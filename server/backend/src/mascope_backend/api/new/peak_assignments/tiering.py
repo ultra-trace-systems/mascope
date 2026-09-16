@@ -53,6 +53,15 @@ The neighbour has to be a formula the run stands behind - candidate tier or
 above - because the line is predicted FROM its formula, and a reading the run
 itself calls below assignability is no ground for taking another row's tier.
 
+``envelope_claim`` - where that neighbour is held at ``assigned``, the peak is
+read as its line (:func:`find_envelope_claims`, :mod:`envelope_claims`): an
+isotopologue of the neighbour at ``candidate``, with the reading it displaced
+first among its alternatives. Not where the row is a compound of the target
+library, where a second channel committed its neutral, where the neighbour
+already holds a line there, or where the peak's mass error does not follow the
+neighbour's even allowing for what the line can deliver; the row then stays as
+it was and its envelope reason says which.
+
 Rules the earlier passes already applied
 ----------------------------------------
 
@@ -61,13 +70,18 @@ and did so before this module existed. They keep their own provenance blocks,
 which the inspector and the SDK read; this pass reads those blocks and folds
 what they say into the same ``tier_reasons`` list, so a reader asking "why is
 this row a candidate" gets one answer wherever the demote came from. It does not
-re-apply them - a row they capped is already capped.
+re-apply them - a row they capped is already capped. That includes what the
+gate found of an isotopologue's line: that it tracks its parent only within
+what its noise and neighbours explain, or not at all.
 """
 
 from __future__ import annotations
 
 import bisect
+from collections import Counter, defaultdict
 from typing import Any, Iterable
+
+import numpy as np
 
 from mascope_backend.api.new.peak_assignments.cross_channel import (
     CHANNELS_FOR_CORROBORATION,
@@ -78,6 +92,21 @@ from mascope_backend.api.new.peak_assignments.engine import (
     ROLE_ISO_CHILD,
     ROLE_M0,
     SOURCE_DATABASE,
+    is_target_library_row,
+)
+from mascope_backend.api.new.peak_assignments.envelope_claims import (
+    ENVELOPE_CLAIM,
+    ClaimedLine,
+    EnvelopeClaim,
+)
+from mascope_backend.api.new.peak_assignments.mass_gate import (
+    REASON_ISOTOPOLOGUE_IN_DOUBT,
+    REASON_ISOTOPOLOGUE_UNTRACKED,
+    TRACKING_IN_DOUBT,
+    TRACKING_UNTRACKED,
+    UNREAD_LINE,
+    SpectrumLines,
+    tracking_of,
 )
 from mascope_backend.api.new.peak_assignments.tiers import (
     TIER_ASSIGNED,
@@ -96,13 +125,36 @@ from mascope_tools.composition.implausibility import implausible_signatures
 #: run, because a tier is only comparable across runs together with the rules
 #: that produced it - the same statement the tier BANDS carry, for the same
 #: reason.
-TIERING_RULES_VERSION = 2
+TIERING_RULES_VERSION = 3
 
 #: The row names a radical rather than a molecule.
 REASON_ODD_ELECTRON = "odd_electron"
 
 #: The peak is a line another committed reading's envelope predicts.
 REASON_ENVELOPE_NEIGHBOUR = "envelope_neighbour"
+
+#: The peak was committed as a compound of its own and is read as an assigned
+#: neighbour's line instead.
+REASON_ENVELOPE_CLAIM = "envelope_claim"
+
+#: Why a row on an assigned neighbour's line was not read as that line.
+HELD_NEIGHBOUR_NOT_ASSIGNED = "neighbour_not_assigned"
+HELD_TARGET_LIBRARY = "target_library"
+HELD_CORROBORATED = "corroborated"
+HELD_LINE_TAKEN = "line_taken"
+HELD_UNTRACKED = "untracked"
+
+#: What each of those says on the row, after the envelope reason's own sentence.
+_HELD_SENTENCES = {
+    HELD_NEIGHBOUR_NOT_ASSIGNED: "that reading is not held at assigned",
+    HELD_TARGET_LIBRARY: "this row is a compound of the target library",
+    HELD_CORROBORATED: "another channel of this run committed its neutral",
+    HELD_LINE_TAKEN: "that reading already holds a line there",
+    HELD_UNTRACKED: (
+        "its mass error does not follow that reading's, even allowing for what "
+        "its line can deliver"
+    ),
+}
 
 #: The peak's own evidence could not separate the winner from other formulas,
 #: and no second channel saw the neutral.
@@ -133,7 +185,13 @@ DENSITY_LIMIT = 2
 #: The rules another pass already applied, listed so this one records them
 #: without capping a second time.
 _EARLIER_RULES = frozenset(
-    {REASON_OFF_CALIBRATION, REASON_AMBIGUOUS_NITROGEN, REASON_MINOR_CHANNEL}
+    {
+        REASON_OFF_CALIBRATION,
+        REASON_AMBIGUOUS_NITROGEN,
+        REASON_MINOR_CHANNEL,
+        REASON_ISOTOPOLOGUE_IN_DOUBT,
+        REASON_ISOTOPOLOGUE_UNTRACKED,
+    }
 )
 
 #: How much taller than a neighbour's predicted line a peak may be and still
@@ -199,13 +257,36 @@ def earlier_reasons(row: dict) -> list[dict]:
     provenance = _provenance(row)
     reasons: list[dict] = []
     mass_gate = provenance.get("mass_gate") or {}
-    if mass_gate.get("capped"):
+    if mass_gate.get("capped") and mass_gate.get("reason", REASON_OFF_CALIBRATION) == (
+        REASON_OFF_CALIBRATION
+    ):
         z = mass_gate.get("mass_z", provenance.get("mass_z"))
         reasons.append(
             _reason(
                 REASON_OFF_CALIBRATION,
                 f"mass error sits {z} widths off the run's own fitted centre "
                 "at its m/z with nothing corroborating the reading",
+                caps=True,
+            )
+        )
+    # What the gate found of an isotopologue's line, whether or not it lowered
+    # the tier: a finding about the line, like every rule here.
+    if mass_gate.get("tracking") == TRACKING_IN_DOUBT:
+        reasons.append(
+            _reason(
+                REASON_ISOTOPOLOGUE_IN_DOUBT,
+                "its mass error misses its monoisotopic row's by more than the "
+                "instrument's precision, and by no more than this line's own "
+                "noise and the peaks close beside it explain",
+                caps=True,
+            )
+        )
+    elif mass_gate.get("tracking") == TRACKING_UNTRACKED:
+        reasons.append(
+            _reason(
+                REASON_ISOTOPOLOGUE_UNTRACKED,
+                "its mass error does not follow its monoisotopic row's, even "
+                "allowing for this line's own noise and the peaks close beside it",
                 caps=True,
             )
         )
@@ -346,30 +427,16 @@ def envelope_neighbours(
         # tier (assigned owners: 1 of 76).
         if owner.get("tier") not in (TIER_ASSIGNED, TIER_CANDIDATE):
             continue
-        ion = str(owner.get("ion_formula") or "")
-        if len(ion) < 2 or ion[-1] not in "+-":
-            continue
-        charge = 1 if ion[-1] == "+" else -1
         owner_intensity = float(owner.get("sample_peak_intensity") or 0.0)
         if owner_intensity <= 0:
             continue
-        try:
-            predicted_mzs, predicted_intensities, labels = predict_isotopes(
-                ion[:-1], charge, threshold=abundance_floor
-            )
-        except Exception:  # noqa: BLE001 - an unpredictable ion demotes nothing
+        envelope = predicted_envelope(owner.get("ion_formula"), abundance_floor)
+        if envelope is None:
             continue
-        if predicted_mzs.size < 2:
-            continue
-        predicted_mzs, predicted_intensities, labels = anchor_on_monoisotopic(
-            predicted_mzs, predicted_intensities, labels
-        )
-        base = float(predicted_intensities[0])
-        if base <= 0:
-            continue
+        predicted_mzs, shares, labels = envelope
         for index in range(1, len(predicted_mzs)):
             line_mz = float(predicted_mzs[index])
-            share = float(predicted_intensities[index]) / base
+            share = float(shares[index])
             window = line_mz * mz_tolerance_ppm * 1e-6
             low = bisect.bisect_left(mzs, line_mz - window)
             high = bisect.bisect_right(mzs, line_mz + window)
@@ -394,23 +461,62 @@ def envelope_neighbours(
                     "neighbour": str(owner.get("peak_assignment_id")),
                     "neighbour_formula": owner.get("assigned_formula"),
                     "line": labels[index],
-                    "predicted_share": round(share, 4),
+                    "line_mz": round(line_mz, 6),
+                    "predicted_share": round(share, 6),
                 }
     return found
 
 
+def predicted_envelope(
+    ion_formula, abundance_floor: float
+) -> tuple[np.ndarray, np.ndarray, list[str]] | None:
+    """An ion's predicted lines, its own first, with heights relative to it.
+
+    :param ion_formula: The ion, charge last (``C6H13O6+``).
+    :param abundance_floor: How deep to predict, relative to the ion's own line.
+    :return: The lines' m/z, relative heights and labels, or None for an ion
+        with nothing beyond its own line, or none the predictor can read.
+    """
+    ion = str(ion_formula or "")
+    if len(ion) < 2 or ion[-1] not in "+-":
+        return None
+    try:
+        mzs, intensities, labels = predict_isotopes(
+            ion[:-1], 1 if ion[-1] == "+" else -1, threshold=abundance_floor
+        )
+    except Exception:  # noqa: BLE001 - an unpredictable ion predicts nothing
+        return None
+    if mzs.size < 2:
+        return None
+    mzs, intensities, labels = anchor_on_monoisotopic(mzs, intensities, labels)
+    base = float(intensities[0])
+    if base <= 0:
+        return None
+    return mzs, intensities / base, labels
+
+
 def envelope_reason(row: dict, on_a_neighbours_line: dict[str, dict]) -> dict | None:
-    """The peak is a line a committed neighbour's envelope already accounts for."""
+    """The peak is a line a committed neighbour's envelope already accounts for.
+
+    Carries the neighbour and the line beside the sentence, which is what
+    :func:`find_envelope_claims` reads the row's claim off.
+    """
     hit = on_a_neighbours_line.get(str(row.get("peak_assignment_id")))
     if not hit:
         return None
-    return _reason(
-        REASON_ENVELOPE_NEIGHBOUR,
-        f"this peak is the {hit['line']} line of {hit['neighbour_formula']}, "
-        f"predicted at {hit['predicted_share']:.1%} of that reading's own line "
-        "and tall enough here to account for the peak outright",
-        caps=True,
-    )
+    return {
+        **_reason(
+            REASON_ENVELOPE_NEIGHBOUR,
+            f"this peak is the {hit['line']} line of {hit['neighbour_formula']}, "
+            f"predicted at {hit['predicted_share']:.1%} of that reading's own line "
+            "and tall enough here to account for the peak outright",
+            caps=True,
+        ),
+        "neighbour": hit["neighbour"],
+        "line": hit["line"],
+        "line_mz": hit["line_mz"],
+        "predicted_share": hit["predicted_share"],
+    }
 
 
 def implausibility_reasons(row: dict) -> list[dict]:
@@ -559,6 +665,7 @@ def apply_tiering(
 
     capped_isotopologues = 0
     capped_isotopologues_after_earlier_pass = 0
+    claimed = carried = 0
     for row in committed:
         if row.get("role") != ROLE_ISO_CHILD:
             continue
@@ -587,14 +694,27 @@ def apply_tiering(
         # isotopologue is its escape). On the assignment gate no isotopologue of
         # an earlier-capped owner was left standing, so this adds no demote
         # there; it is the rule stated once rather than three ways.
+        #
+        # What the gate found of the row's own line comes first, and a line a
+        # claim read as the owner's says so: both are about this peak rather
+        # than about the owner.
         owner_capped = owner_id in capped_here or owner_id in capped_earlier
-        _provenance(row)["tier_reasons"] = [
+        reasons = earlier_reasons(row)
+        claim = _provenance(row).get(ENVELOPE_CLAIM)
+        if isinstance(claim, dict):
+            reasons.append(claim_reason(row, claim))
+            if claim.get("carried_with"):
+                carried += 1
+            else:
+                claimed += 1
+        reasons.append(
             _reason(
                 REASON_INHERITED,
                 "an isotopologue of a reading judged on its own monoisotopic row",
                 caps=owner_capped,
             )
-        ]
+        )
+        _provenance(row)["tier_reasons"] = reasons
         if owner_capped and _cap(row):
             if owner_id in capped_here:
                 capped_isotopologues += 1
@@ -610,6 +730,259 @@ def apply_tiering(
         # standing. Separate from the above, whose owners this pass capped.
         "capped_isotopologues_after_earlier_pass": capped_isotopologues_after_earlier_pass,
         "capped_by_rule": capped_by_rule,
+        # Rows read as an assigned neighbour's line, and the isotopologues they
+        # had carried as compounds of their own that went with them.
+        "claimed": claimed,
+        "claimed_with_their_lines": carried,
         "density_limit": DENSITY_LIMIT,
         "envelope_height_tolerance": ENVELOPE_HEIGHT_TOLERANCE,
     }
+
+
+def claim_reason(row: dict, claim: dict) -> dict:
+    """What a line a claim read as its owner's says about it."""
+    displaced = claim.get("displaced") or {}
+    formula = displaced.get("assigned_formula") or "another formula"
+    line = claim.get("line")
+    if claim.get("carried_with"):
+        detail = (
+            f"committed as an isotopologue of {formula}, a reading this run gave "
+            f"up for a line of {row.get('assigned_formula')}; the {line} line of "
+            f"{row.get('assigned_formula')} is predicted on this peak too"
+        )
+    else:
+        predicted, observed = claim.get("predicted_share"), claim.get("observed_share")
+        heights = (
+            f", predicted at {predicted:.2%} of that reading's own line and found at "
+            f"{observed:.2%}"
+            if isinstance(predicted, (int, float))
+            and isinstance(observed, (int, float))
+            else ""
+        )
+        detail = (
+            f"this peak is the {line} line of {row.get('assigned_formula')}, which "
+            f"the run holds at assigned{heights}; it was committed as {formula} "
+            "first, which is what puts the line in doubt, so it is read as that "
+            "isotopologue at candidate"
+        )
+    return _reason(REASON_ENVELOPE_CLAIM, detail, caps=True)
+
+
+def find_envelope_claims(
+    assignments: Iterable[dict[str, Any]],
+    *,
+    mz_tolerance_ppm: float,
+    abundance_floor: float,
+    precision_ppm: float,
+    lines: SpectrumLines | None = None,
+) -> tuple[list[EnvelopeClaim], dict[str, int]]:
+    """The rows on a neighbour's line that are read as that line.
+
+    Reads what :func:`apply_tiering` left: the envelope reason on each row it
+    found on a neighbour's line, and every row's final tier. So it is asked
+    after that pass, over the same rows.
+
+    A row is read as the neighbour's line when the neighbour holds ``assigned``
+    and none of these holds it back: the row is a compound of the workspace's
+    own target library, which somebody named for this data; a second channel of
+    the run committed its neutral, which is evidence from outside the peak; the
+    neighbour already holds a line within the window of the predicted one; or
+    the peak's mass error does not follow the neighbour's even allowing for what
+    its line can deliver (``mass_gate.tracking_of``), which is the tracking
+    test's own word for a peak that is not this ion's line. A row held back
+    keeps its reading, and its envelope reason says which of these held it.
+
+    Where two rows sit on one predicted line, the nearer one is read as it. The
+    row's own isotopologues go with it where the neighbour's envelope predicts
+    their lines too, by the same tests, and leave the ledger where it does not.
+
+    :param assignments: Every row of the run, after :func:`apply_tiering`.
+    :param mz_tolerance_ppm: The run's own match window.
+    :param abundance_floor: The run's own envelope floor.
+    :param precision_ppm: The instrument class's precision.
+    :param lines: The sample's peaks, read for how well each places its line.
+    :return: The claims, and how many rows each reason held back.
+    """
+    committed = [row for row in assignments if row.get("assigned_formula")]
+    by_id = {str(row.get("peak_assignment_id")): row for row in committed}
+    lines_of: dict[str, list[dict]] = defaultdict(list)
+    for row in committed:
+        owner_id = row.get("owner_peak_assignment_id")
+        if row.get("role") == ROLE_ISO_CHILD and owner_id:
+            lines_of[str(owner_id)].append(row)
+
+    flagged: list[tuple[float, dict, dict, dict]] = []
+    for row in committed:
+        if row.get("role") != ROLE_M0:
+            continue
+        entry = next(
+            (
+                reason
+                for reason in _provenance(row).get("tier_reasons") or []
+                if reason.get("rule") == REASON_ENVELOPE_NEIGHBOUR
+            ),
+            None,
+        )
+        owner = by_id.get(str((entry or {}).get("neighbour")))
+        if entry is None or owner is None or entry.get("line_mz") is None:
+            continue
+        line_mz = float(entry["line_mz"])
+        distance = abs(_mz(row) - line_mz) / line_mz
+        flagged.append((distance, row, owner, entry))
+
+    envelopes: dict[str, tuple | None] = {}
+    taken: set[tuple[str, str]] = set()
+    claims: list[EnvelopeClaim] = []
+    held: Counter = Counter()
+    for _, row, owner, entry in sorted(flagged, key=lambda item: item[0]):
+        owner_id = str(owner.get("peak_assignment_id"))
+        why = None
+        line = None
+        if owner.get("tier") != TIER_ASSIGNED:
+            why = HELD_NEIGHBOUR_NOT_ASSIGNED
+        elif is_target_library_row(row):
+            why = HELD_TARGET_LIBRARY
+        elif is_corroborated(row):
+            why = HELD_CORROBORATED
+        else:
+            line = _as_line(
+                row,
+                owner,
+                str(entry.get("line")),
+                float(entry["line_mz"]),
+                float(entry.get("predicted_share") or 0.0),
+                precision_ppm=precision_ppm,
+                lines=lines,
+            )
+            if (owner_id, line.label) in taken or _holds_line_near(
+                lines_of.get(owner_id, ()), line.line_mz, mz_tolerance_ppm
+            ):
+                why = HELD_LINE_TAKEN
+            elif line.tracking == TRACKING_UNTRACKED:
+                why = HELD_UNTRACKED
+        if why is not None:
+            held[why] += 1
+            entry["detail"] = (
+                f"{entry.get('detail', '')}; it is not read as that line, because "
+                f"{_HELD_SENTENCES[why]}"
+            )
+            continue
+        taken.add((owner_id, line.label))
+        if owner_id not in envelopes:
+            envelopes[owner_id] = predicted_envelope(
+                owner.get("ion_formula"), abundance_floor
+            )
+        carried: list[ClaimedLine] = []
+        released: list[str] = []
+        for child in lines_of.get(str(row.get("peak_assignment_id")), ()):
+            child_line = _predicted_line_for(
+                child,
+                owner,
+                envelopes[owner_id],
+                mz_tolerance_ppm=mz_tolerance_ppm,
+                precision_ppm=precision_ppm,
+                lines=lines,
+            )
+            if (
+                child_line is None
+                or child_line.tracking == TRACKING_UNTRACKED
+                or (owner_id, child_line.label) in taken
+                or _holds_line_near(
+                    lines_of.get(owner_id, ()), child_line.line_mz, mz_tolerance_ppm
+                )
+            ):
+                released.append(str(child.get("peak_assignment_id")))
+                continue
+            taken.add((owner_id, child_line.label))
+            carried.append(child_line)
+        claims.append(
+            EnvelopeClaim(
+                owner_id=owner_id,
+                line=line,
+                carried=tuple(carried),
+                released=tuple(released),
+            )
+        )
+    return claims, dict(held)
+
+
+def _mz(row: dict) -> float:
+    return float(row.get("sample_peak_mz") or 0.0)
+
+
+def _as_line(
+    row: dict,
+    owner: dict,
+    label: str,
+    line_mz: float,
+    share: float,
+    *,
+    precision_ppm: float,
+    lines: SpectrumLines | None,
+) -> ClaimedLine:
+    """A peak read as one predicted line of the owner, with its tracking."""
+    return ClaimedLine(
+        row_id=str(row.get("peak_assignment_id")),
+        label=label,
+        line_mz=line_mz,
+        share=share,
+        tracking=tracking_of(
+            (_mz(row) - line_mz) / line_mz * 1e6,
+            owner.get("mz_error_ppm"),
+            precision_ppm=precision_ppm,
+            child=UNREAD_LINE if lines is None else lines.of(row.get("sample_peak_id")),
+            parent=(
+                UNREAD_LINE if lines is None else lines.of(owner.get("sample_peak_id"))
+            ),
+        ),
+    )
+
+
+def _predicted_line_for(
+    child: dict,
+    owner: dict,
+    envelope: tuple | None,
+    *,
+    mz_tolerance_ppm: float,
+    precision_ppm: float,
+    lines: SpectrumLines | None,
+) -> ClaimedLine | None:
+    """The owner's predicted line a peak sits on, by the envelope rule's tests."""
+    if envelope is None:
+        return None
+    predicted_mzs, shares, labels = envelope
+    mz = _mz(child)
+    intensity = float(child.get("sample_peak_intensity") or 0.0)
+    owner_intensity = float(owner.get("sample_peak_intensity") or 0.0)
+    best = None
+    for index in range(1, len(predicted_mzs)):
+        line_mz = float(predicted_mzs[index])
+        if abs(mz - line_mz) > line_mz * mz_tolerance_ppm * 1e-6:
+            continue
+        if (
+            intensity
+            > owner_intensity * float(shares[index]) * ENVELOPE_HEIGHT_TOLERANCE
+        ):
+            continue
+        if best is None or abs(mz - line_mz) < abs(mz - best[1]):
+            best = (index, line_mz)
+    if best is None:
+        return None
+    index, line_mz = best
+    return _as_line(
+        child,
+        owner,
+        str(labels[index]),
+        line_mz,
+        float(shares[index]),
+        precision_ppm=precision_ppm,
+        lines=lines,
+    )
+
+
+def _holds_line_near(
+    owned: Iterable[dict], line_mz: float, tolerance_ppm: float
+) -> bool:
+    """Whether an owner already committed a line within the window of this one."""
+    window = line_mz * tolerance_ppm * 1e-6
+    return any(abs(_mz(line) - line_mz) <= window for line in owned)

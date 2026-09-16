@@ -14,8 +14,10 @@ read model ("every peak in sample X with its formula and confidence"):
 """
 
 import asyncio
+import copy
 from collections import OrderedDict
-from dataclasses import asdict
+from collections.abc import Callable
+from dataclasses import asdict, dataclass
 from datetime import datetime as dt
 from datetime import timezone
 from types import SimpleNamespace
@@ -41,6 +43,7 @@ from mascope_backend.api.new.cheminfo.utils import (
     to_custom_element_format,
     to_explicit_isotope_format,
 )
+from mascope_backend.api.new.instrument_configs.lib import read_instrument_functions
 from mascope_backend.api.new.ionization.modes.util import (
     fetch_sample_ionization_mechanism_ids,
 )
@@ -81,6 +84,7 @@ from mascope_backend.api.new.peak_assignments.engine import (
     PATTERN_SCORING_KEY,
     REFERENCE_IDENTITIES_COL,
     SEARCH_SCOPE_KEY,
+    SOURCE_DATABASE,
     TIERING_KEY,
     ReagentOffset,
     SampleMassAccuracy,
@@ -98,6 +102,10 @@ from mascope_backend.api.new.peak_assignments.engine import (
     untargeted_seeds,
     untargeted_targets,
 )
+from mascope_backend.api.new.peak_assignments.envelope_claims import (
+    EnvelopeClaim,
+    apply_claims,
+)
 from mascope_backend.api.new.peak_assignments.fold_view import (
     derived_ledger,
     fold_id_target,
@@ -108,7 +116,10 @@ from mascope_backend.api.new.peak_assignments.fold_view import (
     member_detail,
     verification_target,
 )
-from mascope_backend.api.new.peak_assignments.mass_gate import apply_mass_gate
+from mascope_backend.api.new.peak_assignments.mass_gate import (
+    SpectrumLines,
+    apply_mass_gate,
+)
 from mascope_backend.api.new.peak_assignments.profiles import (
     RESOLVED_PROFILE_KEY,
     ResolvedProfile,
@@ -122,7 +133,10 @@ from mascope_backend.api.new.peak_assignments.reagent_pass import (
 )
 from mascope_backend.api.new.peak_assignments.schemas import DEFAULT_PAGE_LIMIT
 from mascope_backend.api.new.peak_assignments.seeded_scoring import score_seeds
-from mascope_backend.api.new.peak_assignments.tiering import apply_tiering
+from mascope_backend.api.new.peak_assignments.tiering import (
+    apply_tiering,
+    find_envelope_claims,
+)
 from mascope_backend.db import (
     AssignmentVerification,
     BatchPeakOccurrence,
@@ -1132,10 +1146,45 @@ def _read_nitrogen_counts(
     :return: How many mirror rows carry same-ion readings, and the cross-channel
         pass's summary.
     """
+    mirror_families = _record_mirror_readings(
+        stage_a_assignments,
+        searched_mechanisms=searched_mechanisms,
+        resolved_profile=resolved_profile,
+        max_alternatives=max_alternatives,
+    )
+    cross_channel = apply_cross_channel(
+        stage_a_assignments + stage_b_assignments,
+        notation_by_id=_notation_by_id(searched_mechanisms),
+    )
+    return mirror_families, cross_channel
+
+
+def _notation_by_id(searched_mechanisms: list[SimpleNamespace]) -> dict[str, str]:
+    """The searched mechanisms' finder notations, keyed by mechanism id."""
+    _, mechanism_id_by_notation = _untargeted_ionization_notations(searched_mechanisms)
+    return {
+        mechanism_id: notation
+        for notation, mechanism_id in mechanism_id_by_notation.items()
+    }
+
+
+def _record_mirror_readings(
+    stage_a_assignments: list[dict],
+    *,
+    searched_mechanisms: list[SimpleNamespace],
+    resolved_profile: ResolvedProfile,
+    max_alternatives: int,
+) -> int:
+    """Give each reference mirror row its ion's family (the first half of
+    :func:`_read_nitrogen_counts`), which reads no tier and so is written once
+    however many times the passes after it run.
+
+    :return: How many mirror rows carry same-ion readings.
+    """
     notations, mechanism_id_by_notation = _untargeted_ionization_notations(
         searched_mechanisms
     )
-    mirror_families = record_mirror_same_ion_readings(
+    return record_mirror_same_ion_readings(
         stage_a_assignments,
         mechanism_id_by_notation=mechanism_id_by_notation,
         search_config=resolved_profile.search_config(notations),
@@ -1143,14 +1192,105 @@ def _read_nitrogen_counts(
         formula_formatter=to_custom_element_format,
         max_alternatives=max_alternatives,
     )
-    cross_channel = apply_cross_channel(
-        stage_a_assignments + stage_b_assignments,
-        notation_by_id={
-            mechanism_id: notation
-            for notation, mechanism_id in mechanism_id_by_notation.items()
-        },
-    )
-    return mirror_families, cross_channel
+
+
+#: How many times a run reads its commits again after reading lines as a
+#: neighbour's. A claim takes a monoisotopic row off the ledger, and a row that
+#: row's own envelope had flagged can then sit on another neighbour's line - a
+#: chain as long as an envelope has lines to walk, which in practice is one or
+#: two. The last reading stands whether or not it found more.
+MAX_CLAIM_ROUNDS = 4
+
+
+@dataclass
+class JudgedCommits:
+    """A sample's committed rows after every pass that judges them.
+
+    :param rows: The rows, claims applied and released isotopologues gone.
+    :param mass_calibration: The mass gate's summary.
+    :param cross_channel: The cross-channel pass's summary.
+    :param tiering: The tiering pass's summary, with what the claims did.
+    """
+
+    rows: list[dict]
+    mass_calibration: dict
+    cross_channel: dict
+    tiering: dict
+
+
+def judge_commits(
+    rows: list[dict],
+    *,
+    stage_a_accuracy: SampleMassAccuracy,
+    fallback_sigma_ppm: float,
+    notation_by_id: dict[str, str],
+    mz_tolerance_ppm: float,
+    abundance_floor: float,
+    max_alternatives: int,
+    lines: SpectrumLines | None = None,
+) -> JudgedCommits:
+    """Run the mass gate, the cross-channel pass and the tiering pass, and read
+    the lines they find in doubt as their neighbours'.
+
+    The three passes read the finished ledger, and a claim changes it: a
+    monoisotopic row becomes an isotopologue, so it no longer anchors the run's
+    calibration or draws the line its centre follows, no longer counts as a
+    channel for its neutral, and no longer predicts lines of its own. So a round
+    that finds claims is not kept. The claims are applied to the rows as the
+    stages built them and every pass runs again, until a round finds nothing new
+    (:data:`MAX_CLAIM_ROUNDS`). The rows passed in are not modified.
+
+    :param rows: Both stages' committed rows, as built.
+    :param stage_a_accuracy: What Stage A measured (``apply_mass_gate``).
+    :param fallback_sigma_ppm: The instrument class's width and precision.
+    :param notation_by_id: The searched mechanisms (``apply_cross_channel``).
+    :param mz_tolerance_ppm: The run's match window.
+    :param abundance_floor: The run's envelope floor.
+    :param max_alternatives: Cap on stored alternatives per row.
+    :param lines: The sample's peaks, read for how well each places its line.
+    :return: The judged rows and each pass's summary.
+    """
+    claims: dict[str, EnvelopeClaim] = {}
+    claim_round = 0
+    while True:
+        claim_round += 1
+        judged = apply_claims(
+            copy.deepcopy(rows), claims.values(), max_alternatives=max_alternatives
+        )
+        mass_calibration = apply_mass_gate(
+            judged,
+            stage_a_accuracy=stage_a_accuracy,
+            fallback_sigma_ppm=fallback_sigma_ppm,
+            lines=lines,
+        )
+        cross_channel = apply_cross_channel(judged, notation_by_id=notation_by_id)
+        tiering = apply_tiering(
+            judged,
+            mz_tolerance_ppm=mz_tolerance_ppm,
+            abundance_floor=abundance_floor,
+        )
+        found, held = find_envelope_claims(
+            judged,
+            mz_tolerance_ppm=mz_tolerance_ppm,
+            abundance_floor=abundance_floor,
+            precision_ppm=fallback_sigma_ppm,
+            lines=lines,
+        )
+        if not found or claim_round >= MAX_CLAIM_ROUNDS:
+            tiering.update(
+                claim_rounds=claim_round,
+                # Rows on an assigned neighbour's line that stayed as they were,
+                # by the reason that held each back.
+                held=held,
+                # Isotopologues that left the ledger with the reading they
+                # belonged to.
+                released=sum(len(claim.released) for claim in claims.values()),
+                # Claims the last round found and no round applied: none unless
+                # the rounds ran out.
+                unapplied=len(found),
+            )
+            return JudgedCommits(judged, mass_calibration, cross_channel, tiering)
+        claims.update((claim.row_id, claim) for claim in found)
 
 
 async def _fetch_known_target_isotopes(
@@ -1512,6 +1652,27 @@ def load_sample_peaks(sample: Sample) -> pd.DataFrame:
         # noise-free", which is the one reading that must not happen.
         peaks_df["signal_to_noise"] = peak_data.signal_to_noise
     return peaks_df
+
+
+async def _resolution_of(sample) -> Callable[[float], float] | None:
+    """The sample file's resolving power as a function of m/z, if it has one.
+
+    What tells the mass gate how close two peaks are to each other in their own
+    widths. A file whose instrument functions were never fitted still gets its
+    lines judged, on their noise alone, so a read that fails stands down.
+
+    :param sample: The sample view row.
+    :return: The resolution function, or None.
+    """
+    try:
+        _, resolution = await read_instrument_functions(sample.filename)
+    except Exception as exc:  # noqa: BLE001 - the lines are read without it
+        runtime.logger.info(
+            f"No resolution function for sample '{sample.sample_item_name}' "
+            f"({exc}); its isotope lines are judged without their neighbours"
+        )
+        return None
+    return resolution
 
 
 def count_sample_peaks(sample: Sample) -> int:
@@ -2496,17 +2657,44 @@ async def _run_sample_assignment(
                     f"Stage B assigned {len(stage_b_assignments)} of "
                     f"{len(remainder_df)} remaining peaks via untargeted search"
                 )
-        # -- The run's own mass calibration, and the gate on it. Runs on the
-        # committed rows of both stages together, because the corroboration it
-        # reads is a property of the whole ledger rather than of either stage:
-        # which reading kept an isotopologue, and which peak a curated identity
-        # claimed. Before the unassigned placeholders are built, which commit
-        # nothing and have nothing to measure.
-        mass_calibration = apply_mass_gate(
+        # -- A reference list's matches carry the other readings of their ion.
+        # Written before the passes below, since it reads no tier and they may
+        # run more than once.
+        mirror_families = _record_mirror_readings(
+            stage_a_assignments,
+            searched_mechanisms=searched_mechanisms,
+            resolved_profile=resolved_profile,
+            max_alternatives=config.max_alternatives,
+        )
+        # -- The passes that judge the finished ledger, on the committed rows of
+        # both stages together, and before the unassigned placeholders are
+        # built, which commit nothing and have nothing to measure:
+        # - the run's own mass calibration and the gate on it, since the
+        #   corroboration it reads is a property of the whole ledger - which
+        #   reading kept an isotopologue, and which peak a curated identity
+        #   claimed;
+        # - what the sample's other channels say about each committed neutral,
+        #   and the nitrogen a reagent adduct can hide;
+        # - why every committed row holds the tier it holds, which reads what
+        #   the two above recorded and the finished ledger's own envelopes.
+        # All three only ever demote, so their order decides which pass is named
+        # and never which tier a row ends on. A line one of them finds on an
+        # assigned neighbour's envelope is read as that neighbour's, and then
+        # all three run again over the ledger that leaves (`judge_commits`).
+        lines = SpectrumLines.from_peaks(peaks_df, await _resolution_of(sample))
+        judged = judge_commits(
             stage_a_assignments + stage_b_assignments,
             stage_a_accuracy=mass_accuracy,
             fallback_sigma_ppm=resolved_profile.fallback_sigma_ppm,
+            notation_by_id=_notation_by_id(searched_mechanisms),
+            mz_tolerance_ppm=scoring.mz_tolerance_ppm,
+            abundance_floor=scoring.abundance_floor,
+            max_alternatives=config.max_alternatives,
+            lines=lines,
         )
+        mass_calibration = judged.mass_calibration
+        cross_channel = judged.cross_channel
+        tiering = judged.tiering
         if mass_calibration["applied"]:
             trend = mass_calibration["trend"]
             centre = (
@@ -2532,16 +2720,13 @@ async def _run_sample_assignment(
                 f"{mass_calibration['committed']} commits, too few to measure a "
                 "mass calibration; no row is gated on one"
             )
-        # -- What the sample's other channels say about each committed neutral,
-        # and the nitrogen a reagent adduct can hide. After the mass gate
-        # because both only ever demote, so the order cannot change a tier -
-        # only which pass is recorded as having taken it.
-        mirror_families, cross_channel = _read_nitrogen_counts(
-            stage_a_assignments,
-            stage_b_assignments,
-            searched_mechanisms=searched_mechanisms,
-            resolved_profile=resolved_profile,
-            max_alternatives=config.max_alternatives,
+        followed = mass_calibration["isotopologues"]
+        runtime.logger.info(
+            f"Sample '{sample.sample_item_name}' isotopologues: "
+            f"{followed['tracks']} track their parents, {followed['in_doubt']} "
+            f"only within what their lines deliver ({mass_calibration['capped_in_doubt']} "
+            f"held at candidate for it), {followed['untracked']} not at all "
+            f"({mass_calibration['capped_untracked']} held at candidate for it)"
         )
         runtime.logger.info(
             f"Sample '{sample.sample_item_name}' corroborates "
@@ -2556,16 +2741,6 @@ async def _run_sample_assignment(
             )
             + f"; {mirror_families} reference-list matches carry other readings "
             "of their ion"
-        )
-        # -- Why every committed row holds the tier it holds, and the rows whose
-        # answer is that the top tier was not earned. Last, because two of its
-        # rules read what the passes above recorded and one reads the finished
-        # ledger's own envelopes; and demote-only, like both of them, so the
-        # order decides which pass is named and never which tier a row ends on.
-        tiering = apply_tiering(
-            stage_a_assignments + stage_b_assignments,
-            mz_tolerance_ppm=scoring.mz_tolerance_ppm,
-            abundance_floor=scoring.abundance_floor,
         )
         runtime.logger.info(
             f"Sample '{sample.sample_item_name}' tiers "
@@ -2583,7 +2758,20 @@ async def _run_sample_assignment(
                 if tiering["capped_by_rule"]
                 else ""
             )
+            + f"; {tiering['claimed']} lines read as an assigned neighbour's "
+            f"isotopologue ({tiering['claimed_with_their_lines']} of their own "
+            f"lines with them, {tiering['released']} released) over "
+            f"{tiering['claim_rounds']} rounds"
+            + (
+                ", held back: "
+                + ", ".join(
+                    f"{count} {why}" for why, count in sorted(tiering["held"].items())
+                )
+                if tiering["held"]
+                else ""
+            )
         )
+        committed_rows = judged.rows
         await _record_resolved_profile(
             run.peak_assignment_run_id,
             config,
@@ -2596,10 +2784,12 @@ async def _run_sample_assignment(
         )
         await send_progress_user_notification(notification, 0.8)
 
-        # -- Persist the complete ledger: one row per observed peak
-        assigned_peak_ids.update(
-            assignment["sample_peak_id"] for assignment in stage_b_assignments
-        )
+        # -- Persist the complete ledger: one row per observed peak. What the
+        # passes left committed, since an isotopologue released with the reading
+        # it belonged to is a peak nothing explains.
+        assigned_peak_ids = claimed_peak_ids | {
+            assignment["sample_peak_id"] for assignment in committed_rows
+        }
         unassigned_df = peaks_df[~peaks_df["sample_peak_id"].isin(assigned_peak_ids)]
         unassigned_assignments = build_unassigned_assignments(
             unassigned_df,
@@ -2610,8 +2800,7 @@ async def _run_sample_assignment(
         all_assignments = (
             reagent_assignments
             + artifact_assignments
-            + stage_a_assignments
-            + stage_b_assignments
+            + committed_rows
             + unassigned_assignments
         )
         # Insert owners before children: owner_peak_assignment_id is a
@@ -2658,10 +2847,14 @@ async def _run_sample_assignment(
                 f"(run '{run.peak_assignment_run_id}'): {fold_error}"
             )
 
+        database_assigned = sum(
+            1 for row in committed_rows if row.get("source") == SOURCE_DATABASE
+        )
+        untargeted_assigned = len(committed_rows) - database_assigned
         message = (
             f"Assigned peaks for sample '{sample.sample_item_name}': "
-            f"{len(stage_a_assignments)} from the target library, "
-            f"{len(stage_b_assignments)} untargeted, "
+            f"{database_assigned} from the target library, "
+            f"{untargeted_assigned} untargeted, "
             f"{len(unassigned_assignments)} unassigned "
             f"({len(all_assignments)} peaks total)."
         )
@@ -2672,8 +2865,8 @@ async def _run_sample_assignment(
             "data": {
                 "peak_assignment_run_id": run.peak_assignment_run_id,
                 "total_peaks": len(all_assignments),
-                "database_assigned": len(stage_a_assignments),
-                "untargeted_assigned": len(stage_b_assignments),
+                "database_assigned": database_assigned,
+                "untargeted_assigned": untargeted_assigned,
                 "unassigned": len(unassigned_assignments),
             },
             "_notification_data": {
@@ -2781,7 +2974,10 @@ async def _fold_sample_peaks_without_run(
     of it on the two paths, and where this path measures no calibration the
     gate stands down, as it does in a run with too few anchors.
     ``test_fold_without_run`` pins that the gate runs here, and
-    ``test_mass_gate`` pins which Stage A rows it may act on.
+    ``test_mass_gate`` pins which Stage A rows it may act on. The gate reads the
+    sample's lines here as in a run, so an isotopologue that does not track its
+    parent is held at candidate on both paths. The tiering pass does not run
+    here, so no line is read as a neighbour's isotopologue on this path.
 
     The reagent-N rule runs here too, for the same reason
     (:func:`_read_nitrogen_counts`): a reference mirror's row whose ion reads as
@@ -2852,12 +3048,14 @@ async def _fold_sample_peaks_without_run(
         reagent_offset=reagent_offset,
     )
     # The run's gate over this path's commits, so that a reference mirror's
-    # row off calibration is capped here as a run would cap it. Nothing records
-    # the summary: there is no run to put it on.
+    # row off calibration is capped here as a run would cap it, and an
+    # isotopologue that does not track its parent is held as a run holds it.
+    # Nothing records the summary: there is no run to put it on.
     apply_mass_gate(
         stage_a,
         stage_a_accuracy=mass_accuracy,
         fallback_sigma_ppm=resolved_profile.fallback_sigma_ppm,
+        lines=SpectrumLines.from_peaks(peaks_df, await _resolution_of(sample)),
     )
     # ...and the run's nitrogen check, through the channels a run would read,
     # so a reference-list row whose ion reads as well another way is not held

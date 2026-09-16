@@ -210,9 +210,11 @@ confidence, since that is how the field communicates identification certainty.
 
 The evidence sets the highest tier a row can reach. A second pass then asks each committed
 row the questions the evidence cannot answer, and it can only lower a tier, never raise
-one. The peak inspector lists its answers under **Why this tier**: every committed row
-carries at least one, naming either what capped it at *candidate* or what it kept its tier
-on. The sentence under each is the run's own, about that row.
+one; the one thing it does besides is to read a peak as another compound's isotope line,
+which replaces the row's reading rather than raising it (below). The peak inspector lists
+its answers under **Why this tier**: every committed row carries at least one, naming
+either what capped it at *candidate* or what it kept its tier on. The sentence under each
+is the run's own, about that row.
 
 What caps a row at candidate:
 
@@ -229,6 +231,29 @@ What caps a row at candidate:
   predicts a line on this peak, and the peak is no more than twice as tall as that line,
   so the line could account for all of it. The neighbour must itself be a reading the
   run stands behind, at *candidate* or above.
+- **read as a neighbour's line** — where that neighbour is held at *assigned*, the peak
+  is read as its isotopologue instead, at *candidate*: the run first committed it as a
+  compound of its own, which is exactly the doubt. The formula it held before is the
+  first of its close alternatives, so assigning it by hand puts it back. The peak stays
+  what it was, with the reason saying why, where the neighbour is at *candidate*, where
+  the peak is a compound of your own target library, where another ionization channel
+  of the run committed its neutral, where the neighbour already has a line there, or
+  where the peak's mass error does not follow the neighbour's even allowing for what the
+  line can deliver (next item). The peak's own isotope lines go with it where the
+  neighbour's pattern predicts them too, and are left unassigned where it does not.
+  Every check then runs again over what the run now holds, so the calibration is no
+  longer measured with the peak as a compound of its own.
+- **line in doubt** and **off its M0** — an isotope line's mass error should follow its
+  M0's, since both are measured on one axis. Within the instrument's precision it does,
+  and the line corroborates the M0. A faint line is placed less well - its own noise
+  widens the margin by the square root of how much fainter it is than a line at a
+  signal-to-noise of 15 - and a line with another peak within two peak widths of it is
+  pushed off its place, by up to a quarter of a width for a neighbour at least as tall
+  (read off the file's resolving power). A line that misses its M0 by no more than that
+  is in doubt: it is held at *candidate*, and not taken lower for a distance from the
+  calibration that the same causes explain. A line that misses by more is off its M0,
+  and is held at *candidate* at least, like any row off calibration beyond that. Neither
+  corroborates its M0.
 - **oxygen lattice** and **carbon-free formula** — shapes a mass search produces rather
   than a source: more than 1.3 oxygens per carbon with at least five oxygens, or no carbon
   at all without being one of the small inorganics these sources make. A curated identity
@@ -264,7 +289,8 @@ separated the formula from every other candidate the run competed for the peak),
 measured** (nothing the pass reads was recorded for the row, which is a statement of
 absence rather than a finding). An isotopologue **follows its M0**: it is the M0's ion
 seen at another isotope, so it takes the M0's answer and loses the top tier with it, and
-the inspector shows the M0's reasons beneath its own.
+the inspector shows the M0's reasons beneath its own. What was found about its own line -
+in doubt, off its M0, read as the M0's line - is listed above that.
 
 A reason can name a rule that lowered nothing: a row its evidence already put below
 *candidate* keeps that tier, and the rule still says what it found. The run records the

@@ -220,6 +220,11 @@ def _patches(
         "seeded": patch(
             f"{_MOD}._seeded_fits", new_callable=AsyncMock, return_value={}
         ),
+        # The file's resolving power lives with its instrument functions in the
+        # database; these files have none, as a file never fitted has none.
+        "resolution": patch(
+            f"{_MOD}._resolution_of", new_callable=AsyncMock, return_value=None
+        ),
         "claim": patch(f"{_MOD}.assignment_claim", _claim_stub()),
         "session": patch(f"{_MOD}.async_session", side_effect=recorder.session_factory),
         "progress": patch(
@@ -381,6 +386,100 @@ class TestLedgerCompleteness:
             if owner is not None:
                 assert owner in seen_ids, "child inserted before its owner"
             seen_ids.add(row["peak_assignment_id"])
+
+
+class TestTheJudgedLedger:
+    """What the run persists is what the passes that judge it left."""
+
+    @pytest.mark.asyncio
+    async def test_a_peak_whose_line_left_the_ledger_is_persisted_unassigned(self):
+        # An isotopologue released with the reading it belonged to is a peak
+        # nothing explains, and the ledger still has a row for it.
+        from mascope_backend.api.new.peak_assignments import service
+        from mascope_backend.api.new.peak_assignments.config import (
+            PeakAssignmentConfig,
+        )
+
+        judge = service.judge_commits
+
+        def releasing(rows, **kwargs):
+            judged = judge(rows, **kwargs)
+            judged.rows = [row for row in judged.rows if row["role"] == "M0"]
+            return judged
+
+        peaks = _peaks_df([("p1", 181.0707, 10000.0), ("p2", 182.0741, 660.0)])
+        recorder = _Recorder()
+        _start(_patches(recorder, peaks, _stage_a_rows()))
+        patch(f"{_MOD}.judge_commits", side_effect=releasing).start()
+
+        result = await _run(PeakAssignmentConfig(run_untargeted=False))
+
+        by_peak = {row["sample_peak_id"]: row for row in recorder.rows}
+        assert set(by_peak) == {"p1", "p2"}
+        assert by_peak["p1"]["role"] == "M0"
+        assert (by_peak["p2"]["role"], by_peak["p2"]["tier"]) == (
+            "unassigned",
+            "unassigned",
+        )
+        assert result["data"]["database_assigned"] == 1
+        assert result["data"]["unassigned"] == 1
+
+    @pytest.mark.asyncio
+    async def test_the_run_reads_its_lines_off_its_own_peaks_and_resolution(self):
+        from mascope_backend.api.new.peak_assignments.config import (
+            PeakAssignmentConfig,
+        )
+
+        peaks = _peaks_df([("p1", 181.0707, 10000.0), ("p2", 182.0741, 660.0)])
+        recorder = _Recorder()
+        mocks = _start(_patches(recorder, peaks, _stage_a_rows()))
+        mocks["resolution"].return_value = lambda mz: 100_000.0
+
+        await _run(PeakAssignmentConfig(run_untargeted=False))
+
+        mocks["resolution"].assert_awaited_once()
+        assert mocks["resolution"].call_args.args[0].sample_item_id == "si-1"
+        config = recorder.recorded_configs()[-1]
+        # These peaks carry no noise estimate, and the file a resolving power.
+        lines = config["mass_calibration"]["lines"]
+        assert (lines["noise"], lines["resolution"]) == (False, True)
+        assert set(config["mass_calibration"]["isotopologues"]) == {
+            "tracks",
+            "in_doubt",
+            "untracked",
+        }
+
+    @pytest.mark.asyncio
+    async def test_the_run_records_what_its_claims_did(self):
+        from mascope_backend.api.new.peak_assignments.config import (
+            PeakAssignmentConfig,
+        )
+
+        peaks = _peaks_df([("p1", 181.0707, 10000.0), ("p2", 182.0741, 660.0)])
+        recorder = _Recorder()
+        _start(_patches(recorder, peaks, _stage_a_rows()))
+
+        await _run(PeakAssignmentConfig(run_untargeted=False))
+
+        tiering = recorder.recorded_configs()[-1]["tiering"]
+        assert {
+            key: tiering[key]
+            for key in (
+                "claimed",
+                "claimed_with_their_lines",
+                "claim_rounds",
+                "held",
+                "released",
+                "unapplied",
+            )
+        } == {
+            "claimed": 0,
+            "claimed_with_their_lines": 0,
+            "claim_rounds": 1,
+            "held": {},
+            "released": 0,
+            "unapplied": 0,
+        }
 
 
 class TestStageHandoff:
