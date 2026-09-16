@@ -30,7 +30,7 @@ step PRs land on the epic and are named here as they merge.
 | 2.5c - the same-ion ambiguity on a Stage A mirror row | #2118 | measured: a reference mirror's M0 row carries the readings of its ion the untargeted search would have held, as `same_ion` alternatives (2,725 rows over the 43 samples), and the reagent-N rule asks it from both sides, since a list can put the nitrogen on the analyte; a second channel fixes the count either way and a target library row stays exempt. It moves tiers and nothing else: no formula, role or owner change on 48,894 peaks, G2 identical on every set, no untargeted or target library row touched. The rule reaches 746 mirror rows and caps 167 from assigned (A 24, B 67, F2 76) with 25 isotopologues. All nine same-ion steals on B carry their ammonium reading: two are capped and seven fixed by the same neutral's urea adduct. G1 A 24.3 -> 23.2, B 36.8 -> 37.0 (conditioned 11.6 -> 11.7), F2 97.5 -> 97.3; on B the cap takes 50 rows the reference confirms, 18 of them Keller's amines through `+H+` |
 | 2.5d - review of the curated lists | #2136 (a library entry's line whatever its spelling), #2137 (the cap on library rows, the plan) | measured: the 46 entries the gate's modes attach were audited against the step's four flags, and the plan owner's verdicts taken on each. The four odd-electron workaround entries left the lists (HCO3 and CHO3 for CO3-, HS3 for S3-, Br for Br2-); the entries that never commit a row stay, with their reasons - reagent lines the pre-pass claims first, or compounds absent or out of range; no entry is left whose ion another channel of the same sample reads as a different neutral. Removing the workaround entries cost C2 its Stage A offset: four to five of its eleven or twelve matched lines were theirs, so it scores at the class width with no offset while its own runs sit at -1.1 ppm, and 146 rows leave assigned, 106 of them rows the reference commits the same formula on (the section after this step has the two ways back). The audit found an engine defect, fixed in #2136: a reference list's copy of a library reading took the entry's line, on the spelling or on a shade better fit - 63 rows on four sets, 12 density caps lifted, no tier moved. Decision 3's exemption is lifted from the cap in #2137 (its fourth addendum): a library line off calibration is capped unless an isotopologue tracks it, which moves the three isotopologues that exemption protected from assigned to candidate and nothing else |
 | 2.5e - an offset from the reagent lines where the library is thin | #2140 | measured: where Stage A matches fewer than eight library lines, both stages score at the median error of every line the reagent pre-pass claimed, isotopologues included, where it claimed three or more and the median is beyond the width the sample is scored at; the width stays the class's. Only C2 reaches it, at -1.25 to -1.26 ppm over seven lines where its commits sit at -1.10 to -1.13: 114 of the 146 monoisotopic rows 2.5d took from assigned come back, 100 of them on the reference's formula, its assigned rows go from 181 to 321, G1 30.9 -> 20.6 (conditioned 0.0 -> 0.8 over 257 rows) and G2 86.4 -> 87.5. The other seven sets are identical row for row. Every run keeps its calibration's offset and width and the gate caps the same rows; on C2 the re-elections move the calibration's line through m/z, which three samples now refuse and two fit shallower |
-| 2.5f - a list hit meets the untargeted grid | - | planned, after 2.5d and independent of 2.5e, in two PRs: first the untargeted enumeration runs over Stage A's peaks too and a list hit's candidate density counts the grid's rivals beside the known set's, so the density rule reaches it with no election changed; then the list formula is one candidate in the arbitration carrying a prior, a grid rival may win the peak, and the assigned tier comes from the same rules for every row, the mass gate already reading a library row like any other since 2.5d (decision 3's fifth addendum); the first PR before 2.4e, which reads assigned tiers, the second where the measurement puts it |
+| 2.5f - a list hit meets the untargeted grid | - | planned, after 2.5d and independent of 2.5e, in two PRs: first the untargeted enumeration runs over Stage A's peaks too and a list hit's candidate density counts the grid's rivals beside the known set's, so the density rule reaches it with no election changed; then the list formula is one candidate in the arbitration carrying a prior, a grid rival may win the peak, and the assigned tier comes from the same rules for every row, the mass gate already reading a library row like any other since 2.5d (decision 3's fifth addendum); the first PR was to come before 2.4e, which reads assigned tiers, and 2.4e went first on the plan owner's word, so the first PR re-reads its claims; the second where the measurement puts it |
 | 2.4e - isotopologue claims under interference | #2143 | measured: a monoisotopic row the envelope-neighbour rule flags under a neighbour held at assigned is read as that neighbour's isotopologue at candidate, the reading it displaced first among its alternatives, unless it is a target library compound, another channel committed its neutral, the neighbour already holds a line there, or its error does not follow the neighbour's within what the line can deliver; the ledger's passes then run again over the claims. An isotopologue's tracking allows for its line's noise below a signal-to-noise of 15 and for a peak within two widths of it: a line only that far off is in doubt and held at candidate, never lower, and one further off is held at candidate at least. Of the 861 flagged rows, 252 are claimed (184 tracking, 68 in doubt) and 578 stay under a neighbour below assigned; the reference had read 67 of the claims as the same formula's isotopologues and 6, all on B and five of them 2H lines, as the M0 the claim displaced. G6 falls from 681 to 596, and no monoisotopic row changes formula or tier, so G1, G1 conditioned and G2 are identical on every set. Set C's 18O, 2H and 13C2 lines of its strongest ion are all its candidate isotopologues. 69 isotopologues go from assigned to candidate, 25 of them lines the reference confirms, and the calibration refits on the three samples where a claimed row had been an anchor. Taken ahead of 2.5f's first PR |
 | 2.4f - an oxygen-free neutral in a nitrate cluster | - | planned, after 2.5d: a nitrate cluster reading whose neutral carries no oxygen is not held at assigned; carbonate is measured beside it for the plan owner |
 | 2.6 - frontend: profile, reasons, roles | - | planned |
@@ -816,7 +816,16 @@ The confidence layer. This is where "assigned" starts meaning something.
     lines too, and leave the ledger otherwise. The claimed row is written in
     its owner's convention (a mass-offset label and the isotopologue formula
     beside the ion for a list's row, the substitution for the search's), with
-    the reading it displaced as its first alternative.
+    the reading it displaced as its first alternative. A row on two assigned
+    neighbours' lines is claimed by the one its envelope reason names, the
+    first found in m/z order.
+  - **What the record says.** The claim block's `displaced.tier` is the tier
+    the displaced reading's evidence gave it: a claim is applied to the rows as
+    the stages built them, before any rule held them lower. On 27 of the gate's
+    252 claims it reads assigned where the run had shown the row at candidate,
+    under the envelope rule itself and on some under density, the nitrogen
+    ambiguity or the radical rule as well. Step 2.7a's re-read should take it
+    so, or the block can carry the tier the run held.
   - **The ledger is judged again.** A claim takes a monoisotopic row off the
     ledger, so the mass gate, the cross-channel pass and the tiering pass run
     again over what the claims leave, until a round finds nothing new (at most
@@ -1217,9 +1226,11 @@ its own status.
 - **Size.** S for the measurement, M-L for the election, which needs the
   prior's weight decided (a decision of its own). After 2.5d, whose audit
   matters here because a wrong entry with a prior leans on every tie it
-  touches, and independent of 2.5e; the first PR before 2.4e, which claims
-  lines under assigned formulas; on the reference frozen at `cc07ce1`
-  (decision 16).
+  touches, and independent of 2.5e; the first PR was to come before 2.4e,
+  which claims lines under assigned formulas. 2.4e went first on the plan
+  owner's word, so the first PR also reports the claims whose neighbour it
+  takes below assigned, which a run then leaves as the rows they were. On the
+  reference frozen at `cc07ce1` (decision 16).
 
 ### 2.6 Frontend: profile, reasons, roles
 
@@ -5365,10 +5376,11 @@ What the 861 rows became, and what held the others back:
     parent are in doubt rather than coincidences, and the reference commits
     too little there to say whether that is right. Step 2.7a's refreshed
     reference is where that is read.
-  - The rule claims a line however much shorter than its prediction it is.
-    118 of the 282 rows on an assigned neighbour's line sat below 0.6 of the
-    predicted height, and the reference had confirmed 16% of those, against
-    52% of the rows within 0.6 to 1.4 of it.
+  - The height rule has two tails the reference speaks to. The rule claims a
+    line however much shorter than its prediction it is, and up to twice as
+    tall. On the 252 claimed rows the reference confirms 16% of the 114 below
+    0.6 of the predicted height, 51% of the 82 within 0.6 to 1.4, and 12% of
+    the 56 between 1.4 and 2.0.
 
 #### Verify, item by item
 
