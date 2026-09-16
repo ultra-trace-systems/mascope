@@ -7,6 +7,36 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 ## [1.8.1] - 2026.09.16
 ### Changed
 
+- **A peak an assigned compound's isotope pattern predicts is read as that
+  compound's isotopologue, and an isotopologue whose mass error misses its
+  parent's is no longer held at assigned.** A run caps a monoisotopic row at
+  candidate when a committed neighbour's isotope pattern predicts a line on
+  its peak and the peak is no more than twice that line's height. Where the
+  neighbour is held at assigned, the run now reads the peak as the
+  neighbour's isotopologue instead, at candidate, with the formula it had
+  committed there as the row's first alternative. The peak keeps its reading
+  where it is a compound of the target library, where another channel of the
+  run committed its neutral, where the neighbour already holds a line there,
+  or where its mass error does not follow the neighbour's. The claimed row's
+  own isotopologues go with it where the neighbour's pattern predicts their
+  lines too, and are left unassigned where it does not, and the mass gate,
+  the cross-channel pass and the tiering pass then run again over what the
+  claims left. Whether an isotopologue follows its parent is now judged with
+  what its line can deliver. Within the instrument class's precision it
+  tracks and corroborates, as before. Beyond that, but within what the line's
+  own signal-to-noise and a peak close beside it explain (read off the file's
+  resolving power), it is in doubt: held at candidate, and never taken lower
+  for its distance from the calibration. Beyond that too, it is capped like
+  any other row and held at candidate at least. `config.mass_calibration`
+  records how the isotopologues followed (`isotopologues`), what their lines
+  were read with (`lines`) and the rows each verdict held (`capped_in_doubt`,
+  `capped_untracked`), and a row's `mass_gate` block records its `tracking`.
+  `config.tiering` (rule set 3) records `claimed`, `claimed_with_their_lines`,
+  `released`, the rows `held` back by reason and the `claim_rounds` the run
+  took, and a claimed row carries `provenance.envelope_claim`. The tier
+  reasons gain `envelope_claim`, `isotopologue_in_doubt` and
+  `isotopologue_untracked`, which the peak inspector names.
+
 - **A sample whose target library is too thin to measure a mass offset is
   scored at the offset its reagent ions show.** Both assignment stages score a
   mass error from the offset the target library's matched lines put the sample

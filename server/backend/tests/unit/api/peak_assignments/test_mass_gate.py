@@ -5,24 +5,42 @@ to define the run's centre decides which rows can be found to sit away from it,
 and a mistake there condemns exactly the samples that most need the correction -
 the ones sitting a ppm out. These pin the corroboration rule, the fit over it,
 the direction the cap may move a tier, and the two ways a run declines to gate
-at all, and the centre that follows the mass range where a run's commits do.
+at all, the centre that follows the mass range where a run's commits do, and
+what an isotopologue's own line can deliver when it misses its parent.
 """
 
+import math
 from dataclasses import replace
 
+import pandas as pd
 import pytest
 
+from mascope_backend.api.new.peak_assignments.envelope_claims import ENVELOPE_CLAIM
 from mascope_backend.api.new.peak_assignments.mass_gate import (
     BELOW_ASSIGNABILITY_Z,
     CORROBORATED_CURATED,
     CORROBORATED_ISOTOPOLOGUE,
     OFF_CALIBRATION_Z,
+    OVERLAP_PUSH_FWHM,
+    OVERLAP_REACH_FWHM,
+    PRECISION_SNR,
+    REASON_ISOTOPOLOGUE_IN_DOUBT,
+    REASON_ISOTOPOLOGUE_UNTRACKED,
     REASON_OFF_CALIBRATION,
+    TRACKING_IN_DOUBT,
+    TRACKING_TRACKS,
+    TRACKING_UNTRACKED,
+    UNREAD_LINE,
+    LineQuality,
     MassCalibration,
+    SpectrumLines,
     apply_mass_gate,
     corroboration_of,
     fit_run_mass_accuracy,
+    isotopologue_tracking,
+    line_tolerance_ppm,
     peak_mz,
+    tracking_of,
     tracking_tolerance_ppm,
 )
 from mascope_backend.api.new.peak_assignments.tiers import (
@@ -55,9 +73,11 @@ def _row(
     owner=None,
     compound=None,
     mz=None,
+    provenance=None,
 ):
     return {
         "peak_assignment_id": row_id,
+        "sample_peak_id": f"peak-{row_id}",
         "role": role,
         "source": source,
         "assigned_formula": formula,
@@ -66,7 +86,7 @@ def _row(
         "tier": tier,
         "owner_peak_assignment_id": owner,
         "target_compound_id": compound,
-        "provenance": {},
+        "provenance": dict(provenance or {}),
     }
 
 
@@ -371,6 +391,7 @@ class TestTheGate:
         assert child["tier"] == TIER_CANDIDATE
         assert child["provenance"]["mass_gate"] == {
             "corroborated_by": CORROBORATED_CURATED,
+            "tracking": TRACKING_UNTRACKED,
             "capped": TIER_CANDIDATE,
             "reason": REASON_OFF_CALIBRATION,
         }
@@ -843,3 +864,439 @@ class TestTheCentreFollowsTheMassRange:
         assert unmeasured["centre"] == "none"
         assert unmeasured["trend"] is None
         assert unmeasured["trend_refused"] is None
+
+
+def _flat_resolution(mz):
+    """A resolving power of 100,000 at every m/z: every line is 10 ppm wide."""
+    return 100_000.0
+
+
+def _spectrum(peaks, resolution=_flat_resolution):
+    """`peaks` as (peak id, m/z, height, signal-to-noise)."""
+    ids, mzs, heights, snrs = zip(*peaks)
+    return SpectrumLines(list(ids), mzs, heights, snrs, resolution)
+
+
+def _isotopologue_pair(
+    child_ppm,
+    *,
+    parent_ppm=0.0,
+    child_snr=100.0,
+    neighbour=False,
+    tier=TIER_ASSIGNED,
+    provenance=None,
+):
+    """A calibrated run with one M0 at m/z 200 and its line at m/z 201.
+
+    The M0 is bright and alone. The line is a tenth of its height at
+    ``child_snr``, and with ``neighbour`` a peak as tall sits 15 ppm - 1.5 of
+    its widths - beside it, which pushes it by a quarter width, 2.5 ppm.
+    """
+    rows = _anchors(12, spread=0.1) + [
+        _row("m0", ppm=parent_ppm, mz=200.0),
+        _row(
+            "child",
+            ppm=child_ppm,
+            role="iso_child",
+            owner="m0",
+            mz=201.0,
+            tier=tier,
+            provenance=provenance,
+        ),
+    ]
+    peaks = [
+        ("peak-m0", 200.0, 10_000.0, 500.0),
+        ("peak-child", 201.0, 1_000.0, child_snr),
+    ]
+    if neighbour:
+        peaks.append(("peak-near", 201.0 * (1 + 15e-6), 1_000.0, 100.0))
+    return rows, _spectrum(peaks)
+
+
+class TestWhatALineCanDeliver:
+    """The bar an isotopologue's miss is judged against, from its own line."""
+
+    def test_two_lines_the_class_describes_share_the_class_s_bar(self):
+        assert line_tolerance_ppm(PRECISION) == pytest.approx(
+            tracking_tolerance_ppm(PRECISION)
+        )
+        at_the_class = LineQuality(snr=PRECISION_SNR)
+        brighter = LineQuality(snr=10 * PRECISION_SNR)
+        assert line_tolerance_ppm(PRECISION, at_the_class, brighter) == pytest.approx(
+            0.9
+        )
+
+    def test_a_fainter_line_is_placed_worse_by_the_root_of_how_much(self):
+        # On the gate's Orbitrap sets the confirmed isotopologues' miss narrows
+        # as 1 / sqrt(SNR), which is the class's precision at SNR 15. A line five
+        # times fainter than that carries five times the variance, and the bar
+        # takes the two lines' variances together.
+        faint = LineQuality(snr=PRECISION_SNR / 5)
+
+        assert faint.noise_ratio == pytest.approx(5.0)
+        assert line_tolerance_ppm(PRECISION, faint) == pytest.approx(
+            0.9 * math.sqrt(3.0)
+        )
+        assert line_tolerance_ppm(PRECISION, faint, faint) == pytest.approx(
+            0.9 * math.sqrt(5.0)
+        )
+
+    @pytest.mark.parametrize("snr", [None, float("nan"), 0.0, -3.0])
+    def test_a_noise_nobody_measured_is_the_class_s(self, snr):
+        assert LineQuality(snr=snr).noise_ratio == 1.0
+
+    def test_a_push_is_a_shift_and_adds_to_the_bar(self):
+        pushed, nudged = LineQuality(push_ppm=2.5), LineQuality(push_ppm=0.5)
+
+        assert line_tolerance_ppm(PRECISION, pushed, nudged) == pytest.approx(3.9)
+
+
+class TestReadingTheSpectrum:
+    """How close and how tall a line's neighbours are, in its own width."""
+
+    def test_a_peak_as_tall_within_reach_pushes_a_quarter_width(self):
+        lines = _spectrum(
+            [("a", 200.0, 100.0, 50.0), ("b", 200.0 * (1 + 15e-6), 100.0, 50.0)]
+        )
+
+        assert lines.fwhm_ppm(200.0) == pytest.approx(10.0)
+        assert lines.of("a").push_ppm == pytest.approx(OVERLAP_PUSH_FWHM * 10.0)
+        assert lines.of("b").push_ppm == pytest.approx(OVERLAP_PUSH_FWHM * 10.0)
+
+    def test_a_shorter_neighbour_pushes_in_proportion_and_a_taller_one_fully(self):
+        lines = _spectrum(
+            [("tall", 200.0, 100.0, 50.0), ("short", 200.0 * (1 + 15e-6), 40.0, 50.0)]
+        )
+
+        assert lines.of("tall").push_ppm == pytest.approx(0.4 * 2.5)
+        assert lines.of("short").push_ppm == pytest.approx(2.5)
+
+    def test_the_tallest_neighbour_in_reach_is_the_one_that_pushes(self):
+        lines = _spectrum(
+            [
+                ("line", 200.0, 100.0, 50.0),
+                ("small", 200.0 * (1 - 12e-6), 20.0, 50.0),
+                ("half", 200.0 * (1 + 18e-6), 50.0, 50.0),
+            ]
+        )
+
+        assert lines.of("line").push_ppm == pytest.approx(0.5 * 2.5)
+
+    def test_a_peak_out_of_reach_pushes_nothing(self):
+        # Two widths is where a neighbour stops counting: the partly resolved
+        # pair it was drawn from measured 1.6 to 1.7 of theirs apart.
+        apart = OVERLAP_REACH_FWHM * 10.0 + 1.0
+        lines = _spectrum(
+            [("a", 200.0, 100.0, 50.0), ("b", 200.0 * (1 + apart * 1e-6), 100.0, 50.0)]
+        )
+
+        assert lines.of("a").push_ppm == 0.0
+
+    def test_a_line_alone_is_pushed_by_nothing(self):
+        assert _spectrum([("a", 200.0, 100.0, 50.0)]).of("a").push_ppm == 0.0
+
+    def test_without_a_resolution_no_line_is_read_as_pushed(self):
+        lines = _spectrum(
+            [("a", 200.0, 100.0, 5.0), ("b", 200.0 * (1 + 5e-6), 100.0, 5.0)],
+            resolution=None,
+        )
+
+        assert lines.fwhm_ppm(200.0) is None
+        assert lines.of("a") == LineQuality(snr=5.0, push_ppm=0.0)
+
+    @pytest.mark.parametrize(
+        "resolution",
+        [
+            lambda mz: 0.0,
+            lambda mz: -1.0,
+            lambda mz: float("nan"),
+            lambda mz: 1.0 / 0.0,
+        ],
+    )
+    def test_a_resolution_that_cannot_answer_pushes_nothing(self, resolution):
+        lines = _spectrum(
+            [("a", 200.0, 100.0, 5.0), ("b", 200.0 * (1 + 5e-6), 100.0, 5.0)],
+            resolution=resolution,
+        )
+
+        assert lines.of("a").push_ppm == 0.0
+
+    def test_a_peak_the_spectrum_does_not_hold_is_one_the_class_describes(self):
+        lines = _spectrum([("a", 200.0, 100.0, 5.0)])
+
+        assert lines.of("elsewhere") == UNREAD_LINE
+        assert lines.of(None) == UNREAD_LINE
+
+    def test_a_noise_the_file_does_not_record_is_not_invented(self):
+        lines = _spectrum([("a", 200.0, 100.0, float("nan")), ("b", 300.0, 1.0, 7.0)])
+
+        assert lines.of("a").snr is None
+        assert lines.of("b").snr == pytest.approx(7.0)
+
+    def test_it_reads_the_frame_the_service_loads(self):
+        frame = pd.DataFrame(
+            {
+                "sample_peak_id": ["a", "b"],
+                "mz": [200.0 * (1 + 15e-6), 200.0],
+                "intensity": [100.0, 100.0],
+                "signal_to_noise": [3.0, 30.0],
+            }
+        )
+
+        lines = SpectrumLines.from_peaks(frame, _flat_resolution)
+        silent = SpectrumLines.from_peaks(frame.drop(columns="signal_to_noise"))
+
+        assert lines.of("a").snr == pytest.approx(3.0)
+        assert lines.of("a").push_ppm == pytest.approx(2.5)
+        assert lines.of("b").snr == pytest.approx(30.0)
+        assert silent.of("a") == LineQuality(snr=None, push_ppm=0.0)
+        assert lines.snapshot() == {
+            "noise": True,
+            "resolution": True,
+            "precision_snr": PRECISION_SNR,
+            "overlap_reach_fwhm": OVERLAP_REACH_FWHM,
+            "overlap_push_fwhm": OVERLAP_PUSH_FWHM,
+        }
+        assert (silent.snapshot()["noise"], silent.snapshot()["resolution"]) == (
+            False,
+            False,
+        )
+
+
+class TestHowAnIsotopologueFollowsItsParent:
+    """Tracks, in doubt, or not at all."""
+
+    def test_inside_the_class_s_precision_it_tracks(self):
+        assert tracking_of(0.5, -0.3, precision_ppm=PRECISION) == TRACKING_TRACKS
+
+    def test_a_faint_line_that_misses_by_its_own_noise_is_in_doubt(self):
+        faint = LineQuality(snr=3.0)
+
+        assert (
+            tracking_of(1.3, 0.0, precision_ppm=PRECISION, child=faint)
+            == TRACKING_IN_DOUBT
+        )
+        assert (
+            tracking_of(1.8, 0.0, precision_ppm=PRECISION, child=faint)
+            == TRACKING_UNTRACKED
+        )
+
+    def test_a_bright_line_that_misses_as_far_does_not_track(self):
+        bright = LineQuality(snr=300.0)
+
+        assert (
+            tracking_of(1.3, 0.0, precision_ppm=PRECISION, child=bright)
+            == TRACKING_UNTRACKED
+        )
+
+    def test_a_line_pushed_by_its_neighbour_is_in_doubt(self):
+        # Set C's strongest line: its 13C2 and 18O lines, about as tall as each
+        # other and 1.3 widths apart, each sit 1.2 to 2.1 ppm off their places
+        # while the ion itself is on calibration.
+        pushed = LineQuality(snr=35.0, push_ppm=2.2)
+
+        assert (
+            tracking_of(-1.9, 0.3, precision_ppm=PRECISION, child=pushed)
+            == TRACKING_IN_DOUBT
+        )
+        assert (
+            tracking_of(-1.9, 0.3, precision_ppm=PRECISION, child=UNREAD_LINE)
+            == TRACKING_UNTRACKED
+        )
+
+    @pytest.mark.parametrize(
+        ("child", "parent"), [(None, 0.0), (0.0, None), (float("nan"), 0.0)]
+    )
+    def test_a_missing_error_does_not_track(self, child, parent):
+        assert tracking_of(child, parent, precision_ppm=PRECISION) == TRACKING_UNTRACKED
+
+    def test_every_committed_isotopologue_with_an_owner_is_read(self):
+        rows, lines = _isotopologue_pair(1.3, child_snr=3.0)
+        rows += [
+            _row("orphan", ppm=9.0, role="iso_child"),
+            _row("lost", ppm=0.1, role="iso_child", owner="nobody"),
+        ]
+
+        assert isotopologue_tracking(rows, precision_ppm=PRECISION, lines=lines) == {
+            "child": TRACKING_IN_DOUBT,
+            "lost": TRACKING_UNTRACKED,
+        }
+        # Without the spectrum every line is one the class describes, and a
+        # miss the faint line's noise explained is a miss.
+        assert isotopologue_tracking(rows, precision_ppm=PRECISION) == {
+            "child": TRACKING_UNTRACKED,
+            "lost": TRACKING_UNTRACKED,
+        }
+
+
+class TestTheGateOnAnIsotopologue:
+    """What a line that misses its parent is held at, and why."""
+
+    def test_a_line_in_doubt_is_held_at_candidate_and_corroborates_nothing(self):
+        rows, lines = _isotopologue_pair(1.3, child_snr=3.0)
+
+        summary = apply_mass_gate(rows, fallback_sigma_ppm=PRECISION, lines=lines)
+
+        m0, child = rows[-2], rows[-1]
+        assert child["tier"] == TIER_CANDIDATE
+        assert child["provenance"]["mass_gate"] == {
+            "corroborated_by": None,
+            "tracking": TRACKING_IN_DOUBT,
+            "capped": TIER_CANDIDATE,
+            "reason": REASON_ISOTOPOLOGUE_IN_DOUBT,
+        }
+        # A line in doubt is not the second place a tracking line is: the M0
+        # rests on its own fit and does not anchor the calibration.
+        assert m0["provenance"]["mass_gate"] == {"corroborated_by": None}
+        assert m0["tier"] == TIER_ASSIGNED
+        assert summary["anchors"] == 12
+        assert (summary["capped"], summary["capped_in_doubt"]) == (0, 1)
+
+    def test_a_line_in_doubt_is_not_taken_lower_for_its_distance(self):
+        # Four ppm off a parent on calibration, which is seven widths from the
+        # centre: a distance its neighbour's push explains, as it explains the
+        # miss, so the line is held at candidate rather than dropped below.
+        rows, lines = _isotopologue_pair(4.0, child_snr=3.0, neighbour=True)
+
+        summary = apply_mass_gate(rows, fallback_sigma_ppm=PRECISION, lines=lines)
+
+        child = rows[-1]
+        assert child["provenance"]["mass_z"] > BELOW_ASSIGNABILITY_Z
+        assert child["tier"] == TIER_CANDIDATE
+        assert child["provenance"]["mass_gate"]["reason"] == (
+            REASON_ISOTOPOLOGUE_IN_DOUBT
+        )
+        assert (summary["capped"], summary["below_assignability"]) == (0, 0)
+
+    def test_the_same_miss_without_the_neighbour_is_a_coincidence(self):
+        rows, lines = _isotopologue_pair(4.0, child_snr=3.0)
+
+        summary = apply_mass_gate(rows, fallback_sigma_ppm=PRECISION, lines=lines)
+
+        child = rows[-1]
+        assert child["tier"] == TIER_BELOW_ASSIGNABILITY
+        assert child["provenance"]["mass_gate"] == {
+            "corroborated_by": None,
+            "tracking": TRACKING_UNTRACKED,
+            "capped": TIER_BELOW_ASSIGNABILITY,
+            "reason": REASON_OFF_CALIBRATION,
+        }
+        assert (summary["capped"], summary["below_assignability"]) == (1, 1)
+
+    def test_a_line_that_does_not_track_is_not_assigned_even_on_calibration(self):
+        # 1.5 ppm is 2.6 widths from the centre, inside the distance cap, and
+        # 1.5 ppm from a parent a bright line should sit within 0.9 of.
+        rows, lines = _isotopologue_pair(1.5)
+
+        summary = apply_mass_gate(rows, fallback_sigma_ppm=PRECISION, lines=lines)
+
+        child = rows[-1]
+        assert abs(child["provenance"]["mass_z"]) < OFF_CALIBRATION_Z
+        assert child["tier"] == TIER_CANDIDATE
+        assert child["provenance"]["mass_gate"] == {
+            "corroborated_by": None,
+            "tracking": TRACKING_UNTRACKED,
+            "capped": TIER_CANDIDATE,
+            "reason": REASON_ISOTOPOLOGUE_UNTRACKED,
+        }
+        assert (summary["capped"], summary["capped_untracked"]) == (0, 1)
+
+    def test_a_line_that_tracks_keeps_its_tier_and_corroborates_its_parent(self):
+        rows, lines = _isotopologue_pair(0.4, child_snr=3.0, neighbour=True)
+
+        summary = apply_mass_gate(rows, fallback_sigma_ppm=PRECISION, lines=lines)
+
+        m0, child = rows[-2], rows[-1]
+        assert child["tier"] == TIER_ASSIGNED
+        assert child["provenance"]["mass_gate"] == {
+            "corroborated_by": CORROBORATED_ISOTOPOLOGUE,
+            "tracking": TRACKING_TRACKS,
+        }
+        assert m0["provenance"]["mass_gate"]["corroborated_by"] == (
+            CORROBORATED_ISOTOPOLOGUE
+        )
+        assert summary["anchors"] == 13
+
+    def test_a_tier_already_below_the_cap_is_left_alone(self):
+        rows, lines = _isotopologue_pair(1.5, tier=TIER_CANDIDATE)
+
+        summary = apply_mass_gate(rows, fallback_sigma_ppm=PRECISION, lines=lines)
+
+        assert rows[-1]["provenance"]["mass_gate"] == {
+            "corroborated_by": None,
+            "tracking": TRACKING_UNTRACKED,
+        }
+        assert summary["capped_untracked"] == 0
+
+    def test_the_isotopologue_rule_does_not_wait_for_a_calibration(self):
+        # It compares two of the run's own lines, which needs no centre.
+        rows = [
+            _row("m0", ppm=0.0, mz=200.0),
+            _row("child", ppm=1.5, role="iso_child", owner="m0", mz=201.0),
+        ]
+
+        summary = apply_mass_gate(rows, fallback_sigma_ppm=PRECISION)
+
+        assert summary["applied"] is False
+        assert rows[0]["tier"] == TIER_ASSIGNED
+        assert rows[1]["tier"] == TIER_CANDIDATE
+        assert rows[1]["provenance"]["mass_gate"]["reason"] == (
+            REASON_ISOTOPOLOGUE_UNTRACKED
+        )
+        assert "mass_z" not in rows[1]["provenance"]
+
+    def test_a_claimed_line_corroborates_nothing_and_its_claim_holds_it(self):
+        # A line a claim read as the ion's was committed as something else
+        # first. It tracks here, so its distance is its parent's: the parent,
+        # which nothing else corroborates, is taken below assignability for it
+        # and the claimed line stays at the candidate its claim put it at.
+        claim = {ENVELOPE_CLAIM: {"line": "13C", "tracking": TRACKING_TRACKS}}
+        rows, lines = _isotopologue_pair(
+            8.0, parent_ppm=8.0, tier=TIER_CANDIDATE, provenance=claim
+        )
+
+        summary = apply_mass_gate(rows, fallback_sigma_ppm=PRECISION, lines=lines)
+
+        m0, child = rows[-2], rows[-1]
+        assert corroboration_of(rows, precision_ppm=PRECISION)["m0"] is None
+        assert m0["tier"] == TIER_BELOW_ASSIGNABILITY
+        assert child["tier"] == TIER_CANDIDATE
+        assert child["provenance"]["mass_gate"] == {
+            "corroborated_by": None,
+            "tracking": TRACKING_TRACKS,
+        }
+        assert summary["anchors"] == 12
+
+    def test_the_run_records_how_its_isotopologues_follow(self):
+        rows = _anchors(12, spread=0.1) + [
+            _row("m0", ppm=0.0, mz=200.0),
+            _row("tracks", ppm=0.2, role="iso_child", owner="m0", mz=201.0),
+            _row("doubt", ppm=-1.3, role="iso_child", owner="m0", mz=202.0),
+            _row("off", ppm=1.5, role="iso_child", owner="m0", mz=203.0),
+        ]
+        lines = _spectrum(
+            [
+                ("peak-m0", 200.0, 10_000.0, 500.0),
+                ("peak-tracks", 201.0, 1_000.0, 100.0),
+                ("peak-doubt", 202.0, 100.0, 3.0),
+                ("peak-off", 203.0, 100.0, 100.0),
+            ]
+        )
+
+        summary = apply_mass_gate(rows, fallback_sigma_ppm=PRECISION, lines=lines)
+
+        assert summary["isotopologues"] == {
+            TRACKING_TRACKS: 1,
+            TRACKING_IN_DOUBT: 1,
+            TRACKING_UNTRACKED: 1,
+        }
+        assert (summary["capped_in_doubt"], summary["capped_untracked"]) == (1, 1)
+        assert summary["lines"] == lines.snapshot()
+        # Without a spectrum the run says it read nothing.
+        bare = apply_mass_gate(_anchors(12), fallback_sigma_ppm=PRECISION)
+        assert (bare["lines"]["noise"], bare["lines"]["resolution"]) == (False, False)
+        assert bare["isotopologues"] == {
+            TRACKING_TRACKS: 0,
+            TRACKING_IN_DOUBT: 0,
+            TRACKING_UNTRACKED: 0,
+        }

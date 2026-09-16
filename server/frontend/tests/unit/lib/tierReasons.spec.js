@@ -24,7 +24,10 @@ const SERVER_RULES = [
   'corroborated',
   'no_close_rival',
   'not_measured',
-  'inherited_from_owner'
+  'inherited_from_owner',
+  'envelope_claim',
+  'isotopologue_in_doubt',
+  'isotopologue_untracked'
 ]
 
 describe('tierReasonLabel', () => {
