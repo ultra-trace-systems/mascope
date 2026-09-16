@@ -11,6 +11,10 @@ Tasks:
 """
 
 import asyncio
+import hashlib
+import hmac
+import json
+import numbers
 import time
 from datetime import datetime, timezone
 from typing import cast
@@ -20,6 +24,7 @@ from sqlalchemy import and_, func, select
 import mascope_file.io as m_io
 import mascope_file.name as m_name
 from mascope_backend.api.controllers.calibration.lib.calibration_mz_fit import (
+    axis_correction_ppm,
     calibration_params_factory,
     calibration_quality_issues,
     fit_quality,
@@ -62,6 +67,7 @@ from mascope_backend.api.models.sample.files.sample_file_pydantic_model import (
 from mascope_backend.db import IonizationMode, Sample, SampleBatch, async_session
 from mascope_backend.db.id import gen_id
 from mascope_backend.runtime import runtime
+from mascope_backend.service_token import derive_token_secret
 from mascope_backend.socket.notifications import (
     UserNotification,
     send_progress_user_notification,
@@ -399,11 +405,88 @@ def carry_acquisition_drift(
     return False
 
 
+#: Purpose label of the key that seals fits (see :func:`seal_fit`).
+_FIT_SEAL_PURPOSE = "calibration-fit-seal"
+
+#: Issue recorded for a fit whose statistics this server cannot vouch for.
+UNSEALED_FIT_ISSUE = {
+    "code": "unsealed",
+    "message": (
+        "The fit statistics were not computed by this server for this file, "
+        "so the fit cannot be judged."
+    ),
+}
+
+
+def _canonical(value):
+    """Numbers as floats, so a JSON round trip (``1.0`` -> ``1``) keeps the seal."""
+    if isinstance(value, bool) or value is None or isinstance(value, str):
+        return value
+    if isinstance(value, numbers.Real):
+        return float(value)
+    if isinstance(value, dict):
+        return {str(k): _canonical(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_canonical(v) for v in value]
+    return str(value)
+
+
+def _fit_seal(fit: dict, filename: str) -> str:
+    """HMAC over what the verdict rests on: the file, the model and its quality."""
+    payload = json.dumps(
+        _canonical(
+            {
+                "filename": filename,
+                "mode": fit.get("mode"),
+                "par": fit.get("par"),
+                "quality": fit.get("quality"),
+            }
+        ),
+        sort_keys=True,
+    )
+    key = derive_token_secret(_FIT_SEAL_PURPOSE).encode("utf-8")
+    return hmac.new(key, payload.encode("utf-8"), hashlib.sha256).hexdigest()
+
+
+def seal_fit(fit: dict, filename: str) -> None:
+    """
+    Mark a fit's parameters and quality block as computed by this server.
+
+    ``/mz_apply`` takes the fit back from the client, and the verdict is
+    decided from the quality block the fit carries - so without a seal, a
+    client could edit that block and have a poor fit stored verified with no
+    acceptance on record. :func:`stamp_quality_verdict` only judges a fit
+    whose seal checks out, for the file it was fitted on.
+
+    :param fit: Fit dict as ``calibration_mz_fit`` returns it (mutated).
+    :param filename: Sample filename the fit was computed for.
+    """
+    fit["seal"] = _fit_seal(fit, filename)
+
+
+def fit_seal_valid(fit: dict, filename: str) -> bool:
+    """
+    Whether ``fit`` carries this server's seal for ``filename``, unaltered.
+
+    Must be checked before the fit is applied: the Orbitrap apply trims its
+    parameters, which the seal covers.
+
+    :param fit: Fit dict to check.
+    :param filename: Sample filename the fit is being applied to.
+    :return: True for a sealed, unmodified fit.
+    """
+    seal = fit.get("seal")
+    if not isinstance(seal, str):
+        return False
+    return hmac.compare_digest(seal, _fit_seal(fit, filename))
+
+
 def stamp_quality_verdict(
     fit: dict,
     filename: str,
     accept: bool = False,
     accepted_by: int | None = None,
+    sealed: bool = False,
 ) -> list[dict]:
     """
     Decide ``status`` and ``verified`` for a fit about to be persisted.
@@ -422,17 +505,24 @@ def stamp_quality_verdict(
 
     Everything this decides is dropped from the incoming dict first:
     ``/mz_apply`` takes the fit straight off the request body and persists
-    unknown keys verbatim.
+    unknown keys verbatim. For the same reason the quality block is only
+    judged when the fit is ``sealed`` (see :func:`fit_seal_valid`); an
+    unsealed fit gets :data:`UNSEALED_FIT_ISSUE` instead, so it is stored
+    unverified unless an operator accepts it.
 
     :param fit: Fit dict about to be persisted (mutated in place).
     :param filename: Sample filename, selects the instrument-class bounds.
     :param accept: Whether an operator accepted the fit regardless of issues.
     :param accepted_by: User id recorded on an acceptance, when known.
+    :param sealed: Whether the fit's seal was valid before it was applied.
     :return: The quality issues found; empty when the fit cleared the bar.
     """
-    for key in ("quality_issues", "accepted_at", "accepted_by"):
+    for key in ("quality_issues", "accepted_at", "accepted_by", "seal"):
         fit.pop(key, None)
-    issues = calibration_quality_issues(fit.get("quality"), filename)
+    if sealed:
+        issues = calibration_quality_issues(fit.get("quality"), filename)
+    else:
+        issues = [dict(UNSEALED_FIT_ISSUE)]
     fit.update(
         {
             "status": "poor" if issues else "ok",
@@ -669,12 +759,17 @@ async def calibration_mz_fit(
         calibration_data["fit"]["quality"] = fit_quality(
             calibration_data.get("stats"), calibration_parameters
         )
+        if calibration_data["fit"]["quality"] is not None:
+            calibration_data["fit"]["quality"]["axis_correction_ppm"] = (
+                axis_correction_ppm(calibration_data["fit"])
+            )
         # A preview for the calibration dialog, so the operator sees what the
         # fit would be stored as before applying it. Apply decides again from
         # the quality block rather than trusting this.
         calibration_data["fit"]["quality_issues"] = calibration_quality_issues(
             calibration_data["fit"]["quality"], sample.filename
         )
+        seal_fit(calibration_data["fit"], sample.filename)
 
     # --- Build shared notification payload ---
     notification_data = {
@@ -807,6 +902,9 @@ async def calibration_mz_apply(
 
     await send_progress_user_notification(notification, 0.1)
 
+    # Before the apply, which trims the parameters the seal covers.
+    sealed = fit_seal_valid(fit, filename)
+
     # --- Apply m/z calibration to file ---
     calibration_handler = get_calibration_handler(
         filename=filename, calibration_params=None, notification=notification
@@ -816,7 +914,11 @@ async def calibration_mz_apply(
     new_mz_range = [updated_mz_axis[0], updated_mz_axis[-1]]
 
     issues = stamp_quality_verdict(
-        fit, filename, accept=accept_quality_issues, accepted_by=user_id
+        fit,
+        filename,
+        accept=accept_quality_issues,
+        accepted_by=user_id,
+        sealed=sealed,
     )
     if issues:
         # INFO: a data condition the record and the badge carry; the file is
