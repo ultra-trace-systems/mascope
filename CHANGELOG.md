@@ -4,6 +4,8 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 ## [Unreleased]
 
+## [1.8.1] - 2026.09.16
+
 ### Added
 
 - **Pasting a batch or samples where there is no place for them yet offers
