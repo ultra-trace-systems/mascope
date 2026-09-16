@@ -110,17 +110,6 @@ class UserRead(schemas.BaseUser[int]):
             return False
         return policy.enrollment_required(self.role_id, self.mfa_enabled)
 
-    @field_validator("role_name")
-    @classmethod
-    def validate_role_name(cls, role_name):
-        """
-        Validates that `role_name` exists in the configured roles.
-        """
-        role_access_levels = auth_settings.ROLE_ACCESS_LEVELS
-        if role_name not in role_access_levels:
-            raise ValueError(f"Invalid role name: '{role_name}'.")
-        return role_name
-
 
 class UserPublic(BaseModel):
     """Reduced user schema for public listing. Omits sensitive fields like email."""

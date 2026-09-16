@@ -63,3 +63,17 @@ async def test_single_read_reports_a_row_create_would_refuse(
     response = await guest_client.get(f"/api/ionization_mechanisms/{mechanism_id}")
     assert response.status_code == 200, response.text
     assert response.json()["data"]["ionization_mechanism"] == mechanism
+
+
+@pytest.mark.asyncio
+async def test_a_row_create_would_refuse_can_be_deleted(
+    editor_client, async_session_factory, legacy_mechanism
+):
+    """Delete reads the mechanism first, so this route is what removes such a
+    row - and it is the only one the API offers for it."""
+    mechanism_id, _ = legacy_mechanism
+    response = await editor_client.delete(f"/api/ionization_mechanisms/{mechanism_id}")
+    assert response.status_code == 200, response.text
+
+    async with async_session_factory() as session:
+        assert await session.get(IonizationMechanism, mechanism_id) is None

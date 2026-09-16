@@ -3,6 +3,7 @@ Ionization mechanisms controller for managing ionization mechanism operations.
 """
 
 from fastapi import HTTPException
+from pydantic import ValidationError
 from sqlalchemy import (
     delete,
     func,
@@ -32,10 +33,55 @@ from mascope_backend.db import (
     async_session,
 )
 from mascope_backend.db.id import gen_id
+from mascope_backend.runtime import runtime
 from mascope_backend.socket.records.service import (
     emit_record_created,
     emit_record_deleted,
 )
+
+
+#: Mechanisms already reported as unwritable, so a stored row does not log on
+#: every read of the listing it appears in.
+_reported_unwritable: set[str] = set()
+
+
+def read_ionization_mechanism(ionization_mechanism) -> dict:
+    """
+    One stored mechanism as a response body, reporting it if it is unwritable.
+
+    :param ionization_mechanism: The stored ``IonizationMechanism`` row.
+    :return: The row's fields.
+    """
+    report_if_unwritable(ionization_mechanism)
+    return IonizationMechanismRead.model_validate(ionization_mechanism).model_dump()
+
+
+def report_if_unwritable(ionization_mechanism) -> None:
+    """
+    Log a stored mechanism the write rules refuse, once per id per process.
+
+    Reads report a stored row as it is, which is what keeps one such row from
+    failing a whole listing. Nothing else would then say it is there, while
+    clients go on offering it - as a mechanism to bind an ionization mode to,
+    for instance, where an empty modification such as "++" yields atomless
+    ions. Logged at WARNING because it is the operator who can fix the row.
+
+    :param ionization_mechanism: The stored ``IonizationMechanism`` row.
+    """
+    if ionization_mechanism.ionization_mechanism_id in _reported_unwritable:
+        return
+    try:
+        IonizationMechanismCreate.model_validate(ionization_mechanism)
+    except ValidationError as e:
+        _reported_unwritable.add(ionization_mechanism.ionization_mechanism_id)
+        reasons = "; ".join(error["msg"] for error in e.errors())
+        runtime.logger.warning(
+            f"Stored ionization mechanism "
+            f"'{ionization_mechanism.ionization_mechanism}' "
+            f"({ionization_mechanism.ionization_mechanism_id}) is one the "
+            f"current rules refuse: {reasons}. It is listed as it is; "
+            f"creating it again would be rejected."
+        )
 
 
 @api_controller()
@@ -108,9 +154,7 @@ async def get_ionization_mechanisms(
             "message": "Retrieved ionization mechanisms successfully.",
             "results": total,
             "data": [
-                IonizationMechanismRead.model_validate(
-                    ionization_mechanism
-                ).model_dump()
+                read_ionization_mechanism(ionization_mechanism)
                 for ionization_mechanism in ionization_mechanisms
             ],
         }
@@ -160,9 +204,7 @@ async def get_ionization_mechanism(ionization_mechanism_id: str) -> dict:
         ]
 
         # -- Return ionization mechanism details with ionization modes -- #
-        ionization_mechanism_data = IonizationMechanismRead.model_validate(
-            ionization_mechanism
-        ).model_dump()
+        ionization_mechanism_data = read_ionization_mechanism(ionization_mechanism)
         ionization_mechanism_data["ionization_modes_count"] = len(affected_ion_modes)
         ionization_mechanism_data["ionization_modes"] = affected_ion_mode_info
         return {
