@@ -67,7 +67,7 @@ async function execute() {
         workspace_name: info.name,
         workspace_description: info.desc
       })
-      app.data.workspace.lazyFocus({
+      app.data.workspace.focusWhenPresent({
         workspace_id: response.data.workspace_id
       })
       break

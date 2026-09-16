@@ -75,7 +75,7 @@ async function execute() {
           dataset_name: info.name,
           dataset_description: info.desc
         })
-        app.data.dataset.lazyFocus({
+        app.data.dataset.focusWhenPresent({
           dataset_id: response.data.dataset_id
         })
         break

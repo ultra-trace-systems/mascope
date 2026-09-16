@@ -23,6 +23,12 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 ### Fixed
 
+- **Creating a dataset opens it again.** The new dataset appeared in the list
+  but stayed closed, and could open by itself later, after switching to
+  another workspace and back. Creating a workspace had the same weakness
+  whenever its list reloaded before the create request returned. Both now
+  open the new record as soon as it reaches the list.
+
 - **The target browser no longer offers "Edit batch targets" with no batch
   open.** Right-clicking its empty space with no batch open still offered the
   entry, which opened the batch dialog with no batch to edit. That menu now

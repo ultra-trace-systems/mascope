@@ -1,4 +1,4 @@
-import { reactive, computed, watch } from 'vue'
+import { reactive, computed } from 'vue'
 import { defineStore } from 'pinia'
 
 import { useApp } from '@/stores'
@@ -58,32 +58,6 @@ export const usePasteIntoNew = defineStore('browser.sample.pasteIntoNew', () => 
       (dialog.dataset && !dialog.datasetName.trim()) || (dialog.batch && !dialog.batchName.trim())
   )
 
-  // Open a container this paste created, once it is in its store's list. It
-  // gets there either by a socket creation event, possibly before the request
-  // that created it returns, or by the reload that follows focusing its parent.
-  // A lazy focus is no use here: it resolves only on a reload, and a creation
-  // event only appends the record. The wait is given up after a while so a
-  // container that never shows up cannot pull the view away later.
-  const LAND_TIMEOUT_MS = 60_000
-  function land(store, key, id) {
-    const present = () => store.list?.some((record) => record[key] === id)
-    if (present()) {
-      store.focus({ [key]: id })
-      return
-    }
-    let timer = null
-    const stop = watch(
-      () => store.list,
-      () => {
-        if (!present()) return
-        stop()
-        clearTimeout(timer)
-        store.focus({ [key]: id })
-      }
-    )
-    timer = setTimeout(stop, LAND_TIMEOUT_MS)
-  }
-
   async function execute() {
     if (invalid.value || dialog.pending) return
     // The clipboard can change while the dialog is open (another tab pasting
@@ -106,7 +80,7 @@ export const usePasteIntoNew = defineStore('browser.sample.pasteIntoNew', () => 
             dataset_description: ''
           })
           dialog.createdDatasetId = response.data.dataset_id
-          land(app.data.dataset, 'dataset_id', dialog.createdDatasetId)
+          app.data.dataset.focusWhenPresent({ dataset_id: dialog.createdDatasetId })
         }
         dataset_id = dialog.createdDatasetId
       }
@@ -129,7 +103,7 @@ export const usePasteIntoNew = defineStore('browser.sample.pasteIntoNew', () => 
             target_collection_ids: []
           })
           dialog.createdBatchId = response.data.sample_batch_id
-          land(app.data.batch, 'sample_batch_id', dialog.createdBatchId)
+          app.data.batch.focusWhenPresent({ sample_batch_id: dialog.createdBatchId })
         }
         const body = {
           sample_item_ids: samples.map((s) => s.sample_item_id),

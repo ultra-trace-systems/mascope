@@ -143,6 +143,36 @@ export const useSelection = (name, key, records, options = {}) => {
     toFocus.value = arg
   }
 
+  // focusing a record that is about to arrive: a record just created shows up
+  // either through a socket creation event, which only appends it to the list,
+  // or through a reload. lazyFocus is read on reloads alone, so this watches the
+  // list instead and focuses the record once it is there. A newer call replaces
+  // a pending one, and the wait is given up after a while so a record that
+  // never shows up cannot pull the view away later.
+  const FOCUS_WHEN_PRESENT_TIMEOUT_MS = 60_000
+  let cancelPendingFocus = null
+  const focusWhenPresent = (arg) => {
+    cancelPendingFocus?.()
+    cancelPendingFocus = null
+    const present = () => records().some((record) => record[key] === arg[key])
+    if (present()) {
+      focus(arg)
+      return
+    }
+    const stop = watch(records, () => {
+      if (!present()) return
+      cancel()
+      focus(arg)
+    })
+    const timer = setTimeout(() => cancel(), FOCUS_WHEN_PRESENT_TIMEOUT_MS)
+    const cancel = () => {
+      stop()
+      clearTimeout(timer)
+      if (cancelPendingFocus === cancel) cancelPendingFocus = null
+    }
+    cancelPendingFocus = cancel
+  }
+
   // lazy multi-selection: a set of ids to select once the records that carry
   // them have loaded. Counterpart to lazyFocus for multi-select stores; used
   // when applying a target location whose data is not resident yet.
@@ -424,6 +454,7 @@ export const useSelection = (name, key, records, options = {}) => {
     unfocus,
     prepRefocus,
     lazyFocus,
+    focusWhenPresent,
     lazySelect,
     resetPersist
   }
