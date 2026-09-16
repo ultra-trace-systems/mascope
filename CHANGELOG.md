@@ -7,6 +7,23 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 ## [1.8.1] - 2026.09.16
 ### Changed
 
+- **A sample whose target library is too thin to measure a mass offset is
+  scored at the offset its reagent ions show.** Both assignment stages score a
+  mass error from the offset the target library's matched lines put the sample
+  at, and a sample matching fewer than eight of them was scored as if it sat
+  on its nominal masses, however far off it was. Where that happens, the run now
+  scores the sample at the median mass error of the lines the reagent pre-pass
+  claimed, if at least three were claimed and the median is larger than the
+  width the sample is scored at; the width stays the instrument class's. It is
+  the median of every claimed line, isotopologues included, not the correction
+  the pre-pass claims against: that one comes from the source's brightest ions,
+  which on an Orbitrap can sit a ppm or two from where the rest of the spectrum
+  does. A library that fits its own offset keeps it, because the reagent lines
+  sit at the low end of the range and need not agree with it.
+  `config.pattern_scoring` records `mu_source: reagent` where the offset came
+  from them, and `reagent_lines` and `reagent_mu_ppm` wherever the pre-pass
+  ran. The batch-wide untargeted search runs no pre-pass and is unchanged.
+
 - **The assignment mass gate caps a target library's line off calibration like
   any other.** A run caps a committed row more than three widths from its own
   fitted mass calibration at candidate, and more than six at below

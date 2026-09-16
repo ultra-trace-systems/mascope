@@ -738,7 +738,56 @@ class TestResolvedProfile:
 
         snapshot = recorder.recorded_configs()[0]["resolved_profile"]
         assert snapshot["fallback_sigma_ppm"] == 0.3  # the sample file is a .raw
-        assert mocks["fit"].call_args.kwargs == {"fallback_sigma_ppm": 0.3}
+        # The generic positive preset has no reagent, so no pre-pass reading.
+        assert mocks["fit"].call_args.kwargs == {
+            "fallback_sigma_ppm": 0.3,
+            "reagent_offset": None,
+        }
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "library", [True, False], ids=["two library lines", "no library match"]
+    )
+    async def test_a_thin_library_is_scored_at_the_reagent_lines_offset(self, library):
+        # Two library lines, or none, are too few to fit an offset, and this
+        # uronium source's own ions all sit 1.3 ppm low. Stage A scores its ions
+        # there, the untargeted stage is scored there, and the run says why.
+        from mascope_backend.api.new.peak_assignments.config import (
+            PeakAssignmentConfig,
+        )
+        from mascope_tools.composition.reagents import reagent_library
+
+        ladder = {cluster.label: cluster.mz for cluster in reagent_library("UR")}
+        low = 1.0 - 1.3e-6
+        peaks = _peaks_df(
+            [
+                ("p1", 181.0707, 10000.0),
+                ("p2", 182.0741, 660.0),
+                ("p3", 300.1234, 500.0),
+                ("r1", ladder["[CH4N2O+H]+"] * low, 2.0e6),
+                ("r2", ladder["[(CH4N2O)2+H]+"] * low, 3.0e6),
+                ("r3", ladder["[(CH4N2O)3+H]+"] * low, 1.0e5),
+            ]
+        )
+        recorder = _Recorder()
+        mocks = _start(_patches(recorder, peaks, _stage_a_rows() if library else []))
+
+        await _run(PeakAssignmentConfig(profile="UR"))
+
+        if library:
+            offset = mocks["fit"].call_args.kwargs["reagent_offset"]
+            assert (offset.lines, offset.taken) == (3, True)
+            assert offset.mu_ppm == pytest.approx(-1.3, abs=1e-6)
+        scoring = mocks["compositions"].call_args.kwargs["scoring"]
+        assert scoring.mu_ppm == pytest.approx(-1.3, abs=1e-6)
+        recorded = recorder.recorded_configs()[-1]["pattern_scoring"]
+        assert recorded["mu_source"] == "reagent"
+        assert recorded["sigma_source"] == "instrument_class"
+        assert recorded["reagent_lines"] == 3
+        assert recorded["reagent_mu_ppm"] == pytest.approx(-1.3, abs=1e-4)
+        # The reagent's own peaks are still the pre-pass's, not the search's.
+        searched = set(mocks["compositions"].call_args.kwargs["targets"])
+        assert searched == ({300.1234} if library else {181.0707, 182.0741, 300.1234})
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
