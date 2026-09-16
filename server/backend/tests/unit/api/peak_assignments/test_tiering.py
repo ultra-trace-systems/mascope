@@ -36,6 +36,7 @@ from mascope_backend.api.new.peak_assignments.tiering import (
     REASON_NOT_MEASURED,
     REASON_ODD_ELECTRON,
     REASON_OFF_CALIBRATION,
+    REASON_OXYGEN_FREE_CLUSTER,
     TIERING_RULES_VERSION,
     apply_tiering,
     envelope_neighbours,
@@ -106,6 +107,7 @@ def run(rows: list[dict], **kwargs) -> dict:
         rows,
         mz_tolerance_ppm=kwargs.pop("mz_tolerance_ppm", 5.0),
         abundance_floor=kwargs.pop("abundance_floor", 0.01),
+        notation_by_id=kwargs.pop("notation_by_id", None),
     )
 
 
@@ -178,6 +180,118 @@ class TestTheRadicalRule:
         rows = [row("pa-1", "O3^N", ion=None)]
         run(rows)
         assert REASON_ODD_ELECTRON not in rules_on(rows, "pa-1")
+
+
+#: A run's mechanisms as the tiering pass is handed them: the finder's
+#: spelling, by the id a row carries.
+CHANNELS = {
+    "m-nitrate": "+NO3-",
+    "m-labelled": "+[15N]O3-",
+    "m-acid-cluster": "+(HNO3)NO3-",
+    "m-deprotonation": "-H+",
+    "m-bromide": "+Br-",
+    "m-carbonate": "+CO3-",
+}
+
+
+def cluster(
+    row_id: str, formula: str = "C10H16", mechanism: str = "m-nitrate", **kwargs
+) -> dict:
+    """A committed row read through one of :data:`CHANNELS`."""
+    entry = row(row_id, formula, ion=None, **kwargs)
+    entry["ionization_mechanism_id"] = mechanism
+    return entry
+
+
+class TestAClusterWithNothingToHoldOnTo:
+    def test_nitrate_on_a_neutral_with_no_oxygen_loses_the_top_tier(self):
+        rows = [cluster("pa-1")]
+        summary = run(rows, notation_by_id=CHANNELS)
+        assert tier_of(rows, "pa-1") == "candidate"
+        assert REASON_OXYGEN_FREE_CLUSTER in rules_on(rows, "pa-1")
+        assert summary["capped"] == 1
+        assert summary["capped_by_rule"] == {REASON_OXYGEN_FREE_CLUSTER: 1}
+
+    @pytest.mark.parametrize("mechanism", ["m-labelled", "m-acid-cluster"])
+    def test_every_nitrate_cluster_is_asked(self, mechanism):
+        rows = [cluster("pa-1", mechanism=mechanism)]
+        run(rows, notation_by_id=CHANNELS)
+        assert tier_of(rows, "pa-1") == "candidate"
+
+    def test_the_row_keeps_its_reading(self):
+        # What was measured on the peak still fits: the reading stays, and only
+        # the tier the run stands behind it at goes.
+        rows = [cluster("pa-1")]
+        run(rows, notation_by_id=CHANNELS)
+        assert rows[0]["assigned_formula"] == "C10H16"
+        assert rows[0]["ionization_mechanism_id"] == "m-nitrate"
+
+    def test_one_oxygen_is_enough_to_hold_on_to(self):
+        rows = [cluster("pa-1", "C10H16O")]
+        run(rows, notation_by_id=CHANNELS)
+        assert tier_of(rows, "pa-1") == "assigned"
+        assert REASON_OXYGEN_FREE_CLUSTER not in rules_on(rows, "pa-1")
+
+    @pytest.mark.parametrize(
+        "mechanism", ["m-deprotonation", "m-bromide", "m-carbonate"]
+    )
+    def test_a_reading_through_another_channel_is_not_asked(self, mechanism):
+        rows = [cluster("pa-1", mechanism=mechanism)]
+        run(rows, notation_by_id=CHANNELS)
+        assert tier_of(rows, "pa-1") == "assigned"
+        assert REASON_OXYGEN_FREE_CLUSTER not in rules_on(rows, "pa-1")
+
+    def test_a_reference_list_s_row_is_asked(self):
+        # A list names a compound, not the channel it is seen through.
+        rows = [cluster("pa-1", source="database")]
+        run(rows, notation_by_id=CHANNELS)
+        assert tier_of(rows, "pa-1") == "candidate"
+
+    def test_a_target_library_row_is_exempt(self):
+        # The workspace named the compound for the modes its collection is
+        # attached to: hydrogen bromide on a nitrate source's monitor list is
+        # the cluster somebody chose to watch.
+        rows = [cluster("pa-1", "HBr", source="database", compound="compound-7")]
+        run(rows, notation_by_id=CHANNELS)
+        assert tier_of(rows, "pa-1") == "assigned"
+        assert REASON_OXYGEN_FREE_CLUSTER not in rules_on(rows, "pa-1")
+
+    def test_a_second_channel_does_not_rescue_it(self):
+        # What the rule doubts is the ion, not whether the neutral was seen.
+        rows = [cluster("pa-1", channels=["+NO3-", "-H+"])]
+        run(rows, notation_by_id=CHANNELS)
+        assert tier_of(rows, "pa-1") == "candidate"
+
+    def test_a_channel_the_run_does_not_name_is_not_asked(self):
+        rows = [cluster("pa-1", mechanism="m-unknown")]
+        run(rows, notation_by_id=CHANNELS)
+        assert tier_of(rows, "pa-1") == "assigned"
+
+    def test_without_the_run_s_mechanisms_no_row_is_asked(self):
+        rows = [cluster("pa-1")]
+        run(rows)
+        assert tier_of(rows, "pa-1") == "assigned"
+
+    def test_its_isotopologues_follow_it_down(self):
+        rows = [
+            cluster("pa-1"),
+            cluster("pa-kid", role="iso_child", owner="pa-1", mz=182.07),
+        ]
+        summary = run(rows, notation_by_id=CHANNELS)
+        assert tier_of(rows, "pa-kid") == "candidate"
+        assert rules_on(rows, "pa-kid") == {REASON_INHERITED}
+        assert summary["capped_isotopologues"] == 1
+
+    def test_the_reason_names_the_neutral_and_the_channel(self):
+        rows = [cluster("pa-1", mechanism="m-labelled")]
+        run(rows, notation_by_id=CHANNELS)
+        (detail,) = [
+            reason["detail"]
+            for reason in rows[0]["provenance"]["tier_reasons"]
+            if reason["rule"] == REASON_OXYGEN_FREE_CLUSTER
+        ]
+        assert "C10H16" in detail
+        assert "+[15N]O3-" in detail
 
 
 class TestTheDensityRule:
