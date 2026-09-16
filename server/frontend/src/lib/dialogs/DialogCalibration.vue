@@ -84,9 +84,30 @@ const title = computed(() =>
     : `Calibrate sample "${original.value?.sample_item_name}"`
 )
 
+// Why the previewed fit misses the quality bar (empty when it clears it). The
+// backend judges again on apply; this is what the operator is shown first.
+const qualityIssues = computed(() => mzFit.current?.quality_issues ?? [])
+const qualityIssuesSummary = computed(() => {
+  const consequence = batch.value
+    ? 'this sample would be calibrated but excluded from matching'
+    : 'saving accepts it, and matching will use it'
+  const reasons = qualityIssues.value.map((issue) => issue.message).join(' ')
+  return `Below the calibration quality bar – ${consequence}. ${reasons}`
+})
+
 const confirmMessage = computed(() => {
   if (batch.value) {
-    return `Applying calibration will remove matches for all associated samples in this and other batches. 
+    return `Applying calibration will remove matches for all associated samples in this and other batches.
+    Samples whose fit misses the quality bar are calibrated but excluded from matching until accepted one by one.
+    This action cannot be undone. Are you sure you want to proceed?`
+  }
+
+  if (qualityIssues.value.length > 0) {
+    return `This fit does not meet the calibration quality bar: ${qualityIssues.value
+      .map((issue) => issue.message)
+      .join(' ')}
+    Saving accepts it anyway: matches and peak assignment will use it, and the sample keeps a warning badge.
+    Applying calibration also removes existing matches for every sample on this file.
     This action cannot be undone. Are you sure you want to proceed?`
   }
 
@@ -167,12 +188,16 @@ async function save() {
           }
         )
       } else {
-        await mzFit.apply(original.value)
+        await mzFit.apply(original.value, {
+          acceptQualityIssues: qualityIssues.value.length > 0
+        })
       }
       visible.value = false
     },
     acceptProps: {
-      label: 'Apply Calibration'
+      label:
+        !batch.value && qualityIssues.value.length > 0 ? 'Accept and Apply' : 'Apply Calibration',
+      severity: !batch.value && qualityIssues.value.length > 0 ? 'warn' : undefined
     },
     rejectProps: {
       label: 'Cancel',
@@ -246,6 +271,14 @@ const formatter = new Intl.NumberFormat('en-US', {
             {{ mzFit.error }}
           </Message>
         </div>
+        <Message
+          v-if="qualityIssues.length > 0"
+          severity="warn"
+          style="margin-bottom: 0.3rem"
+          data-testid="calibration-quality-issues"
+        >
+          {{ qualityIssuesSummary }}
+        </Message>
         <h3>Calibration Results</h3>
         <div class="content-wrapper" :class="{ 'batch-layout': !!samples }">
           <div v-if="samples" class="list-wrapper">

@@ -51,6 +51,7 @@ from mascope_backend.api.models.calibration.calibration_pydantic_model import (
     OrbiCalibrationParams,
     TofCalibrationParams,
 )
+from mascope_backend.api.models.calibration.config import calibration_config
 from mascope_backend.api.new.instrument_configs.lib import (
     read_instrument_functions,
 )
@@ -1140,8 +1141,10 @@ def fit_quality(
         return None
     summary = stats[-1] if "mz" not in stats[-1] else None
     point_rows = stats[:-1] if summary is not None else stats
+    ion_ids = {row.get("target_ion_id") for row in point_rows} - {None}
     return {
         "n_points": len(point_rows),
+        "n_ions": len(ion_ids) if ion_ids else None,
         "pre_fit_mz_error_ppm": (
             _finite_or_none(summary.get("match_mz_error")) if summary else None
         ),
@@ -1156,3 +1159,111 @@ def fit_quality(
         ),
         "refine_window": _finite_or_none(params.refine_window) if params else None,
     }
+
+
+def calibration_quality_issues(quality: dict | None, filename: str) -> list[dict]:
+    """
+    Why a fit does not clear the quality bar for a ``verified`` record.
+
+    The bar (``calibration_config``) is the fit's mean post-fit residual
+    against an instrument-class bound; for a fit on few points, how far it
+    moved the axis; for one on more, how many ions the points came from; and,
+    where a bound is set, the calibrants' share of the TIC. A fit with no quality
+    block cannot be judged and is reported as such rather than let through.
+
+    A value the block does not carry (``n_ions`` on records written before it
+    was added) is not held against the fit.
+
+    :param quality: The fit's ``quality`` block (see :func:`fit_quality`).
+    :param filename: Sample filename, selects the instrument-class bounds.
+    :return: One ``{"code", "message"}`` dict per failed criterion; empty when
+        the fit clears the bar.
+    """
+    if not quality:
+        return [
+            {
+                "code": "no_quality",
+                "message": "No fit statistics recorded, so the fit cannot be judged.",
+            }
+        ]
+    tof = m_name.get_instrument_type(filename) == "tof"
+    max_residual = (
+        calibration_config.TOF_MAX_POST_FIT_MZ_ERROR_PPM
+        if tof
+        else calibration_config.ORBI_MAX_POST_FIT_MZ_ERROR_PPM
+    )
+    min_calibrant_to_tic = (
+        calibration_config.TOF_MIN_CALIBRANT_TO_TIC
+        if tof
+        else calibration_config.ORBI_MIN_CALIBRANT_TO_TIC
+    )
+    issues = []
+
+    residual = quality.get("post_fit_mz_error_ppm")
+    if residual is None:
+        issues.append(
+            {
+                "code": "residual_unknown",
+                "message": "The post-calibration m/z error was not recorded.",
+            }
+        )
+    elif abs(residual) > max_residual:
+        issues.append(
+            {
+                "code": "residual",
+                "message": (
+                    f"Mean m/z error after calibration is {abs(residual):.2f} ppm "
+                    f"(limit {max_residual:g} ppm)."
+                ),
+            }
+        )
+
+    n_points = quality.get("n_points") or 0
+    min_points = calibration_config.MIN_VERIFIED_CALIBRATION_POINTS
+    max_shift = calibration_config.LOW_POINT_MAX_PRE_FIT_MZ_ERROR_PPM
+    pre_fit = quality.get("pre_fit_mz_error_ppm")
+    points = f"{n_points} calibration point{'' if n_points == 1 else 's'}"
+    if n_points == 0:
+        issues.append({"code": "points", "message": "Fitted on no calibration points."})
+    elif n_points < min_points and (pre_fit is None or abs(pre_fit) > max_shift):
+        shift = "an unrecorded amount" if pre_fit is None else f"{abs(pre_fit):.2f} ppm"
+        issues.append(
+            {
+                "code": "points",
+                "message": (
+                    f"Fitted on {points} but moved the m/z axis by {shift}; "
+                    f"below {min_points} points a correction of at most "
+                    f"{max_shift:g} ppm is trusted."
+                ),
+            }
+        )
+
+    n_ions = quality.get("n_ions")
+    min_ions = calibration_config.MIN_VERIFIED_CALIBRATION_IONS
+    if n_points >= min_points and n_ions is not None and n_ions < min_ions:
+        issues.append(
+            {
+                "code": "ions",
+                "message": (
+                    f"All calibration points come from {n_ions} ion"
+                    f"{'' if n_ions == 1 else 's'} (at least {min_ions} needed)."
+                ),
+            }
+        )
+
+    calibrant_to_tic = quality.get("calibrant_to_tic")
+    if (
+        min_calibrant_to_tic is not None
+        and calibrant_to_tic is not None
+        and calibrant_to_tic < min_calibrant_to_tic
+    ):
+        issues.append(
+            {
+                "code": "signal",
+                "message": (
+                    f"Calibrants carry {calibrant_to_tic:.3%} of the total ion "
+                    f"current (at least {min_calibrant_to_tic:.2%} needed)."
+                ),
+            }
+        )
+    return issues

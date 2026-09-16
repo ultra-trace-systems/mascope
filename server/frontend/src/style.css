@@ -228,17 +228,25 @@
     cursor: pointer;
   }
 
-  /* Badge semantics: red = calibration failed (needs action), orange =
-     calibrated but the file arrived with acquisition drift (instrument needs
-     retuning), green = calibrated, grey = unverified. */
+  /* Badge semantics: red = calibration failed (needs action), amber = a fit
+     below the quality bar, whether skipped or accepted and in use (the
+     results are suspect), teal = calibrated fine but the file arrived with
+     acquisition drift (the instrument needs retuning, not the data), green =
+     calibrated, grey = never fitted or unverified. */
   .browser .calibration-failed {
     color: var(--state-error);
   }
 
-  .browser .calibration-drifted {
+  .browser .calibration-poor,
+  .browser .calibration-accepted {
     color: var(--state-warning);
   }
 
+  .browser .calibration-drifted {
+    color: var(--state-info);
+  }
+
+  .browser .calibration-unfitted,
   .browser .calibration-unverified {
     color: var(--p-text-muted-color);
   }

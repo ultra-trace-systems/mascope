@@ -12,6 +12,7 @@ from sqlalchemy.exc import TimeoutError as SQLAlchemyTimeoutError
 
 from mascope_backend.api.controllers.calibration.calibration_controller import (
     calibration_mz_calibrate_sample,
+    is_unfitted_record,
     reset_mz_calibration,
 )
 from mascope_backend.api.controllers.calibration.lib.calibration_mz_fit import (
@@ -599,13 +600,14 @@ async def _auto_process_sample_file(
                 process_id=process_id,
             )
             if not calibrated:
-                # The failure marker written by calibrate_with_retry would
-                # trip the verified gate in match_compute_sample as a raised
-                # warning, failing the whole pipeline; skip matching and
-                # assignment explicitly - both assume a calibrated m/z axis.
+                # The failed or below-bar record calibrate_with_retry leaves
+                # would trip the verified gate in match_compute_sample as a
+                # raised warning, failing the whole pipeline; skip matching
+                # and assignment explicitly - both assume a calibrated m/z
+                # axis.
                 runtime.logger.info(
                     "Skipping matching and peak assignment for sample "
-                    f"'{sample['sample_item_name']}': m/z calibration failed."
+                    f"'{sample['sample_item_name']}': m/z calibration not verified."
                 )
                 continue
         elif is_blank_sample_file:
@@ -1124,18 +1126,31 @@ async def _record_calibration_failure(
     (``status: "failed"``, ``verified: False``) makes the outcome visible to
     the sample browser and trips the verified gate in the match computation.
 
-    Never overwrites an existing record: an applied fit must survive a later
-    failed re-attempt. Best-effort - a database error here is logged, not
-    raised, so it cannot fail the surrounding pipeline.
+    Never overwrites an applied fit or an earlier marker: an applied fit must
+    survive a later failed re-attempt. The one record it does replace is a
+    TOF file's converter record (``is_unfitted_record``), which every TOF
+    file has from registration: skipping it left a failed TOF fit without a
+    trace. The converter's coefficients are kept on the marker. Best-effort -
+    a database error here is logged, not raised, so it cannot fail the
+    surrounding pipeline.
     """
     if sample_file_id is None:
         return
     try:
         async with async_session() as session:
             sample_file = await session.get(SampleFile, sample_file_id)
-            if sample_file is None or sample_file.mz_calibration is not None:
+            if sample_file is None:
                 return
+            existing = sample_file.mz_calibration
+            if existing is not None and not is_unfitted_record(existing):
+                return
+            converter = (
+                {key: existing[key] for key in ("mode", "par") if key in existing}
+                if existing
+                else {}
+            )
             sample_file.mz_calibration = {
+                **converter,
                 "status": "failed",
                 "verified": False,
                 "error": str(error),
@@ -1205,6 +1220,43 @@ async def _report_calibration_given_up(
     )
 
 
+async def _report_calibration_below_bar(
+    sample: dict, issues: list[dict], user_id: int | None
+) -> None:
+    """
+    Tell the user that the sample was calibrated, but not well enough to use.
+
+    The counterpart of :func:`_report_calibration_given_up` for a fit that
+    was applied and stored unverified (see ``stamp_quality_verdict``).
+    Parent-less for the same reason.
+    """
+    reasons = " ".join(issue["message"] for issue in issues)
+    runtime.logger.info(
+        f"m/z calibration of sample '{sample['sample_item_name']}' is below the "
+        f"quality bar; skipping matching and peak assignment. {reasons}"
+    )
+    if user_id is None:
+        return
+    await emit_user_notification(
+        UserNotification(
+            process_id=gen_id(8),
+            type="mz_calibration",
+            status="warning",
+            message=(
+                f"m/z calibration of sample '{sample['sample_item_name']}' does "
+                f"not meet the quality bar: {reasons} Matching and peak "
+                "assignment were skipped for it. Recalibrate it, or accept the "
+                "fit from the calibration dialog."
+            ),
+            data={
+                "sample_item_id": sample["sample_item_id"],
+                "filename": sample["filename"],
+            },
+        ),
+        user_id=user_id,
+    )
+
+
 async def calibrate_with_retry(
     sample: dict,
     sample_file_id: str | None = None,
@@ -1222,7 +1274,8 @@ async def calibrate_with_retry(
     :func:`_record_calibration_failure`, reported to the user once via
     :func:`_report_calibration_given_up`, and ``False`` is returned so the
     caller can skip steps that assume a calibrated m/z axis (matching,
-    assignment).
+    assignment). A fit that is applied but misses the quality bar returns
+    ``False`` too, after its own report, without retrying.
 
     :param sample: Sample dict to calibrate
     :type sample: dict
@@ -1232,7 +1285,7 @@ async def calibrate_with_retry(
     :type user_id: int | None, optional
     :param process_id: Process ID for tracking
     :type process_id: str | None, optional
-    :return: True when a fit was applied, False when calibration was given up.
+    :return: True when a verified fit was applied, False otherwise.
     :rtype: bool
     """
     mz_calibration_params = calibration_params_factory(sample["filename"])
@@ -1242,7 +1295,7 @@ async def calibrate_with_retry(
             # opinion on whether the file's previous calibration was right, so
             # an acquisition-drift marker already on the record is carried
             # forward (see ``carry_acquisition_drift``).
-            await calibration_mz_calibrate_sample(
+            result = await calibration_mz_calibrate_sample(
                 sample_item_id=sample["sample_item_id"],
                 mz_calibration_params=mz_calibration_params,
                 independent_transaction=False,
@@ -1250,7 +1303,16 @@ async def calibrate_with_retry(
                 process_id=gen_id(8),
                 parent_id=process_id,
             )
-            return True
+            data = (result or {}).get("data") or {}
+            if data.get("verified", True):
+                return True
+            # Applied, but below the quality bar: the record says so and the
+            # verified gate keeps the sample out of matching. A wider
+            # tolerance only admits worse calibrants, so no retry.
+            await _report_calibration_below_bar(
+                sample, data.get("quality_issues") or [], user_id=user_id
+            )
+            return False
         except ApiException as e:
             if e.status_code not in RETRYABLE_CALIBRATION_STATUS:
                 # A fault rather than a data condition: a wider tolerance

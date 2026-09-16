@@ -89,11 +89,13 @@ export const useMzFit = () => {
     })
   }
 
-  async function apply(sample) {
+  // `acceptQualityIssues`: store the fit as verified even though it misses the
+  // quality bar. Only after the operator has been shown the issues.
+  async function apply(sample, { acceptQualityIssues = false } = {}) {
     const { filename } = sample ?? active.value
     await api.http.post(
       `/calibration/mz_apply`,
-      { fit: current.value },
+      { fit: current.value, accept_quality_issues: acceptQualityIssues },
       {
         params: { filename },
         use: 'process',

@@ -10,15 +10,38 @@
  *   NULL.
  * - `{status: "failed", ...}` - the automatic pipeline gave up; the sample is
  *   uncalibrated and its matches are skipped until it is recalibrated.
- * - `{status: "ok"/verified: true, ...}` - an applied fit, optionally with a
- *   `quality` block (calibration point count, pre/post mean |m/z error| in
- *   ppm) recorded at fit time.
+ * - `{status: "unfitted", ...}` - a TOF file still on the m/z axis its
+ *   acquisition wrote (the converter's coefficients); never fitted, so its
+ *   matches are skipped too. Records registered before the status was stamped
+ *   carry neither `status` nor `verified`.
+ * - `{status: "poor", quality_issues: [...]}` - a fit was applied but misses
+ *   the quality bar. Unverified (matches skipped) unless an operator accepted
+ *   it (`verified: true`, `accepted_by`), in which case downstream results run
+ *   on it and the badge keeps saying so.
+ * - `{status: "ok", verified: true, ...}` - an applied fit that clears the
+ *   bar, optionally with a `quality` block (calibration point count, pre/post
+ *   mean |m/z error| in ppm) recorded at fit time. `acquisition_drift` marks a
+ *   file whose own axis was far off before the fit corrected it: the
+ *   calibration is fine, the instrument wants retuning.
  */
 
 const ppm = (value) => (value === null || value === undefined ? null : `${value.toFixed(2)} ppm`)
 
+const issueText = (mzCalibration) =>
+  (mzCalibration.quality_issues ?? []).map((issue) => issue.message).join(' ')
+
+const driftText = (mzCalibration) => {
+  const drift = ppm(mzCalibration.acquisition_drift_ppm)
+  return `Acquisition drift${drift ? ` ${drift}` : ''} – consider retuning the instrument.`
+}
+
 /**
  * Derive the calibration badge for a sample row.
+ *
+ * States and their severities, from most to least urgent: `failed` (danger),
+ * `poor` and `accepted` (warn - a calibration that is not good enough, used or
+ * not), `drifted` (info - calibrated fine, the instrument needs attention),
+ * `unfitted`/`unverified` (secondary), `ok` (muted), `none`.
  *
  * @param {object|null|undefined} mzCalibration - `sample.mz_calibration` record
  * @returns {{state: string, icon: string, severity: string, tooltip: string,
@@ -46,12 +69,32 @@ export function calibrationStatus(mzCalibration) {
     return {
       state: 'failed',
       icon: 'ph ph-scales',
-      severity: 'warn',
+      severity: 'danger',
       clickable: true,
       tooltip:
         `m/z calibration failed${attempts}${error}. ` +
         'The sample is uncalibrated and match computation is skipped. ' +
         'Click to calibrate manually.'
+    }
+  }
+
+  // Same test as the backend's `is_unfitted_record`.
+  const unfitted =
+    mzCalibration.status === 'unfitted' ||
+    (mzCalibration.status === undefined &&
+      mzCalibration.verified === undefined &&
+      mzCalibration.quality === undefined &&
+      Number.isInteger(mzCalibration.mode) &&
+      mzCalibration.par !== undefined)
+  if (unfitted) {
+    return {
+      state: 'unfitted',
+      icon: 'ph ph-scales',
+      severity: 'secondary',
+      clickable: true,
+      tooltip:
+        'Not calibrated: the m/z axis is the one the acquisition wrote. ' +
+        'Match computation and peak assignment are skipped. Click to calibrate.'
     }
   }
 
@@ -68,6 +111,33 @@ export function calibrationStatus(mzCalibration) {
         .filter(Boolean)
         .join(', ')
     : null
+  const drift = mzCalibration.acquisition_drift ? ` ${driftText(mzCalibration)}` : ''
+
+  if (mzCalibration.status === 'poor') {
+    const issues = issueText(mzCalibration)
+    if (mzCalibration.verified) {
+      return {
+        state: 'accepted',
+        icon: 'ph ph-scales',
+        severity: 'warn',
+        clickable: true,
+        tooltip:
+          `m/z calibration below the quality bar${detail ? ` (${detail})` : ''}: ${issues} ` +
+          'Accepted by an operator, so matches and assignments use it – ' +
+          `treat their mass errors with care.${drift}`
+      }
+    }
+    return {
+      state: 'poor',
+      icon: 'ph ph-scales',
+      severity: 'warn',
+      clickable: true,
+      tooltip:
+        `m/z calibration below the quality bar${detail ? ` (${detail})` : ''}: ${issues} ` +
+        'Match computation and peak assignment are skipped. ' +
+        `Click to recalibrate, or to accept the fit.${drift}`
+    }
+  }
 
   if (!mzCalibration.verified) {
     return {
@@ -82,15 +152,14 @@ export function calibrationStatus(mzCalibration) {
   }
 
   if (mzCalibration.acquisition_drift) {
-    const drift = ppm(mzCalibration.acquisition_drift_ppm)
     return {
       state: 'drifted',
       icon: 'ph ph-scales',
-      severity: 'warn',
+      severity: 'info',
       clickable: true,
       tooltip:
-        `m/z calibrated${detail ? ` (${detail})` : ''}. ` +
-        `Acquisition drift${drift ? ` ${drift}` : ''} – consider retuning the instrument.`
+        `m/z calibrated${detail ? ` (${detail})` : ''}; the calibration corrected the ` +
+        `instrument's offset.${drift}`
     }
   }
 

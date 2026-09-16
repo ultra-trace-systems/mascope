@@ -31,6 +31,34 @@ class CalibrationConfig(BaseModel):
     # One reminder a day is enough to keep it visible until it is fixed.
     ACQUISITION_DRIFT_WARNING_INTERVAL_S: float = 24 * 60 * 60
 
+    # Quality bar an applied fit must clear to be stored ``verified``, which
+    # is what matching and peak assignment read as "this file's mass axis is
+    # right". The m/z error tolerances below are the window calibrants are
+    # matched in, not a quality bar: a fit can pass them and still leave the
+    # axis a ppm or more out. Measured on a fleet corpus of production files:
+    # Orbitrap fits on three or more points leave at most 0.47 ppm, and the
+    # TOF fits 0.2-1.6 ppm, so the residual bounds sit above both.
+    ORBI_MAX_POST_FIT_MZ_ERROR_PPM: float = 1.0
+    TOF_MAX_POST_FIT_MZ_ERROR_PPM: float = 3.0
+    # Below this many points the residual says little: two calibrants that
+    # disagree split the difference, and one zeroes its own residual. Such a
+    # fit is only trusted while it moves the axis no further than
+    # LOW_POINT_MAX_PRE_FIT_MZ_ERROR_PPM - one- and two-point fits are the
+    # norm for narrow-range and EasyIC modes and are healthy when the
+    # correction is small, while the one-point fits that anchored to the wrong
+    # peak moved the axis 76-81 ppm and reported a zero residual.
+    MIN_VERIFIED_CALIBRATION_POINTS: int = 3
+    LOW_POINT_MAX_PRE_FIT_MZ_ERROR_PPM: float = 5.0
+    # A fit on MIN_VERIFIED_CALIBRATION_POINTS or more must also draw them
+    # from this many ions, or it is one ion's isotopes agreeing with each
+    # other.
+    MIN_VERIFIED_CALIBRATION_IONS: int = 2
+    # Summed calibrant intensity as a fraction of the TIC. Orbitrap only:
+    # healthy TOF fits span 5e-7 to 0.1, so no bar is set for TOF (None
+    # disables the check). On Orbitrap, good fits reach down to 1.3e-4.
+    ORBI_MIN_CALIBRANT_TO_TIC: float | None = 1e-4
+    TOF_MIN_CALIBRANT_TO_TIC: float | None = None
+
     # TOF calibration parameters
     TOF_MZ_ERROR_TOLERANCE: int = 15  # in ppm
     TOF_DEFAULT_REFINE_WINDOW: int = 100
