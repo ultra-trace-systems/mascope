@@ -30,8 +30,9 @@ The formula stays on the row either way: what the run is withdrawing is its
 confidence, not its reading.
 
 What this is worth, measured rather than assumed: on the 43-sample gate it caps
-49 rows of about 14,600 at the top tier, demotes none that the reference
-confirms, and moves G1 by at most 1.7 points on one set. That is not the lever it was designed to be, because the failure it was
+51 rows of the 10,935 at the top tier - three of them the target library's,
+which its curation used to spare - demotes none that the reference confirms,
+and moves G1 by at most 1.7 points on one set. That is not the lever it was designed to be, because the failure it was
 designed to catch has already been closed upstream - the finder ranks candidates
 on the v2 fit at the sample's own width (step 2.1), so a formula three sigma out
 does not win its peak in the first place. The widest mass error on any committed
