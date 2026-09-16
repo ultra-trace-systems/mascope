@@ -31,7 +31,7 @@ step PRs land on the epic and are named here as they merge.
 | 2.5d - review of the curated lists | #2136 (a library entry's line whatever its spelling), #2137 (the cap on library rows, the plan) | measured: the 46 entries the gate's modes attach were audited against the step's four flags, and the plan owner's verdicts taken on each. The four odd-electron workaround entries left the lists (HCO3 and CHO3 for CO3-, HS3 for S3-, Br for Br2-); the entries that never commit a row stay, with their reasons - reagent lines the pre-pass claims first, or compounds absent or out of range; no entry is left whose ion another channel of the same sample reads as a different neutral. Removing the workaround entries cost C2 its Stage A offset: four to five of its eleven or twelve matched lines were theirs, so it scores at the class width with no offset while its own runs sit at -1.1 ppm, and 146 rows leave assigned, 106 of them rows the reference commits the same formula on (the section after this step has the two ways back). The audit found an engine defect, fixed in #2136: a reference list's copy of a library reading took the entry's line, on the spelling or on a shade better fit - 63 rows on four sets, 12 density caps lifted, no tier moved. Decision 3's exemption is lifted from the cap in #2137 (its fourth addendum): a library line off calibration is capped unless an isotopologue tracks it, which moves the three isotopologues that exemption protected from assigned to candidate and nothing else |
 | 2.5e - an offset from the reagent lines where the library is thin | #2140 | measured: where Stage A matches fewer than eight library lines, both stages score at the median error of every line the reagent pre-pass claimed, isotopologues included, where it claimed three or more and the median is beyond the width the sample is scored at; the width stays the class's. Only C2 reaches it, at -1.25 to -1.26 ppm over seven lines where its commits sit at -1.10 to -1.13: 114 of the 146 monoisotopic rows 2.5d took from assigned come back, 100 of them on the reference's formula, its assigned rows go from 181 to 321, G1 30.9 -> 20.6 (conditioned 0.0 -> 0.8 over 257 rows) and G2 86.4 -> 87.5. The other seven sets are identical row for row. Every run keeps its calibration's offset and width and the gate caps the same rows; on C2 the re-elections move the calibration's line through m/z, which three samples now refuse and two fit shallower |
 | 2.5f - a list hit meets the untargeted grid | - | planned, after 2.5d and independent of 2.5e, in two PRs: first the untargeted enumeration runs over Stage A's peaks too and a list hit's candidate density counts the grid's rivals beside the known set's, so the density rule reaches it with no election changed; then the list formula is one candidate in the arbitration carrying a prior, a grid rival may win the peak, and the assigned tier comes from the same rules for every row, the mass gate already reading a library row like any other since 2.5d (decision 3's fifth addendum); the first PR before 2.4e, which reads assigned tiers, the second where the measurement puts it |
-| 2.4e - isotopologue claims under interference | - | planned, after 2.5d: a line an assigned formula's envelope predicts, where the evidence is in doubt, becomes a candidate isotopologue of that formula rather than a new M0 (decision 18's addendum), and the tracking test allows for overlap and low intensity |
+| 2.4e - isotopologue claims under interference | #2143 | measured: a monoisotopic row the envelope-neighbour rule flags under a neighbour held at assigned is read as that neighbour's isotopologue at candidate, the reading it displaced first among its alternatives, unless it is a target library compound, another channel committed its neutral, the neighbour already holds a line there, or its error does not follow the neighbour's within what the line can deliver; the ledger's passes then run again over the claims. An isotopologue's tracking allows for its line's noise below a signal-to-noise of 15 and for a peak within two widths of it: a line only that far off is in doubt and held at candidate, never lower, and one further off is held at candidate at least. Of the 861 flagged rows, 252 are claimed (184 tracking, 68 in doubt) and 578 stay under a neighbour below assigned; the reference had read 67 of the claims as the same formula's isotopologues and 6, all on B and five of them 2H lines, as the M0 the claim displaced. G6 falls from 681 to 596, and no monoisotopic row changes formula or tier, so G1, G1 conditioned and G2 are identical on every set. Set C's 18O, 2H and 13C2 lines of its strongest ion are all its candidate isotopologues. 69 isotopologues go from assigned to candidate, 25 of them lines the reference confirms, and the calibration refits on the three samples where a claimed row had been an anchor. Taken ahead of 2.5f's first PR |
 | 2.4f - an oxygen-free neutral in a nitrate cluster | - | planned, after 2.5d: a nitrate cluster reading whose neutral carries no oxygen is not held at assigned; carbonate is measured beside it for the plan owner |
 | 2.6 - frontend: profile, reasons, roles | - | planned |
 | 2.7 - stage 2 gate, engine 0.5.0 | - | planned |
@@ -782,6 +782,48 @@ The confidence layer. This is where "assigned" starts meaning something.
 - **Size.** M. After 2.5d, whose curated formulas predict many of the
   envelopes, and after 2.5f's measurement, which settles which list rows
   stand at assigned; on the reference frozen at `cc07ce1` (decision 16).
+- **As built (2026-09-16).** Taken ahead of 2.5f's first PR on the plan
+  owner's word, and measured on step 2.5e's round. 2.5f's measurement reads
+  the claims this step makes; a list hit it caps below assigned stops being a
+  neighbour a line can be claimed for.
+  - **What a line can deliver.** A line's own noise widens the class's bar by
+    the square root of how much fainter it is than a line at a signal-to-noise
+    of 15, the two lines' variances taken together. The tallest other peak
+    within two of the line's widths (the file's resolving power) adds up to a
+    quarter width, in proportion to its height up to the line's own. The 15 is
+    measured: on the Orbitrap sets, the child-minus-parent error of the
+    isotopologues the reference confirms narrows as about 1.15 / sqrt(SNR)
+    ppm. The two widths and the quarter width are set C's doublet, which
+    measures 1.6 to 1.7 widths apart where theory puts 1.3, each line pushed
+    1.2 to 2.1 ppm by a partner as tall.
+  - **What each verdict does.** Inside the class's bar a line tracks and
+    corroborates, as before. Inside the widened bar only, it is in doubt: held
+    at candidate, never lower for its distance from the calibration, and it
+    corroborates nothing. Beyond both it is capped like any other row, and held
+    at candidate at least. That last part reaches lines that miss their parent
+    while sitting within three widths of the centre, which stayed assigned
+    before. The two verdicts compare two of the run's own lines, so they hold
+    whether or not the run measured a calibration.
+  - **What a claim takes.** The envelope-neighbour flag and a neighbour at
+    assigned after every rule, and a line whose error follows the neighbour's
+    at least as far as the widened bar allows: a line that misses by more is
+    the tracking test's coincidence, and the row keeps its reading. Also
+    held back: a compound of the target library, a neutral another channel
+    committed (evidence from outside the peak), and a line the neighbour
+    already holds; of two rows on one line, the nearer is claimed. A claimed
+    line corroborates nothing, even where it tracks. The row's own
+    isotopologues go with it where the neighbour's envelope predicts their
+    lines too, and leave the ledger otherwise. The claimed row is written in
+    its owner's convention (a mass-offset label and the isotopologue formula
+    beside the ion for a list's row, the substitution for the search's), with
+    the reading it displaced as its first alternative.
+  - **The ledger is judged again.** A claim takes a monoisotopic row off the
+    ledger, so the mass gate, the cross-channel pass and the tiering pass run
+    again over what the claims leave, until a round finds nothing new (at most
+    four). The calibration is then fitted without the claimed rows, no claimed
+    row counts as a channel, and a row flagged only by a row a claim took is
+    no longer flagged. The run-less ingest fold runs no tiering, so it claims
+    nothing; it reads its lines for the gate as a run does.
 
 ### 2.4f An oxygen-free neutral in a nitrate cluster
 
@@ -5207,6 +5249,142 @@ against step 2.5d's last round on all eight sets.
   over, and the caps did not move with it.
 - **G1, G1 conditioned and G2 per set:** above for C2; the other seven are
   unchanged.
+
+### After step 2.4e, isotopologue claims under interference (2026-09-16)
+
+Build `step-2.4e-isotopologue-claims-2026.09.16-62fbc59` (#2143), read against
+step 2.5e's round on all eight sets. The envelope-neighbour rule flags 861
+monoisotopic rows on that round (862 on step 2.2b's, where the step counted
+them).
+
+What the 861 rows became, and what held the others back:
+
+| set | claimed (tracks / in doubt) | neighbour below assigned | another channel | does not follow | target library |
+|---|---|---|---|---|---|
+| A | 30 (29 / 1) | 40 | - | - | - |
+| B | 128 (93 / 35) | 156 | 9 | 11 | 1 |
+| C | 16 (4 / 12) | 4 | - | - | - |
+| C2 | 0 | 1 | - | - | - |
+| D | 13 (9 / 4) | 86 | - | 2 | - |
+| E | 12 (10 / 2) | 26 | - | - | - |
+| F1 | 40 (32 / 8) | 142 | 3 | - | - |
+| F2 | 13 (7 / 6) | 123 | 4 | - | - |
+
+- **The rest of the 861.**
+  - One more row on F1 is no longer flagged: its only neighbour was a claimed
+    row.
+  - The 252 claimed rows were 177 below assignability and 75 candidate as
+    monoisotopic rows. Six of their own isotopologues went with them (C 3, D
+    1, F1 2), and none left the ledger.
+- **What the reference read on the claimed peaks.**
+  - An isotopologue of the formula now owning them: 67. Of another formula:
+    18.
+  - An M0 of another formula: 10. Silent: 151.
+  - The M0 the claim displaced, with the same formula: 6, all on B and all
+    candidate before and after. Five are 2H lines beside a 13C line: C10H19N3
+    at m/z 199.19 on three samples (C12H20O through ammonium), C8H10N2 at
+    152.12 (C10H14O) and C11H21NO2 at 260.20 (C14H26O4). The sixth is
+    C18H22O14 at m/z 523.14, the 18O line of C17H28O18.
+- **What the holds kept.** The reference reads 4 of the 13 rows whose error
+  does not follow their neighbour's as that neighbour's lines, and one as the
+  M0 this engine commits. It reads 7 of the 16 held for another channel as
+  the neighbour's lines. One of those 16 is a reference-list PFHxA row on F1,
+  which it commits as the M0 it is and a claim would have read as a bromide's
+  81Br line. The target library row held back is one it commits.
+- **The metrics.**
+  - G6 (monoisotopic rows on reference isotopologues) 681 -> 596: A 50 -> 27,
+    B 245 -> 210, C 55 -> 46, D 168 -> 156, E 12 -> 9, F1 101 -> 98, C2 and
+    F2 unchanged. At assigned it stays at 61.
+  - No monoisotopic row changes formula or tier on any set, so G1, G1
+    conditioned and G2, same formula and same ion, are identical everywhere.
+    Where both engines commit an M0, B's same-formula count falls by the six
+    above, and the other-formula count by 1 on A, 3 on B, 5 on F1 and 1 on F2.
+  - Mass error MAD falls slightly on the seven sets with claims, by 0.002 to
+    0.010 ppm.
+- **Set C's strongest line, C10H14O through carbonate.**
+  - Its 18O line, committed as C9H13N2 through the labelled nitrate on four
+    samples, is its isotopologue on all four, in doubt, at candidate. The
+    reference reads it so on all four.
+  - Its 2H line, committed as C8H13N3 through carbonate on two samples, is
+    claimed on both.
+  - Its 13C2 line is held in doubt at candidate on the four samples that
+    commit it. Three had it at assigned, and the fourth had it capped off
+    calibration.
+  - Its 13C+18O line, which C9H13N2 carried as its own 13C line, went with the
+    claim on three samples.
+  - On the fifth sample, where the 18O line was already this ion's
+    isotopologue, that line is held in doubt as well. Every one of these lines
+    is now candidate.
+- **The gate's holds, re-counted by what the lines are.**
+  - Over the 43 runs, 4,867 isotopologues track, 485 are in doubt and 278 do
+    not track, claims included.
+  - The gate holds 127 rows where it capped 51. The distance cap takes 30:
+    the same six monoisotopic rows, and 24 isotopologues. Of the 45
+    isotopologues it took on the round before, 21 are now in doubt.
+  - 85 rows are held in doubt. The reference reads 22 of them as the same
+    formula's isotopologues and is silent on 51.
+  - 12 rows are held for not tracking. The reference reads 6 as the same
+    formula's isotopologues and is silent on 4.
+  - 69 isotopologues go from assigned to candidate, 60 in doubt and 9 not
+    tracking, and 25 of them are lines the reference reads under the same
+    formula: A 5, B 5, C 4, D 11. Four in-doubt lines the distance cap had
+    put below assignability are at candidate now (B 2, C2 1, D 1).
+  - What puts a line in doubt, claims apart: on the Orbitrap sets its noise
+    alone on 86, a close peak alone on 18, both on 110. On the TOF sets it is
+    14, 22 and 165, since nearly every TOF line is faint and crowded both.
+- **The runs' own records.** The full `mass_calibration` record moves on 26
+  of the 43 runs.
+  - Offset, width and anchors are unchanged on 40. On three samples a claimed
+    row had been an anchor, since its own isotopologue tracked it, and the
+    refit moves them:
+    - C: -0.160 -> -0.166 ppm, 28 -> 27 anchors;
+    - D: -0.124 -> -0.122 ppm, 195 -> 194 anchors;
+    - F1: +1.56 -> +1.46 ppm and 4.47 -> 4.26 wide, 61 -> 60 anchors.
+  - The line through m/z is accepted or refused as before on every run. On
+    A, the claimed rows leave the rows it is fitted over, and the offset
+    moves by at most 0.0024 mDa.
+  - `mass_z` moves on 2,314 monoisotopic rows of those nine samples. Six cross
+    three widths, all already below assignability. No monoisotopic cap or
+    corroboration changes on any of the 32,580 rows, and no assigned
+    monoisotopic row sits beyond 2.8 widths.
+  - `corroborated` rises by 12. The 18 claimed lines of target library rows
+    count as curated, as every line of a library row does. The three former
+    anchors and their three lines no longer count.
+  - `capped` falls from 51 to 30, since the lines in doubt have their own
+    count.
+- **The runs themselves.**
+  - 36 runs took two rounds and 7 took one. No chain needed a third, and no
+    claim was left unapplied.
+  - The tiering pass caps 3,250 rows where it capped 3,271. As monoisotopic
+    rows, the claimed rows had been capped by the envelope rule 21 times, by
+    candidate density 10 and as radicals 6.
+  - Run time over the 43: 862 s -> 774 s, within the testbed's spread.
+- **For the plan owner.**
+  - On the TOF sets, the widened bar is wide: a line near a signal-to-noise
+    of 2 or 3 on a peak 150 ppm wide. So most TOF lines that miss their
+    parent are in doubt rather than coincidences, and the reference commits
+    too little there to say whether that is right. Step 2.7a's refreshed
+    reference is where that is read.
+  - The rule claims a line however much shorter than its prediction it is.
+    118 of the 282 rows on an assigned neighbour's line sat below 0.6 of the
+    predicted height, and the reference had confirmed 16% of those, against
+    52% of the rows within 0.6 to 1.4 of it.
+
+#### Verify, item by item
+
+- **The rows by what they become:** the table above; 252 claimed, 608 held,
+  one no longer flagged.
+- **G6 falls:** 681 -> 596, and 61 -> 61 at assigned.
+- **G1 conditioned and G2 inside their bounds on the Orbitrap sets:** both
+  are identical to step 2.5e's round - G1 conditioned A 2.5, B 11.7, C 0.2,
+  C2 0.8, D 1.0; G2 same formula 97.1, 95.1, 94.8, 87.5, 85.5.
+- **Every row the reference confirms as an M0 that a claim takes, reported:**
+  the six on B above.
+- **Set C's doublet lines at the tier the rule gives:** the 18O and 13C2 lines
+  of its strongest ion are candidate isotopologues on every sample that
+  commits them, in doubt.
+- **The gate's isotopologue caps re-counted by overlap and intensity:** above,
+  by verdict, by what the reference reads and by cause.
 
 
 ## Not in this plan
