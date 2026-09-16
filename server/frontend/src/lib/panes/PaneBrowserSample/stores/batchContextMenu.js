@@ -11,6 +11,7 @@ import { batchInstruments, canCalibrateInstruments } from '@/lib/permissions'
 import { useSampleContextMenu } from './sampleContextMenu.js'
 import { useCustomizerPopover } from './customizerPopover.js'
 import { useClipboard } from './clipboard.js'
+import { usePasteIntoNew } from './pasteIntoNew.js'
 
 export const useBatchContextMenu = defineStore('browser.sample.batchCtxMenu', () => {
   const app = useApp()
@@ -20,6 +21,7 @@ export const useBatchContextMenu = defineStore('browser.sample.batchCtxMenu', ()
   const sampleContextMenu = useSampleContextMenu()
   const customizerPopover = useCustomizerPopover()
   const clipboard = useClipboard()
+  const pasteIntoNew = usePasteIntoNew()
 
   // state
   const menu = ref()
@@ -42,7 +44,7 @@ export const useBatchContextMenu = defineStore('browser.sample.batchCtxMenu', ()
 
     await clipboard.read()
     row.value = targetBatch
-    if (row.value || clipboard.batch !== null) {
+    if (row.value || clipboard.batch !== null || pasteSamplesNewValid.value) {
       show(event)
     } else {
       hide()
@@ -71,6 +73,10 @@ export const useBatchContextMenu = defineStore('browser.sample.batchCtxMenu', ()
             ({ sample_batch_id }) => sample_batch_id !== row.value?.sample_batch_id
           )))
   )
+
+  // Samples belong in a batch; on the empty space of a dataset they are
+  // offered a new batch to go into.
+  const pasteSamplesNewValid = computed(() => row.value === null && pasteIntoNew.batchValid)
 
   // The backend checks every instrument the batch draws on, so this does too.
   // The instruments come from the samples currently loaded for the batch; when
@@ -123,6 +129,12 @@ export const useBatchContextMenu = defineStore('browser.sample.batchCtxMenu', ()
           }
         }
       }
+    },
+    {
+      label: `Paste sample${clipboard.samples?.length > 1 ? 's' : ''} into a new batch`,
+      icon: 'pi pi-clipboard',
+      visible: pasteSamplesNewValid.value,
+      command: () => pasteIntoNew.open({ dataset: false })
     },
     {
       separator: true,

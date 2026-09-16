@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { createPinia, setActivePinia } from 'pinia'
 
 // "Refresh matches" on a dataset is the one entry here that starts work rather
@@ -74,5 +74,63 @@ describe('dataset context menu: refresh matches', () => {
     await menu.onClick({ data: null })
 
     expect(menu.entries.find(({ label }) => label === 'Process').visible).toBe(false)
+  })
+})
+
+// A copied batch or copied/cut samples belong further down than a workspace, so
+// right-clicking the workspace's empty space offers a new dataset for them. On
+// a dataset row - or the dataset in the breadcrumb, which opens this same menu
+// on the focused dataset - the dataset's own actions are what is offered.
+describe('dataset context menu: paste into a new dataset', () => {
+  const SAMPLES = [{ sample_item_id: 's1', sample_batch_id: 'b1', sample_item_name: 'Blank' }]
+  const BATCH = { sample_batch_id: 'b1', sample_batch_name: 'Morning QC' }
+  const originalExecCommand = document.execCommand
+  const entry = (menu, label) => menu.entries.find((e) => e.label === label)
+
+  beforeEach(() => {
+    vi.stubGlobal('navigator', {})
+    document.execCommand = vi.fn(() => true)
+  })
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    document.execCommand = originalExecCommand
+    app.data.workspace.focused.is_system = false
+  })
+
+  const clipboard = async () =>
+    (await import('@/lib/panes/PaneBrowserSample/stores/clipboard.js')).useClipboard()
+  const paste = async () =>
+    (await import('@/lib/panes/PaneBrowserSample/stores/pasteIntoNew.js')).usePasteIntoNew()
+
+  it('offers copied samples a new dataset and batch on empty space', async () => {
+    await (await clipboard()).copy(SAMPLES)
+    const open = vi.spyOn(await paste(), 'open')
+    const menu = useDatasetContextMenu()
+    await menu.onClick({ data: null })
+
+    const item = entry(menu, 'Paste sample into a new dataset and batch')
+    expect(item.visible).toBe(true)
+    expect(entry(menu, 'Paste batch into a new dataset').visible).toBe(false)
+    item.command()
+    expect(open).toHaveBeenCalledWith({ dataset: true })
+  })
+
+  it('offers a copied batch a new dataset on empty space', async () => {
+    await (await clipboard()).copy(BATCH)
+    const menu = useDatasetContextMenu()
+    await menu.onClick({ data: null })
+
+    expect(entry(menu, 'Paste batch into a new dataset').visible).toBe(true)
+  })
+
+  it('does not offer a new dataset on a dataset or in the system workspace', async () => {
+    await (await clipboard()).copy(BATCH)
+    const menu = useDatasetContextMenu()
+    await menu.onClick({ data: DATASET })
+    expect(entry(menu, 'Paste batch into a new dataset').visible).toBe(false)
+
+    app.data.workspace.focused.is_system = true
+    await menu.onClick({ data: null })
+    expect(entry(menu, 'Paste batch into a new dataset').visible).toBe(false)
   })
 })

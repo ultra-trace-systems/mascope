@@ -82,7 +82,9 @@ const onStatusAction = (batch) => {
 
         <p>Click on a batch to open it and see the samples within.</p>
 
-        <p>Right click on a batch to perform actions.</p>
+        <p>Right click on a batch to perform actions. Right click on empty
+        space to paste a copied batch into this dataset, or copied or cut
+        samples into a new batch.</p>
       `,
         { doc: app.ui.help.docUrl('concepts/#the-data-hierarchy') }
       )
