@@ -377,7 +377,9 @@ class PeakAssignmentsResource(BaseResource):
         isotopologue (rule ``envelope_claim``) carries
         ``provenance.envelope_claim``: the line, its predicted and observed
         height, how its mass error follows the neighbour's, and the reading it
-        displaced, which is also its first alternative.
+        displaced, which is also its first alternative. The displaced
+        reading's ``tier`` is the one its evidence gave it, before any rule
+        of the run held it lower.
 
         On a hand-curated row (``source`` ``manual``) the provenance also
         carries a ``manual`` block recording who changed what: ``action``,
