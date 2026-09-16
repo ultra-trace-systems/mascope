@@ -4,12 +4,31 @@ from __future__ import annotations
 
 import pytest
 
+from mascope_backend.api.new.peak_assignments.envelope_claims import (
+    ENVELOPE_CLAIM,
+    ClaimedLine,
+    EnvelopeClaim,
+)
+from mascope_backend.api.new.peak_assignments.mass_gate import (
+    REASON_ISOTOPOLOGUE_IN_DOUBT,
+    REASON_ISOTOPOLOGUE_UNTRACKED,
+    TRACKING_IN_DOUBT,
+    TRACKING_TRACKS,
+    TRACKING_UNTRACKED,
+    SpectrumLines,
+)
 from mascope_backend.api.new.peak_assignments.tiering import (
     DENSITY_LIMIT,
     ENVELOPE_HEIGHT_TOLERANCE,
+    HELD_CORROBORATED,
+    HELD_LINE_TAKEN,
+    HELD_NEIGHBOUR_NOT_ASSIGNED,
+    HELD_TARGET_LIBRARY,
+    HELD_UNTRACKED,
     REASON_AMBIGUOUS_NITROGEN,
     REASON_CANDIDATE_DENSITY,
     REASON_CORROBORATED,
+    REASON_ENVELOPE_CLAIM,
     REASON_ENVELOPE_NEIGHBOUR,
     REASON_INHERITED,
     REASON_MINOR_CHANNEL,
@@ -20,6 +39,8 @@ from mascope_backend.api.new.peak_assignments.tiering import (
     TIERING_RULES_VERSION,
     apply_tiering,
     envelope_neighbours,
+    find_envelope_claims,
+    predicted_envelope,
 )
 
 
@@ -46,6 +67,8 @@ def row(
     intensity: float = 1000.0,
     ion: str | None = "C6H13O6+",
     provenance: dict | None = None,
+    ppm: float | None = 0.0,
+    compound: str | None = None,
 ) -> dict:
     """One committed row, with the provenance the pass reads."""
     blob: dict = dict(provenance or {})
@@ -63,6 +86,8 @@ def row(
         "sample_peak_mz": mz,
         "sample_peak_intensity": intensity,
         "ion_formula": ion,
+        "mz_error_ppm": ppm,
+        "target_compound_id": compound,
         "provenance": blob,
     }
 
@@ -628,3 +653,374 @@ class TestAnIsotopologueOfARowAnEarlierPassCapped:
         summary = run(rows)
         assert summary["capped_isotopologues"] == 1
         assert summary["capped_isotopologues_after_earlier_pass"] == 0
+
+
+def reasons_of(rows: list[dict], row_id: str) -> list[dict]:
+    return next(r for r in rows if r["peak_assignment_id"] == row_id)["provenance"][
+        "tier_reasons"
+    ]
+
+
+class TestWhatAnIsotopologueSaysOfItsOwnLine:
+    """What the gate and a claim found of an isotopologue's peak, beside its
+    owner's answer."""
+
+    @staticmethod
+    def family(child_provenance: dict, *, child_tier: str = "candidate") -> list[dict]:
+        return [
+            row("pa-owner"),
+            row(
+                "pa-kid",
+                role="iso_child",
+                owner="pa-owner",
+                tier=child_tier,
+                provenance=child_provenance,
+            ),
+        ]
+
+    def test_a_line_in_doubt_says_so_and_still_follows_its_owner(self):
+        rows = self.family(
+            {
+                "mass_gate": {
+                    "corroborated_by": None,
+                    "tracking": TRACKING_IN_DOUBT,
+                    "capped": "candidate",
+                    "reason": REASON_ISOTOPOLOGUE_IN_DOUBT,
+                }
+            }
+        )
+        summary = run(rows)
+        reasons = reasons_of(rows, "pa-kid")
+        assert [r["rule"] for r in reasons] == [
+            REASON_ISOTOPOLOGUE_IN_DOUBT,
+            REASON_INHERITED,
+        ]
+        assert [r["caps"] for r in reasons] == [True, False]
+        # The gate took that tier, not this pass.
+        assert summary["capped_isotopologues"] == 0
+
+    def test_a_line_that_does_not_track_says_so_whatever_took_its_tier(self):
+        # Its evidence already had it at candidate, so the gate lowered
+        # nothing, and the finding is still the row's to show.
+        rows = self.family(
+            {"mass_gate": {"corroborated_by": None, "tracking": TRACKING_UNTRACKED}}
+        )
+        run(rows)
+        assert [r["rule"] for r in reasons_of(rows, "pa-kid")] == [
+            REASON_ISOTOPOLOGUE_UNTRACKED,
+            REASON_INHERITED,
+        ]
+
+    def test_a_line_capped_for_its_distance_says_both(self):
+        rows = self.family(
+            {
+                "mass_gate": {
+                    "corroborated_by": None,
+                    "tracking": TRACKING_UNTRACKED,
+                    "capped": "below_assignability",
+                    "reason": REASON_OFF_CALIBRATION,
+                },
+                "mass_z": 7.1,
+            },
+            child_tier="below_assignability",
+        )
+        run(rows)
+        assert [r["rule"] for r in reasons_of(rows, "pa-kid")] == [
+            REASON_OFF_CALIBRATION,
+            REASON_ISOTOPOLOGUE_UNTRACKED,
+            REASON_INHERITED,
+        ]
+
+    def test_a_line_that_tracks_says_only_what_its_owner_says(self):
+        rows = self.family(
+            {
+                "mass_gate": {
+                    "corroborated_by": "isotopologue",
+                    "tracking": TRACKING_TRACKS,
+                }
+            },
+            child_tier="assigned",
+        )
+        run(rows)
+        assert rules_on(rows, "pa-kid") == {REASON_INHERITED}
+        assert tier_of(rows, "pa-kid") == "assigned"
+
+    def test_a_claimed_line_says_what_it_was_read_as_before(self):
+        claim = {
+            "line": "13C",
+            "predicted_share": 0.0662,
+            "observed_share": 0.04,
+            "tracking": TRACKING_TRACKS,
+            "displaced": {
+                "assigned_formula": "C7H11NO4",
+                "tier": "below_assignability",
+            },
+        }
+        rows = self.family({ENVELOPE_CLAIM: claim})
+        summary = run(rows)
+        reasons = reasons_of(rows, "pa-kid")
+        assert [r["rule"] for r in reasons] == [REASON_ENVELOPE_CLAIM, REASON_INHERITED]
+        assert reasons[0]["caps"] is True
+        assert "13C line of C6H12O6" in reasons[0]["detail"]
+        assert "C7H11NO4" in reasons[0]["detail"]
+        assert "6.62%" in reasons[0]["detail"]
+        assert (summary["claimed"], summary["claimed_with_their_lines"]) == (1, 0)
+
+    def test_a_line_carried_with_a_claim_says_whose_it_was(self):
+        claim = {
+            "line": "18O",
+            "tracking": TRACKING_TRACKS,
+            "carried_with": "pa-claimed",
+            "displaced": {"assigned_formula": "C7H11NO4"},
+        }
+        rows = self.family({ENVELOPE_CLAIM: claim})
+        summary = run(rows)
+        detail = reasons_of(rows, "pa-kid")[0]["detail"]
+        assert "isotopologue of C7H11NO4" in detail
+        assert "18O line of C6H12O6" in detail
+        assert (summary["claimed"], summary["claimed_with_their_lines"]) == (0, 1)
+
+
+#: The ion the claim tests read lines of, and the floor they predict it to.
+CLAIMING_ION, FLOOR = "C6H13O6+", 0.01
+
+#: A closed-shell neutral a search could have committed on the owner's 13C line.
+ELSEWHERE = "C7H11NO4"
+
+
+def predicted_line(label: str) -> tuple[float, float]:
+    """Where the claiming ion's envelope puts a line, and how tall."""
+    mzs, shares, labels = predicted_envelope(CLAIMING_ION, FLOOR)
+    index = labels.index(label)
+    return float(mzs[index]), float(shares[index])
+
+
+def on_the_line(
+    row_id: str,
+    label: str = "13C",
+    *,
+    ppm: float = 0.0,
+    intensity: float = 40.0,
+    **fields,
+) -> dict:
+    """A committed row on one of the owner's predicted lines, `ppm` off it."""
+    line_mz, _ = predicted_line(label)
+    fields.setdefault("ion", "C7H12NO4+")
+    return row(
+        row_id,
+        fields.pop("formula", ELSEWHERE),
+        mz=line_mz * (1 + ppm * 1e-6),
+        intensity=intensity,
+        ppm=0.1,
+        **fields,
+    )
+
+
+def claiming_owner(**fields) -> dict:
+    fields.setdefault("tier", "assigned")
+    return row("pa-owner", PLAIN, mz=181.0707, intensity=1000.0, ppm=0.0, **fields)
+
+
+def claims_in(rows: list[dict], lines: SpectrumLines | None = None):
+    run(rows, abundance_floor=FLOOR)
+    return find_envelope_claims(
+        rows,
+        mz_tolerance_ppm=5.0,
+        abundance_floor=FLOOR,
+        precision_ppm=0.3,
+        lines=lines,
+    )
+
+
+def envelope_entry(rows: list[dict], row_id: str) -> dict:
+    return next(
+        r for r in reasons_of(rows, row_id) if r["rule"] == REASON_ENVELOPE_NEIGHBOUR
+    )
+
+
+class TestReadingALineAsTheNeighbours:
+    """A row on an assigned neighbour's line is read as that line."""
+
+    def test_the_envelope_reason_names_the_neighbour_and_the_line(self):
+        rows = [claiming_owner(), on_the_line("pa-child")]
+        run(rows, abundance_floor=FLOOR)
+        line_mz, share = predicted_line("13C")
+        entry = envelope_entry(rows, "pa-child")
+        assert entry["neighbour"] == "pa-owner"
+        assert entry["line"] == "13C"
+        assert entry["line_mz"] == pytest.approx(line_mz)
+        assert entry["predicted_share"] == pytest.approx(share, abs=1e-6)
+
+    def test_a_row_on_an_assigned_neighbour_s_line_is_read_as_it(self):
+        rows = [claiming_owner(), on_the_line("pa-child", ppm=0.2)]
+        claims, held = claims_in(rows)
+        line_mz, share = predicted_line("13C")
+        assert claims == [
+            EnvelopeClaim(
+                owner_id="pa-owner",
+                line=ClaimedLine(
+                    row_id="pa-child",
+                    label="13C",
+                    line_mz=pytest.approx(line_mz),
+                    share=pytest.approx(share, abs=1e-6),
+                    tracking=TRACKING_TRACKS,
+                ),
+            )
+        ]
+        assert held == {}
+        # Finding it changes nothing on the rows: applying it is the service's.
+        assert tier_of(rows, "pa-child") == "candidate"
+        assert rows[1]["role"] == "M0"
+
+    def test_under_a_neighbour_at_candidate_it_stays_and_says_why(self):
+        rows = [claiming_owner(tier="candidate"), on_the_line("pa-child")]
+        claims, held = claims_in(rows)
+        assert claims == []
+        assert held == {HELD_NEIGHBOUR_NOT_ASSIGNED: 1}
+        assert envelope_entry(rows, "pa-child")["detail"].endswith(
+            "it is not read as that line, because that reading is not held at assigned"
+        )
+
+    def test_the_neighbour_s_tier_is_read_after_this_pass_took_what_it_took(self):
+        # Assigned on its evidence, and capped here as a radical.
+        rows = [
+            row("pa-owner", RADICAL, mz=181.0707, intensity=1000.0, ppm=0.0),
+            on_the_line("pa-child"),
+        ]
+        claims, held = claims_in(rows)
+        assert tier_of(rows, "pa-owner") == "candidate"
+        assert (claims, held) == ([], {HELD_NEIGHBOUR_NOT_ASSIGNED: 1})
+
+    def test_a_compound_of_the_target_library_stays_what_it_is(self):
+        rows = [
+            claiming_owner(),
+            on_the_line("pa-child", source="database", compound="compound-7"),
+        ]
+        assert claims_in(rows) == ([], {HELD_TARGET_LIBRARY: 1})
+
+    def test_a_reference_list_s_match_can_be_read_as_the_line(self):
+        rows = [claiming_owner(), on_the_line("pa-child", source="database")]
+        claims, _ = claims_in(rows)
+        assert [claim.row_id for claim in claims] == ["pa-child"]
+
+    def test_a_neutral_another_channel_committed_stays(self):
+        rows = [claiming_owner(), on_the_line("pa-child", channels=["+H+", "+NH4+"])]
+        assert claims_in(rows) == ([], {HELD_CORROBORATED: 1})
+
+    def test_a_line_the_neighbour_already_holds_is_not_taken_twice(self):
+        line_mz, _ = predicted_line("13C")
+        rows = [
+            claiming_owner(),
+            row(
+                "pa-owner-13c",
+                PLAIN,
+                role="iso_child",
+                owner="pa-owner",
+                mz=line_mz * (1 - 3e-6),
+                intensity=60.0,
+            ),
+            on_the_line("pa-child", ppm=1.0),
+        ]
+        assert claims_in(rows) == ([], {HELD_LINE_TAKEN: 1})
+
+    def test_a_peak_whose_error_does_not_follow_the_neighbour_s_stays(self):
+        # 3 ppm from where a bright neighbour's line sits, with nothing about
+        # the line to explain it.
+        rows = [claiming_owner(), on_the_line("pa-child", ppm=3.0)]
+        assert claims_in(rows) == ([], {HELD_UNTRACKED: 1})
+        assert envelope_entry(rows, "pa-child")["detail"].endswith(
+            "because its mass error does not follow that reading's, even allowing "
+            "for what its line can deliver"
+        )
+
+    def test_a_faint_peak_that_misses_by_its_noise_is_read_as_the_line(self):
+        line_mz, _ = predicted_line("13C")
+        lines = SpectrumLines(
+            ["peak-pa-owner", "peak-pa-child"],
+            [181.0707, line_mz * (1 + 1.3e-6)],
+            [1000.0, 40.0],
+            [400.0, 3.0],
+        )
+        rows = [claiming_owner(), on_the_line("pa-child", ppm=1.3)]
+        claims, held = claims_in(rows, lines)
+        assert [(claim.row_id, claim.line.tracking) for claim in claims] == [
+            ("pa-child", TRACKING_IN_DOUBT)
+        ]
+        assert held == {}
+
+    def test_of_two_peaks_on_one_line_the_nearer_is_read_as_it(self):
+        rows = [
+            claiming_owner(),
+            on_the_line("pa-far", ppm=-0.8, peak="far"),
+            on_the_line("pa-near", ppm=0.3, peak="near"),
+        ]
+        claims, held = claims_in(rows)
+        assert [claim.row_id for claim in claims] == ["pa-near"]
+        assert held == {HELD_LINE_TAKEN: 1}
+
+    def test_the_row_s_own_lines_go_with_it_where_the_neighbour_predicts_them(self):
+        o18_mz, o18_share = predicted_line("18O")
+        rows = [
+            claiming_owner(),
+            on_the_line("pa-child"),
+            row(
+                "pa-child-18o",
+                ELSEWHERE,
+                role="iso_child",
+                owner="pa-child",
+                mz=o18_mz,
+                intensity=10.0,
+                ppm=0.0,
+            ),
+            row(
+                "pa-child-lost",
+                ELSEWHERE,
+                role="iso_child",
+                owner="pa-child",
+                mz=185.5,
+                intensity=5.0,
+                ppm=0.0,
+            ),
+        ]
+        (claim,), _ = claims_in(rows)
+        assert claim.carried == (
+            ClaimedLine(
+                row_id="pa-child-18o",
+                label="18O",
+                line_mz=pytest.approx(o18_mz),
+                share=pytest.approx(o18_share, abs=1e-6),
+                tracking=TRACKING_TRACKS,
+            ),
+        )
+        assert claim.released == ("pa-child-lost",)
+
+    def test_a_line_of_the_row_the_neighbour_already_holds_is_released(self):
+        o18_mz, _ = predicted_line("18O")
+        rows = [
+            claiming_owner(),
+            row(
+                "pa-owner-18o",
+                PLAIN,
+                role="iso_child",
+                owner="pa-owner",
+                mz=o18_mz,
+                intensity=12.0,
+            ),
+            on_the_line("pa-child"),
+            row(
+                "pa-child-18o",
+                ELSEWHERE,
+                role="iso_child",
+                owner="pa-child",
+                mz=o18_mz * (1 + 2e-6),
+                intensity=10.0,
+                ppm=0.0,
+            ),
+        ]
+        (claim,), _ = claims_in(rows)
+        assert claim.carried == ()
+        assert claim.released == ("pa-child-18o",)
+
+    def test_a_row_the_rule_did_not_flag_is_not_asked(self):
+        rows = [claiming_owner(), on_the_line("pa-child", intensity=1000.0)]
+        assert claims_in(rows) == ([], {})
