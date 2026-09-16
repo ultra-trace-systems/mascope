@@ -160,6 +160,8 @@ class PeakAssignmentRecord(BaseModel):
     #: How many formulas this peak's own evidence could not tell apart
     #: (provenance.candidate_density): 1 means the winner stood alone at the top
     #: of the run's arbitration, and more is the size of the tie it won from.
+    #: On a list hit of a run that searched, it counts the formula search's
+    #: closed-shell rivals beside the known set's (provenance.grid_rivals).
     #: Flattened because it cannot be recovered from the row's ``alternatives``,
     #: which are capped at the run's ``max_alternatives`` - counting those
     #: counts the cap. Null on an isotopologue, which was predicted from its

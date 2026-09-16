@@ -236,7 +236,13 @@ What caps a row at candidate:
   list names a compound rather than the channel it is seen through.
 - **rivals left standing** — the peak's own evidence could not separate the committed
   formula from at least one other, and no second ionization channel of the run committed
-  the same neutral.
+  the same neutral. A compound matched from a list is asked this too. When the run
+  searches formulas, the search also looks at that compound's peak: the formulas its
+  element ranges hold for the mass are scored beside the list's, and any the evidence
+  cannot tell apart count as rivals, named in the reason. A radical does not count,
+  since the run never holds one at *assigned*. A list's presence is evidence for a
+  formula, not a label on it, so a list compound is only held at *assigned* where
+  nothing plausible competes with it.
 - **a neighbour's isotope line** — a committed neighbouring compound's isotope pattern
   predicts a line on this peak, and the peak is no more than twice as tall as that line,
   so the line could account for all of it. The neighbour must itself be a reading the

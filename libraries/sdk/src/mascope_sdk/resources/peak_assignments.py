@@ -380,7 +380,12 @@ class PeakAssignmentsResource(BaseResource):
         height, how its mass error follows the neighbour's, and the reading it
         displaced, which is also its first alternative. The displaced reading's
         ``tier`` is the one its evidence gave it, before any rule of the run
-        held it lower.
+        held it lower. A list hit of a run that searched carries
+        ``provenance.grid_rivals``: the known set's own density, how many
+        closed-shell formulas the search held for its peak that its evidence
+        could not separate (counted into ``candidate_density``), the first few
+        of them by name, its fit on the search's scale, and whether the
+        searched element box holds its formula.
 
         On a hand-curated row (``source`` ``manual``) the provenance also
         carries a ``manual`` block recording who changed what: ``action``,
