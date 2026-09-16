@@ -1,18 +1,33 @@
 name: Reproducibility (golden dataset)
-run-name: Golden-dataset reproducibility on ${{ github.ref_name }}
+run-name: Golden-dataset reproducibility on ${{ github.head_ref || github.ref_name }}
 
 # Heavy job (rebuilds the demo dataset from raw through the real pipeline),
-# so it does not run per-PR: nightly against the default branch, plus manual
-# dispatch for any branch (e.g. before merging a pipeline-touching PR).
+# so it does not run on every PR: nightly against the default branch, on
+# every PR into master (the release PRs, which a ruleset holds on this check),
+# plus manual dispatch for any branch (e.g. before merging a pipeline-touching
+# PR into develop). A PR run checks out the PR's merge commit, so it tests what
+# master would hold after the merge.
 on:
   workflow_dispatch:
   schedule:
     - cron: "17 2 * * *"
+  pull_request:
+    branches: [master]
+    types: [opened, synchronize, reopened]
 
 permissions:
   contents: read
 
+# A new push to a PR supersedes that PR's running check. Scheduled and
+# dispatched runs each get a group of their own, so none cancels or queues
+# behind another.
+concurrency:
+  group: reproducibility-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: true
+
 jobs:
+  # The job id is the check name the master ruleset requires ("reproducibility");
+  # renaming it leaves every PR into master waiting on a check that never comes.
   reproducibility:
     runs-on: ubuntu-latest
     timeout-minutes: 120
