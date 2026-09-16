@@ -128,12 +128,12 @@ def on_its_line(**fields) -> dict:
     return commit("pa-y", "C7H11NO4", "C7H12NO4+", 201.0, 150.0, **fields)
 
 
-def judge(rows: list[dict]):
+def judge(rows: list[dict], channel: str = "+H+"):
     return judge_commits(
         rows,
         stage_a_accuracy=SampleMassAccuracy(),
         fallback_sigma_ppm=0.3,
-        notation_by_id={"im-1": "+H+"},
+        notation_by_id={"im-1": channel},
         mz_tolerance_ppm=5.0,
         abundance_floor=0.01,
         max_alternatives=5,
@@ -310,3 +310,20 @@ class TestAChainOfClaims:
             judged.tiering["claim_rounds"],
             judged.tiering["unapplied"],
         ) == (1, 2, 1)
+
+
+class TestTheRunsChannels:
+    def test_the_tiering_pass_reads_them(self):
+        # A hydrocarbon clustered with nitrate is not held at assigned, so the
+        # line its envelope predicts is not read as its isotopologue.
+        rows = anchors() + [
+            commit("pa-x", "C10H16", "C6H13O6+", 200.0, 1000.0),
+            on_its_line(),
+        ]
+
+        judged = judge(rows, channel="+NO3-")
+
+        judged_rows = by_id(judged.rows)
+        assert judged_rows["pa-x"]["tier"] == "candidate"
+        assert judged_rows["pa-y"]["role"] == "M0"
+        assert judged.tiering["held"] == {"neighbour_not_assigned": 1}
