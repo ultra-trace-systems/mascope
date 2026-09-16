@@ -1,9 +1,9 @@
 """A nitrate cluster needs a neutral with oxygen.
 
-Nitrate holds on to an analyte by a hydrogen bond from the analyte's
+Nitrate holds on to an analyte by hydrogen bonds from the analyte's
 oxygen-bearing groups, so a reading that clusters nitrate with a neutral that
-has no oxygen names an ion the source does not make. These pin which channels
-count as such a cluster, and which readings the test reaches.
+has no oxygen names an ion the source is unlikely to make. These pin which
+channels count as such a cluster, and which readings the test reaches.
 """
 
 import pytest
