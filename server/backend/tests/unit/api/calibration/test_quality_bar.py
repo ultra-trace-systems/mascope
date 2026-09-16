@@ -9,6 +9,7 @@ import pytest
 from mascope_backend.api.controllers.calibration.calibration_controller import (
     UNSEALED_FIT_ISSUE,
     calibration_mz_apply,
+    calibration_quality_gate,
     fit_seal_valid,
     is_unfitted_record,
     previous_fit_moved_the_axis,
@@ -38,6 +39,18 @@ GOOD = {
     "post_fit_mz_error_ppm": 0.22,
     "calibrant_to_tic": 0.1,
 }
+
+
+@pytest.fixture
+def enforce(monkeypatch):
+    """Run under ``calibration_quality_gate = "enforce"``."""
+    monkeypatch.setattr(f"{_CTRL}.calibration_quality_gate", lambda: "enforce")
+
+
+@pytest.fixture
+def warn(monkeypatch):
+    """Run under ``calibration_quality_gate = "warn"``, the default."""
+    monkeypatch.setattr(f"{_CTRL}.calibration_quality_gate", lambda: "warn")
 
 
 def _codes(quality, filename=ORBI_FILE):
@@ -112,7 +125,8 @@ class TestQualityIssues:
         # axis, small correction from the acquisition axis.
         quality = {
             **GOOD,
-            "n_points": 2,
+            "n_points": 1,
+            "n_ions": 1,
             "pre_fit_mz_error_ppm": 80.0,
             "axis_correction_ppm": 0.4,
         }
@@ -120,9 +134,50 @@ class TestQualityIssues:
         assert _codes(quality) == []
 
     def test_few_points_with_an_unknown_shift_are_not_trusted(self):
-        quality = {**GOOD, "n_points": 2, "pre_fit_mz_error_ppm": None}
+        quality = {**GOOD, "n_points": 1, "pre_fit_mz_error_ppm": None}
 
         assert _codes(quality) == ["points"]
+
+    def test_two_ions_that_agree_corroborate_a_large_correction(self):
+        # Two uronium calibrants agreeing within 0.3 ppm after moving the
+        # axis 12 ppm: the correction is borne out by both.
+        quality = {
+            **GOOD,
+            "n_points": 2,
+            "n_ions": 2,
+            "pre_fit_mz_error_ppm": 11.8,
+            "post_fit_mz_error_ppm": 0.31,
+        }
+
+        assert _codes(quality) == []
+
+    def test_two_isotopes_of_one_ion_do_not_corroborate(self):
+        quality = {
+            **GOOD,
+            "n_points": 2,
+            "n_ions": 1,
+            "pre_fit_mz_error_ppm": 14.3,
+            "post_fit_mz_error_ppm": 0.42,
+        }
+
+        (issue,) = calibration_quality_issues(quality, ORBI_FILE)
+        assert issue["code"] == "points"
+        assert "2 calibration points from a single ion" in issue["message"]
+
+    def test_an_unrecorded_ion_count_does_not_corroborate(self):
+        quality = {**GOOD, "n_points": 2, "n_ions": None, "pre_fit_mz_error_ppm": 12}
+
+        assert _codes(quality) == ["points"]
+
+    def test_the_correction_limit_itself_passes(self):
+        quality = {
+            **GOOD,
+            "n_points": 1,
+            "n_ions": 1,
+            "pre_fit_mz_error_ppm": calibration_config.LOW_POINT_MAX_AXIS_CORRECTION_PPM,
+        }
+
+        assert _codes(quality) == []
 
     def test_a_fit_on_no_points_is_caught(self):
         assert _codes({**GOOD, "n_points": 0}) == ["points"]
@@ -130,7 +185,13 @@ class TestQualityIssues:
     def test_many_points_from_one_ion_are_caught(self):
         assert _codes({**GOOD, "n_points": 3, "n_ions": 1}) == ["ions"]
 
-    def test_the_signal_bar(self):
+    def test_the_signal_bar_is_off_by_default(self):
+        # In production it only ever flagged otherwise healthy fits.
+        assert _codes({**GOOD, "calibrant_to_tic": 3e-5}) == []
+
+    def test_the_signal_bar_when_configured(self, monkeypatch):
+        monkeypatch.setattr(calibration_config, "ORBI_MIN_CALIBRANT_TO_TIC", 1e-4)
+
         assert _codes({**GOOD, "calibrant_to_tic": 1.3e-4}) == []
         assert _codes({**GOOD, "calibrant_to_tic": 9.6e-5}) == ["signal"]
 
@@ -139,7 +200,9 @@ class TestQualityIssues:
 
         assert _codes(quality, ORBI_FILE) == ["residual"]
         assert _codes(quality, TOF_FILE) == []
-        assert _codes({**GOOD, "post_fit_mz_error_ppm": 3.5}, TOF_FILE) == ["residual"]
+        # Lower-resolution APi-TOFs leave 3-4 ppm on healthy fits.
+        assert _codes({**GOOD, "post_fit_mz_error_ppm": 4.3}, TOF_FILE) == []
+        assert _codes({**GOOD, "post_fit_mz_error_ppm": 11.5}, TOF_FILE) == ["residual"]
 
     def test_the_bound_itself_passes(self):
         quality = {
@@ -197,16 +260,32 @@ POOR = {**GOOD, "n_points": 1, "pre_fit_mz_error_ppm": 78.0}
 
 
 class TestStampQualityVerdict:
-    def test_a_fit_that_clears_the_bar_is_verified(self):
+    def test_the_gate_warns_by_default(self):
+        assert calibration_quality_gate() == "warn"
+
+    def test_a_fit_that_clears_the_bar_is_verified(self, warn):
         fit = {"quality": dict(GOOD)}
 
         assert stamp_quality_verdict(fit, ORBI_FILE, sealed=True) == []
         assert fit["status"] == "ok"
         assert fit["verified"] is True
         assert fit["quality_issues"] == []
+        assert fit["quality_gate"] == "warn"
         assert "accepted_at" not in fit
 
-    def test_a_fit_below_the_bar_is_stored_poor_and_unverified(self):
+    def test_warn_stores_a_fit_below_the_bar_verified_with_its_reasons(self, warn):
+        fit = {"quality": dict(POOR)}
+
+        issues = stamp_quality_verdict(fit, ORBI_FILE, sealed=True)
+
+        assert [issue["code"] for issue in issues] == ["points"]
+        assert fit["status"] == "poor"
+        assert fit["verified"] is True
+        assert fit["quality_issues"] == issues
+        assert fit["quality_gate"] == "warn"
+        assert "accepted_by" not in fit
+
+    def test_enforce_stores_a_fit_below_the_bar_unverified(self, enforce):
         fit = {"quality": dict(POOR)}
 
         issues = stamp_quality_verdict(fit, ORBI_FILE, sealed=True)
@@ -216,7 +295,7 @@ class TestStampQualityVerdict:
         assert fit["verified"] is False
         assert fit["quality_issues"] == issues
 
-    def test_an_accepted_fit_is_verified_but_keeps_its_issues(self):
+    def test_an_accepted_fit_is_verified_but_keeps_its_issues(self, enforce):
         fit = {"quality": dict(POOR)}
 
         stamp_quality_verdict(fit, ORBI_FILE, accept=True, accepted_by=7, sealed=True)
@@ -227,7 +306,7 @@ class TestStampQualityVerdict:
         assert fit["accepted_by"] == 7
         assert fit["accepted_at"]
 
-    def test_accepting_a_good_fit_records_no_acceptance(self):
+    def test_accepting_a_good_fit_records_no_acceptance(self, enforce):
         fit = {"quality": dict(GOOD)}
 
         stamp_quality_verdict(fit, ORBI_FILE, accept=True, accepted_by=7, sealed=True)
@@ -235,13 +314,14 @@ class TestStampQualityVerdict:
         assert fit["verified"] is True
         assert "accepted_by" not in fit
 
-    def test_a_request_body_cannot_claim_the_verdict(self):
+    def test_a_request_body_cannot_claim_the_verdict(self, enforce):
         # /mz_apply persists the body's fit dict verbatim otherwise.
         fit = {
             "quality": dict(POOR),
             "status": "ok",
             "verified": True,
             "quality_issues": [],
+            "quality_gate": "warn",
             "accepted_at": "2026-01-01T00:00:00+00:00",
             "accepted_by": 1,
         }
@@ -250,6 +330,7 @@ class TestStampQualityVerdict:
 
         assert fit["status"] == "poor"
         assert fit["verified"] is False
+        assert fit["quality_gate"] == "enforce"
         assert "accepted_at" not in fit
         assert "accepted_by" not in fit
 
@@ -329,14 +410,16 @@ async def _apply(
 
 class TestApply:
     @pytest.mark.asyncio
-    async def test_a_good_fit_is_announced_as_a_success(self):
+    async def test_a_good_fit_is_announced_as_a_success(self, enforce):
         stored, result = await _apply({"quality": dict(GOOD)})
 
         assert stored["verified"] is True
         assert result["status"] == "success"
 
     @pytest.mark.asyncio
-    async def test_a_poor_fit_is_applied_unverified_and_announced_as_a_warning(self):
+    async def test_a_poor_fit_is_applied_unverified_and_announced_as_a_warning(
+        self, enforce
+    ):
         stored, result = await _apply({"quality": dict(POOR)})
 
         assert stored["status"] == "poor"
@@ -346,7 +429,19 @@ class TestApply:
         assert "Fitted on 1 calibration point" in result["message"]
 
     @pytest.mark.asyncio
-    async def test_an_accepted_poor_fit_is_stored_verified(self):
+    async def test_under_warn_a_poor_fit_is_matched_and_announced_as_a_warning(
+        self, warn
+    ):
+        stored, result = await _apply({"quality": dict(POOR)})
+
+        assert stored["status"] == "poor"
+        assert stored["verified"] is True
+        assert result["status"] == "partial"
+        assert "use it regardless" in result["message"]
+        assert "Fitted on 1 calibration point" in result["message"]
+
+    @pytest.mark.asyncio
+    async def test_an_accepted_poor_fit_is_stored_verified(self, enforce):
         stored, result = await _apply({"quality": dict(POOR)}, True)
 
         assert stored["status"] == "poor"
@@ -409,7 +504,7 @@ class TestSeal:
         assert not fit_seal_valid(json.loads(json.dumps(self.FIT)), ORBI_FILE)
         assert not fit_seal_valid({**self.FIT, "seal": 12}, ORBI_FILE)
 
-    def test_an_unsealed_fit_is_not_judged_from_its_quality(self):
+    def test_an_unsealed_fit_is_not_judged_from_its_quality(self, enforce):
         fit = {"quality": dict(GOOD)}
 
         issues = stamp_quality_verdict(fit, ORBI_FILE)
@@ -421,7 +516,7 @@ class TestSeal:
 
 class TestApplyChecksTheSeal:
     @pytest.mark.asyncio
-    async def test_a_forged_quality_block_is_stored_unverified(self):
+    async def test_a_forged_quality_block_is_stored_unverified(self, enforce):
         fit = {
             "mode": "one-point",
             "par": {"calibration_factor": 1.0},
@@ -439,7 +534,7 @@ class TestApplyChecksTheSeal:
         assert result["status"] == "partial"
 
     @pytest.mark.asyncio
-    async def test_an_unsealed_fit_can_still_be_accepted_on_record(self):
+    async def test_an_unsealed_fit_can_still_be_accepted_on_record(self, enforce):
         stored, _ = await _apply({"quality": dict(GOOD)}, accept=True, seal=False)
 
         assert stored["verified"] is True
@@ -447,7 +542,7 @@ class TestApplyChecksTheSeal:
         assert stored["quality_issues"] == [UNSEALED_FIT_ISSUE]
 
     @pytest.mark.asyncio
-    async def test_the_seal_is_not_persisted(self):
+    async def test_the_seal_is_not_persisted(self, enforce):
         stored, _ = await _apply({"quality": dict(GOOD)})
 
         assert stored["verified"] is True

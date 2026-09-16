@@ -104,21 +104,28 @@ $$m_{\text{calibrated}} = m_{\text{observed}} \times \text{Scaling Factor}$$
 ## Verification
 
 A fit that runs to completion is not necessarily a good one: two calibrants that disagree are split down the middle, and a single calibrant fits itself perfectly.
-Matching and peak assignment trust a calibrated file's mass axis, so after a fit is applied it is checked against a quality bar, and only a fit that clears it is marked **verified**:
+Matching and peak assignment trust a calibrated file's mass axis, so after a fit is applied it is checked against a quality bar:
 
 | Criterion | Orbitrap | TOF |
 |---|---|---|
-| Mean post-calibration $\lvert m/z \rvert$ error | at most 1 ppm | at most 3 ppm |
-| Correction applied by a fit on fewer than 3 points | at most 5 ppm | at most 5 ppm |
+| Mean post-calibration $\lvert m/z \rvert$ error | at most 1 ppm | at most 10 ppm |
+| Correction made by a fit nothing corroborates (one point, or two isotopes of one ion) | at most 10 ppm | at most 10 ppm |
 | Distinct calibrant ions, for a fit on 3 or more points | at least 2 | at least 2 |
-| Calibrant share of the total ion current | at least 0.01% | not checked |
 
-One or two calibration points are common for narrow mass ranges and EasyIC, and such a fit is trusted as long as the correction it makes is small; a single calibrant that moves the axis tens of ppm has most likely been matched to the wrong peak.
+One or two calibration points are common for narrow mass ranges and EasyIC.
+Two points from different ions check each other, so such a fit is judged on its error alone.
+A single point (or two isotopes of one ion) cannot, so it is trusted only while the correction it makes is small: a single calibrant that moves the axis tens of ppm has most likely been matched to the wrong peak.
+The correction is measured from the axis the instrument wrote, so recalibrating a file an earlier fit moved does not hide it.
 
-A fit that misses the bar is still applied, since it is usually closer than the axis the instrument wrote, but it is stored unverified together with the reasons.
-The sample is then left out of matching and peak assignment until it is recalibrated, or until an operator accepts the fit in the calibration dialog.
-An accepted fit is used downstream, and the sample keeps a warning badge saying so.
-Usually the lasting fix is in the calibration collection: add calibrants so that three or more points from at least two ions are found across the mass range.
+A fit that misses the bar is still applied, since it is usually closer than the axis the instrument wrote, and the sample gets an amber badge whose tooltip gives the reasons.
+What happens next is a server setting, `calibration_quality_gate` in the `[backend]` section of the server configuration:
+
+- `"warn"` (the default): the sample is matched and assigned as usual. Treat its mass errors with care until the calibration is fixed.
+- `"enforce"`: the sample is left out of matching and peak assignment until it is recalibrated, or until an operator accepts the fit in the calibration dialog. An accepted fit is used downstream, and the sample keeps a warning badge saying so.
+
+Run on `"warn"` first and look at which ionization modes the amber badges gather in.
+Usually the lasting fix is in the calibration collection: two calibrants that disagree by a couple of ppm need a third, so that three or more points from at least two ions are found across the mass range.
+Once the badges are rare, switch to `"enforce"`.
 
 TOF files arrive carrying the axis the acquisition software wrote.
 Until a fit replaces it, that axis is unverified and the sample is not matched.
@@ -132,7 +139,7 @@ The sample browser shows each sample's calibration outcome in the calibration co
 |---|---|
 | Green | Calibrated and verified. |
 | Teal | Calibrated and verified, but the file's own axis was far off before calibration (acquisition drift). The data is fine; the instrument needs retuning. |
-| Amber | Calibrated below the quality bar. Either left out of matching, or accepted by an operator and used - the tooltip says which, and why the fit missed the bar. |
+| Amber | Calibrated below the quality bar. Matched anyway (warn-only servers), accepted by an operator and used, or left out of matching - the tooltip says which, and why the fit missed the bar. |
 | Red | Calibration failed; the sample is uncalibrated and not matched. |
 | Grey | Not calibrated (a TOF file still on its acquisition axis), or not verified. |
 | Faint grey | Calibration does not apply: no calibration collection, or a blank file. |

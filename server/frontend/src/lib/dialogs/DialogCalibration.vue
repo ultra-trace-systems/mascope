@@ -87,22 +87,33 @@ const title = computed(() =>
 // Why the previewed fit misses the quality bar (empty when it clears it). The
 // backend judges again on apply; this is what the operator is shown first.
 const qualityIssues = computed(() => mzFit.current?.quality_issues ?? [])
+// Whether the deployment keeps a below-bar fit out of matching ("enforce"),
+// which is the only case saving one needs an explicit acceptance.
+const gateEnforced = computed(() => mzFit.current?.quality_gate === 'enforce')
+const needsAcceptance = computed(
+  () => !batch.value && gateEnforced.value && qualityIssues.value.length > 0
+)
 const qualityIssuesSummary = computed(() => {
-  const consequence = batch.value
-    ? 'this sample would be calibrated but excluded from matching'
-    : 'saving accepts it, and matching will use it'
+  const consequence = !gateEnforced.value
+    ? 'matching and peak assignment use it, and the sample shows a warning badge'
+    : batch.value
+      ? 'this sample would be calibrated but excluded from matching'
+      : 'saving accepts it, and matching will use it'
   const reasons = qualityIssues.value.map((issue) => issue.message).join(' ')
   return `Below the calibration quality bar – ${consequence}. ${reasons}`
 })
 
 const confirmMessage = computed(() => {
   if (batch.value) {
+    const belowBar = gateEnforced.value
+      ? 'Samples whose fit misses the quality bar are calibrated but excluded from matching until accepted one by one.'
+      : 'Samples whose fit misses the quality bar are calibrated, matched, and marked with a warning badge.'
     return `Applying calibration will remove matches for all associated samples in this and other batches.
-    Samples whose fit misses the quality bar are calibrated but excluded from matching until accepted one by one.
+    ${belowBar}
     This action cannot be undone. Are you sure you want to proceed?`
   }
 
-  if (qualityIssues.value.length > 0) {
+  if (needsAcceptance.value) {
     return `This fit does not meet the calibration quality bar: ${qualityIssues.value
       .map((issue) => issue.message)
       .join(' ')}
@@ -189,15 +200,14 @@ async function save() {
         )
       } else {
         await mzFit.apply(original.value, {
-          acceptQualityIssues: qualityIssues.value.length > 0
+          acceptQualityIssues: needsAcceptance.value
         })
       }
       visible.value = false
     },
     acceptProps: {
-      label:
-        !batch.value && qualityIssues.value.length > 0 ? 'Accept and Apply' : 'Apply Calibration',
-      severity: !batch.value && qualityIssues.value.length > 0 ? 'warn' : undefined
+      label: needsAcceptance.value ? 'Accept and Apply' : 'Apply Calibration',
+      severity: needsAcceptance.value ? 'warn' : undefined
     },
     rejectProps: {
       label: 'Cancel',
