@@ -215,6 +215,10 @@ def _read_as_line(
             "ion_formula": row.get("ion_formula"),
             "isotope_label": row.get("isotope_label"),
             "source": row.get("source"),
+            # The tier the reading's evidence gave it. A claim is applied to the
+            # rows as the stages built them, before any rule of the run held
+            # them lower, so a reading the run showed at candidate can read
+            # assigned here.
             "tier": row.get("tier"),
             "evidence": previous.get("evidence"),
         },
