@@ -10,8 +10,15 @@ import TabPanels from 'primevue/tabpanels'
 import TabPanel from 'primevue/tabpanel'
 import ContextMenu from 'primevue/contextmenu'
 
-import { DialogWorkspaceOp, DialogWorkspaceMembership, DialogDatasetOp } from '@/lib/dialogs'
-import { BatchContextMenu, useBatchContextMenu, useBatchTableConfig } from '@/lib/panes'
+import { DialogWorkspaceOp, DialogWorkspaceMembership } from '@/lib/dialogs'
+import {
+  BatchContextMenu,
+  DatasetContextMenu,
+  DialogPasteIntoNew,
+  useBatchContextMenu,
+  useBatchTableConfig,
+  useDatasetContextMenu
+} from '@/lib/panes'
 
 import { useSidebarMenu } from './state.js'
 import WorkspacePane from './WorkspacePane.vue'
@@ -27,10 +34,9 @@ const app = useApp()
 const sidebarMenu = useSidebarMenu()
 
 const dialog = ref()
-const datasetDialog = ref()
 const workspaceContextMenu = ref()
 const workspaceMembersDialog = ref(false)
-const datasetContextMenu = ref()
+const datasetContextMenu = useDatasetContextMenu()
 const batchContextMenu = useBatchContextMenu()
 const batchTable = useBatchTableConfig()
 
@@ -155,7 +161,10 @@ watchEffect(() => {
         @contextmenu="
           (event) => {
             event.preventDefault()
-            datasetContextMenu.toggle(event)
+            datasetContextMenu.onClick({
+              data: app.data.dataset.focused,
+              originalEvent: event
+            })
           }
         "
       />
@@ -293,32 +302,13 @@ watchEffect(() => {
     ]"
   />
   <DialogWorkspaceOp v-model:action="dialog" />
-  <ContextMenu
-    ref="datasetContextMenu"
-    appendTo="self"
-    :model="[
-      {
-        label: 'Edit dataset',
-        icon: 'pi pi-pen-to-square',
-        command: () => {
-          datasetDialog = 'edit'
-        }
-      },
-      {
-        label: 'Delete dataset',
-        icon: 'pi pi-trash',
-        command: () => {
-          datasetDialog = 'delete'
-        }
-      }
-    ]"
-  />
-  <DialogDatasetOp v-model:action="datasetDialog" :dataset="app.data.dataset.focused" />
   <DialogWorkspaceMembership
     v-model:visible="workspaceMembersDialog"
     :workspace="app.data.workspace.focused"
   />
+  <DatasetContextMenu />
   <BatchContextMenu />
+  <DialogPasteIntoNew />
 </template>
 
 <style scoped>

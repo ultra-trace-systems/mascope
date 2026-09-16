@@ -13,7 +13,6 @@ import InputText from 'primevue/inputtext'
 import { BaseTabbedPanel, BaseCopyableField } from '@/lib/base'
 import { useApp } from '@/stores'
 
-import DatasetContextMenu from './DatasetContextMenu.vue'
 import { useDatasetContextMenu, useDatasetTableConfig } from './stores'
 
 const app = useApp()
@@ -67,7 +66,8 @@ const tableHeight = computed(() => ((height.value - padding) * app.ui.split.top)
 
         <p>Right click on a dataset to cut, edit or delete it, or to refresh
         the matches of every batch it holds. Right click on empty space to
-        paste a cut dataset into this workspace.</p>
+        paste a cut dataset into this workspace, or to paste a copied batch or
+        samples into a new dataset.</p>
       `,
         { doc: app.ui.help.docUrl('concepts/#the-data-hierarchy') }
       )
@@ -144,5 +144,4 @@ const tableHeight = computed(() => ((height.value - padding) * app.ui.split.top)
       </Column>
     </DataTable>
   </BaseTabbedPanel>
-  <DatasetContextMenu />
 </template>
