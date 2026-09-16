@@ -39,10 +39,12 @@ beside it is pushed off its place - and such a line is in doubt: held at
 A line that misses by more than that too is a peak the matching window happened
 to reach, capped like any other commit and at ``candidate`` at least.
 
-What this is worth, measured rather than assumed: on the 43-sample gate it caps
-51 rows of the 10,935 at the top tier - three of them the target library's,
-which its curation used to spare - demotes none that the reference confirms,
-and moves G1 by at most 1.7 points on one set. That is not the lever it was designed to be, because the failure it was
+What this is worth, measured rather than assumed: on the 43-sample gate its
+distance cap takes 30 rows - one of them the target library's, which its
+curation used to spare - and moves G1 by at most 1.7 points on one set. The
+isotopologue verdicts hold 97 lines at candidate, 85 of them in doubt; the
+reference engine reads 28 of the 97 as isotopologues of the same formula. That
+is not the lever it was designed to be, because the failure it was
 designed to catch has already been closed upstream - the finder ranks candidates
 on the v2 fit at the sample's own width (step 2.1), so a formula three sigma out
 does not win its peak in the first place. The widest mass error on any committed
@@ -159,7 +161,8 @@ REASON_ISOTOPOLOGUE_UNTRACKED = "isotopologue_untracked"
 #: assignment gate, three isotopologues more than three widths off a
 #: monoisotopic row within one width - a weak M+2 at 1e-5 to 1e-4 of the base
 #: peak, and both lines of a partly resolved 13C2/18O pair that push each other
-#: apart. A library row an isotopologue tracks is corroborated by that
+#: apart, which the gate now reads as in doubt rather than as off calibration. A
+#: library row an isotopologue tracks is corroborated by that
 #: (:data:`CORROBORATED_ISOTOPOLOGUE`), recorded ahead of its curation.
 #:
 #: A reference mirror's row does not qualify, although Stage A matches it in the
