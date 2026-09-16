@@ -158,7 +158,7 @@ dev = [
 
 [[package]]
 name = "mascope-runtime"
-version = "2026.9.15"
+version = "2026.9.16"
 source = { editable = "../../libraries/runtime" }
 dependencies = [
     { name = "loguru" },
