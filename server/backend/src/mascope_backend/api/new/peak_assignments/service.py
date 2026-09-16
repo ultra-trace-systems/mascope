@@ -15,6 +15,7 @@ read model ("every peak in sample X with its formula and confidence"):
 
 import asyncio
 import copy
+import time
 from collections import OrderedDict
 from collections.abc import Callable
 from dataclasses import asdict, dataclass
@@ -83,6 +84,7 @@ from mascope_backend.api.new.peak_assignments.engine import (
     MASS_CALIBRATION_KEY,
     PATTERN_SCORING_KEY,
     REFERENCE_IDENTITIES_COL,
+    ROLE_M0,
     SEARCH_SCOPE_KEY,
     SOURCE_DATABASE,
     TIERING_KEY,
@@ -95,6 +97,7 @@ from mascope_backend.api.new.peak_assignments.engine import (
     pattern_scoring_for,
     pattern_scoring_snapshot,
     reagent_line_offset,
+    record_grid_rivals,
     record_mirror_same_ion_readings,
     sample_mass_accuracy,
     score_ions_by_fit,
@@ -166,7 +169,11 @@ from mascope_tools.composition.calibration import (
     InsufficientCalibrationData,
     recalibrate,
 )
-from mascope_tools.composition.finder import assign_compositions
+from mascope_tools.composition.finder import (
+    ListReading,
+    assign_compositions,
+    rivals_of_readings,
+)
 from mascope_tools.composition.heuristic_filter import SCORE_VERSION
 from mascope_tools.composition.known_window import KnownWindow
 from mascope_tools.composition.reagents import secondary_channels
@@ -1192,6 +1199,70 @@ def _record_mirror_readings(
         formula_formatter=to_custom_element_format,
         max_alternatives=max_alternatives,
     )
+
+
+async def _measure_list_rivals(
+    stage_a_assignments: list[dict],
+    *,
+    peaks_df: pd.DataFrame,
+    searched_mechanisms: list[SimpleNamespace],
+    resolved_profile: ResolvedProfile,
+    scoring,
+) -> dict | None:
+    """Ask the formula search about every peak Stage A committed a formula on.
+
+    A list hit wins its peak before the search runs, so the formulas the
+    element box holds for that mass were never enumerated there. This
+    enumerates them for each monoisotopic Stage A row, scores them beside the
+    list's reading on the search's own scale, and counts into the row's density
+    the closed-shell ones its evidence cannot separate
+    (:func:`engine.record_grid_rivals`). A radical is never held at assigned,
+    so it is no plausible alternative to a list hit (the plan owner's answer on
+    step 2.5f); an election's own density still counts every rival. Nothing
+    is committed or claimed, so no row's reading or owner changes.
+
+    :return: What the run records under its search scope, or None where the
+        search has no channel to ask.
+    """
+    notations, _ = _untargeted_ionization_notations(searched_mechanisms)
+    if not notations:
+        return None
+    notation_by_id = _notation_by_id(searched_mechanisms)
+    rows = [
+        row
+        for row in stage_a_assignments
+        if row.get("role") == ROLE_M0
+        and row.get("assigned_formula")
+        and str(row.get("ionization_mechanism_id")) in notation_by_id
+    ]
+    if not rows:
+        return {"measured": 0, "with_rivals": 0}
+    search_peaks = peaks_df.reset_index(drop=True)
+    columns = [
+        column
+        for column in ("mz", "intensity", "signal_to_noise")
+        if column in search_peaks.columns
+    ]
+    measured = await asyncio.to_thread(
+        rivals_of_readings,
+        search_peaks[columns],
+        resolved_profile.search_config(notations),
+        [
+            ListReading(
+                mz=float(row["sample_peak_mz"]),
+                formula=str(row["assigned_formula"]),
+                ionization_mechanism=notation_by_id[
+                    str(row["ionization_mechanism_id"])
+                ],
+                mz_error_ppm=row.get("mz_error_ppm"),
+            )
+            for row in rows
+        ],
+        resolved_profile.heuristics_config(),
+        scoring,
+        closed_shell_only=True,
+    )
+    return record_grid_rivals(rows, measured)
 
 
 #: How many times a run reads its commits again after reading lines as a
@@ -2657,6 +2728,28 @@ async def _run_sample_assignment(
                 runtime.logger.info(
                     f"Stage B assigned {len(stage_b_assignments)} of "
                     f"{len(remainder_df)} remaining peaks via untargeted search"
+                )
+        # -- A list hit meets the formula search: the grid's rivals for every
+        # peak Stage A committed a formula on, counted into the hit's density.
+        # Only where the search runs, since the grid is the search's; the
+        # run-less ingest fold keeps the known set's count.
+        if config.run_untargeted and stage_a_assignments:
+            started = time.perf_counter()
+            list_hits = await _measure_list_rivals(
+                stage_a_assignments,
+                peaks_df=peaks_df,
+                searched_mechanisms=searched_mechanisms,
+                resolved_profile=resolved_profile,
+                scoring=scoring,
+            )
+            if list_hits is not None and search_scope is not None:
+                search_scope["list_hits"] = list_hits
+            if list_hits is not None:
+                runtime.logger.info(
+                    f"Sample '{sample.sample_item_name}': the formula search holds "
+                    f"a closed-shell rival for {list_hits['with_rivals']} of "
+                    f"{list_hits['measured']} list hits "
+                    f"({time.perf_counter() - started:.1f} s)"
                 )
         # -- A reference list's matches carry the other readings of their ion.
         # Written before the passes below, since it reads no tier and they may
