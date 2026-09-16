@@ -32,7 +32,7 @@ step PRs land on the epic and are named here as they merge.
 | 2.5e - an offset from the reagent lines where the library is thin | #2140 | measured: where Stage A matches fewer than eight library lines, both stages score at the median error of every line the reagent pre-pass claimed, isotopologues included, where it claimed three or more and the median is beyond the width the sample is scored at; the width stays the class's. Only C2 reaches it, at -1.25 to -1.26 ppm over seven lines where its commits sit at -1.10 to -1.13: 114 of the 146 monoisotopic rows 2.5d took from assigned come back, 100 of them on the reference's formula, its assigned rows go from 181 to 321, G1 30.9 -> 20.6 (conditioned 0.0 -> 0.8 over 257 rows) and G2 86.4 -> 87.5. The other seven sets are identical row for row. Every run keeps its calibration's offset and width and the gate caps the same rows; on C2 the re-elections move the calibration's line through m/z, which three samples now refuse and two fit shallower |
 | 2.5f - a list hit meets the untargeted grid | - | planned, after 2.5d and independent of 2.5e, in two PRs: first the untargeted enumeration runs over Stage A's peaks too and a list hit's candidate density counts the grid's rivals beside the known set's, so the density rule reaches it with no election changed; then the list formula is one candidate in the arbitration carrying a prior, a grid rival may win the peak, and the assigned tier comes from the same rules for every row, the mass gate already reading a library row like any other since 2.5d (decision 3's fifth addendum); the first PR was to come before 2.4e, which reads assigned tiers, and 2.4e went first on the plan owner's word, so the first PR re-reads its claims; the second where the measurement puts it |
 | 2.4e - isotopologue claims under interference | #2143 | measured: a monoisotopic row the envelope-neighbour rule flags under a neighbour held at assigned is read as that neighbour's isotopologue at candidate, the reading it displaced first among its alternatives, unless it is a target library compound, another channel committed its neutral, the neighbour already holds a line there, or its error does not follow the neighbour's within what the line can deliver; the ledger's passes then run again over the claims. An isotopologue's tracking allows for its line's noise below a signal-to-noise of 15 and for a peak within two widths of it: a line only that far off is in doubt and held at candidate, never lower, and one further off is held at candidate at least. Of the 861 flagged rows, 252 are claimed (184 tracking, 68 in doubt) and 578 stay under a neighbour below assigned; the reference had read 67 of the claims as the same formula's isotopologues and 6, all on B and five of them 2H lines, as the M0 the claim displaced. G6 falls from 681 to 596, and no monoisotopic row changes formula or tier, so G1, G1 conditioned and G2 are identical on every set. Set C's 18O, 2H and 13C2 lines of its strongest ion are all its candidate isotopologues. 69 isotopologues go from assigned to candidate, 25 of them lines the reference confirms, and the calibration refits on the three samples where a claimed row had been an anchor. Taken ahead of 2.5f's first PR |
-| 2.4f - an oxygen-free neutral in a nitrate cluster | - | planned, after 2.5d: a nitrate cluster reading whose neutral carries no oxygen is not held at assigned; carbonate is measured beside it for the plan owner |
+| 2.4f - an oxygen-free neutral in a nitrate cluster | #2147 | measured: a row read as nitrate clustered with a neutral that has no oxygen - through the plain or labelled ion, or their nitric acid clusters - is held at candidate with the reason `oxygen_free_cluster`, its isotopologues with it; a target library compound is exempt, a reference list's row is not, and no second channel lifts it. Measured two ways with carbonate beside it, the plan owner took the cap and left carbonate out (decision 18's third addendum). The rule names 134 rows on the three nitrate sets and takes 10 from assigned, all on F2, where the reference commits the same reading on one; nothing else moves on 48,894 peaks, G2 is identical on every set, and F2's G1 conditioned goes from 77.6 to 78.6. Restricting the search instead read 75 of F2's 115 rows as the same ion without its proton, 18 of them at assigned; carbonate would have taken 27 rows from assigned, 20 of them on the reference's own formula |
 | 2.6 - frontend: profile, reasons, roles | - | planned |
 | 2.7 - stage 2 gate, engine 0.5.0 | - | planned |
 | 2.2b - mass-dependent centre for the mass gate | #2131 | measured: a run's mass gate judges a row at its own m/z where the run's commits demand a centre that follows `ppm = a + b * 1000 / mz`, accepted on peaky's rules; the line is fitted over every committed monoisotopic row (the plan owner's answer, recorded in the step), and the constant centre and the width stay the anchors'. A takes a line on all six samples (-0.113 to -0.137 mDa over m/z 57 to about 500) and C2 on one (-0.077); every other run keeps the constant centre and records the rule that refused the line. It moves no tier, formula, role, owner or cap on 48,894 peaks, and G1, G1 conditioned and G2 are identical on every set: every row that crosses three widths was already below assignability. What moves is `mass_z` - 2,316 rows on A, 130 on C2 - and A's seven itemised curated rows come inside three widths (-3.49..-4.38 to -0.80..-1.62). The plan owner kept the target library's exemption from the cap for now, to be revisited after 2.5d's review (decision 3's third addendum) |
@@ -856,6 +856,32 @@ The confidence layer. This is where "assigned" starts meaning something.
   conditioned and G2; the carbonate answer recorded.
 - **Size.** S. After 2.5d, and independent of 2.4e, though read after it the
   rows 2.4e claims are no longer M0s.
+- **As built (2026-09-16).** The cap, on the plan owner's answer to the
+  measurement (*After step 2.4f*), and measured on step 2.4e's round.
+  - **Which channels.** Read off the mechanism: nitrate, with a label counted
+    as its element and any number of nitric acid molecules around it. A
+    subtraction, a cation, nitrite and a hydrate are not such a cluster, and
+    neither is a mechanism that cannot be parsed.
+  - **Which rows.** A monoisotopic row whose neutral has no oxygen at all, and
+    its isotopologues with it, as with every rule.
+    - A compound of the target library is exempt, for the reagent-N rule's
+      reason: the workspace named it for the channels of the modes its
+      collection is attached to. C2's hydrogen bromide through the labelled
+      nitrate is on the nitrate monitor list.
+    - A reference list's row is asked, since a list names a compound and not
+      the channel it is seen through.
+    - A second channel does not lift the cap: the doubt is about the ion, as
+      the radical rule's is.
+  - **Carbonate is not asked**, on the plan owner's answer. The reference
+    commits the same oxygen-free neutral on 20 of the 27 carbonate clusters
+    the cap would take.
+  - **The search restriction was not taken.** It hands the peak to its next
+    reading. On the unlabelled nitrate set that is mostly the same ion read
+    without its proton, an organic nitrate the reagent-N rule does not ask,
+    and the restriction put more such readings at assigned than the cap takes.
+  - **The record.** The tier reason `oxygen_free_cluster` ("no oxygen to
+    cluster on" in the inspector) and rule set 4. The tiering pass reads the
+    run's mechanisms.
 
 ### 2.5 The reference seed and the Stage A window
 
@@ -3987,6 +4013,14 @@ belongs in the fitted axis once anchors reach below m/z 100, which is step
     applied to the lists: a formula's presence on a reference list is
     evidence, not a label, and does not mean `assigned` by itself where
     plausible alternatives exist (step 2.5f, decision 3's fifth addendum).
+    *Third addendum (2026-09-16, the plan owner on step 2.4f's
+    measurement).* A reading whose ion the source is unlikely to make keeps
+    its formula at candidate rather than being refused in the search.
+    Refused, the peak goes to its next reading, and the doubt does not go
+    with it: on the unlabelled nitrate set, the next reading of nitrate
+    clustered with an oxygen-free neutral is mostly the same ion without its
+    proton, which no rule doubts and which the run put at assigned more often
+    than the cap takes. Carbonate clusters are not judged by the rule.
 
 ## Risks
 
@@ -5398,6 +5432,103 @@ What the 861 rows became, and what held the others back:
 - **The gate's isotopologue caps re-counted by overlap and intensity:** above,
   by verdict, by what the reference reads and by cause.
 
+
+### After step 2.4f, an oxygen-free neutral in a nitrate cluster (2026-09-16)
+
+#2147 holds at candidate a row read as nitrate clustered with a neutral that
+has no oxygen (the step's as-built note). The two forms were measured first,
+with carbonate beside nitrate, on builds that are not merged: the tier cap
+over both families, and the search restriction over both families and over
+nitrate alone. The plan owner took the cap for nitrate and left carbonate out
+(decision 18's third addendum). The step was then re-run on
+`step-2.4f-oxygen-free-cluster-2026.09.16-d9906c3`. Every round is read
+against step 2.4e's round.
+
+**The oxygen-free cluster readings on step 2.4e's round** (monoisotopic rows;
+the assigned rows' reference readings in brackets):
+
+| set | nitrate | at assigned | carbonate | at assigned (the reference's own formula) |
+|---|---|---|---|---|
+| C | 6 of 273 | 0 | 91 of 278 | 10 (9) |
+| C2 | 19 of 205 | 1, a target library row | 30 of 107 | 12 (10) |
+| E | - | - | 15 of 325 | 0 |
+| F1 | - | - | 84 of 2,481 | 0 |
+| F2 | 115 of 3,602 | 10 | 88 of 1,442 | 5 (1) |
+
+**What the cap does, as built.**
+- **Only the 10 F2 rows move**, from assigned to candidate, each with this
+  reason alone. No formula, role, owner or other tier changes on the 48,894
+  peaks, and none of the ten owns an isotopologue or a claimed line.
+  - The reference is silent on 9 of them: eight search rows (C14H13N3,
+    C15H19N3S, C15H21N3S, C16H19N3, C17H15N3, C19H17N3, C19H21N3, C25H26S) and a
+    reference list's ClI.
+  - It commits the tenth, C19H24S, through nitrate as well, at its own
+    candidate tier.
+- **The rule names 134 rows**, all on the three nitrate sets (C 6, C2 13, F2
+  115). The other 124 were already at candidate or below.
+  - On C and C2, 11 are the radical C11H13S at candidate, which the reference
+    reads as a siloxane's isotopologue line; it is silent on the other 8.
+  - On F2 the reference commits the same formula on 2 (C19H24S, and a list's
+    ClI below assignability), another formula on 7 and an isotopologue line on
+    1, and is silent on 105.
+- **C2's target library row**, hydrogen bromide through the labelled nitrate,
+  keeps its tier on the six samples that commit it (assigned on one). The
+  reference is silent on it.
+- **The metrics.** F2: assigned 696 -> 686, G1 97.3 -> 97.4, G1 conditioned
+  77.6 -> 78.6 (n 85 -> 84). G2 is identical on every set, and the other seven
+  sets are identical in every metric: G1 conditioned A 2.5, B 11.7, C 0.2, C2
+  0.8, D 1.0.
+- **The runs' records.** `pattern_scoring`, `mass_calibration` and
+  `cross_channel` are identical on all 43 runs.
+  - `config.tiering` is rule set 4, and its `capped` count goes from 3,250 to
+    3,260.
+  - `capped_by_rule` names the rule 43 times over 16 runs. It counts every row
+    the rule found at the tier its evidence gave, so 33 of those are rows
+    another rule capped as well: the C11H13S radicals on C and C2, and 22 on
+    F2.
+
+**The forms compared.**
+- **The cap over carbonate** would have taken 27 rows from assigned: C 10, C2
+  12, F2 5.
+  - The reference commits the same formula on 20 of them: C8H18N2 and
+    C10H22N2 on every C and C2 sample, and one F2 row.
+  - Their 21 isotopologues would have followed (C 9, C2 12).
+  - Assigned would have gone C 612 -> 602 and C2 321 -> 309, with G1
+    conditioned unchanged at 0.2 and 0.8 over 480 and 247 rows.
+- **The search restriction over nitrate** hands each peak to its next reading.
+  - C: the 6 rows go unassigned, 5 of them lines the reference reads as a
+    siloxane's.
+  - C2: 6 go unassigned, all such lines, and 7 go to other ions below
+    assignability. The library rows are untouched.
+  - F2: 75 of the 115 are read as the same ion without its proton, an organic
+    nitrate through `-H+`, and 18 of those are assigned (16 up from
+    candidate). The reagent-N rule asks only a winner through the channel
+    that donates the nitrogen, so it does not reach them.
+  - F2 again: 33 go to other ions (4 assigned, 3 of them up from candidate), 6
+    go unassigned, and one goes to the same ion's oxygen-free carbonate
+    reading.
+  - F2's assigned count rises 696 -> 709 and its G2 falls 26.1 -> 24.6, since
+    C19H24S becomes C19H25NO3S. A list's ClI, which the reference commits,
+    goes unassigned.
+  - It also takes 9 lines on C that step 2.4e had claimed from such readings:
+    the 18O lines of the C10H14O and C11H18O carbonate clusters, and the
+    13C+18O lines carried with them.
+- **The search restriction over carbonate** reads the same ions without a
+  proton, as radicals, which the radical rule holds at candidate. It displaces
+  43 readings the reference confirms (C 29, C2 12, F2 2); on F1 it reads 28
+  of the 84 through bromide instead.
+
+#### Verify, item by item
+
+- **The rows each form takes, by set, tier and what the reference commits on
+  the peak:** the table and the two lists above.
+- **What the restricted search elects instead:** the organic nitrate on F2,
+  other ions or nothing on the labelled sets, and the carbonate clusters as
+  radicals.
+- **G1 conditioned and G2:** identical on every set but F2's G1 conditioned,
+  77.6 -> 78.6; G2 identical everywhere.
+- **The carbonate answer:** not judged by the rule, on the plan owner's
+  answer (decision 18's third addendum).
 
 ## Not in this plan
 
