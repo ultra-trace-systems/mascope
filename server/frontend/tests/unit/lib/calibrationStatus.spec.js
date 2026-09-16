@@ -143,6 +143,17 @@ describe('calibrationStatus', () => {
     expect(status.tooltip).toContain('Acquisition drift 14.20 ppm')
   })
 
+  it('warns about a fit below the bar that a warn-only gate let through', () => {
+    const status = calibrationStatus({ ...BELOW_BAR, verified: true, quality_gate: 'warn' })
+
+    expect(status.state).toBe('warned')
+    expect(status.severity).toBe('warn')
+    expect(status.tooltip).toContain('below the quality bar')
+    expect(status.tooltip).toContain('Matches and assignments use it')
+    expect(status.tooltip).not.toContain('skipped')
+    expect(status.tooltip).not.toContain('Accepted')
+  })
+
   it('keeps warning about an accepted fit below the bar', () => {
     const status = calibrationStatus({ ...BELOW_BAR, verified: true, accepted_by: 7 })
 

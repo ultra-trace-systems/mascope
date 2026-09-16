@@ -1184,9 +1184,10 @@ def calibration_quality_issues(quality: dict | None, filename: str) -> list[dict
     Why a fit does not clear the quality bar for a ``verified`` record.
 
     The bar (``calibration_config``) is the fit's mean post-fit residual
-    against an instrument-class bound; for a fit on few points, how far it
-    moved the axis; for one on more, how many ions the points came from; and,
-    where a bound is set, the calibrants' share of the TIC. A fit with no quality
+    against an instrument-class bound; for a fit on one point, or on two
+    isotopes of one ion, how far it moved the axis; for one on three or more,
+    how many ions the points came from; and, where a bound is set, the
+    calibrants' share of the TIC. A fit with no quality
     block cannot be judged and is reported as such rather than let through.
 
     A value the block does not carry (``n_ions`` on records written before it
@@ -1237,8 +1238,15 @@ def calibration_quality_issues(quality: dict | None, filename: str) -> list[dict
         )
 
     n_points = quality.get("n_points") or 0
+    n_ions = quality.get("n_ions")
     min_points = calibration_config.MIN_VERIFIED_CALIBRATION_POINTS
+    min_ions = calibration_config.MIN_VERIFIED_CALIBRATION_IONS
     max_shift = calibration_config.LOW_POINT_MAX_AXIS_CORRECTION_PPM
+    # Below min_points, a fit is corroborated only when its points come from
+    # different ions: one point zeroes its own residual, and one ion's
+    # isotopes agree whatever peak they sit on. An unrecorded ion count is
+    # not taken as corroboration.
+    corroborated = n_points >= 2 and n_ions is not None and n_ions >= min_ions
     # How far the fit puts the axis from the acquisition axis. The pre-fit
     # error measures that only on a file no fit has moved yet: an Orbitrap
     # apply rescales the stored axis in place, so a refit of a file a wrong
@@ -1251,9 +1259,15 @@ def calibration_quality_issues(quality: dict | None, filename: str) -> list[dict
     if shift_ppm is None:
         shift_ppm = quality.get("pre_fit_mz_error_ppm")
     points = f"{n_points} calibration point{'' if n_points == 1 else 's'}"
+    if n_points > 1 and n_ions == 1:
+        points += " from a single ion"
     if n_points == 0:
         issues.append({"code": "points", "message": "Fitted on no calibration points."})
-    elif n_points < min_points and (shift_ppm is None or abs(shift_ppm) > max_shift):
+    elif (
+        n_points < min_points
+        and not corroborated
+        and (shift_ppm is None or abs(shift_ppm) > max_shift)
+    ):
         shift = (
             "an unrecorded amount" if shift_ppm is None else f"{abs(shift_ppm):.2f} ppm"
         )
@@ -1262,14 +1276,12 @@ def calibration_quality_issues(quality: dict | None, filename: str) -> list[dict
                 "code": "points",
                 "message": (
                     f"Fitted on {points} but moves the m/z axis {shift} from "
-                    f"the acquisition axis; below {min_points} points a "
-                    f"correction of at most {max_shift:g} ppm is trusted."
+                    "the acquisition axis; a fit nothing corroborates is "
+                    f"trusted with a correction of at most {max_shift:g} ppm."
                 ),
             }
         )
 
-    n_ions = quality.get("n_ions")
-    min_ions = calibration_config.MIN_VERIFIED_CALIBRATION_IONS
     if n_points >= min_points and n_ions is not None and n_ions < min_ions:
         issues.append(
             {

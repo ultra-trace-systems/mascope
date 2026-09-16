@@ -35,28 +35,34 @@ class CalibrationConfig(BaseModel):
     # is what matching and peak assignment read as "this file's mass axis is
     # right". The m/z error tolerances below are the window calibrants are
     # matched in, not a quality bar: a fit can pass them and still leave the
-    # axis a ppm or more out. Measured on a fleet corpus of production files:
-    # Orbitrap fits on three or more points leave at most 0.47 ppm, and the
-    # TOF fits 0.2-1.6 ppm, so the residual bounds sit above both.
+    # axis a ppm or more out. What a bar below it does - warn or keep the
+    # sample out of matching - is the deployment's ``calibration_quality_gate``.
+    #
+    # Measured on 60 days of production calibrations: Orbitrap fits on three
+    # or more points sit well within 1 ppm unless their calibrants disagree,
+    # and two calibrants that disagree by 2.5 ppm leave 1.27 ppm. TOF fits on
+    # lower-resolution APi-TOFs leave 3-4 ppm as a matter of course, while the
+    # broken TOF fits seen sat at 11 ppm and beyond.
     ORBI_MAX_POST_FIT_MZ_ERROR_PPM: float = 1.0
-    TOF_MAX_POST_FIT_MZ_ERROR_PPM: float = 3.0
-    # Below this many points the residual says little: two calibrants that
-    # disagree split the difference, and one zeroes its own residual. Such a
-    # fit is only trusted while it moves the axis no further than
-    # LOW_POINT_MAX_AXIS_CORRECTION_PPM - one- and two-point fits are the
-    # norm for narrow-range and EasyIC modes and are healthy when the
-    # correction is small, while the one-point fits that anchored to the wrong
-    # peak moved the axis 76-81 ppm and reported a zero residual.
+    TOF_MAX_POST_FIT_MZ_ERROR_PPM: float = 10.0
+    # A fit on a single point zeroes its own residual, and two isotopes of one
+    # ion agree with each other whatever peak they sit on, so such a fit says
+    # nothing about whether it found the right peak. It is only trusted while
+    # it moves the axis no further than LOW_POINT_MAX_AXIS_CORRECTION_PPM -
+    # the Orbitrap drift-warning threshold. One-point fits are the norm for
+    # narrow-range and EasyIC modes and correct a few ppm; the ones that
+    # anchored to the wrong peak moved the axis 76-221 ppm. Two points from two
+    # ions corroborate each other and are judged on their residual alone.
     MIN_VERIFIED_CALIBRATION_POINTS: int = 3
-    LOW_POINT_MAX_AXIS_CORRECTION_PPM: float = 5.0
+    LOW_POINT_MAX_AXIS_CORRECTION_PPM: float = 10.0
     # A fit on MIN_VERIFIED_CALIBRATION_POINTS or more must also draw them
     # from this many ions, or it is one ion's isotopes agreeing with each
     # other.
     MIN_VERIFIED_CALIBRATION_IONS: int = 2
-    # Summed calibrant intensity as a fraction of the TIC. Orbitrap only:
-    # healthy TOF fits span 5e-7 to 0.1, so no bar is set for TOF (None
-    # disables the check). On Orbitrap, good fits reach down to 1.3e-4.
-    ORBI_MIN_CALIBRANT_TO_TIC: float | None = 1e-4
+    # Summed calibrant intensity as a fraction of the TIC, None disabling the
+    # check. Off for both: in production it only ever flagged fits that were
+    # otherwise healthy, down to 3e-5 of the TIC on Orbitrap and 5e-7 on TOF.
+    ORBI_MIN_CALIBRANT_TO_TIC: float | None = None
     TOF_MIN_CALIBRANT_TO_TIC: float | None = None
 
     # TOF calibration parameters

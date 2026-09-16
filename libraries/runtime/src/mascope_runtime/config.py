@@ -429,6 +429,16 @@ class BackendConfig(ModuleConfig):
     # working until the deployment has (re-)paired every agent machine and
     # turns this on. Pairing binds new tokens to a device automatically.
     require_device_tokens: bool = False
+    # What an m/z calibration below the quality bar does. "warn" (the
+    # default) stores it verified with its reasons, so matching and peak
+    # assignment run on it and the sample browser badge shows it amber;
+    # "enforce" stores it unverified, which keeps the sample out of both until
+    # it is recalibrated or an operator accepts the fit. Warn first, look at
+    # which ionization modes the badge flags (usually a calibration collection
+    # whose calibrants disagree), fix them, then enforce. Takes effect on
+    # restart and applies to calibrations from then on; stored records keep
+    # the verdict they were given.
+    calibration_quality_gate: Literal["warn", "enforce"] = "warn"
     # Allowlist of per-record reference licences the peak-assignment database
     # stage (Stage A) may match against. The reference mirror carries a
     # licence per record from ingest through to results, and some sources

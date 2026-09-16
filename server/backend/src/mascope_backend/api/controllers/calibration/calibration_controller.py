@@ -481,6 +481,19 @@ def fit_seal_valid(fit: dict, filename: str) -> bool:
     return hmac.compare_digest(seal, _fit_seal(fit, filename))
 
 
+def calibration_quality_gate() -> str:
+    """
+    What a calibration below the quality bar does on this deployment.
+
+    Read from ``calibration_quality_gate`` in the runtime ``[backend]``
+    config: ``"warn"`` (the default) stores it verified, ``"enforce"`` keeps
+    it out of matching and peak assignment. See :func:`stamp_quality_verdict`.
+
+    :return: ``"warn"`` or ``"enforce"``.
+    """
+    return getattr(runtime.config, "calibration_quality_gate", "warn")
+
+
 def stamp_quality_verdict(
     fit: dict,
     filename: str,
@@ -491,24 +504,27 @@ def stamp_quality_verdict(
     """
     Decide ``status`` and ``verified`` for a fit about to be persisted.
 
-    ``verified`` is what matching and peak assignment read as "this file's
-    mass axis is right", so it is only set for a fit that clears the quality
-    bar (:func:`calibration_quality_issues`). A fit that does not is still
-    applied - it is usually closer than the acquisition axis - but is stored
-    ``status: "poor"``, ``verified: False`` with the reasons, which keeps the
-    file out of matching and assignment until someone looks at it.
+    A fit that misses the quality bar (:func:`calibration_quality_issues`) is
+    still applied - it is usually closer than the acquisition axis - and is
+    stored ``status: "poor"`` with the reasons, so the badge shows it. The
+    deployment's :func:`calibration_quality_gate` decides ``verified``, which
+    is what matching and peak assignment read as "this file's mass axis is
+    right":
 
-    An operator who has looked at such a fit in the calibration dialog can
-    apply it anyway (``accept``). The record then turns ``verified`` and
-    names who accepted it and when, and keeps ``status: "poor"`` and the
-    reasons, so the badge still shows the fit for what it is.
+    - ``"warn"``: verified. The sample is matched and assigned as before;
+      the record and the badge say the fit is below the bar. The gate
+      applied is recorded as ``quality_gate``.
+    - ``"enforce"``: unverified, which keeps the file out of matching and
+      assignment until someone looks at it. An operator who has looked at
+      the fit in the calibration dialog can apply it anyway (``accept``); the
+      record then turns ``verified`` and names who accepted it and when.
 
     Everything this decides is dropped from the incoming dict first:
     ``/mz_apply`` takes the fit straight off the request body and persists
     unknown keys verbatim. For the same reason the quality block is only
     judged when the fit is ``sealed`` (see :func:`fit_seal_valid`); an
-    unsealed fit gets :data:`UNSEALED_FIT_ISSUE` instead, so it is stored
-    unverified unless an operator accepts it.
+    unsealed fit gets :data:`UNSEALED_FIT_ISSUE` instead, and is treated as
+    any other fit below the bar.
 
     :param fit: Fit dict about to be persisted (mutated in place).
     :param filename: Sample filename, selects the instrument-class bounds.
@@ -517,17 +533,19 @@ def stamp_quality_verdict(
     :param sealed: Whether the fit's seal was valid before it was applied.
     :return: The quality issues found; empty when the fit cleared the bar.
     """
-    for key in ("quality_issues", "accepted_at", "accepted_by", "seal"):
+    for key in ("quality_issues", "quality_gate", "accepted_at", "accepted_by", "seal"):
         fit.pop(key, None)
     if sealed:
         issues = calibration_quality_issues(fit.get("quality"), filename)
     else:
         issues = [dict(UNSEALED_FIT_ISSUE)]
+    gate = calibration_quality_gate()
     fit.update(
         {
             "status": "poor" if issues else "ok",
-            "verified": not issues or accept,
+            "verified": not issues or accept or gate != "enforce",
             "quality_issues": issues,
+            "quality_gate": gate,
         }
     )
     if issues and accept:
@@ -769,6 +787,9 @@ async def calibration_mz_fit(
         calibration_data["fit"]["quality_issues"] = calibration_quality_issues(
             calibration_data["fit"]["quality"], sample.filename
         )
+        # Also a preview: whether saving such a fit keeps the sample out of
+        # matching, which is what the dialog offers acceptance for.
+        calibration_data["fit"]["quality_gate"] = calibration_quality_gate()
         seal_fit(calibration_data["fit"], sample.filename)
 
     # --- Build shared notification payload ---
@@ -921,12 +942,17 @@ async def calibration_mz_apply(
         sealed=sealed,
     )
     if issues:
-        # INFO: a data condition the record and the badge carry; the file is
-        # kept out of matching until it is recalibrated or accepted.
+        # INFO: a data condition the record and the badge carry.
+        consequence = (
+            "accepted by an operator"
+            if fit.get("accepted_by") is not None
+            else "kept out of matching"
+            if not fit["verified"]
+            else "matched anyway (quality gate: warn)"
+        )
         runtime.logger.info(
-            f"m/z calibration of '{filename}' applied below the quality bar"
-            f"{' and accepted by an operator' if fit['verified'] else ''}: "
-            + " ".join(issue["message"] for issue in issues)
+            f"m/z calibration of '{filename}' applied below the quality bar, "
+            f"{consequence}: " + " ".join(issue["message"] for issue in issues)
         )
     if carry_acquisition_drift(
         fit,
@@ -1003,15 +1029,22 @@ async def calibration_mz_apply(
         f"Applied m/z fit to '{filename}'. Number of affected samples: {total_samples}."
     )
     runtime.logger.info(message)
+    reasons = " ".join(issue["message"] for issue in issues)
     if not fit["verified"]:
         message += (
             " The fit does not meet the calibration quality bar, so its samples "
-            "are excluded from matching and peak assignment: "
-            + " ".join(issue["message"] for issue in issues)
+            f"are excluded from matching and peak assignment: {reasons}"
+        )
+    elif issues and fit.get("accepted_by") is None:
+        message += (
+            " The fit does not meet the calibration quality bar; matching and "
+            f"peak assignment use it regardless: {reasons}"
         )
     return {
-        # Applied, but not to a usable standard: announced as a warning.
-        "status": "success" if fit["verified"] else "partial",
+        # Applied below the bar and not accepted: announced as a warning.
+        "status": (
+            "partial" if issues and fit.get("accepted_by") is None else "success"
+        ),
         "data": {
             "fit": fit,
         },

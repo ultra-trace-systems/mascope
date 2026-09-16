@@ -15,9 +15,10 @@
  *   matches are skipped too. Records registered before the status was stamped
  *   carry neither `status` nor `verified`.
  * - `{status: "poor", quality_issues: [...]}` - a fit was applied but misses
- *   the quality bar. Unverified (matches skipped) unless an operator accepted
- *   it (`verified: true`, `accepted_by`), in which case downstream results run
- *   on it and the badge keeps saying so.
+ *   the quality bar. Under the deployment's default `quality_gate: "warn"` it
+ *   is still verified and matched; under `"enforce"` it is unverified (matches
+ *   skipped) unless an operator accepted it (`verified: true`, `accepted_by`).
+ *   Whenever downstream results run on it, the badge keeps saying so.
  * - `{status: "ok", verified: true, ...}` - an applied fit that clears the
  *   bar, optionally with a `quality` block (calibration point count, pre/post
  *   mean |m/z error| in ppm) recorded at fit time. `acquisition_drift` marks a
@@ -39,8 +40,8 @@ const driftText = (mzCalibration) => {
  * Derive the calibration badge for a sample row.
  *
  * States and their severities, from most to least urgent: `failed` (danger),
- * `poor` and `accepted` (warn - a calibration that is not good enough, used or
- * not), `drifted` (info - calibrated fine, the instrument needs attention),
+ * `poor`, `warned` and `accepted` (warn - a calibration that is not good
+ * enough, used or not), `drifted` (info - calibrated fine, the instrument needs attention),
  * `unfitted`/`unverified` (secondary), `ok` (muted), `none`.
  *
  * @param {object|null|undefined} mzCalibration - `sample.mz_calibration` record
@@ -115,6 +116,19 @@ export function calibrationStatus(mzCalibration) {
 
   if (mzCalibration.status === 'poor') {
     const issues = issueText(mzCalibration)
+    if (mzCalibration.verified && mzCalibration.accepted_by == null) {
+      // The deployment's quality gate only warns.
+      return {
+        state: 'warned',
+        icon: 'ph ph-scales',
+        severity: 'warn',
+        clickable: true,
+        tooltip:
+          `m/z calibration below the quality bar${detail ? ` (${detail})` : ''}: ${issues} ` +
+          'Matches and assignments use it – treat their mass errors with care. ' +
+          `Click to recalibrate.${drift}`
+      }
+    }
     if (mzCalibration.verified) {
       return {
         state: 'accepted',

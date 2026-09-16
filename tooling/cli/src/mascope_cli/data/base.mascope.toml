@@ -88,6 +88,14 @@ filestreams = './filestreams'
 # has been (re-)paired - pairing binds the token to a device automatically;
 # tokens issued before the device registry have no binding.
 # require_device_tokens = false
+# m/z calibration quality bar: "warn" (the default) marks a calibration
+# below the bar with an amber badge and its reasons, and still matches and
+# assigns the sample; "enforce" leaves such a sample out of matching and peak
+# assignment until it is recalibrated or an operator accepts the fit in the
+# calibration dialog. Run on "warn" first, fix the calibration collections
+# the badges point at, then switch (docs/user/how-it-works/calibration.md).
+# Takes effect on restart, for calibrations from then on.
+# calibration_quality_gate = "warn"
 # Reference chemistry: the per-record licence tags peak assignment's database
 # stage is allowed to match against. Unset (the default) means no gating -
 # every active reference source is matched, which is what every deployment did
