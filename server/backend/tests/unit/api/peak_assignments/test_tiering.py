@@ -373,6 +373,17 @@ class TestTheNeighboursEnvelope:
         )
         assert found == {}
 
+    def test_an_envelope_is_read_relative_to_the_ion_s_own_line(self):
+        # A dibromide's own line is a quarter of its envelope, and its
+        # 79Br81Br line twice as tall as it: the heights the rule compares a
+        # peak with are the ion's own line's multiples, not shares of the whole.
+        mzs, shares, labels = predicted_envelope("C2H3Br2-", 0.01)
+        assert labels[0] == "M0"
+        assert shares[0] == pytest.approx(1.0)
+        assert shares[labels.index("81Br")] == pytest.approx(1.95, abs=0.03)
+        assert predicted_envelope("not an ion", 0.01) is None
+        assert predicted_envelope("C2H3Br2", 0.01) is None
+
 
 class TestWhatTheEarlierPassesDecided:
     @pytest.mark.parametrize(
@@ -1003,7 +1014,7 @@ class TestReadingALineAsTheNeighbours:
                 PLAIN,
                 role="iso_child",
                 owner="pa-owner",
-                mz=o18_mz,
+                mz=o18_mz * (1 - 3e-6),
                 intensity=12.0,
             ),
             on_the_line("pa-child"),
@@ -1012,7 +1023,27 @@ class TestReadingALineAsTheNeighbours:
                 ELSEWHERE,
                 role="iso_child",
                 owner="pa-child",
-                mz=o18_mz * (1 + 2e-6),
+                mz=o18_mz,
+                intensity=10.0,
+                ppm=0.0,
+            ),
+        ]
+        (claim,), _ = claims_in(rows)
+        assert claim.carried == ()
+        assert claim.released == ("pa-child-18o",)
+
+    def test_a_line_of_the_row_that_does_not_follow_the_neighbour_is_released(self):
+        # On the neighbour's 18O line within the window, and 3 ppm off it.
+        o18_mz, _ = predicted_line("18O")
+        rows = [
+            claiming_owner(),
+            on_the_line("pa-child"),
+            row(
+                "pa-child-18o",
+                ELSEWHERE,
+                role="iso_child",
+                owner="pa-child",
+                mz=o18_mz * (1 + 3e-6),
                 intensity=10.0,
                 ppm=0.0,
             ),
