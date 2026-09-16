@@ -219,7 +219,7 @@ async def test_stage_a_is_told_where_the_reagent_lines_put_the_axis():
         assert await fold_sample_peaks_without_run("si-1") == "batch-1"
 
     offset = mocks["stage_a"].call_args.kwargs["reagent_offset"]
-    assert (offset.lines, offset.taken) == (3, True)
+    assert (offset.lines, offset.beyond_width) == (3, True)
     assert offset.mu_ppm == pytest.approx(-1.3, abs=1e-6)
 
 

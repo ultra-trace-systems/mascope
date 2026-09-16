@@ -1947,7 +1947,7 @@ def _reagent_assignments(
         runtime.logger.info(
             f"Reagent pre-pass lines put the mass axis at {offset.mu_ppm:+.2f} ppm "
             f"over {offset.lines} lines"
-            + ("" if offset.taken else ", inside the width")
+            + ("" if offset.beyond_width else ", inside the width")
         )
     rows = build_reagent_assignments(
         hits,
