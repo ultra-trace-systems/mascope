@@ -28,7 +28,7 @@ step PRs land on the epic and are named here as they merge.
 | 2.5a fix - the reference seed out of the mass widths | #2113 | measured: Stage A's width is fitted over the target library's lines alone, only the target library's rows count as curated for the mass gate (decision 3's second addendum), the ingest fold runs the gate, and Stage A falls back to the instrument class's width as the untargeted stage does. With the seed loaded, every set's search width and Stage A anchor count equal the pre-seed round's (F2 6.54 -> 2.62 ppm, gate 6.75 -> 2.62). G2 same formula rises on E, F1 and F2 (40.5 -> 45.2, 22.8 -> 23.6, 17.4 -> 18.8) and holds on the Orbitrap sets (C2 83.3 -> 82.6, D 84.0 -> 83.9). All 3,883 peaks that change owner had been moved by the seed, and 3,866 go back to their pre-seed owner. Of the 30 mirror rows the estimate named, the gate caps 4 and the narrower width holds the other 26 below its cap |
 | 2.5b - Stage A window per source, polarity, radical filter, deactivate, the isoprene lift (seed proposal phase 3) | #2116 (schema and CLI), #2117 (engine, lists) | measured: #2116 records each source's window, radical allowance and polarity on its row (a database mirror at today's window, a list unbounded, existing rows backfilled at today's window), lets `reference sync` set them (`--polarity` included), has `reference seed` write and refresh them, and adds `reference deactivate`. #2117 makes Stage A read all three under the context's ceiling (every shipped context opens Si, P, F, Cl, Br and I at C40/700 Da; `none` sets none) and lifts the isoprene list, D7/D8 (Fromme et al. 2019) and L3-L5; the monoterpene HOM list matches both polarities (decision 17's addendum). With the seed refreshed, G2 same formula rises on every set (A 95.4 -> 97.1, B 93.5 -> 95.1, C2 82.6 -> 87.1, D 83.9 -> 85.5, E 45.2 -> 54.8, F1 23.6 -> 27.6, F2 18.8 -> 26.1); D3-D8, the phosphates and TFA resolve on every sample the reference commits them on, the siloxanes mostly at candidate tier by the evidence's own reading (decision 18); G6 on A falls 87 -> 50 with its grid part 69 -> 5. 987 owners change, 125 towards the reference and 9 away (5 new siloxane isotopologue claims on B, 4 isoprene nitrates on F2). IBr2- commits as an analyte on 8 reagent peaks, read at the gate |
 | 2.5c - the same-ion ambiguity on a Stage A mirror row | #2118 | measured: a reference mirror's M0 row carries the readings of its ion the untargeted search would have held, as `same_ion` alternatives (2,725 rows over the 43 samples), and the reagent-N rule asks it from both sides, since a list can put the nitrogen on the analyte; a second channel fixes the count either way and a target library row stays exempt. It moves tiers and nothing else: no formula, role or owner change on 48,894 peaks, G2 identical on every set, no untargeted or target library row touched. The rule reaches 746 mirror rows and caps 167 from assigned (A 24, B 67, F2 76) with 25 isotopologues. All nine same-ion steals on B carry their ammonium reading: two are capped and seven fixed by the same neutral's urea adduct. G1 A 24.3 -> 23.2, B 36.8 -> 37.0 (conditioned 11.6 -> 11.7), F2 97.5 -> 97.3; on B the cap takes 50 rows the reference confirms, 18 of them Keller's amines through `+H+` |
-| 2.5d - review of the curated lists | - | planned: the calibrant and diagnostic lists the ionization modes attach are audited before their rows count as curated, and decision 3's exemption is revisited on the reviewed lists; the nitrate monitor's two workaround entries are already fixed on the testbed (the section after step 2.2b) |
+| 2.5d - review of the curated lists | #2136 (a library entry's line whatever its spelling), #2137 (the cap on library rows, the plan) | measured: the 46 entries the gate's modes attach were audited against the step's four flags, and the plan owner's verdicts taken on each. The four odd-electron workaround entries left the lists (HCO3 and CHO3 for CO3-, HS3 for S3-, Br for Br2-); the entries that never commit a row stay, with their reasons - reagent lines the pre-pass claims first, or compounds absent or out of range; no entry is left whose ion another channel of the same sample reads as a different neutral. Removing the workaround entries cost C2 its Stage A offset: four to five of its eleven or twelve matched lines were theirs, so it scores at the class width with no offset while its own runs sit at -1.1 ppm, and 146 rows leave assigned, 106 of them rows the reference commits the same formula on (the section after this step has the two ways back). The audit found an engine defect, fixed in #2136: a reference list's copy of a library reading took the entry's line, on the spelling or on a shade better fit - 63 rows on four sets, 12 density caps lifted, no tier moved. Decision 3's exemption is lifted from the cap in #2137 (its fourth addendum): a library line off calibration is capped unless an isotopologue tracks it, which moves the three isotopologues that exemption protected from assigned to candidate and nothing else |
 | 2.4e - isotopologue claims under interference | - | planned, after 2.5d: a line an assigned formula's envelope predicts, where the evidence is in doubt, becomes a candidate isotopologue of that formula rather than a new M0 (decision 18's addendum), and the tracking test allows for overlap and low intensity |
 | 2.4f - an oxygen-free neutral in a nitrate cluster | - | planned, after 2.5d: a nitrate cluster reading whose neutral carries no oxygen is not held at assigned; carbonate is measured beside it for the plan owner |
 | 2.6 - frontend: profile, reasons, roles | - | planned |
@@ -1027,6 +1027,19 @@ its own status.
 - **Size.** S-M: mostly curation and a round. If deciding how calibrant and
   diagnostic lists count changes the engine, that is its own PR. On the
   reference frozen at `cc07ce1` (decision 16).
+
+*The plan owner's answers (2026-09-15), taken on the audit.*
+- **The four odd-electron workaround entries are removed** from the lists the
+  gate batches carry: HCO3 and HS3 from C2's nitrate monitor, CHO3 from F1's
+  bromide monitor, and Br from that monitor and from the bromide calibrants.
+- **The engine defect the audit found is fixed in its own PR:** a reference
+  list's copy of a reading a library entry makes could take the entry's line.
+- **Calibrant and diagnostic lists keep counting as curated, except for the
+  mass gate's cap** (decision 3's fourth addendum). Their rows anchor Stage A's
+  width and the run's calibration and escape the rules that doubt an
+  election, and a line of theirs off calibration is capped unless an
+  isotopologue tracks it.
+- **Entries that never commit a row are kept**, each recorded with its reason.
 
 ### 2.6 Frontend: profile, reasons, roles
 
@@ -3436,6 +3449,25 @@ belongs in the fitted axis once anchors reach below m/z 100, which is step
    - **The caveat, as the plan owner put it:** the exemption is kept, and
      treated critically. A curated row is only as good as its list, and step
      2.5d audits the lists before the exemption is weighed again.
+   *Fourth addendum (2026-09-15, taken by the plan owner on step 2.5d's
+   audit): the cap applies to the target library's rows.*
+   - **The rule.** A committed row off calibration is capped unless an
+     isotopologue that tracks it corroborates it, whoever proposed the
+     formula. A target library's rows still anchor the run's calibration and
+     Stage A's width, and still escape the rules that doubt a search's
+     election: the radical rule, the formula-shape signatures and the
+     reagent-N rule.
+   - **Why.** A list names a compound, not where each of its lines has to
+     sit. On the reviewed lists the exemption protected three rows at
+     assigned, all isotopologue lines of monoisotopic rows on calibration:
+     C3H4O4's weak M+2 on F2, and both isotopologues of C10H14O's carbonate
+     cluster on C, whose 13C2 and 18O lines push each other apart (step
+     2.4e's case). The low-mass argument this decision was first taken on no
+     longer protects a row since step 2.2b's centre follows m/z.
+   - **What it moves.** Measured on the reviewed lists: those three rows go
+     to candidate and nothing else moves - the gate's whole cap goes from 48
+     rows to 51 over the 43 runs, with no owner or formula change on 48,894
+     peaks and G1, G2 and G6 identical on every set.
 4. **The cap.** Every peak by default, with the 5,000 ceiling as the hard
    bound; ingest-time runs are Stage A only, so the cost lands on explicit
    runs.
@@ -4825,6 +4857,127 @@ On the plan owner's word the testbed's data was changed, not the code:
   back.
 
 The next step reads set C against this round, not against step 2.2b's.
+
+### After step 2.5d, the curated lists reviewed (2026-09-15)
+
+The gate batches carry no targets list. Every target library row on the 43
+samples comes from the calibrant and diagnostic collections the ionization
+modes attach: 12 collections holding 46 compounds once the nitrate monitor's
+fix was in, or 72 pairs of a set and an entry. Each pair was read against the
+latest round - set C on the second monitor re-run, every other set on step
+2.2b's round - for the step's four flags.
+
+#### What the audit found, and the plan owner's verdicts
+
+| finding | entries (sets) | rows on the round before | verdict |
+|---|---|---|---|
+| an odd-electron formula written so a declared mechanism reaches the ion | HCO3 (C2) and CHO3 (F1) for CO3-, HS3 (C2) for S3-, Br (D, E, F1) for Br2- | 39 with their isotopologues: C2 27, of them HS3's 12 at assigned; F1 12, of them Br's 3 at assigned; none on D and E, where the reagent pre-pass claims Br2- | removed from the lists the gate batches carry |
+| the entry's own line taken by a reference list's copy of the same neutral, spelled in Hill order | NH3 (A), CH3COOH (C2), H2SO4 (F2) | 27 committed as the copy, 12 of them capped by candidate density | fixed in the engine |
+| never commits a row: a reagent line the pre-pass claims first | the empty neutral `()` (B, C2, D, E, F1, F2), urea (A, B), nitric acid and its dimers (C2, F2), Br2 (D, E, F1), water (F1, F2) | 0 | kept; they are calibration lines |
+| never commits a row: absent from the samples or outside the mode's range | C's two high-m/z calibrants, A's C14H21NO3 and C9H12O, C2's PFHpA, 6:2 FTOH and MSA, D's C11H14O2 and nonanamide, E's nonanamide, F1's sulfuric acid, and the 15N-labelled nitric acid dimer on F2's unlabelled mode | 0 | kept |
+| an ion another channel of the same sample reads as a different neutral | none left once C11H15O4 was replaced | - | - |
+
+- **Two readings the reference makes differently are not that last flag.** It
+  reads nonanamide's and caprolactam's protonated lines as ammonium clusters of
+  C9H16O and C6H8O, through a channel the uronium modes do not declare, but
+  both entries also commit their urea cluster, at assigned on every sample of
+  A and B: the identity has its own second channel.
+- **The `()` entries are the empty neutral.** Through each mechanism their ion
+  is that mechanism's reagent ion - NO3-, Br-, protonated urea - which is what a
+  calibrant list is for.
+- **Rematch flags.** The 14 batches the monitor's fix flagged, and the batches
+  this step's edits flagged, stay flagged: a rematch recomputes the stored
+  matches the match tab shows, and assignment computes its own.
+- **The lists on the internal server** are unchanged.
+
+#### The workaround entries removed (build `...0f2c9e7`, no engine change)
+
+- **Six sets do not move.** A, B, C, D, E and F2 are identical row for row; on
+  D and E the reagent pre-pass already claimed Br2- before Stage A.
+- **The entries' own rows** go to unassigned. The reference leaves the same
+  peaks unassigned, and reads F1's Br2- lines as reagent.
+- **C2's assigned rows fall from 312 to 181.** Of the 146 that leave the tier,
+  the reference commits the same formula on 106. Six of them are HS3's own
+  rows; the rest is Stage A. Four
+  to five of each C2 sample's 11 to 12 matched library lines were the removed
+  entries' ions, so every sample drops below the eight a fitted width and
+  offset need. Stage A then scores the search at the instrument class's 0.583
+  ppm and no offset, where it had fitted 0.59 to 0.79 ppm about -1.53 to -1.58
+  ppm. The run's own calibration still sits at -1.10 to -1.15 ppm. This is the
+  bias step 2.2 recorded: a flat -1.1 ppm on files whose stored calibration is
+  marked verified, which C2's calibrants cannot fit.
+- **F1 stays fitted** on 16 to 21 lines, but its widths and offsets move by up
+  to 0.6 and 0.5 ppm, and 1,162 peaks change owner, 1,078 of them where the
+  reference is silent. Assigned 752 -> 758, G1 94.9 -> 95.1.
+- **Metrics:** G1 on C2 26.6 -> 30.9, conditioned 0.4 -> 0.0 (n 230 -> 125);
+  G2 same formula on C2 87.1 -> 86.4; every other set unchanged.
+
+#### For the plan owner: C2's offset
+
+C2's scoring leaned on the workaround entries' lines for the offset its
+stored calibration does not carry. Their ions were real lines at the right
+mass; only the neutrals written for them were wrong. Two ways back, neither
+in this step:
+- **Recalibrate C2's files** through the calibration node, as step 2.2 did for
+  E. Step 2.2 found C2's axis cannot be fitted until its mode has more than
+  two disagreeing calibrants, so this starts with C2's calibrant list.
+- **Anchor Stage A on the reagent pre-pass's lines** where the library matches
+  fewer than eight. The pre-pass already measures an offset from the source's
+  own reagent ions, and uses it only for its claim window. D and E score at
+  the class width for the same reason; C, whose range starts above its
+  reagent's lines, claims none.
+
+#### The spelling fix (#2136, build `...e9eec1b`)
+
+Stage A compared formulas as text, and dropped nothing a reference list
+copied. Now a formula is compared by its composition, and a list's copy of a
+reading the library makes on the same peak through the same mechanism is
+dropped before the peak is arbitrated.
+- **63 rows** go from a reference list's copy to the library entry making the
+  same reading: A 6 (ammonia), C2 10 (acetic acid), F1 33 (lactic, nitric,
+  formic and iodic acid), F2 14 (sulfuric and formic acid). On A and C2, and
+  for F2's sulfuric acid, the spelling decided the tie. The other 36 are
+  spelled alike: there the copy's isotopes, generated at run time, fitted up
+  to 0.002 better than the library's stored ones.
+- **12 density caps** come off (A 6, C2 6) with the 4 isotopologues that
+  inherited them, and those rows stay below assignability on their evidence.
+- **Nothing else moves**: no tier or owner on 48,894 peaks, G1, G1
+  conditioned and G2 identical, Stage A identical on all 43 runs. The run
+  calibration counts the new library rows as anchors (1 to 3 more on 19
+  runs), which on F1 and F2 moves `mass_z` on 13,807 rows; the 45 that cross
+  three widths are at candidate or below.
+
+#### The cap on the target library's rows (build `...600e1c4`)
+
+Only an isotopologue that tracks a row exempts it from the cap now, and a
+library row is judged like any other against the calibration it anchors.
+- **Three rows move, all from assigned to candidate**, and they are the three
+  decision 3's third addendum left protected: C10H14O's M+1 and M+2 on two C
+  samples, 3.5 and 3.1 widths off while their monoisotopic row sits inside
+  one, and C3H4O4's M+2 on one F2 sample, 3.8 widths off on a line at 1e-5 to
+  1e-4 of the base peak.
+- **The gate's whole cap goes from 48 rows to 51** over the 43 runs. Nothing
+  else moves: 0 owner or formula changes on 48,894 peaks, and G1, G1
+  conditioned, G2 with its denominator and G6 identical on all eight sets.
+- **No library row is left above the cap's tier on its curation alone.**
+- **The record:** of the 492 library rows, 337 are corroborated by an
+  isotopologue that tracks them and 155 by their curation; `capped_curated`
+  counts the three the gate took.
+
+#### Verify, item by item
+
+- **Every flagged entry on the gate batches, with its verdict:** the audit's
+  table.
+- **The gate re-run on the reviewed lists and read against the round
+  before:** three rounds, each against the one before it - the list edits on
+  the merged engine, then #2136, then the cap.
+- **The curated rows beyond three widths and the rows the exemption
+  protects, re-counted:** 15 on step 2.2b's round and 15 once the workaround
+  entries were gone; 16 once the spelling fix gave the library back its own
+  rows. The exemption held 3 of them at assigned, and holds none: the gate
+  caps those three at candidate.
+- **Decision 3's exemption answered:** its fourth addendum.
+
 
 ## Not in this plan
 
