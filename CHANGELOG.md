@@ -7,6 +7,17 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 ## [1.8.1] - 2026.09.16
 ### Changed
 
+- **A nitrate cluster of a neutral with no oxygen is no longer held at
+  assigned.** Nitrate holds on to a molecule by hydrogen bonds from its
+  oxygen-bearing groups, so a run now caps at candidate a row read through a
+  nitrate channel (the plain or 15N-labelled ion, or its clusters with nitric
+  acid) whose neutral carries no oxygen, and its isotopologues follow. The row
+  keeps its formula, the tier reason is `oxygen_free_cluster` ("no oxygen to
+  cluster on" in the peak inspector), and a second ionization channel does not
+  lift it. A compound of the workspace's target library is exempt; a formula
+  from a reference list is not. Carbonate clusters are not judged this way.
+  `config.tiering` records rule set 4.
+
 - **A peak an assigned compound's isotope pattern predicts is read as that
   compound's isotopologue, and an isotopologue whose mass error misses its
   parent's is no longer held at assigned.** A run caps a monoisotopic row at

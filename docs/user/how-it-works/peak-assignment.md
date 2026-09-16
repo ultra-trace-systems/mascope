@@ -224,6 +224,16 @@ What caps a row at candidate:
   molecule. Radicals are real chemistry, but a formula search chooses a radical reading of
   an ion rather than measuring it against a closed-shell one. A curated identity is exempt,
   because it was matched to a compound somebody authored rather than chosen by the search.
+- **no oxygen to cluster on** — the peak was read as nitrate clustered with a neutral that
+  has no oxygen. Nitrate holds on to a molecule by hydrogen bonds from its oxygen-bearing
+  groups, and quantum-chemical modelling of what a nitrate source detects puts the bar at
+  two such hydrogen-bond donors ([Hyttinen et al. 2015][hy15]); a neutral with no oxygen
+  offers none of them. The row keeps its formula, since its mass and isotope pattern
+  still fit. The rule covers every form of the nitrate channel: the plain and the
+  15N-labelled ion, and their clusters with nitric acid. Carbonate clusters are not
+  judged this way. A second ionization channel does not lift the cap. A compound of your
+  own target library is exempt; a formula from a loaded reference list is not, since a
+  list names a compound rather than the channel it is seen through.
 - **rivals left standing** — the peak's own evidence could not separate the committed
   formula from at least one other, and no second ionization channel of the run committed
   the same neutral.
@@ -565,6 +575,10 @@ batch ledger* puts Mascope's own view back.
 - <a id="sch14"></a>Schymanski, E. L. et al. *Identifying small molecules via high
   resolution mass spectrometry: communicating confidence.* Environ. Sci. Technol. 2014,
   48(4):2097–2098. [link](https://pubs.acs.org/doi/10.1021/es5002105)
+- <a id="hy15"></a>Hyttinen, N.; Kupiainen-Määttä, O.; Rissanen, M. P.; Muuronen, M.;
+  Ehn, M.; Kurtén, T. *Modeling the charging of highly oxidized cyclohexene ozonolysis
+  products using nitrate-based chemical ionization.* J. Phys. Chem. A 2015,
+  119(24):6339–6345. [link](https://doi.org/10.1021/acs.jpca.5b01818)
 - <a id="sum07"></a>Sumner, L. W. et al. *Proposed minimum reporting standards for chemical
   analysis (Metabolomics Standards Initiative).* Metabolomics 2007, 3:211–221.
   [link](https://doi.org/10.1007/s11306-007-0082-2)
@@ -577,4 +591,5 @@ batch ledger* puts Mascope's own view back.
 [sch17]: #sch17
 [sch14]: #sch14
 [sum07]: #sum07
+[hy15]: #hy15
 [platt]: #platt
