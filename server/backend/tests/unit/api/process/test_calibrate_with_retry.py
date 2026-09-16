@@ -42,7 +42,11 @@ async def _run(side_effect, user_id: int | None = 1) -> tuple[AsyncMock, list]:
     sink_id = runtime.logger.add(
         lambda message: records.append(message.record), level="TRACE"
     )
-    calibrate = AsyncMock(side_effect=side_effect)
+    # Without a side effect, a calibration that applied a verified fit.
+    calibrate = AsyncMock(
+        side_effect=side_effect,
+        return_value={"data": {"verified": True, "quality_issues": []}},
+    )
     recorder = AsyncMock()
     notifier = AsyncMock()
     try:
@@ -219,3 +223,53 @@ async def test_summary_skipped_without_a_user():
 
     assert calibrate.result is False
     calibrate.notifier.assert_not_awaited()
+
+
+def _applied(verified: bool):
+    """A calibration that applied a fit, with the verdict stamped on it."""
+    issues = (
+        []
+        if verified
+        else [
+            {
+                "code": "points",
+                "message": (
+                    "Fitted on 1 calibration point but moved the m/z axis by "
+                    "78.40 ppm; below 3 points a correction of at most 5 ppm "
+                    "is trusted."
+                ),
+            }
+        ]
+    )
+    return lambda **_: {"data": {"verified": verified, "quality_issues": issues}}
+
+
+@pytest.mark.asyncio
+async def test_a_verified_fit_returns_true():
+    calibrate, _ = await _run(_applied(True))
+
+    assert calibrate.result is True
+    calibrate.notifier.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_fit_below_the_bar_returns_false_without_retrying():
+    """A wider tolerance only admits worse calibrants, so it is not tried."""
+    calibrate, records = await _run(_applied(False))
+
+    assert calibrate.result is False
+    assert calibrate.await_count == 1
+    # The applied fit is its own record; no failure marker over it.
+    calibrate.recorder.assert_not_awaited()
+    assert _monitored(records) == []
+
+
+@pytest.mark.asyncio
+async def test_a_fit_below_the_bar_is_reported_with_its_reasons():
+    calibrate, _ = await _run(_applied(False))
+
+    notification = _emitted(calibrate.notifier)
+    assert notification.status == "warning"
+    assert notification.parent_id is None
+    assert "Fitted on 1 calibration point" in notification.message
+    assert "skipped" in notification.message

@@ -206,6 +206,7 @@ async def calibration_mz_apply_route(
         filename=filename,
         fit=body.fit,
         manual=True,
+        accept_quality_issues=body.accept_quality_issues,
         independent_transaction=True,
         user_id=user.id,
         process_id=process_id,

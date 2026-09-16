@@ -474,11 +474,27 @@ async def create_sample_file(
                 )
                 device_id = None
 
+        # A calibration record at registration is the converter's reading of
+        # the acquisition's own m/z axis (TOF coefficients), never a fit. It
+        # is stamped as such, and nothing else the body carries is kept, so a
+        # registration cannot claim a verified axis. See
+        # ``is_unfitted_record`` in the calibration controller.
+        mz_calibration = sample_file_create.mz_calibration
+        if mz_calibration is not None:
+            mz_calibration = {
+                **{k: v for k, v in mz_calibration.items() if k in ("mode", "par")},
+                "status": "unfitted",
+                "verified": False,
+            }
+
         # Step 2: Construct new sample file. The uploading user comes from
         # the authenticated request (user_id), not from the request body.
         new_sample_file = SampleFile(
             sample_file_id=gen_id(16),
-            **sample_file_create.model_dump(exclude={"uploaded_by_device_id"}),
+            **sample_file_create.model_dump(
+                exclude={"uploaded_by_device_id", "mz_calibration"}
+            ),
+            mz_calibration=mz_calibration,
             uploaded_by_device_id=device_id,
             uploaded_by_user_id=user_id,
         )

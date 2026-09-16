@@ -33,6 +33,33 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   open.** Right-clicking its empty space with no batch open still offered the
   entry, which opened the batch dialog with no batch to edit. That menu now
   opens only when a batch is open.
+- **A calibration that runs is no longer taken for a good one.** A sample's
+  m/z calibration was marked verified whenever a fit completed, and matching
+  and peak assignment read that as "this file's mass axis is right". Two
+  calibrants that disagree were split down the middle and stamped verified
+  with the residual unchanged, a single calibrant fitted itself to zero error,
+  and a TOF file never fitted kept the axis the acquisition wrote with nothing
+  to say so. An applied fit is now verified only when its mean residual is
+  within 1 ppm (Orbitrap) or 3 ppm (TOF), a fit on fewer than three points
+  corrects the axis by no more than 5 ppm, a fit on more draws them from at
+  least two ions, and, on Orbitrap, the calibrants carry at least 0.01% of
+  the total ion current. On a corpus of production files from every site
+  this verifies 112 of 122 Orbitrap fits and all 4 TOF fits; among those it
+  refuses are one-point fits that moved the axis 76 to 81 ppm onto the wrong
+  peak and reported a zero residual. A fit below that bar is still applied but
+  stored unverified with its reasons, the sample is left out of matching and
+  peak assignment, and the user is told why. An operator can accept such a
+  fit from the calibration dialog; the record names who accepted it and the
+  sample keeps a warning badge. A TOF file is marked not calibrated from
+  registration until a fit replaces its acquisition axis, and a TOF fit that
+  fails now leaves a failure marker instead of no trace. Fits already stored
+  keep their verdict until they are recalibrated.
+
+- **The calibration badge tells a bad calibration from an instrument that
+  drifted.** Both showed the same warning colour. A file whose acquisition
+  axis was far off but which calibrated well now shows a teal badge that
+  points at the instrument; amber is kept for calibrations below the quality
+  bar, and a failed calibration is red.
 
 - **Orbitrap peak detection no longer joins two weak neighbouring peaks into
   one.** 1.8.0 began merging two averaged centroids up to one and a half peak

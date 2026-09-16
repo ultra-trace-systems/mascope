@@ -127,3 +127,10 @@ class CalibrationFitParams(MzCalibrationParams):
 
 class CalibrationMzApplyBody(BaseModel):
     fit: dict = Field(..., description="Fit parameters")
+    accept_quality_issues: bool = Field(
+        False,
+        description=(
+            "Store the fit as verified even if it misses the calibration "
+            "quality bar. The record keeps the issues and names who accepted it."
+        ),
+    )

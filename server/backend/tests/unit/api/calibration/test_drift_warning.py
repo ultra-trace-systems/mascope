@@ -478,7 +478,17 @@ class TestApplyRoutesTheMarkerByPath:
     tests pin that the flag survives the trip to the persisted record.
     """
 
-    CLEAN = {"quality": {"pre_fit_mz_error_ppm": 0.35}}
+    # A fit that also clears the quality bar, so ``verified`` reflects the
+    # drift handling alone.
+    CLEAN = {
+        "quality": {
+            "pre_fit_mz_error_ppm": 0.35,
+            "post_fit_mz_error_ppm": 0.1,
+            "n_points": 5,
+            "n_ions": 3,
+            "calibrant_to_tic": 0.05,
+        }
+    }
     FLAGGED = {"acquisition_drift": True, "acquisition_drift_ppm": 12.6}
     WINDOW = ("ORBI-1", 10.0)
 
