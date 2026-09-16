@@ -29,6 +29,7 @@ step PRs land on the epic and are named here as they merge.
 | 2.5b - Stage A window per source, polarity, radical filter, deactivate, the isoprene lift (seed proposal phase 3) | #2116 (schema and CLI), #2117 (engine, lists) | measured: #2116 records each source's window, radical allowance and polarity on its row (a database mirror at today's window, a list unbounded, existing rows backfilled at today's window), lets `reference sync` set them (`--polarity` included), has `reference seed` write and refresh them, and adds `reference deactivate`. #2117 makes Stage A read all three under the context's ceiling (every shipped context opens Si, P, F, Cl, Br and I at C40/700 Da; `none` sets none) and lifts the isoprene list, D7/D8 (Fromme et al. 2019) and L3-L5; the monoterpene HOM list matches both polarities (decision 17's addendum). With the seed refreshed, G2 same formula rises on every set (A 95.4 -> 97.1, B 93.5 -> 95.1, C2 82.6 -> 87.1, D 83.9 -> 85.5, E 45.2 -> 54.8, F1 23.6 -> 27.6, F2 18.8 -> 26.1); D3-D8, the phosphates and TFA resolve on every sample the reference commits them on, the siloxanes mostly at candidate tier by the evidence's own reading (decision 18); G6 on A falls 87 -> 50 with its grid part 69 -> 5. 987 owners change, 125 towards the reference and 9 away (5 new siloxane isotopologue claims on B, 4 isoprene nitrates on F2). IBr2- commits as an analyte on 8 reagent peaks, read at the gate |
 | 2.5c - the same-ion ambiguity on a Stage A mirror row | #2118 | measured: a reference mirror's M0 row carries the readings of its ion the untargeted search would have held, as `same_ion` alternatives (2,725 rows over the 43 samples), and the reagent-N rule asks it from both sides, since a list can put the nitrogen on the analyte; a second channel fixes the count either way and a target library row stays exempt. It moves tiers and nothing else: no formula, role or owner change on 48,894 peaks, G2 identical on every set, no untargeted or target library row touched. The rule reaches 746 mirror rows and caps 167 from assigned (A 24, B 67, F2 76) with 25 isotopologues. All nine same-ion steals on B carry their ammonium reading: two are capped and seven fixed by the same neutral's urea adduct. G1 A 24.3 -> 23.2, B 36.8 -> 37.0 (conditioned 11.6 -> 11.7), F2 97.5 -> 97.3; on B the cap takes 50 rows the reference confirms, 18 of them Keller's amines through `+H+` |
 | 2.5d - review of the curated lists | #2136 (a library entry's line whatever its spelling), #2137 (the cap on library rows, the plan) | measured: the 46 entries the gate's modes attach were audited against the step's four flags, and the plan owner's verdicts taken on each. The four odd-electron workaround entries left the lists (HCO3 and CHO3 for CO3-, HS3 for S3-, Br for Br2-); the entries that never commit a row stay, with their reasons - reagent lines the pre-pass claims first, or compounds absent or out of range; no entry is left whose ion another channel of the same sample reads as a different neutral. Removing the workaround entries cost C2 its Stage A offset: four to five of its eleven or twelve matched lines were theirs, so it scores at the class width with no offset while its own runs sit at -1.1 ppm, and 146 rows leave assigned, 106 of them rows the reference commits the same formula on (the section after this step has the two ways back). The audit found an engine defect, fixed in #2136: a reference list's copy of a library reading took the entry's line, on the spelling or on a shade better fit - 63 rows on four sets, 12 density caps lifted, no tier moved. Decision 3's exemption is lifted from the cap in #2137 (its fourth addendum): a library line off calibration is capped unless an isotopologue tracks it, which moves the three isotopologues that exemption protected from assigned to candidate and nothing else |
+| 2.5e - an offset from the reagent lines where the library is thin | - | planned, after 2.5d: where Stage A matches too few library lines to fit an offset, the run scores the search at the one the reagent pre-pass measured, and only where it is larger than the instrument class's precision; the width stays the class's. On the gate that is C2, whose reagent lines put the axis at -1.25 ppm where its own commits put it at -1.10 and Stage A puts it at zero |
 | 2.4e - isotopologue claims under interference | - | planned, after 2.5d: a line an assigned formula's envelope predicts, where the evidence is in doubt, becomes a candidate isotopologue of that formula rather than a new M0 (decision 18's addendum), and the tracking test allows for overlap and low intensity |
 | 2.4f - an oxygen-free neutral in a nitrate cluster | - | planned, after 2.5d: a nitrate cluster reading whose neutral carries no oxygen is not held at assigned; carbonate is measured beside it for the plan owner |
 | 2.6 - frontend: profile, reasons, roles | - | planned |
@@ -1040,6 +1041,53 @@ its own status.
   election, and a line of theirs off calibration is capped unless an
   isotopologue tracks it.
 - **Entries that never commit a row are kept**, each recorded with its reason.
+
+### 2.5e An offset from the reagent lines where the library is thin
+
+- **What.** Where Stage A matched too few of the target library's lines to fit
+  an offset, the run scores the untargeted stage at the offset the reagent
+  pre-pass already measured from the source's own ions. The width stays the
+  instrument class's: a handful of bright reagent lines is not a measurement
+  of what the instrument does to an analyte.
+  - **Only when there is a bias to correct.** The offset is taken only where
+    it is larger than the class's own precision, so a sample whose reagent
+    lines say the axis sits where it should is scored exactly as it is today.
+  - **A fallback, not a pooled anchor set.** Reagent lines cluster at the low
+    end of the range, where step 2.2b measured an Orbitrap's residual growing
+    as 1/mz, so adding them to a library's own lines would pull a sample that
+    can already measure its offset away from it.
+  - **Recorded** on the run: `pattern_scoring.mu_source` says `reagent`, with
+    the anchors it came from. The pre-pass already computes this - it returns
+    the offset and its anchors, and the service logs them and discards them.
+- **Why.** Step 2.5d's round left C2 scoring at no offset: its curated lines
+  were what measured one, and four to five of them were the odd-electron
+  entries the step removed. Measured on the gate's last round, per sample:
+  - **C2** claims 7 reagent lines between m/z 62 and 129 whose median error is
+    -1.25 to -1.26 ppm, against the -1.10 to -1.13 its own committed rows
+    measure. That is nearer the run's own centre than the removed entries ever
+    put Stage A (-1.53 to -1.58), and far nearer than the zero it scores at
+    now.
+  - **A** claims 10 lines between m/z 61 and 181 whose median is -0.90 to
+    -0.96 while its commits sit at +0.02 to +0.06 - the 1/mz residual, and the
+    reason these are a fallback rather than anchors.
+  - **D** (median 0.00 to +0.35 against commits at -0.08 to -0.23) and **E**
+    (+0.19 to +0.71 against +0.55 to +1.61 on a 3.04 ppm class) are inside
+    the guard and do not move.
+  - **C** claims none: its mass range starts above its reagent's lines.
+  - **B, F1 and F2** fit their own offset and never reach the fallback.
+- **What it does not fix.** C2's axis is genuinely off, by the same 1.1 to 1.3
+  ppm its reagent lines and its own commits agree on. The repair is the
+  calibration node, and those reagent cluster lines are the calibrants step
+  2.2 found its mode lacking; recalibrating C2 re-bases every C2 number in
+  this plan, so it belongs with 2.7a's refresh rather than mid-stage.
+- **Verify.** Only a sample scoring at no offset may move, which on the gate is
+  C2: how many of the 146 rows it lost in 2.5d come back and what the
+  reference says of them; A, B, C, D, E, F1 and F2 identical row for row; the
+  run's own calibration and the gate's caps unchanged, since this is what the
+  search is scored at and not what the gate measures; G1, G1 conditioned and
+  G2 per set.
+- **Size.** S: one number into Stage A's scoring, a guard, a record, and a
+  round. On the reference frozen at `cc07ce1` (decision 16).
 
 ### 2.6 Frontend: profile, reasons, roles
 
