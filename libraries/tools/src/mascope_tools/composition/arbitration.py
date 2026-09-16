@@ -241,6 +241,44 @@ def candidate_density(
     return max(1, sum(1 for evidence in evidences if evidence >= anchor - gap))
 
 
+def unseparated(
+    candidates: Iterable[Any],
+    *,
+    around: str,
+    tie_tol: float = DEFAULT_TIE_TOL,
+) -> list[str]:
+    """The distinct formulas :func:`candidate_density` counts around one.
+
+    The same count, naming what it counted, best evidence first, the anchor
+    among them. A caller that has to say which formulas the evidence could not
+    separate from a reading asks this; one that only needs how many asks
+    :func:`candidate_density`, which the two agree on by test.
+
+    :param candidates: The peak's candidates, in any form
+        :func:`arbitrate_candidates` accepts.
+    :param around: The formula to count around.
+    :param tie_tol: The gap that counts as unresolved.
+    :return: The formulas, best evidence first; just the anchor where it is not
+        among the candidates, and nothing where there are no candidates at all.
+    """
+    best_evidence: dict[str, float] = {}
+    for candidate in candidates:
+        formula, fit = _as_formula_fit(candidate)
+        evidence = fit * formula_plausibility(formula)
+        if formula not in best_evidence or evidence > best_evidence[formula]:
+            best_evidence[formula] = evidence
+    if not best_evidence:
+        return []
+    anchor = best_evidence.get(str(around))
+    if anchor is None:
+        return [str(around)]
+    ranked = sorted(best_evidence.items(), key=lambda item: (-item[1], item[0]))
+    if sum(best_evidence.values()) <= 0:
+        return [formula for formula, _ in ranked]
+    gap = max(tie_tol * ranked[0][1], TIE_ABS_FLOOR)
+    return [formula for formula, evidence in ranked if evidence >= anchor - gap]
+
+
 def density_of(
     arbitrated: Sequence[ArbitratedCandidate], *, around: str | None = None
 ) -> int:

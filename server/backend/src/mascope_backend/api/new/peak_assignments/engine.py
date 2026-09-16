@@ -1624,6 +1624,86 @@ def record_mirror_same_ion_readings(
     return carrying
 
 
+#: The provenance block a list hit carries once the formula search has been
+#: asked about its peak: the grid's rivals its density counts.
+GRID_RIVALS = "grid_rivals"
+
+#: How many of those rivals a row keeps by name. The count is on the row in
+#: full; the names are for a reader, as a row's alternatives are.
+GRID_RIVALS_KEPT = 5
+
+
+def record_grid_rivals(rows: list[dict], measured: list) -> dict:
+    """Count the formula search's rivals into each list hit's density.
+
+    A list hit's density counts the known set's formulas its evidence could not
+    separate (:func:`invert_matches_to_peak_assignments`). The grid holds
+    formulas for the same mass that the known set never proposed, and an
+    election's density counts those. This adds the ones the list hit's
+    evidence cannot separate either, less any the known set already counted
+    (its rows' formulas are the row's alternatives), so the density rule reaches
+    a list hit as it reaches an election.
+
+    :param rows: The Stage A monoisotopic rows that were measured, modified in
+        place.
+    :param measured: What :func:`finder.rivals_of_readings` found for each, in
+        the same order; None where it could not measure a row.
+    :return: What the run records: how many rows were measured, and how many
+        the grid added a rival to.
+    """
+    with_rivals = 0
+    for row, found in zip(rows, measured, strict=True):
+        if found is None:
+            continue
+        provenance = row.get("provenance")
+        if not isinstance(provenance, dict):
+            provenance = {}
+            row["provenance"] = provenance
+        known = {
+            formula_identity(alternative.get("assigned_formula"))
+            for alternative in row.get("alternatives") or []
+        }
+        added = [
+            rival
+            for rival in found.rivals
+            if formula_identity(rival["formula"]) not in known
+        ]
+        known_density = provenance.get(CANDIDATE_DENSITY)
+        known_density = known_density if isinstance(known_density, int) else 1
+        provenance[GRID_RIVALS] = {
+            "known_density": known_density,
+            "added": len(added),
+            "rivals": [
+                {
+                    "formula": rival["formula"],
+                    "ion_formula": rival["ion"],
+                    "ionization_mechanism": rival["ionization_mechanism"],
+                    "fit_score": round(float(rival["fit_score"]), 4),
+                    "mz_error_ppm": (
+                        None
+                        if rival["mz_error_ppm"] is None
+                        else round(float(rival["mz_error_ppm"]), 4)
+                    ),
+                }
+                for rival in added[:GRID_RIVALS_KEPT]
+            ],
+            # The row's fit on the search's own scale, beside which the rivals
+            # were counted.
+            "fit_score": round(float(found.fit_score), 4),
+            "grid_candidates": found.candidates,
+            # Uniqueness is relative to the searched box: a formula outside it
+            # only meets the rivals the box builds.
+            "in_grid": found.in_grid,
+        }
+        provenance[CANDIDATE_DENSITY] = known_density + len(added)
+        if added:
+            with_rivals += 1
+    return {
+        "measured": sum(1 for found in measured if found is not None),
+        "with_rivals": with_rivals,
+    }
+
+
 # Mapping a finder result back to the observed peak it came from is an IDENTITY join,
 # not a mass match: `assign_compositions` copies the m/z straight out of the frame it was
 # handed. The tolerance below exists only to survive a float32/float64 round trip or a
