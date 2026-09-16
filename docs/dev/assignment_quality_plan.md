@@ -30,6 +30,7 @@ step PRs land on the epic and are named here as they merge.
 | 2.5c - the same-ion ambiguity on a Stage A mirror row | #2118 | measured: a reference mirror's M0 row carries the readings of its ion the untargeted search would have held, as `same_ion` alternatives (2,725 rows over the 43 samples), and the reagent-N rule asks it from both sides, since a list can put the nitrogen on the analyte; a second channel fixes the count either way and a target library row stays exempt. It moves tiers and nothing else: no formula, role or owner change on 48,894 peaks, G2 identical on every set, no untargeted or target library row touched. The rule reaches 746 mirror rows and caps 167 from assigned (A 24, B 67, F2 76) with 25 isotopologues. All nine same-ion steals on B carry their ammonium reading: two are capped and seven fixed by the same neutral's urea adduct. G1 A 24.3 -> 23.2, B 36.8 -> 37.0 (conditioned 11.6 -> 11.7), F2 97.5 -> 97.3; on B the cap takes 50 rows the reference confirms, 18 of them Keller's amines through `+H+` |
 | 2.5d - review of the curated lists | #2136 (a library entry's line whatever its spelling), #2137 (the cap on library rows, the plan) | measured: the 46 entries the gate's modes attach were audited against the step's four flags, and the plan owner's verdicts taken on each. The four odd-electron workaround entries left the lists (HCO3 and CHO3 for CO3-, HS3 for S3-, Br for Br2-); the entries that never commit a row stay, with their reasons - reagent lines the pre-pass claims first, or compounds absent or out of range; no entry is left whose ion another channel of the same sample reads as a different neutral. Removing the workaround entries cost C2 its Stage A offset: four to five of its eleven or twelve matched lines were theirs, so it scores at the class width with no offset while its own runs sit at -1.1 ppm, and 146 rows leave assigned, 106 of them rows the reference commits the same formula on (the section after this step has the two ways back). The audit found an engine defect, fixed in #2136: a reference list's copy of a library reading took the entry's line, on the spelling or on a shade better fit - 63 rows on four sets, 12 density caps lifted, no tier moved. Decision 3's exemption is lifted from the cap in #2137 (its fourth addendum): a library line off calibration is capped unless an isotopologue tracks it, which moves the three isotopologues that exemption protected from assigned to candidate and nothing else |
 | 2.5e - an offset from the reagent lines where the library is thin | - | planned, after 2.5d: where Stage A matches too few library lines to fit an offset, the run scores the search at the one the reagent pre-pass measured, and only where it is larger than the instrument class's precision; the width stays the class's. On the gate that is C2, whose reagent lines put the axis at -1.25 ppm where its own commits put it at -1.10 and Stage A puts it at zero |
+| 2.5f - a list hit meets the untargeted grid | - | planned, after 2.5d and independent of 2.5e, in two PRs: first the untargeted enumeration runs over Stage A's peaks too and a list hit's candidate density counts the grid's rivals beside the known set's, so the density rule reaches it with no election changed; then the list formula is one candidate in the arbitration carrying a prior, a grid rival may win the peak, and the assigned tier comes from the same rules for every row, the mass gate already reading a library row like any other since 2.5d (decision 3's fifth addendum); the first PR before 2.4e, which reads assigned tiers, the second where the measurement puts it |
 | 2.4e - isotopologue claims under interference | - | planned, after 2.5d: a line an assigned formula's envelope predicts, where the evidence is in doubt, becomes a candidate isotopologue of that formula rather than a new M0 (decision 18's addendum), and the tracking test allows for overlap and low intensity |
 | 2.4f - an oxygen-free neutral in a nitrate cluster | - | planned, after 2.5d: a nitrate cluster reading whose neutral carries no oxygen is not held at assigned; carbonate is measured beside it for the plan owner |
 | 2.6 - frontend: profile, reasons, roles | - | planned |
@@ -779,7 +780,8 @@ The confidence layer. This is where "assigned" starts meaning something.
   at the tier the rule gives; the gate's isotopologue caps re-counted by
   overlap and intensity.
 - **Size.** M. After 2.5d, whose curated formulas predict many of the
-  envelopes; on the reference frozen at `cc07ce1` (decision 16).
+  envelopes, and after 2.5f's measurement, which settles which list rows
+  stand at assigned; on the reference frozen at `cc07ce1` (decision 16).
 
 ### 2.4f An oxygen-free neutral in a nitrate cluster
 
@@ -1088,6 +1090,82 @@ its own status.
   G2 per set.
 - **Size.** S: one number into Stage A's scoring, a guard, a record, and a
   round. On the reference frozen at `cc07ce1` (decision 16).
+
+### 2.5f A list hit meets the untargeted grid
+
+- **What.** A formula's presence on a list is evidence for the row, not a
+  label on it: a list hit is `assigned` only where nothing plausible
+  competes with it. Today Stage A wins the peak, the untargeted stage runs
+  on the remainder alone, and a Stage A row's `candidate_density` counts
+  rivals inside the known set only, so the alternatives are never
+  enumerated on exactly the rows where the list decides. Two PRs, measured
+  one after the other:
+  - **The measurement.** The untargeted enumeration runs over Stage A's
+    peaks as well, and the density anchored on the list formula counts the
+    grid's rivals beside the known set's. The density rule then reaches a
+    list hit as it reaches an election - capped unless a second channel
+    corroborates it - and the reason names it. No election changes and no
+    owner moves: this PR answers how many list hits have a rival inside the
+    width, which nothing has measured.
+  - **The election.** The list formula is one candidate in the arbitration
+    and carries a prior; a grid rival may win the peak, and the assigned
+    tier comes from the same rules for every row. The prior orders a tie,
+    it does not tier one: a tie stays candidate. The mass gate already
+    reads a library row like any other since step 2.5d, so nothing of the
+    cap changes here (decision 3's fifth addendum). The row keeps saying
+    which list named it.
+  - **What stays.** Stage A's width and the run's calibration fit over
+    corroborated list hits and never depended on the tier; they keep doing
+    so. Isotopologue rows follow their owner as before. Uniqueness is
+    relative to the searched grid: the siloxanes, the phosphates and the
+    iodine species promote straight back because the grid builds no rival,
+    which is right, and the run records its search scope.
+- **Why.** Decision 18 applied to the lists, as the plan owner put it on
+  2026-09-15: the aim is the most likely formula for each peak, and a
+  formula's presence on a reference list is evidence that should not mean
+  `assigned` by itself where plausible alternatives exist. The share at
+  stake is large. On step 2.2b's round, of the monoisotopic rows at
+  assigned, Stage A holds A 219 of 1,012, B 408 of 4,065, C 246 of 602, C2
+  135 of 312, D 458 of 897, E 53 of 225, F1 414 of 752 and F2 276 of 696;
+  the target library's part is A 29, B 22, C 15, C2 16, F1 24 and F2 32,
+  and the reference mirror's the rest. Most rest on the fit alone: the rows
+  whose gate record names neither a tracking isotopologue nor a curation
+  are A 145, B 239, C 213, C2 113, D 208, E 39, F1 336 and F2 229. Read
+  against the reference, it commits another formula on A 7, B 25, C 5, D 1,
+  E 6, F1 14 and F2 14 of them and is silent on A 48, B 52, C 16, C2 34, D
+  16, E 41, F1 367 and F2 249. On the Orbitrap sets the contradictions are
+  the same-ion nitrogen ambiguity - a nitrogen-bearing neutral through
+  `+H+` against a nitrogen-free one through `+NH4+` - and C's five are the
+  workaround entry step 2.5d's section fixed. The reference is no measure
+  of the rivals either, since it assigns list hits the same way: on A and
+  B the target library's C9H19NO is assigned on every sample through `+H+`
+  and through the uronium adduct, the reference reads the second the same
+  way and the first as C9H16O through `+NH4+`, and so splits one neutral
+  across its channels. The number that decides is the grid's, and the
+  first PR is what produces it. Step 2.5d has since moved C2's count (181
+  assigned rows on its round), and the measurement reads the round it runs
+  on. The tiers already exist to carry the answer: the density rule, the
+  envelope-neighbour rule, the cross-channel escape and the mass gate reach
+  a Stage A row today, and 3,953 Stage A monoisotopic rows sit below
+  assigned on the 2.2b round, 3,586 of them on their own fit with no rule
+  involved.
+- **Verify.** From the first PR: the Stage A rows at assigned with a grid
+  rival inside the width, by set, by list and by whether a second channel
+  holds the neutral; the rows the density rule caps and what the reference
+  commits on their peaks; the run time. From the second: the peaks a grid
+  rival wins from a list formula, split by whether the reference agrees
+  with either; the list-only families (siloxanes, phosphates, the iodine
+  species, the PFCAs) promoting back through uniqueness; G1 and G1
+  conditioned, expected to rise because the reference assigns list hits
+  too, and read as decision 18 reads them; G2 unchanged where no rival
+  wins; the three library isotopologues step 2.5d's cap took, re-read with
+  the grid's rivals beside them.
+- **Size.** S for the measurement, M-L for the election, which needs the
+  prior's weight decided (a decision of its own). After 2.5d, whose audit
+  matters here because a wrong entry with a prior leans on every tie it
+  touches, and independent of 2.5e; the first PR before 2.4e, which claims
+  lines under assigned formulas; on the reference frozen at `cc07ce1`
+  (decision 16).
 
 ### 2.6 Frontend: profile, reasons, roles
 
@@ -3516,6 +3594,14 @@ belongs in the fitted axis once anchors reach below m/z 100, which is step
      to candidate and nothing else moves - the gate's whole cap goes from 48
      rows to 51 over the 43 runs, with no owner or formula change on 48,894
      peaks and G1, G2 and G6 identical on every set.
+   *Fifth addendum (2026-09-15, the plan owner's principle on the lists):
+   a formula's presence on a list is evidence, not a label.* A list hit is
+   `assigned` only where nothing plausible competes with it, and today
+   nothing looks: Stage A wins the peak and the untargeted stage never
+   enumerates rivals there. Step 2.5f measures the rivals first and then
+   makes the list formula one candidate with a prior, judged by the same
+   rules as every row. The fourth addendum lifted the cap's exemption; this
+   one reaches the tier a list hit earns against the grid.
 4. **The cap.** Every peak by default, with the 5,000 ceiling as the hard
    bound; ingest-time runs are Stage A only, so the cost lands on explicit
    runs.
@@ -3832,6 +3918,10 @@ belongs in the fitted axis once anchors reach below m/z 100, which is step
     overlapping another, or near the noise floor - it is claimed as a
     candidate-tier isotopologue of that formula rather than committed as a new
     M0 (step 2.4e).
+    *Second addendum (2026-09-15, the plan owner).* The same principle
+    applied to the lists: a formula's presence on a reference list is
+    evidence, not a label, and does not mean `assigned` by itself where
+    plausible alternatives exist (step 2.5f, decision 3's fifth addendum).
 
 ## Risks
 
@@ -3844,7 +3934,9 @@ belongs in the fitted axis once anchors reach below m/z 100, which is step
   the graded context factor of the profiles design joins in stage 2 only
   after the decoy harness shows it helps.
 - **Over-demotion of curated targets.** Decision 3; the reasons make every
-  demotion auditable, and a verification verdict overrides.
+  demotion auditable, and a verification verdict overrides. From step 2.5f a
+  list hit with a rival inside the width sits at candidate by design, with
+  the rival named.
 - **Stage heterogeneity during stage 1.** Until 2.1, Stage B evidence stays
   on the v1 scale; the stage 1 gate therefore judges search metrics (G2-G6),
   not G1 alone.
