@@ -29,7 +29,7 @@ step PRs land on the epic and are named here as they merge.
 | 2.5b - Stage A window per source, polarity, radical filter, deactivate, the isoprene lift (seed proposal phase 3) | #2116 (schema and CLI), #2117 (engine, lists) | measured: #2116 records each source's window, radical allowance and polarity on its row (a database mirror at today's window, a list unbounded, existing rows backfilled at today's window), lets `reference sync` set them (`--polarity` included), has `reference seed` write and refresh them, and adds `reference deactivate`. #2117 makes Stage A read all three under the context's ceiling (every shipped context opens Si, P, F, Cl, Br and I at C40/700 Da; `none` sets none) and lifts the isoprene list, D7/D8 (Fromme et al. 2019) and L3-L5; the monoterpene HOM list matches both polarities (decision 17's addendum). With the seed refreshed, G2 same formula rises on every set (A 95.4 -> 97.1, B 93.5 -> 95.1, C2 82.6 -> 87.1, D 83.9 -> 85.5, E 45.2 -> 54.8, F1 23.6 -> 27.6, F2 18.8 -> 26.1); D3-D8, the phosphates and TFA resolve on every sample the reference commits them on, the siloxanes mostly at candidate tier by the evidence's own reading (decision 18); G6 on A falls 87 -> 50 with its grid part 69 -> 5. 987 owners change, 125 towards the reference and 9 away (5 new siloxane isotopologue claims on B, 4 isoprene nitrates on F2). IBr2- commits as an analyte on 8 reagent peaks, read at the gate |
 | 2.5c - the same-ion ambiguity on a Stage A mirror row | #2118 | measured: a reference mirror's M0 row carries the readings of its ion the untargeted search would have held, as `same_ion` alternatives (2,725 rows over the 43 samples), and the reagent-N rule asks it from both sides, since a list can put the nitrogen on the analyte; a second channel fixes the count either way and a target library row stays exempt. It moves tiers and nothing else: no formula, role or owner change on 48,894 peaks, G2 identical on every set, no untargeted or target library row touched. The rule reaches 746 mirror rows and caps 167 from assigned (A 24, B 67, F2 76) with 25 isotopologues. All nine same-ion steals on B carry their ammonium reading: two are capped and seven fixed by the same neutral's urea adduct. G1 A 24.3 -> 23.2, B 36.8 -> 37.0 (conditioned 11.6 -> 11.7), F2 97.5 -> 97.3; on B the cap takes 50 rows the reference confirms, 18 of them Keller's amines through `+H+` |
 | 2.5d - review of the curated lists | #2136 (a library entry's line whatever its spelling), #2137 (the cap on library rows, the plan) | measured: the 46 entries the gate's modes attach were audited against the step's four flags, and the plan owner's verdicts taken on each. The four odd-electron workaround entries left the lists (HCO3 and CHO3 for CO3-, HS3 for S3-, Br for Br2-); the entries that never commit a row stay, with their reasons - reagent lines the pre-pass claims first, or compounds absent or out of range; no entry is left whose ion another channel of the same sample reads as a different neutral. Removing the workaround entries cost C2 its Stage A offset: four to five of its eleven or twelve matched lines were theirs, so it scores at the class width with no offset while its own runs sit at -1.1 ppm, and 146 rows leave assigned, 106 of them rows the reference commits the same formula on (the section after this step has the two ways back). The audit found an engine defect, fixed in #2136: a reference list's copy of a library reading took the entry's line, on the spelling or on a shade better fit - 63 rows on four sets, 12 density caps lifted, no tier moved. Decision 3's exemption is lifted from the cap in #2137 (its fourth addendum): a library line off calibration is capped unless an isotopologue tracks it, which moves the three isotopologues that exemption protected from assigned to candidate and nothing else |
-| 2.5e - an offset from the reagent lines where the library is thin | #2140 | measured: where Stage A matches fewer than eight library lines, both stages score at the median error of every line the reagent pre-pass claimed, isotopologues included, where it claimed three or more and the median is beyond the width the sample is scored at; the width stays the class's. Only C2 reaches it, at -1.25 to -1.26 ppm over seven lines where its commits sit at -1.10 to -1.13: 114 of the 146 monoisotopic rows 2.5d took from assigned come back, 100 of them on the reference's formula, its assigned rows go from 181 to 321, G1 30.9 -> 20.6 (conditioned 0.0 -> 0.8 over 257 rows) and G2 86.4 -> 87.5. The other seven sets are identical row for row, and every run's calibration and caps are unchanged |
+| 2.5e - an offset from the reagent lines where the library is thin | #2140 | measured: where Stage A matches fewer than eight library lines, both stages score at the median error of every line the reagent pre-pass claimed, isotopologues included, where it claimed three or more and the median is beyond the width the sample is scored at; the width stays the class's. Only C2 reaches it, at -1.25 to -1.26 ppm over seven lines where its commits sit at -1.10 to -1.13: 114 of the 146 monoisotopic rows 2.5d took from assigned come back, 100 of them on the reference's formula, its assigned rows go from 181 to 321, G1 30.9 -> 20.6 (conditioned 0.0 -> 0.8 over 257 rows) and G2 86.4 -> 87.5. The other seven sets are identical row for row. Every run keeps its calibration's offset and width and the gate caps the same rows; on C2 the re-elections move the calibration's line through m/z, which three samples now refuse and two fit shallower |
 | 2.5f - a list hit meets the untargeted grid | - | planned, after 2.5d and independent of 2.5e, in two PRs: first the untargeted enumeration runs over Stage A's peaks too and a list hit's candidate density counts the grid's rivals beside the known set's, so the density rule reaches it with no election changed; then the list formula is one candidate in the arbitration carrying a prior, a grid rival may win the peak, and the assigned tier comes from the same rules for every row, the mass gate already reading a library row like any other since 2.5d (decision 3's fifth addendum); the first PR before 2.4e, which reads assigned tiers, the second where the measurement puts it |
 | 2.4e - isotopologue claims under interference | - | planned, after 2.5d: a line an assigned formula's envelope predicts, where the evidence is in doubt, becomes a candidate isotopologue of that formula rather than a new M0 (decision 18's addendum), and the tracking test allows for overlap and low intensity |
 | 2.4f - an oxygen-free neutral in a nitrate cluster | - | planned, after 2.5d: a nitrate cluster reading whose neutral carries no oxygen is not held at assigned; carbonate is measured beside it for the plan owner |
@@ -5137,8 +5137,8 @@ Build `step-2.5e-reagent-line-offset-2026.09.16-c08dfc6` (#2140), read
 against step 2.5d's last round on all eight sets.
 
 - **Only C2 reaches the fallback.** Its six samples score at -1.25 to -1.26
-  ppm from seven lines each. Their own calibration sits at -1.10 to -1.13 and
-  does not move. The other sets:
+  ppm from seven lines each, where their calibration's offset stays at -1.10
+  to -1.13. The other sets:
   - D reads its lines at 0.00 to +0.35 ppm over 9 to 11, and E at +0.19 to
     +0.71 over 16 on a 3.04 ppm width: both inside the guard.
   - C claims no line.
@@ -5170,6 +5170,24 @@ against step 2.5d's last round on all eight sets.
   - The tiering rules cap 90 rows where they capped 81, 88 of them by the
     odd-electron rule, since more rows now reach a tier it lowers, and three
     by candidate density, which capped none before.
+- **C2's calibration line moves, and its caps do not.** The gate's centre
+  through m/z is fitted over every committed monoisotopic row, not over the
+  anchors, and the 48 re-elected rows moved from a median error of +0.52 ppm
+  to -1.46: scored at zero, they were elected near zero, and that was the
+  line's lever.
+  - Of the five samples that fitted a line on the cap round, three now refuse
+    it as no better than a constant centre, and two fit a shallower one (-0.08
+    and -0.09 mDa where they fitted -0.10 and -0.12). The offset and the width
+    stay.
+  - `mass_z` moves on 593 rows whose formula stayed, by less than half a width
+    on 522. Twelve rows cross three widths and two cross six, all untargeted
+    and at candidate or below.
+  - The gate caps the same six rows at the same tiers. No assigned
+    monoisotopic row sits beyond 1.9 widths, and no assigned isotopologue
+    beyond 2.3.
+  - For step 2.7a: with the offset scored, three of the five C2 samples whose
+    commits demanded a 1/mz line no longer do, and the two that still do
+    demand a shallower one.
 - **Which lines the offset reads.** The anchors the pre-pass corrects its own
   claims by would have put C2 at +0.60 ppm (the step's as-built note), so the
   offset reads every line it claims.
@@ -5182,10 +5200,11 @@ against step 2.5d's last round on all eight sets.
   them:** 114, with the reference's formula on 100.
 - **A, B, C, D, E, F1 and F2 identical row for row:** they are, on 47,474
   peaks.
-- **The run's own calibration and the gate's caps unchanged:** unchanged on
-  all 43 runs, C2's included. Its anchors are the same corroborated commits,
-  since the offset changes what the search is scored at and not what the
-  gate measures.
+- **The run's own calibration and the gate's caps unchanged:** the offset, the
+  width and the capped rows are unchanged on all 43 runs, since the anchors
+  are the same corroborated commits. The line through m/z is not: on five of
+  C2's samples it moved with the search's re-elections, which it is fitted
+  over, and the caps did not move with it.
 - **G1, G1 conditioned and G2 per set:** above for C2; the other seven are
   unchanged.
 
