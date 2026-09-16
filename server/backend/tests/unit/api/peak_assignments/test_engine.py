@@ -1395,7 +1395,7 @@ class TestScoreIonsByFit:
         # the axis 1.26 ppm low, where the sample's commits sit too. A line
         # there is on the axis; scored at zero, it was 1.26 ppm off it.
         lines = [("lib0", -1.2), ("lib1", -1.3), ("lib2", -1.25), ("probe", -1.26)]
-        reading = ReagentOffset(-1.26, 7, taken=True)
+        reading = ReagentOffset(-1.26, 7, beyond_width=True)
 
         corrected = self._fit_of(lines, fallback_sigma_ppm=0.3, reagent_offset=reading)
         uncorrected = self._fit_of(lines, fallback_sigma_ppm=0.3)
@@ -1408,9 +1408,9 @@ class TestScoreIonsByFit:
         )
         assert corrected["probe"] > uncorrected["probe"]
 
-    def test_a_reading_not_taken_leaves_the_sample_uncorrected(self):
+    def test_a_reading_inside_the_width_leaves_the_sample_uncorrected(self):
         lines = [("lib0", 0.3), ("lib1", 0.2), ("probe", 0.3)]
-        inside = ReagentOffset(0.3, 9, taken=False)
+        inside = ReagentOffset(0.3, 9, beyond_width=False)
 
         assert self._fit_of(lines, fallback_sigma_ppm=0.3, reagent_offset=inside)[
             "probe"
@@ -1422,7 +1422,7 @@ class TestScoreIonsByFit:
         # that measures its own offset away from it.
         lines = [(f"lib{i}", 0.1 if i % 2 else -0.1) for i in range(10)]
         lines.append(("probe", 0.0))
-        reading = ReagentOffset(-0.93, 10, taken=True)
+        reading = ReagentOffset(-0.93, 10, beyond_width=True)
 
         assert self._fit_of(lines, fallback_sigma_ppm=0.3, reagent_offset=reading)[
             "probe"

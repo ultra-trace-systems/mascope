@@ -231,16 +231,16 @@ class ReagentOffset:
     :param mu_ppm: The lines' median mass error, or None below
         :data:`REAGENT_OFFSET_MIN_LINES` lines.
     :param lines: How many lines the pass claimed.
-    :param taken: Whether the offset is beyond the width a sample is scored at
-        when its library fits none. Only then is a sample scored at it: an
-        offset inside that width is one the score already allows for, so a
-        sample whose lines put the axis where it should be is scored as if they
-        had said nothing.
+    :param beyond_width: Whether the offset is beyond the width a sample is
+        scored at when its library fits none. Only then is a sample scored at
+        it: an offset inside that width is one the score already allows for, so
+        a sample whose lines put the axis where it should be is scored as if
+        they had said nothing.
     """
 
     mu_ppm: float | None
     lines: int
-    taken: bool = False
+    beyond_width: bool = False
 
 
 def reagent_line_offset(
@@ -257,7 +257,7 @@ def reagent_line_offset(
         (:func:`mass_accuracy.scoring_sigma_ppm`): the offset and the width
         need the same number of library lines, so a sample that reaches this
         offset is always scored at the class's width.
-    :return: The lines' offset, and whether a sample is scored at it.
+    :return: The lines' offset, and whether it is beyond the width.
     """
     errors = [
         float(error)
@@ -270,7 +270,7 @@ def reagent_line_offset(
     return ReagentOffset(
         mu_ppm=mu,
         lines=len(errors),
-        taken=abs(mu) > scoring_sigma_ppm(None, float(fallback_sigma_ppm)),
+        beyond_width=abs(mu) > scoring_sigma_ppm(None, float(fallback_sigma_ppm)),
     )
 
 
@@ -309,12 +309,12 @@ class SampleMassAccuracy:
         """The offset both stages score this sample at.
 
         The target library's where it fitted one, else the reagent lines' where
-        the sample is scored at them (:attr:`ReagentOffset.taken`), else None,
-        which a scorer reads as no correction.
+        they are beyond the width (:attr:`ReagentOffset.beyond_width`), else
+        None, which a scorer reads as no correction.
         """
         if self.mu_ppm is not None:
             return self.mu_ppm
-        if self.reagent is not None and self.reagent.taken:
+        if self.reagent is not None and self.reagent.beyond_width:
             return self.reagent.mu_ppm
         return None
 
@@ -323,7 +323,7 @@ class SampleMassAccuracy:
         """Which measurement :attr:`scoring_mu_ppm` is, as a run records it."""
         if self.mu_ppm is not None:
             return MU_SOURCE_FITTED
-        if self.reagent is not None and self.reagent.taken:
+        if self.reagent is not None and self.reagent.beyond_width:
             return MU_SOURCE_REAGENT
         return MU_SOURCE_NONE
 
@@ -885,8 +885,9 @@ def score_ions_by_fit(
     :param reagent_offset: What the reagent pre-pass's lines said about the
         offset (:func:`reagent_line_offset`). A sample whose target library
         matched too few lines to fit an offset is scored at it where it is
-        taken (:attr:`ReagentOffset.taken`), which is the offset the untargeted
-        stage is scored at too (:attr:`SampleMassAccuracy.scoring_mu_ppm`).
+        beyond the width (:attr:`ReagentOffset.beyond_width`), which is the
+        offset the untargeted stage is scored at too
+        (:attr:`SampleMassAccuracy.scoring_mu_ppm`).
         Measured on the gate's labelled-nitrate set, whose curated lines are
         too few once its workaround entries are gone, the lines put the axis
         at -1.26 ppm and the run's own commits at -1.10, where the sample was
@@ -906,7 +907,8 @@ def score_ions_by_fit(
 
     # The one measurement the untargeted stage is scored at too, read off this
     # same gated frame, with the same stand-ins where it measured nothing: the
-    # class width for the width, the reagent lines' offset where it is taken.
+    # class width for the width, the reagent lines' offset where it is beyond
+    # the width.
     # The offset is None where neither measured one; the scorer reads that as
     # an uncorrected sample rather than a centred one.
     accuracy = sample_mass_accuracy(df, reagent=reagent_offset)

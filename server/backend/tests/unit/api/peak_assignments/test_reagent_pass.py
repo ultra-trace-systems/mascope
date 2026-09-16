@@ -203,21 +203,21 @@ class TestWhereTheClaimedLinesPutTheAxis:
         assert (len(rows) - isotopologues, isotopologues) == (3, 5)
         assert offset.lines == len(rows) == len(claimed)
         assert offset.mu_ppm == pytest.approx(-1.3, abs=0.05)
-        assert offset.taken
+        assert offset.beyond_width
 
     def test_the_width_it_must_clear_is_the_instrument_classs(self):
-        # The same lines on a TOF, whose class is scored at 3 ppm: read, and not
-        # taken.
+        # The same lines on a TOF, whose class is scored at 3 ppm: read, and
+        # inside the width.
         _, _, offset = _run_pre_pass(self._urea(-1.3, -1.3), "UR", "tof")
 
         assert offset.mu_ppm == pytest.approx(-1.3, abs=0.05)
-        assert not offset.taken
+        assert not offset.beyond_width
 
     def test_a_pass_that_claimed_nothing_reads_no_offset(self):
         _, claimed, offset = _run_pre_pass(_peaks(("C6H13O6", 1, 1e6)), "UR", "orbi")
 
         assert not claimed
-        assert (offset.mu_ppm, offset.lines, offset.taken) == (None, 0, False)
+        assert (offset.mu_ppm, offset.lines, offset.beyond_width) == (None, 0, False)
 
     def test_a_profile_with_no_reagent_has_no_pass_to_ask(self):
         rows, _, offset = _run_pre_pass(self._urea(-1.3, -1.3), "none", "orbi")
