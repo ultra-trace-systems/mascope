@@ -82,6 +82,7 @@ from mascope_backend.api.new.peak_assignments.engine import (
     REFERENCE_IDENTITIES_COL,
     SEARCH_SCOPE_KEY,
     TIERING_KEY,
+    ReagentOffset,
     SampleMassAccuracy,
     build_unassigned_assignments,
     calibration_meta,
@@ -89,6 +90,7 @@ from mascope_backend.api.new.peak_assignments.engine import (
     invert_matches_to_peak_assignments,
     pattern_scoring_for,
     pattern_scoring_snapshot,
+    reagent_line_offset,
     record_mirror_same_ion_readings,
     sample_mass_accuracy,
     score_ions_by_fit,
@@ -1901,7 +1903,7 @@ def _reagent_assignments(
     resolved_profile: ResolvedProfile,
     sample_item_id: str,
     peak_assignment_run_id: str,
-) -> tuple[list[dict], set[str]]:
+) -> tuple[list[dict], set[str], ReagentOffset | None]:
     """The reagent pre-pass: the peaks the source made, claimed before the stages.
 
     Shared by the run-backed orchestrator and the run-less ingest fold for the
@@ -1914,7 +1916,10 @@ def _reagent_assignments(
         source's reagent and (for a labelled one) its isotopic purity.
     :param sample_item_id: The sample these rows belong to.
     :param peak_assignment_run_id: The run they are stamped with.
-    :return: The reagent rows, and the peaks they take out of both stages.
+    :return: The reagent rows, the peaks they take out of both stages, and where
+        the claimed lines put the mass axis, which Stage A scores at where the
+        target library fits no offset (:func:`reagent_line_offset`); None for a
+        profile with no reagent library.
     """
     hits, calibration = claim_reagent_peaks(
         peaks_df,
@@ -1929,13 +1934,28 @@ def _reagent_assignments(
             "on "
             + ", ".join(f"{label} {error:+.1f}" for label, error in calibration.anchors)
         )
+    # A profile with no reagent library has no pre-pass to ask, which the run
+    # records differently from a pass that claimed nothing.
+    offset = (
+        None
+        if calibration is None
+        else reagent_line_offset(
+            (hit.mz_error_ppm for hit in hits), resolved_profile.fallback_sigma_ppm
+        )
+    )
+    if offset is not None and offset.mu_ppm is not None:
+        runtime.logger.info(
+            f"Reagent pre-pass lines put the mass axis at {offset.mu_ppm:+.2f} ppm "
+            f"over {offset.lines} lines"
+            + ("" if offset.taken else ", inside the width")
+        )
     rows = build_reagent_assignments(
         hits,
         peaks_df,
         sample_item_id=sample_item_id,
         peak_assignment_run_id=peak_assignment_run_id,
     )
-    return rows, {row["sample_peak_id"] for row in rows}
+    return rows, {row["sample_peak_id"] for row in rows}, offset
 
 
 def _artifact_assignments(
@@ -2022,6 +2042,7 @@ async def _stage_a_assignments(
     *,
     fallback_sigma_ppm: float,
     known_window: KnownWindow | None,
+    reagent_offset: ReagentOffset | None = None,
 ) -> tuple[list[dict], dict | None, SampleMassAccuracy]:
     """Stage A: database-first assignment from the known composition set.
 
@@ -2050,6 +2071,13 @@ async def _stage_a_assignments(
         to a width the other does not use (:func:`score_ions_by_fit`).
     :param known_window: The resolved chemistry context's ceiling on every
         reference source's window, or None where the context sets none.
+    :param reagent_offset: Where the reagent pre-pass's lines put the mass
+        axis. Stage A scores at it where the target library matched too few
+        lines to fit an offset and the lines show one beyond the width
+        (:attr:`SampleMassAccuracy.scoring_mu_ppm`), and so does the untargeted
+        stage. The width stays the class's: a handful of the source's own
+        bright lines says where the axis sits, not how an analyte scatters
+        about it.
     :return: The assignment rows; what a run records about the confidence curve
         their P(correct) came from - None when Stage A never ran or the
         instrument has no curve; and what the target library's own matched
@@ -2060,11 +2088,12 @@ async def _stage_a_assignments(
         mirror is not, so its lines are left out of the fit even though they
         compete for peaks in the same frame (:func:`target_library_rows`). Its
         ``sigma_ppm`` is None when too few of the library's lines matched to
-        fit one, and its ``anchors`` says how few.
+        fit one, its ``anchors`` says how few, and its ``reagent`` is the
+        pre-pass's reading, carried even where the library matched nothing.
     """
     stage_a_assignments: list[dict] = []
     confidence_calibration: dict | None = None
-    mass_accuracy = SampleMassAccuracy()
+    mass_accuracy = SampleMassAccuracy(reagent=reagent_offset)
     target_isotopes_df = await _fetch_known_target_isotopes(
         sample, match_params.isotope_abundance_threshold, mechanism_ids
     )
@@ -2099,12 +2128,16 @@ async def _stage_a_assignments(
             # quality, not the targeted matcher's per-isotopologue term. Runs
             # after gating so tolerance/intensity cuts carry into the fit.
             match_isotope_df = score_ions_by_fit(
-                match_isotope_df, fallback_sigma_ppm=fallback_sigma_ppm
+                match_isotope_df,
+                fallback_sigma_ppm=fallback_sigma_ppm,
+                reagent_offset=reagent_offset,
             )
             # Read off the frame the fit was computed on, so Stage B is judged
             # at the width Stage A was judged at rather than at one refitted
             # over a different set of rows.
-            mass_accuracy = sample_mass_accuracy(match_isotope_df)
+            mass_accuracy = sample_mass_accuracy(
+                match_isotope_df, reagent=reagent_offset
+            )
         instrument = get_instrument_type(sample.filename)
         # Load this instrument's confidence calibration from the D6 store (active DB row,
         # else the in-code provisional curve, else None -> uncalibrated). Passing it in keeps
@@ -2252,7 +2285,7 @@ async def _run_sample_assignment(
         # is sample chemistry, so they are claimed here and taken out of what
         # either stage may assign. Ordering is the whole mechanism - nothing
         # downstream is ever offered the peak, so nothing can overwrite it.
-        reagent_assignments, reagent_peak_ids = _reagent_assignments(
+        reagent_assignments, reagent_peak_ids, reagent_offset = _reagent_assignments(
             peaks_df, resolved_profile, sample_item_id, run.peak_assignment_run_id
         )
         if reagent_assignments:
@@ -2299,6 +2332,7 @@ async def _run_sample_assignment(
             excluded_peak_ids=claimed_peak_ids,
             fallback_sigma_ppm=resolved_profile.fallback_sigma_ppm,
             known_window=resolved_profile.context.known_window,
+            reagent_offset=reagent_offset,
         )
         runtime.logger.info(
             f"Stage A assigned {len(stage_a_assignments)} of {len(peaks_df)} "
@@ -2420,7 +2454,7 @@ async def _run_sample_assignment(
                     f"at {scoring.sigma_ppm:.3f} ppm "
                     f"({scoring_snapshot['sigma_source']}, "
                     f"{mass_accuracy.anchors} anchors), offset "
-                    f"{scoring.mu_ppm:+.3f} ppm"
+                    f"{scoring.mu_ppm:+.3f} ppm ({scoring_snapshot['mu_source']})"
                 )
                 matches_df, _ = await asyncio.to_thread(
                     assign_compositions,
@@ -2798,7 +2832,7 @@ async def _fold_sample_peaks_without_run(
         instrument_type=instrument_type,
         polarity=sample.polarity,
     )
-    reagent, reagent_peak_ids = _reagent_assignments(
+    reagent, reagent_peak_ids, reagent_offset = _reagent_assignments(
         peaks_df, resolved_profile, sample_item_id, run_id
     )
     artifact, artifact_peak_ids = _artifact_assignments(
@@ -2815,6 +2849,7 @@ async def _fold_sample_peaks_without_run(
         excluded_peak_ids=claimed_peak_ids,
         fallback_sigma_ppm=resolved_profile.fallback_sigma_ppm,
         known_window=resolved_profile.context.known_window,
+        reagent_offset=reagent_offset,
     )
     # The run's gate over this path's commits, so that a reference mirror's
     # row off calibration is capped here as a run would cap it. Nothing records

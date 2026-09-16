@@ -18,9 +18,11 @@ import pytest
 from mascope_backend.api.new.peak_assignments.engine import (
     TIER_ASSIGNED,
     TIER_CANDIDATE,
+    ReagentOffset,
     SampleMassAccuracy,
     pattern_scoring_for,
     pattern_scoring_snapshot,
+    reagent_line_offset,
     sample_mass_accuracy,
     untargeted_matches_to_peak_assignments,
     untargeted_seeds,
@@ -34,6 +36,13 @@ ASSIGNED = 0.75
 ORBI_ACCURACY = INSTRUMENT_FALLBACK_SIGMA_PPM["orbi"]
 TOF_ACCURACY = INSTRUMENT_FALLBACK_SIGMA_PPM["tof"]
 MECHANISMS = {"+H+": "mech-h", "+NH4+": "mech-nh4"}
+
+#: The lines the reagent pre-pass claims on a labelled-nitrate sample of the
+#: gate, in ppm: the core ion and its first rung, then five isotopologue lines
+#: of the two. The sample's own commits sit at -1.10.
+NITRATE_LINES = [1.2556, -0.0517, -0.7262, -1.3953, -1.2555, -1.9426, -1.7316]
+#: What they say, as the pre-pass hands it on.
+NITRATE_READING = ReagentOffset(mu_ppm=-1.2555, lines=7, taken=True)
 
 
 def _orbi_params(tolerance: int = 5, floor: float = 1e-5) -> SimpleNamespace:
@@ -136,6 +145,118 @@ class TestWhatStageAMeasured:
         assert measured.sigma_ppm is None
         assert measured.anchors == 0
 
+    def test_the_reagent_lines_reading_rides_beside_the_fit(self):
+        # Carried, never fitted in: three library lines are still too few to
+        # measure anything, whatever the source's own lines say.
+        frame = pd.DataFrame(
+            {
+                "match_mz_error": [-1.2, -1.3, -1.25],
+                "sample_peak_intensity": [100.0] * 3,
+            }
+        )
+
+        measured = sample_mass_accuracy(frame, reagent=NITRATE_READING)
+
+        assert (measured.mu_ppm, measured.sigma_ppm) == (None, None)
+        assert measured.anchors == 3
+        assert measured.reagent is NITRATE_READING
+
+
+class TestTheReagentLinesOffset:
+    """Where the source's own lines put the axis, for a library too thin to say."""
+
+    def test_it_is_the_median_of_every_line_the_pass_claimed(self):
+        # Not the correction the pass claims its rungs against, which is the
+        # median of the two anchors alone. Those are the source's brightest
+        # lines, and here they put the axis at +0.60 ppm, on the other side of
+        # the -1.10 the sample's own commits measure.
+        offset = reagent_line_offset(NITRATE_LINES, ORBI_ACCURACY)
+
+        assert offset.mu_ppm == pytest.approx(-1.2555)
+        assert offset.lines == len(NITRATE_LINES)
+        assert offset.taken
+
+    def test_an_offset_inside_the_width_is_not_taken(self):
+        # A bromide sample's lines, at +0.30 on a class scored at 0.58 ppm: its
+        # commits sit at -0.18, so correcting by them would move it the wrong
+        # way, and a bias that small is one the score already allows for.
+        offset = reagent_line_offset(
+            [0.33, 0.30, -0.04, -0.11, 0.0, 0.73, 0.44, 0.33, -0.12], ORBI_ACCURACY
+        )
+
+        assert offset.mu_ppm == pytest.approx(0.30)
+        assert not offset.taken
+
+    def test_the_guard_is_the_width_the_sample_is_scored_at(self):
+        # A sample that reaches this offset fitted no width either, so it is
+        # scored at the class's precision widened for the prediction's error,
+        # and 0.45 ppm lies between the two.
+        widened = math.hypot(ORBI_ACCURACY, PRED_SIGMA_PPM)
+        assert ORBI_ACCURACY < 0.45 < widened < 0.7
+
+        assert not reagent_line_offset([0.45] * 5, ORBI_ACCURACY).taken
+        assert not reagent_line_offset([-0.45] * 5, ORBI_ACCURACY).taken
+        assert reagent_line_offset([0.7] * 5, ORBI_ACCURACY).taken
+        assert reagent_line_offset([-0.7] * 5, ORBI_ACCURACY).taken
+
+    def test_a_tofs_width_keeps_what_an_orbitraps_would_take(self):
+        # The bromide TOF set's lines sit up to +0.71 ppm on a class scored at 3.
+        assert not reagent_line_offset([0.71] * 16, TOF_ACCURACY).taken
+        assert reagent_line_offset([0.71] * 16, ORBI_ACCURACY).taken
+
+    def test_fewer_than_three_lines_are_no_offset(self):
+        # The core ion and its first rung alone: their mean is on the wrong side
+        # of the axis, and nothing in two lines says which of them is off.
+        two = reagent_line_offset(NITRATE_LINES[:2], ORBI_ACCURACY)
+
+        assert (two.mu_ppm, two.lines, two.taken) == (None, 2, False)
+        assert reagent_line_offset(NITRATE_LINES[:3], ORBI_ACCURACY).mu_ppm == (
+            pytest.approx(-0.0517)
+        )
+
+    def test_an_unusable_error_is_not_a_line(self):
+        offset = reagent_line_offset(
+            [-1.3, float("nan"), None, -1.2, float("inf"), -1.4], ORBI_ACCURACY
+        )
+
+        assert offset.lines == 3
+        assert offset.mu_ppm == pytest.approx(-1.3)
+
+    def test_a_pass_that_claimed_nothing_measured_nothing(self):
+        assert reagent_line_offset([], ORBI_ACCURACY) == ReagentOffset(None, 0)
+
+
+class TestWhichOffsetTheSampleIsScoredAt:
+    """The library's own offset, else the reagent lines', else none."""
+
+    def test_the_librarys_offset_wins_wherever_it_measured_one(self):
+        # The uronium set's lines sit at -0.9 ppm where its library and its
+        # commits sit within 0.15 of zero: a sample that measures its own
+        # offset keeps it.
+        accuracy = SampleMassAccuracy(
+            -0.03, 0.56, 15, ReagentOffset(-0.93, 10, taken=True)
+        )
+
+        assert accuracy.scoring_mu_ppm == pytest.approx(-0.03)
+        assert accuracy.mu_source == "fitted"
+
+    def test_the_reagent_lines_stand_in_where_the_library_measured_none(self):
+        accuracy = SampleMassAccuracy(None, None, 7, NITRATE_READING)
+
+        assert accuracy.scoring_mu_ppm == pytest.approx(-1.2555)
+        assert accuracy.mu_source == "reagent"
+
+    @pytest.mark.parametrize(
+        "reading",
+        [None, ReagentOffset(0.30, 9), ReagentOffset(None, 2), ReagentOffset(None, 0)],
+        ids=["no pre-pass", "inside the width", "too few lines", "no lines"],
+    )
+    def test_otherwise_nothing_measured_one(self, reading):
+        accuracy = SampleMassAccuracy(None, None, 2, reading)
+
+        assert accuracy.scoring_mu_ppm is None
+        assert accuracy.mu_source == "none"
+
 
 class TestPatternScoringForTheSample:
     """What the finder is told about the sample it is searching."""
@@ -171,6 +292,30 @@ class TestPatternScoringForTheSample:
         )
         assert scoring.mz_tolerance_ppm == 15
         assert scoring.abundance_floor == 1e-4
+
+    def test_the_reagent_lines_set_the_offset_where_the_library_fits_none(self):
+        # Stage A scored its own ions there, and the search is scored where
+        # Stage A was. The width stays the class's: a handful of the source's
+        # bright lines says where the axis is, not how an analyte scatters.
+        scoring = pattern_scoring_for(
+            _orbi_params(),
+            SampleMassAccuracy(None, None, 7, NITRATE_READING),
+            ORBI_ACCURACY,
+        )
+
+        assert scoring.mu_ppm == pytest.approx(-1.2555)
+        assert scoring.sigma_ppm == pytest.approx(
+            math.hypot(ORBI_ACCURACY, PRED_SIGMA_PPM)
+        )
+
+    def test_a_reading_inside_the_width_leaves_the_search_uncorrected(self):
+        scoring = pattern_scoring_for(
+            _orbi_params(),
+            SampleMassAccuracy(None, None, 2, ReagentOffset(0.30, 9)),
+            ORBI_ACCURACY,
+        )
+
+        assert scoring.mu_ppm == 0.0
 
     def test_a_measured_width_beats_the_class_statement(self):
         # However well or badly this sample measures, what it measured wins.
@@ -218,6 +363,47 @@ class TestTheRunSaysWhatItJudgedAt:
         assert snapshot["sigma_ppm"] == pytest.approx(
             math.hypot(ORBI_ACCURACY, PRED_SIGMA_PPM), abs=1e-4
         )
+
+    def test_an_offset_from_the_reagent_lines_says_so_and_names_them(self):
+        accuracy = SampleMassAccuracy(None, None, 7, NITRATE_READING)
+        scoring = pattern_scoring_for(_orbi_params(), accuracy, ORBI_ACCURACY)
+
+        snapshot = pattern_scoring_snapshot(scoring, accuracy)
+
+        assert snapshot["mu_source"] == "reagent"
+        assert snapshot["mu_ppm"] == pytest.approx(-1.2555)
+        assert snapshot["reagent_lines"] == 7
+        assert snapshot["reagent_mu_ppm"] == pytest.approx(-1.2555)
+        # The library's own count still says why it did not measure one.
+        assert snapshot["fitted_anchors"] == 7
+        assert snapshot["sigma_source"] == "instrument_class"
+
+    @pytest.mark.parametrize(
+        "reading, recorded",
+        [(ReagentOffset(0.30, 9), 0.3), (ReagentOffset(None, 2), None)],
+        ids=["inside the width", "too few lines"],
+    )
+    def test_a_reading_not_scored_at_is_still_recorded(self, reading, recorded):
+        # "none" alone would not say whether the lines were read and found
+        # inside the width, too few to read, or never asked.
+        accuracy = SampleMassAccuracy(None, None, 2, reading)
+        scoring = pattern_scoring_for(_orbi_params(), accuracy, ORBI_ACCURACY)
+
+        snapshot = pattern_scoring_snapshot(scoring, accuracy)
+
+        assert (snapshot["mu_source"], snapshot["mu_ppm"]) == ("none", 0.0)
+        assert snapshot["reagent_lines"] == reading.lines
+        assert snapshot["reagent_mu_ppm"] == recorded
+
+    def test_a_run_with_no_pre_pass_records_no_reading(self):
+        accuracy = SampleMassAccuracy(-0.24, 0.30, 14)
+        scoring = pattern_scoring_for(_orbi_params(), accuracy, ORBI_ACCURACY)
+
+        snapshot = pattern_scoring_snapshot(scoring, accuracy)
+
+        assert snapshot["mu_source"] == "fitted"
+        assert "reagent_lines" not in snapshot
+        assert "reagent_mu_ppm" not in snapshot
 
     def test_the_window_and_the_floor_ride_along(self):
         accuracy = SampleMassAccuracy(0.0, 0.3, 11)

@@ -90,6 +90,14 @@ isotope-pattern matching of **SIRIUS** ([Böcker et al. 2009][bo09]; [Dührkop e
 awareness. The full mathematical model is in the developer reference,
 `libraries/tools/docs/fit_score.md`.
 
+The Gaussian's width and centre are the sample's own where it can measure them, from
+the lines of your target library that it matched. Where fewer than eight matched, the
+width is the instrument class's, and the centre is the median mass error of the reagent
+ions the run claimed, if it claimed at least three and their offset exceeds that width;
+otherwise the sample is scored on its nominal masses. The reagent ions stand in only
+there: they sit at the low end of the mass range and need not agree with the offset
+your library measures.
+
 **A consequence users see:** a lone mass-only match (one peak, no isotopic corroboration)
 scores *low* by design, while a fully corroborated isotope envelope scores near 1.0. This
 is intentional — mass alone is weak evidence.

@@ -143,6 +143,89 @@ class TestTheIsotopologueRows:
         )
 
 
+def _run_pre_pass(peaks: pd.DataFrame, profile: str, instrument_type: str | None):
+    """The pre-pass as a run calls it, with the chemistry a run would resolve."""
+    from mascope_backend.api.new.peak_assignments.config import (
+        PeakAssignmentConfig,
+    )
+    from mascope_backend.api.new.peak_assignments.profiles import resolve_profile
+    from mascope_backend.api.new.peak_assignments.service import (
+        _reagent_assignments,
+    )
+
+    resolved = resolve_profile(
+        PeakAssignmentConfig(profile=profile),
+        mechanism_notations=["+H+"],
+        instrument_type=instrument_type,
+        polarity="+",
+    )
+    return _reagent_assignments(peaks, resolved, "sample1", "run1")
+
+
+class TestWhereTheClaimedLinesPutTheAxis:
+    """The offset a thin library falls back to is read off every claimed line."""
+
+    @staticmethod
+    def _urea(parent_ppm: float, isotopologue_ppm: float) -> pd.DataFrame:
+        """The protonated urea ladder, its rungs and their isotopologue lines
+        each placed off their own mass by the given amount."""
+        rows = []
+        for formula, height in (
+            ("CH5N2O", 2e6),
+            ("C2H9N4O2", 3e6),
+            ("C3H13N6O3", 3e5),
+        ):
+            predicted_mz, predicted_intensity, labels = predict_isotopes(formula, 1)
+            base = max(predicted_intensity)
+            for one_mz, one_intensity, label in zip(
+                predicted_mz, predicted_intensity, labels
+            ):
+                ppm = parent_ppm if label == "M0" else isotopologue_ppm
+                rows.append(
+                    {
+                        "mz": float(one_mz) * (1.0 + ppm * 1e-6),
+                        "intensity": height * float(one_intensity) / base,
+                    }
+                )
+        frame = pd.DataFrame(sorted(rows, key=lambda row: row["mz"]))
+        frame.insert(0, "sample_peak_id", [f"p{index}" for index in range(len(frame))])
+        return frame
+
+    def test_the_isotopologue_lines_count_as_much_as_their_parents(self):
+        # A source's brightest lines are the ones an Orbitrap moves. On the
+        # gate's labelled-nitrate set the core ion and its first rung sit 1.3 to
+        # 2.5 ppm above their own isotopologue lines, and those sit where the
+        # sample's commits do. Here the rungs sit at +1.0 ppm and their five
+        # isotopologue lines at -1.3; the rungs alone would say +1.0.
+        rows, claimed, offset = _run_pre_pass(self._urea(1.0, -1.3), "UR", "orbi")
+
+        isotopologues = sum(1 for row in rows if row["isotope_label"])
+        assert (len(rows) - isotopologues, isotopologues) == (3, 5)
+        assert offset.lines == len(rows) == len(claimed)
+        assert offset.mu_ppm == pytest.approx(-1.3, abs=0.05)
+        assert offset.taken
+
+    def test_the_width_it_must_clear_is_the_instrument_classs(self):
+        # The same lines on a TOF, whose class is scored at 3 ppm: read, and not
+        # taken.
+        _, _, offset = _run_pre_pass(self._urea(-1.3, -1.3), "UR", "tof")
+
+        assert offset.mu_ppm == pytest.approx(-1.3, abs=0.05)
+        assert not offset.taken
+
+    def test_a_pass_that_claimed_nothing_reads_no_offset(self):
+        _, claimed, offset = _run_pre_pass(_peaks(("C6H13O6", 1, 1e6)), "UR", "orbi")
+
+        assert not claimed
+        assert (offset.mu_ppm, offset.lines, offset.taken) == (None, 0, False)
+
+    def test_a_profile_with_no_reagent_has_no_pass_to_ask(self):
+        rows, _, offset = _run_pre_pass(self._urea(-1.3, -1.3), "none", "orbi")
+
+        assert rows == []
+        assert offset is None
+
+
 class TestWhenThereIsNothingToClaim:
     def test_a_profile_with_no_reagent_writes_no_rows(self):
         assert _rows("ESI_POS") == []

@@ -179,6 +179,51 @@ async def test_folds_stage_a_and_the_placeholders_without_persisting():
 
 
 @pytest.mark.asyncio
+async def test_stage_a_is_told_where_the_reagent_lines_put_the_axis():
+    """The fold's Stage A falls back to the reagent lines' offset as a run's does.
+
+    Otherwise a sample whose library is too thin to fit an offset would be
+    scored at zero on this ledger and at its reagent lines' offset in the run
+    that later replaces it.
+    """
+    from mascope_backend.api.new.peak_assignments.service import (
+        fold_sample_peaks_without_run,
+    )
+    from mascope_tools.composition.reagents import reagent_library
+
+    ladder = {cluster.label: cluster.mz for cluster in reagent_library("UR")}
+    low = 1.0 - 1.3e-6
+    labels = ("[CH4N2O+H]+", "[(CH4N2O)2+H]+", "[(CH4N2O)3+H]+")
+    stack, mocks = _patched()
+    # An Orbitrap, whose scoring width 1.3 ppm is beyond.
+    stack.enter_context(patch(f"{_SVC}.get_instrument_type", return_value="orbi"))
+    mocks["peaks"].return_value = pd.DataFrame(
+        {
+            "sample_peak_id": ["p1", "r1", "r2", "r3"],
+            "mz": [181.0707] + [ladder[label] * low for label in labels],
+            "intensity": [5000.0, 2.0e6, 3.0e6, 1.0e5],
+        }
+    )
+    mocks["mechanisms"].return_value = (
+        ["m-h", "m-urea"],
+        [
+            SimpleNamespace(
+                ionization_mechanism_id=mechanism_id,
+                ionization_mechanism=notation,
+                ionization_mechanism_polarity="+",
+            )
+            for mechanism_id, notation in (("m-h", "+H+"), ("m-urea", "+(CH4N2O)H+"))
+        ],
+    )
+    with stack:
+        assert await fold_sample_peaks_without_run("si-1") == "batch-1"
+
+    offset = mocks["stage_a"].call_args.kwargs["reagent_offset"]
+    assert (offset.lines, offset.taken) == (3, True)
+    assert offset.mu_ppm == pytest.approx(-1.3, abs=1e-6)
+
+
+@pytest.mark.asyncio
 async def test_the_fold_gates_its_stage_a_rows_as_a_run_does():
     """A Stage A row off calibration is capped on this ledger too.
 
