@@ -51,6 +51,7 @@ from mascope_backend.api.models.calibration.calibration_pydantic_model import (
     OrbiCalibrationParams,
     TofCalibrationParams,
 )
+from mascope_backend.api.models.calibration.config import calibration_config
 from mascope_backend.api.new.instrument_configs.lib import (
     read_instrument_functions,
 )
@@ -1115,6 +1116,24 @@ def _finite_or_none(value) -> float | None:
     return value if math.isfinite(value) else None
 
 
+def axis_correction_ppm(fit: dict | None) -> float | None:
+    """
+    How far a fit puts the m/z axis from the acquisition axis, in ppm.
+
+    Known for Orbitrap fits only: their ``calibration_factor`` is cumulative
+    over every apply since the axis was last reset, so it measures the total
+    correction regardless of what earlier fits did to the stored axis.
+
+    :param fit: A fit dict as the handler returns it.
+    :return: Signed correction in ppm, or None when the fit carries no factor.
+    """
+    par = (fit or {}).get("par")
+    factor = par.get("calibration_factor") if isinstance(par, dict) else None
+    if factor is None:
+        return None
+    return _finite_or_none((float(factor) - 1.0) * 1e6)
+
+
 def fit_quality(
     stats: list[dict] | None, params: MzCalibrationParams | None
 ) -> dict | None:
@@ -1140,8 +1159,10 @@ def fit_quality(
         return None
     summary = stats[-1] if "mz" not in stats[-1] else None
     point_rows = stats[:-1] if summary is not None else stats
+    ion_ids = {row.get("target_ion_id") for row in point_rows} - {None}
     return {
         "n_points": len(point_rows),
+        "n_ions": len(ion_ids) if ion_ids else None,
         "pre_fit_mz_error_ppm": (
             _finite_or_none(summary.get("match_mz_error")) if summary else None
         ),
@@ -1156,3 +1177,135 @@ def fit_quality(
         ),
         "refine_window": _finite_or_none(params.refine_window) if params else None,
     }
+
+
+def calibration_quality_issues(quality: dict | None, filename: str) -> list[dict]:
+    """
+    Why a fit does not clear the quality bar for a ``verified`` record.
+
+    The bar (``calibration_config``) is the fit's mean post-fit residual
+    against an instrument-class bound; for a fit on one point, or on two
+    isotopes of one ion, how far it moved the axis; for one on three or more,
+    how many ions the points came from; and, where a bound is set, the
+    calibrants' share of the TIC. A fit with no quality
+    block cannot be judged and is reported as such rather than let through.
+
+    A value the block does not carry (``n_ions`` on records written before it
+    was added) is not held against the fit.
+
+    :param quality: The fit's ``quality`` block (see :func:`fit_quality`).
+    :param filename: Sample filename, selects the instrument-class bounds.
+    :return: One ``{"code", "message"}`` dict per failed criterion; empty when
+        the fit clears the bar.
+    """
+    if not quality:
+        return [
+            {
+                "code": "no_quality",
+                "message": "No fit statistics recorded, so the fit cannot be judged.",
+            }
+        ]
+    tof = m_name.get_instrument_type(filename) == "tof"
+    max_residual = (
+        calibration_config.TOF_MAX_POST_FIT_MZ_ERROR_PPM
+        if tof
+        else calibration_config.ORBI_MAX_POST_FIT_MZ_ERROR_PPM
+    )
+    min_calibrant_to_tic = (
+        calibration_config.TOF_MIN_CALIBRANT_TO_TIC
+        if tof
+        else calibration_config.ORBI_MIN_CALIBRANT_TO_TIC
+    )
+    issues = []
+
+    residual = quality.get("post_fit_mz_error_ppm")
+    if residual is None:
+        issues.append(
+            {
+                "code": "residual_unknown",
+                "message": "The post-calibration m/z error was not recorded.",
+            }
+        )
+    elif abs(residual) > max_residual:
+        issues.append(
+            {
+                "code": "residual",
+                "message": (
+                    f"Mean m/z error after calibration is {abs(residual):.2f} ppm "
+                    f"(limit {max_residual:g} ppm)."
+                ),
+            }
+        )
+
+    n_points = quality.get("n_points") or 0
+    n_ions = quality.get("n_ions")
+    min_points = calibration_config.MIN_VERIFIED_CALIBRATION_POINTS
+    min_ions = calibration_config.MIN_VERIFIED_CALIBRATION_IONS
+    max_shift = calibration_config.LOW_POINT_MAX_AXIS_CORRECTION_PPM
+    # Below min_points, a fit is corroborated only when its points come from
+    # different ions: one point zeroes its own residual, and one ion's
+    # isotopes agree whatever peak they sit on. An unrecorded ion count is
+    # not taken as corroboration.
+    corroborated = n_points >= 2 and n_ions is not None and n_ions >= min_ions
+    # How far the fit puts the axis from the acquisition axis. The pre-fit
+    # error measures that only on a file no fit has moved yet: an Orbitrap
+    # apply rescales the stored axis in place, so a refit of a file a wrong
+    # fit displaced sees that fit's peak on its target and a pre-fit error
+    # near zero. The Orbitrap fit's cumulative factor is the correction from
+    # the acquisition axis whatever came before (see axis_correction_ppm), so
+    # it is used where recorded. TOF fits never get here on fewer than three
+    # points.
+    shift_ppm = quality.get("axis_correction_ppm")
+    if shift_ppm is None:
+        shift_ppm = quality.get("pre_fit_mz_error_ppm")
+    points = f"{n_points} calibration point{'' if n_points == 1 else 's'}"
+    if n_points > 1 and n_ions == 1:
+        points += " from a single ion"
+    if n_points == 0:
+        issues.append({"code": "points", "message": "Fitted on no calibration points."})
+    elif (
+        n_points < min_points
+        and not corroborated
+        and (shift_ppm is None or abs(shift_ppm) > max_shift)
+    ):
+        shift = (
+            "an unrecorded amount" if shift_ppm is None else f"{abs(shift_ppm):.2f} ppm"
+        )
+        issues.append(
+            {
+                "code": "points",
+                "message": (
+                    f"Fitted on {points} but moves the m/z axis {shift} from "
+                    "the acquisition axis; a fit nothing corroborates is "
+                    f"trusted with a correction of at most {max_shift:g} ppm."
+                ),
+            }
+        )
+
+    if n_points >= min_points and n_ions is not None and n_ions < min_ions:
+        issues.append(
+            {
+                "code": "ions",
+                "message": (
+                    f"All calibration points come from {n_ions} ion"
+                    f"{'' if n_ions == 1 else 's'} (at least {min_ions} needed)."
+                ),
+            }
+        )
+
+    calibrant_to_tic = quality.get("calibrant_to_tic")
+    if (
+        min_calibrant_to_tic is not None
+        and calibrant_to_tic is not None
+        and calibrant_to_tic < min_calibrant_to_tic
+    ):
+        issues.append(
+            {
+                "code": "signal",
+                "message": (
+                    f"Calibrants carry {calibrant_to_tic:.3%} of the total ion "
+                    f"current (at least {min_calibrant_to_tic:.2%} needed)."
+                ),
+            }
+        )
+    return issues

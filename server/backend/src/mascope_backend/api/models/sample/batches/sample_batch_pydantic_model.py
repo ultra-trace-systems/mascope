@@ -6,6 +6,7 @@ with validation rules and business logic constraints.
 """
 
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -75,8 +76,11 @@ class SampleBatchValidator(SampleBatchBaseValidator):
         return self
 
 
-class SampleBatchBase(SampleBatchValidator, BaseModel):
-    """Base model with common fields for SampleBatch."""
+class SampleBatchBase(BaseModel):
+    """Base model with common fields for SampleBatch.
+
+    Fields only: a response model built on this reports a stored row as it is
+    (see SampleBatchRead). The write models mix the validators in."""
 
     dataset_id: str = Field(
         ..., description="ID of the dataset associated with the sample batch"
@@ -96,7 +100,7 @@ class SampleBatchBase(SampleBatchValidator, BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
-class SampleBatchCreate(SampleBatchBase):
+class SampleBatchCreate(SampleBatchValidator, SampleBatchBase):
     """Model used for sample batch creation requests."""
 
     target_collection_ids: list[str] = Field(
@@ -105,7 +109,12 @@ class SampleBatchCreate(SampleBatchBase):
 
 
 class SampleBatchRead(SampleBatchBase):
-    """Sample batch response model with added database fields."""
+    """Sample batch response model with added database fields.
+
+    Not validated: `polarity` defaults to '+-' in the database, which
+    `validate_polarity_by_batch_type` refuses on an ACQUISITION batch, so
+    re-running the write validators here would answer 400 for a whole
+    listing over one such row."""
 
     sample_batch_id: str = Field(
         ..., description="Unique identifier for the sample batch"
@@ -167,6 +176,21 @@ class SampleBatchUpdateStatusBody(BaseModel):
         return status
 
 
+# Columns `sort` accepts (see mascope_backend.api.lib.sorting).
+SampleBatchSortColumn = Literal[
+    "sample_batch_id",
+    "dataset_id",
+    "sample_batch_name",
+    "sample_batch_description",
+    "sample_batch_type",
+    "status",
+    "locked",
+    "polarity",
+    "sample_batch_utc_created",
+    "sample_batch_utc_modified",
+]
+
+
 class GetSampleBatchesQueryParams(QueryParamsModel):
     dataset_id: str = Field(
         description="The dataset ID for which to fetch sample batches.",
@@ -186,7 +210,7 @@ class GetSampleBatchesQueryParams(QueryParamsModel):
         default=None,
         description="Filter by polarities (+, -, +-). Can specify multiple polarities.",
     )
-    sort: str | None = Field(
+    sort: SampleBatchSortColumn | None = Field(
         "sample_batch_utc_created",
         description="Column name by which you want to sort the results. The column name should be one of the columns in the sample batch table.",
     )

@@ -6,6 +6,7 @@ with validation rules and business logic constraints.
 """
 
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -117,8 +118,11 @@ class DatasetValidator(DatasetBaseValidator):
         return instrument
 
 
-class DatasetBase(DatasetValidator, BaseModel):
-    """Base model with common fields for Dataset."""
+class DatasetBase(BaseModel):
+    """Base model with common fields for Dataset.
+
+    Fields only, like SampleBatchBase: the write models mix the validators
+    in, and a response model built on this reports a stored row as it is."""
 
     dataset_name: str = Field(
         ...,
@@ -142,7 +146,7 @@ class DatasetBase(DatasetValidator, BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
-class DatasetCreate(DatasetBase):
+class DatasetCreate(DatasetValidator, DatasetBase):
     """Model used for dataset creation requests."""
 
     @model_validator(mode="after")
@@ -157,7 +161,11 @@ class DatasetCreate(DatasetBase):
 
 
 class DatasetRead(DatasetBase):
-    """Model used for reading datasets, includes database fields."""
+    """Model used for reading datasets, includes database fields.
+
+    Not validated, as SampleBatchRead is not: a stored row whose name, type
+    or instrument the current rules refuse is listed rather than failing the
+    listing it appears in."""
 
     dataset_id: str = Field(..., description="Unique identifier for the dataset")
     workspace_id: str = Field(
@@ -193,6 +201,20 @@ class DatasetUpdate(DatasetBaseValidator, BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+# Columns `sort` accepts (see mascope_backend.api.lib.sorting).
+DatasetSortColumn = Literal[
+    "dataset_id",
+    "workspace_id",
+    "dataset_name",
+    "dataset_description",
+    "dataset_type",
+    "locked",
+    "instrument",
+    "dataset_utc_created",
+    "dataset_utc_modified",
+]
+
+
 class GetDatasetsQueryParams(DatasetBaseValidator, QueryParamsModel):
     """
     Query parameters for filtering and paginating dataset listings.
@@ -212,7 +234,7 @@ class GetDatasetsQueryParams(DatasetBaseValidator, QueryParamsModel):
     instrument: list[str] | None = Field(
         None, description="Filter by associated instruments. Can specify many"
     )
-    sort: str | None = Field(
+    sort: DatasetSortColumn | None = Field(
         "dataset_utc_created",
         description=(
             "Column name by which you want to sort the results. "

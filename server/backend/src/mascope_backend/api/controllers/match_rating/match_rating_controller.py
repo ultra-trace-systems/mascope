@@ -2,16 +2,16 @@ import json
 from datetime import datetime, timezone
 
 from sqlalchemy import (
-    asc,
-    desc,
     func,
     select,
 )
 
 from mascope_backend.api.lib.api_features import api_controller
 from mascope_backend.api.lib.exceptions.api_exceptions import NotFoundException
+from mascope_backend.api.lib.sorting import order_by_column
 from mascope_backend.api.models.match_rating.match_rating_pydantic_model import (
     MatchRatingCreate,
+    MatchRatingSortColumn,
 )
 from mascope_backend.db import MatchRating, async_session
 from mascope_backend.db.id import gen_id
@@ -86,9 +86,7 @@ async def get_match_ratings(
         # Step 3: Apply sorting
         if sort:
             stmt = stmt.order_by(
-                desc(getattr(MatchRating, sort))
-                if order == "desc"
-                else asc(getattr(MatchRating, sort))
+                order_by_column(MatchRating, sort, order, MatchRatingSortColumn)
             )
 
         # Step 4: Apply pagination

@@ -2,8 +2,6 @@ import asyncio
 
 from sqlalchemy import (
     and_,
-    asc,
-    desc,
     func,
     select,
 )
@@ -15,12 +13,14 @@ from mascope_backend.api.lib.api_features import (
 from mascope_backend.api.lib.exceptions.api_exceptions import (
     NotFoundException,
 )
+from mascope_backend.api.lib.sorting import order_by_column
 from mascope_backend.api.new.instrument_configs.lib import (
     fetch_instrument_config_by_filename,
 )
 from mascope_backend.api.new.instrument_configs.schemas import (
     CreateInstrumentConfigBody,
     InstrumentConfigFitParams,
+    InstrumentConfigSortColumn,
     InstrumentFunctionData,
     PeakShape,
 )
@@ -122,10 +122,10 @@ async def get_instrument_configs(
 
         # -- Apply sorting --
         if sort:
-            stmt = (
-                stmt.order_by(desc(getattr(InstrumentConfig, sort)))
-                if order == "desc"
-                else stmt.order_by(asc(getattr(InstrumentConfig, sort)))
+            stmt = stmt.order_by(
+                order_by_column(
+                    InstrumentConfig, sort, order, InstrumentConfigSortColumn
+                )
             )
 
         # -- Apply pagination --

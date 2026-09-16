@@ -18,8 +18,10 @@ from mascope_backend.api.lib.api_features import api_controller
 from mascope_backend.api.lib.exceptions.api_exceptions import (
     NotFoundException,
 )
+from mascope_backend.api.lib.sorting import order_by_column
 from mascope_backend.api.models.match.collections.match_collection_pydantic_model import (
     MatchCollectionBase,
+    MatchCollectionSortColumn,
 )
 from mascope_backend.db import MatchCollection, SampleItem, async_session
 from mascope_backend.runtime import runtime
@@ -92,12 +94,9 @@ async def get_match_collections(
 
         # Step 3: Apply sorting
         if sort:
-            sort_expression = getattr(MatchCollection, sort, None)
-            if sort_expression:
-                if order == "desc":
-                    query = query.order_by(sort_expression.desc())
-                else:
-                    query = query.order_by(sort_expression.asc())
+            query = query.order_by(
+                order_by_column(MatchCollection, sort, order, MatchCollectionSortColumn)
+            )
 
         # Step 4: Count total matching collections
         count_stmt = select(func.count()).select_from(query.subquery())

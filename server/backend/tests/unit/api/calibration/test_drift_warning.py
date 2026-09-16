@@ -17,6 +17,7 @@ from mascope_backend.api.controllers.calibration.calibration_controller import (
     carry_acquisition_drift,
     clear_drift_suppression,
     previous_fit_moved_the_axis,
+    seal_fit,
     warn_on_acquisition_drift,
 )
 from mascope_backend.api.controllers.sample.lib.fetch_affected_sample_data import (
@@ -449,6 +450,9 @@ async def _apply(fit: dict, previous: dict | None, manual: bool) -> dict:
     ``sample_file.mz_calibration``.
     """
     sample_file = _sample_file(previous)
+    # Sealed as calibration_mz_fit would, so the verdict reflects the quality
+    # block rather than a fit the server cannot vouch for.
+    seal_fit(fit, ORBI_FILE)
     handler = SimpleNamespace(apply=AsyncMock())
     sum_signal = SimpleNamespace(mz=SimpleNamespace(values=[100.0, 200.0]))
     with (
@@ -478,7 +482,17 @@ class TestApplyRoutesTheMarkerByPath:
     tests pin that the flag survives the trip to the persisted record.
     """
 
-    CLEAN = {"quality": {"pre_fit_mz_error_ppm": 0.35}}
+    # A fit that also clears the quality bar, so ``verified`` reflects the
+    # drift handling alone.
+    CLEAN = {
+        "quality": {
+            "pre_fit_mz_error_ppm": 0.35,
+            "post_fit_mz_error_ppm": 0.1,
+            "n_points": 5,
+            "n_ions": 3,
+            "calibrant_to_tic": 0.05,
+        }
+    }
     FLAGGED = {"acquisition_drift": True, "acquisition_drift_ppm": 12.6}
     WINDOW = ("ORBI-1", 10.0)
 

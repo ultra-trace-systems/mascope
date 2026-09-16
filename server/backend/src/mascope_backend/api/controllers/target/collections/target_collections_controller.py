@@ -1,6 +1,6 @@
 import asyncio
 
-from sqlalchemy import and_, asc, delete, desc, func, or_, select
+from sqlalchemy import and_, delete, func, or_, select
 from sqlalchemy.orm import joinedload
 
 from mascope_backend.api.controllers.sample.batches.status.service import (
@@ -24,8 +24,10 @@ from mascope_backend.api.lib.exceptions.api_exceptions import (
     ApiException,
     NotFoundException,
 )
+from mascope_backend.api.lib.sorting import order_by_column
 from mascope_backend.api.models.target.collections.target_collection_pydantic_model import (
     TargetCollectionCreate,
+    TargetCollectionSortColumn,
     TargetCollectionUpdate,
 )
 from mascope_backend.db import (
@@ -136,10 +138,11 @@ async def get_target_collections(
             )
         # Apply sorting if specified
         if sort:
-            if order == "desc":
-                stmt = stmt.order_by(desc(getattr(TargetCollection, sort)))
-            else:
-                stmt = stmt.order_by(asc(getattr(TargetCollection, sort)))
+            stmt = stmt.order_by(
+                order_by_column(
+                    TargetCollection, sort, order, TargetCollectionSortColumn
+                )
+            )
 
         # Get total count for pagination
         count_stmt = select(func.count()).select_from(stmt.subquery())

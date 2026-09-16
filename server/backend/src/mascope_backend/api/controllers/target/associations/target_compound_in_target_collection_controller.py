@@ -1,11 +1,13 @@
 from sqlalchemy import (
-    asc,
-    desc,
     func,
     select,
 )
 
 from mascope_backend.api.lib.api_features import api_controller
+from mascope_backend.api.lib.sorting import order_by_column
+from mascope_backend.api.models.target.compounds.target_compound_pydantic_model import (
+    TargetCompoundInTargetCollectionSortColumn,
+)
 from mascope_backend.db import (
     TargetCompoundInTargetCollection,
     async_session,
@@ -60,14 +62,14 @@ async def get_target_compound_in_target_collection(
             )
 
         if sort:
-            if order == "desc":
-                stmt = stmt.order_by(
-                    desc(getattr(TargetCompoundInTargetCollection, sort))
+            stmt = stmt.order_by(
+                order_by_column(
+                    TargetCompoundInTargetCollection,
+                    sort,
+                    order,
+                    TargetCompoundInTargetCollectionSortColumn,
                 )
-            else:
-                stmt = stmt.order_by(
-                    asc(getattr(TargetCompoundInTargetCollection, sort))
-                )
+            )
 
         # Get total count
         count_stmt = select(func.count()).select_from(stmt)

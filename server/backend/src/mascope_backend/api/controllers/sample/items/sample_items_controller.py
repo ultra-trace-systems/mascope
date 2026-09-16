@@ -5,9 +5,7 @@ from typing import cast
 import numpy as np
 import pandas as pd
 from sqlalchemy import (
-    asc,
     delete,
-    desc,
     func,
     insert,
     select,
@@ -40,12 +38,14 @@ from mascope_backend.api.lib.api_features import (
 from mascope_backend.api.lib.exceptions.api_exceptions import (
     NotFoundException,
 )
+from mascope_backend.api.lib.sorting import order_by_column
 from mascope_backend.api.lib.utils import generate_copy_name
 from mascope_backend.api.models.sample.items.config import sample_item_config
 from mascope_backend.api.models.sample.items.sample_item_pydantic_model import (
     SampleItemBase,
     SampleItemCreate,
     SampleItemRead,
+    SampleItemSortColumn,
     SampleItemUpdate,
 )
 from mascope_backend.api.new.temp.storage import download_name, user_temp_path
@@ -132,10 +132,9 @@ async def get_sample_items(
 
         # Step 2: Apply sorting if specified
         if sort:
-            if order == "desc":
-                stmt = stmt.order_by(desc(getattr(SampleItem, sort)))
-            else:
-                stmt = stmt.order_by(asc(getattr(SampleItem, sort)))
+            stmt = stmt.order_by(
+                order_by_column(SampleItem, sort, order, SampleItemSortColumn)
+            )
 
         # Step 3: Get total count for pagination
         count_stmt = select(func.count()).select_from(stmt)

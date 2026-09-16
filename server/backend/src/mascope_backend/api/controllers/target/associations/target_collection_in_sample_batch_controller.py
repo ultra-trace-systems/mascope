@@ -1,11 +1,13 @@
 from sqlalchemy import (
-    asc,
-    desc,
     func,
     select,
 )
 
 from mascope_backend.api.lib.api_features import api_controller
+from mascope_backend.api.lib.sorting import order_by_column
+from mascope_backend.api.models.target.collections.target_collection_pydantic_model import (
+    TargetCollectionInSampleBatchSortColumn,
+)
 from mascope_backend.db import TargetCollectionInSampleBatch, async_session
 
 
@@ -38,10 +40,14 @@ async def get_target_collections_in_sample_batch(
             )
 
         if sort:
-            if order == "desc":
-                stmt = stmt.order_by(desc(getattr(TargetCollectionInSampleBatch, sort)))
-            else:
-                stmt = stmt.order_by(asc(getattr(TargetCollectionInSampleBatch, sort)))
+            stmt = stmt.order_by(
+                order_by_column(
+                    TargetCollectionInSampleBatch,
+                    sort,
+                    order,
+                    TargetCollectionInSampleBatchSortColumn,
+                )
+            )
 
         # Get total count
         count_stmt = select(func.count()).select_from(stmt)

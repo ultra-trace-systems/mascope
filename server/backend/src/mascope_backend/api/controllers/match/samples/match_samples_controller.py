@@ -18,8 +18,10 @@ from mascope_backend.api.lib.api_features import api_controller
 from mascope_backend.api.lib.exceptions.api_exceptions import (
     NotFoundException,
 )
+from mascope_backend.api.lib.sorting import order_by_column
 from mascope_backend.api.models.match.samples.match_sample_pydantic_model import (
     MatchSampleBase,
+    MatchSampleSortColumn,
 )
 from mascope_backend.db import MatchSample, SampleItem, async_session
 from mascope_backend.runtime import runtime
@@ -85,12 +87,9 @@ async def get_match_samples(
 
         # Apply sorting
         if sort:
-            sort_expression = getattr(MatchSample, sort, None)
-            if sort_expression:
-                if order == "desc":
-                    query = query.order_by(sort_expression.desc())
-                else:
-                    query = query.order_by(sort_expression.asc())
+            query = query.order_by(
+                order_by_column(MatchSample, sort, order, MatchSampleSortColumn)
+            )
 
         # Count total matching samples
         count_stmt = select(func.count()).select_from(query.subquery())

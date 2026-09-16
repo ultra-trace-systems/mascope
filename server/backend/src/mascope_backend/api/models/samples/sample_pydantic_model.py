@@ -1,4 +1,5 @@
 from datetime import datetime
+from typing import Literal
 
 from pydantic import ConfigDict, Field, model_validator
 
@@ -14,6 +15,34 @@ from mascope_backend.api.models.sample.items.sample_item_pydantic_model import (
 
 # TODO_configuration move to sample configs when refactoring
 DEFAULT_PEAK_MZ_TOLERANCE_PPM = 1.0
+
+
+# Columns `sort` accepts (see mascope_backend.api.lib.sorting).
+SampleSortColumn = Literal[
+    "sample_item_id",
+    "sample_file_id",
+    "instrument_function_id",
+    "sample_batch_id",
+    "ionization_mode_id",
+    "sample_item_name",
+    "sample_item_type",
+    "locked",
+    "filter_id",
+    "tic",
+    "polarity",
+    "t0",
+    "t1",
+    "sample_item_utc_created",
+    "sample_item_utc_modified",
+    "filename",
+    "instrument",
+    "instrument_type",
+    "source_filename",
+    "method_file",
+    "length",
+    "datetime",
+    "datetime_utc",
+]
 
 
 class GetSamplesQueryParams(GetSampleItemsQueryValidator, QueryParamsModel):
@@ -56,7 +85,7 @@ class GetSamplesQueryParams(GetSampleItemsQueryValidator, QueryParamsModel):
         None,
         description="Filter samples by match_category to include samples with specified match category and higher",
     )
-    sort: str = Field(
+    sort: SampleSortColumn = Field(
         "datetime_utc",
         description="Column name by which you want to sort the results. Should be one of the Sample table columns (e.g., datetime_utc, filename, sample_item_type).",
     )

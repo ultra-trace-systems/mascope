@@ -1,5 +1,5 @@
 import math
-from typing import List, Optional
+from typing import List, Literal, Optional
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -51,6 +51,25 @@ class MatchIsotopeBase(BaseModel):
         return value
 
 
+# Columns `sort` accepts (see mascope_backend.api.lib.sorting).
+MatchIsotopeSortColumn = Literal[
+    "match_isotope_id",
+    "target_isotope_id",
+    "sample_item_id",
+    "sample_peak_id",
+    "sample_peak_mz",
+    "sample_peak_intensity",
+    "sample_peak_intensity_relative",
+    "sample_peak_tof",
+    "match_abundance_error",
+    "match_mz_error",
+    "match_score",
+    "signal_to_noise",
+    "match_isotope_utc_created",
+    "match_isotope_utc_modified",
+]
+
+
 class GetMatchesQueryParams(QueryParamsModel):
     sample_item_id: Optional[str] = Field(
         None, description="Filter by the ID of the sample item"
@@ -65,7 +84,7 @@ class GetMatchesQueryParams(QueryParamsModel):
         False,
         description="Flag to include target isotope details.",
     )
-    sort: Optional[str] = Field(None, description="Field to sort by")
+    sort: MatchIsotopeSortColumn | None = Field(None, description="Field to sort by")
     order: Optional[str] = Field(None, description="Order of sorting ('asc' or 'desc')")
     page: int | None = Field(None, description="Pagination page number")
     limit: int | None = Field(None, description="Number of items per page")

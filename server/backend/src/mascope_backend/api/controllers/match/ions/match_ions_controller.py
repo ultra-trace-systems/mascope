@@ -20,9 +20,11 @@ from mascope_backend.api.lib.api_features import api_controller
 from mascope_backend.api.lib.exceptions.api_exceptions import (
     NotFoundException,
 )
+from mascope_backend.api.lib.sorting import order_by_column, order_distinct_on
 from mascope_backend.api.lib.utils import strings_json_safe
 from mascope_backend.api.models.match.ions.match_ion_pydantic_model import (
     MatchIonBase,
+    MatchIonSortColumn,
 )
 from mascope_backend.db import (
     IonizationMechanism,
@@ -209,13 +211,13 @@ async def get_match_ions(
             )
 
         # Step 10: Apply sorting
-        if sort:
-            sort_expression = getattr(MatchIon, sort, None)
-            if sort_expression:
-                if order == "desc":
-                    query = query.order_by(sort_expression.desc())
-                else:
-                    query = query.order_by(sort_expression.asc())
+        if sort and show_target_collection:
+            # The collection join selects DISTINCT ON the match ion id.
+            query = order_distinct_on(query, MatchIon, sort, order, MatchIonSortColumn)
+        elif sort:
+            query = query.order_by(
+                order_by_column(MatchIon, sort, order, MatchIonSortColumn)
+            )
 
         # Step 11: Count total
         count_stmt = select(func.count()).select_from(query.subquery())

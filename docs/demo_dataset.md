@@ -207,9 +207,12 @@ a from-bundle rebuild (step A3) so the stored filenames match a reproducibility
 rebuild of the same `raw/`.
 
 Booting the stack and ingesting raw files makes this a **heavy** test. It does
-not run per-PR: CI runs it nightly against the default branch and on manual
-dispatch (`.github/workflows/reproducibility.yaml`) - dispatch it on a branch
-before merging a pipeline-touching PR. When the pipeline legitimately changes
+not run on every PR: CI runs it nightly against the default branch, on every PR
+into `master` - a repository ruleset makes it a required check there, so a
+release cannot merge while it is red - and on manual dispatch
+(`.github/workflows/reproducibility.yaml`). PRs into `develop` do not run it, so
+dispatch it on a branch before merging a pipeline-touching PR; otherwise a
+change that moves the goldens surfaces only when the next release PR is opened. When the pipeline legitimately changes
 the numbers, regenerate the goldens with `mascope demo snapshot --update`,
 review the diff, and cut a new bundle version. Goldens are never updated
 silently.

@@ -1,4 +1,4 @@
-from typing import List, Optional
+from typing import List, Literal, Optional
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -55,8 +55,16 @@ class AttributeTemplateUpdateBody(AttributeTemplateBase):
     pass
 
 
+# Columns `sort` accepts (see mascope_backend.api.lib.sorting).
+AttributeTemplateSortColumn = Literal[
+    "attribute_template_id",
+    "name",
+    "type",
+]
+
+
 class GetAttributeTemplatesQueryParams(QueryParamsModel):
-    sort: Optional[str] = Field(
+    sort: AttributeTemplateSortColumn | None = Field(
         "name", description="The column name by which you want to sort the results."
     )
     order: Optional[str] = Field(

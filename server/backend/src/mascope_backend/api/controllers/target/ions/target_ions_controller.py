@@ -3,9 +3,7 @@ from typing import List, Optional
 from sqlalchemy import (
     String,
     and_,
-    asc,
     cast,
-    desc,
     func,
     select,
 )
@@ -25,10 +23,12 @@ from mascope_backend.api.controllers.target.lib.compute.target_ions_compute impo
 )
 from mascope_backend.api.lib.api_features import api_controller
 from mascope_backend.api.lib.exceptions.api_exceptions import NotFoundException
+from mascope_backend.api.lib.sorting import order_by_column, order_distinct_on
 from mascope_backend.api.models.target.compounds.target_compound_pydantic_model import (
     TargetCompoundBase,
 )
 from mascope_backend.api.models.target.ions.target_ion_pydantic_model import (
+    TargetIonSortColumn,
     TargetIonUpdate,
 )
 from mascope_backend.api.new.ionization.modes.util import (
@@ -208,11 +208,13 @@ async def get_target_ions(
             )
 
         # Apply sorting
-        if sort:
-            if order == "desc":
-                stmt = stmt.order_by(desc(getattr(TargetIon, sort)))
-            else:
-                stmt = stmt.order_by(asc(getattr(TargetIon, sort)))
+        if sort and sample_batch_id:
+            # The batch filter selects DISTINCT ON the ion id.
+            stmt = order_distinct_on(stmt, TargetIon, sort, order, TargetIonSortColumn)
+        elif sort:
+            stmt = stmt.order_by(
+                order_by_column(TargetIon, sort, order, TargetIonSortColumn)
+            )
 
         # Get total count
         total = await session.scalar(select(func.count()).select_from(stmt))

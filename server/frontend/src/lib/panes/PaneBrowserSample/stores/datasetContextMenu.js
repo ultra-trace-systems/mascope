@@ -6,6 +6,7 @@ import { useConfirm } from 'primevue/useconfirm'
 import { useApp } from '@/stores'
 
 import { useClipboard } from './clipboard.js'
+import { usePasteIntoNew } from './pasteIntoNew.js'
 
 export const useDatasetContextMenu = defineStore('browser.sample.datasetCtxMenu', () => {
   const app = useApp()
@@ -13,6 +14,7 @@ export const useDatasetContextMenu = defineStore('browser.sample.datasetCtxMenu'
 
   // local deps
   const clipboard = useClipboard()
+  const pasteIntoNew = usePasteIntoNew()
 
   // state
   const menu = ref()
@@ -31,12 +33,17 @@ export const useDatasetContextMenu = defineStore('browser.sample.datasetCtxMenu'
       !app.data.workspace.focused?.is_system
   )
 
+  // A batch or samples belong further down than a workspace; on empty space
+  // they are offered a new dataset (and batch) to go into.
+  const pasteNewValid = computed(() => row.value === null && pasteIntoNew.datasetValid)
+  const samplesS = computed(() => (clipboard.samples?.length > 1 ? 's' : ''))
+
   // actions
   async function onClick(event) {
     await clipboard.read()
     row.value = event?.data ?? null
     // show on a row (cut/edit/delete) or when a paste is available (empty space)
-    if (row.value || pasteValid.value) {
+    if (row.value || pasteValid.value || pasteNewValid.value) {
       show(event)
     } else {
       hide()
@@ -67,6 +74,18 @@ export const useDatasetContextMenu = defineStore('browser.sample.datasetCtxMenu'
         })
         clipboard.clear()
       }
+    },
+    {
+      label: 'Paste batch into a new dataset',
+      icon: 'pi pi-clipboard',
+      visible: pasteNewValid.value && pasteIntoNew.batchPaste,
+      command: () => pasteIntoNew.open({ dataset: true })
+    },
+    {
+      label: `Paste sample${samplesS.value} into a new dataset and batch`,
+      icon: 'pi pi-clipboard',
+      visible: pasteNewValid.value && pasteIntoNew.samplesPaste,
+      command: () => pasteIntoNew.open({ dataset: true })
     },
     {
       separator: true,

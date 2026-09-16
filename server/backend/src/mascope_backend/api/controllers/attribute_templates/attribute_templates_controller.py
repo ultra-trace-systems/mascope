@@ -1,14 +1,14 @@
 from sqlalchemy import (
-    asc,
-    desc,
     func,
     select,
 )
 
 from mascope_backend.api.lib.api_features import api_controller
 from mascope_backend.api.lib.exceptions.api_exceptions import NotFoundException
+from mascope_backend.api.lib.sorting import order_by_column
 from mascope_backend.api.models.attribute_templates.attribute_template_pydantic_model import (
     AttributeTemplateCreateBody,
+    AttributeTemplateSortColumn,
     AttributeTemplateUpdateBody,
 )
 from mascope_backend.db import AttributeTemplate, async_session
@@ -53,10 +53,10 @@ async def get_attribute_templates(
         # Step 1: Construct query
         stmt = select(AttributeTemplate)
         if sort:
-            stmt = (
-                stmt.order_by(desc(getattr(AttributeTemplate, sort)))
-                if order == "desc"
-                else stmt.order_by(asc(getattr(AttributeTemplate, sort)))
+            stmt = stmt.order_by(
+                order_by_column(
+                    AttributeTemplate, sort, order, AttributeTemplateSortColumn
+                )
             )
         # Step 2: Count total results
         total = await session.scalar(select(func.count()).select_from(stmt))

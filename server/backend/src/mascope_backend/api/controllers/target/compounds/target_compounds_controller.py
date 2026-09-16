@@ -2,7 +2,7 @@ import asyncio
 from typing import Optional
 
 from fastapi import HTTPException
-from sqlalchemy import and_, asc, desc, func, or_, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from mascope_backend.api.controllers.ionization_mechanisms.ionization_mechanisms_controller import (
@@ -19,8 +19,10 @@ from mascope_backend.api.controllers.target.lib.fetch.target_compounds_fetch imp
 )
 from mascope_backend.api.lib.api_features import api_controller
 from mascope_backend.api.lib.exceptions.api_exceptions import NotFoundException
+from mascope_backend.api.lib.sorting import order_by_column
 from mascope_backend.api.models.target.compounds.target_compound_pydantic_model import (
     TargetCompoundBase,
+    TargetCompoundSortColumn,
     TargetCompoundUpdate,
 )
 from mascope_backend.db import (
@@ -144,10 +146,9 @@ async def get_target_compounds(
 
         # Step 4: Apply sorting if specified
         if sort:
-            if order == "desc":
-                stmt = stmt.order_by(desc(getattr(TargetCompound, sort)))
-            else:
-                stmt = stmt.order_by(asc(getattr(TargetCompound, sort)))
+            stmt = stmt.order_by(
+                order_by_column(TargetCompound, sort, order, TargetCompoundSortColumn)
+            )
 
         # Step 5: Count total results
         count_stmt = select(func.count()).select_from(stmt.subquery())

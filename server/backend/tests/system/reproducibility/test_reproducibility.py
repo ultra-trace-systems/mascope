@@ -18,8 +18,8 @@ minutes): start a rebuild-mode demo stack first, then enable it with
     MASCOPE_DEMO_REBUILD=1 docker compose -f docker-compose.demo.yaml up -d
     MASCOPE_REPRO_TEST=1 uv run pytest server/backend/tests/system/reproducibility/ -v
 
-CI runs it from ``.github/workflows/reproducibility.yaml`` (nightly + manual
-dispatch). Configuration (all optional):
+CI runs it from ``.github/workflows/reproducibility.yaml`` (nightly, on PRs into
+master, and on manual dispatch). Configuration (all optional):
 
 - ``MASCOPE_REPRO_APP_URL``: app origin (default ``http://127.0.0.1:8080``).
 - ``MASCOPE_REPRO_BACKEND_CONTAINER`` / ``MASCOPE_REPRO_POSTGRES_CONTAINER``:

@@ -8,12 +8,14 @@ with custom operations and integrations, including role filtering, validation, e
 
 from typing import Optional, Union
 
-from sqlalchemy import asc, desc, func, select
+from sqlalchemy import func, select
 
 from mascope_backend.accounts import ACCOUNT_TYPE_MACHINE, refuse_machine_account
 from mascope_backend.api.lib.api_features import api_controller
 from mascope_backend.api.lib.exceptions.api_exceptions import NotFoundException
+from mascope_backend.api.lib.sorting import order_by_column, sortable_columns
 from mascope_backend.api.new.auth.config import auth_settings
+from mascope_backend.api.new.auth.exceptions import ForbiddenAccessException
 from mascope_backend.api.new.roles.exceptions import InvalidRoleException
 from mascope_backend.api.new.users.first_owner.util import (
     check_last_owner_deletion,
@@ -27,9 +29,11 @@ from mascope_backend.api.new.users.password.generate import (
     generate_random_password,
 )
 from mascope_backend.api.new.users.schemas import (
+    PublicUserSortColumn,
     UserCreate,
     UserPublic,
     UserRead,
+    UserSortColumn,
     UserUpdate,
 )
 from mascope_backend.api.new.users.user_manager.service import UserManager
@@ -44,7 +48,7 @@ async def get_users(
     role_name_max: Optional[str] = None,
     page: int | None = None,
     limit: int | None = None,
-    sort: str = "registered_at",
+    sort: str | None = None,
     order: str = "desc",
     caller: User | None = None,
 ) -> dict:
@@ -59,13 +63,16 @@ async def get_users(
     :type page: int | None
     :param limit: Number of results per page, defaults to None (no pagination).
     :type limit: int | None
-    :param sort: Column name to sort by, defaults to "registered_at".
-    :type sort: str
+    :param sort: Column name to sort by, defaults to None: "registered_at" for
+                 an admin caller, "id" for anyone else.
+    :type sort: str | None
     :param order: Sort order, either 'asc' or 'desc', defaults to "desc".
     :type order: str
     :param caller: The user making the request, used for access control. Admin and
                    higher roles see full user details, defaults to None (public view).
     :type caller: User | None
+    :raises ForbiddenAccessException: If a caller below admin filters by role or
+                                      sorts by a column outside ``PublicUserSortColumn``.
     :raises NotFoundException: If no users are found in the database.
     :return: A dictionary containing the user list and metadata.
     :rtype: dict
@@ -75,6 +82,25 @@ async def get_users(
         raise ValueError(
             "Both 'page' and 'limit' must be provided together or both omitted."
         )
+    # Admins/owners see full user details; others get public-only fields.
+    admin_level = auth_settings.ROLE_ACCESS_LEVELS["admin"]
+    full_view = caller is not None and (
+        caller.is_superuser
+        or (caller.role_id is not None and caller.role_id >= admin_level)
+    )
+    # A caller below admin reads ids and usernames only. Filtering by role, or
+    # ordering by anything else, would disclose the values that view omits.
+    if not full_view:
+        if role_name_min or role_name_max:
+            raise ForbiddenAccessException(
+                "Filtering users by role requires the admin role."
+            )
+        if sort is not None and sort not in sortable_columns(PublicUserSortColumn):
+            raise ForbiddenAccessException(
+                "Sorting users by anything but id or username requires the admin role."
+            )
+    sort = sort or ("registered_at" if full_view else "id")
+
     async with async_session() as session:
         # Step 1: Construct the base query with join to Role. Machine accounts
         # are excluded: this list is the human user-management view, and a
@@ -101,12 +127,7 @@ async def get_users(
                     query = query.filter(Role.role_id <= max_access_level)
 
         # Step 2: Apply sorting
-        if sort:
-            query = query.order_by(
-                desc(getattr(User, sort))
-                if order == "desc"
-                else asc(getattr(User, sort))
-            )
+        query = query.order_by(order_by_column(User, sort, order, UserSortColumn))
 
         # Step 3: Get total count for pagination
         count_query = select(func.count()).select_from(query.subquery())
@@ -118,17 +139,7 @@ async def get_users(
         result = await session.execute(query)
 
         # Step 5: Construct the response data
-        # Admins/owners see full user details; others get public-only fields
-        admin_level = auth_settings.ROLE_ACCESS_LEVELS["admin"]
-        schema = (
-            UserRead
-            if caller
-            and (
-                caller.is_superuser
-                or (caller.role_id is not None and caller.role_id >= admin_level)
-            )
-            else UserPublic
-        )
+        schema = UserRead if full_view else UserPublic
         users = []
         for user, role_name in result.all():
             user_data = user.to_dict()

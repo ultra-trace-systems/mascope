@@ -4,6 +4,150 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 ## [Unreleased]
 
+## [1.8.1] - 2026.09.16
+
+### Added
+
+- **Pasting a batch or samples where there is no place for them yet offers
+  to make one.** Right-clicking the empty space of a workspace with a copied
+  batch on the clipboard offers "Paste batch into a new dataset", and with
+  copied or cut samples "Paste samples into a new dataset and batch";
+  right-clicking the empty space of a dataset offers "Paste samples into a
+  new batch". A short dialog asks for a name for each new dataset and batch
+  (nothing is filled in for you), creates them, pastes into them and opens
+  the result. Previously the empty dataset and batch had to be created by
+  hand first.
+
+- **The dataset in the top bar has the full dataset menu.** Right-clicking it
+  offered only Edit and Delete; it now opens the same menu as a dataset row
+  in the sample browser, including Process > Refresh matches for every batch
+  in the dataset, and Cut.
+
+### Fixed
+
+- **Creating a dataset opens it again.** The new dataset appeared in the list
+  but stayed closed, and could open by itself later, after switching to
+  another workspace and back. Creating a workspace had the same weakness
+  whenever its list reloaded before the create request returned. Both now
+  open the new record as soon as it reaches the list.
+
+- **The target browser no longer offers "Edit batch targets" with no batch
+  open.** Right-clicking its empty space with no batch open still offered the
+  entry, which opened the batch dialog with no batch to edit. That menu now
+  opens only when a batch is open.
+- **A calibration that runs is no longer taken for a good one.** A sample's
+  m/z calibration was marked verified whenever a fit completed, and matching
+  and peak assignment read that as "this file's mass axis is right". Two
+  calibrants that disagree were split down the middle and stamped verified
+  with the residual unchanged, a single calibrant fitted itself to zero error,
+  and a TOF file never fitted kept the axis the acquisition wrote with nothing
+  to say so. An applied fit is now checked against a quality bar: a mean
+  residual within 1 ppm (Orbitrap) or 10 ppm (TOF); a correction of at most
+  10 ppm from the acquisition axis for a fit nothing corroborates (one point,
+  or two isotopes of one ion); and points from at least two ions for a fit on
+  three or more. A fit below the bar is still applied, recorded with its
+  reasons, and shown with an amber badge. On a corpus of production files
+  from every site the bar passes 113 of 122 Orbitrap fits and all 4 TOF fits;
+  among those it flags are one-point fits that moved the axis 76 to 81 ppm
+  onto the wrong peak and reported a zero residual.
+
+  **What a fit below the bar does is the new `calibration_quality_gate`
+  setting in `[backend]`.** The default, `"warn"`, still matches and assigns
+  the sample. With `"enforce"`, the sample is left out of matching and peak
+  assignment and the user is told why, until it is recalibrated or an
+  operator accepts the fit from the calibration dialog (the record names who
+  did). Run on `"warn"` first: over the last 60 days about 7% of production
+  calibrations would have missed the bar, almost all of them in a few
+  ionization modes whose two calibrants disagree by a couple of ppm, which
+  want a third calibrant before the gate is enforced.
+
+  A TOF file is marked not calibrated from registration until a fit replaces
+  its acquisition axis, and a TOF fit that fails now leaves a failure marker
+  instead of no trace. Fits already stored keep their verdict until they are
+  recalibrated.
+
+- **The calibration badge tells a bad calibration from an instrument that
+  drifted.** Both showed the same warning colour. A file whose acquisition
+  axis was far off but which calibrated well now shows a teal badge that
+  points at the instrument; amber is kept for calibrations below the quality
+  bar, and a failed calibration is red.
+
+- **Orbitrap peak detection no longer joins two weak neighbouring peaks into
+  one.** 1.8.0 began merging two averaged centroids up to one and a half peak
+  widths apart when the scans hold one or the other and alternate between
+  them, which is how a dominant ion whose measured position jitters from scan
+  to scan looks. Near the noise, though, a real ion's label misses scans
+  routinely, so two weak neighbours that take turns clearing it look the
+  same: the 18O and 13C2 isotopologues of one ion, 12 to 13 ppm apart, came
+  out as one centroid between them, and a matched isotope moved by several
+  ppm, gained up to half again its intensity, or was matched to the wrong
+  target. On the published demo dataset, whose files hold four scans each,
+  the rule joined 40 such pairs across 38 of the 161 files, and the nightly
+  reproducibility check failed on the 1.8.0 release. Both sides must now
+  reach a per-scan signal-to-noise of 10. On that dataset a peak misses at
+  least one scan in under 3% of cases from there up, against half of them at
+  3 to 4; the jittering dominant ions the rule exists for sit far above it,
+  and on the demo dataset it now joins nothing. Peak lists detected with
+  1.8.0 keep the joined peaks until peak detection is re-run for the sample.
+
+- **One stored row the current rules refuse no longer breaks the listing it
+  is in.** Reading ionization mechanisms, datasets and sample batches re-ran
+  the *create* validators over every row of the response. Those rules have
+  tightened over time and nothing rewrites older rows to match, so a single
+  such row made the whole listing answer 400 for every caller - including
+  the frontend, which loads all three. For ionization mechanisms it was an
+  empty modification such as `++` or an element the formula check does not
+  know; for sample batches the database's own `+-` polarity default, which
+  an ACQUISITION batch's rules refuse; for datasets a name, type or
+  instrument combination refused later. The same held for the single-record
+  reads, so such a mechanism could not even be deleted through the API.
+  Reading now reports stored rows as they are, for these three and for the
+  user listing, whose role name was checked the same way; what may be
+  written is validated exactly as before, where it is written. A mechanism
+  the write rules refuse is logged once per id when it is read, so it stays
+  visible to operators rather than silently offered to clients.
+
+- **Creating an ionization mechanism answers 422 on a malformed body.**
+  `POST /api/ionization_mechanisms` derived the polarity before any type
+  checking, so a body with no mechanism, a non-string mechanism, or one that
+  was not an object at all raised inside the validator and answered 500. The
+  unused `IonizationMechanismUpdate` schema, whose validators crashed on the
+  partial bodies it existed for, is gone; no route offered it.
+
+### Security
+
+- **A list endpoint's `sort` parameter accepts only the columns that endpoint
+  declares.** Every list route that takes `sort` (users, datasets, sample
+  batches, items, files and samples, target collections, compounds, ions and
+  isotopes and their associations, match results and ratings, ionization
+  mechanisms, attribute templates, instrument configs) passed the value
+  straight to `getattr` on the model. An unknown name answered 500 - which is
+  how `GET /api/users?sort=1' OR '1'='1` failed a pentest injection control,
+  though no SQL was ever injected - and any mapped attribute was orderable,
+  so any active user could order `/api/users` by the password hash or email
+  and use the order as an oracle over values the listing does not show.
+  Each endpoint now names its sortable columns explicitly
+  (`mascope_backend/api/lib/sorting.py`): anything else is refused with 422
+  during request validation, the accepted values are listed as an enum in
+  the OpenAPI document, and the controllers check the same list again before
+  touching the model. `/api/users` sorts by `id`, `username` or
+  `registered_at` only; the other endpoints keep every scalar column they
+  return, so the frontend's sorts are unaffected. The match collection,
+  compound, ion and sample endpoints used to ignore a name they did not
+  recognise and return the results unsorted; they now refuse it like the
+  rest. An unexpected `AttributeError` still maps to 500.
+
+  Sorting target ions or isotopes filtered by `sample_batch_id`, or match
+  ions with `show_target_collection`, by any column other than the row id
+  answered 500 (those queries select `DISTINCT ON` the id, which Postgres
+  requires to lead the `ORDER BY`); it now orders as asked.
+
+  A caller below admin reads only ids and usernames from `/api/users`, and
+  may now neither filter it by role (`role_name_min` / `role_name_max`,
+  which listed who holds a role) nor sort it by `registered_at`: both answer
+  403. Such a caller's default order is `id` instead of `registered_at`;
+  admins keep `registered_at`.
+
 ## [1.8.0] - 2026.09.15
 
 ### Added

@@ -171,12 +171,18 @@ jobs:
     timeout-minutes: 30
     # Referencing a GitHub environment is what makes OIDC federation work at
     # all here, and it is not optional. A job with no environment presents
-    # Entra the subject `repo:<org>/<repo>:ref:refs/tags/<TAG>` - a different
-    # string on every release - and Entra matches a federated credential's
-    # subject as an exact, case-sensitive string with no wildcard support and
-    # a hard cap of 20 credentials per app. Naming an environment makes the
-    # subject the constant `repo:ultra-trace-systems/mascope:environment:
-    # release-signing`, which one credential covers for every future release.
+    # Entra a subject ending in `:ref:refs/tags/<TAG>` - a different string on
+    # every release - and Entra matches a federated credential's subject as an
+    # exact, case-sensitive string with no wildcard support and a hard cap of
+    # 20 credentials per app. Naming an environment makes the subject the
+    # constant `repo:ultra-trace-systems@162320857/mascope@767603004:
+    # environment:release-signing`, which one credential covers for every
+    # future release. The owner@id/repo@id prefix is GitHub's immutable
+    # subject format, which this repository has enabled; the plain
+    # `repo:ultra-trace-systems/mascope:...` form no longer matches and fails
+    # the Azure login with AADSTS700213. The login step logs the subject it
+    # presented, and `gh api repos/{owner}/{repo}/actions/oidc/customization/sub`
+    # shows the prefix currently in effect.
     # Mind the scope: `environment:` is job-level and unconditional, so any
     # protection rule put on release-signing gates the whole job - the agent
     # tests and the UNSIGNED build too, including the documented rollback of

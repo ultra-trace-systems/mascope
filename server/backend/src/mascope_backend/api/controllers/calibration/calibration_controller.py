@@ -11,6 +11,10 @@ Tasks:
 """
 
 import asyncio
+import hashlib
+import hmac
+import json
+import numbers
 import time
 from datetime import datetime, timezone
 from typing import cast
@@ -20,7 +24,9 @@ from sqlalchemy import and_, func, select
 import mascope_file.io as m_io
 import mascope_file.name as m_name
 from mascope_backend.api.controllers.calibration.lib.calibration_mz_fit import (
+    axis_correction_ppm,
     calibration_params_factory,
+    calibration_quality_issues,
     fit_quality,
     get_calibration_handler,
 )
@@ -61,6 +67,7 @@ from mascope_backend.api.models.sample.files.sample_file_pydantic_model import (
 from mascope_backend.db import IonizationMode, Sample, SampleBatch, async_session
 from mascope_backend.db.id import gen_id
 from mascope_backend.runtime import runtime
+from mascope_backend.service_token import derive_token_secret
 from mascope_backend.socket.notifications import (
     UserNotification,
     send_progress_user_notification,
@@ -226,24 +233,61 @@ def warn_on_acquisition_drift(
     )
 
 
+#: Record statuses of a fit that was applied to the file's m/z axis: ``ok``
+#: cleared the quality bar, ``poor`` did not (see :func:`calibration_mz_apply`).
+APPLIED_STATUSES = ("ok", "poor")
+
+
+def is_unfitted_record(record: dict | None) -> bool:
+    """
+    Whether a calibration record describes the acquisition's own axis.
+
+    The file converter stores a TOF file's acquisition coefficients as its
+    record, stamped ``status: "unfitted"`` at registration (see
+    ``create_sample_file``). Records registered before that stamp are the
+    converter's bare ``{"mode": <int>, "par": [...]}``: every applied fit has
+    carried ``verified`` since the key was introduced, and a fit's record
+    carries its ``quality``, so a record with the converter's shape and
+    neither of those is a converter record too.
+
+    :param record: A ``sample_file.mz_calibration`` record, if any.
+    :return: True for a converter record, False otherwise (including None).
+    """
+    if not record:
+        return False
+    if record.get("status") == "unfitted":
+        return True
+    return (
+        not {"status", "verified", "quality"} & record.keys()
+        and isinstance(record.get("mode"), int)
+        and "par" in record
+    )
+
+
 def previous_fit_moved_the_axis(previous: dict | None) -> bool:
     """
     Whether the calibration already on the file rescaled its stored m/z axis.
 
-    An applied fit is persisted with ``status: "ok"`` (see
-    :func:`calibration_mz_apply`); a calibration the pipeline gave up on
-    leaves a marker record instead (``status: "failed"``, ``verified: False``)
-    and never touches the axis, so the file still sits on the axis it was
-    acquired with. A record that says neither is treated as applied: the cost
-    of being wrong that way is one drift observation not raised, against a
-    badge that blames the instrument for a fit which displaced the axis.
+    An applied fit is persisted with a status in :data:`APPLIED_STATUSES`
+    (see :func:`calibration_mz_apply`) - whether or not it cleared the quality
+    bar, it moved the axis. A calibration the pipeline gave up on leaves a
+    marker record instead (``status: "failed"``, ``verified: False``) and a
+    converter record (:func:`is_unfitted_record`) describes the acquisition
+    axis; neither has touched it, so the file still sits on the axis it was
+    acquired with. Any other record is treated as applied unless it says it
+    is unverified: the cost of being wrong that way is one drift observation
+    not raised, against a badge that blames the instrument for a fit which
+    displaced the axis.
 
     :param previous: The record being replaced, if any.
     :return: True when the stored m/z axis reflects the previous fit.
     """
-    if not previous:
+    if not previous or is_unfitted_record(previous):
         return False
-    return previous.get("status") != "failed" and previous.get("verified") is not False
+    status = previous.get("status")
+    if status in APPLIED_STATUSES:
+        return True
+    return status != "failed" and previous.get("verified") is not False
 
 
 def _clear_carried_marker(
@@ -359,6 +403,159 @@ def carry_acquisition_drift(
         return False
     fit.update({"acquisition_drift": True, "acquisition_drift_ppm": carried})
     return False
+
+
+#: Purpose label of the key that seals fits (see :func:`seal_fit`).
+_FIT_SEAL_PURPOSE = "calibration-fit-seal"
+
+#: Issue recorded for a fit whose statistics this server cannot vouch for.
+UNSEALED_FIT_ISSUE = {
+    "code": "unsealed",
+    "message": (
+        "The fit statistics were not computed by this server for this file, "
+        "so the fit cannot be judged."
+    ),
+}
+
+
+def _canonical(value):
+    """Numbers as floats, so a JSON round trip (``1.0`` -> ``1``) keeps the seal."""
+    if isinstance(value, bool) or value is None or isinstance(value, str):
+        return value
+    if isinstance(value, numbers.Real):
+        return float(value)
+    if isinstance(value, dict):
+        return {str(k): _canonical(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_canonical(v) for v in value]
+    return str(value)
+
+
+def _fit_seal(fit: dict, filename: str) -> str:
+    """HMAC over what the verdict rests on: the file, the model and its quality."""
+    payload = json.dumps(
+        _canonical(
+            {
+                "filename": filename,
+                "mode": fit.get("mode"),
+                "par": fit.get("par"),
+                "quality": fit.get("quality"),
+            }
+        ),
+        sort_keys=True,
+    )
+    key = derive_token_secret(_FIT_SEAL_PURPOSE).encode("utf-8")
+    return hmac.new(key, payload.encode("utf-8"), hashlib.sha256).hexdigest()
+
+
+def seal_fit(fit: dict, filename: str) -> None:
+    """
+    Mark a fit's parameters and quality block as computed by this server.
+
+    ``/mz_apply`` takes the fit back from the client, and the verdict is
+    decided from the quality block the fit carries - so without a seal, a
+    client could edit that block and have a poor fit stored verified with no
+    acceptance on record. :func:`stamp_quality_verdict` only judges a fit
+    whose seal checks out, for the file it was fitted on.
+
+    :param fit: Fit dict as ``calibration_mz_fit`` returns it (mutated).
+    :param filename: Sample filename the fit was computed for.
+    """
+    fit["seal"] = _fit_seal(fit, filename)
+
+
+def fit_seal_valid(fit: dict, filename: str) -> bool:
+    """
+    Whether ``fit`` carries this server's seal for ``filename``, unaltered.
+
+    Must be checked before the fit is applied: the Orbitrap apply trims its
+    parameters, which the seal covers.
+
+    :param fit: Fit dict to check.
+    :param filename: Sample filename the fit is being applied to.
+    :return: True for a sealed, unmodified fit.
+    """
+    seal = fit.get("seal")
+    if not isinstance(seal, str):
+        return False
+    return hmac.compare_digest(seal, _fit_seal(fit, filename))
+
+
+def calibration_quality_gate() -> str:
+    """
+    What a calibration below the quality bar does on this deployment.
+
+    Read from ``calibration_quality_gate`` in the runtime ``[backend]``
+    config: ``"warn"`` (the default) stores it verified, ``"enforce"`` keeps
+    it out of matching and peak assignment. See :func:`stamp_quality_verdict`.
+
+    :return: ``"warn"`` or ``"enforce"``.
+    """
+    return getattr(runtime.config, "calibration_quality_gate", "warn")
+
+
+def stamp_quality_verdict(
+    fit: dict,
+    filename: str,
+    accept: bool = False,
+    accepted_by: int | None = None,
+    sealed: bool = False,
+) -> list[dict]:
+    """
+    Decide ``status`` and ``verified`` for a fit about to be persisted.
+
+    A fit that misses the quality bar (:func:`calibration_quality_issues`) is
+    still applied - it is usually closer than the acquisition axis - and is
+    stored ``status: "poor"`` with the reasons, so the badge shows it. The
+    deployment's :func:`calibration_quality_gate` decides ``verified``, which
+    is what matching and peak assignment read as "this file's mass axis is
+    right":
+
+    - ``"warn"``: verified. The sample is matched and assigned as before;
+      the record and the badge say the fit is below the bar. The gate
+      applied is recorded as ``quality_gate``.
+    - ``"enforce"``: unverified, which keeps the file out of matching and
+      assignment until someone looks at it. An operator who has looked at
+      the fit in the calibration dialog can apply it anyway (``accept``); the
+      record then turns ``verified`` and names who accepted it and when.
+
+    Everything this decides is dropped from the incoming dict first:
+    ``/mz_apply`` takes the fit straight off the request body and persists
+    unknown keys verbatim. For the same reason the quality block is only
+    judged when the fit is ``sealed`` (see :func:`fit_seal_valid`); an
+    unsealed fit gets :data:`UNSEALED_FIT_ISSUE` instead, and is treated as
+    any other fit below the bar.
+
+    :param fit: Fit dict about to be persisted (mutated in place).
+    :param filename: Sample filename, selects the instrument-class bounds.
+    :param accept: Whether an operator accepted the fit regardless of issues.
+    :param accepted_by: User id recorded on an acceptance, when known.
+    :param sealed: Whether the fit's seal was valid before it was applied.
+    :return: The quality issues found; empty when the fit cleared the bar.
+    """
+    for key in ("quality_issues", "quality_gate", "accepted_at", "accepted_by", "seal"):
+        fit.pop(key, None)
+    if sealed:
+        issues = calibration_quality_issues(fit.get("quality"), filename)
+    else:
+        issues = [dict(UNSEALED_FIT_ISSUE)]
+    gate = calibration_quality_gate()
+    fit.update(
+        {
+            "status": "poor" if issues else "ok",
+            "verified": not issues or accept or gate != "enforce",
+            "quality_issues": issues,
+            "quality_gate": gate,
+        }
+    )
+    if issues and accept:
+        fit.update(
+            {
+                "accepted_at": datetime.now(timezone.utc).isoformat(),
+                "accepted_by": accepted_by,
+            }
+        )
+    return issues
 
 
 async def reset_mz_calibration(sample_file) -> bool:
@@ -580,6 +777,20 @@ async def calibration_mz_fit(
         calibration_data["fit"]["quality"] = fit_quality(
             calibration_data.get("stats"), calibration_parameters
         )
+        if calibration_data["fit"]["quality"] is not None:
+            calibration_data["fit"]["quality"]["axis_correction_ppm"] = (
+                axis_correction_ppm(calibration_data["fit"])
+            )
+        # A preview for the calibration dialog, so the operator sees what the
+        # fit would be stored as before applying it. Apply decides again from
+        # the quality block rather than trusting this.
+        calibration_data["fit"]["quality_issues"] = calibration_quality_issues(
+            calibration_data["fit"]["quality"], sample.filename
+        )
+        # Also a preview: whether saving such a fit keeps the sample out of
+        # matching, which is what the dialog offers acceptance for.
+        calibration_data["fit"]["quality_gate"] = calibration_quality_gate()
+        seal_fit(calibration_data["fit"], sample.filename)
 
     # --- Build shared notification payload ---
     notification_data = {
@@ -628,6 +839,7 @@ async def calibration_mz_apply(
     fit: dict,
     filename: str,
     manual: bool = False,
+    accept_quality_issues: bool = False,
     independent_transaction: bool = False,
     user_id: int | None = None,
     process_id=None,
@@ -641,6 +853,7 @@ async def calibration_mz_apply(
     - Set non-ACQUISITION batches to "processing"
     - Prepare progress user notification
     - Apply m/z calibration
+    - Judge the fit against the quality bar (see :func:`stamp_quality_verdict`)
     - Update sample file database record with new calibration
     - Notify completion for each affected batch and remove existing matches
     - Set non-ACQUISITION batches to "rematch"
@@ -651,6 +864,8 @@ async def calibration_mz_apply(
     :param manual: Whether an operator asked for this calibration rather than
         the automatic pipeline. Governs the acquisition-drift marker only -
         see :func:`carry_acquisition_drift`.
+    :param accept_quality_issues: Whether an operator accepted this fit
+        knowing it misses the quality bar; stores it ``verified`` anyway.
     :param independent_transaction: Whether to run as independent transaction
     :param user_id: Current user triggered operation (for user notifications)
     :param process_id: Process ID for tracking
@@ -708,6 +923,9 @@ async def calibration_mz_apply(
 
     await send_progress_user_notification(notification, 0.1)
 
+    # Before the apply, which trims the parameters the seal covers.
+    sealed = fit_seal_valid(fit, filename)
+
     # --- Apply m/z calibration to file ---
     calibration_handler = get_calibration_handler(
         filename=filename, calibration_params=None, notification=notification
@@ -716,7 +934,26 @@ async def calibration_mz_apply(
     updated_mz_axis = (await asyncio.to_thread(get_sum_signal, filename)).mz.values
     new_mz_range = [updated_mz_axis[0], updated_mz_axis[-1]]
 
-    fit.update({"status": "ok", "verified": True})
+    issues = stamp_quality_verdict(
+        fit,
+        filename,
+        accept=accept_quality_issues,
+        accepted_by=user_id,
+        sealed=sealed,
+    )
+    if issues:
+        # INFO: a data condition the record and the badge carry.
+        consequence = (
+            "accepted by an operator"
+            if fit.get("accepted_by") is not None
+            else "kept out of matching"
+            if not fit["verified"]
+            else "matched anyway (quality gate: warn)"
+        )
+        runtime.logger.info(
+            f"m/z calibration of '{filename}' applied below the quality bar, "
+            f"{consequence}: " + " ".join(issue["message"] for issue in issues)
+        )
     if carry_acquisition_drift(
         fit,
         sample_file.mz_calibration,
@@ -792,7 +1029,22 @@ async def calibration_mz_apply(
         f"Applied m/z fit to '{filename}'. Number of affected samples: {total_samples}."
     )
     runtime.logger.info(message)
+    reasons = " ".join(issue["message"] for issue in issues)
+    if not fit["verified"]:
+        message += (
+            " The fit does not meet the calibration quality bar, so its samples "
+            f"are excluded from matching and peak assignment: {reasons}"
+        )
+    elif issues and fit.get("accepted_by") is None:
+        message += (
+            " The fit does not meet the calibration quality bar; matching and "
+            f"peak assignment use it regardless: {reasons}"
+        )
     return {
+        # Applied below the bar and not accepted: announced as a warning.
+        "status": (
+            "partial" if issues and fit.get("accepted_by") is None else "success"
+        ),
         "data": {
             "fit": fit,
         },
@@ -908,8 +1160,24 @@ async def calibration_mz_calibrate_sample(
         warn_on_acquisition_drift(fit, sample.instrument, sample.filename)
     await send_progress_user_notification(notification, 0.95)
 
+    # ``fit`` carries the verdict ``calibration_mz_apply`` stamped on it; the
+    # callers use it to keep a below-bar file out of matching.
+    verified = bool(fit and fit.get("verified"))
+    quality_issues = (fit or {}).get("quality_issues") or []
+    message = f"Sample '{sample.sample_item_name}' m/z calibrated."
+    if not verified:
+        message = (
+            f"Sample '{sample.sample_item_name}' m/z calibrated below the quality "
+            "bar and excluded from matching: "
+            + " ".join(issue["message"] for issue in quality_issues)
+        )
     return {
-        "message": f"Sample '{sample.sample_item_name}' m/z calibrated.",
+        "status": "success" if verified else "partial",
+        "message": message,
+        "data": {
+            "verified": verified,
+            "quality_issues": quality_issues,
+        },
         "_notification_data": {
             "sample_item_id": sample_item_id,
             "sample_file_id": sample.sample_file_id,
@@ -929,7 +1197,10 @@ async def calibration_mz_calibrate_sample(
 MAX_LISTED_CALIBRATION_FAILURES = 10
 
 
-def _compose_calibration_failure_message(failed_sample_items: list[dict]) -> str:
+def _compose_calibration_failure_message(
+    failed_sample_items: list[dict],
+    header: str = "Failed to calibrate {n} sample(s).",
+) -> str:
     """
     Summarise a batch calibration's failures, naming the samples.
 
@@ -940,6 +1211,8 @@ def _compose_calibration_failure_message(failed_sample_items: list[dict]) -> str
     :param failed_sample_items: Per-sample failure records collected by
         :func:`calibration_mz_calibrate_samples`.
     :type failed_sample_items: list[dict]
+    :param header: First line, with ``{n}`` for the number of samples.
+    :type header: str
     :return: Warning message naming the samples that were not calibrated.
     :rtype: str
     """
@@ -951,9 +1224,7 @@ def _compose_calibration_failure_message(failed_sample_items: list[dict]) -> str
     remaining = len(failed_sample_items) - len(listed)
     if remaining:
         lines.append(f"...and {remaining} more.")
-    return "\n".join(
-        [f"Failed to calibrate {len(failed_sample_items)} sample(s)."] + lines
-    )
+    return "\n".join([header.format(n=len(failed_sample_items))] + lines)
 
 
 @api_controller_background_task(
@@ -979,7 +1250,8 @@ async def calibration_mz_calibrate_samples(
     - Calibrate each sample, collecting affected IDs
     - On per-sample failure, log warning and continue
     - Fetch affected batch IDs from all touched sample IDs
-    - Raise a warning naming every failed sample if any failed
+    - Raise a warning naming every sample that failed or was calibrated
+      below the quality bar
     - Return calibration summary and notification data
 
     :param sample_item_ids: List of sample item IDs to be calibrated.
@@ -1021,6 +1293,7 @@ async def calibration_mz_calibrate_samples(
     # --- Calibrate each sample and collect all affected IDs ---
     affected_sample_item_ids = set()
     failed_sample_items = []
+    below_bar_sample_items = []
 
     for sample_item_id in sample_item_ids:
         # Wrap in try/except to not break the loop if one item fails
@@ -1035,6 +1308,22 @@ async def calibration_mz_calibrate_samples(
                 process_id=gen_id(8),
                 parent_id=process_id,
             )
+            result_data = calibration_result.get("data") or {}
+            if not result_data.get("verified", True):
+                sample = await fetch_sample(sample_item_id=sample_item_id)
+                below_bar_sample_items.append(
+                    {
+                        "sample_item": {
+                            "sample_item_id": sample.sample_item_id,
+                            "sample_item_name": sample.sample_item_name,
+                            "filename": sample.filename,
+                        },
+                        "warning_message": " ".join(
+                            issue["message"]
+                            for issue in result_data.get("quality_issues") or []
+                        ),
+                    }
+                )
             # Collect affected items from successful calibration
             affected_sample_item_ids.update(
                 calibration_result.get("_notification_data", {}).get(
@@ -1075,13 +1364,25 @@ async def calibration_mz_calibrate_samples(
     else:
         affected_sample_batch_ids = []
 
-    # --- Raise warning if any samples failed ---
-    if failed_sample_items:
-        warning_message = _compose_calibration_failure_message(failed_sample_items)
+    # --- Raise warning if any samples failed or calibrated below the bar ---
+    if failed_sample_items or below_bar_sample_items:
+        warning_message = "\n".join(
+            _compose_calibration_failure_message(items, header)
+            for items, header in (
+                (failed_sample_items, "Failed to calibrate {n} sample(s)."),
+                (
+                    below_bar_sample_items,
+                    "{n} sample(s) calibrated below the quality bar and "
+                    "excluded from matching.",
+                ),
+            )
+            if items
+        )
         raise_api_warning(
             warning_message,
             {
                 "samples_calibrate_failed": failed_sample_items,
+                "samples_calibrated_below_bar": below_bar_sample_items,
                 "_notification_data": {
                     "affected_sample_batch_ids": affected_sample_batch_ids,
                     "affected_sample_item_ids": list(affected_sample_item_ids),

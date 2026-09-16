@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Optional
+from typing import Literal, Optional
 
 from fastapi_users import schemas
 from pydantic import (
@@ -109,17 +109,6 @@ class UserRead(schemas.BaseUser[int]):
         if self.account_type == ACCOUNT_TYPE_MACHINE:
             return False
         return policy.enrollment_required(self.role_id, self.mfa_enabled)
-
-    @field_validator("role_name")
-    @classmethod
-    def validate_role_name(cls, role_name):
-        """
-        Validates that `role_name` exists in the configured roles.
-        """
-        role_access_levels = auth_settings.ROLE_ACCESS_LEVELS
-        if role_name not in role_access_levels:
-            raise ValueError(f"Invalid role name: '{role_name}'.")
-        return role_name
 
 
 class UserPublic(BaseModel):
@@ -331,21 +320,38 @@ class UserUpdate(schemas.BaseUserUpdate):
         return values
 
 
+# Columns `sort` accepts (see mascope_backend.api.lib.sorting).
+UserSortColumn = Literal[
+    "id",
+    "username",
+    "registered_at",
+]
+# The subset a caller below admin may sort by: the columns UserPublic returns.
+PublicUserSortColumn = Literal[
+    "id",
+    "username",
+]
+
+
 class GetUsersQueryParams(QueryParamsModel):
     """
     Query parameter model for retrieving users with pagination, sorting, and filtering options.
     """
 
     role_name_min: Optional[str] = Field(
-        None, description="Minimum role name to filter users (e.g., 'guest')."
+        None,
+        description="Minimum role name to filter users (e.g., 'guest'). Admin only.",
     )
     role_name_max: Optional[str] = Field(
-        None, description="Maximum role name to filter users (e.g., 'admin')."
+        None,
+        description="Maximum role name to filter users (e.g., 'admin'). Admin only.",
     )
-    sort: Optional[str] = Field(
-        "registered_at",
+    sort: UserSortColumn | None = Field(
+        None,
         description=(
-            "Column name by which you want to sort the results. The column name should match the columns in the user table."
+            "Column to sort the results by. Defaults to registered_at for an "
+            "admin and id for anyone else. Callers below admin may sort by id "
+            "or username only."
         ),
     )
     order: Optional[str] = Field(
