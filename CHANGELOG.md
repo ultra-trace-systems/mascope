@@ -11,9 +11,10 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   batch on the clipboard offers "Paste batch into a new dataset", and with
   copied or cut samples "Paste samples into a new dataset and batch";
   right-clicking the empty space of a dataset offers "Paste samples into a
-  new batch". A short dialog asks for the names, creates what is missing,
-  pastes into it and opens it. Previously the empty dataset and batch had to
-  be created by hand first.
+  new batch". A short dialog asks for a name for each new dataset and batch
+  (nothing is filled in for you), creates them, pastes into them and opens
+  the result. Previously the empty dataset and batch had to be created by
+  hand first.
 
 - **The dataset in the top bar has the full dataset menu.** Right-clicking it
   offered only Edit and Delete; it now opens the same menu as a dataset row
@@ -21,6 +22,11 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   in the dataset, and Cut.
 
 ### Fixed
+
+- **The target browser no longer offers "Edit batch targets" with no batch
+  open.** Right-clicking its empty space with no batch open still offered the
+  entry, which opened the batch dialog with no batch to edit. That menu now
+  opens only when a batch is open.
 
 - **Orbitrap peak detection no longer joins two weak neighbouring peaks into
   one.** 1.8.0 began merging two averaged centroids up to one and a half peak

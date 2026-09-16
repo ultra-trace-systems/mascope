@@ -13,7 +13,10 @@ export const useCollectionContextMenu = defineStore('collectionContextMenu', () 
   })
 
   const entries = computed(() => {
-    if (!selection.value)
+    // Away from a collection the one entry edits the open batch's targets, so
+    // without an open batch there is nothing to offer.
+    if (!selection.value) {
+      if (!app.data.batch.focused) return []
       return [
         {
           label: 'Edit batch targets',
@@ -23,6 +26,7 @@ export const useCollectionContextMenu = defineStore('collectionContextMenu', () 
           }
         }
       ]
+    }
 
     const isGlobal = !selection.value.workspace_id
     const canMutate = !isGlobal || app.auth.user.role_id >= ROLES.admin
@@ -64,6 +68,10 @@ export const useCollectionContextMenu = defineStore('collectionContextMenu', () 
       selection.value = data
       // Load detailed data for context menu operations
       await app.data.target.collection.loadDetailed(data.target_collection_id)
+    }
+    if (entries.value.length === 0) {
+      ref_.value?.hide()
+      return
     }
     ref_.value?.toggle(event.originalEvent || event)
   }
