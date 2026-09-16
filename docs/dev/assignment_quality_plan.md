@@ -5490,8 +5490,9 @@ the assigned rows' reference readings in brackets):
 **The forms compared.**
 - **The cap over carbonate** would have taken 27 rows from assigned: C 10, C2
   12, F2 5.
-  - The reference commits the same formula on 20 of them: C8H18N2 and
-    C10H22N2 on every C and C2 sample, and one F2 row.
+  - The reference commits the same formula on 20 of them: C8H18N2 on all
+    five C samples and five of the six C2 samples, C10H22N2 on four and five
+    of them, and C19H24S on one F2 sample.
   - Their 21 isotopologues would have followed (C 9, C2 12).
   - Assigned would have gone C 612 -> 602 and C2 321 -> 309, with G1
     conditioned unchanged at 0.2 and 0.8 over 480 and 247 rows.
@@ -5517,6 +5518,18 @@ the assigned rows' reference readings in brackets):
   proton, as radicals, which the radical rule holds at candidate. It displaces
   43 readings the reference confirms (C 29, C2 12, F2 2); on F1 it reads 28
   of the 84 through bromide instead.
+
+**For the plan owner (step 2.7a).** The paper's bar is two hydrogen-bond
+donors on oxygen, and the rule takes the surest case, a neutral with no oxygen
+at all. Of the 134 rows it names, 12 are hydrocarbons, 120 carry nitrogen or
+sulfur (nitrogen 45, both 40, sulfur 35), and 2 are a reference list's ClI.
+- **A halogen bond to nitrate** is the one cluster the reason's sentence, that
+  the source is unlikely to make the ion, over-reaches on.
+- The cap holds such a row at candidate, which is decision 18's side of the
+  doubt, and the target library's HBr is exempt.
+- Step 2.7a can decide whether a list's halogen or interhalogen read through
+  nitrate is exempt like the target library's rows, or the sentence is worded
+  as doubt.
 
 #### Verify, item by item
 
