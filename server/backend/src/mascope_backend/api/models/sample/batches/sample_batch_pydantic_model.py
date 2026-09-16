@@ -76,8 +76,11 @@ class SampleBatchValidator(SampleBatchBaseValidator):
         return self
 
 
-class SampleBatchBase(SampleBatchValidator, BaseModel):
-    """Base model with common fields for SampleBatch."""
+class SampleBatchBase(BaseModel):
+    """Base model with common fields for SampleBatch.
+
+    Fields only: a response model built on this reports a stored row as it is
+    (see SampleBatchRead). The write models mix the validators in."""
 
     dataset_id: str = Field(
         ..., description="ID of the dataset associated with the sample batch"
@@ -97,7 +100,7 @@ class SampleBatchBase(SampleBatchValidator, BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
-class SampleBatchCreate(SampleBatchBase):
+class SampleBatchCreate(SampleBatchValidator, SampleBatchBase):
     """Model used for sample batch creation requests."""
 
     target_collection_ids: list[str] = Field(
@@ -106,7 +109,12 @@ class SampleBatchCreate(SampleBatchBase):
 
 
 class SampleBatchRead(SampleBatchBase):
-    """Sample batch response model with added database fields."""
+    """Sample batch response model with added database fields.
+
+    Not validated: `polarity` defaults to '+-' in the database, which
+    `validate_polarity_by_batch_type` refuses on an ACQUISITION batch, so
+    re-running the write validators here would answer 400 for a whole
+    listing over one such row."""
 
     sample_batch_id: str = Field(
         ..., description="Unique identifier for the sample batch"

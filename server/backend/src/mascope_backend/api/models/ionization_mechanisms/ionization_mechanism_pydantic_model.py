@@ -110,8 +110,13 @@ class IonizationMechanismBaseValidator:
         return self
 
 
-class IonizationMechanismFields(BaseModel):
-    """The fields every IonizationMechanism schema carries, without validation."""
+class IonizationMechanismBase(BaseModel):
+    """
+    Base model with common fields for IonizationMechanism schemas.
+
+    Fields only: the write models mix the validators in, and a response model
+    built on this reports a stored row as it is (see IonizationMechanismRead).
+    """
 
     ionization_mechanism_polarity: str = Field(
         ..., description="Polarity of the ionization mechanism ('+' or '-')"
@@ -124,21 +129,29 @@ class IonizationMechanismFields(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
-class IonizationMechanismBase(
-    IonizationMechanismBaseValidator, IonizationMechanismFields
+class IonizationMechanismCreate(
+    IonizationMechanismBaseValidator, IonizationMechanismBase
 ):
-    """Base model with common fields for IonizationMechanism schemas."""
-
-
-class IonizationMechanismCreate(IonizationMechanismBase):
     """Model used for ionization mechanism creation requests."""
 
     @model_validator(mode="before")
     @classmethod
     def auto_derive_fields(cls, values):
-        """Auto-derive polarity field."""
+        """
+        Auto-derive polarity field.
+
+        Runs before pydantic has checked anything, so a body that is not an
+        object, or whose mechanism is missing or not a string, is left to the
+        field validation below rather than indexed into here - indexing it
+        raises TypeError, which is a 500 rather than the 422 a malformed
+        request deserves.
+        """
+        if not isinstance(values, dict):
+            return values
         mechanism = values.get("ionization_mechanism")
         polarity = values.get("ionization_mechanism_polarity")
+        if not isinstance(mechanism, str) or not mechanism:
+            return values
 
         # Auto-derive polarity from the last character if not provided
         if polarity is None:
@@ -168,33 +181,20 @@ class IonizationMechanismCreate(IonizationMechanismBase):
         return values
 
 
-class IonizationMechanismRead(IonizationMechanismFields):
+class IonizationMechanismRead(IonizationMechanismBase):
     """
     Model used for reading ionization mechanisms, includes database fields.
 
-    Not validated: a stored row is reported as it is. The create and update
-    validators have tightened over time and nothing rewrites existing rows to
-    match, so re-running them here would turn one row written under older
-    rules into a 400 for the whole listing - including for the frontend,
-    which loads it. What may be written is enforced where it is written.
+    Not validated: a stored row is reported as it is. The create validators
+    have tightened over time and nothing rewrites existing rows to match, so
+    re-running them here would turn one row written under older rules into a
+    400 for the whole listing - including for the frontend, which loads it.
+    What may be written is enforced where it is written.
     """
 
     ionization_mechanism_id: str = Field(
         ..., description="Unique identifier for the ionization mechanism"
     )
-
-
-class IonizationMechanismUpdate(IonizationMechanismBaseValidator, BaseModel):
-    """Model used for ionization mechanism update requests - only user-editable fields."""
-
-    ionization_mechanism_polarity: str | None = Field(
-        None, description="Polarity of the ionization mechanism ('+' or '-')"
-    )
-    ionization_mechanism: str | None = Field(
-        None, description="Chemical formula modification representing the ionized form."
-    )
-
-    model_config = ConfigDict(from_attributes=True)
 
 
 # Columns `sort` accepts (see mascope_backend.api.lib.sorting).

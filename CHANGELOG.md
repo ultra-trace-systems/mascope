@@ -6,15 +6,29 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 ### Fixed
 
-- **One ionization mechanism the current rules refuse no longer breaks the
-  whole list.** Reading mechanisms re-ran the create validators on every
-  stored row, and those validators have tightened over time (an empty
-  modification such as `++`, unknown elements) with nothing rewriting old
-  rows. A single such row - from an older release, or inserted directly -
-  made `GET /api/ionization_mechanisms` answer 400 for everyone, including
-  the frontend, which loads it; the single-mechanism read failed the same
-  way for that row. Reads now report stored rows as they are. Creating and
-  updating a mechanism validate exactly as before.
+- **One stored row the current rules refuse no longer breaks the listing it
+  is in.** Reading ionization mechanisms, datasets and sample batches re-ran
+  the *create* validators over every row of the response. Those rules have
+  tightened over time and nothing rewrites older rows to match, so a single
+  such row made the whole listing answer 400 for every caller - including
+  the frontend, which loads all three. For ionization mechanisms it was an
+  empty modification such as `++` or an element the formula check does not
+  know; for sample batches the database's own `+-` polarity default, which
+  an ACQUISITION batch's rules refuse; for datasets a name, type or
+  instrument combination refused later. The same held for the single-record
+  reads, so such a mechanism could not even be deleted through the API.
+  Reading now reports stored rows as they are, for these three and for the
+  user listing, whose role name was checked the same way; what may be
+  written is validated exactly as before, where it is written. A mechanism
+  the write rules refuse is logged once per id when it is read, so it stays
+  visible to operators rather than silently offered to clients.
+
+- **Creating an ionization mechanism answers 422 on a malformed body.**
+  `POST /api/ionization_mechanisms` derived the polarity before any type
+  checking, so a body with no mechanism, a non-string mechanism, or one that
+  was not an object at all raised inside the validator and answered 500. The
+  unused `IonizationMechanismUpdate` schema, whose validators crashed on the
+  partial bodies it existed for, is gone; no route offered it.
 
 ### Security
 
