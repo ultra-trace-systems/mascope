@@ -31,6 +31,14 @@ are. Decision 9 already prefers the closed-shell reading when two
 readings make one ion; this says the same thing about a reading with no rival:
 a radical is a tie-break, and a tie-break is not evidence.
 
+``oxygen_free_cluster`` - the row reads the peak as nitrate clustered with a
+neutral that carries no oxygen, which the nitrate has nothing to hold on to
+(:func:`oxygen_free_cluster_reason`). On the gate it names 134 rows, all on the
+three nitrate sets, and takes the top tier from 10 of them, all on the TOF
+nitrate set: the reference engine commits the same formula on one of the ten
+and nothing on the other nine. Carbonate clusters are not asked, on the same
+measurement.
+
 ``candidate_density`` - the run could not separate this peak's winner from other
 formulas, and nothing outside the peak corroborates it. Density is measured in
 the finder over the full candidate list (``arbitration.candidate_density``),
@@ -116,6 +124,7 @@ from mascope_tools.composition.arbitration import CANDIDATE_DENSITY
 from mascope_tools.composition.heuristic_filter import (
     anchor_on_monoisotopic,
     neutral_is_closed_shell,
+    oxygen_free_cluster,
     predict_isotopes,
 )
 from mascope_tools.composition.implausibility import implausible_signatures
@@ -125,10 +134,14 @@ from mascope_tools.composition.implausibility import implausible_signatures
 #: run, because a tier is only comparable across runs together with the rules
 #: that produced it - the same statement the tier BANDS carry, for the same
 #: reason.
-TIERING_RULES_VERSION = 3
+TIERING_RULES_VERSION = 4
 
 #: The row names a radical rather than a molecule.
 REASON_ODD_ELECTRON = "odd_electron"
+
+#: The row clusters an anion that holds on to oxygen with a neutral that has
+#: none.
+REASON_OXYGEN_FREE_CLUSTER = "oxygen_free_cluster"
 
 #: The peak is a line another committed reading's envelope predicts.
 REASON_ENVELOPE_NEIGHBOUR = "envelope_neighbour"
@@ -353,6 +366,48 @@ def odd_electron_reason(row: dict) -> dict | None:
         f"{formula} is an odd-electron neutral - a radical rather than a "
         "molecule, and the reading that made it was elected over a "
         "closed-shell one rather than measured against it",
+        caps=True,
+    )
+
+
+def oxygen_free_cluster_reason(
+    row: dict, notation_by_id: dict[str, str]
+) -> dict | None:
+    """A cluster of an anion that holds on to oxygen, around a neutral with none.
+
+    Nitrate holds on to a neutral by hydrogen bonds from its oxygen-bearing
+    groups (``heuristic_filter.OXYGEN_BOUND_ANIONS``), so a reading that puts
+    nitrate on a neutral with no oxygen names an ion the source is unlikely to
+    make. What was measured on the peak - its mass and its envelope - still fits
+    the reading, so the row keeps it at candidate. Refusing the reading in the
+    search instead hands the peak to its next one, and on the gate's unlabelled
+    nitrate set that is mostly the same ion without its proton, an organic
+    nitrate the doubt does not reach: the refusal was measured, and it put more
+    such readings at assigned than the cap takes.
+
+    No corroboration lifts it, for the radical rule's reason: the doubt is
+    about the ion, and a second channel's reading of the neutral says nothing
+    about whether nitrate holds on to it.
+
+    A row of the target library is exempt: the workspace named that compound
+    for the modes its collection is attached to. A reference list's row is not,
+    since a list names a compound and not the channel it is seen through.
+
+    :param row: A committed monoisotopic row.
+    :param notation_by_id: The run's mechanisms, by the id the rows carry.
+    :return: The reason, or None where the reading is not such a cluster.
+    """
+    if is_target_library_row(row):
+        return None
+    formula = row.get("assigned_formula")
+    notation = notation_by_id.get(str(row.get("ionization_mechanism_id")))
+    if not oxygen_free_cluster(formula, notation):
+        return None
+    return _reason(
+        REASON_OXYGEN_FREE_CLUSTER,
+        f"{formula} carries no oxygen, and a {notation} cluster holds on to a "
+        "neutral by hydrogen bonds from its oxygen-bearing groups, so the source "
+        "is unlikely to make this ion",
         caps=True,
     )
 
@@ -598,6 +653,7 @@ def apply_tiering(
     *,
     mz_tolerance_ppm: float,
     abundance_floor: float,
+    notation_by_id: dict[str, str] | None = None,
 ) -> dict:
     """Give every committed row its reasons, and cap the rows that earned it.
 
@@ -610,10 +666,13 @@ def apply_tiering(
         commit no formula are left untouched.
     :param mz_tolerance_ppm: The run's own match window, for the envelope rule.
     :param abundance_floor: The run's own envelope floor, for the same rule.
+    :param notation_by_id: The run's mechanisms, by the id the rows carry, for
+        the rule that reads a row's channel. Without them no row names a channel.
     :return: What the run should record about this pass: its rule version, what
         each rule capped, and the thresholds it capped on - a tier is only
         comparable across runs together with the rules that produced it.
     """
+    notation_by_id = notation_by_id or {}
     rows = list(assignments)
     committed = [row for row in rows if row.get("assigned_formula")]
     m0 = [row for row in committed if row.get("role") == ROLE_M0]
@@ -634,6 +693,7 @@ def apply_tiering(
         reasons = earlier_reasons(row)
         for reason in (
             odd_electron_reason(row),
+            oxygen_free_cluster_reason(row, notation_by_id),
             density_reason(row),
             envelope_reason(row, on_a_neighbours_line),
         ):

@@ -1268,6 +1268,7 @@ def judge_commits(
             judged,
             mz_tolerance_ppm=mz_tolerance_ppm,
             abundance_floor=abundance_floor,
+            notation_by_id=notation_by_id,
         )
         found, held = find_envelope_claims(
             judged,
