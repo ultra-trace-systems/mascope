@@ -10,7 +10,9 @@ test.describe('dataset ops', () => {
     await dialog.getByRole('textbox', { name: 'Name' }).fill(name)
     await dialog.getByRole('button', { name: 'Create' }).click()
 
-    await expect(page.getByRole('row', { name: new RegExp(name) })).toBeVisible()
+    // the new dataset is opened: the top bar names it and its batches show
+    await expect(page.locator('menu.breadcrum').getByRole('button', { name })).toBeVisible()
+    await expect(page.getByRole('button', { name: 'Create batch' })).toBeVisible()
   })
 
   test('rename dataset', async ({ page, scratch }) => {

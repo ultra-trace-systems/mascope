@@ -34,7 +34,10 @@ const where = computed(() =>
 
 <template>
   <Dialog
-    v-model:visible="paste.dialog.visible"
+    :visible="paste.dialog.visible"
+    @update:visible="(value) => !value && paste.close()"
+    :closable="!paste.dialog.pending"
+    :closeOnEscape="!paste.dialog.pending"
     :header="`Paste into a new ${into}`"
     modal
     style="width: 520px"
@@ -69,7 +72,8 @@ const where = computed(() =>
           label="Cancel"
           severity="secondary"
           type="button"
-          @click="paste.dialog.visible = false"
+          :disabled="paste.dialog.pending"
+          @click="paste.close()"
         />
         <Button
           label="Paste"

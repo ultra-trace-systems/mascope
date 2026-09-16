@@ -34,13 +34,25 @@ export const usePasteIntoNew = defineStore('browser.sample.pasteIntoNew', () => 
   const samplesPaste = computed(
     () => clipboard.samples !== null && ['copy', 'cut'].includes(clipboard.op)
   )
-  // a new dataset goes into the focused workspace, which the system one refuses
+  // Nothing is created in the system workspace, nor a batch in an
+  // auto-managed acquisition dataset.
+  const systemWorkspace = computed(() => !!app.data.workspace.focused?.is_system)
   const datasetValid = computed(
-    () => (batchPaste.value || samplesPaste.value) && !app.data.workspace.focused?.is_system
+    () => (batchPaste.value || samplesPaste.value) && !systemWorkspace.value
   )
-  const batchValid = computed(() => samplesPaste.value && app.data.dataset.focusedId != null)
+  const batchValid = computed(
+    () =>
+      samplesPaste.value &&
+      app.data.dataset.focusedId != null &&
+      app.data.dataset.focused?.dataset_type !== 'ACQUISITION' &&
+      !systemWorkspace.value
+  )
 
+  // A paste that has started runs to the end - its requests cannot be taken
+  // back - so the dialog neither closes nor reopens for another paste until it
+  // has settled; the settling paste would otherwise write into the new one.
   function open({ dataset }) {
+    if (dialog.pending) return
     dialog.dataset = dataset
     // a pasted batch is its own batch; samples need one to go into
     dialog.batch = samplesPaste.value
@@ -57,6 +69,10 @@ export const usePasteIntoNew = defineStore('browser.sample.pasteIntoNew', () => 
     () =>
       (dialog.dataset && !dialog.datasetName.trim()) || (dialog.batch && !dialog.batchName.trim())
   )
+
+  function close() {
+    if (!dialog.pending) dialog.visible = false
+  }
 
   async function execute() {
     if (invalid.value || dialog.pending) return
@@ -135,6 +151,7 @@ export const usePasteIntoNew = defineStore('browser.sample.pasteIntoNew', () => 
     batchValid,
     invalid,
     open,
+    close,
     execute
   }
 })
