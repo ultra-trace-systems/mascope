@@ -43,15 +43,16 @@ class TestWhichChannelsHoldOnToOxygen:
             # Nitrite is not nitrate, and a hydrate is not the acid cluster.
             "+NO2-",
             "+H2O+NO3-",
-            # Nitrate's composition in a mechanism of another kind.
-            "-NO3-",
+            # Nitrate's composition taken away rather than added, which leaves
+            # an anion too, and added as a cation.
+            "-NO3+",
             "+NO3+",
         ],
     )
     def test_no_other_channel(self, notation):
         assert not clusters_on_oxygen(notation)
 
-    @pytest.mark.parametrize("notation", [None, "", "not a mechanism"])
+    @pytest.mark.parametrize("notation", [None, "", "not a mechanism", "+Xx-"])
     def test_a_notation_nobody_can_read_holds_on_to_nothing(self, notation):
         assert not clusters_on_oxygen(notation)
 
