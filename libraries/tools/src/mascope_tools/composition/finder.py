@@ -2,6 +2,7 @@
 
 import re
 import warnings
+from dataclasses import dataclass
 from typing import Iterator, Sequence
 
 import numpy as np
@@ -10,7 +11,11 @@ import polars as pl
 from pyteomics.mass import Composition
 
 from mascope_tools.composition import utils
-from mascope_tools.composition.arbitration import CANDIDATE_DENSITY, candidate_density
+from mascope_tools.composition.arbitration import (
+    CANDIDATE_DENSITY,
+    candidate_density,
+    unseparated,
+)
 from mascope_tools.composition.config import UNSATURATION_COEFFICIENTS
 from mascope_tools.composition.exceptions import (
     CompositionFinderWarning,
@@ -18,13 +23,16 @@ from mascope_tools.composition.exceptions import (
 from mascope_tools.composition.grid import (
     DEFAULT_MAX_GRID_ROWS,
     NeutralGrid,
+    admits,
     build_neutral_grid,
 )
 from mascope_tools.composition.heuristic_filter import (
+    ISOTOPE_CANDIDATE_LIMIT,
     PATTERN_REQUIRED_LINES,
     SAME_ION_ALTERNATIVES,
     apply_heuristic_rules,
     match_isotopic_pattern,
+    neutral_is_closed_shell,
 )
 from mascope_tools.composition.models import (
     Atom,
@@ -420,6 +428,206 @@ def find_compositions(
     all_results.sort(key=lambda r: abs(r.composition_error_ppm))
 
     return [r.to_dict() for r in all_results]
+
+
+@dataclass(frozen=True)
+class ListReading:
+    """A reading a list proposed for a peak, to be measured against the grid.
+
+    :param mz: The peak's m/z.
+    :param formula: The list's neutral formula.
+    :param ionization_mechanism: The channel it was matched through, in the
+        finder's notation (``"+[15N]O3-"``).
+    :param mz_error_ppm: Its mass error, signed as the matcher signs it; it
+        orders the reading among the grid's candidates as theirs orders them.
+    """
+
+    mz: float
+    formula: str
+    ionization_mechanism: str
+    mz_error_ppm: float | None = None
+
+
+@dataclass(frozen=True)
+class ReadingRivals:
+    """What the formula search holds against one list reading.
+
+    :param density: How many distinct formulas the peak's evidence cannot
+        separate from the reading, the reading included: the count
+        :func:`arbitration.candidate_density` makes, anchored on it, over the
+        reading and the grid's candidates scored together.
+    :param rivals: The grid's formulas among those, best evidence first, each
+        with its ion, channel, fit and mass error.
+    :param fit_score: The reading's own fit, scored with the grid's candidates.
+    :param candidates: How many of the grid's candidates for other ions the
+        peak's window held once the heuristic rules had been applied.
+    :param in_grid: Whether the searched element box holds the reading's own
+        formula. Uniqueness is relative to that box: a formula outside it can
+        only meet the rivals the box builds.
+    """
+
+    density: int
+    rivals: tuple[dict, ...]
+    fit_score: float
+    candidates: int
+    in_grid: bool
+
+
+def rivals_of_readings(
+    peaks: pd.DataFrame,
+    config: CompositionSearchConfig,
+    readings: Sequence[ListReading],
+    heuristics: HeuristicFilterConfig | None = None,
+    scoring: PatternScoring | None = None,
+    closed_shell_only: bool = False,
+) -> list[ReadingRivals | None]:
+    """The grid's rivals for readings a list, not the search, proposed.
+
+    A list hit wins its peak before the search runs, so the compositions the
+    element box holds for that mass are never enumerated there, and the hit's
+    density counts only the other list formulas that matched it. This asks the
+    grid the question the search asks of every peak it elects on: which of the
+    box's formulas fit the peak, and how many of them the evidence cannot
+    separate from the one the list named. The reading is scored beside them by
+    the same fit, so one scale ranks them all. Nothing is committed or claimed:
+    the peaks keep the readings they had.
+
+    The reading's own ion is one hypothesis however the box splits it, so a
+    grid candidate making the same ion is not a rival: a same-ion split is the
+    nitrogen-ambiguity rule's question, not this one's.
+
+    :param peaks: The sample's peaks, with ``mz`` and ``intensity`` and, where
+        the file has one, ``signal_to_noise`` - the whole spectrum, since an
+        envelope is scored against every line.
+    :param config: The search the grid is built from, as the untargeted stage
+        runs it.
+    :param readings: The list readings to measure.
+    :param heuristics: The heuristic filter the search applies.
+    :param scoring: The sample's scoring parameters.
+    :param closed_shell_only: Whether only a closed-shell neutral can be a
+        rival. A radical is never held at assigned, so a caller asking whether a
+        plausible alternative competes leaves radicals out; they then take no
+        part in the count, the gap it is judged at included.
+    :return: One result per reading, in order; None where the reading's formula
+        or channel cannot be read.
+    """
+    results: list[ReadingRivals | None] = [None] * len(readings)
+    if not readings:
+        return results
+    peaks_df = pl.from_pandas(peaks).sort("mz")
+    mechanisms = [
+        utils.parse_ionization(name)
+        for name in get_ionization_mech_string_list(config.ionizations)
+    ]
+    order = sorted(range(len(readings)), key=lambda index: readings[index].mz)
+    target_mzs = np.array([readings[index].mz for index in order], dtype=float)
+    for index, (mz, grid) in zip(
+        order, grids_for_targets(target_mzs, config, mechanisms)
+    ):
+        reading = readings[index]
+        own = _reading_candidate(reading)
+        if own is None:
+            continue
+        found = find_compositions(mz, config, grid=grid)
+        kept, _ = (
+            apply_heuristic_rules(found, heuristics_config=heuristics)
+            if found
+            else ([], [])
+        )
+        grid_candidates = [
+            candidate
+            for candidate in kept
+            if candidate.get("ion") != own["ion"]
+            and (
+                not closed_shell_only
+                or neutral_is_closed_shell(str(candidate.get("formula") or ""))
+            )
+        ]
+        # The candidates the scorer would keep for this peak, with the reading
+        # among them whatever its mass error: without it there is nothing to
+        # count around.
+        grid_candidates.sort(
+            key=lambda candidate: abs(
+                float(candidate.get("composition_error_ppm") or 0.0)
+            )
+        )
+        scored, _ = match_isotopic_pattern(
+            [own["candidate"], *grid_candidates[: ISOTOPE_CANDIDATE_LIMIT - 1]],
+            peaks_df,
+            scoring,
+        )
+        counted = unseparated(
+            [
+                {
+                    "formula": candidate.get("formula"),
+                    "fit_score": candidate.get("isotopic_pattern_score"),
+                }
+                for candidate in scored
+            ],
+            around=own["formula"],
+        )
+        best_by_formula: dict[str, dict] = {}
+        own_fit = 0.0
+        for candidate in scored:
+            if candidate.get("ion") == own["ion"]:
+                own_fit = float(candidate.get("isotopic_pattern_score") or 0.0)
+                continue
+            best_by_formula.setdefault(str(candidate.get("formula")), candidate)
+        results[index] = ReadingRivals(
+            density=len(counted),
+            rivals=tuple(
+                {
+                    "formula": formula,
+                    "ion": best_by_formula[formula].get("ion"),
+                    "ionization_mechanism": best_by_formula[formula].get(
+                        "ionization_mechanism"
+                    ),
+                    "fit_score": float(
+                        best_by_formula[formula].get("isotopic_pattern_score") or 0.0
+                    ),
+                    "mz_error_ppm": best_by_formula[formula].get(
+                        "composition_error_ppm"
+                    ),
+                }
+                for formula in counted
+                if formula != own["formula"] and formula in best_by_formula
+            ),
+            fit_score=own_fit,
+            candidates=len(grid_candidates),
+            in_grid=admits(config, own["counts"]),
+        )
+    return results
+
+
+def _reading_candidate(reading: ListReading) -> dict | None:
+    """A list reading, shaped as the search shapes a candidate it enumerated.
+
+    :return: The candidate, its Hill formula, ion and element counts; None where
+        the formula or the channel cannot be read.
+    """
+    try:
+        composition = utils.parse_composition(reading.formula)
+        counts = {symbol: count for symbol, count in composition.items() if count}
+        mechanism = utils.parse_ionization(reading.ionization_mechanism)
+        ion = utils.combine_counts_and_ionization(counts, mechanism)
+        neutral_mass = utils.composition_mass(composition)
+        formula = utils.to_hill_order(counts)
+    except Exception:  # noqa: BLE001 - a reading nobody can parse has no rivals
+        return None
+    return {
+        "formula": formula,
+        "ion": ion,
+        "counts": counts,
+        "candidate": {
+            "formula": formula,
+            "ion": ion,
+            "ionization_mechanism": mechanism.mascope_notation,
+            "composition_error_ppm": float(reading.mz_error_ppm or 0.0),
+            "neutral_mass": neutral_mass,
+            "unsaturation": None,
+            "observed_mass": float(reading.mz),
+        },
+    }
 
 
 #: The narrowest band worth building a shared grid for. A band this small that
