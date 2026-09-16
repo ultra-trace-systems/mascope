@@ -776,7 +776,7 @@ class TestResolvedProfile:
 
         if library:
             offset = mocks["fit"].call_args.kwargs["reagent_offset"]
-            assert (offset.lines, offset.taken) == (3, True)
+            assert (offset.lines, offset.beyond_width) == (3, True)
             assert offset.mu_ppm == pytest.approx(-1.3, abs=1e-6)
         scoring = mocks["compositions"].call_args.kwargs["scoring"]
         assert scoring.mu_ppm == pytest.approx(-1.3, abs=1e-6)

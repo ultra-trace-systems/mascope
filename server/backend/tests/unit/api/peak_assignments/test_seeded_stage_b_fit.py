@@ -42,7 +42,7 @@ MECHANISMS = {"+H+": "mech-h", "+NH4+": "mech-nh4"}
 #: of the two. The sample's own commits sit at -1.10.
 NITRATE_LINES = [1.2556, -0.0517, -0.7262, -1.3953, -1.2555, -1.9426, -1.7316]
 #: What they say, as the pre-pass hands it on.
-NITRATE_READING = ReagentOffset(mu_ppm=-1.2555, lines=7, taken=True)
+NITRATE_READING = ReagentOffset(mu_ppm=-1.2555, lines=7, beyond_width=True)
 
 
 def _orbi_params(tolerance: int = 5, floor: float = 1e-5) -> SimpleNamespace:
@@ -174,9 +174,9 @@ class TestTheReagentLinesOffset:
 
         assert offset.mu_ppm == pytest.approx(-1.2555)
         assert offset.lines == len(NITRATE_LINES)
-        assert offset.taken
+        assert offset.beyond_width
 
-    def test_an_offset_inside_the_width_is_not_taken(self):
+    def test_an_offset_inside_the_width_is_left_alone(self):
         # A bromide sample's lines, at +0.30 on a class scored at 0.58 ppm: its
         # commits sit at -0.18, so correcting by them would move it the wrong
         # way, and a bias that small is one the score already allows for.
@@ -185,7 +185,7 @@ class TestTheReagentLinesOffset:
         )
 
         assert offset.mu_ppm == pytest.approx(0.30)
-        assert not offset.taken
+        assert not offset.beyond_width
 
     def test_the_guard_is_the_width_the_sample_is_scored_at(self):
         # A sample that reaches this offset fitted no width either, so it is
@@ -194,22 +194,22 @@ class TestTheReagentLinesOffset:
         widened = math.hypot(ORBI_ACCURACY, PRED_SIGMA_PPM)
         assert ORBI_ACCURACY < 0.45 < widened < 0.7
 
-        assert not reagent_line_offset([0.45] * 5, ORBI_ACCURACY).taken
-        assert not reagent_line_offset([-0.45] * 5, ORBI_ACCURACY).taken
-        assert reagent_line_offset([0.7] * 5, ORBI_ACCURACY).taken
-        assert reagent_line_offset([-0.7] * 5, ORBI_ACCURACY).taken
+        assert not reagent_line_offset([0.45] * 5, ORBI_ACCURACY).beyond_width
+        assert not reagent_line_offset([-0.45] * 5, ORBI_ACCURACY).beyond_width
+        assert reagent_line_offset([0.7] * 5, ORBI_ACCURACY).beyond_width
+        assert reagent_line_offset([-0.7] * 5, ORBI_ACCURACY).beyond_width
 
     def test_a_tofs_width_keeps_what_an_orbitraps_would_take(self):
         # The bromide TOF set's lines sit up to +0.71 ppm on a class scored at 3.
-        assert not reagent_line_offset([0.71] * 16, TOF_ACCURACY).taken
-        assert reagent_line_offset([0.71] * 16, ORBI_ACCURACY).taken
+        assert not reagent_line_offset([0.71] * 16, TOF_ACCURACY).beyond_width
+        assert reagent_line_offset([0.71] * 16, ORBI_ACCURACY).beyond_width
 
     def test_fewer_than_three_lines_are_no_offset(self):
         # The core ion and its first rung alone: their mean is on the wrong side
         # of the axis, and nothing in two lines says which of them is off.
         two = reagent_line_offset(NITRATE_LINES[:2], ORBI_ACCURACY)
 
-        assert (two.mu_ppm, two.lines, two.taken) == (None, 2, False)
+        assert (two.mu_ppm, two.lines, two.beyond_width) == (None, 2, False)
         assert reagent_line_offset(NITRATE_LINES[:3], ORBI_ACCURACY).mu_ppm == (
             pytest.approx(-0.0517)
         )
@@ -234,7 +234,7 @@ class TestWhichOffsetTheSampleIsScoredAt:
         # commits sit within 0.15 of zero: a sample that measures its own
         # offset keeps it.
         accuracy = SampleMassAccuracy(
-            -0.03, 0.56, 15, ReagentOffset(-0.93, 10, taken=True)
+            -0.03, 0.56, 15, ReagentOffset(-0.93, 10, beyond_width=True)
         )
 
         assert accuracy.scoring_mu_ppm == pytest.approx(-0.03)
