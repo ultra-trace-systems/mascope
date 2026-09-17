@@ -315,6 +315,23 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 ## [1.8.1] - 2026.09.16
 ### Changed
 
+- **The formula search can take a peak a reference list matched.** A run
+  that searches formulas now holds an election on every peak it assigned
+  from a reference list. The list's compound is one candidate beside the
+  formulas the element ranges hold for that mass, and its place on the list
+  counts for it: a closed-shell rival takes the peak only where its
+  evidence, fit times chemical plausibility, is more than twice the
+  compound's and ahead of it by more than a tie, and where it also explains
+  the compound's own isotope lines that track it, such as a siloxane's
+  silicon lines. The rival's row then lists the compound first among its
+  alternatives, marked `displaced_by_rival`, so promoting it restores the
+  list's reading, and records the weighing in `provenance.list_reading`. The
+  compound's isotopologues leave with it. A compound of the sample's target
+  library keeps its peak, and its rivals still count. A kept compound names
+  the rival it was held against in `provenance.grid_rivals.held_against`,
+  and the run counts the peaks rivals took and the ones they did not in
+  `search_scope.list_hits`.
+
 - **A compound matched from a list meets the formula search's rivals for its
   peak.** When a run searches formulas, it now also asks the search about
   every peak it assigned from the target library or a reference list: the
@@ -322,9 +339,8 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   list's, and the closed-shell ones the evidence cannot tell apart are added
   to the row's candidate density. The density rule then holds such a row at
   candidate unless a second ionization channel committed the same neutral,
-  and its reason names the rivals. Radicals do not count, and no peak changes
-  its formula. The row records `provenance.grid_rivals`, and the run records
-  `search_scope.list_hits`.
+  and its reason names the rivals. Radicals do not count. The row records
+  `provenance.grid_rivals`, and the run records `search_scope.list_hits`.
 
 - **A nitrate cluster of a neutral with no oxygen is no longer held at
   assigned.** Nitrate holds on to a molecule by hydrogen bonds from its
