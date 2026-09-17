@@ -1022,7 +1022,7 @@ const breadcrumb = computed(() => {
     </div>
 
     <Dialog v-model:visible="configVisible" modal header="Assign peaks" :style="{ width: '26rem' }">
-      <PeakAssignConfigForm />
+      <PeakAssignConfigForm :sample-item-id="app.data.sample.focusedId" />
       <template #footer>
         <Button label="Cancel" text severity="secondary" @click="configVisible = false" />
         <Button label="Assign" icon="pi ph ph-magic-wand" :loading="submitting" @click="launch" />

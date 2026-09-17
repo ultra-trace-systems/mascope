@@ -3,6 +3,8 @@ import { computed } from 'vue'
 
 import Tag from 'primevue/tag'
 
+import { contextName, profileName, runChemistry } from '@/lib/peakAssignProfiles'
+
 // Provenance chips for one peak-assignment run: which engine produced it, at
 // which version, and - for a run published from outside - what that engine
 // disclosed about its calibration.
@@ -152,6 +154,54 @@ const tierBandsText = computed(() => {
   return parts.length ? `Tier bands (evidence): ${parts.join(' \u00b7 ')}` : null
 })
 
+// --- Chemistry -----------------------------------------------------------------
+
+// The reagent profile and chemistry context the run searched under, as it
+// recorded them when it started. A tier is read against the grid and the
+// window those set, so the chemistry travels with the run the way the engine
+// does. Absent on every run that recorded none: an import, the batch ledger's
+// derived run, a run from before profiles.
+const chemistry = computed(() => runChemistry(props.run))
+
+// The dense selector row gets the preset's key; the open list its name.
+const chemistryLabel = computed(() => {
+  const record = chemistry.value
+  if (!record) return ''
+  if (!props.compact) return profileName(record)
+  return record.profile === 'none' ? 'no profile' : record.profile
+})
+
+const isAuto = (requested) => !requested || requested === 'auto'
+const fromConfig = (source) => (source === 'config' ? ' (set for this run)' : '')
+const listed = (value) => (Array.isArray(value) ? value.filter(Boolean) : [])
+
+const chemistryTooltip = computed(() => {
+  const record = chemistry.value
+  if (!record) return ''
+  const channels = listed(record.secondary_channels)
+  const unconfigured = listed(record.unavailable_channels)
+  return [
+    `Chemistry profile: ${profileName(record)}` +
+      (isAuto(record.requested_profile)
+        ? ", read off the sample's ionization mechanisms"
+        : ', named for this run'),
+    `Chemistry context: ${contextName(record)}` +
+      (isAuto(record.requested_context) ? ", the profile's own" : ', named for this run'),
+    record.element_ranges
+      ? `Element grid: ${record.element_ranges}${fromConfig(record.element_ranges_source)}`
+      : null,
+    typeof record.mz_precision_ppm === 'number'
+      ? `m/z window: ${record.mz_precision_ppm} ppm${fromConfig(record.mz_precision_source)}`
+      : null,
+    channels.length ? `Also searched through: ${channels.join(', ')}` : null,
+    unconfigured.length
+      ? `Shown by the spectrum but not configured, so not searched: ${unconfigured.join(', ')}`
+      : null
+  ]
+    .filter(Boolean)
+    .join('\n')
+})
+
 // --- Tooltips ----------------------------------------------------------------
 
 function engineOrigin() {
@@ -232,6 +282,15 @@ const disclosureLabel = computed(() => {
       style="font-size: 11px"
       v-tooltip.top="engineTooltip"
     />
+    <Tag
+      v-if="chemistry"
+      :value="chemistryLabel"
+      severity="secondary"
+      icon="pi ph ph-test-tube"
+      class="chemistry"
+      style="font-size: 11px"
+      v-tooltip.top="chemistryTooltip"
+    />
     <!-- Only a run that came through the import channel has a disclosure to
          show: an in-app run's calibration state is the sample's own, which the
          engine already gates on before it will run at all. A copied run does
@@ -263,13 +322,21 @@ const disclosureLabel = computed(() => {
   opacity: 0.7;
 }
 
+/* Quiet like the in-app engine chip beside it: it qualifies the run rather
+   than warning about it. */
+.chemistry {
+  opacity: 0.7;
+}
+
 /* An engine name is client-supplied and may be up to 64 characters, which would
    otherwise push the row the run selector sits in out of shape. Clip the chip
    and let the tooltip carry the full name. */
-.engine {
+.engine,
+.chemistry {
   max-width: 12rem;
 }
-.engine :deep(.p-tag-label) {
+.engine :deep(.p-tag-label),
+.chemistry :deep(.p-tag-label) {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
