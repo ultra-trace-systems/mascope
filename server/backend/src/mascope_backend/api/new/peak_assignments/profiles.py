@@ -306,3 +306,62 @@ def resolve_profile(
         element_ranges_source=element_ranges_source,
         mz_precision_source=mz_precision_source,
     )
+
+
+@dataclass(frozen=True)
+class SampleChemistry:
+    """What resolving a group of samples reads, and how many samples share it.
+
+    :param mechanism_notations: The notations of the samples' mode at their
+        polarity, as :func:`resolve_profile` takes them.
+    :param polarity: The samples' polarity.
+    :param samples: How many samples carry this mode at this polarity.
+    """
+
+    mechanism_notations: tuple[str, ...]
+    polarity: str | None
+    samples: int = 1
+
+
+def preview_resolutions(
+    config: PeakAssignmentConfig, chemistries: list[SampleChemistry]
+) -> list[dict]:
+    """What a run under this config would search under, one entry per answer.
+
+    A launcher names the chemistry before the run starts, and a batch can hold
+    more than one ionization mode, so the answer is a list and samples that
+    resolve alike are counted together. The preview says what the mechanisms
+    decide and nothing else: the m/z window also depends on the instrument
+    class, and the secondary channels on the spectrum, neither of which a
+    preview reads.
+
+    :param config: The run configuration whose profile and context to resolve.
+    :param chemistries: The samples, grouped by mode and polarity.
+    :return: One record per distinct resolution, the most samples first.
+    """
+    previews: dict[tuple[str, str, str], dict] = {}
+    for chemistry in chemistries:
+        resolved = resolve_profile(
+            config, chemistry.mechanism_notations, polarity=chemistry.polarity
+        )
+        key = (resolved.profile.name, resolved.context.name, chemistry.polarity or "")
+        preview = previews.get(key)
+        if preview is None:
+            preview = previews[key] = {
+                "profile": resolved.profile.name,
+                "profile_label": resolved.profile.label,
+                "profile_polarity": resolved.profile.polarity,
+                "requested_profile": resolved.requested_profile,
+                "context": resolved.context.name,
+                "context_label": resolved.context.label,
+                "requested_context": resolved.requested_context,
+                "element_ranges": resolved.element_ranges,
+                "polarity": chemistry.polarity,
+                "samples": 0,
+            }
+        preview["samples"] += chemistry.samples
+    # Ties broken on the key, so the order does not follow the database's.
+    return [
+        previews[key]
+        for key in sorted(previews, key=lambda key: (-previews[key]["samples"], key))
+    ]
