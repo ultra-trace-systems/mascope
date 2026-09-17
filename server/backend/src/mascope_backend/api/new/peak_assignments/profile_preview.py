@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from sqlalchemy import func, select
 
+from mascope_backend.api.lib.exceptions.api_exceptions import NotFoundException
 from mascope_backend.api.new.peak_assignments.config import PeakAssignmentConfig
 from mascope_backend.api.new.peak_assignments.profiles import (
     SampleChemistry,
@@ -21,6 +22,7 @@ from mascope_backend.api.new.peak_assignments.profiles import (
 from mascope_backend.db import (
     IonizationMechanism,
     IonizationMode,
+    SampleBatch,
     SampleItem,
     async_session,
 )
@@ -43,8 +45,11 @@ async def preview_profiles(
     :param sample_item_id: The sample to resolve for.
     :param sample_batch_id: Or the batch whose samples to resolve for.
     :raises ValueError: Neither or both scopes were given.
+    :raises NotFoundException: The sample or the batch does not exist. A
+        superuser passes the access check whatever the id, so this is where a
+        missing one is told apart from an empty batch.
     :return: One record per distinct resolution, the most samples first; empty
-        when the scope holds no sample.
+        for a batch that holds no sample.
     """
     if (sample_item_id is None) == (sample_batch_id is None):
         raise ValueError("Name exactly one of a sample and a batch.")
@@ -65,6 +70,14 @@ async def preview_profiles(
                 .group_by(SampleItem.ionization_mode_id, SampleItem.polarity)
             )
         ).all()
+        if not groups:
+            if sample_item_id is not None:
+                raise NotFoundException(f"Sample with ID '{sample_item_id}' not found")
+            if await session.get(SampleBatch, sample_batch_id) is None:
+                raise NotFoundException(
+                    f"Sample batch with ID '{sample_batch_id}' not found"
+                )
+            return []
         mode_ids = {mode_id for mode_id, _, _ in groups if mode_id is not None}
         modes = (
             {
