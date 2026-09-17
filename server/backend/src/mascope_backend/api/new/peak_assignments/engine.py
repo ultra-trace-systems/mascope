@@ -1957,6 +1957,10 @@ def record_displaced_list_readings(
             "ion_formula": row.get("ion_formula"),
             "source": row.get("source"),
             "target_compound_id": row.get("target_compound_id"),
+            # The tier the reading's evidence gave it. The election settles on
+            # the rows as Stage A built them, before any rule of the run judges
+            # the ledger, so a reading the run would have held at candidate can
+            # read assigned here.
             "tier": row.get("tier"),
             "evidence": round(float(weighing["evidence"]), 4),
             "fit_score": round(float(weighing["fit_score"]), 4),

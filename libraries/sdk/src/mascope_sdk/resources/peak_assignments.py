@@ -392,7 +392,9 @@ class PeakAssignmentsResource(BaseResource):
         lines, listed by m/z, unexplained) or ``target_library``. A search row
         that took a list hit's peak carries ``provenance.list_reading``: the
         list's formula, ion, source, compound and tier, the evidence of both
-        readings, and the prior they were weighed with. The list's reading is
+        readings, and the prior they were weighed with. As on a claim's
+        displaced reading, that ``tier`` is the one the list reading's evidence
+        gave it, before any rule of the run held it lower. The list's reading is
         also the row's first alternative, marked ``displaced_by_rival``.
 
         On a hand-curated row (``source`` ``manual``) the provenance also
