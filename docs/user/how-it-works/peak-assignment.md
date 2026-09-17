@@ -55,6 +55,23 @@ Every peak is assigned in a two-stage engine:
   within the mass tolerance — the classic mass-decomposition problem
   ([Böcker & Lipták 2007][bl07]) — and scores each candidate the same way.
 
+**A list compound meets the search.** When a run searches formulas, every peak Stage A
+assigned is put to Stage B too, with the list's compound as one of its candidates. The
+compound's place on a list counts for it: a closed-shell formula from the search takes
+the peak only where its evidence (fit × plausibility, see
+[Arbitration](#arbitration-competing-the-candidates)) is more than twice the compound's,
+and ahead of it by more than a tie. It must also explain the compound's own isotope
+lines, the ones the spectrum shows where the compound predicts them: the fit charges a
+reading for a line it predicts and the spectrum lacks, but never charges a rival for a
+line the spectrum holds and the rival leaves unexplained. A siloxane's silicon lines, or
+the bromine line of a bromide adduct, keep the list's compound on its peak against a
+formula without them. A compound of your own target library keeps its peak in any case.
+Where a rival does take the peak, the row shows the search's formula, with the list's
+compound first among its alternatives, so promoting it by hand restores the list's
+reading. The compound's isotope lines leave the ledger with it, and the search's own
+pattern can hold them. Where the compound keeps its peak, the search's rivals still count
+against it (*rivals left standing*, below).
+
 Peaks that neither stage explains are recorded as *unassigned*, so a run is a complete,
 queryable ledger: one row per observed peak.
 

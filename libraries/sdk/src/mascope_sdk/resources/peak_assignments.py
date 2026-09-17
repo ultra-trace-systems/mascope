@@ -385,7 +385,15 @@ class PeakAssignmentsResource(BaseResource):
         closed-shell formulas the search held for its peak that its evidence
         could not separate (counted into ``candidate_density``), the first few
         of them by name, its fit on the search's scale, and whether the
-        searched element box holds its formula.
+        searched element box holds its formula. Where a rival cleared the
+        list's prior and the list hit kept its peak all the same, the block
+        names that rival under ``held_against``, with ``why``:
+        ``unexplained_lines`` (the rival leaves the hit's own tracking isotope
+        lines, listed by m/z, unexplained) or ``target_library``. A search row
+        that took a list hit's peak carries ``provenance.list_reading``: the
+        list's formula, ion, source, compound and tier, the evidence of both
+        readings, and the prior they were weighed with. The list's reading is
+        also the row's first alternative, marked ``displaced_by_rival``.
 
         On a hand-curated row (``source`` ``manual``) the provenance also
         carries a ``manual`` block recording who changed what: ``action``,
