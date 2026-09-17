@@ -24,10 +24,12 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 
 from mascope_backend.api.new.peak_assignments.engine import (
+    DISPLACED_BY_CLAIM,
     ROLE_ISO_CHILD,
     SOURCE_DATABASE,
     _isotope_offset_label,
     fit_isotope_formula,
+    reading_as_alternative,
 )
 from mascope_backend.api.new.peak_assignments.tiers import TIER_CANDIDATE
 from mascope_tools.composition.finder import replace_atom_with_isotope
@@ -129,35 +131,6 @@ def apply_claims(
     ]
 
 
-def _reading_of(row: dict) -> dict:
-    """What a row said before a claim read it as another formula's line.
-
-    Shaped as an alternative, so the inspector lists it with the row's other
-    readings and promoting it by hand commits it again.
-    """
-    provenance = row.get("provenance") or {}
-    return {
-        "assigned_formula": row.get("assigned_formula"),
-        "ion_formula": row.get("ion_formula"),
-        "ionization_mechanism_id": row.get("ionization_mechanism_id"),
-        "isotope_label": row.get("isotope_label"),
-        "target_compound_id": row.get("target_compound_id"),
-        "target_ion_id": row.get("target_ion_id"),
-        "fit_score": row.get("fit_score"),
-        "mz_error_ppm": row.get("mz_error_ppm"),
-        "plausibility": provenance.get("plausibility"),
-        "source": row.get("source"),
-        # What tells a reader this is the reading the claim took the peak from,
-        # rather than a rival the peak's own election considered.
-        "displaced_by_claim": True,
-        **(
-            {"reference_identities": provenance["reference_identities"]}
-            if provenance.get("reference_identities")
-            else {}
-        ),
-    }
-
-
 def _line_names(
     owner: dict, line: ClaimedLine
 ) -> tuple[str | None, str | None, str | None]:
@@ -192,7 +165,7 @@ def _read_as_line(
     carried_with: str | None = None,
 ) -> None:
     """Rewrite one row as its owner's line, keeping what it said before."""
-    displaced = _reading_of(row)
+    displaced = reading_as_alternative(row, DISPLACED_BY_CLAIM)
     previous = row.get("provenance") or {}
     owner_provenance = owner.get("provenance") or {}
     label, ion_formula, isotope_formula = _line_names(owner, line)
