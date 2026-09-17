@@ -735,6 +735,45 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   before the reasons existed, a row assigned by hand or served from the batch
   ledger - shows no list.
 
+- **The assignment launchers let you choose the chemistry a run searches
+  under, and say what it will be.**
+  - **Choosing it:** *Assign peaks* and the batch's *Search untargeted* offer
+    the chemistry profile (how the sample was ionized) and the chemistry
+    context (what was sampled), both on *Auto* by default.
+  - **What Auto means:** each launcher says what *Auto* resolves to for the
+    sample, or for each group of the batch's samples. With a single answer,
+    the formula range field shows the grid the run would search.
+  - **A warning:** a named profile of the other polarity from the samples is
+    flagged.
+  - **Remembered:** the choice is kept with the other launch settings, and
+    *Reset to defaults* puts both back on *Auto*.
+  - **On the run:** a run in the run selector names the profile it searched
+    under. Hovering the name shows the context, the element grid, the m/z
+    window and the extra channels searched.
+  - **API:** `GET /api/params` lists the profiles and contexts a run may name.
+    `GET /api/peak-assignments/sample/{sample_item_id}/profile-preview` and
+    `GET /api/peak-assignments/batch/{sample_batch_id}/profile-preview`
+    resolve them without starting a run.
+
+- **The peak inspector shows where an assignment's mass error sits, and the
+  other readings of its ion.**
+  - ***mass z***, beside the m/z error, is the row's distance from the run's
+    own mass calibration at its m/z, counted in the calibration's widths. It is
+    marked when it is past the distance the mass gate caps a row at.
+  - ***Same ion, read another way***, under *Why this tier*, lists the neutrals
+    the same ion reads as through the run's other channels. No mass or isotope
+    pattern tells those readings apart.
+  - The close alternatives now mark a same-ion reading, the reading an
+    isotopologue claim replaced, and a list compound the formula search took
+    the peak from.
+
+- **Reagent and artifact peaks have chips of their own in the assignment
+  ledger.** A peak the ionization source made, or a ringing side lobe, used to
+  show as a pale *unassigned* chip with a small icon, and was filtered and
+  sorted among the peaks nothing explained. It now shows a *reagent* or
+  *artifact* chip. The strip above the ledger counts each role apart from the
+  tiers and from the other, and the tier column sorts them after the tiers.
+
 - **A run now measures its own mass accuracy and says where each of its
   assignments sits in it.** A sample's assignments do not scatter around zero
   ppm; they scatter around the offset that acquisition sat at, with the spread

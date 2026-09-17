@@ -82,6 +82,66 @@ a nearby, out-of-tolerance peak — that peak is released to the untargeted stag
 unassigned) so it can get its own correct assignment instead of being mislabelled as a
 poorly-fitting isotopologue of something else.
 
+## The chemistry a run searches under
+
+A run searches under two presets:
+
+- **A chemistry profile:** how the sample was ionized. It decides which cluster ions the
+  source makes of itself, and which elements the sample's compounds can be built from.
+- **A chemistry context:** what was sampled.
+
+**What they set.** A run first sets aside the cluster ions a CIMS profile's reagent
+makes, as *reagent* peaks, so neither stage reads them as compounds. An electrospray
+profile has no single reagent and sets none aside. Then:
+
+- the profile gives the untargeted stage its element grid, its m/z window on each
+  instrument class, and the extra channels a source of its kind produces;
+- the context narrows that grid, never widening it;
+- the context also rejects formulas whose hydrogen, oxygen, nitrogen or
+  ring-and-double-bond count per carbon no such sample holds, in the manner of the
+  element-ratio rules of [Kind & Fiehn 2007][kf07];
+- the context caps the window a reference list is matched in.
+
+| Profile | Polarity | Recognised by | Context it takes |
+|---|---|---|---|
+| Bromide CIMS | negative | `+Br-` | Ambient air |
+| Uronium (urea) CIMS | positive | `+(CH4N2O)H+` | Uronium |
+| Nitrate CIMS | negative | `+NO3-` | Ambient air |
+| 15N-nitrate CIMS | negative | `+^NO3-` | Ambient air |
+| Iodide CIMS | negative | `+I-` | Ambient air |
+| Positive ESI / APCI | positive | no diagnostic mechanism | none |
+| Negative ESI / APCI | negative | no diagnostic mechanism | none |
+
+The contexts are ambient air, chamber, indoor air, object headspace, combustion, water,
+food and beverage, and uronium. Each describes itself where it is chosen.
+
+**Auto.** Both presets default to **Auto**. The profile is read off the sample's
+ionization mechanisms: a mode carrying the bromide mechanism is a bromide source, whatever
+the mode is called. A mode with no diagnostic mechanism gets the ESI profile of the
+sample's polarity. The context is the one the profile is normally used with.
+
+**No profile and No context.** *No profile* switches the layer off: the run searches
+the engine's original wide grid at a fixed 10 ppm window. *No context* applies no
+matrix prior.
+
+**In the launchers.** *Assign peaks* and the batch's *Search untargeted* both offer the
+two presets. Each says what *Auto* resolves to: for the sample, or for each group of the
+batch's samples, since a batch can hold more than one ionization mode. With a single
+answer, the formula range field shows the grid the run would search.
+
+A named profile applies to every sample it reaches. The launcher warns when that profile
+belongs to the other polarity from the samples. The choice is remembered with the other
+launch settings, and *Reset to defaults* puts both presets back on *Auto*.
+
+**In the run selector.** Each in-app run names the profile it searched under beside its
+engine. Hovering the name shows:
+
+- whether the profile was read off the mechanisms or named for the run;
+- the context;
+- the element grid and the m/z window;
+- the extra channels searched;
+- any channel the spectrum showed but the deployment has no mechanism for.
+
 ## The fit score — a pure measurement
 
 The **fit score** measures exactly one thing: *how well does the observed data fit the
@@ -324,6 +384,27 @@ absence rather than a finding). An isotopologue **follows its M0**: it is the M0
 seen at another isotope, so it takes the M0's answer and loses the top tier with it, and
 the inspector shows the M0's reasons beneath its own. What was found about its own line -
 in doubt, off its M0, read as the M0's line - is listed above that.
+
+**Beside the reasons.** The peak inspector also shows two measurements the reasons
+read.
+
+- ***mass z*** sits beside the m/z error. It is the row's distance from the run's own
+  mass calibration at its m/z, counted in the calibration's widths. Hovering it gives
+  the run's centre and width, and the distances at which *off calibration* caps a row.
+  The value is marked when it is past the distance that caps a row at *candidate*.
+- ***Same ion, read another way*** sits under the reasons. It lists the other neutrals
+  the committed ion reads as through the run's other channels, which the nitrogen check
+  is about. Two such readings have the same mass and isotope pattern, so the spectrum
+  cannot choose between them; a second channel of the run can.
+
+The close alternatives mark three kinds of entry that are not simply runners-up:
+
+- *same ion*: another reading of the same ion;
+- *earlier reading*: what the run first read the peak as, before a neighbour's isotope
+  line claimed it;
+- *list compound*: a list's compound that a formula from the search took the peak from.
+
+*Use this* on either of the last two puts that reading back.
 
 A reason can name a rule that lowered nothing: a row its evidence already put below
 *candidate* keeps that tier, and the rule still says what it found. The run records the
