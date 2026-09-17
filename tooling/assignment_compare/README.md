@@ -32,6 +32,14 @@ uv run python tooling/assignment_compare/compare_runs.py \
     --engine-a mascope --engine-b peaky --out compare/
 ```
 
+`--engine-b-before <timestamp>` reads the second engine's newest completed run
+created before that instant instead of its latest, so a reference that was
+re-published can still be read as it stood before (the timestamp is UTC unless
+it carries an offset). The nightly run prune keeps two completed runs per sample
+and engine by default, so on such a deployment this reaches back one publish.
+`summary.json` records the timestamp, and every joined row names the run it
+read.
+
 ## Output
 
 | file | content |

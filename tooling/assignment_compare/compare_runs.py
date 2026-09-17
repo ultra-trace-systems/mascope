@@ -78,14 +78,35 @@ def ring_double_bond_equivalents(counts: dict[str, int]) -> float | None:
     return tetravalent - monovalent / 2 + trivalent / 2 + 1
 
 
-def latest_completed_run(runs: pd.DataFrame | None, engine: str) -> str | None:
-    """The newest completed run id of ``engine``, or None. Runs list newest first."""
+def latest_completed_run(
+    runs: pd.DataFrame | None, engine: str, before: pd.Timestamp | None = None
+) -> str | None:
+    """The newest completed run id of ``engine``, or None. Runs list newest first.
+
+    With ``before``, the newest one created before that instant: a reference as it
+    stood before it was re-published, which the store keeps beside the new one.
+    """
     if runs is None or runs.empty:
         return None
     mine = runs[(runs["engine"] == engine) & (runs["status"] == "completed")]
+    if before is not None:
+        created = pd.to_datetime(
+            mine["peak_assignment_run_utc_created"], utc=True, format="ISO8601"
+        )
+        mine = mine[created < before]
     if mine.empty:
         return None
     return str(mine.iloc[0]["peak_assignment_run_id"])
+
+
+def utc_instant(value: str) -> pd.Timestamp:
+    """An ISO timestamp as a UTC instant; one without an offset is read as UTC."""
+    instant = pd.Timestamp(value)
+    return (
+        instant.tz_localize("UTC")
+        if instant.tzinfo is None
+        else instant.tz_convert("UTC")
+    )
 
 
 def previous_completed_run(runs: pd.DataFrame | None, engine: str) -> str | None:
@@ -699,6 +720,14 @@ def main(argv=None) -> int:
         help="engine name of the second run (default: peaky)",
     )
     parser.add_argument(
+        "--engine-b-before",
+        type=utc_instant,
+        metavar="TIMESTAMP",
+        help="read the second engine's newest completed run created before this "
+        "ISO timestamp (UTC unless it says otherwise) instead of its latest - "
+        "a re-published reference read as it stood before",
+    )
+    parser.add_argument(
         "--out", default="assignment_compare_out", help="output directory"
     )
     args = parser.parse_args(argv)
@@ -725,7 +754,7 @@ def main(argv=None) -> int:
     for sample_id in resolve_samples(client, args):
         runs = client.peak_assignments.list_runs(sample_id)
         run_a = latest_completed_run(runs, args.engine_a)
-        run_b = latest_completed_run(runs, args.engine_b)
+        run_b = latest_completed_run(runs, args.engine_b, before=args.engine_b_before)
         if run_a is None or run_b is None:
             print(
                 f"{sample_id}: skipped (runs: {args.engine_a}={run_a}, {args.engine_b}={run_b})"
@@ -795,6 +824,8 @@ def main(argv=None) -> int:
         "pooled": summarize(pooled, args.engine_a, args.engine_b),
         "per_sample": per_sample,
     }
+    if args.engine_b_before is not None:
+        result["engine_b_before"] = args.engine_b_before.isoformat()
     transitions = [
         one["since_previous_run"]
         for one in per_sample.values()
