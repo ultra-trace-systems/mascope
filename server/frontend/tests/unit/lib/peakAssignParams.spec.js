@@ -15,6 +15,8 @@ import { nextTick } from 'vue'
 
 const SERVED = {
   run_untargeted: true,
+  profile: 'auto',
+  context: 'auto',
   mz_precision_ppm: 3,
   formula_ranges: 'C0-80 H0-160 O0-50 N0-20',
   max_untargeted_peaks: 300,
@@ -26,6 +28,17 @@ const LIMITS = {
   max_untargeted_peaks_ceiling: 2000,
   max_mz_precision_ppm: 50,
   max_alternatives_ceiling: 20
+}
+
+const PRESETS = {
+  profiles: [
+    { name: 'BR', label: 'Bromide CIMS', polarity: '-', default_context: 'ambient-air' },
+    { name: 'none', label: 'None', polarity: '', default_context: 'none' }
+  ],
+  contexts: [
+    { name: 'ambient-air', label: 'Ambient air', description: 'Outdoor air.' },
+    { name: 'none', label: 'None', description: 'No matrix prior.' }
+  ]
 }
 
 const get = vi.fn()
@@ -45,6 +58,7 @@ function served({ peak_assignment = SERVED, ...rest } = {}) {
         params: {
           peak_assignment,
           peak_assignment_limits: LIMITS,
+          peak_assignment_presets: PRESETS,
           cheminfo_config: { DEBOUNCE_DELAY_MS: 250 },
           ...rest
         }
@@ -81,6 +95,14 @@ describe('peak assignment parameters: defaults', () => {
     const store = await loadedStore()
     expect(store.limits).toEqual(LIMITS)
     expect(store.debounceMs).toBe(250)
+  })
+
+  it('takes the chemistry presets from the same answer', async () => {
+    const store = usePeakAssignParams()
+    // Until /params answers there is nothing to offer beside auto.
+    expect(store.presets).toEqual({ profiles: [], contexts: [] })
+    await store.ensureLoaded()
+    expect(store.presets).toEqual(PRESETS)
   })
 
   it('fetches once however many surfaces ask', async () => {
@@ -151,6 +173,30 @@ describe('peak assignment parameters: persistence', () => {
     expect(store.params.mz_precision_ppm).toBe(8) // theirs, kept
     expect(store.params.max_alternatives).toBe(12) // the new default, followed
     expect(Object.keys(store.params).sort()).toEqual([...PARAM_KEYS].sort())
+  })
+
+  it('puts a stored name this server no longer offers back on the default', async () => {
+    // The API would refuse a launch naming it, and a selector could not show
+    // it: the same reason an unparseable range is dropped on load.
+    localStorage.setItem(
+      STORAGE_KEY,
+      JSON.stringify({ profile: 'KRYPTON', context: 'ambient-air' })
+    )
+    const store = await loadedStore()
+
+    expect(store.params.profile).toBe('auto')
+    expect(store.params.context).toBe('ambient-air')
+    await nextTick()
+    expect(stored()).toEqual({ context: 'ambient-air' })
+  })
+
+  it('keeps a stored name when the server offers no list to check it against', async () => {
+    // A server from before the presets were served still accepts the names.
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({ profile: 'BR' }))
+    get.mockResolvedValue(served({ peak_assignment_presets: undefined }))
+    const store = await loadedStore()
+
+    expect(store.params.profile).toBe('BR')
   })
 
   it('never writes before the defaults have landed', async () => {
@@ -271,6 +317,14 @@ describe('peak assignment parameters: the launch payload', () => {
     store.params.mz_precision_ppm = 8
 
     expect(store.payload()).toEqual({ mz_precision_ppm: 8 })
+  })
+
+  it('names the chemistry the user chose', async () => {
+    const store = await loadedStore()
+    store.params.profile = 'BR'
+    store.params.context = 'none'
+
+    expect(store.payload()).toMatchObject({ profile: 'BR', context: 'none' })
   })
 
   it('covers exactly the fields the config form offers', async () => {

@@ -5,10 +5,25 @@ import Button from 'primevue/button'
 import FloatLabel from 'primevue/floatlabel'
 import InputNumber from 'primevue/inputnumber'
 import InputText from 'primevue/inputtext'
+import Message from 'primevue/message'
+import Select from 'primevue/select'
 import ToggleSwitch from 'primevue/toggleswitch'
 
 import { useApp } from '@/stores'
-import { PARAM_KEYS, isFormulaRange, usePeakAssignParams } from '@/lib/peakAssignParams'
+import {
+  AUTO_PRESET,
+  PARAM_KEYS,
+  fetchProfilePreview,
+  isFormulaRange,
+  usePeakAssignParams
+} from '@/lib/peakAssignParams'
+import {
+  chemistryLabel,
+  contextName,
+  polarityMismatches,
+  polarityWord,
+  profileName
+} from '@/lib/peakAssignProfiles'
 
 // The peak-assignment run configuration, shared by the per-sample launcher and
 // the batch launcher so both offer the same knobs and the same bounds.
@@ -30,6 +45,17 @@ const props = defineProps({
   hidden: {
     type: Array,
     default: () => []
+  },
+  // What the launch is for, so the form can say what `auto` resolves to there:
+  // the sample a per-sample run assigns, or the batch whose samples the batch
+  // search reaches. With neither, the chemistry is named when the run starts.
+  sampleItemId: {
+    type: String,
+    default: null
+  },
+  sampleBatchId: {
+    type: String,
+    default: null
   }
 })
 
@@ -71,10 +97,252 @@ function commitFormulaRange() {
     params.formula_ranges = formulaRangeModel.value.trim()
   }
 }
+
+// --- Chemistry ---------------------------------------------------------------
+// The reagent profile says how the sample was ionized, the context what was
+// sampled. Together they set the reagent pre-pass's cluster library, the
+// untargeted stage's element grid and m/z window, and the ceiling a reference
+// list is matched under, so they apply whether or not the untargeted stage
+// runs. `auto` is the default: the profile is read off the sample's ionization
+// mechanisms, and the context is the profile's own.
+//
+// A null value is a store that has not heard from /params yet, which a launch
+// sends as nothing and the server reads as `auto`, so the selector says so -
+// and the question below is asked once rather than again when /params lands.
+const profileModel = computed({
+  get: () => params.profile ?? AUTO_PRESET,
+  set: (value) => (params.profile = value)
+})
+const contextModel = computed({
+  get: () => params.context ?? AUTO_PRESET,
+  set: (value) => (params.context = value)
+})
+
+// What that means for this launch is asked of the server, for the sample or the
+// batch the launch is for, and asked again whenever either name changes. A
+// batch can hold more than one ionization mode, so the answer is a list.
+const preview = ref(null)
+const previewFailed = ref(false)
+let previewRequest = 0
+
+watch(
+  () => [props.sampleItemId, props.sampleBatchId, profileModel.value, contextModel.value],
+  async ([sampleItemId, sampleBatchId, profile, context]) => {
+    const request = ++previewRequest
+    if (!sampleItemId && !sampleBatchId) {
+      preview.value = null
+      previewFailed.value = false
+      return
+    }
+    try {
+      const records = await fetchProfilePreview(
+        { sampleItemId, sampleBatchId },
+        { profile, context }
+      )
+      // A slower answer to an earlier question must not replace a later one.
+      if (request !== previewRequest) return
+      preview.value = records
+      previewFailed.value = false
+    } catch {
+      if (request !== previewRequest) return
+      preview.value = null
+      previewFailed.value = true
+    }
+  },
+  { immediate: true }
+)
+
+const profileIsAuto = computed(() => profileModel.value === AUTO_PRESET)
+const contextIsAuto = computed(() => contextModel.value === AUTO_PRESET)
+const forBatch = computed(() => !props.sampleItemId && Boolean(props.sampleBatchId))
+
+// The one answer, when the launch has one: always for a sample, and for a batch
+// whose samples all resolve alike.
+const single = computed(() => (preview.value?.length === 1 ? preview.value[0] : null))
+const distinct = (key) => new Set((preview.value ?? []).map((record) => record[key])).size
+
+// `auto` names its answer in the option itself, so the closed selector reads as
+// what the run will do rather than as a mode.
+function autoLabel(named, several) {
+  if (named) return `Auto (${named})`
+  return several ? `Auto (${several})` : 'Auto'
+}
+const profileOptions = computed(() => [
+  {
+    value: AUTO_PRESET,
+    label: autoLabel(
+      profileIsAuto.value && single.value ? profileName(single.value) : null,
+      profileIsAuto.value && distinct('profile') > 1 ? 'per sample' : null
+    )
+  },
+  ...store.presets.profiles.map((preset) => ({
+    value: preset.name,
+    label: profileName({ profile: preset.name, profile_label: preset.label })
+  }))
+])
+const contextOptions = computed(() => [
+  {
+    value: AUTO_PRESET,
+    label: autoLabel(
+      contextIsAuto.value && single.value ? contextName(single.value) : null,
+      contextIsAuto.value && distinct('context') > 1 ? "each profile's own" : null
+    )
+  },
+  ...store.presets.contexts.map((preset) => ({
+    value: preset.name,
+    label: contextName({ context: preset.name, context_label: preset.label }),
+    description: preset.description
+  }))
+])
+
+// Where the answer came from, said once beside it.
+const resolvedFrom = computed(() => {
+  if (profileIsAuto.value) {
+    return forBatch.value
+      ? "Read off each sample's ionization mechanisms."
+      : "Read off the sample's ionization mechanisms."
+  }
+  return contextIsAuto.value ? "The context is the profile's own." : null
+})
+
+const samplesText = (count) => `${count} sample${count === 1 ? '' : 's'}`
+
+// A named profile is applied as named: over samples of the other polarity it
+// searches reagent chemistry they were never measured with. Said rather than
+// refused - the server runs what it is asked to - because the name persists
+// between launches and may have been chosen for another batch.
+const mismatchText = computed(() => {
+  const mismatched = polarityMismatches(preview.value)
+  if (!mismatched.length) return null
+  const record = mismatched[0]
+  const profile = profileName(record)
+  const own = polarityWord(record.profile_polarity)
+  const theirs = polarityWord(record.polarity)
+  if (!forBatch.value) {
+    return `${profile} is a ${own}-mode profile, and this sample is ${theirs}.`
+  }
+  const count = mismatched.reduce((sum, entry) => sum + (entry.samples ?? 0), 0)
+  const verb = count === 1 ? 'is' : 'are'
+  return `${profile} is a ${own}-mode profile, and ${samplesText(count)} of this batch ${verb} ${theirs}.`
+})
+
+// The grid the untargeted stage would search, where the launch has one answer:
+// what leaving the formula range empty means, shown where it is left empty.
+const formulaRangePlaceholder = computed(() => {
+  if (single.value?.element_ranges) return single.value.element_ranges
+  return preview.value?.length > 1
+    ? "From each sample's chemistry profile"
+    : 'From the chemistry profile'
+})
+
+const chemistryDoc = app.ui.help.docUrl(
+  'how-it-works/peak-assignment/#the-chemistry-a-run-searches-under'
+)
 </script>
 
 <template>
   <div class="col config-form" style="gap: 1.25rem; align-items: stretch">
+    <FloatLabel
+      :pt="
+        app.ui.help.right(
+          `
+          <h1>Chemistry Profile</h1>
+          <p>
+          How the sample was ionized: the reagent chemistry that decides which
+          cluster ions the source makes of itself, and which elements the
+          sample's compounds can be built from. It sets the untargeted stage's
+          element grid and m/z window, and the reagent ions set aside before
+          either stage runs.
+          </p>
+          <p>
+          <b>Auto</b> reads it off the sample's ionization mechanisms &mdash; a
+          mode carrying the bromide mechanism is a bromide source, whatever it
+          is called. <b>No profile</b> switches the layer off and searches the
+          engine's original wide grid.
+          </p>`,
+          { layer, doc: chemistryDoc }
+        )
+      "
+    >
+      <Select
+        v-model="profileModel"
+        inputId="assign_profile"
+        :options="profileOptions"
+        optionLabel="label"
+        optionValue="value"
+        fluid
+      />
+      <label for="assign_profile">Chemistry profile</label>
+    </FloatLabel>
+    <FloatLabel
+      :pt="
+        app.ui.help.right(
+          `
+          <h1>Chemistry Context</h1>
+          <p>
+          What was sampled: ambient air, a chamber, water, food. The context
+          narrows the profile's element grid, rejects formulas whose hydrogen,
+          oxygen, nitrogen or ring-and-double-bond count per carbon no such
+          sample holds, and caps the window a reference list is matched in. It
+          never widens the profile's grid.
+          </p>
+          <p>
+          <b>Auto</b> takes the context the profile is normally used with.
+          <b>No context</b> applies no such prior.
+          </p>`,
+          { layer, doc: chemistryDoc }
+        )
+      "
+    >
+      <Select
+        v-model="contextModel"
+        inputId="assign_context"
+        :options="contextOptions"
+        optionLabel="label"
+        optionValue="value"
+        fluid
+      >
+        <template #option="{ option }">
+          <span v-tooltip.right="option.description || null">{{ option.label }}</span>
+        </template>
+      </Select>
+      <label for="assign_context">Chemistry context</label>
+    </FloatLabel>
+    <div
+      v-if="preview?.length || previewFailed"
+      class="chemistry-resolved"
+      data-testid="chemistry-resolved"
+    >
+      <template v-if="single">
+        <span>
+          {{ forBatch ? `All ${samplesText(single.samples)} search as` : 'Searches as' }}
+          <b>{{ chemistryLabel(single) }}</b>
+        </span>
+        <small v-if="resolvedFrom">{{ resolvedFrom }}</small>
+      </template>
+      <template v-else-if="preview?.length">
+        <span>Each sample searches under its own chemistry:</span>
+        <ul>
+          <li
+            v-for="record in preview"
+            :key="`${record.profile}|${record.context}|${record.polarity}`"
+          >
+            <b>{{ chemistryLabel(record) }}</b> &middot; {{ samplesText(record.samples) }}
+          </li>
+        </ul>
+        <small v-if="resolvedFrom">{{ resolvedFrom }}</small>
+      </template>
+      <small v-else>Could not look the chemistry up. The run resolves it when it starts.</small>
+    </div>
+    <Message
+      v-if="mismatchText"
+      severity="warn"
+      size="small"
+      variant="simple"
+      data-testid="chemistry-polarity"
+    >
+      {{ mismatchText }}
+    </Message>
     <div
       v-if="!hidden.includes('run_untargeted')"
       class="toggle-row"
@@ -159,7 +427,7 @@ function commitFormulaRange() {
           value: 'Format: Element + range, e.g. C0-80 H0-160 [15N]0-1 ^N0-1',
           showDelay: 500
         }"
-        placeholder="From the chemistry profile"
+        :placeholder="formulaRangePlaceholder"
         fluid
       />
       <label for="formula_ranges">Formula range</label>
@@ -275,6 +543,21 @@ function commitFormulaRange() {
 .config-form :deep(small) {
   display: block;
   opacity: 0.7;
+}
+
+/* The answer sits under the two selectors it answers, in the recessive voice
+   the form's other asides use. */
+.chemistry-resolved {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  margin-top: -0.5rem;
+  font-size: 0.85rem;
+}
+
+.chemistry-resolved ul {
+  margin: 0;
+  padding-left: 1.1rem;
 }
 
 .toggle-row {
