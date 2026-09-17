@@ -321,7 +321,8 @@ async def preview_sample_profile_route(
 
     A run resolves them when it starts and records the answer on itself; this
     answers before anything starts, from the sample's ionization mode, so a
-    launcher can name what ``auto`` means. Nothing is written.
+    launcher can name what ``auto`` means. Nothing is written. Returns 404 for a
+    sample that does not exist.
 
     :param sample_item_id: The unique identifier of the sample.
     :param query_params: The profile and context a run config would name.
@@ -350,7 +351,8 @@ async def preview_batch_profiles_route(
 
     The batch's untargeted search resolves them per sample, and a batch can hold
     more than one ionization mode, so the answer is one record per distinct
-    resolution with the number of samples it covers. Nothing is written.
+    resolution with the number of samples it covers. Nothing is written. A batch
+    with no samples resolves to no records; one that does not exist is a 404.
 
     :param sample_batch_id: The unique identifier of the batch.
     :param query_params: The profile and context a run config would name.

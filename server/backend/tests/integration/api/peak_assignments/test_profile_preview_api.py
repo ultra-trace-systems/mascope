@@ -329,3 +329,52 @@ async def test_a_sample_or_batch_the_user_cannot_read_is_refused(
         f"/api/peak-assignments/{scope}/{foreign_sample[scope]}/profile-preview"
     )
     assert response.status_code == 403
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("scope", ["sample", "batch"])
+async def test_a_sample_or_batch_that_does_not_exist_is_not_found(
+    owner_client, pa_test_data, scope
+):
+    # A superuser passes the access check whatever the id names, so the preview
+    # itself has to tell a missing id from a scope with nothing in it.
+    response = await owner_client.get(
+        f"/api/peak-assignments/{scope}/no-such-{scope}/profile-preview"
+    )
+    assert response.status_code == 404
+    # The message names the id that was asked for, not a lookup it fell into.
+    assert f"no-such-{scope}" in response.text
+
+
+@pytest.mark.asyncio
+async def test_a_batch_with_no_samples_resolves_to_nothing(
+    guest_client, async_session_factory, pa_test_data
+):
+    dataset_id = gen_id()
+    batch_id = gen_id()
+    async with async_session_factory() as session:
+        session.add(
+            Dataset(
+                dataset_id=dataset_id,
+                workspace_id=pa_test_data["workspace_id"],
+                dataset_name=f"Profile preview empty {dataset_id}",
+                dataset_utc_created=_NOW,
+            )
+        )
+        await session.flush()
+        session.add(
+            SampleBatch(
+                sample_batch_id=batch_id,
+                dataset_id=dataset_id,
+                sample_batch_name=f"Profile preview empty {batch_id}",
+                sample_batch_utc_created=_NOW,
+            )
+        )
+        await session.commit()
+
+    response = await guest_client.get(
+        f"/api/peak-assignments/batch/{batch_id}/profile-preview"
+    )
+    assert response.status_code == 200
+    assert response.json()["results"] == 0
+    assert response.json()["data"] == []
