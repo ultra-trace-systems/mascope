@@ -18,7 +18,7 @@ vi.mock('@/stores/data/modules/sample', () => ({ useSample: () => ({ focusedId: 
 
 vi.mock('@/stores/auth', () => ({ useAuth: () => ({ user: {}, onLogin: vi.fn() }) }))
 
-const { familyM0 } = await import('@/stores/data/modules/peakAssignment/assignment')
+const { familyM0, tierHistogram } = await import('@/stores/data/modules/peakAssignment/assignment')
 
 const M0 = {
   peak_assignment_id: 'pa-m0',
@@ -81,5 +81,51 @@ describe('familyM0', () => {
     const numeric = { ...CHILD, owner_peak_assignment_id: 7 }
     expect(familyM0(numeric, new Map([['7', M0]]))).toBe(numeric)
     expect(familyM0(numeric, new Map([[7, M0]]))).toBe(M0)
+  })
+})
+
+// The strip above the ledger counts the sample's compounds by tier, and the peaks
+// the source and the instrument made by role. The engine writes a reagent or an
+// artifact row at tier `unassigned`, so a count by tier alone would put the
+// sample's brightest peaks among the ones nothing explained.
+describe('tierHistogram', () => {
+  const row = (role, tier = 'unassigned') => ({ role, tier })
+
+  it('counts reagent and artifact peaks under their roles, apart from every tier', () => {
+    expect(
+      tierHistogram([
+        row('M0', 'assigned'),
+        row('M0', 'candidate'),
+        row('M0', 'below_assignability'),
+        row('unassigned'),
+        row('reagent'),
+        // A reagent's isotopologue carries the reagent role and names no owner.
+        row('reagent'),
+        row('artifact')
+      ])
+    ).toEqual({
+      assigned: 1,
+      candidate: 1,
+      below_assignability: 1,
+      unassigned: 1,
+      reagent: 2,
+      artifact: 1
+    })
+  })
+
+  it('counts a family once, under its M0', () => {
+    expect(tierHistogram([row('M0', 'assigned'), row('iso_child', 'assigned')]).assigned).toBe(1)
+  })
+
+  it('counts nothing for no rows, every bucket present', () => {
+    expect(tierHistogram([])).toEqual({
+      assigned: 0,
+      candidate: 0,
+      below_assignability: 0,
+      unassigned: 0,
+      reagent: 0,
+      artifact: 0
+    })
+    expect(tierHistogram(null).reagent).toBe(0)
   })
 })
