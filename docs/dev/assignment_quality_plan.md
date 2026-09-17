@@ -33,7 +33,7 @@ step PRs land on the epic and are named here as they merge.
 | 2.5f - a list hit meets the untargeted grid | #2148 (the measurement), #2149 (the election) | measured: a run that searches puts every monoisotopic list hit to the search, its reading one candidate beside the grid's. A closed-shell rival takes the peak only where its evidence is past twice the reading's by more than a tie and it explains the reading's own tracking isotope lines; a target library compound keeps its peak (decision 19). A hit that keeps its peak counts the grid's closed-shell rivals into its density, and the density rule holds a lone one with a rival at candidate (decision 3's sixth addendum). On the gate, rivals take 1,093 list-hit peaks, none of them held at assigned on the measurement's round; the reference commits the rival's formula on 19 and the list's on none. The lines keep 47 hits, 27 of them B's siloxanes, and the library 1. 31 list hits at assigned lose the second channel a taken reading had given them. G2 is identical on every set but F2 (26.1 -> 29.0); G1 conditioned moves on B, D, F1 and F2 (F2 78.6 -> 76.0) |
 | 2.4e - isotopologue claims under interference | #2143 | measured: a monoisotopic row the envelope-neighbour rule flags under a neighbour held at assigned is read as that neighbour's isotopologue at candidate, the reading it displaced first among its alternatives, unless it is a target library compound, another channel committed its neutral, the neighbour already holds a line there, or its error does not follow the neighbour's within what the line can deliver; the ledger's passes then run again over the claims. An isotopologue's tracking allows for its line's noise below a signal-to-noise of 15 and for a peak within two widths of it: a line only that far off is in doubt and held at candidate, never lower, and one further off is held at candidate at least. Of the 861 flagged rows, 252 are claimed (184 tracking, 68 in doubt) and 578 stay under a neighbour below assigned; the reference had read 67 of the claims as the same formula's isotopologues and 6, all on B and five of them 2H lines, as the M0 the claim displaced. G6 falls from 681 to 596, and no monoisotopic row changes formula or tier, so G1, G1 conditioned and G2 are identical on every set. Set C's 18O, 2H and 13C2 lines of its strongest ion are all its candidate isotopologues. 69 isotopologues go from assigned to candidate, 25 of them lines the reference confirms, and the calibration refits on the three samples where a claimed row had been an anchor. Taken ahead of 2.5f's first PR |
 | 2.4f - an oxygen-free neutral in a nitrate cluster | #2147 | measured: a row read as nitrate clustered with a neutral that has no oxygen - through the plain or labelled ion, or their nitric acid clusters - is held at candidate with the reason `oxygen_free_cluster`, its isotopologues with it; a target library compound is exempt, a reference list's row is not, and no second channel lifts it. Measured two ways with carbonate beside it, the plan owner took the cap and left carbonate out (decision 18's third addendum). The rule names 134 rows on the three nitrate sets and takes 10 from assigned, all on F2, where the reference commits the same reading on one; nothing else moves on 48,894 peaks, G2 is identical on every set, and F2's G1 conditioned goes from 77.6 to 78.6. Restricting the search instead read 75 of F2's 115 rows as the same ion without its proton, 18 of them at assigned; carbonate would have taken 27 rows from assigned, 20 of them on the reference's own formula |
-| 2.6 - frontend: profile, reasons, roles | - | planned |
+| 2.6 - frontend: profile, reasons, roles | #2150 | built: the launchers offer the chemistry profile and context, on *Auto*, and name what *Auto* resolves to for the sample or per group of a batch's samples, from two read routes that resolve a run config's names without starting a run; a named profile of the other polarity is warned about. A run's chip names the profile it recorded. The inspector shows `mass_z` beside the ppm error and the same ion's other readings under the tier reasons, and marks the same-ion and displaced alternatives. Reagent and artifact peaks show their role in place of the tier, and the ledger counts, filters and sorts them apart from the tiers. No engine change: no run or gate number moves |
 | 2.7 - stage 2 gate, engine 0.5.0 | - | planned |
 | 2.2b - mass-dependent centre for the mass gate | #2131 | measured: a run's mass gate judges a row at its own m/z where the run's commits demand a centre that follows `ppm = a + b * 1000 / mz`, accepted on peaky's rules; the line is fitted over every committed monoisotopic row (the plan owner's answer, recorded in the step), and the constant centre and the width stay the anchors'. A takes a line on all six samples (-0.113 to -0.137 mDa over m/z 57 to about 500) and C2 on one (-0.077); every other run keeps the constant centre and records the rule that refused the line. It moves no tier, formula, role, owner or cap on 48,894 peaks, and G1, G1 conditioned and G2 are identical on every set: every row that crosses three widths was already below assignability. What moves is `mass_z` - 2,316 rows on A, 130 on C2 - and A's seven itemised curated rows come inside three widths (-3.49..-4.38 to -0.80..-1.62). The plan owner kept the target library's exemption from the cap for now, to be revisited after 2.5d's review (decision 3's third addendum) |
 | 2.7a - reference refresh: peaky's branch rebased on main 0.8.0, re-pinned, the 43 runs re-published | - | planned: the reference stays at `cc07ce1` until then; the gate is read against both |
@@ -5850,6 +5850,83 @@ against 81 to 91.
   grid's rivals beside them:** unchanged at candidate. Their monoisotopic rows,
   C10H14O on C and C3H4O4 on F2, have no closed-shell rival within the width
   and keep their peaks.
+
+### After step 2.6, profile, reasons and roles in the app (2026-09-17)
+
+Display and documentation, plus two reads the launchers needed. No engine code
+changed, so no run, ledger or gate number moves, and the baseline for the next
+step stays step 2.5f's round.
+
+**The chemistry in the launchers.** *Assign peaks* and the batch's untargeted
+search share one form, and it now opens on the profile and context selectors,
+both on *Auto*.
+- **How the form learns what *Auto* means.** The server answers it; the browser
+  holds no copy of the fingerprint. Two read routes resolve a run config's names
+  over a sample or over a batch's samples, from their ionization modes and
+  polarities. The detection order and the polarity fallback therefore stay in
+  `detect_reagent_profile`, where step 3.5 will change them. A batch gets one
+  answer per distinct resolution with its sample count, since the batch search
+  resolves per sample.
+- **What a preview leaves out.** It names the profile, the context and the grid
+  they give, and nothing the mechanisms do not decide: the m/z window needs the
+  instrument class, and the secondary channels need the spectrum.
+- **The presets** are served with the run config's bounds (`/params`), from the
+  library the config validates against.
+- **Persistence.** Develop's shared launch settings, which reached the epic with
+  its rebase, persist every field a launcher shows, and the two names follow
+  them. A named profile carried to a sample of the other polarity would search
+  reagent chemistry that sample was never measured with. The form says so rather
+  than refusing, and *Reset to defaults* puts both names back on *Auto*.
+
+**The chemistry on the run.** The run selector's provenance chip names the
+profile an in-app run recorded (`config.resolved_profile`). Its hover gives:
+- the context, the grid and the window, each marked where the run set it
+  rather than resolved it;
+- the secondary channels, and a channel the deployment could not express.
+
+**Beside the reasons.**
+- **mass z.** The inspector shows `mass_z` right after the ppm error. Its hover
+  gives the run's centre, the gate's width and `cap_z` / `floor_z`. The value is
+  marked past `cap_z`, and whether the cap applied stays the reasons' to say.
+- **The same ion's other readings.** The `same_ion` alternatives are listed
+  under *Why this tier*, which is where *ambiguous nitrogen* points.
+- **The marked alternatives.** The close alternatives mark the same-ion
+  readings, and also the two displaced readings steps 2.4e and 2.5f put first
+  (`displaced_by_claim`, `displaced_by_rival`). The reasons' sentences already
+  tell a reader those are there.
+
+**The roles.** The reagent and artifact passes write their rows at tier
+`unassigned`, which is true (no compound was assigned) and read as "nothing
+explained this" on a chip.
+- **The chip.** The role now replaces the tier on the chip wherever it is drawn.
+- **The strip.** The strip above the ledger counts the two roles apart from the
+  tiers and from each other. `tierCounts` already excluded them from the
+  analyte counts; it had counted both as one "reagent".
+- **Sorting.** The tier column sorts the role rows after every tier.
+
+**The testbed.** The testbed now runs the step's build, the first from the
+rebased epic. Develop ships `peak_assignment = false` since v1.8.0, so the
+testbed's env config now sets it true.
+
+#### Verify, item by item
+
+- **Vitest on the form and the inspector rows:** green. The frontend suite has
+  1,246 tests.
+  - The form's chemistry has 13 cases; the store has 4 more and the name helpers
+    their own spec.
+  - The inspector has 10 cases for *mass z*, the same-ion readings and the
+    marked alternatives.
+  - The ledger's role chips, filters and sort, the tier tag's role chips, the
+    run chip's chemistry and `tierHistogram` are covered, and both launchers are
+    checked to pass their scope.
+- **Reversions.** Each new frontend line was reverted with the specs re-run: 37
+  of 37 red. The backend's 15 of 15 are red too.
+- **The reads, against the gate's samples.** On the testbed's build of this
+  step, one sample of each gate set previews as its latest run recorded it: the
+  same profile, context and grid. Each gate batch (3 to 595 samples) previews
+  as one answer with its count. A named bromide profile over the urea sets
+  returns the polarity pair the form warns on. An unknown name is a 422, and a
+  missing sample or batch is a 404.
 
 ## Not in this plan
 
