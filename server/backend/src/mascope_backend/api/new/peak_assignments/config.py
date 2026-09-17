@@ -6,6 +6,9 @@ from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator
 
 from mascope_backend.runtime import runtime
 from mascope_tools.composition.profiles import (
+    CHEMISTRY_CONTEXTS,
+    IDENTITY_PROFILE_NAME,
+    REAGENT_PROFILES,
     get_chemistry_context,
     get_reagent_profile,
 )
@@ -106,6 +109,68 @@ class PeakAssignmentLimits(BaseModel):
     max_mz_precision_ppm: float = MAX_MZ_PRECISION_PPM
     max_formula_range_species: int = MAX_FORMULA_RANGE_SPECIES
     max_alternatives_ceiling: int = MAX_ALTERNATIVES_CEILING
+
+
+class PeakAssignmentPreset(BaseModel):
+    """One preset a run config may name as its ``profile`` or ``context``."""
+
+    name: str
+    label: str
+    description: str = ""
+    #: A reagent profile's polarity, ``"+"`` or ``"-"``, and ``""`` for the
+    #: identity profile, which belongs to none. None on a context, which has no
+    #: polarity.
+    polarity: str | None = None
+    #: The context a reagent profile takes when a run asks for ``auto``. None on
+    #: a context.
+    default_context: str | None = None
+
+
+def _profile_presets() -> list[PeakAssignmentPreset]:
+    """The reagent profiles, the identity profile last.
+
+    The identity profile turns the profile layer off rather than describing a
+    source, so a list read top to bottom reaches it after every chemistry it
+    could have picked.
+    """
+    ordered = sorted(
+        REAGENT_PROFILES.values(),
+        key=lambda profile: profile.name == IDENTITY_PROFILE_NAME,
+    )
+    return [
+        PeakAssignmentPreset(
+            name=profile.name,
+            label=profile.label,
+            polarity=profile.polarity,
+            default_context=profile.default_context,
+        )
+        for profile in ordered
+    ]
+
+
+def _context_presets() -> list[PeakAssignmentPreset]:
+    """The chemistry contexts, in the library's order, which ends on ``none``."""
+    return [
+        PeakAssignmentPreset(
+            name=context.name,
+            label=context.label,
+            description=context.description,
+        )
+        for context in CHEMISTRY_CONTEXTS.values()
+    ]
+
+
+class PeakAssignmentPresets(BaseModel):
+    """The names ``profile`` and ``context`` accept, published for a launcher.
+
+    Served for the reason the limits are: a form that offered a name from its
+    own copy of the library would drift from the validator below, which looks
+    each name up in that library. ``auto`` is not listed, since it names no
+    preset; it is the default a client already has from the run config.
+    """
+
+    profiles: list[PeakAssignmentPreset] = Field(default_factory=_profile_presets)
+    contexts: list[PeakAssignmentPreset] = Field(default_factory=_context_presets)
 
 
 def peak_assignment_enabled() -> bool:
@@ -409,16 +474,26 @@ class PeakAssignmentConfig(BaseModel):
         request that carried it, instead of failing a run that has already been
         created and reported to the client.
         """
-        name = (value or "").strip()
-        if not name or name.lower() == DEFAULT_PROFILE:
-            return DEFAULT_PROFILE
-        lookup = (
-            get_reagent_profile
-            if info.field_name == "profile"
-            else get_chemistry_context
-        )
-        try:
-            lookup(name)
-        except KeyError as unknown:
-            raise ValueError(str(unknown)) from unknown
-        return name
+        return known_preset_name(value, info.field_name)
+
+
+def known_preset_name(value: str | None, field_name: str) -> str:
+    """A ``profile`` or ``context`` value, checked against the library.
+
+    Shared by every request that names one, so a name the run config would
+    refuse is refused everywhere else with the same message.
+
+    :param value: The name as sent; blank means ``auto``.
+    :param field_name: ``"profile"`` or ``"context"``, which library to look in.
+    :raises ValueError: No preset of that kind has the name.
+    :return: The name as sent, or ``auto``.
+    """
+    name = (value or "").strip()
+    if not name or name.lower() == DEFAULT_PROFILE:
+        return DEFAULT_PROFILE
+    lookup = get_reagent_profile if field_name == "profile" else get_chemistry_context
+    try:
+        lookup(name)
+    except KeyError as unknown:
+        raise ValueError(str(unknown)) from unknown
+    return name
