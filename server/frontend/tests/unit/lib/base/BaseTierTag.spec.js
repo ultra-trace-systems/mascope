@@ -152,6 +152,21 @@ describe('BaseTierTag reagent and artifact peaks', () => {
     }
   })
 
+  // The class is what colours the chip: the role's own colour, the spectrum's,
+  // rather than the recessive dashed style an unassigned chip wears.
+  it("wears the role's class, not the tier's", () => {
+    for (const role of ['reagent', 'artifact']) {
+      const classes = mountTag({ tier: 'unassigned', role }).find('.tag').classes()
+
+      expect(classes).toEqual(expect.arrayContaining(['role', role]))
+      expect(classes).not.toContain('tier')
+      expect(classes).not.toContain('unassigned')
+    }
+    const tier = mountTag({ tier: 'unassigned', role: 'unassigned' }).find('.tag').classes()
+    expect(tier).toEqual(expect.arrayContaining(['tier', 'unassigned']))
+    expect(tier).not.toContain('role')
+  })
+
   it('says what made the peak, and that it is not counted as a compound', () => {
     const reagent = mountTag({ tier: 'unassigned', role: 'reagent', source: 'reagent' })
     expect(reagent.vm.autoTooltip).toBe(
