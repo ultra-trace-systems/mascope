@@ -36,7 +36,7 @@ step PRs land on the epic and are named here as they merge.
 | 2.6 - frontend: profile, reasons, roles | #2150 | built: the launchers offer the chemistry profile and context, on *Auto*, and name what *Auto* resolves to for the sample or per group of a batch's samples, from two read routes that resolve a run config's names without starting a run; a named profile of the other polarity is warned about. A run's chip names the profile it recorded. The inspector shows `mass_z` beside the ppm error and the same ion's other readings under the tier reasons, and marks the same-ion and displaced alternatives. Reagent and artifact peaks show their role in place of the tier, and the ledger counts, filters and sorts them apart from the tiers. No engine change: no run or gate number moves |
 | 2.7 - stage 2 gate, engine 0.5.0 | - | planned |
 | 2.2b - mass-dependent centre for the mass gate | #2131 | measured: a run's mass gate judges a row at its own m/z where the run's commits demand a centre that follows `ppm = a + b * 1000 / mz`, accepted on peaky's rules; the line is fitted over every committed monoisotopic row (the plan owner's answer, recorded in the step), and the constant centre and the width stay the anchors'. A takes a line on all six samples (-0.113 to -0.137 mDa over m/z 57 to about 500) and C2 on one (-0.077); every other run keeps the constant centre and records the rule that refused the line. It moves no tier, formula, role, owner or cap on 48,894 peaks, and G1, G1 conditioned and G2 are identical on every set: every row that crosses three widths was already below assignability. What moves is `mass_z` - 2,316 rows on A, 130 on C2 - and A's seven itemised curated rows come inside three widths (-3.49..-4.38 to -0.80..-1.62). The plan owner kept the target library's exemption from the cap for now, to be revisited after 2.5d's review (decision 3's third addendum) |
-| 2.7a - reference refresh: peaky's branch rebased on main 0.8.0, re-pinned, the 43 runs re-published | - | planned: the reference stays at `cc07ce1` until then; the gate is read against both |
+| 2.7a - reference refresh: peaky's branch rebased on main 0.8.0, re-pinned, the 43 runs re-published | (this PR), peaky `epic/v2-fit-reference` at `26e0ff3` | measured: the branch is rebased on peaky's main, pinned to this epic's head and green in CI for the first time since 2.1b, and all 43 runs are re-published at `26e0ff3`, the batch sets pinned to the gate's samples because main's `batch` now picks its own. Against the refreshed reference G1 is 6.1 on A, 10.9 on C, 7.9 on D and 32.7 on B, where the reference is silent on 23.7 points, and G1 conditioned meets 20% on the TOF sets for the first time (E 13.0, F1 7.8, F2 17.1). C2's refreshed reference scores at no offset: step 2.5d's list edits left it four anchors, and peaky skips the labelled reagent's own lines, so C2 is read against the frozen reference until it is recalibrated. `compare_runs.py --engine-b-before` reads the frozen reference from the store |
 | 3.1 - series detection on the batch ledger | - | planned |
 | 3.2 - time-series coherence | - | planned |
 | 3.3 - calibration from verdicts, per profile | - | planned |
@@ -3992,7 +3992,8 @@ belongs in the fitted axis once anchors reach below m/z 100, which is step
     release. peaky's isoprene list is lifted in 2.5b, its mass-dependent
     centre becomes step 2.2b, its persistence admission, predicted
     satellites and vote rule are named in 3.2, and its two new profiles in
-    3.5.
+    3.5. *Refreshed 2026-09-17 by step 2.7a: the branch is `26e0ff3`, the
+    twelve commits and one that re-pins the library to this epic's head.*
 
 17. **A source's window, radical allowance and polarity live on its row,
     and Stage A reads all three** (taken 2026-09-14 with step 2.5b, on the
@@ -5927,6 +5928,237 @@ testbed's env config now sets it true.
   as one answer with its count. A named bromide profile over the urea sets
   returns the polarity pair the form warns on. An unknown name is a 422, and a
   missing sample or batch is a 404.
+
+### After step 2.7a, the reference refreshed (2026-09-17)
+
+No engine change. The in-app runs are the round step 2.6 left, and every
+engine-side number below is the same on both sides. What moved is the
+reference, once, as decision 16 planned.
+
+**The branch.** peaky's `epic/v2-fit-reference` is now `26e0ff3`.
+- **Its base** is peaky's main at `823f8dd`: release 0.8.0 and three PRs after
+  it, a help-text fix and the privacy scan, none of them on the scoring path.
+- **On top** sit the twelve commits that need the unreleased library, and one
+  more. That one pins `mascope-tools` to this epic's head, `49aa69ca5` (it was
+  `fc25575da`), and sets `allow-direct-references`.
+- **Its CI** installs and passes, on both Pythons and the locked job, for the
+  first time since step 2.1b. Every push before this failed at install.
+- **Every run says so.** All 43 published runs record commit `26e0ff3` and
+  version `0.8.0+assign0.6.0`.
+
+**A change on main the plan did not list.** `peaky batch` now picks its own
+samples: the fewest spectra that cover the batch's persistent ions, then a
+residual stage. On the gate's batches that picks 0 to 2 of each set's gate
+samples.
+- **So the batch runs are pinned.** Sets A to D run on the gate's samples, with
+  the residual stage off, and each run records that selection.
+- **The rest is as before.** E, F1 and F2 are single-sample runs, and every
+  other flag is the frozen run's.
+
+**The run is reproducible.** Set A ran twice, on two machines and two operating
+systems. All 2,626 rows agree in every published field. The only difference is
+the sixteenth digit of some floats inside `alternatives`, which the publish
+does not carry. Every batch ledger carries its time-series disposition, the
+trap step 2.1b found.
+
+**Both references stay readable.** The store keeps the two newest runs per
+sample and engine, so the frozen reference is now each sample's previous peaky
+run. `compare_runs.py --engine-b-before <timestamp>` reads the newest run
+created before that instant.
+
+**What each reference is judged at.** Its anchors are the server's own matches
+of the sample that peaky can mass.
+
+| set | anchors | width | offset ppm |
+|---|---|---|---|
+| A | 11-12 | fitted | -0.33 to 0.00, both |
+| B | 5-8 | class on four samples, fitted on two | 0.00 to +0.23, both |
+| C | 2 -> 1 | class | none |
+| C2 | 6 -> 4 | class | -1.23 to -1.18 -> **none** |
+| D | 3 -> 2 | class | none |
+| E | 6 -> 5 | class | -0.18 to +0.71 -> -0.18 to +0.95 |
+| F1 | 14-17 -> 13-15 | fitted | +1.07 to +2.67 -> +1.07 to +2.43 |
+| F2 | 17-21 | fitted | +0.11 to +0.88, both |
+
+- **Where the anchors went.** Two testbed edits since the freeze removed
+  matched lines, and with them anchors:
+  - the nitrate monitor's fix, which replaced the entry on C's base peak;
+  - step 2.5d's removal of the odd-electron workaround entries: HCO3 and HS3 on
+    C2, Br on D, E and F1, and CHO3 on F1.
+- **C2 falls below the five an offset needs.** Its four remaining anchors are
+  acetic acid, nitric acid, HBr and C3H6O3, at -0.7 to -2.2 ppm with a median
+  of -1.25 to -1.28 on every sample.
+  - The refreshed reference therefore scores C2 at no offset, on a source that
+    reads 1.2 ppm low. That is the collapse step 2.1b described.
+  - The in-app engine met the same loss in 2.5d, and 2.5e answered it with the
+    reagent lines.
+- **The labelled reagent's own lines are not counted.** C2 matches its 15N
+  reagent ions too, but peaky skips every matched row whose isotope formula
+  carries a bracket, and a labelled ion is written with one.
+  - Four of those rows are base lines, not isotopologues: `[15N]O3-`, the
+    nitric acid and HBr clusters, and the labelled dimer. peaky masses all
+    four.
+  - Counted, they give every C2 sample eight anchors and an offset of -1.05 to
+    -1.07 ppm. The reagent ion itself reads +1.25 ppm, against -0.05 to -1.95
+    for the other three.
+
+So **C2's refreshed numbers are not a reference.** They are shown below for
+completeness, and C2 is read against the frozen reference.
+
+**The reference's own ledger.** Its committed M0 rows and their tiers by
+peaky's own bands, how often a peak both references commit changed formula,
+and its committed mass error.
+
+| set | committed M0 | its Assigned | its Candidate | formula changed | its MAD ppm |
+|---|---|---|---|---|---|
+| A | 1002 -> 1599 | 784 -> 980 | 218 -> 619 | 29 of 994 (2.9%) | 0.150 -> 0.160 |
+| B | 4680 -> 5081 | 1933 -> 2164 | 2747 -> 2917 | 199 of 4562 (4.4%) | 0.174 -> 0.174 |
+| C | 681 -> 799 | 445 -> 509 | 236 -> 290 | 0 of 673 | 0.121 -> 0.127 |
+| C2 | 381 -> 159 | 264 -> 67 | 117 -> 92 | 22 of 77 (28.6%) | 0.167 -> 0.409 |
+| D | 1554 -> 1632 | 800 -> 791 | 754 -> 841 | 2 of 1535 (0.1%) | 0.189 -> 0.190 |
+| E | 158 -> 552 | 42 -> 169 | 116 -> 383 | 16 of 90 (17.8%) | 1.106 -> 1.120 |
+| F1 | 1034 -> 2265 | 123 -> 399 | 911 -> 1866 | 138 of 227 (60.8%) | 0.995 -> 1.140 |
+| F2 | 827 -> 1267 | 69 -> 318 | 758 -> 949 | 81 of 145 (55.9%) | 0.934 -> 0.714 |
+
+- **It commits more everywhere but C2,** and on the TOF sets one and a half to
+  three and a half times as much. The runs cut at each sample's own noise edge,
+  main's height gate, which the plan named as the reason the TOF reference had
+  committed so little. The four changes on main were not measured apart.
+- **The Orbitrap reference keeps its readings.** Where both references commit,
+  the formula moves on 0 to 4.4% of the peaks.
+- **The TOF reference does not.** It moves on 18% of E's shared peaks and over
+  half of F1's and F2's, so a TOF number here is a reading of this reference
+  rather than a settled one.
+
+**The gate against both references.** The engine side is identical: G3, G5
+(0 everywhere) and G8 (0 everywhere) do not move.
+
+| set | G1 | G2 formula / ion | G2 n | G4 | G6 (at assigned) |
+|---|---|---|---|---|---|
+| A | 23.2 -> **6.1** | 97.1 -> 95.2 / 98.0 -> 96.6 | 784 -> 980 | 48 of 58 | 27 -> 38 (2 -> 4) |
+| B | 37.2 -> 32.7 | 95.1 -> 93.8 / 96.4 -> 94.8 | 1933 -> 2164 | 14 of 24 | 210 -> 249 (39 -> 51) |
+| C | 20.7 -> **10.9** | 94.8 -> 93.7 / 94.8 -> 93.7 | 445 -> 509 | 0 of 29 | 46 (10 -> 9) |
+| C2 | 20.6 -> 91.0 | 87.5 -> 49.3 / 87.5 -> 49.3 | 264 -> 67 | 0 of 33 | 18 -> 16 (4) |
+| D | 8.3 -> **7.9** | 85.5 -> 85.0 / 87.1 -> 86.6 | 800 -> 791 | 124 of 344 | 156 -> 164 (2 -> 3) |
+| E | 93.6 -> 66.1 | 54.8 -> 54.4 / 64.3 -> 56.8 | 42 -> 169 | 48 of 322 -> 48 of 313 | 9 -> 20 (3 -> 1) |
+| F1 | 94.8 -> 78.0 | 27.6 -> 41.6 / 29.3 -> 42.1 | 123 -> 399 | 50 of 323 -> 50 of 291 | 96 -> 164 (2 -> 6) |
+| F2 | 96.7 -> 83.9 | 29.0 -> 41.2 / 29.0 -> 43.1 | 69 -> 318 | 0 of 10 | 31 -> 68 (2 -> 4) |
+
+**G1 falls because the reference speaks, not because it agrees more.** Its
+three parts:
+
+| set | contradicts | same ion, other split | does not commit | = G1 |
+|---|---|---|---|---|
+| A | 0.2 -> 0.7 | 2.0 -> 2.4 | 21.0 -> 3.1 | 23.2 -> 6.1 |
+| B | 1.7 -> 2.2 | 7.8 -> 6.8 | 27.7 -> 23.7 | 37.2 -> 32.7 |
+| C | 1.8 -> 2.3 | 0.0 -> 0.2 | 18.9 -> 8.5 | 20.7 -> 10.9 |
+| C2 | 1.6 -> 9.7 | 0.3 -> 0.0 | 18.7 -> 81.3 | 20.6 -> 91.0 |
+| D | 1.3 -> 1.9 | 0.0 -> 0.0 | 7.0 -> 6.0 | 8.3 -> 7.9 |
+| E | 5.1 -> 5.5 | 1.3 -> 0.4 | 87.3 -> 60.2 | 93.6 -> 66.1 |
+| F1 | 6.4 -> 3.3 | 0.0 -> 0.0 | 88.4 -> 74.7 | 94.8 -> 78.0 |
+| F2 | 10.8 -> 3.5 | 0.0 -> 0.4 | 85.9 -> 80.0 | 96.7 -> 83.9 |
+
+- **On the Orbitrap sets** the silent share falls by up to 85%, and the
+  contradicted share rises by 0.6 points at most.
+- **On F1 and F2** the contradicted share roughly halves and falls by two
+  thirds.
+
+**G1 conditioned (decision 14)**, over the assigned rows the reference commits
+an M0 on, with n:
+
+| set | frozen | refreshed |
+|---|---|---|
+| A | 2.5 (797) | 2.8 (977) |
+| B | 11.9 (2906) | 10.2 (3057) |
+| C | 0.2 (489) | 1.1 (554) |
+| C2 | 0.8 (257) | 48.2 (56) |
+| D | 1.2 (834) | 1.7 (842) |
+| E | 42.3 (26) | **13.0 (92)** |
+| F1 | 50.7 (73) | **7.8 (167)** |
+| F2 | 76.0 (100) | **17.1 (140)** |
+
+**The TOF sets now have the reference decision 14 carried them to.** It
+commits on 92, 167 and 140 of their assigned rows, and on those the engine
+meets the 20% bound on all three. The unconditioned G1 stays at 66 to 84%,
+which is the reference's silence.
+
+**What the refresh answers for 2.7.** Against the refreshed reference, G1 is
+met on A, C and D and missed on B. B's miss is silence: the reference commits
+nothing on 23.7 points of its 32.7. G2's formula bound holds on A, B, C and D,
+and its ion bound only on A. C2 is read against the frozen reference until its
+axis or its anchors are fixed.
+
+**The items this step was to read.**
+- **A claim's `displaced.tier` (2.4e).** It is informative as it stands, the
+  displaced reading's evidence tier.
+  - On the Orbitrap sets the refreshed reference commits the displaced reading
+    on 5 of the 17 claims whose displaced tier says assigned, 4 of 25 at
+    candidate, and none of 145 below assignability. It confirms the claim on
+    9, 12 and 41 of them.
+  - So a claim that displaces a reading its evidence called assigned is the
+    contested kind. The re-read takes the tier so, and the block needs no
+    second tier.
+- **The height rule's tails (2.4e).** Over the 247 claims the refreshed
+  reference confirms 17% below 0.6 of the predicted height, 57% between 0.6 and
+  1.4, and 26% between 1.4 and 2.0 (frozen: 16%, 53% and 13%). The low tail is
+  where the doubt is.
+- **The widened bar on the TOF sets (2.4e).** The refreshed reference now
+  speaks there, and the lines in doubt fare worse than the lines that track.
+  - It confirms 24% of the TOF isotopologue rows whose line tracks (7% frozen)
+    and 4% of those in doubt (under 1% frozen).
+  - Where it commits on a line in doubt, it reads the peak otherwise 17 times
+    against 8 confirmations. On the tracking lines it is 124 against 197.
+  - Where the reference speaks, a TOF line in doubt is more often read
+    otherwise than confirmed. That argues for keeping it out of the evidence
+    that lifts its owner, for 2.7 to take or leave.
+- **Oxygen-free nitrate clusters (2.4f).** The rule caps 144 rows now, and the
+  refreshed reference commits on 21 of them: 13 as isotopologues, 6 as another
+  neutral and 2 as the same.
+  - The two ClI rows read as they did. The reference commits ClI through
+    nitrate on one of the two peaks, at below assignability, and nothing on the
+    other.
+  - So the reference does not settle whether a list's halogen read through
+    nitrate should be exempt.
+- **List hits a rival took (2.5f).** Of the 1,089, the refreshed reference
+  commits the rival's formula on 44 (19 frozen) and the list's on none. It is
+  silent on 930.
+  - Every refreshed run activates one list, Keller's contaminants. The HOM
+    list, whose readings are 1,014 of the taken peaks, is not one the
+    reference reads, so its silence there is no verdict on the list.
+- **The fit's abundance term (2.5f).** Its first answer is B's siloxanes.
+  - The lines kept 27 of them against their rivals, and the refreshed reference
+    commits the list's siloxane on 20 (none frozen). The lines were right.
+  - The search's own elections cannot be read from the store. Of the untargeted
+    rows the refreshed reference reads as a different ion, the run held the
+    reference's reading among its alternatives on 357 of 3,214, and those are
+    stored without a fit. Measuring the term there needs the candidates scored
+    again, with and without it.
+- **C2's lines through m/z (2.2b, 2.5e).** The refreshed reference cannot speak
+  to them, since it scores C2 at no offset (above).
+
+**For the plan owner.**
+- **C2.** The step was to recalibrate C2 with the refresh. Doing so writes the
+  six sample files, needs more calibrants on its mode than the two that
+  disagree, and runs the calibration routes, which take a signed-in session.
+  - **Recalibrated,** C2's axis is right, and the refreshed reference's zero
+    offset becomes true.
+  - **Separately,** peaky's anchor rule misses a labelled reagent's own lines,
+    a fix for peaky's main whatever C2's axis.
+
+#### Verify, item by item
+
+- **The branch:** CI green on both Pythons and the locked job. peaky's own
+  suite, the privacy scan included, passes on Linux.
+- **The runs:** 43 published, each recording commit `26e0ff3` and version
+  `0.8.0+assign0.6.0`. Set A's two runs agree in every published field.
+  - One batch worker crashed on D's first attempt, a segfault in the
+    interpreter on a fully loaded host. D ran again on its own and completed.
+- **The engine side:** the same 43 in-app runs before and after, so G3, G5 and
+  G8 do not move.
+- **The frozen read:** after the publish, `--engine-b-before` gives the
+  comparison made before it, byte for byte, on all eight sets.
+- **The anchors:** C2's four and the four labelled base lines were read from
+  the peaks endpoint on all six samples.
 
 ## Not in this plan
 
