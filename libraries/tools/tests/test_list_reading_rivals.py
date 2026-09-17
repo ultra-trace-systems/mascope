@@ -163,17 +163,21 @@ class TestTheReadings:
         assert _measure(UNRESOLVED, readings=[reading]) == [None]
 
     def test_the_results_keep_the_readings_order(self):
+        # Given in neither ascending nor descending m/z: the grid is walked in
+        # ascending m/z whatever order the readings arrive in.
         low = calculate_mass(formula="C10H16O4") + parse_ionization("+H+").mass
+        high = calculate_mass(formula="C12H18O6") + parse_ionization("+H+").mass
         peaks = pd.DataFrame(
             {
-                "mz": [low, MZ],
-                "intensity": [100.0, 100.0],
-                "signal_to_noise": [2.0, 2.0],
+                "mz": [low, MZ, high],
+                "intensity": [100.0, 100.0, 100.0],
+                "signal_to_noise": [2.0, 2.0, 2.0],
             }
         )
         readings = [
             ListReading(MZ, "C11H16O5", "+H+", 0.0),
             ListReading(low, "C10H16O4", "+H+", 0.0),
+            ListReading(high, "C12H18O6", "+H+", 0.0),
         ]
         together = rivals_of_readings(peaks, _box(), readings, HEURISTICS, UNRESOLVED)
         alone = [
@@ -182,6 +186,7 @@ class TestTheReadings:
         ]
         assert together == alone
         assert together[0] != together[1]
+        assert together[1] != together[2]
 
     def test_nothing_to_measure_measures_nothing(self):
         assert rivals_of_readings(_peak(), _box(), [], HEURISTICS, UNRESOLVED) == []
@@ -196,6 +201,8 @@ class TestTheNamedCount:
             ([("A", 0.9), ("B", 0.85), ("C", 0.2)], "C"),
             ([("A", 0.0), ("B", 0.0)], "A"),
             ([("A", 0.9), ("A", 0.5), ("B", 0.89)], "A"),
+            # A formula arriving twice is counted at its best evidence.
+            ([("A", 0.9), ("B", 0.5), ("A", 0.3)], "B"),
         ],
     )
     def test_it_names_what_the_density_counts(self, candidates, around):
