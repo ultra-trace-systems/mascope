@@ -30,7 +30,7 @@ step PRs land on the epic and are named here as they merge.
 | 2.5c - the same-ion ambiguity on a Stage A mirror row | #2118 | measured: a reference mirror's M0 row carries the readings of its ion the untargeted search would have held, as `same_ion` alternatives (2,725 rows over the 43 samples), and the reagent-N rule asks it from both sides, since a list can put the nitrogen on the analyte; a second channel fixes the count either way and a target library row stays exempt. It moves tiers and nothing else: no formula, role or owner change on 48,894 peaks, G2 identical on every set, no untargeted or target library row touched. The rule reaches 746 mirror rows and caps 167 from assigned (A 24, B 67, F2 76) with 25 isotopologues. All nine same-ion steals on B carry their ammonium reading: two are capped and seven fixed by the same neutral's urea adduct. G1 A 24.3 -> 23.2, B 36.8 -> 37.0 (conditioned 11.6 -> 11.7), F2 97.5 -> 97.3; on B the cap takes 50 rows the reference confirms, 18 of them Keller's amines through `+H+` |
 | 2.5d - review of the curated lists | #2136 (a library entry's line whatever its spelling), #2137 (the cap on library rows, the plan) | measured: the 46 entries the gate's modes attach were audited against the step's four flags, and the plan owner's verdicts taken on each. The four odd-electron workaround entries left the lists (HCO3 and CHO3 for CO3-, HS3 for S3-, Br for Br2-); the entries that never commit a row stay, with their reasons - reagent lines the pre-pass claims first, or compounds absent or out of range; no entry is left whose ion another channel of the same sample reads as a different neutral. Removing the workaround entries cost C2 its Stage A offset: four to five of its eleven or twelve matched lines were theirs, so it scores at the class width with no offset while its own runs sit at -1.1 ppm, and 146 rows leave assigned, 106 of them rows the reference commits the same formula on (the section after this step has the two ways back). The audit found an engine defect, fixed in #2136: a reference list's copy of a library reading took the entry's line, on the spelling or on a shade better fit - 63 rows on four sets, 12 density caps lifted, no tier moved. Decision 3's exemption is lifted from the cap in #2137 (its fourth addendum): a library line off calibration is capped unless an isotopologue tracks it, which moves the three isotopologues that exemption protected from assigned to candidate and nothing else |
 | 2.5e - an offset from the reagent lines where the library is thin | #2140 | measured: where Stage A matches fewer than eight library lines, both stages score at the median error of every line the reagent pre-pass claimed, isotopologues included, where it claimed three or more and the median is beyond the width the sample is scored at; the width stays the class's. Only C2 reaches it, at -1.25 to -1.26 ppm over seven lines where its commits sit at -1.10 to -1.13: 114 of the 146 monoisotopic rows 2.5d took from assigned come back, 100 of them on the reference's formula, its assigned rows go from 181 to 321, G1 30.9 -> 20.6 (conditioned 0.0 -> 0.8 over 257 rows) and G2 86.4 -> 87.5. The other seven sets are identical row for row. Every run keeps its calibration's offset and width and the gate caps the same rows; on C2 the re-elections move the calibration's line through m/z, which three samples now refuse and two fit shallower |
-| 2.5f - a list hit meets the untargeted grid | #2148 (the measurement) | first PR measured: a run that searches asks the grid about every monoisotopic list hit, scores the box's candidates for its peak beside the list's reading on the search's own fit, and counts the closed-shell ones the evidence cannot separate into the hit's density (decision 3's sixth addendum: a radical is no plausible rival), so the density rule holds a lone list hit with a rival at candidate and names the rivals; no election or owner changes. 146 list hits at assigned have such a rival, almost all from the monoterpene HOM list on the TOF sets: 113 go to candidate (F1 85, F2 24, E 2, B 1, C 1), where the reference commits the list's formula on 2 and is silent on 105, and a second channel keeps 33. Four lines 2.4e had claimed for F1 list hits unwind. G2 is identical on every set; F1's G1 conditioned goes from 50.7 to 48.6. The measurement costs 49 s over the 43 runs. The second PR, the list formula as one candidate with a prior, waits on the prior's weight |
+| 2.5f - a list hit meets the untargeted grid | #2148 (the measurement), #2149 (the election) | measured: a run that searches puts every monoisotopic list hit to the search, its reading one candidate beside the grid's. A closed-shell rival takes the peak only where its evidence is past twice the reading's by more than a tie and it explains the reading's own tracking isotope lines; a target library compound keeps its peak (decision 19). A hit that keeps its peak counts the grid's closed-shell rivals into its density, and the density rule holds a lone one with a rival at candidate (decision 3's sixth addendum). On the gate, rivals take 1,093 list-hit peaks, none of them held at assigned on the measurement's round; the reference commits the rival's formula on 19 and the list's on none. The lines keep 47 hits, 27 of them B's siloxanes, and the library 1. 32 list hits at assigned lose the second channel a taken reading had given them. G2 is identical on every set but F2 (26.1 -> 29.0); G1 conditioned moves on B, D, F1 and F2 (F2 78.6 -> 76.0) |
 | 2.4e - isotopologue claims under interference | #2143 | measured: a monoisotopic row the envelope-neighbour rule flags under a neighbour held at assigned is read as that neighbour's isotopologue at candidate, the reading it displaced first among its alternatives, unless it is a target library compound, another channel committed its neutral, the neighbour already holds a line there, or its error does not follow the neighbour's within what the line can deliver; the ledger's passes then run again over the claims. An isotopologue's tracking allows for its line's noise below a signal-to-noise of 15 and for a peak within two widths of it: a line only that far off is in doubt and held at candidate, never lower, and one further off is held at candidate at least. Of the 861 flagged rows, 252 are claimed (184 tracking, 68 in doubt) and 578 stay under a neighbour below assigned; the reference had read 67 of the claims as the same formula's isotopologues and 6, all on B and five of them 2H lines, as the M0 the claim displaced. G6 falls from 681 to 596, and no monoisotopic row changes formula or tier, so G1, G1 conditioned and G2 are identical on every set. Set C's 18O, 2H and 13C2 lines of its strongest ion are all its candidate isotopologues. 69 isotopologues go from assigned to candidate, 25 of them lines the reference confirms, and the calibration refits on the three samples where a claimed row had been an anchor. Taken ahead of 2.5f's first PR |
 | 2.4f - an oxygen-free neutral in a nitrate cluster | #2147 | measured: a row read as nitrate clustered with a neutral that has no oxygen - through the plain or labelled ion, or their nitric acid clusters - is held at candidate with the reason `oxygen_free_cluster`, its isotopologues with it; a target library compound is exempt, a reference list's row is not, and no second channel lifts it. Measured two ways with carbonate beside it, the plan owner took the cap and left carbonate out (decision 18's third addendum). The rule names 134 rows on the three nitrate sets and takes 10 from assigned, all on F2, where the reference commits the same reading on one; nothing else moves on 48,894 peaks, G2 is identical on every set, and F2's G1 conditioned goes from 77.6 to 78.6. Restricting the search instead read 75 of F2's 115 rows as the same ion without its proton, 18 of them at assigned; carbonate would have taken 27 rows from assigned, 20 of them on the reference's own formula |
 | 2.6 - frontend: profile, reasons, roles | - | planned |
@@ -1281,6 +1281,33 @@ its own status.
     search's scale, whether the box holds the formula), and the run carries
     `search_scope.list_hits`. The run-less ingest fold runs no search, so its
     list hits keep the known set's count.
+- **As built, the election (2026-09-17).** #2149, measured on the
+  measurement's round (*After step 2.5f's second PR*).
+  - **The question put to the search.** Every monoisotopic Stage A row whose
+    channel the search runs is one of the search's targets. The list's reading
+    is a candidate beside the grid's, scored on the search's own fit.
+  - **When a rival takes the peak.** Its evidence (fit times plausibility) has
+    to be past the reading's times the prior, 2, by more than the gap ties are
+    counted at. Its envelope has to hold its required lines, and it has to
+    explain the reading's own lines (decision 19).
+  - **What a rival's win does.** The rival's rows are committed as the search
+    commits any election. The reading's isotopologues leave the ledger with
+    it, and their peaks go to the rival's envelope or stay unassigned.
+  - **Where the reading keeps its peak.** The row stays as Stage A built it,
+    the grid's closed-shell rivals are counted into its density from the same
+    pass, and its lines stay the list's. A compound of the target library keeps
+    its peak whatever the grid holds. A list's peak is elected on even where an
+    earlier envelope matched it as a line.
+  - **The record.** A row that took a list hit's peak lists the list's reading
+    first among its alternatives (`displaced_by_rival`). It also carries
+    `provenance.list_reading`: the list's formula, ion, source, compound, tier
+    and identities, both evidences and the prior.
+    - A kept hit's `grid_rivals` names the rival that cleared the prior under
+      `held_against`, with why.
+    - `search_scope.list_hits` counts the peaks measured, kept with a rival,
+      taken, and held by lines or by the library.
+  - **What holds no election.** The run-less fold and the batch ledger's
+    search, which enumerates only unassigned anchors, hold none.
 
 ### 2.6 Frontend: profile, reasons, roles
 
@@ -4054,6 +4081,39 @@ belongs in the fitted axis once anchors reach below m/z 100, which is step
     clustered with an oxygen-free neutral is mostly the same ion without its
     proton, which no rule doubts and which the run put at assigned more often
     than the cap takes. Carbonate clusters are not judged by the rule.
+19. **A list's reading counts twice against the grid, and a rival has to
+    explain the reading's own lines** (taken 2026-09-17 by the plan owner, on
+    step 2.5f's measurement and its first election round).
+    - **The prior.** A grid rival takes a list hit's peak only where its
+      evidence is past twice the reading's by more than the gap ties are
+      counted at. The estimate on the measurement's round, by weight:
+      - 1: rivals would take 1,544 peaks, 24 of them where the reference
+        commits the list's formula;
+      - 1.5: 1,308 peaks, 4 of them;
+      - 2: 1,153 peaks, none of them; 1,137 are readings below
+        assignability.
+    - **The reading's own lines.** The fit charges a reading for a line it
+      predicts and the spectrum lacks, and never charges a rival for a line the
+      spectrum holds and the rival leaves unexplained. At the prior alone:
+      - CHO formulas took 27 siloxane peaks on B whose 29Si and 30Si lines sat
+        within 0.1 ppm of the prediction;
+      - a formula the tiered measure put at 0 took the one assigned hit, a
+        sulfonamide through bromide with four tracking lines.
+
+      So a rival also has to explain every line of the reading's envelope that
+      the spectrum was expected to show and whose mass error follows the ion's
+      within two widths. It explains a line it matched and predicts at least
+      half of, so a trace line of the right mass does not count. A CHO rival
+      shares a CHO reading's 13C line, so the lines decide only where the
+      envelope is distinctive.
+    - **The target library.** A compound of the sample's target library keeps
+      its peak, and its closed-shell rivals still count into its density, as
+      decision 3's fourth addendum keeps the library clear of the rules that
+      doubt a search's election.
+    - **Not taken.** Weighing both readings on the measure the row is tiered
+      on would re-measure each would-be rival first. About 188 peaks would have
+      stayed with the list on the first election round, at the cost of a
+      second pass over the list peaks.
 
 ## Risks
 
@@ -5671,6 +5731,114 @@ of 1,375, F2 790 of 1,626.
   peaks:** the 113 above.
 - **The run time:** 49 s of measurement over the 43 runs.
 - **The claims whose neighbour it takes below assigned:** the four on F1.
+
+### After step 2.5f's second PR, the election (2026-09-17)
+
+#2149 holds the election (the step's as-built note). It was measured on
+`step-2.5f-list-hit-election-2026.09.17-233c265`, read against the measurement's
+round. Decision 19's lines answer a first build with the prior alone
+(`...-bdf0381`).
+
+**What the first build showed.** With the prior alone, rivals took 1,137
+list-hit peaks: 1,121 readings below assignability, 15 at candidate and one at
+assigned. The reference commits the rival's formula on 19 and the list's on
+none.
+- **No evidence.** 212 of those readings the evidence puts at 0. Stage A's own
+  fit is 0 on them too, since they sit several widths from their peaks.
+- **Lines left unexplained.** 41 had isotopologues that tracked them, and on 28
+  the rival explains none of those lines: B's siloxanes, bromide adducts on D
+  and F1, and the one assigned hit, which the two measures read opposite ways.
+  The search's fit gives the reading 0.17 against Stage A's 0.83, and the rival
+  0.44 against 0. 92 released lines went unassigned.
+- **The siloxanes.** D5 through urea on B matches its 29Si and 30Si lines within
+  0.1 ppm. Its 29Si line holds 69% of the prediction, which the fit's abundance
+  term reads as a miss, and the CHO rival is charged nothing for either line.
+- **The tiered measure.** Weighed on it instead, about 949 peaks would have been
+  taken.
+
+The plan owner took the lines and the library exemption (decision 19).
+
+**Who holds the list's peaks.** Rivals take 1,093 of them: A 22, B 68, C 19, C2
+1, D 16, E 61, F1 308, F2 598.
+- **The records.** 1,089 rows carry the list's reading. The claims pass then
+  reads the other 4 as a neighbour's isotopologue, as the measurement's round
+  read them, and their alternatives keep both readings.
+- **The readings taken.** The list's reading was below assignability on 1,086
+  and at candidate on 3. The monoterpene HOM list holds 1,014 of them, the
+  siloxanes 3.
+- **The rivals.** They sit at assigned on 143, candidate on 627 and below on 319.
+- **The reference.** It commits the rival's formula on 19, the list's on none,
+  another formula on 138 and an isotopologue on 12, and is silent on 920.
+- **The released lines.** 21 are now the rival's, and 27 are unassigned.
+
+**Kept against a rival that cleared the prior.**
+- **By the reading's lines: 47.** B 27, all siloxanes; D 7; E 1; F1 12.
+  - Their tiers: the assigned sulfonamide, 11 at candidate and 35 below.
+  - The reference commits another formula on 7, a siloxane (C11H26O8Si3) on 4
+    of them, and the rival's formula on none.
+- **By the library: 1** (E, at candidate).
+
+**What else moves.**
+- **Second channels.** 32 list hits at assigned go to candidate (F2 28, F1 4).
+  The other channel's reading of their neutral was a list hit a rival took, and
+  without it the reagent-N or density rule holds them. The reference is silent
+  on 27 and commits another formula on 5.
+- **Search rows.** 95 change tier or role around the taken peaks, through the
+  rivals' envelopes, the seeded fits and the calibration. 21 remainder peaks
+  are now a rival's isotopologues.
+- **The calibration.**
+  - The offset moves on 13 runs: by at most 0.27 ppm on one F1 sample, 0.17 ppm
+    elsewhere, and 0.01 ppm on D.
+  - The width moves on 15 runs, by at most 0.34 ppm.
+  - The line through m/z moves on 5 (A 4, C2 1), by at most 0.006 mDa, and
+    the reason it is refused changes on 4 runs where it stays refused.
+  - The pattern scoring is identical on all 43 runs.
+- **The tiering record.** Capped 3,373 -> 3,475, density 2,403 -> 2,498,
+  claimed 248 -> 247.
+
+**The metrics.**
+- **Assigned:** B 4,064 -> 4,078, C 611 -> 615, D 897 -> 899, E 223 -> 236, F1
+  673 -> 699, F2 662 -> 721; A and C2 unchanged.
+- **G1:** B 37.0 -> 37.2, C 20.3 -> 20.7, D 8.1 -> 8.3, E 93.3 -> 93.6, F1 94.7
+  -> 94.8, F2 97.3 -> 96.7.
+- **G1 conditioned:** B 11.7 -> 11.9, D 1.0 -> 1.2, F1 48.6 -> 50.7, F2 78.6 ->
+  76.0 (n 84 -> 100); A, C, C2 and E unchanged.
+- **G2:** identical on every set but F2, where it rises from 26.1 to 29.0.
+- **G6 at assigned:** B 38 -> 39, C 7 -> 10, F2 1 -> 2.
+
+**The run time.** The runs took 913 s, against 760 s for the first build and
+792 s for the measurement's round; F1's took 368 s against 272 and 284. Timed
+back to back offline, the election costs the same with and without the lines,
+within the host's spread.
+
+**For the plan owner.**
+- **Second channels.** A list hit held at assigned by a second channel's weak
+  list reading loses that hold when a rival takes the other peak (the 32
+  above).
+- **The fit's abundance term.** It reads a matched line at 69% of its predicted
+  height as a miss, which put B's siloxanes below their rivals. The lines
+  answer it for list hits; the search's own elections still meet it. For 2.7a.
+- **Elections' own density** still counts radical rivals (decision 3's sixth
+  addendum).
+
+#### Verify, item by item
+
+- **The peaks a grid rival wins from a list formula, split by whether the
+  reference agrees with either:** 1,093; the reference agrees with the rival
+  on 19 and with the list on none.
+- **The list-only families promoting back through uniqueness:** none promotes.
+  At assigned, the siloxanes (13), phosphates (35), iodine species (16) and
+  fluorinated acids (37) keep their tiers, and the density rule still holds
+  those at candidate that have a rival. Rivals take 3 siloxanes, 3 phosphates
+  and 4 fluorinated acids below assignability, and the lines keep 27 siloxanes.
+- **G1 and G1 conditioned:** above; conditioned, they rise on B, D and F1 and
+  fall on F2.
+- **G2 unchanged where no rival wins:** rivals win on every set; G2 is
+  identical on seven and rises on F2.
+- **The three library isotopologues step 2.5d's cap took, re-read with the
+  grid's rivals beside them:** unchanged at candidate. Their monoisotopic rows,
+  C10H14O on C and C3H4O4 on F2, have no closed-shell rival within the width
+  and keep their peaks.
 
 ## Not in this plan
 
