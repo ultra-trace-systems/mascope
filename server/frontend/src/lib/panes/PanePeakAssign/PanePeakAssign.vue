@@ -475,7 +475,9 @@ const altAdduct = (alt) => alt?.scored?.ionization_mechanism ?? null
 const altTooltip = (alt, index) => {
   const fit = altFit(alt)
   const measuring = fit == null && !alt?.scored && scoring.value
+  const kind = alternativeKind(alt)
   const lines = [
+    ...(kind ? [kind.tooltip] : []),
     `fit: ${fit != null ? formatFit(fit) : measuring ? '— measuring' : '— not measured'}`
   ]
   const mzError = altMzError(alt)
@@ -630,6 +632,111 @@ const ownerReasons = computed(() => {
   const detail = app.data.peakAssignment.peak.detailOf(owner.peak_assignment_id)
   return tierReasonsOf(detail?.provenance ?? owner.provenance)
 })
+
+// --- Where the mass error sits -------------------------------------------------
+// The ppm error is a distance with no scale. The run measures its own mass
+// calibration over the rows it committed and corroborated, and records every
+// committed row's distance from it in that calibration's widths (`mass_z`):
+// the number its mass gate judged, and what "off calibration" among the
+// reasons is about. Flattened onto the ledger row, so it shows before the
+// detail lands; a derived row and an imported one have none.
+const massZ = computed(() => {
+  const z = focusedAssignment.value?.mass_z ?? provenance.value?.mass_z
+  return typeof z === 'number' && Number.isFinite(z) ? z : null
+})
+// What the distance is measured in, recorded once on the run.
+const massCalibration = computed(() => {
+  const record = app.data.peakAssignment.peak.run?.config?.mass_calibration
+  return record && typeof record === 'object' && !Array.isArray(record) ? record : null
+})
+// Past the distance the gate caps a row at: marked, since that is what a reader
+// scanning the card needs to see. Whether the cap applied is the reasons' to
+// say - an isotopologue that tracks the row lifts it.
+const massZFar = computed(() => {
+  const cap = massCalibration.value?.cap_z
+  return massZ.value != null && typeof cap === 'number' && Math.abs(massZ.value) > cap
+})
+const zFormat = new Intl.NumberFormat('en-US', {
+  minimumFractionDigits: 1,
+  maximumFractionDigits: 1,
+  signDisplay: 'exceptZero'
+})
+const massZTooltip = computed(() => {
+  if (massZ.value == null) return ''
+  const lines = [
+    "How far this row's mass error sits from the run's own mass calibration at " +
+      "its m/z, counted in the calibration's widths."
+  ]
+  const calibration = massCalibration.value
+  const width = calibration?.gate_sigma_ppm ?? calibration?.sigma_ppm
+  if (typeof width === 'number') {
+    const centre =
+      calibration.centre === 'trend'
+        ? 'a centre that follows m/z'
+        : typeof calibration.mu_ppm === 'number'
+          ? `a centre of ${num.mzError.format(calibration.mu_ppm)} ppm`
+          : 'no centre'
+    lines.push(`The run measured ${centre} and a width of ${num.mzError.format(width)} ppm.`)
+  }
+  const cap = calibration?.cap_z
+  const floor = calibration?.floor_z
+  if (typeof cap === 'number') {
+    lines.push(
+      `Beyond ${cap} widths a row nothing corroborates is held at candidate` +
+        (typeof floor === 'number' ? `, beyond ${floor} below assignability.` : '.')
+    )
+  }
+  return lines.join('\n')
+})
+
+// --- The other readings of this ion ---------------------------------------------
+// Many ions split two ways between a neutral and an adduct - dimethylformamide
+// with a proton is acrolein with ammonium - and no mass, envelope or fit tells
+// the splits apart. The run keeps the readings it did not commit among the
+// alternatives, flagged `same_ion`, and the nitrogen rule reads them. They are
+// listed beside the reasons, which is where "ambiguous nitrogen" points.
+const notationById = computed(() => {
+  const map = new Map()
+  for (const mechanism of app.data.ionization?.mechanism?.list ?? []) {
+    map.set(mechanism.ionization_mechanism_id, mechanism.ionization_mechanism)
+  }
+  return map
+})
+const channelOf = (entry) =>
+  entry?.ionization_mechanism_id != null
+    ? (notationById.value.get(entry.ionization_mechanism_id) ?? null)
+    : null
+const sameIonReadings = computed(() =>
+  alternatives.value.filter((alt) => alt?.same_ion === true && alt.assigned_formula)
+)
+const SAME_ION_TOOLTIP =
+  'The same ion read as another neutral through another adduct. Its mass and isotope ' +
+  "pattern are this row's own, so the spectrum cannot choose between the two readings; " +
+  'a second channel of the run can.'
+
+// Three kinds of close alternative are not simply runners-up, and each says
+// which it is: a reading of the same ion, the reading a neighbour's isotope line
+// took this peak from, and a loaded list's compound that the formula search
+// took the peak from. The last two are also what "use this" puts back.
+const ALTERNATIVE_KINDS = [
+  { key: 'same_ion', label: 'same ion', tooltip: SAME_ION_TOOLTIP },
+  {
+    key: 'displaced_by_claim',
+    label: 'earlier reading',
+    tooltip:
+      "What the run first read this peak as, before a neighbour's isotope line claimed " +
+      'it. Using it puts that reading back.'
+  },
+  {
+    key: 'displaced_by_rival',
+    label: 'list compound',
+    tooltip:
+      "The loaded list's compound for this peak, which a formula from the search took: " +
+      "its evidence was more than twice the list's and it explains the compound's " +
+      'isotope lines. Using it puts the list compound back.'
+  }
+]
+const alternativeKind = (alt) => ALTERNATIVE_KINDS.find(({ key }) => alt?.[key] === true) ?? null
 
 // A candidate can only be committed when it names both halves of an
 // assignment: the formula and the adduct it was found under. The server
@@ -971,6 +1078,10 @@ const demotedCount = computed(() => {
           <span class="k">m/z error</span>
           <span class="v">{{ num.mzError.format(evidenceRow.mz_error_ppm) }} ppm</span>
         </div>
+        <div class="ev" v-if="massZ != null" data-testid="mass-z">
+          <span class="k" v-tooltip.top="massZTooltip">mass z</span>
+          <span class="v" :class="{ far: massZFar }">{{ zFormat.format(massZ) }}</span>
+        </div>
         <div class="ev" v-if="evidenceRow.abundance_error != null">
           <span class="k">abund. error</span>
           <span class="v">{{
@@ -1093,6 +1204,35 @@ const demotedCount = computed(() => {
             <span class="reason-body">
               <span class="reason-rule">{{ reason.label }}<span class="via"> via M0</span></span>
               <span class="reason-detail">{{ reason.detail }}</span>
+            </span>
+          </li>
+        </ul>
+      </div>
+      <!-- The splits of this ion the run did not commit, under the reasons that
+           read them. Shown whether or not a rule capped the row: a second
+           channel settles the count, and the reader should see what it settled. -->
+      <div
+        v-if="sameIonReadings.length"
+        class="same-ion"
+        data-testid="same-ion"
+        v-help.right="{
+          title: 'Why this tier',
+          helpKey: 'assignment-tiers',
+          doc: app.ui.help.docUrl('how-it-works/peak-assignment/#why-a-row-holds-its-tier')
+        }"
+      >
+        <div class="alts-label">Same ion, read another way</div>
+        <ul class="readings">
+          <li
+            v-for="(reading, i) in sameIonReadings"
+            :key="`same-${i}`"
+            class="reading"
+            v-tooltip.left="SAME_ION_TOOLTIP"
+          >
+            <span class="pi ph ph-arrows-left-right reading-icon" />
+            <span class="reading-formula">{{ reading.assigned_formula }}</span>
+            <span v-if="channelOf(reading)" class="reading-channel">
+              through {{ channelOf(reading) }}
             </span>
           </li>
         </ul>
@@ -1342,7 +1482,12 @@ const demotedCount = computed(() => {
             class="alt"
             v-tooltip.left="altTooltip(alt, i)"
           >
-            <span class="f">{{ alt.assigned_formula || alt.ion_formula || '?' }}</span>
+            <span class="f"
+              >{{ alt.assigned_formula || alt.ion_formula || '?'
+              }}<span v-if="alternativeKind(alt)" class="alt-kind">{{
+                alternativeKind(alt).label
+              }}</span></span
+            >
             <span class="s">
               <span v-if="altFit(alt) != null"
                 >fit {{ formatFit(altFit(alt))
@@ -1768,6 +1913,53 @@ const demotedCount = computed(() => {
 .ev .v.uncal {
   opacity: 0.55;
   font-style: italic;
+}
+/* Past the distance the mass gate caps at, in the colour the candidate chip
+   wears: the reasons below say whether the cap applied. */
+.ev .v.far {
+  color: var(--state-warning);
+}
+/* The same ion's other readings: a list in the reasons' own voice, the
+   formula in the alternatives' type. */
+.same-ion {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+.readings {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+}
+.reading {
+  display: flex;
+  align-items: baseline;
+  gap: 0.4rem;
+  font-size: 0.8rem;
+  cursor: default;
+}
+.reading-icon {
+  font-size: 0.8rem;
+  opacity: 0.55;
+}
+.reading-formula {
+  font-family: var(--font-mono, ui-monospace, monospace);
+}
+.reading-channel {
+  opacity: 0.65;
+}
+/* What kind of alternative a row is, beside its formula rather than in a
+   column of its own: the list's columns are the numbers. */
+.alt-kind {
+  margin-left: 0.4rem;
+  padding: 0 0.3rem;
+  border: 1px dashed var(--p-content-border-color, #e3e6ec);
+  border-radius: 0.25rem;
+  font-size: 0.7rem;
+  opacity: 0.7;
 }
 .alts-list {
   display: flex;
