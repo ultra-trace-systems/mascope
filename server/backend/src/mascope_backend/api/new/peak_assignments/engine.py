@@ -11,6 +11,7 @@ so the arbitration logic stays unit-testable. The service layer owns
 persistence.
 """
 
+from collections import Counter
 from collections.abc import Iterable
 from dataclasses import dataclass
 from functools import lru_cache
@@ -42,6 +43,15 @@ from mascope_tools.composition.calibration import (
     calibration_for,
 )
 from mascope_tools.composition.custom_elements import CUSTOM_ELEMENTS
+from mascope_tools.composition.finder import (
+    HELD_BY_LIBRARY,
+    HELD_BY_LINES,
+    KNOWN_DISPLACED,
+    KNOWN_KEPT,
+    KNOWN_RIVALS,
+    ListReading,
+    ReadingRivals,
+)
 from mascope_tools.composition.heuristic_filter import (
     PATTERN_BASE_SNR,
     SAME_ION_ALTERNATIVES,
@@ -1628,6 +1638,18 @@ def record_mirror_same_ion_readings(
 #: asked about its peak: the grid's rivals its density counts.
 GRID_RIVALS = "grid_rivals"
 
+#: The provenance block a search row carries where it took a list hit's peak:
+#: the list reading it displaced and the evidence the two were weighed on.
+LIST_READING = "list_reading"
+
+#: How much a list reading's evidence counts for against the formula search's.
+#: A rival takes a list hit's peak only where its evidence (fit times
+#: plausibility) exceeds twice the reading's, and then by more than a tie (the
+#: plan owner's answer on step 2.5f). Measured before it was taken, it lets the
+#: grid take the peaks of readings the run already held below assignability,
+#: and none on which the reference commits the list's formula.
+LIST_PRIOR_WEIGHT = 2.0
+
 #: How many of those rivals a row keeps by name. The count is on the row in
 #: full; the names are for a reader, as a row's alternatives are.
 GRID_RIVALS_KEPT = 5
@@ -1694,6 +1716,13 @@ def record_grid_rivals(rows: list[dict], measured: list) -> dict:
             # Uniqueness is relative to the searched box: a formula outside it
             # only meets the rivals the box builds.
             "in_grid": found.in_grid,
+            # The rival that cleared the list's prior and still did not take the
+            # peak, and why.
+            **(
+                {"held_against": _held_against_record(found.held_against)}
+                if found.held_against
+                else {}
+            ),
         }
         provenance[CANDIDATE_DENSITY] = known_density + len(added)
         if added:
@@ -1702,6 +1731,249 @@ def record_grid_rivals(rows: list[dict], measured: list) -> dict:
         "measured": sum(1 for found in measured if found is not None),
         "with_rivals": with_rivals,
     }
+
+
+def _held_against_record(held: dict) -> dict:
+    """The rival a list hit kept its peak against, as the row records it."""
+    return {
+        "formula": held["formula"],
+        "ion_formula": held["ion"],
+        "ionization_mechanism": held["ionization_mechanism"],
+        "fit_score": round(float(held["fit_score"]), 4),
+        "prior": held["prior"],
+        "why": held["why"],
+        "unexplained_lines": [round(float(mz), 5) for mz in held["unexplained_lines"]],
+    }
+
+
+def list_readings(
+    stage_a_assignments: list[dict],
+    peaks_df: pd.DataFrame,
+    notation_by_id: dict[str, str],
+) -> dict[str, ListReading]:
+    """The list readings the formula search is asked about, by row id.
+
+    Every monoisotopic Stage A row whose channel the search runs, at its peak's
+    m/z as the search's own frame holds it, so the search can key the reading
+    on the value it walks. A compound of the sample's own target library keeps
+    its peak whatever the grid holds, and its rivals are still counted.
+
+    :param stage_a_assignments: Stage A's rows.
+    :param peaks_df: The frame the search is handed, with ``sample_peak_id``.
+    :param notation_by_id: The searched mechanisms, by id.
+    :return: Row id -> the reading.
+    """
+    mz_by_peak = dict(
+        zip(
+            peaks_df["sample_peak_id"].astype(str),
+            peaks_df["mz"].astype(float),
+            strict=True,
+        )
+    )
+    readings: dict[str, ListReading] = {}
+    for row in stage_a_assignments:
+        notation = notation_by_id.get(str(row.get("ionization_mechanism_id")))
+        mz = mz_by_peak.get(str(row.get("sample_peak_id")))
+        if (
+            row.get("role") != ROLE_M0
+            or not row.get("assigned_formula")
+            or notation is None
+            or mz is None
+        ):
+            continue
+        readings[str(row["peak_assignment_id"])] = ListReading(
+            mz=mz,
+            formula=str(row["assigned_formula"]),
+            ionization_mechanism=notation,
+            mz_error_ppm=_float_or_none(row.get("mz_error_ppm")),
+            keeps_peak=is_target_library_row(row),
+        )
+    return readings
+
+
+@dataclass
+class ListElection:
+    """How the formula search settled the peaks the lists had read.
+
+    :param stage_a: Stage A's rows less the list hits a rival took and their
+        isotopologues; the kept hits carry the grid's rivals.
+    :param matches: The search's rows less the markers of kept readings.
+    :param released: The peaks a rival took, with the lines of the list hits it
+        took them from, which the search's rows may now hold.
+    :param displaced: Peak id -> the list hit a rival took it from, and the
+        weighing.
+    :param summary: What the run records under its search scope.
+    """
+
+    stage_a: list[dict]
+    matches: pd.DataFrame
+    released: set[str]
+    displaced: dict[str, tuple[dict, dict]]
+    summary: dict
+
+
+def settle_list_election(
+    stage_a_assignments: list[dict],
+    matches_df: pd.DataFrame,
+    readings: dict[str, ListReading],
+) -> ListElection:
+    """Apply what the search decided on the peaks the lists had read.
+
+    A kept reading leaves its row as Stage A built it, with the grid's rivals
+    counted into its density (:func:`record_grid_rivals`), and the run counts
+    the readings a rival cleared the prior against and still did not displace:
+    for the lines it left unexplained, or because the reading is the target
+    library's. A reading a rival beat leaves the ledger with its isotopologues,
+    and their peaks go to the search's rows.
+
+    :param stage_a_assignments: Stage A's rows.
+    :param matches_df: The search's result, with the known-peak markers.
+    :param readings: The readings the search was asked about, by row id.
+    :return: The settled rows and what the run records.
+    """
+    row_by_id = {str(row["peak_assignment_id"]): row for row in stage_a_assignments}
+    row_id_by_mz = {reading.mz: row_id for row_id, reading in readings.items()}
+    kept_rows: list[dict] = []
+    kept_measured: list = []
+    displaced: dict[str, tuple[dict, dict]] = {}
+    commits = matches_df
+    if not matches_df.empty and KNOWN_KEPT in matches_df.columns:
+        # A frame holds a missing value on the rows that are not markers, and
+        # numpy's bool where every row is one.
+        is_kept = matches_df[KNOWN_KEPT].eq(True)
+        for _, result in matches_df[is_kept].iterrows():
+            row = row_by_id.get(row_id_by_mz.get(float(result["mz"]), ""))
+            if row is not None:
+                found = result.get(KNOWN_RIVALS)
+                kept_rows.append(row)
+                # A reading the search could not read was not measured.
+                kept_measured.append(
+                    found if isinstance(found, ReadingRivals) else None
+                )
+        commits = matches_df[~is_kept]
+    if not commits.empty and KNOWN_DISPLACED in commits.columns:
+        for _, result in commits.iterrows():
+            weighing = result.get(KNOWN_DISPLACED)
+            if not isinstance(weighing, dict):
+                continue
+            row = row_by_id.get(row_id_by_mz.get(float(weighing["peak_mz"]), ""))
+            if row is not None:
+                displaced[str(row["sample_peak_id"])] = (row, dict(weighing))
+    recorded = record_grid_rivals(kept_rows, kept_measured)
+    held = Counter(
+        found.held_against["why"]
+        for found in kept_measured
+        if found is not None and found.held_against
+    )
+    taken_ids = {str(row["peak_assignment_id"]) for row, _ in displaced.values()}
+    released = set(displaced)
+    stage_a = []
+    for row in stage_a_assignments:
+        owner = str(row.get("owner_peak_assignment_id") or "")
+        if str(row["peak_assignment_id"]) in taken_ids or owner in taken_ids:
+            released.add(str(row["sample_peak_id"]))
+            continue
+        stage_a.append(row)
+    return ListElection(
+        stage_a=stage_a,
+        matches=commits,
+        released=released,
+        displaced=displaced,
+        summary={
+            "measured": recorded["measured"] + len(displaced),
+            "with_rivals": recorded["with_rivals"],
+            "taken_by_rivals": len(displaced),
+            "kept_by_lines": held[HELD_BY_LINES],
+            "kept_by_library": held[HELD_BY_LIBRARY],
+            "prior": LIST_PRIOR_WEIGHT,
+        },
+    )
+
+
+#: On an alternative, what says it is the reading an isotopologue claim took
+#: the peak from (:mod:`envelope_claims`).
+DISPLACED_BY_CLAIM = "displaced_by_claim"
+
+#: On an alternative, what says it is the list reading a rival took the peak
+#: from (:func:`settle_list_election`).
+DISPLACED_BY_RIVAL = "displaced_by_rival"
+
+
+def reading_as_alternative(row: dict, displaced_by: str) -> dict:
+    """What a row said, shaped as an alternative of the row that took its peak.
+
+    The inspector lists it with the row's other readings, and promoting it by
+    hand commits it again, with its compound.
+
+    :param row: The row whose reading was displaced.
+    :param displaced_by: What tells a reader this is the reading something took
+        the peak from, rather than a rival the peak's own election considered:
+        :data:`DISPLACED_BY_CLAIM` or :data:`DISPLACED_BY_RIVAL`.
+    """
+    provenance = row.get("provenance") or {}
+    return {
+        "assigned_formula": row.get("assigned_formula"),
+        "ion_formula": row.get("ion_formula"),
+        "ionization_mechanism_id": row.get("ionization_mechanism_id"),
+        "isotope_label": row.get("isotope_label"),
+        "target_compound_id": row.get("target_compound_id"),
+        "target_ion_id": row.get("target_ion_id"),
+        "fit_score": row.get("fit_score"),
+        "mz_error_ppm": row.get("mz_error_ppm"),
+        "plausibility": provenance.get("plausibility"),
+        "source": row.get("source"),
+        displaced_by: True,
+        **(
+            {REFERENCE_IDENTITIES_COL: provenance[REFERENCE_IDENTITIES_COL]}
+            if provenance.get(REFERENCE_IDENTITIES_COL)
+            else {}
+        ),
+    }
+
+
+def record_displaced_list_readings(
+    stage_b_assignments: list[dict],
+    displaced: dict[str, tuple[dict, dict]],
+    max_alternatives: int,
+) -> int:
+    """Give each search row that took a list hit's peak the reading it displaced.
+
+    The reading goes first among the row's alternatives, and the weighing into
+    :data:`LIST_READING`: the list's formula, its identities, and the evidence
+    the two readings were weighed on with the prior.
+
+    :return: How many of the taken peaks a search row holds.
+    """
+    holding = 0
+    for assignment in stage_b_assignments:
+        taken = displaced.get(str(assignment.get("sample_peak_id")))
+        if taken is None or assignment.get("role") != ROLE_M0:
+            continue
+        row, weighing = taken
+        provenance = assignment.setdefault("provenance", {})
+        row_provenance = row.get("provenance") or {}
+        provenance[LIST_READING] = {
+            "assigned_formula": row.get("assigned_formula"),
+            "ion_formula": row.get("ion_formula"),
+            "source": row.get("source"),
+            "target_compound_id": row.get("target_compound_id"),
+            "tier": row.get("tier"),
+            "evidence": round(float(weighing["evidence"]), 4),
+            "fit_score": round(float(weighing["fit_score"]), 4),
+            "rival_evidence": round(float(weighing["rival_evidence"]), 4),
+            "prior": weighing["prior"],
+            **(
+                {REFERENCE_IDENTITIES_COL: row_provenance[REFERENCE_IDENTITIES_COL]}
+                if row_provenance.get(REFERENCE_IDENTITIES_COL)
+                else {}
+            ),
+        }
+        assignment["alternatives"] = [
+            reading_as_alternative(row, DISPLACED_BY_RIVAL),
+            *(assignment.get("alternatives") or []),
+        ][: max_alternatives or 0] or None
+        holding += 1
+    return holding
 
 
 # Mapping a finder result back to the observed peak it came from is an IDENTITY join,
