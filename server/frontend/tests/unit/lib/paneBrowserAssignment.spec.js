@@ -131,7 +131,13 @@ vi.mock('@/lib/base', async () => ({
   BaseRunProvenance: (await vi.importActual('@/lib/base/BaseRunProvenance.vue')).default
 }))
 
-vi.mock('@/lib/dialogs', () => ({ PeakAssignConfigForm: true }))
+vi.mock('@/lib/dialogs', () => ({
+  PeakAssignConfigForm: {
+    props: ['hidden', 'sampleItemId', 'sampleBatchId'],
+    template:
+      '<div class="config-form-stub" :data-sample="sampleItemId" :data-batch="sampleBatchId" />'
+  }
+}))
 
 // The pane imports the shared parameter store, which reaches for /params.
 // The launcher dialog's form is stubbed above, so nothing here fetches it;
@@ -389,6 +395,10 @@ describe('PaneBrowserAssignment launcher', () => {
     const wrapper = await mountPane()
     wrapper.vm.configVisible = true
     await wrapper.vm.$nextTick()
+    // The form names the chemistry the run would use on the sample it is for.
+    const form = wrapper.find('.config-form-stub')
+    expect(form.attributes('data-sample')).toBe('si-1')
+    expect(form.attributes('data-batch')).toBeUndefined()
 
     await wrapper.vm.launch()
 

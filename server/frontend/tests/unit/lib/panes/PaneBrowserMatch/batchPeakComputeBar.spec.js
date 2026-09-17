@@ -39,8 +39,8 @@ vi.mock('@/lib/panes/PaneBrowserMatch/BatchPeakRunSelect.vue', () => ({
 }))
 vi.mock('@/lib/dialogs', () => ({
   PeakAssignConfigForm: {
-    props: ['hidden'],
-    template: '<div class="config-form" />'
+    props: ['hidden', 'sampleItemId', 'sampleBatchId'],
+    template: '<div class="config-form" :data-sample="sampleItemId" :data-batch="sampleBatchId" />'
   }
 }))
 
@@ -370,6 +370,9 @@ describe('BatchPeakComputeBar untargeted search', () => {
     const dialog = wrapper.find('.search-dialog')
     expect(dialog.exists()).toBe(true)
     expect(dialog.find('.config-form').exists()).toBe(true)
+    // The form names the chemistry the search would use on this batch's samples.
+    expect(dialog.find('.config-form').attributes('data-batch')).toBe('b-1')
+    expect(dialog.find('.config-form').attributes('data-sample')).toBeUndefined()
     // The parameters are the shared ones, so a value set anywhere - here, the
     // per-sample launcher, the composition search pane - is what this launches
     // with. `run_untargeted` is the exception: the switch is hidden here

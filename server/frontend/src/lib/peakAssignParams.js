@@ -41,8 +41,14 @@ const LEGACY_STORAGE_KEY = 'mascope.peakAssign.params'
 // The fields this store owns: the run config the API accepts, minus what is
 // decided per launch rather than by the user. Null means "no override yet" and
 // is replaced by the server default the moment /params answers.
+//
+// The chemistry profile and context are the run's too, and persist like the
+// rest: a launcher shows both on every open, so a named one is never carried
+// invisibly, and the reset control puts both back on `auto`.
 const BLANK = Object.freeze({
   run_untargeted: null,
+  profile: null,
+  context: null,
   mz_precision_ppm: null,
   formula_ranges: null,
   max_untargeted_peaks: null,
@@ -64,6 +70,19 @@ const FALLBACK_LIMITS = Object.freeze({
 // Fallback debounce for the pane's search, used until /params answers.
 const FALLBACK_DEBOUNCE_MS = 800
 
+/**
+ * The `profile` and `context` value that asks the engine to work the chemistry
+ * out from the sample - the server's default for both.
+ */
+export const AUTO_PRESET = 'auto'
+
+// No presets until /params answers: a selector offers `auto` alone meanwhile,
+// which is what a run would use anyway.
+const NO_PRESETS = Object.freeze({ profiles: [], contexts: [] })
+
+// The params key a preset list is served under, per field.
+const PRESET_LISTS = Object.freeze({ profile: 'profiles', context: 'contexts' })
+
 // "C0-100 H0-200 Cl0-10", isotopes in brackets ([15N]0-1) or caret form (^N0-1).
 const ELEMENT_PATTERN = '(?:[A-Z][a-z]?|\\^[A-Z][a-z]?|\\[\\d*[A-Z][a-z]?\\])'
 const RANGE_PATTERN = '\\d+-\\d+'
@@ -83,6 +102,41 @@ export const FORMULA_RANGE_PATTERN = new RegExp(
  */
 export function isFormulaRange(value) {
   return typeof value === 'string' && FORMULA_RANGE_PATTERN.test(value.trim())
+}
+
+/**
+ * The preview endpoint for a launch scope.
+ *
+ * @param {{sampleItemId?: string|null, sampleBatchId?: string|null}} scope
+ * @returns {string|null} the path, or null when the scope names nothing
+ */
+export function previewPath({ sampleItemId = null, sampleBatchId = null } = {}) {
+  if (sampleItemId) return `/peak-assignments/sample/${sampleItemId}/profile-preview`
+  if (sampleBatchId) return `/peak-assignments/batch/${sampleBatchId}/profile-preview`
+  return null
+}
+
+/**
+ * What a run config's profile and context resolve to, over a sample or a batch.
+ *
+ * Failures are the caller's to show: the preview sits beside a form as a
+ * convenience, so a failed lookup is said there rather than toasted.
+ *
+ * @param {{sampleItemId?: string|null, sampleBatchId?: string|null}} scope
+ * @param {{profile?: string|null, context?: string|null}} [names] - null reads
+ *   as `auto`, which is what a launch that sends nothing gets
+ * @returns {Promise<Array<object>>} one record per distinct resolution, the
+ *   most samples first; empty for a scope that names nothing
+ */
+export async function fetchProfilePreview(scope, { profile = null, context = null } = {}) {
+  const path = previewPath(scope)
+  if (!path) return []
+  const response = await api.http.get(path, {
+    params: { profile: profile ?? 'auto', context: context ?? 'auto' },
+    type: 'load_profile_preview',
+    errors: 'inline'
+  })
+  return response?.data?.data ?? []
 }
 
 /** Overrides held in storage, filtered to the fields this store still owns. */
@@ -125,6 +179,9 @@ export const usePeakAssignParams = defineStore('peakAssign.params', () => {
   const limits = ref({ ...FALLBACK_LIMITS })
   const debounceMs = ref(FALLBACK_DEBOUNCE_MS)
   const defaults = ref(null)
+  // The chemistry profiles and contexts a run config may name, as served:
+  // `{name, label, description, polarity, default_context}` each.
+  const presets = ref(NO_PRESETS)
 
   /** Whether /params has answered. Until it does, unset fields are still null. */
   const loaded = computed(() => defaults.value !== null)
@@ -176,6 +233,13 @@ export const usePeakAssignParams = defineStore('peakAssign.params', () => {
         if (served?.peak_assignment_limits) limits.value = served.peak_assignment_limits
         const delay = served?.cheminfo_config?.DEBOUNCE_DELAY_MS
         if (typeof delay === 'number') debounceMs.value = delay
+        const servedPresets = served?.peak_assignment_presets
+        if (servedPresets) {
+          presets.value = Object.freeze({
+            profiles: servedPresets.profiles ?? [],
+            contexts: servedPresets.contexts ?? []
+          })
+        }
         const servedDefaults = served?.peak_assignment
         if (!servedDefaults) return
         defaults.value = Object.freeze(
@@ -187,6 +251,15 @@ export const usePeakAssignParams = defineStore('peakAssign.params', () => {
           if (params[key] === null || params[key] === undefined) {
             params[key] = defaults.value[key]
           }
+        }
+        // A stored name this server no longer offers goes back to the default,
+        // as an unparseable range is dropped on load: the API would refuse the
+        // launch it reached, and a selector could not show it.
+        for (const [key, list] of Object.entries(PRESET_LISTS)) {
+          const offered = presets.value[list]
+          const value = params[key]
+          if (!offered.length || value === AUTO_PRESET || value === defaults.value[key]) continue
+          if (!offered.some((preset) => preset.name === value)) params[key] = defaults.value[key]
         }
       })
       .catch(() => {
@@ -252,6 +325,7 @@ export const usePeakAssignParams = defineStore('peakAssign.params', () => {
     limits,
     debounceMs,
     defaults,
+    presets,
     loaded,
     overrides,
     ensureLoaded,
