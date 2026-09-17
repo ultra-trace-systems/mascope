@@ -33,7 +33,13 @@ tier for the peak, which is usual: an engine typically tiers only the peaks it
 committed a formula to. Only Mascope's own tier is used when peaks are rolled up
 across a batch.
 
-Orthogonal to its tier, a peak can carry a role: **reagent** and **artifact**
-peaks stem from the ionization chemistry or the instrument rather than the
-sample's compounds, and **isotopologue** peaks belong to another
-assignment's isotope pattern, counted with their main peak.
+Orthogonal to its tier, a peak can carry a role:
+
+- **reagent**: an ion the ionization source makes of itself.
+- **artifact**: a ringing side lobe of a very intense neighbouring peak.
+- **isotopologue**: a peak of another assignment's isotope pattern, counted with its
+  main peak.
+
+Reagent and artifact peaks are not the sample's compounds, so each shows a chip of its
+own in place of a tier. The counts above the ledger list them apart from the tiers, and
+the tier column sorts them after the tiers.
