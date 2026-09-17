@@ -2,7 +2,7 @@
 
 import re
 import warnings
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Iterator, Sequence
 
 import numpy as np
@@ -13,6 +13,8 @@ from pyteomics.mass import Composition
 from mascope_tools.composition import utils
 from mascope_tools.composition.arbitration import (
     CANDIDATE_DENSITY,
+    DEFAULT_TIE_TOL,
+    TIE_ABS_FLOOR,
     candidate_density,
     unseparated,
 )
@@ -27,10 +29,15 @@ from mascope_tools.composition.grid import (
     build_neutral_grid,
 )
 from mascope_tools.composition.heuristic_filter import (
+    DETECT_SNR_K,
+    FALLBACK_SIGMA_PPM,
     ISOTOPE_CANDIDATE_LIMIT,
+    PATTERN_BASE_SNR,
     PATTERN_REQUIRED_LINES,
+    REL_DETECT_NO_SNR,
     SAME_ION_ALTERNATIVES,
     apply_heuristic_rules,
+    formula_plausibility,
     match_isotopic_pattern,
     neutral_is_closed_shell,
 )
@@ -80,12 +87,96 @@ def _other_candidate_formulas(
     )
 
 
+@dataclass(frozen=True)
+class ListReading:
+    """A reading a list proposed for a peak, to be measured against the grid.
+
+    :param mz: The peak's m/z.
+    :param formula: The list's neutral formula.
+    :param ionization_mechanism: The channel it was matched through, in the
+        finder's notation (``"+[15N]O3-"``).
+    :param mz_error_ppm: Its mass error, signed as the matcher signs it; it
+        orders the reading among the grid's candidates as theirs orders them.
+    :param keeps_peak: Whether the reading keeps its peak whatever the grid
+        holds, as a compound of the sample's own target library does. Its
+        rivals are still counted.
+    """
+
+    mz: float
+    formula: str
+    ionization_mechanism: str
+    mz_error_ppm: float | None = None
+    keeps_peak: bool = False
+
+
+@dataclass(frozen=True)
+class ReadingRivals:
+    """What the formula search holds against one list reading.
+
+    :param density: How many distinct formulas the peak's evidence cannot
+        separate from the reading, the reading included: the count
+        :func:`arbitration.candidate_density` makes, anchored on it, over the
+        reading and the grid's candidates scored together.
+    :param rivals: The grid's formulas among those, best evidence first, each
+        with its ion, channel, fit and mass error.
+    :param fit_score: The reading's own fit, scored with the grid's candidates.
+    :param candidates: How many of the grid's candidates for other ions the
+        peak's window held once the heuristic rules had been applied.
+    :param in_grid: Whether the searched element box holds the reading's own
+        formula. Uniqueness is relative to that box: a formula outside it can
+        only meet the rivals the box builds.
+    :param held_against: Where a search elected on the peak, the rival that
+        cleared the list's prior and still did not take it, with why
+        (:data:`HELD_BY_LINES` or :data:`HELD_BY_LIBRARY`); None where no rival
+        cleared the prior.
+    """
+
+    density: int
+    rivals: tuple[dict, ...]
+    fit_score: float
+    candidates: int
+    in_grid: bool
+    held_against: dict | None = None
+
+
+#: A result row that says a list reading kept its peak. The peak belongs to
+#: the stage that matched the list; the row only carries what the grid held
+#: against the reading, under :data:`KNOWN_RIVALS`.
+KNOWN_KEPT = "known_kept"
+
+#: What the grid held against a list reading, as :class:`ReadingRivals`.
+KNOWN_RIVALS = "known_rivals"
+
+#: On a rival's monoisotopic row, the list reading it took the peak from.
+KNOWN_DISPLACED = "known_displaced"
+
+#: Why a rival that cleared the list's prior did not take the peak: it left
+#: lines of the reading's own envelope unexplained.
+HELD_BY_LINES = "unexplained_lines"
+
+#: Why a rival that cleared the list's prior did not take the peak: the reading
+#: is a compound of the sample's own target library.
+HELD_BY_LIBRARY = "target_library"
+
+#: How many of the sample's mass widths a line's mass error may sit from its
+#: ion's own and still be read as tracking it.
+LINE_TRACKING_WIDTHS = 2.0
+
+#: How much more a line may hold than a rival's envelope predicts there, as a
+#: share of the prediction, for the rival to explain it: a rival predicting less
+#: than half of a line leaves the rest of it to something else.
+EXPLAINED_EXCESS = 1.0
+
+
 def assign_compositions(
     peaks: pd.DataFrame,
     config: CompositionSearchConfig,
     heuristics: HeuristicFilterConfig | None = None,
     targets: Sequence[float] | None = None,
     scoring: PatternScoring | None = None,
+    known: dict[float, ListReading] | None = None,
+    known_prior: float = 1.0,
+    closed_shell_rivals: bool = False,
 ) -> tuple[pd.DataFrame, dict[float, list[str]]]:
     """Assign molecular compositions to a set of peaks.
 
@@ -109,6 +200,19 @@ def assign_compositions(
         abundance floor. Defaults to the fixed Orbitrap-shaped constants the
         finder used before a caller could describe the sample.
     :type scoring: PatternScoring, optional
+    :param known: Peaks a list already read, by their m/z (the frame's own
+        values, which must be among the targets), with the reading. There the
+        reading is one candidate beside the grid's, and a rival takes the peak
+        only where its evidence beats the reading's times ``known_prior`` by
+        more than a tie and it explains the reading's own lines as well
+        (:func:`_weigh`); the rival's rows then carry the reading under
+        :data:`KNOWN_DISPLACED`. Where the reading keeps the peak, one row
+        marked :data:`KNOWN_KEPT` says what the grid held against it, and none
+        of its lines is claimed: they are the list's.
+    :param known_prior: How much a list reading's evidence counts for against
+        the grid's.
+    :param closed_shell_rivals: Whether only a closed-shell formula can be a
+        list reading's rival.
     :return: A DataFrame with assigned compositions and related information.
         An M0 row whose ion could also be read as a different neutral/adduct
         pair carries those readings under ``same_ion_alternatives``: the
@@ -156,7 +260,27 @@ def assign_compositions(
         for name in get_ionization_mech_string_list(config.ionizations)
     ]
 
+    known = known or {}
     for mz, grid in grids_for_targets(mzs, config, mechanisms):
+        reading = known.get(float(mz))
+        if reading is not None:
+            # A list's peak is its own even where another envelope reached it
+            # first; only a rival that beats the reading can take it.
+            results_per_peak.extend(
+                _elect_on_known_peak(
+                    float(mz),
+                    reading,
+                    config,
+                    grid,
+                    heuristics,
+                    peaks_df,
+                    scoring,
+                    assigned_mzs,
+                    prior=known_prior,
+                    closed_shell_rivals=closed_shell_rivals,
+                )
+            )
+            continue
         if mz in assigned_mzs:
             continue
 
@@ -279,13 +403,16 @@ def assign_compositions(
     # monoisotopic line outranks another candidate's isotopologue for the same
     # peak, and only then does mass error decide.
     #
-    # A guard rather than a live rule. The loop above claims each row's m/z as
-    # it emits it and skips an m/z already claimed, so on real input the
-    # collision this settles does not arise; it is here because nothing in the
-    # loop's structure PROMISES that, and the cost of being wrong is an
-    # envelope's isotopologues outliving it. mz_error_ppm is signed, so rank on
-    # its magnitude: the row kept has to be the closest match, not the one
-    # furthest BELOW its prediction.
+    # The loop above claims each row's m/z as it emits it and skips an m/z
+    # already claimed, with one exception: a list's peak is elected on even
+    # where an earlier envelope matched it as a line. There the election's
+    # monoisotopic row, the kept reading's marker or the rival's, survives, and
+    # the earlier envelope loses a line on a peak the list held before it.
+    # Elsewhere this is a guard, since nothing in the loop's structure PROMISES
+    # the collision cannot arise, and the cost of being wrong is an envelope's
+    # isotopologues outliving it. mz_error_ppm is signed, so rank on its
+    # magnitude: the row kept has to be the closest match, not the one furthest
+    # BELOW its prediction.
     sort_by = [c for c in ["mz"] if c in matches.columns]
     if "isotope_label" in matches.columns:
         matches = matches.assign(_not_m0=matches["isotope_label"] != "M0")
@@ -430,49 +557,6 @@ def find_compositions(
     return [r.to_dict() for r in all_results]
 
 
-@dataclass(frozen=True)
-class ListReading:
-    """A reading a list proposed for a peak, to be measured against the grid.
-
-    :param mz: The peak's m/z.
-    :param formula: The list's neutral formula.
-    :param ionization_mechanism: The channel it was matched through, in the
-        finder's notation (``"+[15N]O3-"``).
-    :param mz_error_ppm: Its mass error, signed as the matcher signs it; it
-        orders the reading among the grid's candidates as theirs orders them.
-    """
-
-    mz: float
-    formula: str
-    ionization_mechanism: str
-    mz_error_ppm: float | None = None
-
-
-@dataclass(frozen=True)
-class ReadingRivals:
-    """What the formula search holds against one list reading.
-
-    :param density: How many distinct formulas the peak's evidence cannot
-        separate from the reading, the reading included: the count
-        :func:`arbitration.candidate_density` makes, anchored on it, over the
-        reading and the grid's candidates scored together.
-    :param rivals: The grid's formulas among those, best evidence first, each
-        with its ion, channel, fit and mass error.
-    :param fit_score: The reading's own fit, scored with the grid's candidates.
-    :param candidates: How many of the grid's candidates for other ions the
-        peak's window held once the heuristic rules had been applied.
-    :param in_grid: Whether the searched element box holds the reading's own
-        formula. Uniqueness is relative to that box: a formula outside it can
-        only meet the rivals the box builds.
-    """
-
-    density: int
-    rivals: tuple[dict, ...]
-    fit_score: float
-    candidates: int
-    in_grid: bool
-
-
 def rivals_of_readings(
     peaks: pd.DataFrame,
     config: CompositionSearchConfig,
@@ -524,79 +608,253 @@ def rivals_of_readings(
     for index, (mz, grid) in zip(
         order, grids_for_targets(target_mzs, config, mechanisms)
     ):
-        reading = readings[index]
-        own = _reading_candidate(reading)
-        if own is None:
-            continue
-        found = find_compositions(mz, config, grid=grid)
-        kept, _ = (
-            apply_heuristic_rules(found, heuristics_config=heuristics)
-            if found
-            else ([], [])
-        )
-        grid_candidates = [
-            candidate
-            for candidate in kept
-            if candidate.get("ion") != own["ion"]
-            and (
-                not closed_shell_only
-                or neutral_is_closed_shell(str(candidate.get("formula") or ""))
-            )
-        ]
-        # The candidates the scorer would keep for this peak, with the reading
-        # among them whatever its mass error: without it there is nothing to
-        # count around.
-        grid_candidates.sort(
-            key=lambda candidate: abs(
-                float(candidate.get("composition_error_ppm") or 0.0)
-            )
-        )
-        scored, _ = match_isotopic_pattern(
-            [own["candidate"], *grid_candidates[: ISOTOPE_CANDIDATE_LIMIT - 1]],
+        scored = _score_reading(
+            mz,
+            readings[index],
+            config,
+            grid,
+            heuristics,
             peaks_df,
             scoring,
+            closed_shell_only=closed_shell_only,
         )
-        counted = unseparated(
-            [
-                {
-                    "formula": candidate.get("formula"),
-                    "fit_score": candidate.get("isotopic_pattern_score"),
-                }
-                for candidate in scored
-            ],
-            around=own["formula"],
-        )
-        best_by_formula: dict[str, dict] = {}
-        own_fit = 0.0
-        for candidate in scored:
-            if candidate.get("ion") == own["ion"]:
-                own_fit = float(candidate.get("isotopic_pattern_score") or 0.0)
-                continue
-            best_by_formula.setdefault(str(candidate.get("formula")), candidate)
-        results[index] = ReadingRivals(
-            density=len(counted),
-            rivals=tuple(
-                {
-                    "formula": formula,
-                    "ion": best_by_formula[formula].get("ion"),
-                    "ionization_mechanism": best_by_formula[formula].get(
-                        "ionization_mechanism"
-                    ),
-                    "fit_score": float(
-                        best_by_formula[formula].get("isotopic_pattern_score") or 0.0
-                    ),
-                    "mz_error_ppm": best_by_formula[formula].get(
-                        "composition_error_ppm"
-                    ),
-                }
-                for formula in counted
-                if formula != own["formula"] and formula in best_by_formula
-            ),
-            fit_score=own_fit,
-            candidates=len(grid_candidates),
-            in_grid=admits(config, own["counts"]),
-        )
+        results[index] = None if scored is None else scored.rivals
     return results
+
+
+@dataclass(frozen=True)
+class _ScoredReading:
+    """A list reading and the grid's candidates for its peak, scored together.
+
+    :param own: The reading, shaped as a candidate (:func:`_reading_candidate`).
+    :param scored: Every candidate scored, the reading among them, in the
+        scorer's ranked order.
+    :param isotopes: Each scored candidate's matched envelope, index for index.
+    :param found: What the grid held for the mass, before any filter.
+    :param rivals: The count and the named rivals (:class:`ReadingRivals`).
+    """
+
+    own: dict
+    scored: list
+    isotopes: list
+    found: list
+    rivals: ReadingRivals
+
+
+def _score_reading(
+    mz: float,
+    reading: ListReading,
+    config: CompositionSearchConfig,
+    grid: NeutralGrid | None,
+    heuristics: HeuristicFilterConfig | None,
+    peaks_df: pl.DataFrame,
+    scoring: PatternScoring | None,
+    *,
+    closed_shell_only: bool,
+) -> _ScoredReading | None:
+    """Score a list reading beside the grid's candidates for its peak.
+
+    :return: The scored set and the rivals it holds; None where the reading
+        cannot be read.
+    """
+    own = _reading_candidate(reading)
+    if own is None:
+        return None
+    found = find_compositions(mz, config, grid=grid)
+    kept, _ = (
+        apply_heuristic_rules(found, heuristics_config=heuristics)
+        if found
+        else ([], [])
+    )
+    grid_candidates = [
+        candidate
+        for candidate in kept
+        if candidate.get("ion") != own["ion"]
+        and (
+            not closed_shell_only
+            or neutral_is_closed_shell(str(candidate.get("formula") or ""))
+        )
+    ]
+    # The candidates the scorer would keep for this peak, with the reading among
+    # them whatever its mass error: without it there is nothing to count around.
+    grid_candidates.sort(
+        key=lambda candidate: abs(float(candidate.get("composition_error_ppm") or 0.0))
+    )
+    scored, isotopes = match_isotopic_pattern(
+        [own["candidate"], *grid_candidates[: ISOTOPE_CANDIDATE_LIMIT - 1]],
+        peaks_df,
+        scoring,
+    )
+    counted = unseparated(
+        [
+            {
+                "formula": candidate.get("formula"),
+                "fit_score": candidate.get("isotopic_pattern_score"),
+            }
+            for candidate in scored
+        ],
+        around=own["formula"],
+    )
+    best_by_formula: dict[str, dict] = {}
+    own_fit = 0.0
+    for candidate in scored:
+        if candidate.get("ion") == own["ion"]:
+            own_fit = float(candidate.get("isotopic_pattern_score") or 0.0)
+            continue
+        best_by_formula.setdefault(str(candidate.get("formula")), candidate)
+    rivals = ReadingRivals(
+        density=len(counted),
+        rivals=tuple(
+            {
+                "formula": formula,
+                "ion": best_by_formula[formula].get("ion"),
+                "ionization_mechanism": best_by_formula[formula].get(
+                    "ionization_mechanism"
+                ),
+                "fit_score": float(
+                    best_by_formula[formula].get("isotopic_pattern_score") or 0.0
+                ),
+                "mz_error_ppm": best_by_formula[formula].get("composition_error_ppm"),
+            }
+            for formula in counted
+            if formula != own["formula"] and formula in best_by_formula
+        ),
+        fit_score=own_fit,
+        candidates=len(grid_candidates),
+        in_grid=admits(config, own["counts"]),
+    )
+    return _ScoredReading(
+        own=own, scored=scored, isotopes=isotopes, found=found, rivals=rivals
+    )
+
+
+@dataclass(frozen=True)
+class _Weighing:
+    """How a list reading fared against the grid's candidates for its peak.
+
+    :param winner: The index of the rival that takes the peak; None where the
+        reading keeps it.
+    :param ahead: The index of the rival with the most evidence past the
+        reading's times the prior, whether or not it could take the peak.
+    :param unexplained: The reading's own tracking lines that rival's envelope
+        does not explain, by m/z.
+    """
+
+    winner: int | None
+    ahead: int | None = None
+    unexplained: tuple[float, ...] = ()
+
+
+def _weigh(
+    scored: _ScoredReading, prior: float, scoring: PatternScoring | None
+) -> _Weighing:
+    """Weigh a list reading against the grid's candidates for its peak.
+
+    A rival takes the peak where its evidence (fit times plausibility) exceeds
+    the reading's times the prior by more than the gap the density counts ties
+    at, its envelope holds the lines a reading cannot do without, and it
+    explains the reading's own lines as well (:func:`_tracking_lines`,
+    :func:`_explained_masses`). The fit charges a reading for a line it predicts
+    and the spectrum lacks, and never charges a rival for a line the spectrum
+    holds and it leaves unexplained, so the lines are asked separately. The
+    prior orders a near-tie; it never lets a rival in on a tie.
+
+    :return: The winner, the index of the rival with the most evidence past
+        the prior, and the reading's lines that rival leaves unexplained.
+    """
+    evidences = [
+        float(candidate.get("isotopic_pattern_score") or 0.0)
+        * formula_plausibility(str(candidate.get("formula") or ""))
+        for candidate in scored.scored
+    ]
+    if not evidences:
+        return _Weighing(winner=None)
+    own_index = next(
+        (
+            index
+            for index, candidate in enumerate(scored.scored)
+            if candidate.get("ion") == scored.own["ion"]
+        ),
+        None,
+    )
+    own_evidence = 0.0 if own_index is None else evidences[own_index]
+    gap = max(DEFAULT_TIE_TOL * max(evidences), TIE_ABS_FLOOR)
+    ahead = sorted(
+        (
+            index
+            for index, candidate in enumerate(scored.scored)
+            if index != own_index
+            and _pattern_is_evidence(candidate)
+            and evidences[index] > own_evidence * prior + gap
+        ),
+        key=lambda index: (-evidences[index], index),
+    )
+    if not ahead:
+        return _Weighing(winner=None)
+    lines = _tracking_lines(scored, own_index, scoring)
+    unexplained = {
+        index: tuple(sorted(lines - _explained_masses(scored.isotopes[index])))
+        for index in ahead
+    }
+    winner = next((index for index in ahead if not unexplained[index]), None)
+    return _Weighing(winner=winner, ahead=ahead[0], unexplained=unexplained[ahead[0]])
+
+
+def _tracking_lines(
+    scored: _ScoredReading, own_index: int | None, scoring: PatternScoring | None
+) -> frozenset[float]:
+    """The lines of a reading's envelope that are evidence for it.
+
+    A line is one the spectrum was expected to show (the fit's own
+    detectability gate) and whose mass error follows the ion's own line within
+    :data:`LINE_TRACKING_WIDTHS` of the sample's width - the mass gate's notion
+    of an isotopologue that corroborates its row. A line any rival of the same
+    nominal envelope predicts at the same place, such as a CHO reading's 13C
+    line, is explained by that rival too, so the lines only tell readings apart
+    where the envelope is distinctive.
+
+    :return: The lines' observed m/z.
+    """
+    if own_index is None:
+        return frozenset()
+    envelope = scored.isotopes[own_index]
+    masses = np.asarray(envelope.get("masses", []), dtype=float)
+    predicted = np.asarray(envelope.get("predicted_intensities", []), dtype=float)
+    errors = np.asarray(envelope.get("mass_errors_ppm", []), dtype=float)
+    if masses.size < 2 or not predicted[0] > 0:
+        return frozenset()
+    base_snr = scored.scored[own_index].get(PATTERN_BASE_SNR)
+    width = (scoring or PatternScoring()).sigma_ppm or FALLBACK_SIGMA_PPM
+    lines = set()
+    for index in range(1, masses.size):
+        if not masses[index]:
+            continue
+        share = predicted[index] / predicted[0]
+        detectable = (
+            share * base_snr >= DETECT_SNR_K
+            if base_snr is not None
+            else share >= REL_DETECT_NO_SNR
+        )
+        if detectable and abs(errors[index] - errors[0]) <= (
+            LINE_TRACKING_WIDTHS * width
+        ):
+            lines.add(float(masses[index]))
+    return frozenset(lines)
+
+
+def _explained_masses(envelope: dict) -> frozenset[float]:
+    """The lines an envelope explains, by their observed m/z.
+
+    A line it matched and predicts at least half of: a coincidence of mass, such
+    as a trace 33S line on a peak a 29Si line fills, explains nothing.
+    """
+    return frozenset(
+        float(mass)
+        for mass, excess in zip(
+            envelope.get("masses", []), envelope.get("intensity_errors", [])
+        )
+        if mass and excess <= EXPLAINED_EXCESS
+    )
 
 
 def _reading_candidate(reading: ListReading) -> dict | None:
@@ -760,6 +1018,126 @@ def _pattern_is_evidence(candidate: dict) -> bool:
     return bool(candidate.get(PATTERN_REQUIRED_LINES, False))
 
 
+def _elect_on_known_peak(
+    mz: float,
+    reading: ListReading,
+    config: CompositionSearchConfig,
+    grid: NeutralGrid | None,
+    heuristics: HeuristicFilterConfig | None,
+    peaks_df: pl.DataFrame,
+    scoring: PatternScoring | None,
+    assigned_mzs: set,
+    *,
+    prior: float,
+    closed_shell_rivals: bool,
+) -> list[dict]:
+    """The rows a list reading's peak gets: a kept marker, or a rival's envelope.
+
+    :param assigned_mzs: The m/z the search has claimed so far, updated in
+        place.
+    :return: The rows to report for the peak and any lines a rival claimed.
+    """
+    measured = _score_reading(
+        mz,
+        reading,
+        config,
+        grid,
+        heuristics,
+        peaks_df,
+        scoring,
+        closed_shell_only=closed_shell_rivals,
+    )
+    weighing = (
+        _Weighing(winner=None) if measured is None else _weigh(measured, prior, scoring)
+    )
+    winner = None if reading.keeps_peak else weighing.winner
+    if winner is None:
+        assigned_mzs.add(mz)
+        return [
+            {
+                "mz": mz,
+                "formula": reading.formula
+                if measured is None
+                else measured.own["formula"],
+                "ion": "---" if measured is None else measured.own["ion"],
+                "isotope_label": "M0",
+                "other_candidates": "",
+                KNOWN_KEPT: True,
+                KNOWN_RIVALS: None
+                if measured is None
+                else _held_against(measured, weighing, prior),
+            }
+        ]
+    candidates = measured.scored
+    main_candidate = candidates[winner].copy()
+    main_candidate["mz"] = mz
+    main_candidate["other_candidates"] = _other_candidate_formulas(
+        measured.found, main_candidate["formula"]
+    )
+    main_candidate[CANDIDATE_DENSITY] = candidate_density(
+        [
+            {
+                "formula": candidate.get("formula"),
+                "fit_score": candidate.get("isotopic_pattern_score"),
+            }
+            for candidate in candidates
+        ],
+        around=main_candidate["formula"],
+    )
+    own_fit = measured.rivals.fit_score
+    main_candidate[KNOWN_DISPLACED] = {
+        # The list's peak: the rival's own line is matched where the rival
+        # predicts it, which is this peak on every reading that got here.
+        "peak_mz": mz,
+        "formula": measured.own["formula"],
+        "ion": measured.own["ion"],
+        "ionization_mechanism": measured.own["candidate"]["ionization_mechanism"],
+        "fit_score": own_fit,
+        "evidence": own_fit * formula_plausibility(measured.own["formula"]),
+        "rival_evidence": float(main_candidate.get("isotopic_pattern_score") or 0.0)
+        * formula_plausibility(str(main_candidate["formula"])),
+        "prior": prior,
+    }
+    main_candidate[KNOWN_RIVALS] = measured.rivals
+    rows, _ = process_isotopes(
+        main_candidate, [measured.isotopes[winner]], assigned_mzs
+    )
+    return rows
+
+
+def _held_against(
+    measured: _ScoredReading,
+    weighing: _Weighing,
+    prior: float,
+) -> ReadingRivals:
+    """What the grid held against a reading that kept its peak.
+
+    Names the rival that cleared the prior and why it still did not take the
+    peak; the measurement as it was where no rival cleared the prior.
+    """
+    if weighing.winner is not None:
+        # Only a reading that keeps its peak whatever the grid holds gets here
+        # with a winner: the rival that would have taken it.
+        held, why, unexplained = weighing.winner, HELD_BY_LIBRARY, ()
+    elif weighing.ahead is not None:
+        held, why, unexplained = weighing.ahead, HELD_BY_LINES, weighing.unexplained
+    else:
+        return measured.rivals
+    rival = measured.scored[held]
+    return replace(
+        measured.rivals,
+        held_against={
+            "formula": rival.get("formula"),
+            "ion": rival.get("ion"),
+            "ionization_mechanism": rival.get("ionization_mechanism"),
+            "fit_score": float(rival.get("isotopic_pattern_score") or 0.0),
+            "prior": prior,
+            "why": why,
+            "unexplained_lines": list(unexplained),
+        },
+    )
+
+
 def process_isotopes(
     main_candidate: dict, all_matched_isotopes: list, assigned_mzs: set
 ) -> tuple:
@@ -824,6 +1202,10 @@ def process_isotopes(
             # it was predicted from the winner and matched - so the parent's
             # count is not a measurement of this line.
             iso_result.pop(CANDIDATE_DENSITY, None)
+            # A list reading's weighing is about the peak the ion took, as the
+            # density is.
+            iso_result.pop(KNOWN_DISPLACED, None)
+            iso_result.pop(KNOWN_RIVALS, None)
             iso_result["mz"] = iso_mz
             iso_result["observed_mass"] = iso_mz
             iso_result["isotope_label"] = isotope_labels[idx]
