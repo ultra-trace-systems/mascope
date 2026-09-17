@@ -41,6 +41,8 @@ let scoringNow
 let evidenceRecord
 let evidenceKey
 let measuringNow
+// The deployment's ionization mechanisms, which name an alternative's channel.
+let mechanisms
 
 const helpStub = {
   set: vi.fn(),
@@ -98,7 +100,8 @@ function makeApp() {
         },
         verification: { forAssignment: () => verdictRecord, verify },
         anchorContext: { overlayFor: () => anchorVerdictRecord }
-      }
+      },
+      ionization: { mechanism: { list: mechanisms } }
     },
     ui: { help: helpStub }
   }
@@ -200,6 +203,7 @@ beforeEach(() => {
   evidenceRecord = null
   evidenceKey = null
   measuringNow = false
+  mechanisms = []
 })
 afterEach(() => vi.clearAllMocks())
 
@@ -2098,5 +2102,190 @@ describe('PanePeakAssign on-demand evidence for a derived row', () => {
     expect(grid).toContain('main peak')
     expect(grid).toContain('M+2 predicted at m/z 238.7537')
     expect(grid).not.toContain('not measured')
+  })
+})
+
+// Where a row's mass error sits against the run's own calibration, in that
+// calibration's widths: the number the run's mass gate judged, which the ppm
+// error beside it cannot say without the run's width.
+describe('PanePeakAssign mass z', () => {
+  const ROW = {
+    ...assignment({ formula: 'C6H12O6', tier: 'assigned' }),
+    mz_error_ppm: 0.42,
+    mass_z: 1.26
+  }
+  const CALIBRATION = {
+    mu_ppm: 0.12,
+    sigma_ppm: 0.25,
+    gate_sigma_ppm: 0.3,
+    anchors: 212,
+    centre: 'constant',
+    cap_z: 3,
+    floor_z: 6
+  }
+  const massZ = (wrapper) => wrapper.find('[data-testid="mass-z"]')
+  const withCalibration = (calibration) => ({
+    engine: 'mascope',
+    config: { mass_calibration: calibration }
+  })
+
+  it('shows the distance right after the ppm error, from the ledger row', async () => {
+    focusedAssignment = ROW
+    runRecord = withCalibration(CALIBRATION)
+    const wrapper = await mountPane({ recordTooltips: true })
+
+    expect(massZ(wrapper).find('.v').text()).toBe('+1.3')
+    expect(massZ(wrapper).find('.v').classes()).not.toContain('far')
+    const keys = wrapper.findAll('.evidence .ev .k').map((key) => key.text())
+    expect(keys.indexOf('mass z')).toBe(keys.indexOf('m/z error') + 1)
+    expect(massZ(wrapper).find('.k').attributes('data-tooltip')).toBe(
+      [
+        "How far this row's mass error sits from the run's own mass calibration at its " +
+          "m/z, counted in the calibration's widths.",
+        'The run measured a centre of 0.12 ppm and a width of 0.30 ppm.',
+        'Beyond 3 widths a row nothing corroborates is held at candidate, beyond 6 below ' +
+          'assignability.'
+      ].join('\n')
+    )
+  })
+
+  it('reads it off the detail for a row that carries none, marked past the cap', async () => {
+    focusedAssignment = { ...ROW, mass_z: undefined }
+    detailRecord = { provenance: { mass_z: -3.4 } }
+    runRecord = withCalibration(CALIBRATION)
+    const wrapper = await mountPane()
+
+    expect(massZ(wrapper).find('.v').text()).toBe('-3.4')
+    expect(massZ(wrapper).find('.v').classes()).toContain('far')
+  })
+
+  it('names a centre that follows m/z rather than a number', async () => {
+    focusedAssignment = ROW
+    runRecord = withCalibration({ ...CALIBRATION, centre: 'trend' })
+    const wrapper = await mountPane({ recordTooltips: true })
+
+    expect(massZ(wrapper).find('.k').attributes('data-tooltip')).toContain(
+      'The run measured a centre that follows m/z and a width of 0.30 ppm.'
+    )
+  })
+
+  it('says only what the number is where the run recorded no calibration', async () => {
+    focusedAssignment = { ...ROW, mass_z: 9.5 }
+    runRecord = { engine: 'mascope', config: {} }
+    const wrapper = await mountPane({ recordTooltips: true })
+
+    // No cap to be past: nothing on the run says where it is.
+    expect(massZ(wrapper).find('.v').classes()).not.toContain('far')
+    expect(massZ(wrapper).find('.k').attributes('data-tooltip')).toBe(
+      "How far this row's mass error sits from the run's own mass calibration at its " +
+        "m/z, counted in the calibration's widths."
+    )
+  })
+
+  it('shows no row where the run measured none', async () => {
+    focusedAssignment = { ...ROW, mass_z: null }
+    runRecord = withCalibration(CALIBRATION)
+    const wrapper = await mountPane()
+
+    expect(massZ(wrapper).exists()).toBe(false)
+  })
+})
+
+// The readings of the committed ion that the run did not commit: the same ion
+// split another way between neutral and adduct, which no mass or envelope tells
+// apart, and which the nitrogen rule among the reasons is about.
+describe('PanePeakAssign the same ion read another way', () => {
+  const COMMITTED = {
+    ...assignment({ formula: 'C3H7NO', tier: 'candidate' }),
+    ion_formula: 'C3H8NO+',
+    ionization_mechanism_id: 'm-h'
+  }
+  const AMBIGUOUS = {
+    rule: 'ambiguous_nitrogen',
+    detail: 'C3H8NO+ reads as C3H4O through +NH4+ as well',
+    caps: true
+  }
+  const SAME_ION = {
+    assigned_formula: 'C3H4O',
+    ion_formula: 'C3H8NO+',
+    ionization_mechanism_id: 'm-nh4',
+    fit_score: 0.9,
+    same_ion: true
+  }
+  const RIVAL = { assigned_formula: 'C2H5N3', ion_formula: 'C2H6N3+', fit_score: 0.4 }
+  const readings = (wrapper) => wrapper.findAll('[data-testid="same-ion"] .reading')
+  const blocks = (wrapper) =>
+    [...wrapper.find('section.inspector').element.children].map((node) => node.classList[0])
+
+  beforeEach(() => {
+    focusedAssignment = COMMITTED
+    mechanisms = [
+      { ionization_mechanism_id: 'm-h', ionization_mechanism: '+H+' },
+      { ionization_mechanism_id: 'm-nh4', ionization_mechanism: '+NH4+' }
+    ]
+  })
+
+  it('lists the readings the run did not commit, with their channels, under the reasons', async () => {
+    detailRecord = {
+      provenance: { tier_reasons: [AMBIGUOUS] },
+      alternatives: [SAME_ION, RIVAL]
+    }
+    const wrapper = await mountPane({ recordTooltips: true })
+
+    expect(readings(wrapper)).toHaveLength(1)
+    expect(readings(wrapper)[0].find('.reading-formula').text()).toBe('C3H4O')
+    expect(readings(wrapper)[0].find('.reading-channel').text()).toBe('through +NH4+')
+    expect(readings(wrapper)[0].attributes('data-tooltip')).toContain(
+      'The same ion read as another neutral through another adduct.'
+    )
+    const order = blocks(wrapper)
+    expect(order.indexOf('same-ion')).toBe(order.indexOf('tier-reasons') + 1)
+  })
+
+  it('lists them on a row no rule judged too', async () => {
+    detailRecord = { alternatives: [SAME_ION] }
+    const wrapper = await mountPane()
+
+    expect(wrapper.find('.tier-reasons').exists()).toBe(false)
+    expect(readings(wrapper)).toHaveLength(1)
+  })
+
+  it('shows nothing for an ion with no other reading', async () => {
+    detailRecord = { provenance: { tier_reasons: [AMBIGUOUS] }, alternatives: [RIVAL] }
+    const wrapper = await mountPane()
+
+    expect(wrapper.find('[data-testid="same-ion"]').exists()).toBe(false)
+  })
+
+  it('names a reading by its formula alone where the channel is not listed', async () => {
+    detailRecord = {
+      alternatives: [{ ...SAME_ION, ionization_mechanism_id: 'm-retired' }]
+    }
+    const wrapper = await mountPane()
+
+    expect(readings(wrapper)[0].find('.reading-formula').text()).toBe('C3H4O')
+    expect(readings(wrapper)[0].find('.reading-channel').exists()).toBe(false)
+  })
+
+  it('marks each kind of close alternative, and says what it is on hover', async () => {
+    detailRecord = {
+      alternatives: [
+        SAME_ION,
+        { ...RIVAL, assigned_formula: 'C4H9NO', displaced_by_claim: true },
+        { ...RIVAL, assigned_formula: 'C3H9NO', displaced_by_rival: true },
+        RIVAL
+      ]
+    }
+    const wrapper = await mountPane({ recordTooltips: true })
+    const rows = wrapper.findAll('.alt')
+
+    expect(
+      rows.map((row) => (row.find('.alt-kind').exists() ? row.find('.alt-kind').text() : null))
+    ).toEqual(['same ion', 'earlier reading', 'list compound', null])
+    const firstLines = rows.map((row) => row.attributes('data-tooltip').split('\n')[0])
+    expect(firstLines[0]).toContain('The same ion read as another neutral')
+    expect(firstLines[1]).toContain("before a neighbour's isotope line claimed it")
+    expect(firstLines[2]).toContain("The loaded list's compound for this peak")
+    expect(firstLines[3]).toBe('fit: 40%')
   })
 })
