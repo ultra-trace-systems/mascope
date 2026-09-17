@@ -554,7 +554,9 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   one engine only. Its summary carries each engine's tiers, the share of its
   assigned rows the other engine does not confirm, mass-error statistics, a
   chemistry sanity check on the committed formulas and agreement by peak
-  intensity, as JSON and as Markdown tables.
+  intensity, as JSON and as Markdown tables. `--engine-b-before <timestamp>`
+  reads the second engine's newest run created before that instant instead,
+  so a reference that has been re-published can still be read as it was.
 
 ### Changed
 
