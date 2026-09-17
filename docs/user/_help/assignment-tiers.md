@@ -42,4 +42,9 @@ Orthogonal to its tier, a peak can carry a role:
 
 Reagent and artifact peaks are not the sample's compounds, so each shows a chip of its
 own in place of a tier. The counts above the ledger list them apart from the tiers, and
-the tier column sorts them after the tiers.
+the tier column sorts them after the tiers. The two kinds of count measure different
+things:
+
+- a tier count counts a compound once, with its isotopologues folded in, and each peak
+  nothing explained once;
+- a role count counts peaks, so a reagent ion's isotope lines are counted with it.
