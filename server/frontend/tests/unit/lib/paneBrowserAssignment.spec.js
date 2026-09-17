@@ -55,6 +55,8 @@ let verdictPeakId
 // The focused sample's run record; `{ engine: 'batch' }` is a sample served
 // from the batch ledger rather than from a run of its own.
 let runRecord
+// What the store's histogram answers for the strip above the table.
+let tierCountsRecord
 
 // Minimal help-mode facade: the pane registers help cards through these calls;
 // the tests only need them to resolve.
@@ -100,7 +102,7 @@ function makeApp() {
         peak: {
           list: assignmentList,
           pending: false,
-          tierCounts: {},
+          tierCounts: tierCountsRecord,
           childrenOf: (id) => childrenByOwner.get(id) ?? [],
           // Stands in for the store's family resolution; the rule itself is
           // pinned against the real implementation in
@@ -372,6 +374,7 @@ beforeEach(() => {
   verdictPeakId = null
   overlayRecord = null
   runRecord = null
+  tierCountsRecord = {}
   seed()
 })
 
@@ -1774,5 +1777,74 @@ describe('PaneBrowserAssignment row actions', () => {
     expect(cell.exists()).toBe(true)
     expect(cell.classes()).toContain('unjudged')
     expect(cell.classes()).not.toContain('empty')
+  })
+})
+
+// The source's and the instrument's peaks, each with a chip of its own after the
+// tiers. Their rows sit at tier `unassigned`, so without their own buckets they
+// were filtered and sorted among the peaks nothing explained.
+describe('PaneBrowserAssignment reagent and artifact peaks', () => {
+  const peak = (id, role, tier = 'unassigned', fit = null) =>
+    family({ id, mz: 100 + id.length, intensity: 10, formula: null, tier, fit, role })
+
+  beforeEach(() => {
+    runList = [{ peak_assignment_run_id: 'run-1', status: 'completed' }]
+    seed(
+      family({ id: 'm', mz: 150.1, intensity: 50, formula: 'C6H12O6', tier: 'assigned' }),
+      peak('u', 'unassigned'),
+      peak('r', 'reagent'),
+      peak('x', 'artifact'),
+      peak('rr', 'reagent')
+    )
+    tierCountsRecord = {
+      assigned: 1,
+      candidate: 0,
+      below_assignability: 0,
+      unassigned: 1,
+      reagent: 2,
+      artifact: 1
+    }
+  })
+
+  const chips = (wrapper) => wrapper.findAll('.tier-stat')
+
+  it('counts each role with a chip of its own, after the tiers', async () => {
+    const wrapper = await mountPane()
+
+    expect(chips(wrapper).map((chip) => chip.text())).toEqual([
+      '1 assigned',
+      '0 candidate',
+      '0 below',
+      '1 unassigned',
+      '2 reagent',
+      '1 artifact'
+    ])
+    // Set off from the tiers where the roles begin.
+    expect(chips(wrapper)[4].classes()).toContain('roles-start')
+    expect(chips(wrapper)[5].classes()).not.toContain('roles-start')
+  })
+
+  it('filters to one role at a time, and never to the unassigned peaks with them', async () => {
+    const wrapper = await mountPane()
+
+    await chips(wrapper)[5].trigger('click')
+    expect(ids(wrapper)).toEqual(['x'])
+
+    await chips(wrapper)[5].trigger('click')
+    await chips(wrapper)[3].trigger('click')
+    expect(ids(wrapper)).toEqual(['u'])
+
+    await chips(wrapper)[4].trigger('click')
+    expect(ids(wrapper).sort()).toEqual(['r', 'rr', 'u'])
+  })
+
+  it('sorts the role rows after every tier, reagent before artifact', async () => {
+    const wrapper = await mountPane()
+
+    const order = ids(wrapper)
+    expect(order[0]).toBe('m')
+    expect(order[1]).toBe('u')
+    expect(order.slice(2, 4).sort()).toEqual(['r', 'rr'])
+    expect(order[4]).toBe('x')
   })
 })

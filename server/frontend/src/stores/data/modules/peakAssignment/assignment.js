@@ -98,6 +98,41 @@ export function familyM0(assignment, byId) {
   return byId?.get(assignment.owner_peak_assignment_id) ?? assignment
 }
 
+/**
+ * The ledger's tier histogram: one count per tier, and one per role that
+ * accounts for a peak without a formula.
+ *
+ * iso_child isotopologues are folded into their M0 and NOT counted, so the tiers
+ * count assigned formulas (and unassigned peaks), not every isotopologue peak. A
+ * reagent or artifact peak is counted under its role, each apart from the other
+ * and from every tier: the engine writes those rows at tier `unassigned`, and
+ * counting them there would put the source's own brightest ions among the peaks
+ * nothing explained. A reagent's own isotopologues carry the reagent role and
+ * are counted with it.
+ *
+ * @param {Array<Object>} records the run's ledger rows
+ * @returns {Object<string, number>} counts by tier and by role
+ */
+export function tierHistogram(records) {
+  const counts = {
+    assigned: 0,
+    candidate: 0,
+    below_assignability: 0,
+    unassigned: 0,
+    reagent: 0,
+    artifact: 0
+  }
+  for (const record of records ?? []) {
+    if (record.role === 'iso_child') continue
+    if (record.role === 'reagent' || record.role === 'artifact') {
+      counts[record.role] += 1
+    } else {
+      counts[record.tier] = (counts[record.tier] ?? 0) + 1
+    }
+  }
+  return counts
+}
+
 // Peak ASSIGNMENTS for the focused sample + focused run.
 //
 // One row per observed peak, keyed by sample_peak_id (unique within a run and
@@ -283,28 +318,8 @@ export const usePeakAssignment = defineStore('app.data.peakAssignment', () => {
     return byId.value.get(peakAssignmentId) ?? null
   }
 
-  // Confidence-tier histogram for the run summary. iso_child isotopologues are
-  // folded into their M0 and NOT counted, so the tiers count assigned formulas
-  // (and unassigned peaks), not every isotopologue peak. Roles reagent/artifact
-  // are counted separately (orthogonal to tier).
-  const tierCounts = computed(() => {
-    const counts = {
-      assigned: 0,
-      candidate: 0,
-      below_assignability: 0,
-      unassigned: 0,
-      reagent: 0
-    }
-    for (const record of data.list.value) {
-      if (record.role === 'iso_child') continue
-      if (record.role === 'reagent' || record.role === 'artifact') {
-        counts.reagent += 1
-      } else {
-        counts[record.tier] = (counts[record.tier] ?? 0) + 1
-      }
-    }
-    return counts
-  })
+  // Confidence-tier histogram for the run summary (see tierHistogram).
+  const tierCounts = computed(() => tierHistogram(data.list.value))
 
   return {
     ...data,

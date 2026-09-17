@@ -27,7 +27,7 @@ import {
   P_CORRECT_TOOLTIP,
   uncalibratedReason as reasonForNoPCorrect
 } from '@/lib/pCorrect'
-import { tierBucket, tierRank } from '@/lib/tiers'
+import { TIERS, tierBucket, tierRank } from '@/lib/tiers'
 import { prettyTrim } from '@/lib/utils'
 import { scrollVirtualRowIntoView } from '@/lib/virtualScroll'
 import { useApp } from '@/stores'
@@ -211,12 +211,22 @@ function focusPeak(assignment) {
 // batch-peaks pane, which is the point of sharing it - two ledgers side by side
 // that ranked tiers differently would be worse than either being wrong alone.
 
-// Histogram bucket for a row: reagent/artifact roles are their own bucket,
-// matching the counts strip and the spectrum coloring. Tier ranking itself
-// lives in @/lib/tiers so this ledger and the batch-peak ledger cannot drift.
+// The roles that account for a peak without a formula, each its own bucket
+// beside the tiers: a reagent peak is the source's own ion, an artifact the
+// instrument's ringing. Their rows are written at tier `unassigned`, so without
+// this they would be filtered, counted and sorted among the peaks nothing
+// explained. Tier ranking itself lives in @/lib/tiers so this ledger and the
+// batch-peak ledger cannot drift.
+const ROLE_BUCKETS = ['reagent', 'artifact']
 function bucketOf(row) {
-  if (row.role === 'reagent' || row.role === 'artifact') return 'reagent'
+  if (ROLE_BUCKETS.includes(row.role)) return row.role
   return tierBucket(row.tier)
+}
+// Sorted after every tier, in the strip's order, so the tier column groups the
+// rows by the chip they show.
+function rankOf(row) {
+  const role = ROLE_BUCKETS.indexOf(row.role)
+  return role === -1 ? tierRank(row.tier) : TIERS.length + role
 }
 
 // Active tier filters (empty = show all); clicking a histogram chip toggles it.
@@ -309,7 +319,7 @@ const rows = computed(() => {
     )
     .map((row) => ({
       ...row,
-      tierRank: tierRank(row.tier),
+      tierRank: rankOf(row),
       // Null where the producing engine stated no tier, and null rather than a
       // rank so `compareBy` sorts those rows last in both directions - "this
       // engine said nothing" is not a position on the scale. Guarded because
@@ -669,13 +679,17 @@ const breadcrumb = computed(() => {
           doc: app.ui.help.docUrl('how-it-works/peak-assignment/#confidence-tiers')
         }"
       >
+        <!-- The four tiers count the sample's compounds and the peaks nothing
+             explained; the two roles after them count the peaks the source and
+             the instrument made, which are neither. -->
         <button
           v-for="t in [
             { key: 'assigned', label: 'assigned', count: tierCounts.assigned },
             { key: 'candidate', label: 'candidate', count: tierCounts.candidate },
-            { key: 'reagent', label: 'reagent', count: tierCounts.reagent },
             { key: 'below_assignability', label: 'below', count: tierCounts.below_assignability },
-            { key: 'unassigned', label: 'unassigned', count: tierCounts.unassigned }
+            { key: 'unassigned', label: 'unassigned', count: tierCounts.unassigned },
+            { key: 'reagent', label: 'reagent', count: tierCounts.reagent },
+            { key: 'artifact', label: 'artifact', count: tierCounts.artifact }
           ]"
           :key="t.key"
           type="button"
@@ -683,6 +697,7 @@ const breadcrumb = computed(() => {
           :class="[
             t.key === 'below_assignability' ? 'below' : t.key,
             {
+              'roles-start': t.key === ROLE_BUCKETS[0],
               active: activeTiers.has(t.key),
               dim: activeTiers.size && !activeTiers.has(t.key)
             }
@@ -1118,8 +1133,13 @@ const breadcrumb = computed(() => {
 .tier-stat.candidate b {
   color: var(--state-warning);
 }
-.tier-stat.reagent b {
+.tier-stat.reagent b,
+.tier-stat.artifact b {
   color: #8a5ed0;
+}
+/* Set off from the tiers: what follows is not a confidence. */
+.tier-stat.roles-start {
+  margin-left: 0.4rem;
 }
 .tier-stat.below b,
 .tier-stat.unassigned b {
