@@ -203,6 +203,10 @@ class TestTheNamedCount:
             ([("A", 0.9), ("A", 0.5), ("B", 0.89)], "A"),
             # A formula arriving twice is counted at its best evidence.
             ([("A", 0.9), ("B", 0.5), ("A", 0.3)], "B"),
+            # The gap is a tenth of the best evidence, not of the anchor's.
+            ([("A", 1.0), ("B", 0.5), ("C", 0.42)], "B"),
+            # Near zero evidence the gap is its floor.
+            ([("A", 0.01), ("B", 0.006)], "A"),
         ],
     )
     def test_it_names_what_the_density_counts(self, candidates, around):
