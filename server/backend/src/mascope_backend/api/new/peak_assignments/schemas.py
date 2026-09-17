@@ -9,12 +9,15 @@ from pydantic import (
     BeforeValidator,
     ConfigDict,
     Field,
+    field_validator,
     model_validator,
 )
 
 from mascope_backend.api.new.peak_assignments.config import (
+    DEFAULT_PROFILE,
     MAX_IMPORT_ROWS_PER_REQUEST,
     PeakAssignmentConfig,
+    known_preset_name,
 )
 from mascope_backend.api.new.peak_assignments.tiers import normalize_tier
 
@@ -375,6 +378,63 @@ class PeakAssignmentQueryParams(BaseModel):
         ),
     )
     offset: int = Field(0, ge=0, description="Rows to skip, for paging.")
+
+
+class ProfilePreviewQueryParams(BaseModel):
+    """The two chemistry names a preview resolves, as a run config names them."""
+
+    profile: str = Field(
+        DEFAULT_PROFILE,
+        description=(
+            "Reagent profile to resolve: 'auto' reads it off each sample's "
+            "ionization mechanisms, or a preset name."
+        ),
+    )
+    context: str = Field(
+        DEFAULT_PROFILE,
+        description=(
+            "Chemistry context to resolve: 'auto' takes each profile's own, or a "
+            "context name."
+        ),
+    )
+
+    @field_validator("profile", "context")
+    @classmethod
+    def _known_name(cls, value: str, info) -> str:
+        """Refuse a name the run config would refuse, with its message."""
+        return known_preset_name(value, info.field_name)
+
+
+class ProfilePreviewRecord(BaseModel):
+    """The chemistry a run would search some of the requested samples under.
+
+    Samples that resolve alike are one record. A run records the same names on
+    itself (``config.resolved_profile``) once it has started; this is the answer
+    before it starts, from the samples' ionization modes alone.
+    """
+
+    profile: str
+    profile_label: str
+    #: The profile's own polarity; ``""`` for the identity profile.
+    profile_polarity: str
+    requested_profile: str
+    context: str
+    context_label: str
+    requested_context: str
+    #: The neutral grid the profile and context give the untargeted stage.
+    element_ranges: str
+    #: The polarity of the samples this record counts.
+    polarity: str | None = None
+    samples: int
+
+
+class ProfilePreviewResponse(BaseModel):
+    """What a run config's profile and context resolve to, per distinct answer."""
+
+    status: str = "success"
+    message: str
+    results: int
+    data: list[ProfilePreviewRecord]
 
 
 class AssignSamplePeaksBody(BaseModel):

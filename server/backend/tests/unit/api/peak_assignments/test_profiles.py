@@ -10,12 +10,18 @@ profiles existed.
 import pytest
 from pydantic import ValidationError
 
-from mascope_backend.api.new.peak_assignments.config import PeakAssignmentConfig
+from mascope_backend.api.new.peak_assignments.config import (
+    PeakAssignmentConfig,
+    PeakAssignmentPresets,
+)
 from mascope_backend.api.new.peak_assignments.profiles import (
     SOURCE_CONFIG,
     SOURCE_PROFILE,
+    SampleChemistry,
+    preview_resolutions,
     resolve_profile,
 )
+from mascope_backend.api.new.peak_assignments.schemas import ProfilePreviewQueryParams
 from mascope_tools.composition import profiles as presets
 
 
@@ -234,3 +240,117 @@ class TestConfigValidation:
             PeakAssignmentConfig(
                 formula_ranges=" ".join(f"C{i}-{i + 1}" for i in range(13))
             )
+
+
+class TestPreview:
+    """What a launcher is told before a run: one answer per distinct resolution."""
+
+    def test_samples_that_resolve_alike_are_counted_together(self):
+        previews = preview_resolutions(
+            PeakAssignmentConfig(),
+            [
+                SampleChemistry(tuple(UREA), "+", samples=3),
+                # Another mode carrying the same fingerprint is the same answer.
+                SampleChemistry(("+(CH4N2O)H+",), "+", samples=2),
+            ],
+        )
+        assert [(p["profile"], p["context"], p["samples"]) for p in previews] == [
+            ("UR", "uronium", 5)
+        ]
+
+    def test_the_most_samples_come_first_and_ties_do_not_follow_the_input(self):
+        chemistries = [
+            SampleChemistry((), "-", samples=1),
+            SampleChemistry(tuple(BROMIDE), "-", samples=4),
+            SampleChemistry(tuple(UREA), "+", samples=1),
+        ]
+        forward = preview_resolutions(PeakAssignmentConfig(), chemistries)
+        backward = preview_resolutions(PeakAssignmentConfig(), chemistries[::-1])
+        assert [p["profile"] for p in forward] == ["BR", "ESI_NEG", "UR"]
+        assert backward == forward
+
+    def test_it_carries_the_names_a_run_would_record(self):
+        (preview,) = preview_resolutions(
+            PeakAssignmentConfig(), [SampleChemistry(tuple(BROMIDE), "-")]
+        )
+        snapshot = resolve_profile(
+            PeakAssignmentConfig(), BROMIDE, instrument_type="orbi", polarity="-"
+        ).snapshot()
+        for key in (
+            "profile",
+            "profile_label",
+            "requested_profile",
+            "context",
+            "context_label",
+            "requested_context",
+            "element_ranges",
+        ):
+            assert preview[key] == snapshot[key], key
+
+    def test_a_named_profile_is_one_answer_per_polarity(self):
+        # The polarity is kept apart, since a launcher warns where a profile's
+        # own polarity is not its samples'.
+        previews = preview_resolutions(
+            PeakAssignmentConfig(profile="BR"),
+            [
+                SampleChemistry(tuple(UREA), "+", samples=2),
+                SampleChemistry(tuple(BROMIDE), "-", samples=2),
+            ],
+        )
+        assert sorted((p["polarity"], p["profile_polarity"]) for p in previews) == [
+            ("+", "-"),
+            ("-", "-"),
+        ]
+        assert {p["profile"] for p in previews} == {"BR"}
+
+    def test_no_samples_is_no_answer(self):
+        assert preview_resolutions(PeakAssignmentConfig(), []) == []
+
+
+class TestPresets:
+    """The names a launcher offers are the names the run config accepts."""
+
+    def test_every_library_preset_is_served(self):
+        served = PeakAssignmentPresets()
+        assert {p.name for p in served.profiles} == set(presets.REAGENT_PROFILES)
+        assert {c.name for c in served.contexts} == set(presets.CHEMISTRY_CONTEXTS)
+
+    def test_every_served_name_is_one_the_config_accepts(self):
+        served = PeakAssignmentPresets()
+        for profile in served.profiles:
+            assert PeakAssignmentConfig(profile=profile.name).profile == profile.name
+        for context in served.contexts:
+            assert PeakAssignmentConfig(context=context.name).context == context.name
+
+    def test_a_profile_says_its_polarity_and_the_context_auto_takes(self):
+        served = {p.name: p for p in PeakAssignmentPresets().profiles}
+        assert served["BR"].polarity == "-"
+        assert served["BR"].default_context == "ambient-air"
+        assert served["UR"].default_context == "uronium"
+        for profile in served.values():
+            assert profile.default_context in presets.CHEMISTRY_CONTEXTS
+
+    def test_the_identity_entries_come_last(self):
+        served = PeakAssignmentPresets()
+        assert served.profiles[-1].name == presets.IDENTITY_PROFILE_NAME
+        assert served.contexts[-1].name == presets.NO_CONTEXT.name
+
+    def test_a_context_carries_its_description(self):
+        served = {c.name: c for c in PeakAssignmentPresets().contexts}
+        assert served["ambient-air"].description == presets.AMBIENT_AIR.description
+        assert served["ambient-air"].polarity is None
+
+
+class TestPreviewQuery:
+    def test_it_refuses_what_the_run_config_refuses(self):
+        with pytest.raises(ValidationError):
+            ProfilePreviewQueryParams(profile="krypton-cims")
+        with pytest.raises(ValidationError):
+            ProfilePreviewQueryParams(context="mars")
+
+    def test_blank_and_auto_read_as_auto(self):
+        query = ProfilePreviewQueryParams(profile=" ", context="AUTO")
+        assert (query.profile, query.context) == ("auto", "auto")
+
+    def test_an_alias_is_accepted(self):
+        assert ProfilePreviewQueryParams(profile="bromide").profile == "bromide"
