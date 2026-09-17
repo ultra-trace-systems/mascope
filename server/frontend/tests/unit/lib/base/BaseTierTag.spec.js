@@ -134,3 +134,59 @@ describe('BaseTierTag demoted mark', () => {
     }
   })
 })
+
+// A reagent or artifact peak is accounted for by what made it. Its row sits at
+// tier `unassigned` because no compound was assigned, and a chip saying so would
+// read as a peak nothing explained - so the role is the chip.
+describe('BaseTierTag reagent and artifact peaks', () => {
+  const roleIcon = (wrapper) => wrapper.find('.role-icon')
+
+  it('shows the role in place of the tier, with no evidence', () => {
+    for (const role of ['reagent', 'artifact']) {
+      const wrapper = mountTag({ tier: 'unassigned', evidence: 0.5, role, source: role })
+
+      expect(wrapper.find('.tag').text()).toBe(role)
+      expect(wrapper.find('.tag').text()).not.toContain('unassigned')
+      // The chip is the role, so no second mark repeats it.
+      expect(roleIcon(wrapper).exists()).toBe(false)
+    }
+  })
+
+  it('says what made the peak, and that it is not counted as a compound', () => {
+    const reagent = mountTag({ tier: 'unassigned', role: 'reagent', source: 'reagent' })
+    expect(reagent.vm.autoTooltip).toBe(
+      [
+        "Reagent: an ion the ionization source makes of itself, not one of the sample's compounds",
+        "Counted apart from the sample's compounds",
+        'Source: reagent'
+      ].join('\n')
+    )
+
+    const artifact = mountTag({ tier: 'unassigned', role: 'artifact' })
+    expect(artifact.vm.autoTooltip).toBe(
+      [
+        'Artifact: a ringing side lobe of a very intense neighbouring peak, not a species',
+        "Counted apart from the sample's compounds"
+      ].join('\n')
+    )
+  })
+
+  it('keeps the tier on an isotopologue, marked as one', () => {
+    const wrapper = mountTag({ tier: 'assigned', evidence: 0.9, role: 'iso_child' })
+
+    expect(wrapper.find('.tag').text()).toContain('assigned')
+    expect(roleIcon(wrapper).exists()).toBe(true)
+  })
+
+  it('leaves a monoisotopic row and an unknown role on their tier', () => {
+    for (const role of ['M0', 'unassigned', 'constructor', null]) {
+      const wrapper = mountTag({ tier: 'candidate', role })
+      expect(wrapper.find('.tag').text(), String(role)).toBe('candidate')
+    }
+  })
+
+  it('yields to an explicit tooltip here too', () => {
+    const wrapper = mountTag({ tier: 'unassigned', role: 'reagent', tooltip: 'say this' })
+    expect(wrapper.vm.autoTooltip).toBe('say this')
+  })
+})
