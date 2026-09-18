@@ -15,7 +15,14 @@ seen, and so that splitting by stream can be designed from evidence
 
 from __future__ import annotations
 
-from mascope_thermo.backend import ReaderBackend
+import argparse
+import json
+import os
+import sys
+
+import numpy as np
+
+from mascope_thermo.backend import ReaderBackend, open_backend
 from mascope_thermo.scan_filter import parse_scan_filter
 
 
@@ -76,6 +83,11 @@ def scan_streams(backend: ReaderBackend) -> list[dict]:
     :param backend: An open reader backend.
     :return: One dict per stream, JSON-safe.
     """
+    return [stream for stream, _scan_numbers in _census(backend)]
+
+
+def _census(backend: ReaderBackend) -> list[tuple[dict, list[int]]]:
+    """:func:`scan_streams`, with each stream's scan numbers beside it."""
     streams: dict[str, dict] = {}
     # (polarity, MS order) -> key of the last scan seen in that sequence
     last_key: dict[tuple, str] = {}
@@ -117,7 +129,7 @@ def scan_streams(backend: ReaderBackend) -> list[dict]:
             if stream["signature"]["ms_order"] == 1
             else {}
         )
-        census.append(stream)
+        census.append((stream, scan_numbers))
     return census
 
 
@@ -137,3 +149,78 @@ def pooled_ms1_streams(streams: list[dict]) -> dict[str, list[str]]:
         if signature.get("ms_order") == 1:
             by_polarity.setdefault(signature.get("polarity"), []).append(stream["key"])
     return {polarity: keys for polarity, keys in by_polarity.items() if len(keys) > 1}
+
+
+def stream_report(datafile_path: str, top: int = 10) -> dict:
+    """A raw file's census, as ``mascope file scans`` shows it.
+
+    The file's instrument model, method and scan count, then its streams from
+    :func:`scan_streams`. Each MS1 stream also gets ``top_peaks``: the
+    ``top`` strongest centroids averaged over that stream's own scans, as
+    ``[m/z, intensity]`` pairs. The reagent ions of a chemistry are usually
+    among them, which is what an operator looks for first.
+
+    :param datafile_path: Path to a Thermo ``.raw`` file.
+    :param top: How many centroids to report per MS1 stream; 0 for none.
+    :return: The report, JSON-safe.
+    """
+    with open_backend(datafile_path) as backend:
+        streams = []
+        for stream, scan_numbers in _census(backend):
+            if stream["signature"].get("ms_order") == 1 and top > 0:
+                stream["top_peaks"] = _top_peaks(backend, scan_numbers, top)
+            streams.append(stream)
+        return {
+            "file": os.path.basename(datafile_path),
+            "model": backend.instrument_details().get("Model"),
+            "method_file": backend.method_file(),
+            "scans": int(backend.num_scans()),
+            "streams": streams,
+        }
+
+
+def _top_peaks(backend: ReaderBackend, scan_numbers: list[int], top: int) -> list:
+    """The ``top`` strongest centroids averaged over these scans."""
+    masses, intensities, *_ = backend.average_centroids(
+        scan_numbers, ppm=1, average=True
+    )
+    masses = np.asarray(masses, dtype=float)
+    intensities = np.asarray(intensities, dtype=float)
+    strongest = np.argsort(intensities)[::-1][:top]
+    return [
+        [round(float(masses[i]), 5), round(float(intensities[i]), 1)] for i in strongest
+    ]
+
+
+def main(argv: list[str] | None = None) -> int:
+    """``python -m mascope_thermo.streams PATH``: print the report as JSON.
+
+    The runtime logs to stdout too, and a caller reads the report from
+    stdout, so logging is shut down before the file is opened. Anything
+    logged earlier is flushed first, and the report is the last line.
+    ``mascope file scans`` runs this inside the backend container when the
+    operator CLI has no reader of its own.
+    """
+    parser = argparse.ArgumentParser(
+        prog="python -m mascope_thermo.streams",
+        description="Print a Thermo raw file's scan streams as JSON.",
+    )
+    parser.add_argument("path", help="Path to a Thermo .raw file")
+    parser.add_argument(
+        "--top",
+        type=int,
+        default=10,
+        help="Strongest centroids to report per MS1 stream (default 10)",
+    )
+    args = parser.parse_args(argv)
+
+    from loguru import logger
+
+    logger.remove()
+    report = stream_report(args.path, top=args.top)
+    print(json.dumps(report), flush=True)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

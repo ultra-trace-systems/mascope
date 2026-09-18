@@ -10,12 +10,14 @@ available.
 """
 
 import json
+import subprocess
+import sys
 
 import pytest
 from conftest import NEG_ORBI_FILE_PATH, POS_ORBI_FILE_PATH
 
 from mascope_thermo.backend import _summarize_acquisition_parameters, open_backend
-from mascope_thermo.streams import pooled_ms1_streams, scan_streams
+from mascope_thermo.streams import pooled_ms1_streams, scan_streams, stream_report
 
 
 class _ScriptedReader:
@@ -261,3 +263,50 @@ def test_a_sample_file_is_one_survey_stream(backend, path, polarity):
     assert stream["t_first"] <= stream["t_last"]
     assert stream["acquisition_params"]["scans_sampled"] > 0
     json.dumps(census)  # written verbatim into .props
+
+
+def test_the_report_adds_the_file_header_and_each_survey_streams_top_peaks(backend):
+    report = stream_report(NEG_ORBI_FILE_PATH, top=3)
+
+    assert report["file"] == "KORBI2_AMB_NEG_20260108144525.raw"
+    assert report["model"]
+    assert report["method_file"].endswith(".meth")
+    assert report["scans"] == sum(stream["scans"] for stream in report["streams"])
+    (stream,) = report["streams"]
+    peaks = stream["top_peaks"]
+    assert len(peaks) == 3
+    intensities = [intensity for _mz, intensity in peaks]
+    assert intensities == sorted(intensities, reverse=True)
+    # Nitrate, the reagent ion of this negative-mode acquisition, leads.
+    assert abs(peaks[0][0] - 61.9884) < 0.001
+    json.dumps(report)
+
+
+def test_no_top_peaks_are_read_when_none_are_asked_for():
+    report = stream_report(POS_ORBI_FILE_PATH, top=0)
+    assert "top_peaks" not in report["streams"][0]
+
+
+def test_the_module_prints_the_report_as_its_last_line():
+    """``mascope file scans`` runs this in the backend container and reads the
+    last line of stdout, where the runtime's own log lines also go."""
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "mascope_thermo.streams",
+            POS_ORBI_FILE_PATH,
+            "--top",
+            "2",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=300,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    last = [line for line in result.stdout.splitlines() if line.strip()][-1]
+    report = json.loads(last[last.index("{") :])
+    assert report["file"] == "KORBI2_AMB_POS_20260109174345.raw"
+    assert len(report["streams"][0]["top_peaks"]) == 2
