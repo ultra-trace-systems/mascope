@@ -34,7 +34,7 @@ step PRs land on the epic and are named here as they merge.
 | 2.4e - isotopologue claims under interference | #2143 | measured: a monoisotopic row the envelope-neighbour rule flags under a neighbour held at assigned is read as that neighbour's isotopologue at candidate, the reading it displaced first among its alternatives, unless it is a target library compound, another channel committed its neutral, the neighbour already holds a line there, or its error does not follow the neighbour's within what the line can deliver; the ledger's passes then run again over the claims. An isotopologue's tracking allows for its line's noise below a signal-to-noise of 15 and for a peak within two widths of it: a line only that far off is in doubt and held at candidate, never lower, and one further off is held at candidate at least. Of the 861 flagged rows, 252 are claimed (184 tracking, 68 in doubt) and 578 stay under a neighbour below assigned; the reference had read 67 of the claims as the same formula's isotopologues and 6, all on B and five of them 2H lines, as the M0 the claim displaced. G6 falls from 681 to 596, and no monoisotopic row changes formula or tier, so G1, G1 conditioned and G2 are identical on every set. Set C's 18O, 2H and 13C2 lines of its strongest ion are all its candidate isotopologues. 69 isotopologues go from assigned to candidate, 25 of them lines the reference confirms, and the calibration refits on the three samples where a claimed row had been an anchor. Taken ahead of 2.5f's first PR |
 | 2.4f - an oxygen-free neutral in a nitrate cluster | #2147 | measured: a row read as nitrate clustered with a neutral that has no oxygen - through the plain or labelled ion, or their nitric acid clusters - is held at candidate with the reason `oxygen_free_cluster`, its isotopologues with it; a target library compound is exempt, a reference list's row is not, and no second channel lifts it. Measured two ways with carbonate beside it, the plan owner took the cap and left carbonate out (decision 18's third addendum). The rule names 134 rows on the three nitrate sets and takes 10 from assigned, all on F2, where the reference commits the same reading on one; nothing else moves on 48,894 peaks, G2 is identical on every set, and F2's G1 conditioned goes from 77.6 to 78.6. Restricting the search instead read 75 of F2's 115 rows as the same ion without its proton, 18 of them at assigned; carbonate would have taken 27 rows from assigned, 20 of them on the reference's own formula |
 | 2.6 - frontend: profile, reasons, roles | #2150 | built: the launchers offer the chemistry profile and context, on *Auto*, and name what *Auto* resolves to for the sample or per group of a batch's samples, from two read routes that resolve a run config's names without starting a run; a named profile of the other polarity is warned about. A run's chip names the profile it recorded. The inspector shows `mass_z` beside the ppm error and the same ion's other readings under the tier reasons, and marks the same-ion and displaced alternatives. Reagent and artifact peaks show their role in place of the tier, and the ledger counts, filters and sorts them apart from the tiers. No engine change: no run or gate number moves |
-| 2.7 - stage 2 gate, engine 0.5.0 | - | planned |
+| 2.7 - stage 2 gate, engine 0.5.0 | (this PR) | measured: the 0.5.0 build re-assigned all 43 gate samples, read against the frozen and the refreshed reference. Against the refreshed one G1 meets 20% on A, C, C2 and D (6.1, 10.9, 19.8, 7.8) and misses on B (32.7, of it 23.7 points the reference's silence); G1 conditioned meets it on all eight sets, the TOF sets included; G2's formula bound holds on all five Orbitrap sets and its ion bound on A; G5, G7 and G8 are 0; every committed row carries its reasons, and the top-24 view holds no reagent peak fitted as an analyte. Before the round C2 was recalibrated on weak lines, its two calibrants being its two brightest (the plan owner's rule, now step 3.6): its commits move from -1.14 to -0.08 ppm and it has a usable reference again. The plan owner's IBr2- decision is the polyhalide rule, which takes the top tier from six rows no reference confirms |
 | 2.2b - mass-dependent centre for the mass gate | #2131 | measured: a run's mass gate judges a row at its own m/z where the run's commits demand a centre that follows `ppm = a + b * 1000 / mz`, accepted on peaky's rules; the line is fitted over every committed monoisotopic row (the plan owner's answer, recorded in the step), and the constant centre and the width stay the anchors'. A takes a line on all six samples (-0.113 to -0.137 mDa over m/z 57 to about 500) and C2 on one (-0.077); every other run keeps the constant centre and records the rule that refused the line. It moves no tier, formula, role, owner or cap on 48,894 peaks, and G1, G1 conditioned and G2 are identical on every set: every row that crosses three widths was already below assignability. What moves is `mass_z` - 2,316 rows on A, 130 on C2 - and A's seven itemised curated rows come inside three widths (-3.49..-4.38 to -0.80..-1.62). The plan owner kept the target library's exemption from the cap for now, to be revisited after 2.5d's review (decision 3's third addendum) |
 | 2.7a - reference refresh: peaky's branch rebased on main 0.8.0, re-pinned, the 43 runs re-published | #2151, peaky `epic/v2-fit-reference` at `26e0ff3` | measured: the branch is rebased on peaky's main, pinned to this epic's head and green in CI for the first time since 2.1b, and all 43 runs are re-published at `26e0ff3`, the batch sets pinned to the gate's samples because main's `batch` now picks its own. Against the refreshed reference G1 is 6.1 on A, 10.9 on C, 7.9 on D and 32.7 on B, where the reference is silent on 23.7 points, and G1 conditioned meets 20% on the TOF sets for the first time (E 13.0, F1 7.8, F2 17.1). C2's refreshed reference scores at no offset: step 2.5d's list edits left it four anchors, and peaky skips the labelled reagent's own lines, so C2 is read against the frozen reference until it is recalibrated. `compare_runs.py --engine-b-before` reads the frozen reference from the store |
 | 3.1 - series detection on the batch ledger | - | planned |
@@ -42,6 +42,7 @@ step PRs land on the epic and are named here as they merge.
 | 3.3 - calibration from verdicts, per profile | - | planned |
 | 3.4 - gate automation | - | planned |
 | 3.5 - profiles as versioned rows, routing by detection | - | planned |
+| 3.6 - m/z calibrants below the brightest lines (calibration node) | - | planned |
 
 ## Purpose
 
@@ -1476,6 +1477,32 @@ Corroboration that only a batch can give, on the batch ledger.
   opportunistic channels on a labelled run; peaky #30).
 - **Size.** L. Decision D5.
 
+### 3.6 Calibrants below the brightest lines
+
+- **What.** The m/z calibration node leaves out a calibrant line brighter
+  than a cap, as it already leaves out one below `peak_intensity_min`. The
+  cap is a node parameter, absolute or relative to the base peak, with an
+  instrument-class default, and the fit records it.
+- **Why.** The brightest lines are the worst calibrants on both instruments
+  (the plan owner, 2026-09-18). On the assignment gate the two brightest
+  reagent lines read above every weaker line of the same ladder on every
+  Orbitrap set:
+  - B +1.87 against -0.43 ppm;
+  - C2 +0.60 against -1.41;
+  - D +0.44 against -0.03, the gap growing with the lines' height.
+
+  The Orbitrap fit is one factor, the median of its lines, so a list holding
+  the reagent's own base peak lands between the bright lines and the weak
+  ones. On C2 it left the axis 1.1 ppm low, which step 2.7 refitted by hand.
+  Calibrant lists without the reagent ions already exist for the
+  higher-m/z nitrate modes of the same instrument; the cap makes that the
+  node's rule on every mode.
+- **Verify.** Refit the gate's Orbitrap files with the cap and with today's
+  lists. The committed analytes' median error moves toward zero where bright
+  lines had pulled a fit, and away from it nowhere.
+- **Size.** S. It is the calibration node's, not the engine's, and it
+  re-bases every set it touches, so it lands between rounds.
+
 ## Metrics and targets
 
 ### Baselines (2026-09-07)
@@ -1702,14 +1729,14 @@ C2 is held to C's.
 
 | metric | today A | today B | today C | after stage 1 | after stage 2 | after stage 3 |
 |---|---|---|---|---|---|---|
-| G1 "assigned" rows the reference does not confirm (stage 1 gate: A 41.5%, B 24.3%, C 41.5%, D 37.3% - met; C2 55.2% - missed. After 2.1: A 35.4, B 18.9, C 34.7, C2 40.1, D 21.0 - met on all five, and B inside the stage-2 bound. After 2.4, read on the rows the reference commits an M0 on (decision 14): A 3.1, B 12.3, C 1.3, C2 0.4, D 1.4 - met on all five - against A 23.0, B 36.9, C 21.0, C2 23.1, D 8.4 unconditioned) | 73% | 57% | 99% | <= 45% | <= 20% | <= 15% |
-| G2 reference Assigned peaks recovered: same formula / same ion (stage 1 gate: A 95.6/97.2% and B 95.2/96.1% - both bounds met; C 87.3/87.9% and D 80.1/82.3% - same formula met, same ion missed; C2 68.3% - missed, and 4.2 points of it are the nitrate ladder the pre-pass correctly claims. After 2.1: A 95.6/97.2, B 95.2/96.1, C 87.7/88.2, C2 74.9/74.9, D 80.6/82.8) | 39% / - | 12% / - | 18% / - | >= 80% / >= 95% (A, C), >= 70% / >= 95% (B) | >= 85% / >= 95% | hold |
+| G1 "assigned" rows the reference does not confirm (stage 1 gate: A 41.5%, B 24.3%, C 41.5%, D 37.3% - met; C2 55.2% - missed. After 2.1: A 35.4, B 18.9, C 34.7, C2 40.1, D 21.0 - met on all five, and B inside the stage-2 bound. After 2.4, read on the rows the reference commits an M0 on (decision 14): A 3.1, B 12.3, C 1.3, C2 0.4, D 1.4 - met on all five - against A 23.0, B 36.9, C 21.0, C2 23.1, D 8.4 unconditioned. Stage 2 gate (0.5.0, against the refreshed reference): A 6.1, B 32.7, C 10.9, C2 19.8, D 7.8 - met on A, C, C2 and D; conditioned, within 20% on all eight sets) | 73% | 57% | 99% | <= 45% | <= 20% | <= 15% |
+| G2 reference Assigned peaks recovered: same formula / same ion (stage 1 gate: A 95.6/97.2% and B 95.2/96.1% - both bounds met; C 87.3/87.9% and D 80.1/82.3% - same formula met, same ion missed; C2 68.3% - missed, and 4.2 points of it are the nitrate ladder the pre-pass correctly claims. After 2.1: A 95.6/97.2, B 95.2/96.1, C 87.7/88.2, C2 74.9/74.9, D 80.6/82.8. Stage 2 gate, refreshed reference: A 95.2/96.6, B 93.8/94.8, C 93.7/93.7, C2 87.2/87.2, D 85.0/86.6 - the formula bound met on all five) | 39% / - | 12% / - | 18% / - | >= 80% / >= 95% (A, C), >= 70% / >= 95% (B) | >= 85% / >= 95% | hold |
 | G3 committed formulas with N >= 5; carbon-free formulas (stage 1 gate: A 1.0% - met, B 2.7% - missed, 0.0% on every other set; every carbon-free formula left on any of the 43 samples is a Stage A curated row and the untargeted stage writes none, so the carbon half is met outright. After 2.1: A 1.2% and B 2.8%, still no carbon-free formula from the untargeted stage on any set) | 13%; 59 | 15%; - | 17%; - | <= 1%; 0 off the allowlist | hold | hold |
 | G4 reference reagent peaks labelled reagent or artifact (stage 1 gate: A 48 of 58, B 14 of 24, D 123 of 262, E 48 of 336, F1 50 of 333; on C, C2 and F2 the reference's reagent rows are a different claim, so the raw share does not measure this engine's pass) | 0 of 58 | 0 of 24 | 0 of 29 | >= 90% | 100% | hold |
 | G4a of those, the ones that **name an ion** (step 1.4's own target; stage 1 gate: A 82.8%, B 58.3%, D 84.4%, E 87.3%, F1 74.6% - missed, and A's and B's misses are second centroids and a reference label 5-7 ppm off, not a missing library entry) | 0 of 58 | 0 of 24 | 0 of 15 | >= 90% | 100% | hold |
 | G5 reference Assigned peaks never searched (stage 1 gate: 0 on every set, from 5,304 pooled over A-F2 on the reference's own Assigned tier - A 186, B 4,180, C 7, which reproduces the step-0 baselines beside them) | 190 | 4,181 | 8 | 0 | 0 | 0 |
 | G6 main peaks on reference isotopologues (stage 1 gate: 107 A, 460 B, 328 D, 57 C, 24 C2, 8 E, 57 F1, 33 F2, up from 79/54/75 because the peaks the cap hid are now searched - as a share of committed rows A is flat at 5.2%, B 3.4 -> 5.0%, D 8.8 -> 13.8%. Of the rows 1.6 added, the reference's parent ion is outside the searched grid for 20 of A's 28, 293 of B's 406 and 90 of D's 255 - that part is 2.5b's; the rest have the parent on the grid and are the envelope logic refusing or never predicting the line, which decision 11's rider gives to 2.1 and 2.4. After 1.5 the parent was outside the grid for 78 of A's 79 and 52 of D's 75, which is what decision 11 read. After 2.1: 103 A, 432 B, 314 D, 49 C, 18 C2, 7 E, 61 F1, 33 F2, and of the rows whose parent this engine reads with the reference's own formula 100 -> 83 on B and 32 -> 30 on D. At assigned tier: 159 over the eight sets before step 2.4's tiering and 71 after, 47 of them the grid gap - silicon and phosphorus parents - and 24 the envelope part its height test spares) | 96 | - | - | read, not gated (decision 11: <= 10 after 2.5b) | <= 5 | hold |
-| G7 uncorroborated commits beyond 3 sigma | not gated | not gated | not gated | - | 0 | 0 |
+| G7 uncorroborated commits beyond 3 sigma (stage 2 gate: 0 - no assigned monoisotopic row beyond 3 widths at all) | not gated | not gated | not gated | - | 0 | 0 |
 | G8 untargeted isotopologue rows without an owner (step 1.5's coherence count; was 71 over the bromide Orbitrap set's six samples, 0 on every set after 1.5, at the stage 1 gate and after 2.1, with six to eight times as many peaks searched) | 0 | 0 | 0 | 0 | 0 | 0 |
 | mass error of committed peaks, MAD (stage 1 gate: A 0.22, B 0.30, C 0.17, C2 0.31, D 0.31 ppm - met on all five Orbitrap sets. After 2.1: 0.215, 0.298, 0.168, 0.25, 0.307 - met on all five) | 0.20 ppm | 0.20 ppm | 1.13 ppm | <= 0.35 ppm on an Orbitrap | hold | hold |
 | every committed row carries tier reasons | no | no | no | - | yes | yes |
@@ -4049,7 +4076,12 @@ belongs in the fitted axis once anchors reach below m/z 100, which is step
       list's IBr commits through `+Br-` on 8 peaks the reference reads as
       reagent (D 1, E 3, F1 4), a G4 cost; whether the list keeps IBr on
       those sets or the reagent pre-pass learns IBr2- is decided at 2.7 with
-      the numbers in hand.
+      the numbers in hand. *Decided 2026-09-18 by the plan owner: the list
+      keeps IBr, and on a halide channel it is held at candidate. Neither
+      reference reads IBr on the eight peaks, but both call the peak reagent
+      by a mass-defect rule rather than an identification, and bromide CIMS
+      measures the air's IBr exactly this way; only the peak's time series can
+      tell the air from the source (step 2.7, the polyhalide rule).*
 
 18. **The reference is a reference, not ground truth, and the assigned tier
     is reserved for near-certainty** (taken 2026-09-14 by the plan owner,
@@ -6164,6 +6196,177 @@ axis or its anchors are fixed.
   comparison made before it, byte for byte, on all eight sets.
 - **The anchors:** C2's four and the four labelled base lines were read from
   the peaks endpoint on all six samples.
+
+### The stage 2 gate: engine 0.5.0 (2026-09-18)
+
+Branch `step-2.7-stage-2-gate` deployed on the testbed in prod mode
+(`...-2026.09.18-dc06a54`). All 43 gate samples were re-assigned and read against
+both references. Since step 2.7a, three things changed:
+- **The version.** `PEAK_ASSIGNMENT_ENGINE_VERSION` is 0.5.0.
+- **One rule.** The polyhalide rule is the plan owner's IBr2- decision (decision
+  17's addendum).
+- **One data change, made before the round.** C2 was recalibrated.
+
+#### C2 recalibrated
+
+- **Why.** C2's mode calibrates on two lines, and they are its two brightest.
+  - They are the 15N reagent's base peak (+1.26 ppm, 8.6 million counts) and its
+    labelled dimer (-0.06 ppm, 5.5 million).
+  - Every weaker line of the same ladder reads -0.73 to -1.95 ppm, and the run's
+    committed analytes read -1.13.
+  - The node's Orbitrap fit is one factor, the median of its lines, so it could
+    not move. The plan owner's rule is that the brightest peaks are not
+    calibrants: they carry artifacts and distortion on both instruments (step
+    3.6).
+- **How.** The six files were refitted on a list without the reagent's own
+  lines: nitric acid's weak lines, acetic acid, malonic through azelaic acid
+  and palmitic acid, all existing compounds. The fit and the apply are the
+  node's own.
+  - **The mode keeps its list.** Changing a mode's calibration collection flags
+    every batch of the mode for recalibration and changes what Stage A
+    matches.
+  - **The fit** kept 4 or 5 lines per file, at 3,800 to 97,000 counts, and
+    moved the axis +0.96 to +1.11 ppm. Its residuals are within 0.37 ppm, with
+    no quality issue.
+  - **Afterwards** the six samples were rematched, both engines re-ran C2, and
+    C2's reference was re-published.
+- **What it did.**
+  - **The engine's commits.** The median error of its assigned rows goes
+    from -1.14 to -0.08 ppm, and their spread (median absolute deviation) from
+    0.156 to 0.135.
+  - **The refreshed reference.** Its four anchors still score C2 at no
+    offset, and that is now true. It commits 393 analytes at -0.08 ppm, where
+    it had 159 on the old axis (step 2.7a) and the frozen reference 381.
+  - **C2 has a usable reference again.** G1 against it is 19.8, and G1
+    conditioned 2.7 over 258 rows.
+- **What it does not do.** The frozen reference's C2 runs are on the old axis.
+  Their formulas are still compared peak for peak below, but their mass errors
+  are not comparable.
+
+#### What the round changed
+
+Against the round before it (step 2.6's on 37 samples, C2's recalibrated round
+on six):
+- **The version.** All 43 runs record 0.5.0.
+- **Nothing else moves but the rule's rows.** No peak changes owner, and every
+  set's row counts are identical.
+- **The polyhalide rule names 10 rows**, all from the reactive iodine list on
+  the bromide sets: IBr on eight peaks and ICl on two.
+  - It takes the top tier from six of them: E 1, F1 4, D 1. Neither reference
+    confirms any of the six.
+  - G1 moves on three sets: D 7.9 -> 7.8, E 66.1 -> 66.0 and F1 78.0 -> 77.8.
+    G1 conditioned moves only on F1 (7.8 -> 6.7). G2 is identical everywhere.
+- **The run time.** The 43 runs took 796 s.
+
+#### The gate, against both references
+
+G1 conditioned is decision 14's, over the assigned rows the reference commits
+an M0 on; G2 is against the refreshed reference; G6 counts main peaks at the
+assigned tier on a reference isotopologue.
+
+| set | assigned | G1 frozen / refreshed | G1 conditioned, frozen / refreshed (n) | G2 formula / ion (n) | G6 | MAD ppm |
+|---|---|---|---|---|---|---|
+| A | 1012 | 23.2 / **6.1** | 2.5 (797) / 2.8 (977) | **95.2** / **96.6** (980) | 4 | **0.200** |
+| B | 4078 | 37.2 / 32.7 | 11.9 (2906) / 10.2 (3057) | **93.8** / 94.8 (2164) | 51 | **0.294** |
+| C | 615 | 20.7 / **10.9** | 0.2 (489) / 1.1 (554) | **93.7** / 93.7 (509) | 9 | **0.162** |
+| C2 | 313 | 22.7 / **19.8** | 2.0 (247) / 2.7 (258) | **87.2** / 87.2 (250) | 9 | **0.254** |
+| D | 898 | **8.2** / **7.8** | 1.2 (834) / 1.7 (842) | **85.0** / 86.6 (791) | 3 | **0.317** |
+| E | 235 | 93.6 / 66.0 | 42.3 (26) / **13.0 (92)** | 54.4 / 56.8 (169) | 1 | 2.265 |
+| F1 | 695 | 94.8 / 77.8 | 50.7 (73) / **6.7 (165)** | 41.6 / 42.1 (399) | 6 | 1.013 |
+| F2 | 721 | 96.7 / 83.9 | 76.0 (100) / **17.1 (140)** | 41.2 / 43.1 (318) | 4 | 1.296 |
+
+G1's three parts against the refreshed reference:
+
+| set | contradicts | same ion, other split | does not commit | = G1 |
+|---|---|---|---|---|
+| A | 0.7 | 2.4 | 3.1 | 6.1 |
+| B | 2.2 | 6.8 | 23.7 | 32.7 |
+| C | 2.3 | 0.2 | 8.5 | 10.9 |
+| C2 | 3.8 | 1.3 | 14.7 | 19.8 |
+| D | 1.9 | 0.0 | 5.9 | 7.8 |
+| E | 5.1 | 0.4 | 60.4 | 66.0 |
+| F1 | 2.7 | 0.0 | 75.1 | 77.8 |
+| F2 | 3.5 | 0.4 | 80.0 | 83.9 |
+
+#### Metric by metric
+
+- **G1 `<= 20%`.**
+  - **Against the refreshed reference:** met on A, C, C2 and D (6.1, 10.9,
+    19.8, 7.8) and missed on B (32.7). B's miss is silence: the reference
+    commits nothing on 23.7 of its 32.7 points, and contradicts 2.2.
+  - **Against the frozen reference:** met on D only. That reference is silent
+    on a fifth of A's, C's and C2's assigned rows.
+  - **Conditioned (decision 14):** within 20% on all eight sets against the
+    refreshed reference, the TOF sets included (E 13.0, F1 6.7, F2 17.1).
+    Against the frozen reference it is within 20% on the five Orbitrap sets
+    only.
+- **G2 `>= 85%` same formula, `>= 95%` same ion.** The formula bound is met on
+  all five Orbitrap sets: A 95.2, B 93.8, C 93.7, C2 87.2, D 85.0. The ion
+  bound is met on A only (96.6); B, C, C2 and D read 94.8, 93.7, 87.2 and 86.6.
+- **G3, held.** Formulas with five or more nitrogens: A 0.5%, and 0.0% on every
+  set but B, whose 2.5% is the uronium context's own nitrogen cap of 5. Every
+  carbon-free formula comes from the target library or a reference list (159
+  rows); the formula search writes none, as at stage 1.
+- **G4, `100%`: not met, and unchanged since stage 1.** Of the reference's
+  reagent rows, this engine calls reagent or artifact 48 of 58 on A, 14 of 24
+  on B and 124 of 344 on D. On C, C2 and F2 the reference's reagent rows are a
+  different claim (stage 1's reading).
+- **G5 and G8: 0** on every set.
+- **G6 `<= 5` at assigned:** met on A (4), D (3), E (1) and F2 (4); missed on
+  B (51), C (9), C2 (9) and F1 (6).
+- **G7: 0.** No assigned monoisotopic row sits beyond 3 widths of its run's
+  calibration at all, corroborated or not. Every committed M0 row records its
+  `mass_z`.
+- **The mass error, held.** Every Orbitrap set is inside 0.35 ppm.
+- **Every committed row carries its tier reasons:** 38,190 of 38,190.
+- **The top-24 view.** On the stakeholder sample, the brightest 24 peaks hold six
+  reagent peaks, all labelled reagent, and no reagent peak is fitted as an
+  analyte. The cyclic siloxanes D3 to D5 carry their silicon formulas, and the
+  refreshed reference commits the same formulas on them. Stage 1 had fitted
+  carbon-rich formulas there.
+
+**What the gate says.** The two measures the stage was built to move are met
+on the sets they gate:
+- the share of assigned rows the reference contradicts is 0.7 to 3.8% on the
+  Orbitrap sets and 2.7 to 5.1% on the TOF sets;
+- the assigned rows the reference commits on are confirmed to within 20% on
+  every set.
+
+What is not met:
+- B's silence;
+- the same-ion bound where one ion is read two ways (decision 9's policy);
+- the reagent-agreement target (G4);
+- G6 on four sets.
+
+None of these is a tier the engine asserts without evidence. On the plan's own
+terms, this is the point at which the feature can be re-presented.
+
+**For the plan owner.**
+- **The stakeholder page** is rebuilt from this round against the refreshed
+  reference, as step 1.7 rebuilt it.
+- **The TOF reference** changes its formula on more than half of F1's and F2's
+  shared peaks between its two versions (step 2.7a). A TOF number here is a
+  reading of today's reference, not a settled one.
+- **Stage 3's order** stands: 3.1 series, 3.2 time series (which also settles
+  where a polyhalide came from), 3.3 calibration from verdicts, 3.4 gate
+  automation, 3.5 profiles as rows. 3.6, the calibration node's cap, is
+  independent of the others.
+
+#### Verify, item by item
+
+- **Tests at the head.**
+  - The whole backend suite passes: 3,559 passed and 6 skipped.
+  - The library suite (687) and the frontend unit suite (1,247) pass.
+  - ruff and the strict docs build are clean.
+- **Reversions.** Each new line of the polyhalide rule was reverted and its
+  tests re-run: 7 of 7 red. The frontend label's reversion is red too.
+- **The round.** 43 of 43 runs completed at 0.5.0. The row counts, owners and
+  G2 are identical to the round before, except for the rule's six rows.
+- **C2's recalibration.** The six stored records moved by exactly their fitted
+  factor and stay verified. The records from before are kept, and applying the
+  inverse factor restores the files.
+- **G7 and the tier reasons** were read from the store over every committed row
+  of the round.
 
 ## Not in this plan
 
