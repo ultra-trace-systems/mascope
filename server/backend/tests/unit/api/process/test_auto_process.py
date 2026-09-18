@@ -418,7 +418,8 @@ async def test_skips_calibration_when_no_calibration_collection():
 
 @pytest.mark.asyncio
 async def test_processes_multiple_ionization_modes():
-    """Each ionization mode produces its own calibration + match cycle."""
+    """Each ionization mode is matched; calibrating two modes of one file is
+    skipped, since the file holds a single m/z calibration for both."""
     from mascope_backend.api.controllers.sample.files.process.service import (
         auto_process_sample_file,
     )
@@ -479,9 +480,197 @@ async def test_processes_multiple_ionization_modes():
         process_id="proc-001",
     )
 
-    assert mocks["calibrate"].call_count == 2
+    mocks["calibrate"].assert_not_called()
     assert mocks["match"].call_count == 2
     assert mocks["assign"].call_count == 2
+
+
+def _start_dual_polarity(*, calibrate, neg_collection="cal-neg", pos_collection=None):
+    """Start the base patches for a ``+-`` file, negative polarity first.
+
+    The file carries one ACQUISITION sample item per polarity. ``calibrate``
+    becomes the side effect of ``calibrate_with_retry`` and receives the shared
+    file record to update, the way ``calibration_mz_apply`` stores its fit on
+    the file rather than on the sample item.
+    """
+    sample_file = _make_sample_file(polarity="+-")
+    sample_file.mz_calibration = None
+    ion_modes = {
+        "im-neg": _make_ionization_mode(
+            ionization_mode_id="im-neg",
+            ionization_mode_polarity="-",
+            calibration_collection_id=neg_collection,
+        ),
+        "im-pos": _make_ionization_mode(
+            ionization_mode_id="im-pos",
+            ionization_mode_polarity="+",
+            calibration_collection_id=pos_collection,
+        ),
+    }
+    samples = [
+        _make_sample_item(sample_item_id="si-neg", ionization_mode_id="im-neg"),
+        _make_sample_item(sample_item_id="si-pos", ionization_mode_id="im-pos"),
+    ]
+
+    patches = _base_patches()
+    mocks = {k: p.start() for k, p in patches.items()}
+    mocks["fetch_sample_file"].return_value = sample_file
+    mocks["get_acquisition_dataset"].return_value = {"data": _make_dataset()}
+    mocks["create_batches"].return_value = (
+        samples,
+        [
+            _make_batch(sample_batch_id="batch-neg"),
+            _make_batch(sample_batch_id="batch-pos"),
+        ],
+    )
+    mocks["fetch_affected"].return_value = _make_affected_data(samples)
+
+    async def _calibrate(sample, **_):
+        return await calibrate(sample, sample_file)
+
+    mocks["calibrate"].side_effect = _calibrate
+
+    async def _get_ion_mode(model_class, mode_id):
+        return ion_modes[mode_id]
+
+    mock_session = AsyncMock()
+    mock_session.get = AsyncMock(side_effect=_get_ion_mode)
+    mock_ctx = AsyncMock()
+    mock_ctx.__aenter__ = AsyncMock(return_value=mock_session)
+    mock_ctx.__aexit__ = AsyncMock(return_value=False)
+    mocks["async_session"].return_value = mock_ctx
+    return mocks, sample_file
+
+
+@pytest.mark.asyncio
+async def test_calibrating_one_polarity_keeps_the_others_matches():
+    """
+    Calibrating one polarity must not cost the other polarity its matches.
+
+    The m/z calibration is per file: applying a fit rescales the whole peak
+    store and removes the matches of every sample item on the file. Matching
+    the first polarity before calibrating the second used to lose the first
+    polarity's fresh matches to that apply.
+    """
+    from mascope_backend.api.controllers.sample.files.process.service import (
+        auto_process_sample_file,
+    )
+
+    matches: dict[str, bool] = {}
+
+    async def calibrate(sample, sample_file):
+        # What calibration_mz_apply does to the file's sample items.
+        matches.clear()
+        sample_file.mz_calibration = {"mode": "one-point", "verified": True}
+        return True
+
+    mocks, _ = _start_dual_polarity(
+        calibrate=calibrate, neg_collection=None, pos_collection="cal-pos"
+    )
+
+    async def match(sample_item_id, **_):
+        matches[sample_item_id] = True
+
+    mocks["match"].side_effect = match
+
+    await auto_process_sample_file(
+        sample_file_id="sf-001", independent_transaction=True, process_id="proc-001"
+    )
+
+    mocks["calibrate"].assert_called_once()
+    assert matches == {"si-neg": True, "si-pos": True}
+    assert mocks["assign"].call_count == 2
+
+
+@pytest.mark.asyncio
+async def test_both_polarities_with_calibrants_match_on_the_acquisition_axis():
+    """
+    A file with a calibrant on both polarities is not calibrated at all.
+
+    The file holds one m/z calibration, so the polarity calibrated last would
+    set the axis for both. Both samples are matched on the acquisition axis
+    instead.
+    """
+    from mascope_backend.api.controllers.sample.files.process.service import (
+        auto_process_sample_file,
+    )
+
+    async def calibrate(sample, sample_file):
+        raise AssertionError("a shared-calibration file must not be calibrated")
+
+    mocks, _ = _start_dual_polarity(
+        calibrate=calibrate, neg_collection="cal-neg", pos_collection="cal-pos"
+    )
+
+    await auto_process_sample_file(
+        sample_file_id="sf-001", independent_transaction=True, process_id="proc-001"
+    )
+
+    mocks["calibrate"].assert_not_called()
+    matched = {c.kwargs["sample_item_id"] for c in mocks["match"].call_args_list}
+    assert matched == {"si-neg", "si-pos"}
+    assert mocks["assign"].call_count == 2
+
+
+@pytest.mark.asyncio
+async def test_unverified_calibration_holds_back_the_other_polarity():
+    """
+    An unverified record on the file is shared by every sample on it.
+
+    The verified gate in the match computation would refuse the uncalibrated
+    polarity too, and fail the pipeline with it. Neither sample is matched,
+    and the pipeline still completes.
+    """
+    from mascope_backend.api.controllers.sample.files.process.service import (
+        auto_process_sample_file,
+    )
+
+    async def calibrate(sample, sample_file):
+        sample_file.mz_calibration = {"status": "failed", "verified": False}
+        return False
+
+    mocks, _ = _start_dual_polarity(
+        calibrate=calibrate, neg_collection=None, pos_collection="cal-pos"
+    )
+
+    result = await auto_process_sample_file(
+        sample_file_id="sf-001", independent_transaction=True, process_id="proc-001"
+    )
+
+    mocks["calibrate"].assert_called_once()
+    mocks["match"].assert_not_called()
+    mocks["assign"].assert_not_called()
+    assert "Auto-processing complete" in result["message"]
+
+
+@pytest.mark.asyncio
+async def test_failed_refit_keeps_the_earlier_fit_for_the_other_polarity():
+    """
+    A fit that fails before applying leaves an earlier verified fit in place.
+
+    The failure marker never overwrites an applied fit, so on reprocessing the
+    uncalibrated polarity is still matched on it; only the failed one is held
+    back.
+    """
+    from mascope_backend.api.controllers.sample.files.process.service import (
+        auto_process_sample_file,
+    )
+
+    async def calibrate(sample, sample_file):
+        return False
+
+    mocks, sample_file = _start_dual_polarity(
+        calibrate=calibrate, neg_collection=None, pos_collection="cal-pos"
+    )
+    sample_file.mz_calibration = {"mode": "one-point", "verified": True}
+
+    await auto_process_sample_file(
+        sample_file_id="sf-001", independent_transaction=True, process_id="proc-001"
+    )
+
+    mocks["match"].assert_called_once()
+    assert mocks["match"].call_args.kwargs["sample_item_id"] == "si-neg"
+    mocks["assign"].assert_called_once()
 
 
 @pytest.mark.asyncio
