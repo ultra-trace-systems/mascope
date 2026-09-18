@@ -1,5 +1,3 @@
-import asyncio
-
 from sqlalchemy import (
     and_,
     func,
@@ -31,17 +29,11 @@ from mascope_file.name import get_instrument_name, get_instrument_type
 from mascope_signal.instrument_func.fit import fit_instrument_functions
 
 
-# This service reinforces the a uniqueness constraint:
-#    "Each instrument config must have a unique
-#     name (=method_file) for each instrument."
-#
-# This is achieved by:
-#   1. Ensuring ready functions only get the most recent
-#      record when duplicates are found.
-#   2. Raising an exception when trying to write
-#      duplicate records.
-#
-# TODO - refactor to move this constraint to the database
+# An instrument config belongs to one sample file: ingest fits and inserts a
+# new row for every file it converts, and analysis resolves a file's config
+# only through the file's own foreign key. Rows therefore repeat an
+# (instrument, method_file) pair freely. Listing reports the most recent row
+# per pair; deleting removes the one row it names.
 
 
 @api_controller()
@@ -244,50 +236,25 @@ async def create_instrument_config(
 @api_controller()
 async def delete_instrument_config(instrument_function_id: str):
     """
-    Deletes a instrument function by its unique identifier.
+    Deletes one instrument function by its unique identifier.
 
-    Steps:
-    1. Fetch the instrument function by its ID from the database.
-    2. If the instrument function is found, delete it from the session and commit the changes to the database.
+    Only the named row goes. Other configs that share its instrument and method
+    file are left alone: every sample file has a config of its own, so sharing
+    that pair does not make them the same config. A sample file that pointed at
+    the deleted row loses the link (``ondelete="SET NULL"``).
 
     :param instrument_function_id: The unique identifier of the instrument function to delete.
     :type instrument_function_id: str
     :raises NotFoundException: If no instrument function is found with the provided ID.
     """
-    # Step 1. Get full record from the ID
-    instrument_config = (
-        await get_instrument_config(instrument_function_id=instrument_function_id)
-    ).get("data")
-
-    # Step 2. Retrieve all instrument configs with the same instrument and method file
     async with async_session() as session:
-        result = await session.execute(
-            select(InstrumentConfig).where(
-                InstrumentConfig.instrument == instrument_config["instrument"],
-                InstrumentConfig.method_file == instrument_config["method_file"],
+        instrument_config = await session.get(InstrumentConfig, instrument_function_id)
+        if not instrument_config:
+            raise NotFoundException(
+                f"Instrument config with ID '{instrument_function_id}' not found"
             )
-        )
-        instrument_configs = result.scalars().all()
-    # Step 3. Gather all IDs to be deleted
-    instrument_function_ids = [
-        conf.instrument_function_id for conf in instrument_configs
-    ]
-
-    # Step 4: Delete records
-    async def delete_record(id):
-        async with async_session() as session:
-            instrument_config = await session.get(InstrumentConfig, id)
-            if not instrument_config:
-                raise NotFoundException(
-                    f"Instrument config with ID '{instrument_function_id}' not found"
-                )
-
-            # Step 2: Delete the instrument function and commit changes
-            await session.delete(instrument_config)
-            await session.commit()
-
-    delete_tasks = [delete_record(id) for id in instrument_function_ids]
-    await asyncio.gather(*delete_tasks)
+        await session.delete(instrument_config)
+        await session.commit()
 
     return {
         "message": "Instrument function deleted successfully.",
