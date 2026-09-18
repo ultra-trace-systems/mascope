@@ -136,6 +136,19 @@ class H5Processor(BaseFileProcessor):
         return {}
 
     @property
+    def scan_streams(self) -> list[dict]:
+        """The file's scan streams: none recorded for TofDaq h5 files.
+
+        A TofDaq acquisition is one stream: a single ion mode and one mass
+        axis, with no per-scan filter to tell scans apart. The census exists
+        for Orbitrap files, whose methods can alternate what they measure.
+
+        :return: Empty list
+        :rtype: list[dict]
+        """
+        return []
+
+    @property
     def _is_blank_measurement(self) -> bool:
         """Determine if the file being processed is a blank/zero measurement
 

@@ -115,6 +115,92 @@ def test_acquisition_params_never_fail_ingestion(props, monkeypatch):
     assert processor._get_sample_file_props().acquisition_params == {}
 
 
+def test_scan_streams_are_captured_into_props(props):
+    """The stream census reaches .props via the DLL-free path, and only there."""
+    streams = props.scan_streams
+    assert [stream["key"] for stream in streams] == [
+        "FTMS + p NSI Full ms [40.0000-500.0000] R=120000"
+    ]
+    stream = streams[0]
+    assert stream["signature"]["polarity"] == EXPECTED_POLARITY
+    assert stream["blocks"] == 1
+    assert stream["acquisition_params"]["source"] == "opentfraw"
+    json.dumps(streams)  # .props is written with json.dump
+
+
+def test_scan_streams_never_fail_ingestion(props, monkeypatch):
+    """The census is best-effort, like the acquisition parameters."""
+
+    def boom(self):
+        raise RuntimeError("reader exploded")
+
+    monkeypatch.setattr("mascope_thermo.backend.OpenTFRawBackend.scan_filters", boom)
+    processor = RawProcessor(
+        socket_client=None, file_queue=Queue(), shutdown_event=Event()
+    )
+    processor.file_to_process = str(KORBI_POS)
+    assert processor._get_sample_file_props().scan_streams == []
+
+
+class _TwoRangesPerPolarity:
+    """Reader stand-in for a method that alternates two scan ranges."""
+
+    _FILTERS = (
+        "FTMS - p NSI Full ms [40.0000-160.0000]",
+        "FTMS - p NSI Full ms [128.0000-600.0000]",
+    )
+
+    def scan_filters(self):
+        return [
+            {"scan": n, "time_s": float(n), "filter": self._FILTERS[n % 2]}
+            for n in range(1, 7)
+        ]
+
+    def scan_trailer(self, scan_number):  # noqa: ARG002
+        return {"FT Resolution:": 120000}
+
+    def acquisition_parameters(self, max_scans=5, scan_numbers=None):  # noqa: ARG002
+        return {}
+
+
+def test_pooled_ms1_streams_are_reported_once_at_info(monkeypatch, caplog):
+    """Peak detection pools the two ranges into one peak list. That is a
+    property of the acquisition, reported once, and not a fault."""
+    import logging
+    from contextlib import contextmanager
+
+    # Read from the processor's own stdlib logger rather than through the
+    # runtime logger it is bridged to. Alembic's env.py calls
+    # logging.config.fileConfig, which replaces the root handlers (the bridge
+    # among them) and disables every logger that already exists, so once the
+    # migration tests have run in the same session nothing reaches the bridge.
+    processor_logger = logging.getLogger("mascope_thermo.processor")
+    monkeypatch.setattr(processor_logger, "disabled", False)
+    caplog.set_level(logging.INFO, logger=processor_logger.name)
+
+    processor = RawProcessor(
+        socket_client=None, file_queue=Queue(), shutdown_event=Event()
+    )
+    processor.file_to_process = "ORBI-1_two_ranges.raw"
+
+    @contextmanager
+    def _context(_file_path):
+        yield _TwoRangesPerPolarity()
+
+    processor._file_context_manager = _context
+    streams = processor.scan_streams
+
+    assert len(streams) == 2
+    records = [r for r in caplog.records if r.name == processor_logger.name]
+    pooled = [r for r in records if "MS1 scan streams" in r.getMessage()]
+    assert [r.levelname for r in pooled] == ["INFO"]
+    message = pooled[0].getMessage()
+    assert "2 MS1 scan streams in polarity -" in message
+    assert "[40.0000-160.0000]" in message
+    assert "[128.0000-600.0000]" in message
+    assert not [r for r in records if r.levelno >= logging.WARNING]
+
+
 def test_method_file_never_fails_ingestion(props, monkeypatch):
     """The method name is descriptive metadata: a reader that cannot supply it
     must degrade to "" rather than cost us the file."""

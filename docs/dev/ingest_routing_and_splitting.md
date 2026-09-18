@@ -39,7 +39,7 @@ the table below and ticks its item on #2098.
 
 | Phase | Content | State |
 |---|---|---|
-| 0 | Stop losing information: method identity, stream census, token-rule and notification fixes | in progress: method identity (#2155), dual-polarity calibration order (#2153) and the instrument-config delete (#2156) shipped |
+| 0 | Stop losing information: method identity, stream census, token-rule and notification fixes | in progress; section 10 marks each item as it ships |
 | 1 | Per-file processing state, persistent notifications, "needs a chemistry" | open |
 | 2 | Method bindings: routing without tokens | open |
 | 3 | The part contract: stream and window honoured by every consumer | open |
@@ -772,7 +772,15 @@ Effort is rough.
    counts, time span, blocks) through a filter parser with tests.
    - Sample `acquisition_parameters` per stream instead of over five scans
      mixed across both polarities.
-3. **Flag mixed streams.** A file with more than one MS1 stream in a polarity
+   - Shipped in #2160: `mascope_thermo.scan_filter` parses the filter and
+     `mascope_thermo.streams` takes the census. Each stream carries
+     parameters sampled from its own scans; the whole-file sample stays
+     beside them. `lock` is left out of the signature, because the Thermo
+     library renders it per scan and OpenTFRaw never does. The one remaining
+     difference between the backends is source fragmentation, which
+     OpenTFRaw sometimes omits (one file of the corpus).
+3. **Flag mixed streams** (the INFO line shipped in #2160; the processing
+   detail needs phase 1). A file with more than one MS1 stream in a polarity
    gets a processing detail and an INFO line, until phase 4 handles it.
 4. **Fix the token rule**: one mode per polarity.
 5. **Route the failure notification** to the instrument room and the device

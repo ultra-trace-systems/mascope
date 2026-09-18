@@ -134,7 +134,9 @@ class ReaderBackend(Protocol):
         """Per-scan trailer table ``{"header_labels": [...], "settings": {...}}``."""
         ...
 
-    def acquisition_parameters(self, max_scans: int = ...) -> dict:
+    def acquisition_parameters(
+        self, max_scans: int = ..., scan_numbers: list[int] | None = None
+    ) -> dict:
         """Method-level acquisition parameters sampled from the per-scan trailer.
 
         Returns ``{"source", "scans_sampled", "constant", "varying"}`` -- see
@@ -143,6 +145,30 @@ class ReaderBackend(Protocol):
         field set: it exists to record what acquisitions actually carry, so a
         structured acquisition-method schema can later be designed from
         evidence instead of guesswork.
+
+        Up to ``max_scans`` scans are sampled evenly from ``scan_numbers``, or
+        from every MS1 scan when none are given. A scan stream passes its own
+        scans, so its summary is not a mix of two methods' settings.
+        """
+        ...
+
+    def scan_filters(self) -> list[dict]:
+        """Every scan's filter, in acquisition order.
+
+        ``[{"scan": 1-based number, "time_s": start time [s], "filter": text}]``
+        for every scan of every polarity and MS order. No scan is left out, not
+        even an outlier first scan: this describes the file rather than
+        selecting from it. The text is as the reader renders it; see
+        :mod:`mascope_thermo.scan_filter` for what it holds.
+        """
+        ...
+
+    def scan_trailer(self, scan_number: int) -> dict:
+        """One scan's trailer, the instrument's own ``{label: value}`` table.
+
+        Values are verbatim, so their type depends on the backend (see
+        :func:`_summarize_acquisition_parameters`). Empty when the scan has
+        none.
         """
         ...
 
@@ -678,13 +704,36 @@ class ThermoBackend:
             settings[i] = list(header.Values)
         return {"header_labels": header_labels, "settings": settings}
 
-    def acquisition_parameters(self, max_scans: int = _ACQUISITION_PARAM_SCANS) -> dict:
-        selector = self._selector(None, None, None, "Ms")
-        per_scan = []
-        for i in _sample_evenly(list(selector.scan_indices_1based), max_scans):
-            header = self._raw.GetTrailerExtraInformation(i)
-            per_scan.append(dict(zip(list(header.Labels), list(header.Values))))
+    def acquisition_parameters(
+        self,
+        max_scans: int = _ACQUISITION_PARAM_SCANS,
+        scan_numbers: list[int] | None = None,
+    ) -> dict:
+        if scan_numbers is None:
+            scan_numbers = self._selector(None, None, None, "Ms").scan_indices_1based
+        per_scan = [
+            self.scan_trailer(i) for i in _sample_evenly(list(scan_numbers), max_scans)
+        ]
         return _summarize_acquisition_parameters("thermo", per_scan)
+
+    def scan_filters(self) -> list[dict]:
+        selector = self._selector(ms_type=None)
+        return [
+            {
+                "scan": scan_number,
+                "time_s": stats.StartTime * _SECONDS_PER_MINUTE,
+                "filter": scan_filter.ToString(),
+            }
+            for scan_number, scan_filter, stats in zip(
+                selector.all_scan_indices,
+                selector.raw_scan_filters,
+                selector.raw_scan_stats,
+            )
+        ]
+
+    def scan_trailer(self, scan_number: int) -> dict:
+        header = self._raw.GetTrailerExtraInformation(scan_number)
+        return dict(zip(list(header.Labels), list(header.Values)))
 
     def scan_statistics(
         self,
@@ -1233,18 +1282,35 @@ class OpenTFRawBackend:
         }
         return {"header_labels": header_labels, "settings": settings}
 
-    def acquisition_parameters(self, max_scans: int = _ACQUISITION_PARAM_SCANS) -> dict:
+    def acquisition_parameters(
+        self,
+        max_scans: int = _ACQUISITION_PARAM_SCANS,
+        scan_numbers: list[int] | None = None,
+    ) -> dict:
+        if scan_numbers is None:
+            scan_numbers = [int(s["scan_number"]) for s in self._selected(ms_type="Ms")]
+        per_scan = [
+            self.scan_trailer(n) for n in _sample_evenly(list(scan_numbers), max_scans)
+        ]
+        return _summarize_acquisition_parameters("opentfraw", per_scan)
+
+    def scan_filters(self) -> list[dict]:
+        return [
+            {
+                "scan": int(s["scan_number"]),
+                "time_s": s["retention_time"] * _SECONDS_PER_MINUTE,
+                "filter": s["filter_string"] or "",
+            }
+            for s in self._all_scans()
+        ]
+
+    def scan_trailer(self, scan_number: int) -> dict:
         # scan_parameters() is the instrument's own trailer-extra table -- far
         # richer than the typed subset _OTF_TRAILER_FIELDS surfaces (tens of
         # entries: application mode, FT resolution, AGC target, S-Lens RF, FAIMS
         # state, source CID). Read it directly rather than widening
         # _OTF_TRAILER_FIELDS, whose shape scan_acquisition_settings() pins.
-        scan_numbers = [int(s["scan_number"]) for s in self._selected(ms_type="Ms")]
-        per_scan = [
-            self._raw.scan_parameters(n) or {}
-            for n in _sample_evenly(scan_numbers, max_scans)
-        ]
-        return _summarize_acquisition_parameters("opentfraw", per_scan)
+        return self._raw.scan_parameters(scan_number) or {}
 
     def scan_statistics(
         self,
