@@ -587,6 +587,23 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   and its reason names the rivals. Radicals do not count. The row records
   `provenance.grid_rivals`, and the run records `search_scope.list_hits`.
 
+- **The peak assignment engine is version 0.5.0**, and results from it are
+  not comparable with a 0.4.0 run of the same sample. The version is stamped
+  on every run this server computes, so the two are told apart in the run
+  selector and in any export; a sample assigned before the upgrade keeps its
+  old run and is re-assigned to get the new one. What changed under it is how
+  a committed row earns its tier: the fit judges a candidate at the sample's
+  own mass width and noise, the mass gate calibrates on the run's own
+  commits, a neutral seen through two channels corroborates itself, a
+  compound matched from a list competes with the formula search, a peak an
+  assigned compound's isotope pattern predicts is read as its isotopologue,
+  and every committed row says why it holds its tier. Measured against a
+  reference engine on 43 samples from four instruments and four ionization
+  chemistries, the share of assigned rows the reference contradicts is 0.7 to
+  3.8% on the Orbitrap sets and 2.7 to 5.1% on the time-of-flight sets, and
+  on every set the assigned rows the reference commits on are confirmed to
+  within 20%.
+
 - **A halogen molecule read through a halide is no longer held at assigned.**
   IBr read through bromide is the polyhalide anion IBr2-, which a halide source
   makes from the halogens of the air it samples and from its own, so a run now
