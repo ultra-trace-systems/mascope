@@ -18,6 +18,7 @@ from mascope_backend.file_converter.errors import (
     EmptyAcquisitionError,
 )
 from mascope_thermo.backend import open_backend
+from mascope_thermo.streams import pooled_ms1_streams, scan_streams
 from mascope_thermo.thermo import NoScansFoundError, get_polarity_options
 
 
@@ -137,6 +138,43 @@ class RawProcessor(BaseFileProcessor):
                 exc_info=True,
             )
             return {}
+
+    @property
+    @with_file_context
+    def scan_streams(self) -> list[dict]:
+        """The file's scan streams: its scans grouped by scan signature.
+
+        See :func:`mascope_thermo.streams.scan_streams`. A census like
+        ``acquisition_params``, so it must never cost us a file either: a
+        reader failure degrades to an empty list and a warning.
+
+        Peak detection pools every MS1 scan of a polarity into one peak list,
+        so a polarity whose MS1 scans come from more than one stream is logged
+        at INFO, once per file. It is a property of the acquisition, not a
+        fault.
+
+        :return: One dict per stream, or [] if unavailable
+        :rtype: list[dict]
+        """
+        try:
+            streams = scan_streams(self.file_handle)
+        except Exception:
+            _log.warning(
+                "Could not take the scan stream census of %s",
+                self.file_to_process,
+                exc_info=True,
+            )
+            return []
+        for polarity, keys in pooled_ms1_streams(streams).items():
+            _log.info(
+                "%s holds %d MS1 scan streams in polarity %s, which peak "
+                "detection pools into one peak list: %s",
+                self.file_to_process,
+                len(keys),
+                polarity,
+                "; ".join(keys),
+            )
+        return streams
 
     @property
     @with_file_context

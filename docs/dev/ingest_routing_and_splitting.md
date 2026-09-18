@@ -772,7 +772,15 @@ Effort is rough.
    counts, time span, blocks) through a filter parser with tests.
    - Sample `acquisition_parameters` per stream instead of over five scans
      mixed across both polarities.
-3. **Flag mixed streams.** A file with more than one MS1 stream in a polarity
+   - Shipped in #2160: `mascope_thermo.scan_filter` parses the filter and
+     `mascope_thermo.streams` takes the census. Each stream carries
+     parameters sampled from its own scans; the whole-file sample stays
+     beside them. `lock` is left out of the signature, because the Thermo
+     library renders it per scan and OpenTFRaw never does. The one remaining
+     difference between the backends is source fragmentation, which
+     OpenTFRaw sometimes omits (one file of the corpus).
+3. **Flag mixed streams** (the INFO line shipped in #2160; the processing
+   detail needs phase 1). A file with more than one MS1 stream in a polarity
    gets a processing detail and an INFO line, until phase 4 handles it.
 4. **Fix the token rule**: one mode per polarity. Shipped in #2158.
 5. **Route the failure notification** to the instrument room and the device
