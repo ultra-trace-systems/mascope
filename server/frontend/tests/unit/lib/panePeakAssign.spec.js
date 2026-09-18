@@ -2289,3 +2289,160 @@ describe('PanePeakAssign the same ion read another way', () => {
     expect(firstLines[3]).toBe('fit: 40%')
   })
 })
+
+// What the row is, named outright above the evidence: the ionization the ion
+// was read through, and what a reference list calls the formula.
+describe('PanePeakAssign ionization and reference lists', () => {
+  const DMF = {
+    ...assignment({ formula: 'C3H7NO', tier: 'below_assignability' }),
+    ion_formula: 'C3H8NO+',
+    ionization_mechanism_id: 'm-h',
+    source: 'database'
+  }
+  const LISTED = { name: 'N,N-Dimethylformamide', source: 'contaminants-list' }
+  const ACROLEIN = { name: 'Acrolein', source: 'organics-list' }
+  const field = (wrapper, id) => wrapper.find(`[data-testid="${id}"]`)
+
+  beforeEach(() => {
+    focusedAssignment = DMF
+    mechanisms = [
+      { ionization_mechanism_id: 'm-h', ionization_mechanism: '+H+' },
+      { ionization_mechanism_id: 'm-nh4', ionization_mechanism: '+NH4+' }
+    ]
+  })
+
+  it('names the ionization, and says on hover what it made of the neutral', async () => {
+    const wrapper = await mountPane({ recordTooltips: true })
+
+    expect(field(wrapper, 'ionization').find('.k').text()).toBe('ionization')
+    expect(field(wrapper, 'ionization').find('.v').text()).toBe('+H+')
+    expect(field(wrapper, 'ionization').find('.k').attributes('data-tooltip')).toContain(
+      'C3H7NO +H+ gives C3H8NO+'
+    )
+  })
+
+  it('stands above the evidence', async () => {
+    const wrapper = await mountPane()
+    const order = [...wrapper.find('section.inspector').element.children].map(
+      (node) => node.classList[0]
+    )
+    expect(order.indexOf('identity')).toBe(order.indexOf('evidence') - 1)
+  })
+
+  it('leaves the ionization out where the deployment does not list the mechanism', async () => {
+    focusedAssignment = { ...DMF, ionization_mechanism_id: 'm-retired' }
+    const wrapper = await mountPane()
+    expect(field(wrapper, 'ionization').exists()).toBe(false)
+  })
+
+  it('names the compound a list matched, and its list', async () => {
+    detailRecord = { provenance: { reference_identities: [LISTED] }, known_compounds: [] }
+    const wrapper = await mountPane({ recordTooltips: true })
+    const listed = field(wrapper, 'listed-as')
+
+    expect(listed.find('.k').text()).toBe('reference list')
+    expect(listed.find('.v').text()).toBe('N,N-Dimethylformamide')
+    expect(listed.find('.list-source').text()).toBe('contaminants-list')
+    expect(listed.attributes('data-tooltip')).toContain(
+      'The run matched this formula from a reference list.'
+    )
+  })
+
+  it('names a formula a list holds that the run did not match from it as potential', async () => {
+    focusedAssignment = { ...DMF, source: 'untargeted' }
+    detailRecord = { provenance: {}, known_compounds: [LISTED] }
+    const wrapper = await mountPane({ recordTooltips: true })
+    const listed = field(wrapper, 'listed-as')
+
+    expect(listed.find('.k').text()).toContain('potential')
+    expect(listed.find('.v').text()).toBe('N,N-Dimethylformamide')
+    expect(listed.attributes('data-tooltip')).toContain('the name is a lead to check')
+  })
+
+  it("prefers the run's own match to the lookup", async () => {
+    detailRecord = {
+      provenance: { reference_identities: [LISTED] },
+      known_compounds: [ACROLEIN]
+    }
+    const wrapper = await mountPane()
+    expect(field(wrapper, 'listed-as').find('.v').text()).toBe('N,N-Dimethylformamide')
+    expect(field(wrapper, 'listed-as').find('.potential').exists()).toBe(false)
+  })
+
+  it('shows no list line where no list names the formula', async () => {
+    detailRecord = { provenance: {}, known_compounds: [] }
+    const wrapper = await mountPane()
+    expect(field(wrapper, 'listed-as').exists()).toBe(false)
+  })
+
+  it('names what a list calls another reading of the ion', async () => {
+    detailRecord = {
+      provenance: {},
+      alternatives: [
+        {
+          assigned_formula: 'C3H4O',
+          ion_formula: 'C3H8NO+',
+          ionization_mechanism_id: 'm-nh4',
+          same_ion: true,
+          known_compounds: [ACROLEIN]
+        }
+      ]
+    }
+    const wrapper = await mountPane({ recordTooltips: true })
+    const reading = wrapper.find('[data-testid="same-ion"] .reading')
+
+    expect(reading.find('.reading-listed').text()).toBe('Acrolein')
+    expect(reading.find('.reading-listed').attributes('data-tooltip')).toContain(
+      'Acrolein (organics-list)'
+    )
+  })
+
+  it('names what a list calls a close alternative, on the row and on hover', async () => {
+    detailRecord = {
+      provenance: {},
+      alternatives: [
+        { assigned_formula: 'C4H11N', fit_score: 0.3, reference_identities: [ACROLEIN] },
+        { assigned_formula: 'C2H5N3', fit_score: 0.2 }
+      ]
+    }
+    const wrapper = await mountPane({ recordTooltips: true })
+    const rows = wrapper.findAll('.alt')
+
+    expect(rows[0].find('.alt-listed').text()).toBe('Acrolein')
+    expect(rows[0].attributes('data-tooltip')).toContain(
+      'The run matched this formula from a reference list.'
+    )
+    expect(rows[1].find('.alt-listed').exists()).toBe(false)
+  })
+
+  it('leads the reasons with the band that set the tier', async () => {
+    detailRecord = {
+      provenance: {
+        tier_reasons: [
+          {
+            rule: 'evidence_band',
+            detail: 'evidence 8% (fit 8% x plausibility 100%) is under the candidate band of 45%',
+            caps: true,
+            band: 'below_assignability'
+          },
+          {
+            rule: 'corroborated',
+            detail: 'the same neutral is committed through 2 of the run channels',
+            caps: false
+          }
+        ]
+      }
+    }
+    const wrapper = await mountPane({ recordTooltips: true })
+    const reasons = wrapper.findAll('.tier-reasons .reason')
+
+    expect(reasons.map((row) => row.find('.reason-rule').text())).toEqual([
+      'evidence band',
+      'second channel'
+    ])
+    expect(reasons[0].classes()).toContain('caps')
+    expect(reasons[0].attributes('data-tooltip')).toBe(
+      "Sets this row's tier: the reasons below can only lower it further"
+    )
+  })
+})

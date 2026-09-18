@@ -13,6 +13,7 @@ import {
 // the backend's own tests pin that side. What this pins is that every one of
 // them has a name here, so none falls through to its raw key on screen.
 const SERVER_RULES = [
+  'evidence_band',
   'odd_electron',
   'oxygen_free_cluster',
   'polyhalide_cluster',
@@ -22,8 +23,10 @@ const SERVER_RULES = [
   'carbon_free',
   'off_calibration',
   'ambiguous_nitrogen',
+  'ambiguous_adduct',
   'minor_channel',
   'corroborated',
+  'same_ion_settled',
   'no_close_rival',
   'not_measured',
   'inherited_from_owner',
@@ -150,6 +153,18 @@ describe('reasonTooltip', () => {
     expect(reasonTooltip(STANDS, 'assigned')).toBe(
       'Caps nothing: this row holds the tier its evidence earned'
     )
+  })
+
+  // The band is where the row's evidence put it before any rule, so it does
+  // not "hold" or "would hold" anything: it is the floor the rules lower from.
+  it('says the evidence band sets the tier, whatever the tier is', () => {
+    const band = { rule: 'evidence_band', caps: true }
+    for (const tier of ['candidate', 'below_assignability']) {
+      expect(reasonTooltip(band, tier)).toBe(
+        "Sets this row's tier: the reasons below can only lower it further"
+      )
+    }
+    expect(reasonIcon(band)).toBe('ph-arrow-down')
   })
 
   it("names the M0 as the row a reason read off an isotopologue's M0 is about", () => {
