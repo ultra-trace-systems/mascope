@@ -52,6 +52,9 @@ All methods returning time values convert internal units (minutes) to **seconds*
 - **`tic_per_scan()`**: Returns the Total Ion Current (TIC) for every scan.
 - **`scan_statistics(scan_number)`**: Retrieves per-scan metrics (e.g., BasePeakIntensity, Frequency) defined in `SCAN_STAT_FIELDS`.
 - **`scan_acquisition_settings(scan_number)`**: Returns detailed acquisition parameters.
+- **`scan_filters()`**: Returns every scan's number, start time in seconds and filter text, in acquisition order, with no scan left out.
+- **`scan_trailer(scan_number)`**: Returns one scan's trailer, the instrument's own `{label: value}` table. Values are text from the Thermo backend and typed scalars from OpenTFRaw.
+- **`acquisition_parameters(max_scans, scan_numbers)`**: Summarises the trailers of up to `max_scans` scans, sampled evenly from `scan_numbers` (every MS1 scan by default), into the values constant across them and the names of those that vary.
 - **`scan_indices()`**: Returns the integer indices for all scans in the raw file.
 - **`mass_range(scan_number)`**: Returns the m/z range for the specified scan.
 
@@ -69,6 +72,12 @@ All methods returning time values convert internal units (minutes) to **seconds*
 - **`ms2_events_by_scan(scan_number)`**: Decodes and returns the precursor m/z and activation (e.g. `hcd40.00`) for MS2 acquisition events. The activation is what separates the steps of a stepped-energy acquisition, whose scans share one precursor.
 - **`ms2_acquisition_info(scan_number)`**: Returns specialized MS2 metadata, such as isolation width and collision energy.
 - **`ms2_centroids_for_scans(scan_indices)`**: Retrieves centroid data specifically for a set of MS2 scans.
+
+## Scan Streams
+
+`mascope_thermo.scan_filter` parses a scan filter (`FTMS - p NSI Full ms [40.0000-600.0000]`) into the signature that tells scan streams apart: analyzer, polarity, scan data type, source, source fragmentation, FAIMS CV, scan mode, MS order, the precursors of targeted MSn scans, and the scan ranges. `mascope_thermo.streams.scan_streams` groups a file's scans by that signature plus the trailer's FT resolution, and reports per stream its scan count, blocks, time span and its own acquisition parameters. The converter stores the result in `.props` as `scan_streams`.
+
+The two backends render some filters differently. The Thermo library writes `lock` on each scan that found its lock mass, and OpenTFRaw never does; `lock` describes one scan's outcome, so it is left out of the signature. The Thermo library also renders the source fragmentation (`sid=`) of some scans that OpenTFRaw renders without it. On the internal regression corpus, the census agrees between the backends on 181 of 182 readable files, and that is the one difference.
 
 ## Underlying Algorithms
 

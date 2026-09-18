@@ -129,6 +129,10 @@ class _ScanlessRawFile:
     def method_file(self):
         return ""
 
+    def scan_filters(self):
+        # A census of no scans is empty, as the real readers report it.
+        return []
+
 
 class _PopulatedRawFile:
     def scan_times(self, ms_type=None):  # noqa: ARG002
