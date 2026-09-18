@@ -327,3 +327,30 @@ class TestTheRunsChannels:
         assert judged_rows["pa-x"]["tier"] == "candidate"
         assert judged_rows["pa-y"]["role"] == "M0"
         assert judged.tiering["held"] == {"neighbour_not_assigned": 1}
+
+
+class TestTheBandsReachTheReasons:
+    def test_a_row_under_the_top_band_names_it_first(self):
+        low = commit("pa-low", "C6H12O6", "C6H13O6+", 200.0, 1000.0)
+        low["fit_score"] = 0.3
+        low["tier"] = "below_assignability"
+        low["provenance"]["evidence"] = 0.3
+        judged = judge_commits(
+            anchors() + [low],
+            stage_a_accuracy=SampleMassAccuracy(),
+            fallback_sigma_ppm=0.3,
+            notation_by_id={"im-1": "+H+"},
+            mz_tolerance_ppm=5.0,
+            abundance_floor=0.01,
+            max_alternatives=5,
+            tier_bands={"assigned": 0.75, "candidate": 0.45},
+        )
+        row = by_id(judged.rows)["pa-low"]
+        assert rules(row)[0] == "evidence_band"
+        assert judged.tiering["under_band"] == 1
+
+    def test_a_caller_that_states_no_bands_gets_no_band_line(self):
+        low = commit("pa-low", "C6H12O6", "C6H13O6+", 200.0, 1000.0)
+        low["provenance"]["evidence"] = 0.3
+        judged = judge(anchors() + [low])
+        assert "evidence_band" not in rules(by_id(judged.rows)["pa-low"])
