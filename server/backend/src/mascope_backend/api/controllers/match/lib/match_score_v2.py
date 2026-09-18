@@ -36,11 +36,7 @@ import numpy as np
 import pandas as pd
 
 from mascope_tools.composition.heuristic_filter import calibrate_score, score_pattern_v2
-
-
-# Correct matches spread wider than the calibration-anchor precision (centroiding +
-# prediction error + analyte tail); added in quadrature to the fitted instrument sigma.
-PRED_SIGMA_PPM = 0.5
+from mascope_tools.composition.mass_accuracy import PRED_SIGMA_PPM
 
 
 def match_score_version() -> int:
@@ -56,24 +52,6 @@ def match_score_version() -> int:
         return int(os.environ.get("MASCOPE_MATCH_SCORE_VERSION", "1"))
     except (TypeError, ValueError):
         return 1  # malformed value -> the default
-
-
-def fit_sample_mass_accuracy(
-    match_isotope_df: pd.DataFrame,
-) -> tuple[float, float | None]:
-    """Robust (mu, sigma) ppm of the matched isotopologues' mass error — the
-    instrument's measured mass accuracy (resolution-correct, Orbitrap vs TOF).
-    Returns sigma=None when there are too few matched anchors (caller falls back)."""
-    me = pd.to_numeric(match_isotope_df.get("match_mz_error"), errors="coerce")
-    inten = pd.to_numeric(
-        match_isotope_df.get("sample_peak_intensity"), errors="coerce"
-    )
-    me = me[(inten.fillna(0) > 0) & me.notna()]
-    if len(me) < 8:
-        return 0.0, None
-    mu = float(me.median())
-    sigma = max(float(1.4826 * (me - mu).abs().median()), 0.05)
-    return mu, sigma
 
 
 def sample_noise_floor(match_isotope_df: pd.DataFrame) -> float:
@@ -94,7 +72,7 @@ def ion_score_v2(
     group: pd.DataFrame,
     *,
     sigma_ppm: float | None = None,
-    mu: float = 0.0,
+    mu: float | None = 0.0,
     noise: float = 1.0,
     calibrate: bool = False,
     calibration: tuple[float, float] | None = None,
@@ -118,6 +96,13 @@ def ion_score_v2(
     conflated dynamic range with signal-to-noise; the kwarg stays so the four call sites
     that still pass a `sample_noise_floor` keep working until they are cleaned up.
 
+    `mu` is the sample's fitted mass offset, and ``None`` means none was fitted -
+    `fit_mass_accuracy` answers that for a sample with too few anchors to measure one.
+    An unmeasured offset is scored as no offset, which is what "uncorrected" means;
+    it is stated here rather than at each call site so that the three of them cannot
+    answer it differently, and so that a caller wanting to know whether an offset was
+    measured has to ask the fit rather than read it off a zero.
+
     `calibrate=True` recasts the fit as a single-candidate P(correct) — a confidence-layer
     concern, not the headline match score — and REQUIRES `calibration`, the Platt `(a, b)`
     fitted for this instrument/dataset. The library default was fitted on the demo
@@ -130,6 +115,7 @@ def ion_score_v2(
             "(DEFAULT_CALIBRATION_V2) was fitted on the demo Orbitrap golden set and is "
             "not transferable."
         )
+    mu = 0.0 if mu is None else float(mu)
     g = group.sort_values("relative_abundance", ascending=False)
     pr = pd.to_numeric(g["relative_abundance"], errors="coerce").to_numpy(float)
     if pr.size == 0 or not np.isfinite(pr).any() or np.nanmax(pr) <= 0:

@@ -55,6 +55,8 @@ let verdictPeakId
 // The focused sample's run record; `{ engine: 'batch' }` is a sample served
 // from the batch ledger rather than from a run of its own.
 let runRecord
+// What the store's histogram answers for the strip above the table.
+let tierCountsRecord
 
 // Minimal help-mode facade: the pane registers help cards through these calls;
 // the tests only need them to resolve.
@@ -100,7 +102,7 @@ function makeApp() {
         peak: {
           list: assignmentList,
           pending: false,
-          tierCounts: {},
+          tierCounts: tierCountsRecord,
           childrenOf: (id) => childrenByOwner.get(id) ?? [],
           // Stands in for the store's family resolution; the rule itself is
           // pinned against the real implementation in
@@ -131,7 +133,13 @@ vi.mock('@/lib/base', async () => ({
   BaseRunProvenance: (await vi.importActual('@/lib/base/BaseRunProvenance.vue')).default
 }))
 
-vi.mock('@/lib/dialogs', () => ({ PeakAssignConfigForm: true }))
+vi.mock('@/lib/dialogs', () => ({
+  PeakAssignConfigForm: {
+    props: ['hidden', 'sampleItemId', 'sampleBatchId'],
+    template:
+      '<div class="config-form-stub" :data-sample="sampleItemId" :data-batch="sampleBatchId" />'
+  }
+}))
 
 // The pane imports the shared parameter store, which reaches for /params.
 // The launcher dialog's form is stubbed above, so nothing here fetches it;
@@ -366,6 +374,7 @@ beforeEach(() => {
   verdictPeakId = null
   overlayRecord = null
   runRecord = null
+  tierCountsRecord = {}
   seed()
 })
 
@@ -389,6 +398,10 @@ describe('PaneBrowserAssignment launcher', () => {
     const wrapper = await mountPane()
     wrapper.vm.configVisible = true
     await wrapper.vm.$nextTick()
+    // The form names the chemistry the run would use on the sample it is for.
+    const form = wrapper.find('.config-form-stub')
+    expect(form.attributes('data-sample')).toBe('si-1')
+    expect(form.attributes('data-batch')).toBeUndefined()
 
     await wrapper.vm.launch()
 
@@ -752,12 +765,12 @@ describe('PaneBrowserAssignment adduct corroboration', () => {
     const rows = rowsById(wrapper)
 
     expect(wrapper.vm.corrobTooltip(rows.get('a-c0'))).toBe(
-      'Supported by 3 adducts, via the M0 of this isotopologue family ' +
+      'Supported by 3 channels, via the M0 of this isotopologue family ' +
         "(folded into the M0's P(correct), not into this row's)"
     )
     // The M0's own tooltip is the one it always had.
     expect(wrapper.vm.corrobTooltip(rows.get('a'))).toBe(
-      'Supported by 3 adducts (already folded into P(correct))'
+      'Supported by 3 channels (already folded into P(correct))'
     )
   })
 
@@ -770,6 +783,65 @@ describe('PaneBrowserAssignment adduct corroboration', () => {
 
     expect(wrapper.vm.corrobLabel(rows.get('a-c0'))).toBe('(3)')
     expect(wrapper.vm.corrobLabel(rows.get('a'))).toBe('3')
+  })
+
+  // An untargeted family carries no curated count at all - that is the normal
+  // case in a ledger - so the channel count is what has to reach the marker,
+  // parent and isotopologues alike.
+  it('marks an untargeted family from its channel count', async () => {
+    const fam = corroborated(null)
+    fam.parent.corroboration_channels = 3
+    const wrapper = await unfolded(fam)
+    const rows = rowsById(wrapper)
+
+    expect(rows.get('a').corrobAdducts).toBe(3)
+    expect(rows.get('a').corrobInherited).toBe(false)
+    for (const id of ['a-c0', 'a-c1']) {
+      expect(rows.get(id).corrobAdducts, id).toBe(3)
+      expect(rows.get(id).corrobInherited, id).toBe(true)
+    }
+  })
+
+  // The channel count is folded into nothing, so the marker must not repeat the
+  // curated count's claim that P(correct) already accounts for it.
+  it('does not claim a channel count is in P(correct)', async () => {
+    const fam = corroborated(null)
+    fam.parent.corroboration_channels = 3
+    const wrapper = await unfolded(fam)
+    const rows = rowsById(wrapper)
+
+    expect(wrapper.vm.corrobTooltip(rows.get('a'))).toBe(
+      'Supported by 3 channels (not included in the P(correct) beside it)'
+    )
+    expect(wrapper.vm.corrobTooltip(rows.get('a-c0'))).toBe(
+      'Supported by 3 channels, via the M0 of this isotopologue family ' +
+        '(not included in the P(correct) beside it)'
+    )
+  })
+
+  // The inheritance is a fallback, not an override. A backend that does put a
+  // count on an isotopologue - the row is the one being described, after all -
+  // must see it rendered as the row's own rather than replaced by its parent's.
+  it("shows an isotopologue's own count rather than inheriting", async () => {
+    const fam = corroborated(null, [{ corroboration_channels: 2 }, {}])
+    fam.parent.corroboration_channels = 4
+    const wrapper = await unfolded(fam)
+    const rows = rowsById(wrapper)
+
+    expect(rows.get('a-c0').corrobAdducts).toBe(2)
+    expect(rows.get('a-c0').corrobInherited).toBe(false)
+    // Its sibling has none of its own and still borrows the family's.
+    expect(rows.get('a-c1').corrobAdducts).toBe(4)
+    expect(rows.get('a-c1').corrobInherited).toBe(true)
+  })
+
+  // Where a curated row carries both, the channel count is the superset.
+  it('prefers the channel count over the curated one', async () => {
+    const fam = corroborated(2)
+    fam.parent.corroboration_channels = 4
+    const wrapper = await unfolded(fam)
+
+    expect(rowsById(wrapper).get('a').corrobAdducts).toBe(4)
   })
 
   // The marker is gated on `corrobAdducts > 1`, so an uncorroborated family has
@@ -898,6 +970,91 @@ describe('PaneBrowserAssignment adduct corroboration', () => {
   })
 })
 
+// An unfolded isotopologue row is labelled by how it differs from its family's
+// M0. For the 15N-nitrate ion C9H16O7^N- the M0 is the bracketed [15N]C9H16O7-,
+// and the one line without a bracket, C9H16NO7-, is the reagent's unlabelled
+// remainder: read off the brackets alone it was labelled "M0", indented under
+// the family's real one. The ion formula on the rows says which brackets are
+// labels.
+describe('PaneBrowserAssignment isotopologue labels', () => {
+  const ION = 'C9H16O7^N-'
+
+  beforeEach(() => {
+    runList = [{ peak_assignment_run_id: 'run-1', status: 'completed' }]
+  })
+
+  /** The labelled family, every row naming its ion unless `children` says otherwise. */
+  const labelledFamily = (children = [{}, {}]) => {
+    const fam = family({
+      id: 'n',
+      mz: 251.0903,
+      intensity: 1000,
+      formula: 'C9H16O4',
+      children: [
+        { sample_peak_mz: 250.0932, isotope_label: 'M-1', isotope_formula: 'C9H16NO7-' },
+        { sample_peak_mz: 252.0936, isotope_label: 'M+1', isotope_formula: '[13C][15N]C8H16O7-' }
+      ].map((child, index) => ({ ion_formula: ION, ...child, ...children[index] }))
+    })
+    Object.assign(fam.parent, { ion_formula: ION, isotope_formula: '[15N]C9H16O7-' })
+    return fam
+  }
+
+  // The shared stubs render no cell, so the rows are passed down to the Column
+  // stub, as the corroboration tests do, to read the label the cell shows.
+  async function renderedLabels(...families) {
+    const tableRows = ref([])
+    seed(...families)
+    const wrapper = mount(PaneBrowserAssignment, {
+      global: {
+        directives: { tooltip: {}, help: {} },
+        stubs: {
+          ...GLOBAL_STUBS,
+          DataTable: {
+            ...GLOBAL_STUBS.DataTable,
+            watch: {
+              value: { handler: (value) => (tableRows.value = value), immediate: true }
+            }
+          },
+          Column: {
+            setup: () => ({ rows: tableRows }),
+            template:
+              '<div class="col"><template v-for="(row, i) in rows" :key="i">' +
+              '<slot name="body" :data="row" /></template></div>'
+          }
+        }
+      }
+    })
+    wrapper.vm.showIsotopologues = true
+    await wrapper.vm.$nextTick()
+    return wrapper.findAll('.child-label').map((cell) => cell.text())
+  }
+
+  it('counts a labelled family from its labelled line, the remainder at 14N', async () => {
+    expect(await renderedLabels(labelledFamily())).toEqual(['[14N]', '[13C]'])
+  })
+
+  it("reads an isotopologue that names no ion through its M0's", async () => {
+    const fam = labelledFamily([{ ion_formula: null }, { ion_formula: undefined }])
+
+    expect(await renderedLabels(fam)).toEqual(['[14N]', '[13C]'])
+  })
+
+  it('keeps the brackets of an unlabelled family', async () => {
+    const bromine = family({
+      id: 'br',
+      mz: 328.6817,
+      intensity: 176,
+      formula: 'CHBr3',
+      children: [
+        { sample_peak_mz: 330.6797, isotope_formula: '[81Br]CHBr3-' },
+        { sample_peak_mz: 332.6776, isotope_formula: '[81Br]2CHBr2-' }
+      ].map((child) => ({ ion_formula: 'CHBr4-', ...child }))
+    })
+
+    expect(await renderedLabels(bromine)).toEqual(['[81Br]', '[81Br]2'])
+  })
+})
+
 // A dash in the P(correct) column has several different causes and only one of
 // them is about the instrument's calibration. Naming the wrong one is worse than
 // naming none: "no calibration curve for this instrument" on a hand-assigned row
@@ -914,7 +1071,7 @@ describe('PaneBrowserAssignment uncalibrated P(correct)', () => {
     { id: 'hand', source: 'manual', formula: 'C10H12' },
     { id: 'untargeted', source: 'untargeted', formula: 'C6H6' },
     { id: 'engine', source: 'database', formula: 'C2H6' },
-    // A satellite that curation stripped when its M0 was reassigned: a person's
+    // An isotopologue that curation stripped when its M0 was reassigned: a person's
     // edit is what unassigned it, so the backend leaves source 'manual' on it,
     // and it holds no formula at all.
     { id: 'stripped', source: 'manual', formula: null, tier: 'unassigned', role: 'unassigned' }
@@ -1620,5 +1777,74 @@ describe('PaneBrowserAssignment row actions', () => {
     expect(cell.exists()).toBe(true)
     expect(cell.classes()).toContain('unjudged')
     expect(cell.classes()).not.toContain('empty')
+  })
+})
+
+// The source's and the instrument's peaks, each with a chip of its own after the
+// tiers. Their rows sit at tier `unassigned`, so without their own buckets they
+// were filtered and sorted among the peaks nothing explained.
+describe('PaneBrowserAssignment reagent and artifact peaks', () => {
+  const peak = (id, role, tier = 'unassigned', fit = null) =>
+    family({ id, mz: 100 + id.length, intensity: 10, formula: null, tier, fit, role })
+
+  beforeEach(() => {
+    runList = [{ peak_assignment_run_id: 'run-1', status: 'completed' }]
+    seed(
+      family({ id: 'm', mz: 150.1, intensity: 50, formula: 'C6H12O6', tier: 'assigned' }),
+      peak('u', 'unassigned'),
+      peak('r', 'reagent'),
+      peak('x', 'artifact'),
+      peak('rr', 'reagent')
+    )
+    tierCountsRecord = {
+      assigned: 1,
+      candidate: 0,
+      below_assignability: 0,
+      unassigned: 1,
+      reagent: 2,
+      artifact: 1
+    }
+  })
+
+  const chips = (wrapper) => wrapper.findAll('.tier-stat')
+
+  it('counts each role with a chip of its own, after the tiers', async () => {
+    const wrapper = await mountPane()
+
+    expect(chips(wrapper).map((chip) => chip.text())).toEqual([
+      '1 assigned',
+      '0 candidate',
+      '0 below',
+      '1 unassigned',
+      '2 reagent',
+      '1 artifact'
+    ])
+    // Set off from the tiers where the roles begin.
+    expect(chips(wrapper)[4].classes()).toContain('roles-start')
+    expect(chips(wrapper)[5].classes()).not.toContain('roles-start')
+  })
+
+  it('filters to one role at a time, and never to the unassigned peaks with them', async () => {
+    const wrapper = await mountPane()
+
+    await chips(wrapper)[5].trigger('click')
+    expect(ids(wrapper)).toEqual(['x'])
+
+    await chips(wrapper)[5].trigger('click')
+    await chips(wrapper)[3].trigger('click')
+    expect(ids(wrapper)).toEqual(['u'])
+
+    await chips(wrapper)[4].trigger('click')
+    expect(ids(wrapper).sort()).toEqual(['r', 'rr', 'u'])
+  })
+
+  it('sorts the role rows after every tier, reagent before artifact', async () => {
+    const wrapper = await mountPane()
+
+    const order = ids(wrapper)
+    expect(order[0]).toBe('m')
+    expect(order[1]).toBe('u')
+    expect(order.slice(2, 4).sort()).toEqual(['r', 'rr'])
+    expect(order[4]).toBe('x')
   })
 })

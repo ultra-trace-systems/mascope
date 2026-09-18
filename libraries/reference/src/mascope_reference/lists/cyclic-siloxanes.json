@@ -1,0 +1,34 @@
+{
+  "schema_version": 2,
+  "id": "cyclic-siloxanes",
+  "label": "Cyclic volatile methylsiloxanes, D3 to D8",
+  "data_version": "2026.09.2",
+  "license": "CC-BY-4.0",
+  "references": [
+    {
+      "citation": "S. Genualdi, T. Harner, Y. Cheng, et al., Global distribution of linear and cyclic volatile methyl siloxanes in air. Environmental Science & Technology 45 (2011) 3349-3354.",
+      "doi": "10.1021/es200301j"
+    },
+    {
+      "citation": "A. Schlosser, R. Volkmer-Engert, Volatile polydimethylcyclosiloxanes in the ambient laboratory air identified as source of extreme background signals in nanoelectrospray mass spectrometry. Journal of Mass Spectrometry 38 (2003) 523-525.",
+      "doi": "10.1002/jms.465"
+    },
+    {
+      "citation": "H. Fromme, M. Witte, L. Fembacher, et al., Siloxane in baking moulds, emission to indoor air and migration to food during baking with an electric oven. Environment International 126 (2019) 145-152.",
+      "doi": "10.1016/j.envint.2019.01.081"
+    }
+  ],
+  "polarity": "positive",
+  "always_active": true,
+  "provenance": {
+    "compiled_from": "The cyclic volatile methylsiloxanes: observed in ambient and indoor air, and a classic background of mass spectrometry inlets. D3 to D6 as measured in air worldwide (Genualdi et al. 2011); D7 and D8 as measured in indoor air (Fromme et al. 2019). Formulas checked against PubChem."
+  },
+  "species": [
+    {"formula": "C6H18O3Si3", "name": "Hexamethylcyclotrisiloxane (D3)", "reference": "10.1021/es200301j"},
+    {"formula": "C8H24O4Si4", "name": "Octamethylcyclotetrasiloxane (D4)", "reference": "10.1021/es200301j"},
+    {"formula": "C10H30O5Si5", "name": "Decamethylcyclopentasiloxane (D5)", "reference": "10.1021/es200301j"},
+    {"formula": "C12H36O6Si6", "name": "Dodecamethylcyclohexasiloxane (D6)", "reference": "10.1021/es200301j"},
+    {"formula": "C14H42O7Si7", "name": "Tetradecamethylcycloheptasiloxane (D7)", "reference": "10.1016/j.envint.2019.01.081"},
+    {"formula": "C16H48O8Si8", "name": "Hexadecamethylcyclooctasiloxane (D8)", "reference": "10.1016/j.envint.2019.01.081"}
+  ]
+}

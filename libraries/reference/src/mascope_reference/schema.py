@@ -37,6 +37,7 @@ LICENSE_LENGTH = 64
 INCHIKEY_LENGTH = 27
 SOURCE_NATIVE_ID_LENGTH = 128
 FORMULA_LENGTH = 512
+POLARITY_LENGTH = 8
 
 
 #: One row per ingested source + version (provenance, license, active flag).
@@ -49,6 +50,12 @@ reference_source = table(
     column("record_count", Integer),
     column("is_active", Boolean),
     column("ingested_at", TIMESTAMP(timezone=True)),
+    # How the source's compounds may be matched (mascope_reference.scope): the
+    # window as a JSON object whose null fields are unbounded, whether its
+    # radicals may be matched, and its polarity (NULL for both).
+    column("known_window", JSON),
+    column("allow_radicals", Boolean),
+    column("polarity", String(POLARITY_LENGTH)),
 )
 
 #: One row per (compound, source version). ``xrefs`` is typed JSON so the dict
@@ -81,6 +88,9 @@ SOURCE_INSERT_COLUMNS = (
     "record_count",
     "is_active",
     "ingested_at",
+    "known_window",
+    "allow_radicals",
+    "polarity",
 )
 COMPOUND_INSERT_COLUMNS = (
     "reference_source_id",

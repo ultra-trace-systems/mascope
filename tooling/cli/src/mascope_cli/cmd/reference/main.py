@@ -6,6 +6,12 @@ downloaded dump and upserts the normalized records into the ``reference_*``
 tables as a versioned load, mirroring how the demo dataset is built and keeping
 ingestion off the request path. Each load is versioned for reproducibility and
 becomes the active version of its source.
+
+Each source row also records how its compounds may be matched - its window, its
+radical allowance and its polarity (``mascope_reference.scope``). A database
+mirror loads at the mirror window and a list loads unbounded; ``sync``'s
+``--elements``, ``--max-carbon``, ``--max-mass``, ``--allow-radicals`` and
+``--polarity`` override either.
 """
 
 from pathlib import Path
@@ -20,8 +26,17 @@ from sqlalchemy.pool import NullPool
 
 from mascope_cli.runtime import runtime
 from mascope_reference import available_sources, get_adapter, ingest
-from mascope_reference.ingest import DEFAULT_BATCH_SIZE, EmptyIngest
+from mascope_reference.ingest import DEFAULT_BATCH_SIZE, EmptyIngest, deactivate
+from mascope_reference.peaklist import admitted_species
 from mascope_reference.schema import reference_compound, reference_source
+from mascope_reference.scope import (
+    BOTH_POLARITIES,
+    UNBOUNDED_TOKEN,
+    SourceScope,
+    scope_of,
+)
+from mascope_reference.seed import catalogue, select_lists
+from mascope_reference.seed import seed as seed_lists
 
 
 reference_app = typer.Typer()
@@ -65,7 +80,12 @@ def main():
 
 @reference_app.command("sources")
 def sources() -> None:
-    """List the reference sources with a registered ETL adapter."""
+    """List the reference sources with a registered ETL adapter.
+
+    Each with the licence its records default to and the window a load of it
+    writes on its source row: the mirror window for a database, unbounded for a
+    list, where ``sync``'s window flags can say otherwise.
+    """
     allowed = _license_gate()
     for name in available_sources():
         adapter = get_adapter(name)
@@ -82,7 +102,10 @@ def sources() -> None:
             if blocked
             else ""
         )
-        console.print(f"[bold]{name}[/bold]  (license: {adapter.license}){gated}")
+        console.print(
+            f"[bold]{name}[/bold]  (license: {adapter.license}; window: "
+            f"{adapter.known_window.describe()}){gated}"
+        )
 
 
 @reference_app.command()
@@ -141,6 +164,53 @@ def sync(
             ),
         ),
     ] = False,
+    elements: Annotated[
+        Optional[str],
+        typer.Option(
+            "--elements",
+            help=(
+                "Elements a formula of this source may carry, comma-separated "
+                f"(C,H,N,O,S,Si), or '{UNBOUNDED_TOKEN}'. Default: the adapter's "
+                "window (see 'sources')."
+            ),
+        ),
+    ] = None,
+    max_carbon: Annotated[
+        Optional[str],
+        typer.Option(
+            "--max-carbon",
+            help=f"Largest carbon count, or '{UNBOUNDED_TOKEN}'.",
+        ),
+    ] = None,
+    max_mass: Annotated[
+        Optional[str],
+        typer.Option(
+            "--max-mass",
+            help=f"Largest monoisotopic mass in Da, or '{UNBOUNDED_TOKEN}'.",
+        ),
+    ] = None,
+    allow_radicals: Annotated[
+        Optional[bool],
+        typer.Option(
+            "--allow-radicals/--no-allow-radicals",
+            help=(
+                "Whether this source's odd-electron formulas may be matched. "
+                "Default: not for a database or a CSV; a list file's own header "
+                "decides for it."
+            ),
+        ),
+    ] = None,
+    polarity: Annotated[
+        Optional[str],
+        typer.Option(
+            "--polarity",
+            help=(
+                "The polarity this source's compounds are detected in: positive, "
+                f"negative or '{BOTH_POLARITIES}'. Default: both for a database or a "
+                "CSV; a list file's own header decides for it."
+            ),
+        ),
+    ] = None,
     yes: Annotated[
         bool,
         typer.Option(
@@ -154,6 +224,19 @@ def sync(
     try:
         adapter = get_adapter(source)
     except KeyError as error:
+        runtime.logger.error(str(error))
+        raise typer.Exit(1) from None
+    try:
+        scope = scope_of(adapter, path).overridden(
+            elements=elements,
+            max_carbon=max_carbon,
+            max_mass=max_mass,
+            allow_radicals=allow_radicals,
+            polarity=polarity,
+        )
+    except ValueError as error:
+        # Refused before the prompt, like an unknown source: a bound that cannot
+        # be read would otherwise be discovered after a multi-hour load.
         runtime.logger.error(str(error))
         raise typer.Exit(1) from None
 
@@ -188,6 +271,7 @@ def sync(
             activate=not stage,
             prune=prune,
             progress=_progress,
+            scope=scope,
         )
     except EmptyIngest as error:
         # The mirror is untouched - report why rather than leaving the operator to
@@ -202,6 +286,7 @@ def sync(
         f"(version '{result.version}', source_id={result.reference_source_id}, "
         f"{result.skipped:,} skipped)."
     )
+    runtime.logger.info(f"Matched as: {result.scope.describe()}.")
     if stage:
         runtime.logger.info(
             f"Load staged (inactive). Expose it with: mascope reference activate "
@@ -278,6 +363,175 @@ def activate(
     runtime.logger.success(
         f"Activated '{source}' version '{version}' ({record_count:,} records)."
     )
+
+
+@reference_app.command("deactivate")
+def deactivate_source(
+    source: Annotated[
+        str,
+        typer.Argument(help="Provenance name of the source, as shown by 'status'."),
+    ],
+    yes: Annotated[
+        bool,
+        typer.Option("--yes", "-y", help="Do not ask for confirmation."),
+    ] = False,
+) -> None:
+    """Take a source's active load out, leaving no version of it active.
+
+    Its compounds stay in the database, inactive: annotation and peak assignment
+    stop reading them, 'reference activate' brings a version back, and 'reference
+    seed' loads a shipped list again.
+    """
+    if not yes:
+        typer.confirm(
+            f"This will deactivate '{source}': annotation and peak assignment "
+            "will no longer read it. Continue?",
+            abort=True,
+        )
+
+    engine = _sync_engine()
+    try:
+        taken = deactivate(engine, source)
+    finally:
+        engine.dispose()
+    if taken is None:
+        runtime.logger.error(
+            f"'{source}' has no active load. Run 'mascope reference status' to "
+            "see what is loaded."
+        )
+        raise typer.Exit(1)
+    runtime.logger.success(
+        f"Deactivated '{taken.source}' version '{taken.version}' "
+        f"({taken.record_count:,} records). Bring it back with: mascope reference "
+        f"activate {taken.source} --version {taken.version}"
+    )
+
+
+def _print_catalogue(lists) -> None:
+    """Show the shipped reference lists: what each is and whether it loads by
+    default. Reads the package, never the database."""
+    table = Table(title="Reference lists shipped with Mascope")
+    table.add_column("List")
+    table.add_column("Version")
+    table.add_column("Licence")
+    table.add_column("Species", justify="right")
+    table.add_column("Loads by default")
+    table.add_column("Label")
+    for peak_list in lists:
+        table.add_row(
+            Text(peak_list.id),
+            Text(peak_list.data_version or ""),
+            Text(peak_list.license or ""),
+            f"{sum(1 for _ in admitted_species(peak_list)):,}",
+            "yes" if peak_list.load_by_default else "no",
+            Text(peak_list.label or ""),
+        )
+    console.print(table)
+
+
+@reference_app.command()
+def seed(
+    names: Annotated[
+        Optional[list[str]],
+        typer.Argument(
+            help=(
+                "Ids of the lists to load (see --list). Default: every list "
+                "that loads by default."
+            ),
+        ),
+    ] = None,
+    include_optional: Annotated[
+        bool,
+        typer.Option(
+            "--all",
+            help=(
+                "Also load the lists that do not load by default: the radical "
+                "lists, whose species compete with closed-shell molecules for "
+                "the same peaks."
+            ),
+        ),
+    ] = False,
+    show: Annotated[
+        bool,
+        typer.Option(
+            "--list", help="Show the shipped lists and exit, without the database."
+        ),
+    ] = False,
+    prune: Annotated[
+        bool,
+        typer.Option(
+            "--prune",
+            help="Delete a list's earlier loads once its new version is in.",
+        ),
+    ] = False,
+    yes: Annotated[
+        bool,
+        typer.Option(
+            "--yes",
+            "-y",
+            help="Do not ask for confirmation (for non-interactive use).",
+        ),
+    ] = False,
+) -> None:
+    """Load the reference lists Mascope ships, each as its own source.
+
+    Each list becomes the active version of a source named by its id, through
+    the same ingest `sync` runs. A list whose version is already active is left
+    alone, so seeding twice changes nothing.
+    """
+    lists = catalogue()
+    if show:
+        _print_catalogue(lists)
+        return
+    try:
+        chosen = select_lists(lists, names, include_optional=include_optional)
+    except KeyError as error:
+        runtime.logger.error(error.args[0])
+        raise typer.Exit(1) from None
+
+    # Loading activates each list's source, replacing an earlier version of it,
+    # and --prune deletes what it replaces - gated like `sync`, before any
+    # database work.
+    if not yes:
+        ids = ", ".join(peak_list.id for peak_list in chosen)
+        consequence = (
+            "and DELETE their earlier loads"
+            if prune
+            else "replacing any earlier version of each"
+        )
+        typer.confirm(
+            f"This will load {len(chosen)} reference list(s) ({ids}) as active "
+            f"sources, {consequence}. Continue?",
+            abort=True,
+        )
+
+    engine = _sync_engine()
+    try:
+        outcomes = seed_lists(
+            engine, names=[peak_list.id for peak_list in chosen], prune=prune
+        )
+    finally:
+        engine.dispose()
+    for outcome in outcomes:
+        if not outcome.loaded:
+            refreshed = (
+                "; its window, radical allowance and polarity were brought up to "
+                "date with the list"
+                if outcome.refreshed
+                else ""
+            )
+            runtime.logger.info(
+                f"'{outcome.list_id}' version '{outcome.version}' is already "
+                f"active - nothing to load{refreshed}."
+            )
+            continue
+        held = (
+            f"; {outcome.held_back:,} radicals held back" if outcome.held_back else ""
+        )
+        runtime.logger.success(
+            f"Loaded '{outcome.list_id}' version '{outcome.version}' "
+            f"({outcome.ingested:,} records{held})."
+        )
 
 
 def _record_licenses(conn, source_ids: list[int]) -> dict[int, list[str]]:
@@ -424,6 +678,15 @@ def _print_known_licenses(allowed: list[str] | None) -> None:
     )
 
 
+def _scope_text(row) -> str:
+    """How a status row's compounds may be matched, for the table."""
+    try:
+        return SourceScope.from_row(row).describe()
+    except (TypeError, ValueError):
+        # A row the scope cannot read is reported, not allowed to hide the table.
+        return "unreadable"
+
+
 @reference_app.command()
 def status() -> None:
     """Show ingested sources, their versions, and what Stage A may match."""
@@ -440,6 +703,9 @@ def status() -> None:
                     reference_source.c.record_count,
                     reference_source.c.is_active,
                     reference_source.c.ingested_at,
+                    reference_source.c.known_window,
+                    reference_source.c.allow_radicals,
+                    reference_source.c.polarity,
                 ).order_by(
                     reference_source.c.name, reference_source.c.ingested_at.desc()
                 )
@@ -468,6 +734,7 @@ def status() -> None:
     table.add_column("Records", justify="right")
     table.add_column("Active")
     table.add_column("Ingested (UTC)")
+    table.add_column("Matched as")
     for row in rows:
         # Wrapped in Text because these come from the database: Rich would parse
         # square brackets in them as console markup and swallow them, so a source
@@ -479,6 +746,7 @@ def status() -> None:
             f"{row.record_count:,}",
             "[green]yes[/green]" if row.is_active else "no",
             Text(str(row.ingested_at)),
+            Text(_scope_text(row)),
         )
     console.print(table)
     _print_license_gate(rows, record_licenses, allowed)

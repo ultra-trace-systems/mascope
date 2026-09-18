@@ -4,13 +4,19 @@ import os
 
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator
 
-from mascope_backend.api.new.cheminfo.config import cheminfo_config
 from mascope_backend.runtime import runtime
+from mascope_tools.composition.profiles import (
+    CHEMISTRY_CONTEXTS,
+    IDENTITY_PROFILE_NAME,
+    REAGENT_PROFILES,
+    get_chemistry_context,
+    get_reagent_profile,
+)
 
 
 # Bump when the assignment algorithm changes in a way that affects results.
 # Stored on every PeakAssignmentRun so runs stay reproducible and comparable.
-PEAK_ASSIGNMENT_ENGINE_VERSION = "0.3.0"
+PEAK_ASSIGNMENT_ENGINE_VERSION = "0.5.0"
 
 # The in-app engine's identity, stamped on every run this server computes. It is
 # reserved: an import that could stamp it would defeat the provenance badge that
@@ -72,10 +78,22 @@ MAX_IMPORT_JSON_BYTES = 64 * 1024
 # the mass window (more candidates per peak), and exponentially with the number
 # of element species. These bounds keep one API call from scheduling unbounded
 # work; they are deliberately generous, well above any sane analysis.
+#
+# The peak ceiling is also the default, because `max_untargeted_peaks` is unset
+# by default: the stage searches every unexplained peak it is offered and this
+# is what stops "every" from being unbounded. No gate spectrum comes near it -
+# the densest carries about 2,600 peaks, of which the stage is offered fewer -
+# so on real data it is a backstop rather than a setting.
 MAX_UNTARGETED_PEAKS_CEILING = 5000
 MAX_MZ_PRECISION_PPM = 100.0
 MAX_FORMULA_RANGE_SPECIES = 12
 MAX_ALTERNATIVES_CEILING = 50
+
+# The value of `profile` / `context` that asks the engine to work the chemistry
+# out from the sample rather than being told it. Lives here, with the model that
+# validates it, so `peak_assignments/profiles.py` can import it without the
+# config importing the resolver back.
+DEFAULT_PROFILE = "auto"
 
 
 class PeakAssignmentLimits(BaseModel):
@@ -91,6 +109,68 @@ class PeakAssignmentLimits(BaseModel):
     max_mz_precision_ppm: float = MAX_MZ_PRECISION_PPM
     max_formula_range_species: int = MAX_FORMULA_RANGE_SPECIES
     max_alternatives_ceiling: int = MAX_ALTERNATIVES_CEILING
+
+
+class PeakAssignmentPreset(BaseModel):
+    """One preset a run config may name as its ``profile`` or ``context``."""
+
+    name: str
+    label: str
+    description: str = ""
+    #: A reagent profile's polarity, ``"+"`` or ``"-"``, and ``""`` for the
+    #: identity profile, which belongs to none. None on a context, which has no
+    #: polarity.
+    polarity: str | None = None
+    #: The context a reagent profile takes when a run asks for ``auto``. None on
+    #: a context.
+    default_context: str | None = None
+
+
+def _profile_presets() -> list[PeakAssignmentPreset]:
+    """The reagent profiles, the identity profile last.
+
+    The identity profile turns the profile layer off rather than describing a
+    source, so a list read top to bottom reaches it after every chemistry it
+    could have picked.
+    """
+    ordered = sorted(
+        REAGENT_PROFILES.values(),
+        key=lambda profile: profile.name == IDENTITY_PROFILE_NAME,
+    )
+    return [
+        PeakAssignmentPreset(
+            name=profile.name,
+            label=profile.label,
+            polarity=profile.polarity,
+            default_context=profile.default_context,
+        )
+        for profile in ordered
+    ]
+
+
+def _context_presets() -> list[PeakAssignmentPreset]:
+    """The chemistry contexts, in the library's order, which ends on ``none``."""
+    return [
+        PeakAssignmentPreset(
+            name=context.name,
+            label=context.label,
+            description=context.description,
+        )
+        for context in CHEMISTRY_CONTEXTS.values()
+    ]
+
+
+class PeakAssignmentPresets(BaseModel):
+    """The names ``profile`` and ``context`` accept, published for a launcher.
+
+    Served for the reason the limits are: a form that offered a name from its
+    own copy of the library would drift from the validator below, which looks
+    each name up in that library. ``auto`` is not listed, since it names no
+    preset; it is the default a client already has from the run config.
+    """
+
+    profiles: list[PeakAssignmentPreset] = Field(default_factory=_profile_presets)
+    contexts: list[PeakAssignmentPreset] = Field(default_factory=_context_presets)
 
 
 def peak_assignment_enabled() -> bool:
@@ -225,29 +305,62 @@ class PeakAssignmentConfig(BaseModel):
             "database stage left unassigned."
         ),
     )
-    mz_precision_ppm: float = Field(
-        cheminfo_config.DEFAULT_MZ_PRECISION,
+    # -- The chemistry the run searches under (docs/dev/assignment_quality_plan.md
+    # step 1.1). Two names, resolved against the library presets in
+    # `mascope_tools.composition.profiles` by `peak_assignments/profiles.py`; the
+    # resolved content is snapshotted onto the run, so what a run did stays
+    # readable after a preset is revised.
+    profile: str = Field(
+        DEFAULT_PROFILE,
+        description=(
+            "Reagent chemistry preset for the untargeted stage: 'auto' reads it "
+            "off the sample's ionization mechanisms, 'none' is the identity "
+            "profile (the engine's pre-profile grid and window), or a preset "
+            "name such as 'BR' or 'UR'."
+        ),
+    )
+    context: str = Field(
+        DEFAULT_PROFILE,
+        description=(
+            "Sampled-matrix preset: 'auto' takes the reagent profile's default, "
+            "'none' applies no matrix prior, or a context name such as "
+            "'ambient-air' or 'uronium'."
+        ),
+    )
+    # Both are None by default, meaning "whatever the profile resolves to". They
+    # used to carry the engine's own defaults, which is why they are optional
+    # rather than merely defaulted: a value that IS the default is
+    # indistinguishable from one a client sent deliberately, and the launcher
+    # form sends every field it shows. None is the only way for a request to say
+    # "I did not choose this".
+    mz_precision_ppm: float | None = Field(
+        None,
         gt=0.0,
         le=MAX_MZ_PRECISION_PPM,
-        description="m/z tolerance in ppm for the untargeted composition search.",
+        description=(
+            "m/z tolerance in ppm for the untargeted composition search. "
+            "Omitted, the resolved profile's instrument-class window applies."
+        ),
     )
-    formula_ranges: str = Field(
-        cheminfo_config.DEFAULT_FORMULA_RANGE,
+    formula_ranges: str | None = Field(
+        None,
         description=(
             "Element count ranges permitted in untargeted candidates, e.g. "
             "'C0-80 H0-160 O0-50 N0-20'. Enumeration is a tree search whose "
             "depth is the number of element species, so the species count is "
-            "capped."
+            "capped. Omitted, the resolved profile's grid applies."
         ),
     )
-    max_untargeted_peaks: int = Field(
-        300,
+    max_untargeted_peaks: int | None = Field(
+        None,
         gt=0,
         le=MAX_UNTARGETED_PEAKS_CEILING,
         description=(
             "Upper bound on the number of (most intense) unassigned peaks fed "
-            "to the untargeted stage. Composition enumeration is the scaling "
-            "risk; this bounds run time on dense spectra."
+            "to the untargeted stage. Omitted, every eligible peak is searched, "
+            "up to the ceiling; a run that reaches the ceiling records that it "
+            "did. None by default because a spectrum's unexplained peaks are "
+            "what the stage is for, and a cap on them is a cap on the answer."
         ),
     )
     peak_intensity_threshold: float = Field(
@@ -291,13 +404,14 @@ class PeakAssignmentConfig(BaseModel):
     # documented follow-up, and P(correct) is the eventual binding once calibration
     # coverage allows it (docs/dev/assignment_confidence.md).
     #
-    # One pair, both stages, knowingly: Stage A's fit is ion_score_v2 and Stage B's is
-    # score_pattern (v1), so a band means slightly different things to each - on the
-    # sweep, holding the upper band at 0.80 costs Stage B 5.3% of its assigned rows and
-    # Stage A only 0.5%. Per-stage bands would fit the data better and are deliberately
-    # not introduced: the heterogeneity predates this binding (it was there under
-    # fit-tiering too), and a second pair of knobs is more apparatus than a directional
-    # threshold is worth.
+    # One pair, both stages, and now on one scale. Both stages' fit is
+    # `ion_score_v2` over one `compute_match_isotopes` pass: Stage A's over the
+    # curated library's ions, Stage B's over the untargeted stage's winners
+    # measured again as ions (`service._seeded_fits`). The band means the same
+    # thing to each, which is what the sweep behind these numbers assumed and
+    # what the numbers themselves were fitted against - so per-stage bands, the
+    # apparatus this comment used to argue was not worth building, are not
+    # needed either.
     #
     # The upper band still parses under its old name: this model is built from the
     # assign request body, so a client pinned to the pre-rename field would
@@ -326,14 +440,22 @@ class PeakAssignmentConfig(BaseModel):
 
     @field_validator("formula_ranges")
     @classmethod
-    def _bound_formula_ranges(cls, value: str) -> str:
+    def _bound_formula_ranges(cls, value: str | None) -> str | None:
         """Cap the number of element species the untargeted search enumerates.
 
         ``find_compositions`` is a depth-first search whose depth is the number
         of element species, so widening the range string is the cheapest way to
         make a run combinatorially expensive. Parsing the ranges belongs to
         ``mascope_tools``; this only bounds the species count.
+
+        The presets are bounded by their own test rather than here: they are
+        library data, not a request, and a preset that outgrew the cap should
+        fail the suite rather than every run that resolves to it.
         """
+        if value is None or not value.strip():
+            # A form whose field the user cleared sends "", which means the same
+            # thing as never having set it: let the profile decide.
+            return None
         species = [token for token in value.split() if token]
         if len(species) > MAX_FORMULA_RANGE_SPECIES:
             raise ValueError(
@@ -342,3 +464,36 @@ class PeakAssignmentConfig(BaseModel):
                 "enumeration is exponential in the number of species."
             )
         return value
+
+    @field_validator("profile", "context")
+    @classmethod
+    def _known_profile_name(cls, value: str, info) -> str:
+        """Reject a profile or context name nothing would resolve.
+
+        Caught here rather than at resolution time so a typo answers 422 on the
+        request that carried it, instead of failing a run that has already been
+        created and reported to the client.
+        """
+        return known_preset_name(value, info.field_name)
+
+
+def known_preset_name(value: str | None, field_name: str) -> str:
+    """A ``profile`` or ``context`` value, checked against the library.
+
+    Shared by every request that names one, so a name the run config would
+    refuse is refused everywhere else with the same message.
+
+    :param value: The name as sent; blank means ``auto``.
+    :param field_name: ``"profile"`` or ``"context"``, which library to look in.
+    :raises ValueError: No preset of that kind has the name.
+    :return: The name as sent, or ``auto``.
+    """
+    name = (value or "").strip()
+    if not name or name.lower() == DEFAULT_PROFILE:
+        return DEFAULT_PROFILE
+    lookup = get_reagent_profile if field_name == "profile" else get_chemistry_context
+    try:
+        lookup(name)
+    except KeyError as unknown:
+        raise ValueError(str(unknown)) from unknown
+    return name

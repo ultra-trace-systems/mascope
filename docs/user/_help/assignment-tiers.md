@@ -15,6 +15,13 @@ a vote across the samples the peak appears in, not a threshold on one number.
   the evidence is too weak to trust.
 - **unassigned** &mdash; no composition explained the peak.
 
+The peak inspector says why a row holds its tier, under **Why this tier**: what
+capped it at *candidate* &mdash; a radical neutral, a peak whose evidence left
+other formulas standing, a line a neighbouring compound's isotope pattern
+already predicts &mdash; or what it kept its tier on. These rules only ever lower
+a tier, never raise one. A row assigned by hand, a run imported from another
+engine and a run made before Mascope recorded reasons show none.
+
 A run computed outside Mascope and imported can carry a second tier: the one the
 engine that produced it reached on its own terms. Such a run shows it in its own
 **engine tier** column beside Mascope's, which is always Mascope's own reading of
@@ -26,7 +33,18 @@ tier for the peak, which is usual: an engine typically tiers only the peaks it
 committed a formula to. Only Mascope's own tier is used when peaks are rolled up
 across a batch.
 
-Orthogonal to its tier, a peak can carry a role: **reagent** and **artifact**
-peaks stem from the ionization chemistry or the instrument rather than the
-sample's compounds, and **isotopologue** peaks belong to another
-assignment's isotope pattern, counted with their main peak.
+Orthogonal to its tier, a peak can carry a role:
+
+- **reagent**: an ion the ionization source makes of itself.
+- **artifact**: a ringing side lobe of a very intense neighbouring peak.
+- **isotopologue**: a peak of another assignment's isotope pattern, counted with its
+  main peak.
+
+Reagent and artifact peaks are not the sample's compounds, so each shows a chip of its
+own in place of a tier. The counts above the ledger list them apart from the tiers, and
+the tier column sorts them after the tiers. The two kinds of count measure different
+things:
+
+- a tier count counts a compound once, with its isotopologues folded in, and each peak
+  nothing explained once;
+- a role count counts peaks, so a reagent ion's isotope lines are counted with it.

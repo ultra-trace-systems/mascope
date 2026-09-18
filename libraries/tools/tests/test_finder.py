@@ -1,14 +1,20 @@
+from dataclasses import replace
+
 import pandas as pd
 import pytest
 
+from mascope_tools.composition.arbitration import CANDIDATE_DENSITY
 from mascope_tools.composition.exceptions import CompositionFinderException
 from mascope_tools.composition.finder import (
     _other_candidate_formulas,
     assign_compositions,
     find_compositions,
+    neutral_mass_bounds,
     process_isotopes,
     replace_atom_with_isotope,
 )
+from mascope_tools.composition.grid import build_neutral_grid
+from mascope_tools.composition.heuristic_filter import PATTERN_REQUIRED_LINES
 from mascope_tools.composition.models import CompositionSearchConfig
 from mascope_tools.composition.utils import (
     combine_formula_and_ionization,
@@ -162,6 +168,51 @@ def test_predicted_mz_is_recoverable_from_composition_error_ppm():
         assert recovered == pytest.approx(predicted_mz, rel=1e-12)
 
 
+def test_a_shared_grid_answers_a_peak_the_same_as_its_own_window_does():
+    # `assign_compositions` enumerates one grid for the whole spectrum and hands
+    # it to every peak; a peak searched alone builds a grid over its own window.
+    # Those are the same search over the same box, and the second is the fallback
+    # for a box too wide to hold - so a disagreement between them would be a
+    # spectrum answered differently for a reason that is not chemistry.
+    config = CompositionSearchConfig(
+        ionizations="+H+,+Na+",
+        element_count_ranges="C0-20 H0-40 N0-3 O0-10",
+        mass_range_ppm=10.0,
+    )
+    mechanisms = [parse_ionization(name) for name in ("+H+", "+Na+")]
+    targets = [181.0707, 203.0526, 301.1414, 365.1054]
+    shared = build_neutral_grid(
+        config, *neutral_mass_bounds(targets, mechanisms, config.mass_range_ppm)
+    )
+    assert shared is not None
+
+    for target in targets:
+        with_shared = find_compositions(target, config, grid=shared)
+        alone = find_compositions(target, config)
+        assert [r["ion"] for r in with_shared] == [r["ion"] for r in alone]
+        assert with_shared == alone
+
+
+def test_the_row_cap_keeps_the_closest_readings():
+    # A window can hold more compositions than a caller will look at, and the cap
+    # decides which survive. It has to be the closest ones: everything downstream
+    # ranks on mass error, so a cap that kept an arbitrary slice would hand the
+    # ranking a set the ranking cannot repair.
+    config = CompositionSearchConfig(
+        ionizations="-H+",
+        element_count_ranges="C1-40 H0-80 N0-3 O0-18 S0-1 Cl0-2 Br0-2",
+        mass_range_ppm=10.0,
+        max_result_rows=25,
+    )
+    capped = find_compositions(464.991, config)
+    assert len(capped) == 25
+
+    uncapped = find_compositions(464.991, replace(config, max_result_rows=10**9))
+    assert len(uncapped) > 25
+    closest = sorted(abs(r["composition_error_ppm"]) for r in uncapped)[:25]
+    assert sorted(abs(r["composition_error_ppm"]) for r in capped) == closest
+
+
 def test_composition_results_are_ranked_by_error_magnitude():
     # find_compositions returns best-first, and "best" is the smallest deviation
     # in either direction - not the most negative one.
@@ -221,7 +272,7 @@ def test_assign_compositions_enumerates_only_the_targets(monkeypatch):
 
     enumerated = []
 
-    def fake_find_compositions(target_mz, config):
+    def fake_find_compositions(target_mz, config, grid=None):
         enumerated.append(target_mz)
         return []
 
@@ -267,8 +318,8 @@ def test_only_the_monoisotopic_row_is_labelled_m0():
     pattern - one row, and not necessarily the base peak.
 
     The base peak carries its own configuration's label, so a bromine-rich ion
-    is assigned on the lightest peak of its cluster with the tallest as a
-    satellite. Labelling index 0 `M0` unconditionally would put the label on
+    is assigned on the lightest peak of its cluster with the tallest as an
+    isotopologue. Labelling index 0 `M0` unconditionally would put the label on
     two rows at once, since the monoisotopic row already carries it.
     """
     rows = _rows_of(_BROMINE_PATTERN)
@@ -278,7 +329,7 @@ def test_only_the_monoisotopic_row_is_labelled_m0():
     assert sorted(labels) == ["81Br", "81Br2", "81Br3", "M0"]
     by_label = {row["isotope_label"]: row["mz"] for row in rows}
     assert by_label["M0"] == pytest.approx(236.7550)
-    # The base peak is a satellite here, labelled by its own substitution.
+    # The base peak is an isotopologue here, labelled by its own substitution.
     assert by_label["81Br"] == pytest.approx(238.7530)
 
 
@@ -298,3 +349,268 @@ def test_the_base_peak_is_m0_when_it_is_also_the_monoisotopic_one():
     by_label = {row["isotope_label"]: row["mz"] for row in _rows_of(glucose)}
 
     assert by_label["M0"] == pytest.approx(180.0634)
+
+
+def _pattern(masses, labels, errors):
+    """A matched isotope pattern, in the shape match_isotopic_pattern returns."""
+    return {
+        "masses": list(masses),
+        "labels": list(labels),
+        "predicted_masses": list(masses),
+        "predicted_intensities": [1.0] + [0.3] * (len(masses) - 1),
+        "mass_errors_ppm": list(errors),
+        "intensity_errors": [0.0] * len(masses),
+    }
+
+
+def test_a_monoisotopic_row_outranks_another_candidates_isotopologue(monkeypatch):
+    """One peak, two candidates: the row that IS somebody's monoisotopic line
+    survives, even when the other candidate's isotopologue fits the mass better.
+
+    A candidate is a whole envelope. Drop its monoisotopic row here and the
+    isotopologues it left behind belong to nothing. Mass error alone cannot see
+    that, because it compares two rows without asking what each row's loss
+    costs the rest of its envelope.
+
+    The fixture builds a collision the finder itself does not produce: a
+    candidate whose monoisotopic line is not the peak it was enumerated for.
+    That is deliberate. The rule is a guard - the loop claims each m/z as it
+    emits it, so real input does not reach the tie - and a guard can only be
+    tested by constructing the case it guards against.
+    """
+    from mascope_tools.composition import finder
+
+    shared_mz = 101.0034
+    patterns = {
+        # Enumerated first, and its 13C line lands on the shared peak with the
+        # smaller mass error - which used to be the whole contest.
+        100.0: _pattern([100.0, shared_mz], ["M0", "13C"], [0.1, 3.0]),
+        # A chlorine-rich ion, whose most abundant isotopologue is not its
+        # monoisotopic one: the finder reports the base first, and here the
+        # monoisotopic line is the shared peak.
+        105.0: _pattern([shared_mz, 105.0, 106.0], ["M0", "37Cl", "37Cl2"], [5.0] * 3),
+    }
+    monkeypatch.setattr(
+        finder,
+        "find_compositions",
+        lambda target_mz, config, grid=None: [{"formula": f"F{int(target_mz)}"}],
+    )
+    monkeypatch.setattr(
+        finder,
+        "apply_heuristic_rules",
+        lambda comp_results, heuristics_config=None: (
+            [
+                dict(
+                    comp_results[0],
+                    neutral_mass=100.0,
+                    ion=f"{comp_results[0]['formula']}H+",
+                    # A scored pattern whose required lines are present; the
+                    # finder commits nothing without them.
+                    isotopic_pattern_score=0.9,
+                    **{PATTERN_REQUIRED_LINES: True},
+                )
+            ],
+            {},
+        ),
+    )
+    monkeypatch.setattr(
+        finder,
+        "match_isotopic_pattern",
+        lambda candidates, peaks, scoring=None: (
+            candidates,
+            [patterns[float(candidates[0]["formula"][1:])]],
+        ),
+    )
+    peaks = pd.DataFrame(
+        {
+            "mz": [100.0, shared_mz, 105.0, 106.0],
+            "intensity": [1000.0, 300.0, 800.0, 240.0],
+        }
+    )
+    config = CompositionSearchConfig(
+        ionizations="H+", element_count_ranges="C0-2 H0-2", mass_range_ppm=5.0
+    )
+
+    matches, _ = assign_compositions(peaks, config, targets=[100.0, 105.0])
+
+    at_shared = matches[matches["mz"] == shared_mz]
+    assert len(at_shared) == 1
+    assert at_shared.iloc[0]["isotope_label"] == "M0"
+    # ...and the losing candidate keeps its own monoisotopic row, so neither
+    # envelope is left with isotopologues that belong to nothing.
+    assert set(matches[matches["formula"] == "F100"]["mz"]) == {100.0}
+    assert set(matches[matches["formula"] == "F105"]["mz"]) == {
+        shared_mz,
+        105.0,
+        106.0,
+    }
+
+
+def test_the_best_reading_that_is_evidence_wins_the_peak(monkeypatch):
+    """A top-ranked candidate missing a required line does not take the peak
+    down with it.
+
+    Under the v1 score a reading whose brightest predicted line was absent
+    scored zero, so it could never be top-ranked and "the top candidate is not
+    evidence" did mean "no reading of this peak is". The v2 fit charges that
+    absence instead of refusing on it, so a reading with an excellent mass and
+    no envelope can rank above one whose envelope is all there - and the peak
+    belongs to the second.
+    """
+    from mascope_tools.composition import finder
+
+    monkeypatch.setattr(
+        finder,
+        "find_compositions",
+        lambda target_mz, config, grid=None: [{"formula": "C2H2"}, {"formula": "C3H4"}],
+    )
+    monkeypatch.setattr(
+        finder,
+        "apply_heuristic_rules",
+        lambda comp_results, heuristics_config=None: (
+            [dict(result, neutral_mass=26.0, ion="C2H3+") for result in comp_results],
+            {},
+        ),
+    )
+    monkeypatch.setattr(
+        finder,
+        "match_isotopic_pattern",
+        lambda candidates, peaks, scoring=None: (
+            [
+                dict(
+                    candidates[0],
+                    isotopic_pattern_score=0.62,
+                    **{PATTERN_REQUIRED_LINES: False},
+                ),
+                dict(
+                    candidates[1],
+                    isotopic_pattern_score=0.55,
+                    **{PATTERN_REQUIRED_LINES: True},
+                ),
+            ],
+            [
+                _pattern([100.0], ["M0"], [0.2]),
+                _pattern([100.0, 101.0], ["M0", "13C"], [0.1, 0.3]),
+            ],
+        ),
+    )
+    peaks = pd.DataFrame({"mz": [100.0, 101.0], "intensity": [1000.0, 30.0]})
+    config = CompositionSearchConfig(
+        ionizations="H+", element_count_ranges="C0-3 H0-4", mass_range_ppm=5.0
+    )
+
+    matches, _ = assign_compositions(peaks, config, targets=[100.0])
+
+    committed = matches[matches["formula"] != "---"]
+    assert set(committed["formula"]) == {"C3H4"}
+    # ...and it is committed with ITS OWN envelope, which is what claims the
+    # isotopologue: taking the first non-empty pattern in the list instead stamped
+    # one composition's isotopologues onto another's row.
+    assert sorted(committed["isotope_label"]) == ["13C", "M0"]
+
+
+def test_a_peak_whose_best_reading_has_no_envelope_is_left_alone(monkeypatch):
+    """A candidate missing a line its prediction requires is not committed.
+
+    The ion's own line and the one the prediction leads with are absence tests,
+    reported by `match_isotopic_pattern` rather than read off a zero score - the
+    v2 fit charges an absent line instead of refusing on it, so a reading
+    missing the brightest one scores low and not nothing. Candidates are ranked
+    by that fit, so a failing candidate at the top means no reading of this peak
+    has an envelope - and the row can always be written anyway, because the
+    candidate's monoisotopic line IS the peak. On a bromide grid this is what
+    keeps a `+Br2-` reading whose 79Br81Br line is missing from taking the peak
+    it used to swallow.
+    """
+    from mascope_tools.composition import finder
+
+    monkeypatch.setattr(
+        finder,
+        "find_compositions",
+        lambda target_mz, config, grid=None: [{"formula": "C2H2"}],
+    )
+    monkeypatch.setattr(
+        finder,
+        "apply_heuristic_rules",
+        lambda comp_results, heuristics_config=None: (
+            [dict(comp_results[0], neutral_mass=26.0, ion="C2H3+")],
+            {},
+        ),
+    )
+    # A middling fit, and the flag saying a required line is missing: under v2
+    # that is what the absence looks like, and the score alone would commit it.
+    scored = {"isotopic_pattern_score": 0.41, PATTERN_REQUIRED_LINES: False}
+    monkeypatch.setattr(
+        finder,
+        "match_isotopic_pattern",
+        lambda candidates, peaks, scoring=None: (
+            [dict(candidates[0], **scored)],
+            [_pattern([100.0], ["M0"], [0.2])],
+        ),
+    )
+    peaks = pd.DataFrame({"mz": [100.0], "intensity": [1000.0]})
+    config = CompositionSearchConfig(
+        ionizations="H+", element_count_ranges="C0-2 H0-2", mass_range_ppm=5.0
+    )
+
+    matches, _ = assign_compositions(peaks, config, targets=[100.0])
+
+    assert list(matches["formula"]) == ["---"]
+    # ...and the runner-up formulas stay visible for an inspector.
+    assert matches.iloc[0]["other_candidates"] == "C2H2"
+
+
+class TestTheDensityOnACommittedRow:
+    """Step 2.4: the count of hypotheses the peak's evidence could not separate
+    travels on the row the search commits, because here is the only place the
+    competitors still exist."""
+
+    @staticmethod
+    def _search(peaks: pd.DataFrame) -> pd.DataFrame:
+        config = CompositionSearchConfig(
+            ionizations="+H+",
+            element_count_ranges="C0-10 H0-20 N0-2 O0-10",
+            mass_range_ppm=5.0,
+        )
+        matches, _log = assign_compositions(peaks, config)
+        return matches
+
+    def test_a_committed_row_carries_one(self):
+        peaks = pd.DataFrame({"mz": [PROTONATED_GLUCOSE_MZ], "intensity": [1000.0]})
+        committed = self._search(peaks)
+        row = committed[committed["formula"] != "---"].iloc[0]
+        assert row[CANDIDATE_DENSITY] >= 1
+
+    def test_a_peak_nothing_explains_carries_none(self):
+        peaks = pd.DataFrame({"mz": [9999.0], "intensity": [1000.0]})
+        matches = self._search(peaks)
+        assert matches["formula"].tolist() == ["---"]
+        assert CANDIDATE_DENSITY not in matches.columns or pd.isna(
+            matches.iloc[0].get(CANDIDATE_DENSITY)
+        )
+
+    def test_an_isotopologue_does_not_inherit_its_parent_s_count(self):
+        # An isotopologue was predicted from the winner and matched, never searched,
+        # so the parent's count is not a measurement of this line. Same reason
+        # the same-ion family is dropped from a child. The pattern reaching the
+        # real flow is anchored on the ion's own line, so index 0 is the row the
+        # search committed.
+        rows, _ = process_isotopes(
+            {
+                "neutral_mass": 236.7550,
+                "formula": "Br3",
+                CANDIDATE_DENSITY: 4,
+            },
+            [
+                _pattern(
+                    [236.7550, 238.7530, 240.7509],
+                    ["M0", "81Br", "81Br2"],
+                    [0.4, 0.4, 0.4],
+                )
+            ],
+            set(),
+        )
+        by_label = {row["isotope_label"]: row for row in rows}
+        assert by_label["M0"][CANDIDATE_DENSITY] == 4
+        assert CANDIDATE_DENSITY not in by_label["81Br"]
+        assert CANDIDATE_DENSITY not in by_label["81Br2"]

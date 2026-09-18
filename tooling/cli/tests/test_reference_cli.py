@@ -33,6 +33,7 @@ import mascope_cli.cmd.reference.main as reference_main
 import mascope_reference.sources as reference_sources
 from mascope_cli.cmd.reference.main import reference_app
 from mascope_cli.runtime import runtime
+from mascope_reference.scope import MIRROR_WINDOW, UNBOUNDED, KnownWindow, SourceScope
 
 
 runner = CliRunner()
@@ -103,6 +104,133 @@ def test_activate_aborts_when_confirmation_is_declined(no_engine):
     assert result.exit_code != 0
 
 
+def test_deactivate_aborts_when_confirmation_is_declined(no_engine):
+    result = runner.invoke(reference_app, ["deactivate", "pubchem"], input="n\n")
+    assert "no longer read it" in result.output
+    assert result.exit_code != 0
+
+
+# --- The window a sync writes -------------------------------------------------
+
+
+@pytest.fixture
+def captured_ingest(monkeypatch):
+    """Stand in for the ingest, recording the scope a sync hands it."""
+    seen = {}
+
+    class _Result:
+        def __init__(self, scope):
+            self.scope = scope
+            self.ingested = 1
+            self.skipped = 0
+            self.source = "my-list"
+            self.version = "v1"
+            self.reference_source_id = 1
+
+    class _Engine:
+        def dispose(self):
+            pass
+
+    def _ingest(engine, adapter, path, version, **kwargs):
+        seen.update(kwargs)
+        return _Result(kwargs["scope"])
+
+    monkeypatch.setattr(reference_main, "_sync_engine", _Engine)
+    monkeypatch.setattr(reference_main, "ingest", _ingest)
+    return seen
+
+
+def test_a_custom_list_syncs_unbounded_unless_the_flags_bound_it(dump, captured_ingest):
+    result = runner.invoke(
+        reference_app, ["sync", "custom", str(dump), "--version", "v1", "--yes"]
+    )
+    assert result.exit_code == 0, result.output
+    assert captured_ingest["scope"] == SourceScope(UNBOUNDED)
+
+    result = runner.invoke(
+        reference_app,
+        [
+            "sync",
+            "custom",
+            str(dump),
+            "--version",
+            "v2",
+            "--elements",
+            "C,H,N,O,S,Si",
+            "--max-carbon",
+            "20",
+            "--allow-radicals",
+            "--yes",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert captured_ingest["scope"] == SourceScope(
+        KnownWindow(frozenset({"C", "H", "N", "O", "S", "Si"}), max_carbon=20),
+        allow_radicals=True,
+    )
+
+
+def test_a_database_syncs_at_the_mirror_window_and_a_flag_lifts_it(
+    tmp_path, captured_ingest
+):
+    dump = tmp_path / "pubchem.sdf"
+    dump.write_text("", encoding="utf-8")
+    result = runner.invoke(
+        reference_app, ["sync", "pubchem", str(dump), "--version", "v1", "--yes"]
+    )
+    assert result.exit_code == 0, result.output
+    assert captured_ingest["scope"] == SourceScope(MIRROR_WINDOW)
+
+    result = runner.invoke(
+        reference_app,
+        ["sync", "pubchem", str(dump), "--version", "v2", "--max-mass", "any", "--yes"],
+    )
+    assert result.exit_code == 0, result.output
+    assert captured_ingest["scope"].known_window == KnownWindow(
+        MIRROR_WINDOW.elements, MIRROR_WINDOW.max_carbon, None
+    )
+
+
+def test_a_custom_list_records_the_polarity_its_flag_names(dump, captured_ingest):
+    # A CSV names no polarity of its own; without the flag a positive-mode list
+    # would be matched against negative samples too.
+    result = runner.invoke(
+        reference_app,
+        [
+            "sync",
+            "custom",
+            str(dump),
+            "--version",
+            "v1",
+            "--polarity",
+            "positive",
+            "--yes",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert captured_ingest["scope"] == SourceScope(UNBOUNDED, polarity="positive")
+
+
+def test_a_polarity_that_cannot_be_read_is_refused_before_the_prompt(dump, no_engine):
+    result = runner.invoke(
+        reference_app,
+        ["sync", "custom", str(dump), "--version", "v1", "--polarity", "neutral"],
+        input="y\n",
+    )
+    assert result.exit_code == 1
+    assert "Continue?" not in result.output
+
+
+def test_a_bound_that_cannot_be_read_is_refused_before_the_prompt(dump, no_engine):
+    result = runner.invoke(
+        reference_app,
+        ["sync", "custom", str(dump), "--version", "v1", "--max-carbon", "forty"],
+        input="y\n",
+    )
+    assert result.exit_code == 1
+    assert "Continue?" not in result.output
+
+
 # --- The Stage A licence gate reported by `status` / `sources` --------------
 
 
@@ -114,7 +242,10 @@ CREATE TABLE reference_source (
     license TEXT,
     record_count INTEGER,
     is_active BOOLEAN,
-    ingested_at TEXT
+    ingested_at TEXT,
+    known_window JSON,
+    allow_radicals BOOLEAN,
+    polarity TEXT
 )
 """
 
@@ -138,6 +269,21 @@ _MIRROR = [
     (4, "pubchem", "2025-01", "public-domain", False, ["public-domain"]),
 ]
 
+#: (known_window, allow_radicals, polarity) as a load writes them: a database at
+#: the mirror window, the hand-authored list unbounded with its own allowance.
+_MIRROR_SCOPE = (
+    '{"elements": ["C", "H", "N", "O", "S"], "max_carbon": 40, "max_mass": 700.0}',
+    False,
+    None,
+)
+_SCOPES = {
+    "my-list": (
+        '{"elements": null, "max_carbon": null, "max_mass": null}',
+        True,
+        "negative",
+    )
+}
+
 
 @pytest.fixture
 def mirror(tmp_path, monkeypatch):
@@ -153,7 +299,7 @@ def mirror(tmp_path, monkeypatch):
         conn.exec_driver_sql(_COMPOUND_DDL)
         for source_id, name, version, lic, active, records in _MIRROR:
             conn.exec_driver_sql(
-                "INSERT INTO reference_source VALUES (?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO reference_source VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     source_id,
                     name,
@@ -162,6 +308,7 @@ def mirror(tmp_path, monkeypatch):
                     len(records),
                     active,
                     "2026-01-01 00:00:00.000000",
+                    *_SCOPES.get(name, _MIRROR_SCOPE),
                 ),
             )
             for record_license in records:
@@ -220,6 +367,17 @@ def test_status_says_nothing_is_gated_by_default(mirror, monkeypatch):
     assert "[backend] reference_licenses" in flat
 
 
+def test_status_says_how_each_source_is_matched(mirror, monkeypatch):
+    # Wide enough that no cell wraps: the scope is one phrase per row.
+    monkeypatch.setattr(reference_main.console, "width", 320)
+    result = runner.invoke(reference_app, ["status"])
+    assert result.exit_code == 0, result.output
+    flat = _flat(result.output)
+    assert "C, H, N, O, S; C <= 40; <= 700 Da; no radicals; both polarities" in flat
+    assert "my-list 2026-07 custom 2 yes" in flat
+    assert "unbounded; radicals allowed; negative" in flat
+
+
 def test_status_reports_what_the_gate_blocks(mirror, gate):
     gate(["public-domain"])
     result = runner.invoke(reference_app, ["status"])
@@ -254,8 +412,40 @@ def test_sources_flags_an_adapter_the_gate_excludes(gate, monkeypatch):
     result = runner.invoke(reference_app, ["sources"])
     assert result.exit_code == 0, result.output
     flat = _flat(result.output)
-    assert "hmdb (license: hmdb-attribution) (outside this deployment" in flat
-    assert "pubchem (license: public-domain) (outside" not in flat
+    assert (
+        "hmdb (license: hmdb-attribution; window: C, H, N, O, S; C <= 40; <= 700 Da) "
+        "(outside this deployment" in flat
+    )
+    assert (
+        "pubchem (license: public-domain; window: C, H, N, O, S; C <= 40; <= 700 Da) (outside"
+        not in flat
+    )
+
+
+def test_sources_names_the_window_each_source_loads_at(monkeypatch):
+    # A database loads at the mirror window and a list someone authored loads
+    # unbounded; an operator reads which before a load writes it.
+    monkeypatch.setattr(reference_main.console, "width", 200)
+    result = runner.invoke(reference_app, ["sources"])
+    assert result.exit_code == 0, result.output
+    flat = _flat(result.output)
+    mirror = "window: C, H, N, O, S; C <= 40; <= 700 Da"
+    for name in (
+        "pubchem",
+        "comptox",
+        "chebi",
+        "hmdb",
+        "lipidmaps",
+        "coconut",
+        "norman",
+    ):
+        assert f"{name} (license: " in flat
+        assert (
+            f"{name} (license: {reference_sources.get_adapter(name).license}; {mirror})"
+            in flat
+        )
+    assert "custom (license: custom; window: unbounded)" in flat
+    assert "peaklist (license: custom; window: unbounded)" in flat
 
 
 def test_sources_flags_nothing_when_no_gate_is_configured(monkeypatch):
@@ -280,7 +470,7 @@ def test_status_names_every_licence_tag_when_ungated(mirror, monkeypatch):
     assert "Reference licence tags" in flat
     assert "CC-BY-4.0 chebi, lipidmaps matched" in flat
     assert "CC0 coconut matched" in flat
-    assert "custom custom matched" in flat
+    assert "custom custom, peaklist matched" in flat
     assert "hmdb-attribution hmdb matched" in flat
     assert "open norman matched" in flat
     assert "public-domain comptox, pubchem matched" in flat
@@ -298,7 +488,7 @@ def test_status_names_the_tags_a_gate_leaves_out(mirror, gate):
     assert "public-domain comptox, pubchem matched" in flat
     assert "open norman NOT matched" in flat
     assert "hmdb-attribution hmdb NOT matched" in flat
-    assert "custom custom NOT matched" in flat
+    assert "custom custom, peaklist NOT matched" in flat
 
 
 # The copy-paste allowlist example, in every place that carries one. Written as

@@ -14,6 +14,7 @@ from pathlib import Path
 
 from mascope_reference.adapters._io import read_delimited
 from mascope_reference.record import ReferenceRecord
+from mascope_reference.scope import MIRROR_WINDOW
 
 
 def _first(row: dict[str, str], *keys: str) -> str | None:
@@ -29,6 +30,7 @@ class NormanAdapter:
 
     name = "norman"
     license = "open"
+    known_window = MIRROR_WINDOW
 
     def parse(self, path: Path) -> Iterator[ReferenceRecord]:
         for row in read_delimited(path, delimiter=","):

@@ -13,7 +13,9 @@ import json
 import pandas as pd
 import pytest
 
+from mascope_backend.api.controllers.match.lib.match_score_v2 import ion_score_v2
 from mascope_backend.api.new.peak_assignments.engine import (
+    ISOTOPE_FORMULA_LENGTH,
     ROLE_ISO_CHILD,
     ROLE_M0,
     ROLE_UNASSIGNED,
@@ -23,9 +25,14 @@ from mascope_backend.api.new.peak_assignments.engine import (
     TIER_BELOW_ASSIGNABILITY,
     TIER_CANDIDATE,
     TIER_UNASSIGNED,
+    ReagentOffset,
     build_unassigned_assignments,
     evidence_for,
+    fit_isotope_formula,
+    formula_identity,
     invert_matches_to_peak_assignments,
+    labelled_isotopes,
+    monoisotopic_row,
     plausibility_for,
     score_ions_by_fit,
     tier_for_evidence,
@@ -120,6 +127,71 @@ class TestTierForEvidence:
         parameters = inspect.signature(tier_for_evidence).parameters
         for band in ("candidate_threshold", "assigned_threshold"):
             assert parameters[band].kind is inspect.Parameter.KEYWORD_ONLY
+
+
+class TestIsotopeFormulaWidth:
+    """A merged line's isotopologue names must fit the column they land in: one
+    row too long fails the insert of the whole run."""
+
+    # The M+3 line of a nitrogen-bearing bromide adduct at TOF resolution, named
+    # in full the way the isotope generator writes it - the row that failed a
+    # run's insert once a reference list brought such formulas into Stage A.
+    MERGED = (
+        "[81Br][15N]C10H17O8-/[15N][18O]C10H17BrO7-/[13C][81Br]C9H17NO8-/"
+        "[81Br][17O]C10H17NO7-/[13C]2[15N]C8H17BrO8-/[2H][81Br]C10H16NO8-/"
+        "[13C][18O]C9H17BrNO7-/[17O][18O]C10H17BrNO6-/[13C]3C7H17BrNO8-/"
+        "[2H][18O]C10H16BrNO7-/[13C]2[17O]C8H17BrNO7-/[13C]2[2H]C8H16BrNO8-"
+    )
+
+    def test_a_formula_that_fits_passes_through(self):
+        assert fit_isotope_formula("[81Br]Br2-") == "[81Br]Br2-"
+        assert fit_isotope_formula(None) is None
+        assert fit_isotope_formula(float("nan")) is None
+
+    def test_a_merged_line_keeps_whole_names_from_the_front(self):
+        assert len(self.MERGED) > ISOTOPE_FORMULA_LENGTH
+        fitted = fit_isotope_formula(self.MERGED)
+        assert len(fitted) <= ISOTOPE_FORMULA_LENGTH
+        names = self.MERGED.split("/")
+        kept = fitted.split("/")
+        assert kept == names[: len(kept)]
+        # And no further name would have fitted.
+        assert len(fitted) + 1 + len(names[len(kept)]) > ISOTOPE_FORMULA_LENGTH
+
+    def test_a_single_name_longer_than_the_column_is_cut(self):
+        name = "[13C]" * 60 + "C10H17BrNO8-"
+        assert fit_isotope_formula(name) == name[:ISOTOPE_FORMULA_LENGTH]
+
+    def test_a_stage_a_row_fits_its_column(self):
+        mono = _isotope_row(
+            target_isotope_id="iso-mono",
+            target_ion_id="ion1",
+            target_compound_id="cmp1",
+            compound_formula="C10H17NO8",
+            ion_formula="C10H17BrNO8-",
+            mz=357.9985,
+            relative_abundance=1.0,
+            sample_peak_id="p1",
+        )
+        merged = {
+            **_isotope_row(
+                target_isotope_id="iso-m3",
+                target_ion_id="ion1",
+                target_compound_id="cmp1",
+                compound_formula="C10H17NO8",
+                ion_formula="C10H17BrNO8-",
+                mz=361.0019,
+                relative_abundance=0.02,
+                sample_peak_id="p2",
+            ),
+            "target_isotope_formula": self.MERGED,
+        }
+        assignments = invert_matches_to_peak_assignments(
+            pd.DataFrame([mono, merged]), "sample1", "run1", CANDIDATE, ASSIGNED
+        )
+        by_peak = {a["sample_peak_id"]: a for a in assignments}
+        assert by_peak["p2"]["role"] == ROLE_ISO_CHILD
+        assert by_peak["p2"]["isotope_formula"] == fit_isotope_formula(self.MERGED)
 
 
 class TestEvidenceFor:
@@ -266,15 +338,15 @@ class TestInvertMatches:
         assert winner["ionization_mechanism_id"] == "mech-h"
         assert alternative["ionization_mechanism_id"] == "mech-na"
         # Both candidates are their ion's most abundant isotope, so the runner-up
-        # is labelled the main peak it is; the satellite case is the test below.
+        # is labelled the main peak it is; the isotopologue case is the test below.
         assert alternative["isotope_label"] == "M0"
 
-    def test_runner_up_satellite_keeps_its_own_isotope_label(self):
-        """A runner-up is as free as a winner to be one of its ion's satellites.
+    def test_runner_up_isotopologue_keeps_its_own_isotope_label(self):
+        """A runner-up is as free as a winner to be one of its ion's isotopologues.
 
         ion2's M+1 contests the peak ion1's M0 wins. The label is computed per
         candidate off ion2's own M0 m/z, not copied from the winner: without it
-        there is nothing on the alternative to say it is a satellite, and
+        there is nothing on the alternative to say it is an isotopologue, and
         promoting it by hand would enter C7H11NO3's M+1 into the ledger as
         C7H11NO3 itself - one compound owning a peak a mass unit off its own,
         and an isotopologue family headed by its own child.
@@ -1004,9 +1076,11 @@ class TestInvertMatches:
             == by_peak["p1"]["peak_assignment_id"]
         )
 
-    def test_child_owner_stays_none_when_ions_m0_lost_its_peak(self):
-        # ion1's M0 loses peak p1 to ion2, but ion1's M+1 still wins p2:
-        # the child cannot be attributed to an M0 assignment of its own ion.
+    def test_an_isotopologue_whose_ion_lost_its_m0_peak_is_not_written(self):
+        # ion1's M0 loses peak p1 to ion2, but ion1's M+1 still wins p2. The
+        # M+1 has no M0 assignment of its own ion to belong to, so it is left
+        # out and p2 goes to the untargeted stage - which leaves out an
+        # isotopologue of its own whose ion committed no monoisotopic peak.
         match_df = pd.DataFrame(
             [
                 _isotope_row(
@@ -1048,14 +1122,46 @@ class TestInvertMatches:
         assignments = invert_matches_to_peak_assignments(
             match_df, "sample1", "run1", CANDIDATE, ASSIGNED
         )
-        by_peak = {a["sample_peak_id"]: a for a in assignments}
 
-        assert by_peak["p1"]["target_ion_id"] == "ion2"
-        child = by_peak["p2"]
-        assert child["target_ion_id"] == "ion1"
-        assert child["role"] == ROLE_ISO_CHILD
-        assert child["owner_peak_assignment_id"] is None
-        assert child["tier"] == TIER_CANDIDATE
+        assert [(a["sample_peak_id"], a["target_ion_id"]) for a in assignments] == [
+            ("p1", "ion2")
+        ]
+
+    def test_an_isotopologue_whose_m0_found_no_peak_is_not_written(self):
+        # The M0 went unmatched, so the ion won no monoisotopic peak for its
+        # M+1 to belong to.
+        match_df = pd.DataFrame(
+            [
+                _isotope_row(
+                    target_isotope_id="iso1",
+                    target_ion_id="ion1",
+                    target_compound_id="cmp1",
+                    compound_formula="C6H12O6",
+                    ion_formula="C6H13O6+",
+                    mz=181.0707,
+                    relative_abundance=1.0,
+                    sample_peak_id="",
+                    sample_peak_intensity=0.0,
+                ),
+                _isotope_row(
+                    target_isotope_id="iso2",
+                    target_ion_id="ion1",
+                    target_compound_id="cmp1",
+                    compound_formula="C6H12O6",
+                    ion_formula="C6H13O6+",
+                    mz=182.0741,
+                    relative_abundance=0.065,
+                    sample_peak_id="p2",
+                ),
+            ]
+        )
+
+        assert (
+            invert_matches_to_peak_assignments(
+                match_df, "sample1", "run1", CANDIDATE, ASSIGNED
+            )
+            == []
+        )
 
     def test_unmatched_isotopes_are_ignored(self):
         match_df = pd.DataFrame(
@@ -1225,6 +1331,107 @@ class TestScoreIonsByFit:
         out = score_ions_by_fit(df)
         fit = out.groupby("target_ion_id")["match_score"].first()
         assert fit["full"] > fit["miss"]
+
+    def test_a_reference_mirror_does_not_set_the_width_stage_a_scores_at(self):
+        # The mirror's lines are paired in the same frame as the target
+        # library's, and on a TOF most of them are lines the window reached by
+        # chance. Fitted into the width, twenty of them scattered across +-9 ppm
+        # would let a mirror ion 3 ppm off an axis the library measures at 0.15
+        # ppm fit as well as a real one. It must score the same with them in the
+        # frame as without them.
+        identities = [{"name": "a seed compound", "source": "test"}]
+
+        def line(ion, mz_err, reference=None):
+            row = self._iso(ion, 1.0, mz_err, 1000.0, 0.9, snr=50.0, peak_id=ion)
+            row["reference_identities"] = reference
+            return row
+
+        library = [line(f"lib{i}", 0.1 if i % 2 else -0.1) for i in range(10)]
+        chance = [
+            line(f"chance{i}", -9.0 + i * 18.0 / 19, identities) for i in range(20)
+        ]
+        probe = [line("probe", 3.0, identities)]
+
+        def fit_of(rows):
+            out = score_ions_by_fit(pd.DataFrame(rows))
+            return out.groupby("target_ion_id")["match_score"].first()
+
+        alone = fit_of(library + probe)
+        crowded = fit_of(library + chance + probe)
+
+        assert crowded["probe"] == pytest.approx(alone["probe"])
+        assert crowded["probe"] < crowded["lib0"]
+
+    def _fit_of(self, lines, **kwargs):
+        rows = [
+            self._iso(ion, 1.0, mz_err, 1000.0, 0.9, snr=50.0, peak_id=ion)
+            for ion, mz_err in lines
+        ]
+        out = score_ions_by_fit(pd.DataFrame(rows), **kwargs)
+        return out.groupby("target_ion_id")["match_score"].first()
+
+    def test_a_library_too_thin_to_fit_a_width_scores_at_the_class_width(self):
+        # Four lines are too few to fit a width. The untargeted stage stands in
+        # the instrument class's width there, so Stage A must too. The fit
+        # score's own fallback is a generic 2 ppm, which on an Orbitrap scores a
+        # line 1.5 ppm off almost as well as one on the axis.
+        lines = [("lib0", 0.05), ("lib1", -0.05), ("lib2", 0.0), ("probe", 1.5)]
+
+        orbitrap = self._fit_of(lines, fallback_sigma_ppm=0.3)
+        generic = self._fit_of(lines)
+
+        probe = pd.DataFrame(
+            [self._iso("probe", 1.0, 1.5, 1000.0, 0.9, snr=50.0, peak_id="probe")]
+        )
+        assert orbitrap["probe"] == pytest.approx(ion_score_v2(probe, sigma_ppm=0.3))
+        assert orbitrap["probe"] < generic["probe"]
+
+    def test_a_fitted_width_is_not_replaced_by_the_class_width(self):
+        lines = [(f"lib{i}", 0.1 if i % 2 else -0.1) for i in range(10)]
+        lines.append(("probe", 1.5))
+
+        assert self._fit_of(lines, fallback_sigma_ppm=5.0)["probe"] == pytest.approx(
+            self._fit_of(lines)["probe"]
+        )
+
+    def test_a_library_too_thin_to_fit_an_offset_scores_at_the_reagent_lines(self):
+        # The labelled-nitrate set once its workaround entries were gone: too
+        # few library lines to fit an offset, and the source's own lines put
+        # the axis 1.26 ppm low, where the sample's commits sit too. A line
+        # there is on the axis; scored at zero, it was 1.26 ppm off it.
+        lines = [("lib0", -1.2), ("lib1", -1.3), ("lib2", -1.25), ("probe", -1.26)]
+        reading = ReagentOffset(-1.26, 7, beyond_width=True)
+
+        corrected = self._fit_of(lines, fallback_sigma_ppm=0.3, reagent_offset=reading)
+        uncorrected = self._fit_of(lines, fallback_sigma_ppm=0.3)
+
+        probe = pd.DataFrame(
+            [self._iso("probe", 1.0, -1.26, 1000.0, 0.9, snr=50.0, peak_id="probe")]
+        )
+        assert corrected["probe"] == pytest.approx(
+            ion_score_v2(probe, sigma_ppm=0.3, mu=-1.26)
+        )
+        assert corrected["probe"] > uncorrected["probe"]
+
+    def test_a_reading_inside_the_width_leaves_the_sample_uncorrected(self):
+        lines = [("lib0", 0.3), ("lib1", 0.2), ("probe", 0.3)]
+        inside = ReagentOffset(0.3, 9, beyond_width=False)
+
+        assert self._fit_of(lines, fallback_sigma_ppm=0.3, reagent_offset=inside)[
+            "probe"
+        ] == pytest.approx(self._fit_of(lines, fallback_sigma_ppm=0.3)["probe"])
+
+    def test_a_fitted_offset_is_not_replaced_by_the_reagent_lines(self):
+        # The uronium set's lines sit at -0.9 ppm while its library and its
+        # commits sit at zero: pooled or preferred, they would move a sample
+        # that measures its own offset away from it.
+        lines = [(f"lib{i}", 0.1 if i % 2 else -0.1) for i in range(10)]
+        lines.append(("probe", 0.0))
+        reading = ReagentOffset(-0.93, 10, beyond_width=True)
+
+        assert self._fit_of(lines, fallback_sigma_ppm=0.3, reagent_offset=reading)[
+            "probe"
+        ] == pytest.approx(self._fit_of(lines)["probe"])
 
 
 class TestUntargetedMatches:
@@ -1435,7 +1642,7 @@ class TestUntargetedMatches:
         that ionization maps to - the runner-up a person can actually promote.
         Its isotope label rides along for the same reason a Stage A runner-up's
         does: promoting a 13C child as though it were an M0 would enter a
-        compound's satellite into the ledger as the compound.
+        compound's isotopologue into the ledger as the compound.
         """
         matches_df = pd.DataFrame(
             [
@@ -1715,6 +1922,134 @@ class TestUntargetedMatches:
         assert assignments == []
 
 
+class TestAnIsotopologueBelongsToAnM0:
+    """An isotopologue row is written by the monoisotopic row that claims it.
+
+    The ledger's owner link is what says a peak is part of an envelope, so an
+    isotopologue with nobody to point at states a claim about an ion the ledger
+    never commits. It is not written; its peak stays unassigned, which is what
+    it is.
+    """
+
+    def _pair(self, *, m0_mz: float, child_mz: float, m0_formula="C5H10O2"):
+        """One ion's M0 and its 13C line, as the finder reports them."""
+        return pd.DataFrame(
+            [
+                {
+                    "mz": m0_mz,
+                    "formula": m0_formula,
+                    "ion": "C5H11O2+",
+                    "isotope_label": "M0",
+                    "ionization_mechanism": "+H+",
+                    "mz_error_ppm": 1.0,
+                    "intensity_error": 0.05,
+                    "other_candidates": "",
+                },
+                {
+                    "mz": child_mz,
+                    "formula": m0_formula,
+                    "ion": "[13C]C4H11O2+",
+                    "isotope_label": "13C",
+                    "ionization_mechanism": "+H+",
+                    "mz_error_ppm": 1.5,
+                    "intensity_error": 0.1,
+                    "other_candidates": "",
+                },
+            ]
+        )
+
+    def _peaks(self) -> pd.DataFrame:
+        return pd.DataFrame(
+            {
+                "sample_peak_id": ["pA", "pB"],
+                "mz": [100.1, 101.1033],
+                "intensity": [5000.0, 300.0],
+            }
+        )
+
+    def test_an_isotopologue_whose_ion_won_no_peak_is_not_written(self):
+        # The finder reported the 13C line but not the M0 it belongs to - the
+        # monoisotopic line failed the envelope's intensity test, or another
+        # candidate took its peak. Before, the child was written with a null
+        # owner; the reference engines' ledgers show the same peaks as ordinary
+        # isotopologues, and a row that names no owner cannot be read as one.
+        assignments = untargeted_matches_to_peak_assignments(
+            self._pair(m0_mz=100.1, child_mz=101.1033).iloc[1:],
+            self._peaks(),
+            "sample1",
+            "run1",
+            CANDIDATE,
+            ASSIGNED,
+        )
+        assert assignments == []
+
+    def test_the_isotopologue_is_written_when_its_m0_is(self):
+        assignments = untargeted_matches_to_peak_assignments(
+            self._pair(m0_mz=100.1, child_mz=101.1033),
+            self._peaks(),
+            "sample1",
+            "run1",
+            CANDIDATE,
+            ASSIGNED,
+        )
+        by_peak = {a["sample_peak_id"]: a for a in assignments}
+        assert by_peak["pB"]["role"] == ROLE_ISO_CHILD
+        assert (
+            by_peak["pB"]["owner_peak_assignment_id"]
+            == by_peak["pA"]["peak_assignment_id"]
+        )
+
+    def test_an_m0_reported_after_its_isotopologue_still_owns_it(self):
+        # For a bromine- or chlorine-rich envelope the finder reports the most
+        # abundant isotopologue first, and the monoisotopic line can sit at a
+        # lower m/z than an isotopologue already seen. Ownership is therefore
+        # settled in a second pass, not as the rows arrive.
+        rows = self._pair(m0_mz=100.1, child_mz=101.1033)
+        assignments = untargeted_matches_to_peak_assignments(
+            rows.iloc[::-1].reset_index(drop=True),
+            self._peaks(),
+            "sample1",
+            "run1",
+            CANDIDATE,
+            ASSIGNED,
+        )
+        by_peak = {a["sample_peak_id"]: a for a in assignments}
+        assert (
+            by_peak["pB"]["owner_peak_assignment_id"]
+            == by_peak["pA"]["peak_assignment_id"]
+        )
+
+    def test_a_peak_another_pass_claimed_gets_no_row(self):
+        # The whole peak list is pattern context now, so the search sees peaks
+        # the reagent and artifact pre-passes and Stage A already own. They are
+        # context, not territory: the ledger holds one row per peak.
+        assignments = untargeted_matches_to_peak_assignments(
+            self._pair(m0_mz=100.1, child_mz=101.1033),
+            self._peaks(),
+            "sample1",
+            "run1",
+            CANDIDATE,
+            ASSIGNED,
+            excluded_peak_ids={"pB"},
+        )
+        assert [a["sample_peak_id"] for a in assignments] == ["pA"]
+
+    def test_excluding_the_m0_takes_its_isotopologues_with_it(self):
+        # Stage A owns the monoisotopic peak, so that ion's envelope is Stage
+        # A's to write. A Stage B isotopologue left behind would claim the peak
+        # for an ion this stage never committed.
+        assignments = untargeted_matches_to_peak_assignments(
+            self._pair(m0_mz=100.1, child_mz=101.1033),
+            self._peaks(),
+            "sample1",
+            "run1",
+            CANDIDATE,
+            ASSIGNED,
+            excluded_peak_ids={"pA"},
+        )
+        assert assignments == []
+
+
 class TestBuildUnassigned:
     def test_every_leftover_peak_gets_a_placeholder_row(self):
         peaks_df = pd.DataFrame(
@@ -1915,3 +2250,358 @@ class TestReferenceStageAInversion:
         assert assignment["target_ion_id"] == "ion1"
         # ...and the reference name rides alongside.
         assert assignment["provenance"]["reference_identities"] == _REF_IDENTITIES
+
+
+@pytest.mark.parametrize(
+    ("written", "identity"),
+    [
+        ("CH3COOH", "C2H4O2"),
+        ("C2H4O2", "C2H4O2"),
+        ("NH3", "H3N"),
+        ("H2SO4", "H2O4S"),
+        ("(HNO3)2", "H2N2O6"),
+        ("()", "()"),
+        ("H2O6^N2", "H2O6^N2"),
+        ("not a formula", "not a formula"),
+    ],
+)
+def test_a_formulas_identity_is_its_composition_in_hill_order(written, identity):
+    # An unreadable formula keeps its own text, so it is never merged with another.
+    assert formula_identity(written) == identity
+
+
+class TestALibraryEntryKeepsItsLineHoweverItIsSpelled:
+    """A target library holds what a person typed; a reference list holds the
+    same neutral in Hill order. Compared as text the two were two hypotheses on
+    one peak: the tie between them fell to alphabetical order, so the library's
+    ``CH3COOH`` lost its own line to the list's ``C2H4O2``, sat beside it as an
+    alternative, and the density rule counted it as a rival. Read as
+    compositions they are one reading, and the library's row owns it."""
+
+    def _frame(
+        self,
+        *,
+        library_score: float = 0.9,
+        copy_score: float = 0.9,
+        copy_mechanism: str = "-H+",
+        library_first: bool = False,
+        library_formula: str = "CH3COOH",
+        copy_formula: str = "C2H4O2",
+    ) -> pd.DataFrame:
+        library = _isotope_row(
+            target_isotope_id="iso1",
+            target_ion_id="ion1",
+            target_compound_id="acetic",
+            compound_formula=library_formula,
+            ion_formula="C2H3O2-",
+            mz=59.0139,
+            relative_abundance=1.0,
+            sample_peak_id="p1",
+            match_score=library_score,
+            ionization="-H+",
+        )
+        copy = _reference_row(
+            target_isotope_id="refiso1",
+            target_ion_id="refion1",
+            compound_formula=copy_formula,
+            ion_formula="C2H3O2-",
+            mz=59.0139,
+            relative_abundance=1.0,
+            sample_peak_id="p1",
+            match_score=copy_score,
+            ionization=copy_mechanism,
+        )
+        return pd.DataFrame([library, copy] if library_first else [copy, library])
+
+    def _invert(self, df: pd.DataFrame) -> dict:
+        [assignment] = invert_matches_to_peak_assignments(
+            df,
+            sample_item_id="s1",
+            peak_assignment_run_id="run1",
+            candidate_threshold=CANDIDATE,
+            assigned_threshold=ASSIGNED,
+        )
+        return assignment
+
+    @pytest.mark.parametrize("library_first", [False, True])
+    @pytest.mark.parametrize(
+        ("library_formula", "copy_formula"),
+        [("CH3COOH", "C2H4O2"), ("C2H4O2", "CH3COOH")],
+    )
+    def test_the_library_entry_keeps_its_line_over_the_lists_copy(
+        self, library_first, library_formula, copy_formula
+    ):
+        assignment = self._invert(
+            self._frame(
+                library_first=library_first,
+                library_formula=library_formula,
+                copy_formula=copy_formula,
+            )
+        )
+
+        assert assignment["target_compound_id"] == "acetic"
+        assert assignment["assigned_formula"] == library_formula
+        # The list's names still ride along on the library's row.
+        assert assignment["provenance"]["reference_identities"] == _REF_IDENTITIES
+
+    def test_the_lists_copy_is_no_rival(self):
+        assignment = self._invert(self._frame())
+
+        provenance = assignment["provenance"]
+        assert provenance["n_candidates"] == 1
+        assert provenance["candidate_density"] == 1
+        assert provenance["is_tie"] is False
+        assert provenance["confidence"] == pytest.approx(1.0)
+        assert assignment["alternatives"] is None
+
+    def test_a_copy_that_fits_a_shade_better_does_not_take_the_line(self):
+        assignment = self._invert(self._frame(library_score=0.90, copy_score=0.92))
+
+        assert assignment["target_compound_id"] == "acetic"
+
+    def test_two_library_entries_spelling_one_neutral_are_one_reading(self):
+        # Two lists attached to one batch can hold the same compound written two
+        # ways; neither is the other's alternative or its rival.
+        df = pd.DataFrame(
+            [
+                _isotope_row(
+                    target_isotope_id="iso1",
+                    target_ion_id="ion1",
+                    target_compound_id="urea-monitor",
+                    compound_formula="CON2H4",
+                    ion_formula="CH5N2O+",
+                    mz=61.0396,
+                    relative_abundance=1.0,
+                    sample_peak_id="p1",
+                ),
+                _isotope_row(
+                    target_isotope_id="iso2",
+                    target_ion_id="ion2",
+                    target_compound_id="urea-calibrants",
+                    compound_formula="CH4N2O",
+                    ion_formula="CH5N2O+",
+                    mz=61.0396,
+                    relative_abundance=1.0,
+                    sample_peak_id="p1",
+                ),
+            ]
+        )
+
+        assignment = self._invert(df)
+
+        assert assignment["alternatives"] is None
+        assert assignment["provenance"]["n_candidates"] == 1
+        assert assignment["provenance"]["candidate_density"] == 1
+
+    def test_the_lists_reading_through_another_mechanism_is_not_a_copy(self):
+        # Another mechanism makes another ion, so the list's row is a reading of
+        # its own and competes on its evidence as before.
+        assignment = self._invert(
+            self._frame(library_score=0.90, copy_score=0.95, copy_mechanism="+NO3-")
+        )
+
+        assert assignment["target_compound_id"] is None
+        assert assignment["assigned_formula"] == "C2H4O2"
+        assert assignment["alternatives"][0]["target_compound_id"] == "acetic"
+
+
+class TestALabelledIonCountsFromItsLabel:
+    """A labelled reagent's atom is written in brackets like any substituted
+    isotope, so the brackets alone cannot find a labelled ion's M0. The ion is
+    measured by its labelled line; the formula without a bracket is the
+    reagent's unlabelled remainder one mass unit below, a line of a few
+    percent. Read as the M0, it put the labelled line at "M+1" and, where the
+    remainder found no peak of its own, left the ion's main line an
+    isotopologue of nothing."""
+
+    ION = "C9H16O7^N-"
+
+    def _row(self, isotope_id, isotope_formula, mz, abundance, peak_id) -> dict:
+        return {
+            **_isotope_row(
+                target_isotope_id=isotope_id,
+                target_ion_id="ion1",
+                target_compound_id="cmp1",
+                compound_formula="C9H16O4",
+                ion_formula=self.ION,
+                mz=mz,
+                relative_abundance=abundance,
+                sample_peak_id=peak_id,
+                sample_peak_intensity=1000.0 if peak_id else 0.0,
+                ionization="+[15N]O3-",
+            ),
+            "target_isotope_formula": isotope_formula,
+        }
+
+    def _family(self, *, remainder_peak: str) -> pd.DataFrame:
+        return pd.DataFrame(
+            [
+                self._row("iso-14n", "C9H16NO7-", 250.0932, 0.0204, remainder_peak),
+                self._row("iso-15n", "[15N]C9H16O7-", 251.0903, 1.0, "p1"),
+                self._row("iso-13c", "[13C][15N]C8H16O7-", 252.0936, 0.0997, "p2"),
+            ]
+        )
+
+    def test_the_labelled_line_is_the_m0(self):
+        assignments = invert_matches_to_peak_assignments(
+            self._family(remainder_peak="p0"), "sample1", "run1", CANDIDATE, ASSIGNED
+        )
+        by_peak = {a["sample_peak_id"]: a for a in assignments}
+
+        main = by_peak["p1"]
+        assert (main["role"], main["isotope_label"]) == (ROLE_M0, "M0")
+        assert main["isotope_formula"] == "[15N]C9H16O7-"
+        for peak, label in (("p0", "M-1"), ("p2", "M+1")):
+            assert by_peak[peak]["role"] == ROLE_ISO_CHILD
+            assert by_peak[peak]["isotope_label"] == label
+            assert (
+                by_peak[peak]["owner_peak_assignment_id"] == main["peak_assignment_id"]
+            )
+
+    def test_a_remainder_with_no_peak_leaves_the_ion_whole(self):
+        # The remainder is 2% of the labelled line, so on most ions it finds no
+        # peak. Read as the M0, it made the ion's main line an isotopologue
+        # whose M0 won nothing, which is a row the engine does not write.
+        assignments = invert_matches_to_peak_assignments(
+            self._family(remainder_peak=""), "sample1", "run1", CANDIDATE, ASSIGNED
+        )
+        by_peak = {a["sample_peak_id"]: a for a in assignments}
+
+        assert set(by_peak) == {"p1", "p2"}
+        assert by_peak["p1"]["role"] == ROLE_M0
+        assert (
+            by_peak["p2"]["owner_peak_assignment_id"]
+            == by_peak["p1"]["peak_assignment_id"]
+        )
+
+    def test_the_labels_are_read_off_the_ion_formula(self):
+        assert labelled_isotopes(self.ION) == {"[15N]": 1}
+        assert labelled_isotopes("C5H8O8^N2-") == {"[15N]": 2}
+        assert labelled_isotopes("C6H13O6+") == {}
+        assert labelled_isotopes(None) == {}
+
+    def test_every_labelled_atom_is_at_its_label(self):
+        # Two labelled atoms: the line with one of them unlabelled is the M-1.
+        ion = "C5H8O8^N2-"
+        rows = pd.DataFrame(
+            [
+                {"mz": 250.0, "target_isotope_formula": "C5H8N2O8-"},
+                {"mz": 251.0, "target_isotope_formula": "[15N]C5H8NO8-"},
+                {"mz": 252.0, "target_isotope_formula": "[15N]2C5H8O8-"},
+            ]
+        ).assign(target_ion_formula=ion)
+
+        assert monoisotopic_row(rows)["target_isotope_formula"] == "[15N]2C5H8O8-"
+
+    def test_a_merged_low_resolution_line_is_the_m0_when_it_holds_it(self):
+        # At a low resolution the labelled line and the remainder's 13C line,
+        # 6 mDa apart, are one line, and the generator names both.
+        rows = pd.DataFrame(
+            [
+                {"mz": 250.0932, "target_isotope_formula": "C9H16NO7-"},
+                {
+                    "mz": 251.0930,
+                    "target_isotope_formula": "[15N]C9H16O7-/[13C]C8H16NO7-",
+                },
+            ]
+        ).assign(target_ion_formula=self.ION)
+
+        assert monoisotopic_row(rows)["mz"] == 251.0930
+
+    def test_without_the_ion_formula_the_line_without_a_bracket_stands(self):
+        rows = pd.DataFrame(
+            [
+                {"mz": 238.7537, "target_isotope_formula": "[81Br]Br2-"},
+                {"mz": 236.7558, "target_isotope_formula": "Br3-"},
+            ]
+        )
+
+        assert monoisotopic_row(rows)["target_isotope_formula"] == "Br3-"
+
+
+class TestTheCandidateDensityOnAStageARow:
+    """Step 2.4: the count of formulas the peak's evidence could not separate
+    from the committed one belongs to the peak the ION was searched at.
+
+    Stage A writes one provenance blob per row of a winner's envelope, so
+    without this the isotopologues of every curated identity carried the count
+    their PARENT earned - 245 of them on the assignment gate, against the
+    schema's "null on an isotopologue"."""
+
+    @staticmethod
+    def _family() -> pd.DataFrame:
+        """One curated identity claiming its M0 and its M+1."""
+        return pd.DataFrame(
+            [
+                _isotope_row(
+                    target_isotope_id="iso-m0",
+                    target_ion_id="ion1",
+                    target_compound_id="cmp1",
+                    compound_formula="C6H12O6",
+                    ion_formula="C6H13O6+",
+                    mz=181.0707,
+                    relative_abundance=1.0,
+                    sample_peak_id="p1",
+                ),
+                _isotope_row(
+                    target_isotope_id="iso-m1",
+                    target_ion_id="ion1",
+                    target_compound_id="cmp1",
+                    compound_formula="C6H12O6",
+                    ion_formula="C6H13O6+",
+                    mz=182.0740,
+                    relative_abundance=0.066,
+                    sample_peak_id="p2",
+                ),
+            ]
+        )
+
+    def test_the_main_row_carries_it_and_the_isotopologue_does_not(self):
+        assignments = invert_matches_to_peak_assignments(
+            self._family(), "sample1", "run1", CANDIDATE, ASSIGNED
+        )
+        by_peak = {a["sample_peak_id"]: a for a in assignments}
+
+        assert by_peak["p1"]["role"] == ROLE_M0
+        assert by_peak["p1"]["provenance"]["candidate_density"] == 1
+
+        assert by_peak["p2"]["role"] == ROLE_ISO_CHILD
+        assert "candidate_density" not in by_peak["p2"]["provenance"]
+
+    def test_the_isotopologue_keeps_the_rest_of_its_provenance(self):
+        # Only the density is withheld: an isotopologue still records the evidence
+        # its tier was read off and the plausibility of the formula it carries.
+        assignments = invert_matches_to_peak_assignments(
+            self._family(), "sample1", "run1", CANDIDATE, ASSIGNED
+        )
+        isotopologue = next(a for a in assignments if a["sample_peak_id"] == "p2")
+        assert isotopologue["provenance"]["evidence"] is not None
+        assert isotopologue["provenance"]["plausibility"] == 1.0
+        assert isotopologue["provenance"]["n_candidates"] == 1
+
+    def test_the_count_is_around_the_formula_the_row_commits(self):
+        # Two curated identities on one peak, the second fitting better but
+        # implausible: the arbitration ranks the plausible one first and that is
+        # what the row commits, so the count is taken around it.
+        rows = self._family().to_dict("records")
+        rows.append(
+            _isotope_row(
+                target_isotope_id="iso-other",
+                target_ion_id="ion2",
+                target_compound_id="cmp2",
+                compound_formula="C6H17NO4",  # over-saturated: plausibility 0
+                ion_formula="C6H18NO4+",
+                mz=181.0707,
+                relative_abundance=1.0,
+                sample_peak_id="p1",
+                match_score=0.99,
+            )
+        )
+        assignments = invert_matches_to_peak_assignments(
+            pd.DataFrame(rows), "sample1", "run1", CANDIDATE, ASSIGNED
+        )
+        main = next(a for a in assignments if a["sample_peak_id"] == "p1")
+        assert main["assigned_formula"] == "C6H12O6"
+        # The rival has no evidence at all, so nothing ties the commit.
+        assert main["provenance"]["candidate_density"] == 1
+        assert main["provenance"]["n_candidates"] == 2

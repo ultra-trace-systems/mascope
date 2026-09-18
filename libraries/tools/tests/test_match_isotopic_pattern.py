@@ -12,6 +12,7 @@ import polars as pl
 import pytest
 
 from mascope_tools.composition.heuristic_filter import (
+    PATTERN_REQUIRED_LINES,
     match_isotopic_pattern,
     predict_isotopes,
     score_pattern,
@@ -110,3 +111,135 @@ def test_score_pattern_is_invariant_to_the_error_signs():
             predicted_rel,
         )
     )
+
+
+# A dibromide: IsoSpec ranks its configurations by abundance, so the line it
+# returns first is 79Br81Br at 46.8%, two mass units ABOVE the monoisotopic one
+# at 24.0%. Every index-0 assumption in the matcher and the scorer means the
+# ion's own line, so this is the geometry that tells them apart.
+DIBROMIDE = "C6H12Br2"
+DIBROMIDE_CANDIDATES = [
+    {"formula": "C6H12", "ion": f"{DIBROMIDE}-", "composition_error_ppm": 0.3}
+]
+
+
+def _dibromide_lines():
+    mzs, intensities, labels = predict_isotopes(DIBROMIDE, -1)
+    return {
+        label: (float(mz), float(intensity))
+        for mz, intensity, label in zip(mzs, intensities, labels)
+    }
+
+
+def test_the_predictors_first_line_is_not_the_ions_own():
+    """The premise of the tests below, pinned so it cannot drift silently."""
+    _, intensities, labels = predict_isotopes(DIBROMIDE, -1)
+
+    assert labels[0] == "81Br"
+    assert labels.index("M0") == 1
+    assert intensities[0] > intensities[1]
+
+
+def test_the_envelope_is_anchored_on_the_ions_own_line():
+    lines = _dibromide_lines()
+    peaks = pl.DataFrame(
+        {
+            "mz": [lines["M0"][0], lines["81Br"][0]],
+            "intensity": [1.0e6, 1.0e6 * lines["81Br"][1] / lines["M0"][1]],
+        }
+    ).sort("mz")
+
+    _, isotope_data = match_isotopic_pattern(DIBROMIDE_CANDIDATES, peaks)
+    data = isotope_data[0]
+
+    assert data["labels"][0] == "M0"
+    assert data["masses"][0] == pytest.approx(lines["M0"][0], abs=1e-4)
+    # ...and the isotopologue's predicted share is stated relative to the ion,
+    # which for this envelope is larger than one.
+    assert data["predicted_intensities"][1] == pytest.approx(
+        lines["81Br"][1] / lines["M0"][1], rel=1e-6
+    )
+    assert abs(data["intensity_errors"][1]) < 1e-6
+
+
+def test_a_bright_peak_is_not_lost_to_a_faint_neighbour_two_mass_units_up():
+    """The set D regression: a bright target, a faint peak where the
+    most-abundant line would fall.
+
+    Anchoring on the predictor's first line matched that faint peak, normalised
+    the envelope to it, and then found the target thousands of percent too
+    bright for its own monoisotopic line - so the target went unmatched while
+    the pattern still scored well. The peak the candidate was enumerated FOR
+    then got no row at all.
+    """
+    lines = _dibromide_lines()
+    peaks = pl.DataFrame(
+        {
+            "mz": [lines["M0"][0], lines["81Br"][0]],
+            "intensity": [7.0e3, 3.6e2],
+        }
+    ).sort("mz")
+
+    ranked, isotope_data = match_isotopic_pattern(DIBROMIDE_CANDIDATES, peaks)
+    data = isotope_data[0]
+
+    # The target is matched, and it is the row the envelope hangs off.
+    assert data["masses"][0] == pytest.approx(lines["M0"][0], abs=1e-4)
+    assert data["labels"][0] == "M0"
+    # The faint neighbour is what it is: far too weak for the 79Br81Br line of
+    # this ion, so it fails the intensity gate and is not claimed.
+    assert data["masses"][1] == 0.0
+    # And the reading is refused rather than merely scored down: a dibromide
+    # whose brightest predicted line is not in the spectrum is not a dibromide,
+    # however well its one matched line agrees. Without this the anchoring
+    # would trade one phantom for another - the reading that used to swallow
+    # the target would win it instead, as an M0 with no envelope at all. The
+    # fit charges the absence (a 79Br81Br line at 1.95 times the target, missing
+    # and unmissable, is most of the envelope's weight) but does not refuse on
+    # it, which is why the refusal is a flag of its own.
+    assert ranked[0][PATTERN_REQUIRED_LINES] is False
+    assert ranked[0]["isotopic_pattern_score"] < 0.5
+
+
+def test_a_candidate_whose_brightest_line_is_absent_is_not_evidence():
+    """The requirement the anchoring separated out and had to state again.
+
+    Before, the caller put the brightest line first and the score required
+    index 0, so "the brightest line is there" was implicit in "the ion's line is
+    there". Once the two are different rows, both have to be asked for - and
+    once the fit charges an absent line rather than refusing on it, asked for
+    outside the score.
+    """
+    lines = _dibromide_lines()
+    peaks = pl.DataFrame(
+        {
+            "mz": [lines["M0"][0], lines["13C"][0]],
+            "intensity": [1.0e6, 1.0e6 * lines["13C"][1] / lines["M0"][1]],
+        }
+    ).sort("mz")
+
+    ranked, isotope_data = match_isotopic_pattern(DIBROMIDE_CANDIDATES, peaks)
+
+    # The ion's own line is matched, and so is an isotopologue...
+    assert isotope_data[0]["masses"][0] > 0
+    assert np.count_nonzero(isotope_data[0]["masses"]) == 2
+    # ...but not the one the prediction leads with, so the reading is not
+    # evidence of this ion, whatever the fit makes of the lines it did find.
+    assert ranked[0][PATTERN_REQUIRED_LINES] is False
+
+
+def test_a_candidate_whose_own_line_is_absent_scores_nothing():
+    """The ion's monoisotopic line is the peak the composition search proposed
+    the candidate for, so a spectrum that does not hold it is not evidence for
+    the candidate - however well the rest of the envelope lines up. This one the
+    fit refuses outright: with no anchor there is nothing to measure against."""
+    lines = _dibromide_lines()
+    peaks = pl.DataFrame(
+        {"mz": [lines["81Br"][0], lines["81Br2"][0]], "intensity": [1.0e6, 4.9e5]}
+    ).sort("mz")
+
+    ranked, isotope_data = match_isotopic_pattern(DIBROMIDE_CANDIDATES, peaks)
+
+    assert ranked[0]["isotopic_pattern_score"] == 0.0
+    assert ranked[0][PATTERN_REQUIRED_LINES] is False
+    assert not np.any(isotope_data[0]["masses"] > 0)

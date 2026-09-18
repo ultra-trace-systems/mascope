@@ -8,20 +8,30 @@ split from the convergence design - *matching is formula-based; identity is
 one-to-many* - so Stage A pre-computes isotopologues once per formula and attaches
 the (possibly several) names afterwards.
 
-An optional atmospheric-window bound (element set / carbon count / mass) keeps
-Stage A from expanding a large off-domain reference mirror (e.g. full CompTox)
-into isotopologues per sample - the performance guard the convergence doc leaves
-as an open decision. Callers can widen or disable it.
+What each source contributes is bounded by what its row records
+(:mod:`mascope_reference.scope`), so a curated list brings in the silicon,
+phosphorus and halogen families no formula grid reaches while a mirror the size
+of CompTox stays inside the atmospheric window rather than being expanded into
+isotopologues per sample:
+
+- **its window**, intersected with the chemistry context's ceiling;
+- **its radical allowance**: an odd-electron formula is matched only from a
+  source whose row allows radicals;
+- **its polarity**: a source detected in one polarity is not matched against a
+  sample measured in the other.
 """
 
+import json
 from dataclasses import dataclass, field
 
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from mascope_reference.peaklist import is_odd_electron
 from mascope_reference.query import _STABLE_ORDER, active_join
 from mascope_reference.schema import reference_compound, reference_source
-from mascope_tools.composition.utils import parse_composition
+from mascope_reference.scope import SourceScope
+from mascope_tools.composition.known_window import KnownWindow
 
 
 # Rows are consumed in batches rather than materialized in one list: this runs
@@ -41,12 +51,16 @@ _KNOWN_COLUMNS = (
     reference_compound.c.license,
 )
 
+# What a row's source records about how its compounds may be matched, selected
+# beside every compound row: the source table is a handful of rows, so reading
+# the scope off the join costs nothing and keeps one stream in one order.
+_SCOPE_COLUMNS = (
+    reference_source.c.reference_source_id.label("source_id"),
+    reference_source.c.known_window,
+    reference_source.c.allow_radicals,
+    reference_source.c.polarity,
+)
 
-# Default bound: the atmospheric-organics window. Elements a monoterpene-SOA /
-# HOM study cares about, a generous carbon cap, and a mass ceiling above dimers.
-DEFAULT_ELEMENTS = frozenset({"C", "H", "N", "O", "S"})
-DEFAULT_MAX_CARBON = 40
-DEFAULT_MAX_MASS = 700.0
 # Cap identities kept per formula so provenance JSON stays bounded even when a
 # formula is shared by thousands of compounds in a large mirror.
 DEFAULT_MAX_IDENTITIES = 25
@@ -73,84 +87,74 @@ class KnownComposition:
     identities: list[KnownIdentity] = field(default_factory=list)
 
 
-def _within_bound(
-    formula: str,
-    mass: float | None,
-    *,
-    elements: frozenset[str] | None,
-    max_carbon: int | None,
-    max_mass: float | None,
-) -> bool:
-    """Whether a formula passes the (optional) atmospheric window."""
-    if max_mass is not None and (mass is None or mass > max_mass):
-        return False
-    if elements is None and max_carbon is None:
-        return True
-    try:
-        composition = parse_composition(formula)
-    except Exception:
-        return False
-    present = {sym for sym, count in composition.items() if count > 0}
-    if elements is not None and not present.issubset(elements):
-        return False
-    if max_carbon is not None and composition.get("C", 0) > max_carbon:
-        return False
-    return True
-
-
 async def known_state_fingerprint(session: AsyncSession) -> tuple:
     """Cheap identity of the active reference state, for caching derived data.
 
     One row per active source suffices: ingest writes a new
-    ``reference_source`` row per (source, version) and flips ``is_active``,
-    so any change to what :func:`iter_known_compositions` would return also
-    changes this tuple. An empty tuple means no active sources - the known
-    set is empty without scanning ``reference_compound``.
+    ``reference_source`` row per (source, version) and flips ``is_active``, and
+    what a row records about how its compounds may be matched is part of the
+    row's entry, so any change to what :func:`iter_known_compositions` would
+    return also changes this tuple - a seed that brings a list's window up to
+    date without reloading it included. An empty tuple means no active sources -
+    the known set is empty without scanning ``reference_compound``.
 
     :param session: Active async session.
-    :return: Sorted tuple of (source id, ingestion timestamp) pairs.
+    :return: Sorted tuple of (source id, ingestion timestamp, window, radical
+        allowance, polarity), one per active source.
     """
     rows = (
         await session.execute(
             select(
                 reference_source.c.reference_source_id,
                 reference_source.c.ingested_at,
+                reference_source.c.known_window,
+                reference_source.c.allow_radicals,
+                reference_source.c.polarity,
             )
             .where(reference_source.c.is_active.is_(True))
             .order_by(reference_source.c.reference_source_id)
         )
     ).all()
-    return tuple((row.reference_source_id, row.ingested_at) for row in rows)
+    return tuple(
+        (
+            row.reference_source_id,
+            row.ingested_at,
+            json.dumps(row.known_window, sort_keys=True),
+            bool(row.allow_radicals),
+            row.polarity,
+        )
+        for row in rows
+    )
 
 
 async def iter_known_compositions(
     session: AsyncSession,
     *,
     licenses: set[str] | None = None,
-    elements: frozenset[str] | None = DEFAULT_ELEMENTS,
-    max_carbon: int | None = DEFAULT_MAX_CARBON,
-    max_mass: float | None = DEFAULT_MAX_MASS,
+    ceiling: KnownWindow | None = None,
+    polarity: str | None = None,
     max_identities: int = DEFAULT_MAX_IDENTITIES,
 ) -> list[KnownComposition]:
     """Return the active known-composition set, deduplicated on canonical formula.
 
-    Reads only active reference sources (via :func:`query._active_join`), collapses
-    rows to one :class:`KnownComposition` per canonical formula, and attaches up to
-    ``max_identities`` identities per formula. Optionally bounds the set to an
-    atmospheric window so Stage A does not expand an off-domain mirror.
+    Reads only active reference sources (via :func:`query.active_join`), keeps each
+    compound its source admits, collapses them to one :class:`KnownComposition`
+    per canonical formula, and attaches up to ``max_identities`` identities per
+    formula. A formula carries the identities of the sources that admit it, and
+    only those: one another source holds outside its window lends it nothing.
 
     :param session: Active async session.
     :param licenses: If given, keep only compounds whose per-record license is in
         this set (commercial gating). ``None`` keeps all.
-    :param elements: Allowed element symbols; a formula with any other element is
-        dropped. ``None`` disables the element filter.
-    :param max_carbon: Drop formulas with more carbons than this. ``None`` disables.
-    :param max_mass: Drop compounds heavier than this monoisotopic mass (also drops
-        rows with no stored mass). ``None`` disables.
+    :param ceiling: The chemistry context's ceiling on every source's window.
+        ``None`` sets none, so each source is bounded by its own row alone.
+    :param polarity: The sample's polarity, ``positive`` or ``negative``. A
+        source whose row records the other polarity contributes nothing;
+        ``None`` matches every source.
     :param max_identities: Cap on identities retained per formula.
     :return: Known compositions, one per unique formula, ascending by formula.
     """
-    stmt = active_join(*_KNOWN_COLUMNS)
+    stmt = active_join(*_KNOWN_COLUMNS, *_SCOPE_COLUMNS)
     # Charged species are recorded, not matched: Stage A pairs a NEUTRAL formula
     # with an ionization mechanism, so an intrinsically charged row has no
     # neutral precursor to expand and could only ever produce a false identity
@@ -164,33 +168,51 @@ async def iter_known_compositions(
     )
     if licenses is not None:
         stmt = stmt.where(reference_compound.c.license.in_(licenses))
-    if max_mass is not None:
-        stmt = stmt.where(reference_compound.c.monoisotopic_mass <= max_mass)
+    if polarity is not None:
+        stmt = stmt.where(
+            or_(
+                reference_source.c.polarity.is_(None),
+                reference_source.c.polarity == polarity,
+            )
+        )
+    if ceiling is not None and ceiling.max_mass is not None:
+        # The ceiling bounds every source, so its mass cap can be left to the
+        # index; each source's own cap is applied per row below.
+        stmt = stmt.where(reference_compound.c.monoisotopic_mass <= ceiling.max_mass)
     # Totally ordered, so which identities survive ``max_identities`` is the same
     # on every run over the same data rather than whatever order the rows arrive in.
     stmt = stmt.order_by(*_STABLE_ORDER)
 
     by_formula: dict[str, KnownComposition] = {}
-    rejected: set[str] = set()
-    # Streamed, not materialized: only the kept set (bounded by the window below)
-    # and the rejected-formula set stay in memory, so an off-domain mirror costs
-    # a scan rather than the whole table resident in the worker.
+    # What each source admits, read once per source: its window under the
+    # ceiling, and whether its radicals may be matched.
+    admits_by_source: dict[int, tuple[KnownWindow, bool]] = {}
+    # Decided once per (source, formula): a formula repeats within a source only
+    # as isomers, and across sources each has its own window to answer to.
+    decided: dict[tuple[int, str], bool] = {}
+    # Streamed, not materialized: only the kept set and the decisions stay in
+    # memory, so an off-domain mirror costs a scan rather than the whole table
+    # resident in the worker.
     result = await session.stream(stmt.execution_options(yield_per=_STREAM_BATCH))
     async for row in result:
         formula = row.formula
-        if formula in rejected:
+        key = (row.source_id, formula)
+        admitted = decided.get(key)
+        if admitted is None:
+            scope = admits_by_source.get(row.source_id)
+            if scope is None:
+                source = SourceScope.from_row(row)
+                scope = (source.known_window.intersect(ceiling), source.allow_radicals)
+                admits_by_source[row.source_id] = scope
+            window, allow_radicals = scope
+            admitted = window.admits(formula, row.monoisotopic_mass) and (
+                allow_radicals or not is_odd_electron(formula)
+            )
+            decided[key] = admitted
+        if not admitted:
             continue
         known = by_formula.get(formula)
         if known is None:
-            if not _within_bound(
-                formula,
-                row.monoisotopic_mass,
-                elements=elements,
-                max_carbon=max_carbon,
-                max_mass=max_mass,
-            ):
-                rejected.add(formula)
-                continue
             known = KnownComposition(
                 formula=formula,
                 monoisotopic_mass=row.monoisotopic_mass,

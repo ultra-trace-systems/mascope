@@ -111,6 +111,65 @@ class TestProvenanceScalars:
         assert scalars["evidence"] == 0.85
         assert scalars["corroboration_adducts"] == 2
 
+    def test_the_channel_count_reaches_the_ledger(self):
+        # The corroboration marker is blank on an untargeted row without this:
+        # `corroboration_adducts` counts the adducts a CURATED compound matched
+        # through, so it is null on most of a ledger.
+        row = {**_UNTARGETED_ROW, "cross_channel": {"channels": ["+H+", "+NH4+"]}}
+        assert _provenance_scalars(row, None)["corroboration_channels"] == 2
+
+    def test_a_row_seen_in_one_channel_says_one(self):
+        # Not None: one channel is a measured answer, and the marker's own
+        # threshold is what decides whether it is worth rendering.
+        row = {**_UNTARGETED_ROW, "cross_channel": {"channels": ["+NH4+"]}}
+        assert _provenance_scalars(row, None)["corroboration_channels"] == 1
+
+    def test_a_row_the_pass_never_reached_has_no_count(self):
+        # Absent rather than 0, so "not measured" stays distinguishable from
+        # "measured and found nothing" the way every other scalar here is.
+        assert (
+            _provenance_scalars(_UNTARGETED_ROW, None)["corroboration_channels"] is None
+        )
+        assert (
+            _provenance_scalars({"cross_channel": {"inherited_from": "pa-1"}}, None)[
+                "corroboration_channels"
+            ]
+            is None
+        )
+
+
+class TestTheCandidateDensityOnTheLedger:
+    """Step 2.4: how many formulas the peak's evidence could not tell apart.
+
+    A ledger column rather than inspector detail because it cannot be recovered
+    from what the row stores: `alternatives` is capped at the run's
+    `max_alternatives`, so a reader counting those counts the cap.
+    """
+
+    def test_the_count_reaches_the_ledger(self):
+        row = {**_UNTARGETED_ROW, "candidate_density": 3}
+        assert _provenance_scalars(row, None)["candidate_density"] == 3
+
+    def test_an_uncontested_peak_says_one(self):
+        # Not None: one is a measured answer - the winner stood alone at the top
+        # of the arbitration - and it is the answer the tiering acts on.
+        row = {**_UNTARGETED_ROW, "candidate_density": 1}
+        assert _provenance_scalars(row, None)["candidate_density"] == 1
+
+    def test_a_row_nothing_measured_has_no_count(self):
+        # An isotopologue, or a row imported from an engine that sends none.
+        # Absent rather than 0, so "not measured" stays distinguishable from
+        # "measured and found nothing", as every other scalar here is.
+        assert _provenance_scalars(_UNTARGETED_ROW, None)["candidate_density"] is None
+        assert _provenance_scalars(None, None)["candidate_density"] is None
+
+    def test_it_is_not_the_number_of_candidates(self):
+        # Stage A records both, and they answer different questions: how many
+        # the confidence was normalised across, and how many of those the
+        # evidence could not separate.
+        row = {**_DATABASE_ROW, "n_candidates": 9, "candidate_density": 2}
+        assert _provenance_scalars(row, _CURVE)["candidate_density"] == 2
+
 
 @pytest.mark.parametrize("provenance", _SHAPES.values(), ids=list(_SHAPES))
 def test_the_detail_fold_and_the_ledger_scalars_agree(provenance):

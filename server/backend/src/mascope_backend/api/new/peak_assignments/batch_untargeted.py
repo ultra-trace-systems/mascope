@@ -33,10 +33,7 @@ from sqlalchemy import select
 
 from mascope_backend.api.controllers.samples.lib.samples_fetch import fetch_sample
 from mascope_backend.api.lib.api_features import api_controller_background_task
-from mascope_backend.api.new.cheminfo.utils import (
-    to_custom_element_format,
-    to_explicit_isotope_format,
-)
+from mascope_backend.api.new.cheminfo.utils import to_custom_element_format
 from mascope_backend.api.new.match.params import default_match_params
 from mascope_backend.api.new.peak_assignments.batch_peaks import (
     ROLE_ISO_CHILD,
@@ -55,17 +52,33 @@ from mascope_backend.api.new.peak_assignments.batch_runs import (
     fail_run,
     start_run,
 )
-from mascope_backend.api.new.peak_assignments.config import PeakAssignmentConfig
+from mascope_backend.api.new.peak_assignments.config import (
+    MAX_UNTARGETED_PEAKS_CEILING,
+    PeakAssignmentConfig,
+)
 from mascope_backend.api.new.peak_assignments.engine import (
+    ROLE_ARTIFACT,
+    ROLE_REAGENT,
     SOURCE_UNTARGETED,
+    SampleMassAccuracy,
     evidence_for,
+    pattern_scoring_for,
     tier_for_evidence,
     untargeted_matches_to_peak_assignments,
+    untargeted_seeds,
+    untargeted_targets,
 )
 from mascope_backend.api.new.peak_assignments.fold_view import fold_run_id
+from mascope_backend.api.new.peak_assignments.profiles import (
+    ResolvedProfile,
+    resolve_profile,
+    with_secondary_channels,
+)
 from mascope_backend.api.new.peak_assignments.seeded_scoring import score_seeds
 from mascope_backend.api.new.peak_assignments.service import (
+    _seeded_fits,
     _untargeted_ionization_notations,
+    fetch_mechanisms_by_notation,
     fetch_sample_mechanisms,
     load_sample_peaks,
 )
@@ -76,12 +89,18 @@ from mascope_backend.socket.notifications import (
     UserNotification,
     send_progress_user_notification,
 )
-from mascope_tools.composition import CompositionSearchConfig, HeuristicFilterConfig
+from mascope_file.name import get_instrument_type
 from mascope_tools.composition.finder import assign_compositions
+from mascope_tools.composition.reagents import secondary_channels
 
 
 #: The notification channel the search reports on, start to finish.
 NOTIFICATION_TYPE = "search_batch_untargeted"
+
+#: A member row stores its role as a code; these are the two a pre-pass writes,
+#: resolved once so the comparison in :func:`choose_representatives` is on plain
+#: integers.
+CLAIMED_ROLE_CODES = frozenset({role_code(ROLE_REAGENT), role_code(ROLE_ARTIFACT)})
 
 
 # --- pure helpers ---------------------------------------------------------------
@@ -92,12 +111,24 @@ def choose_representatives(members: Iterable[Any]) -> dict[str, Any]:
 
     A member with no intensity counts as the dimmest, not as a candidate.
 
+    A member a pre-pass claimed is not a candidate at all. Its anchor reads as
+    unassigned - a reagent or artifact row carries no formula, so the consensus
+    has nothing to vote on - but the peak is the source's own chemistry or the
+    detector's ringing, and was deliberately taken out of the per-sample stages
+    before either ran. Without this the batch search would be the one path that
+    puts an analyte formula back onto it, which is the phantom the pre-passes
+    exist to prevent. An anchor whose members are all claimed this way is left
+    with no representative and is never searched; a mixed anchor is still
+    searched, on a member that is a real peak.
+
     :param members: Occurrence rows (or anything carrying ``batch_peak_id``,
-        ``sample_item_id``, ``sample_peak_id`` and ``intensity``).
+        ``sample_item_id``, ``sample_peak_id``, ``intensity`` and ``role``).
     :return: anchor id -> the member chosen for it.
     """
     best: dict[str, Any] = {}
     for member in members:
+        if getattr(member, "role", None) in CLAIMED_ROLE_CODES:
+            continue
         current = best.get(member.batch_peak_id)
         if current is None or (member.intensity or 0.0) > (current.intensity or 0.0):
             best[member.batch_peak_id] = member
@@ -132,17 +163,15 @@ def owner_anchor_of(
     return owner_member.batch_peak_id if owner_member is not None else None
 
 
-def search_config(config: PeakAssignmentConfig, notations: list[str]):
-    """The finder's configuration for this search - the orchestrator's, verbatim."""
-    formula_ranges, _ = to_explicit_isotope_format(config.formula_ranges)
-    return CompositionSearchConfig(
-        ionizations=",".join(notations),
-        mass_range_ppm=config.mz_precision_ppm,
-        element_count_ranges=formula_ranges,
-        use_unsaturation=True,
-        min_unsaturation=-1000.0,
-        max_unsaturation=10000.0,
-    )
+def search_config(resolved_profile: ResolvedProfile, notations: list[str]):
+    """The finder's configuration for this search - the orchestrator's, verbatim.
+
+    Kept as a named function even though it now forwards: what makes the batch
+    search comparable with a per-sample run is that both are configured from one
+    resolution, and a helper that says so is easier to keep honest than a call
+    site that happens to match.
+    """
+    return resolved_profile.search_config(notations)
 
 
 @dataclass
@@ -198,11 +227,19 @@ async def _unassigned_anchors_and_members(
 
 async def _search_sample(
     sample_item_id: str, target_peak_ids: set[str], config: PeakAssignmentConfig
-) -> list[dict]:
+) -> tuple[list[dict], int]:
     """Stage B over one sample's representative peaks, in the context of its
-    whole spectrum. Returns the engine's assignment rows for the peaks it
-    explained - the representatives and any isotopologue peaks it paired to
-    them - shaped as ledger rows that will never be written."""
+    whole spectrum.
+
+    :return: The engine's assignment rows for the peaks it explained - the
+        representatives and any isotopologue peaks it paired to them, shaped as
+        ledger rows that will never be written - and the number of this sample's
+        representatives the cap left unsearched. A batch run has one config for
+        many samples and no per-sample run row to stamp, so the count is carried
+        out to the batch's own result instead: an anchor nobody searched is not
+        an anchor nothing could explain, and the counts are otherwise
+        indistinguishable.
+    """
     sample = await fetch_sample(sample_item_id)
     peaks_df = load_sample_peaks(sample)
     frame = (
@@ -213,27 +250,101 @@ async def _search_sample(
         .sort_values("mz")
         .reset_index(drop=True)
     )
-    targets = frame[frame["sample_peak_id"].isin(target_peak_ids)].nlargest(
-        config.max_untargeted_peaks, "intensity"
+    targets, search_scope = untargeted_targets(
+        frame[frame["sample_peak_id"].isin(target_peak_ids)],
+        config.max_untargeted_peaks,
+        MAX_UNTARGETED_PEAKS_CEILING,
     )
+    unsearched = search_scope["eligible_peaks"] - search_scope["searched_peaks"]
     if targets.empty:
-        return []
+        return [], unsearched
+    if search_scope["limited"]:
+        runtime.logger.info(
+            f"Batch untargeted search on sample '{sample.sample_item_name}' "
+            f"searches {search_scope['searched_peaks']} of "
+            f"{search_scope['eligible_peaks']} representative peaks"
+        )
     _, mechanisms = await fetch_sample_mechanisms(sample)
-    notations, mechanism_id_by_notation = _untargeted_ionization_notations(mechanisms)
-    if not notations:
+    # The mode's own mechanisms decide whether there is anything to search at
+    # all. An opportunistic channel is an addition to a sample's chemistry, not
+    # a substitute for it: a mode that declares nothing is a mode nobody has
+    # configured, and searching it through a channel the source happens to show
+    # would be assigning a sample whose ionization is unknown.
+    primary_notations, _ = _untargeted_ionization_notations(mechanisms)
+    if not primary_notations:
         runtime.logger.info(
             f"Untargeted batch search skips sample '{sample.sample_item_name}': "
             "no polarity-compatible ionization mechanisms."
         )
-        return []
+        return [], unsearched
+    # Resolved per sample, not per batch: a batch can hold more than one
+    # ionization mode, and the chemistry belongs to the sample that was measured.
+    resolved_profile = resolve_profile(
+        config,
+        mechanism_notations=[m.ionization_mechanism for m in mechanisms],
+        instrument_type=get_instrument_type(sample.filename),
+        polarity=sample.polarity,
+    )
+    # The opportunistic channels are read off this sample's own spectrum, on the
+    # whole frame rather than the searched representatives: the evidence is the
+    # source's cluster ions, which are bright and belong to no anchor.
+    secondary_mechanisms = await fetch_mechanisms_by_notation(
+        [
+            channel.notation
+            for channel in secondary_channels(resolved_profile.profile.name)
+        ],
+        sample.polarity,
+    )
+    resolved_profile = with_secondary_channels(
+        resolved_profile,
+        frame["mz"].to_numpy(),
+        frame["intensity"].to_numpy(),
+        [m.ionization_mechanism for m in secondary_mechanisms],
+    )
+    notations, mechanism_id_by_notation = _untargeted_ionization_notations(
+        mechanisms
+        + [
+            mechanism
+            for mechanism in secondary_mechanisms
+            if mechanism.ionization_mechanism in resolved_profile.minor_channels
+        ]
+    )
+    runtime.logger.info(
+        f"Untargeted batch search of sample '{sample.sample_item_name}' "
+        f"searches profile '{resolved_profile.profile.name}' / context "
+        f"'{resolved_profile.context.name}': {resolved_profile.element_ranges} "
+        f"at {resolved_profile.mz_precision_ppm} ppm"
+    )
     # The whole spectrum is the frame - isotope patterns are scored against it -
     # while only the representatives are enumerated.
+    match_params = await default_match_params(sample_item_id)
+    # No Stage A ran on this path, so nothing has fitted this sample's mass
+    # width; the match tolerance stands in for it (see `pattern_scoring_for`).
+    # A batch search therefore judges a candidate a little more loosely than a
+    # run of the same sample would, which is the honest state of it: the width
+    # is a measurement, and this path has not made it.
+    scoring = pattern_scoring_for(
+        match_params, SampleMassAccuracy(), resolved_profile.fallback_sigma_ppm
+    )
+    search_columns = [
+        column
+        for column in ("mz", "intensity", "signal_to_noise")
+        if column in frame.columns
+    ]
     matches_df, _ = await asyncio.to_thread(
         assign_compositions,
-        frame[["mz", "intensity"]],
-        search_config(config, notations),
-        HeuristicFilterConfig(use_senior=True),
+        frame[search_columns],
+        search_config(resolved_profile, notations),
+        resolved_profile.heuristics_config(),
         targets=targets["mz"].tolist(),
+        scoring=scoring,
+    )
+    fit_by_seed = await _seeded_fits(
+        sample,
+        match_params,
+        untargeted_seeds(
+            matches_df, mechanism_id_by_notation, to_custom_element_format
+        ),
     )
     return untargeted_matches_to_peak_assignments(
         matches_df,
@@ -245,7 +356,9 @@ async def _search_sample(
         mechanism_id_by_notation=mechanism_id_by_notation,
         formula_formatter=to_custom_element_format,
         max_alternatives=config.max_alternatives,
-    )
+        minor_channels=resolved_profile.minor_channels,
+        fit_by_seed=fit_by_seed,
+    ), unsearched
 
 
 async def _apply_search_rows(
@@ -299,6 +412,12 @@ async def _apply_search_rows(
         for row in rows:
             member = members_by_peak.get(row["sample_peak_id"])
             if member is None or not row.get("assigned_formula"):
+                continue
+            if member.role in CLAIMED_ROLE_CODES:
+                # A pre-pass owns this peak. It is not a representative, so the
+                # search did not enumerate it - but an envelope scored against
+                # the whole spectrum can still land an isotopologue row on it, and that
+                # row must not overwrite the claim.
                 continue
             anchor = anchors[member.batch_peak_id]
             registry = list(anchor.candidates or [])
@@ -498,6 +617,11 @@ async def run_batch_untargeted_search(
         )
     counts = {
         "anchors_searched": len(anchors),
+        # Anchors the cap kept out of the search. Zero unless a caller set
+        # `max_untargeted_peaks` or a sample carries more representatives than
+        # the ceiling; reported because a blank anchor means something different
+        # when nothing looked at it.
+        "anchors_unsearched": 0,
         "anchors_annotated": 0,
         "members_propagated": 0,
         "samples_searched": 0,
@@ -534,11 +658,12 @@ async def run_batch_untargeted_search(
                     )
                 )
             try:
-                rows = await _search_sample(
+                rows, unsearched = await _search_sample(
                     sample_item_id,
                     {member.sample_peak_id for member in sample_representatives},
                     config,
                 )
+                counts["anchors_unsearched"] += unsearched
                 annotations.update(
                     await _apply_search_rows(
                         sample_batch_id, sample_item_id, rows, set(anchors)
@@ -626,6 +751,13 @@ def search_outcome(counts: dict, sample_batch_id: str) -> dict:
     # A sample that raised is reported rather than left to the log: the counts
     # below are otherwise indistinguishable from a batch that simply had less
     # to find, and the anchors it holds were not searched.
+    left = counts.get("anchors_unsearched", 0)
+    unsearched = (
+        f" {left} anchor{'s' if left != 1 else ''} "
+        f"{'were' if left != 1 else 'was'} left unsearched by the peak cap."
+        if left
+        else ""
+    )
     failed = counts.get("samples_failed", 0)
     skipped = (
         f" {failed} sample{'s' if failed != 1 else ''} could not be read and "
@@ -643,7 +775,7 @@ def search_outcome(counts: dict, sample_batch_id: str) -> dict:
             f"{counts['anchors_annotated']} assigned a composition, and "
             f"{counts['members_propagated']} member peak"
             f"{'s' if counts['members_propagated'] != 1 else ''} in other samples "
-            f"measured against it.{skipped}"
+            f"measured against it.{skipped}{unsearched}"
         ),
         "data": counts,
         "_notification_data": notification_data,

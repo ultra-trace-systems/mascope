@@ -8,6 +8,7 @@ import Button from 'primevue/button'
 import FilterSample from './FilterSample.vue'
 import FilterTarget from './FilterTarget.vue'
 import FilterMechanism from './FilterMechanism.vue'
+import FilterBatchPeak from './FilterBatchPeak.vue'
 
 const { alt, c } = useMagicKeys()
 
@@ -48,6 +49,7 @@ watchEffect(() => {
     <FilterSample />
     <FilterTarget />
     <FilterMechanism />
+    <FilterBatchPeak />
     <span v-if="filtering" class="pi pi-filter" style="opacity: 0.5" />
   </menu>
 </template>

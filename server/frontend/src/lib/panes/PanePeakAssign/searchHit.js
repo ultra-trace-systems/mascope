@@ -1,3 +1,5 @@
+import { isMonoisotopicFormula, labelledIsotopes } from '@/lib/chem'
+
 /**
  * What a composition-search hit means when it is committed to a peak.
  *
@@ -10,33 +12,29 @@
  */
 
 /**
- * Whether an isotopologue formula names the ion's monoisotopic isotopologue.
- *
- * The generator brackets a substituted isotope (`C5[13C]H13O6+`, `[81Br]Br2-`)
- * and leaves the monoisotopic one - every element at its lightest isotope -
- * unmarked. The same rule as the backend's `is_monoisotopic_formula`.
- *
- * @param {string|null|undefined} formula an isotopologue formula
- * @returns {boolean}
- */
-const isMonoisotopicFormula = (formula) =>
-  typeof formula === 'string' && formula.length > 0 && !formula.includes('[')
-
-/**
- * The monoisotopic isotopologue of a hit's predicted pattern.
+ * The monoisotopic isotopologue of a hit's predicted pattern: the M0 every
+ * offset label counts from, the way an isotope table counts - which for a
+ * bromine- or chlorine-rich ion is the lightest line of the cluster, not the
+ * tallest, and for a labelled ion is the labelled line, not the unlabelled
+ * remainder below it.
  *
  * The lightest row stands in when no formula carries the marker that tells the
- * two apart, and is the same row wherever an element's most abundant isotope is
- * also its lightest. The backend's `monoisotopic_row` resolves it the same way.
+ * lines apart, and is the same row wherever an element's most abundant isotope
+ * is also its lightest. The backend's `monoisotopic_row` resolves it the same way.
  *
  * @param {Array<Object>} children the hit's predicted isotopologues
+ * @param {string|null|undefined} ionFormula the ion's formula, which names its
+ *   labels; without one, the pattern is read as an unlabelled ion's
  * @returns {Object} the monoisotopic row, or the lightest one
  */
-function monoisotopicOf(children) {
+function monoisotopicOf(children, ionFormula) {
   // Copied before sorting: `children` is the hit's own array, and the results
   // table renders from it.
   const ordered = [...children].sort((a, b) => (a.mz ?? 0) - (b.mz ?? 0))
-  return ordered.find((row) => isMonoisotopicFormula(row.target_isotope_formula)) ?? ordered[0]
+  const labels = labelledIsotopes(ionFormula)
+  return (
+    ordered.find((row) => isMonoisotopicFormula(row.target_isotope_formula, labels)) ?? ordered[0]
+  )
 }
 
 /**
@@ -44,18 +42,19 @@ function monoisotopicOf(children) {
  *
  * The composition search scores a whole ION against the spectrum and reports one
  * row per candidate compound, but the peak in hand may be any isotope of that
- * ion - a heavy-isotope satellite lands in the results just as readily as the
+ * ion - a heavy-isotope isotopologue lands in the results just as readily as the
  * main peak does. Committing every hit as an M0 would therefore enter a
- * compound's satellite into the ledger as the compound's main peak, which
+ * compound's isotopologue into the ledger as the compound's main peak, which
  * everything that folds an isotopologue family onto its M0 (the tier histogram,
  * the batch consensus, a verification verdict) would then believe.
  *
- * Labels count from the ion's MONOISOTOPIC isotopologue - every element at its
- * lightest isotope - and the label is the nominal mass offset from it. That is
- * the convention the assignment engine's `monoisotopic_row` and
- * `_isotope_offset_label` use, so a hand-assigned row reads like an
- * engine-assigned one: for a bromine-rich ion the lightest peak of the cluster
- * is the M0 and the tallest is its M+2, as in an isotope table.
+ * Labels count from the ion's MONOISOTOPIC isotopologue (`monoisotopicOf`), and
+ * the label is the nominal mass offset from it. That is the convention the
+ * assignment engine's `monoisotopic_row` and `_isotope_offset_label` use, so a
+ * hand-assigned row reads like an engine-assigned one: for a bromine-rich ion
+ * the lightest peak of the cluster is the M0 and the tallest is its M+2, as in
+ * an isotope table, and for a 15N-labelled ion the labelled line is the M0 and
+ * the reagent's unlabelled remainder below it is the M-1.
  *
  * @param {Object} hit a composition-search result row
  * @returns {{label: string, formula: string|null}} the isotopologue label
@@ -68,7 +67,9 @@ export function isotopeOfHit(hit) {
   // isotopologue, which is what a single-isotope candidate means anyway.
   if (!children.length) return { label: 'M0', formula: null }
 
-  const main = monoisotopicOf(children)
+  // The labels are read off the ion formula, which the search spreads onto the
+  // hit with the rest of the matched ion; an isotope row carries only its own.
+  const main = monoisotopicOf(children, hit?.target_ion_formula)
   // The isotope the search matched at this peak. Taken from the hit's own
   // `cheminfo` rather than from the focused peak, so the answer does not depend
   // on which peak happens to be focused when the button is clicked.

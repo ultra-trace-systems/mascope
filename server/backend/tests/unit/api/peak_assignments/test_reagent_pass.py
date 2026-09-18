@@ -1,0 +1,309 @@
+"""What the reagent pre-pass writes into the ledger.
+
+The library half is tested in ``libraries/tools/tests/test_reagent_library.py``;
+what matters here is the shape of the row it produces, because that shape is
+what decides whether a reagent peak stays out of the analyte ledger or quietly
+re-enters it as an assignment nobody made.
+"""
+
+from types import SimpleNamespace
+
+import numpy as np
+import pandas as pd
+import pytest
+
+from mascope_backend.api.new.peak_assignments.engine import (
+    ROLE_REAGENT,
+    SOURCE_REAGENT,
+    drop_ions_claimed_elsewhere,
+)
+from mascope_backend.api.new.peak_assignments.import_validation import (
+    coherent_tiers,
+    owner_link_errors,
+)
+from mascope_backend.api.new.peak_assignments.reagent_pass import (
+    build_reagent_assignments,
+    claim_reagent_peaks,
+    reagent_library_for,
+)
+from mascope_backend.api.new.peak_assignments.tiers import TIER_UNASSIGNED
+from mascope_tools.composition.heuristic_filter import predict_isotopes
+
+
+def _peaks(*ions: tuple[str, int, float]) -> pd.DataFrame:
+    """A peak frame holding each ion's predicted envelope at a given height."""
+    rows = []
+    for formula, charge, height in ions:
+        predicted_mz, predicted_intensity, _ = predict_isotopes(formula, charge)
+        base = max(predicted_intensity)
+        for one_mz, one_intensity in zip(predicted_mz, predicted_intensity):
+            rows.append(
+                {"mz": float(one_mz), "intensity": height * float(one_intensity) / base}
+            )
+    frame = pd.DataFrame(sorted(rows, key=lambda row: row["mz"]))
+    frame.insert(0, "sample_peak_id", [f"peak{index}" for index in range(len(frame))])
+    return frame
+
+
+#: The Orbitrap window a run claims in; the pass matches at the instrument's
+#: own precision against a mass the sample's anchor ions have corrected.
+ORBI_PPM = 3.0
+
+
+def _rows(profile: str = "BR", *ions: tuple[str, int, float]) -> list[dict]:
+    peaks = _peaks(*(ions or (("Br", -1, 1e6),)))
+    hits, _ = claim_reagent_peaks(
+        peaks, reagent_library_for(profile), claim_ppm=ORBI_PPM
+    )
+    return build_reagent_assignments(hits, peaks, "sample1", "run1")
+
+
+class TestTheReagentRow:
+    def test_it_names_the_ion_and_no_analyte(self):
+        """The composition is known exactly, and it is the source's, not the
+        sample's. An `assigned_formula` here would put a reagent cluster into
+        every cross-sample formula vote it touches."""
+        row = _rows()[0]
+
+        assert row["role"] == ROLE_REAGENT
+        assert row["source"] == SOURCE_REAGENT
+        assert row["ion_formula"] == "Br"
+        assert row["assigned_formula"] is None
+        assert row["ionization_mechanism_id"] is None
+
+    def test_its_tier_says_no_analyte_was_assigned(self):
+        """And it is the tier the import path's own coherence rule requires of
+        a row that names no formula, so the engine writes what it would accept.
+        """
+        row = _rows()[0]
+
+        assert row["tier"] == TIER_UNASSIGNED
+        assert row["tier"] in coherent_tiers(None, 0.6, 0.3)
+
+    def test_it_records_how_far_off_the_peak_sat(self):
+        """On a peak placed at the ion's own mass the error is ~0.013 ppm, the
+        residual between IsoSpec's masses and the composition arithmetic this
+        library computes its targets with. Recorded on every row, so a claim
+        that matched far off its mass says so rather than passing silently."""
+        row = _rows()[0]
+
+        assert row["mz_error_ppm"] == pytest.approx(0.0, abs=0.1)
+
+    def test_it_says_which_reagent_ion_claimed_the_peak(self):
+        provenance = _rows()[0]["provenance"]["reagent"]
+
+        assert provenance["ion"] == "[Br]-"
+        assert provenance["kind"] == "cluster"
+        assert provenance["mz"] == pytest.approx(78.9189, abs=5e-4)
+
+    def test_every_row_lands_on_a_real_peak_of_the_sample(self):
+        peaks = _peaks(("Br", -1, 1e6), ("Br2", -1, 3e5))
+        hits, _ = claim_reagent_peaks(
+            peaks, reagent_library_for("BR"), claim_ppm=ORBI_PPM
+        )
+        rows = build_reagent_assignments(hits, peaks, "sample1", "run1")
+
+        assert {row["sample_peak_id"] for row in rows} <= set(peaks["sample_peak_id"])
+        assert len({row["peak_assignment_id"] for row in rows}) == len(rows)
+
+
+class TestTheIsotopologueRows:
+    def test_an_isotopologue_names_its_label_and_its_predicted_share(self):
+        isotopologues = [row for row in _rows() if row["isotope_label"]]
+
+        assert [row["isotope_label"] for row in isotopologues] == ["81Br"]
+        assert isotopologues[0]["provenance"]["reagent"]["predicted_relative"] > 0.9
+
+    def test_an_isotopologue_carries_the_reagent_role_too(self):
+        """The peak is the source's chemistry as much as its parent is, and G4
+        counts it: the reference engine labels these reagent as well."""
+        assert {row["role"] for row in _rows()} == {ROLE_REAGENT}
+
+    def test_no_reagent_row_names_an_owner(self):
+        """Owner linkage models one thing in this ledger - an isotopologue
+        naming the M0 analyte it belongs to - and the import path enforces it,
+        so the engine must not write a shape it would then refuse. The parent is
+        recorded as provenance instead.
+        """
+        rows = _rows("BR", ("Br", -1, 1e6), ("Br2", -1, 3e5))
+
+        assert all(row["owner_peak_assignment_id"] is None for row in rows)
+        assert (
+            owner_link_errors(
+                [
+                    SimpleNamespace(
+                        sample_peak_id=row["sample_peak_id"],
+                        owner_sample_peak_id=None,
+                        role=row["role"],
+                    )
+                    for row in rows
+                ]
+            )
+            == []
+        )
+
+
+def _run_pre_pass(peaks: pd.DataFrame, profile: str, instrument_type: str | None):
+    """The pre-pass as a run calls it, with the chemistry a run would resolve."""
+    from mascope_backend.api.new.peak_assignments.config import (
+        PeakAssignmentConfig,
+    )
+    from mascope_backend.api.new.peak_assignments.profiles import resolve_profile
+    from mascope_backend.api.new.peak_assignments.service import (
+        _reagent_assignments,
+    )
+
+    resolved = resolve_profile(
+        PeakAssignmentConfig(profile=profile),
+        mechanism_notations=["+H+"],
+        instrument_type=instrument_type,
+        polarity="+",
+    )
+    return _reagent_assignments(peaks, resolved, "sample1", "run1")
+
+
+class TestWhereTheClaimedLinesPutTheAxis:
+    """The offset a thin library falls back to is read off every claimed line."""
+
+    @staticmethod
+    def _urea(parent_ppm: float, isotopologue_ppm: float) -> pd.DataFrame:
+        """The protonated urea ladder, its rungs and their isotopologue lines
+        each placed off their own mass by the given amount."""
+        rows = []
+        for formula, height in (
+            ("CH5N2O", 2e6),
+            ("C2H9N4O2", 3e6),
+            ("C3H13N6O3", 3e5),
+        ):
+            predicted_mz, predicted_intensity, labels = predict_isotopes(formula, 1)
+            base = max(predicted_intensity)
+            for one_mz, one_intensity, label in zip(
+                predicted_mz, predicted_intensity, labels
+            ):
+                ppm = parent_ppm if label == "M0" else isotopologue_ppm
+                rows.append(
+                    {
+                        "mz": float(one_mz) * (1.0 + ppm * 1e-6),
+                        "intensity": height * float(one_intensity) / base,
+                    }
+                )
+        frame = pd.DataFrame(sorted(rows, key=lambda row: row["mz"]))
+        frame.insert(0, "sample_peak_id", [f"p{index}" for index in range(len(frame))])
+        return frame
+
+    def test_the_isotopologue_lines_count_as_much_as_their_parents(self):
+        # A source's brightest lines are the ones an Orbitrap moves. On the
+        # gate's labelled-nitrate set the core ion and its first rung sit 1.3 to
+        # 2.5 ppm above their own isotopologue lines, and those sit where the
+        # sample's commits do. Here the rungs sit at +1.0 ppm and their five
+        # isotopologue lines at -1.3; the rungs alone would say +1.0.
+        rows, claimed, offset = _run_pre_pass(self._urea(1.0, -1.3), "UR", "orbi")
+
+        isotopologues = sum(1 for row in rows if row["isotope_label"])
+        assert (len(rows) - isotopologues, isotopologues) == (3, 5)
+        assert offset.lines == len(rows) == len(claimed)
+        assert offset.mu_ppm == pytest.approx(-1.3, abs=0.05)
+        assert offset.beyond_width
+
+    def test_the_width_it_must_clear_is_the_instrument_classs(self):
+        # The same lines on a TOF, whose class is scored at 3 ppm: read, and
+        # inside the width.
+        _, _, offset = _run_pre_pass(self._urea(-1.3, -1.3), "UR", "tof")
+
+        assert offset.mu_ppm == pytest.approx(-1.3, abs=0.05)
+        assert not offset.beyond_width
+
+    def test_a_pass_that_claimed_nothing_reads_no_offset(self):
+        _, claimed, offset = _run_pre_pass(_peaks(("C6H13O6", 1, 1e6)), "UR", "orbi")
+
+        assert not claimed
+        assert (offset.mu_ppm, offset.lines, offset.beyond_width) == (None, 0, False)
+
+    def test_a_profile_with_no_reagent_has_no_pass_to_ask(self):
+        rows, _, offset = _run_pre_pass(self._urea(-1.3, -1.3), "none", "orbi")
+
+        assert rows == []
+        assert offset is None
+
+
+class TestWhenThereIsNothingToClaim:
+    def test_a_profile_with_no_reagent_writes_no_rows(self):
+        assert _rows("ESI_POS") == []
+
+    def test_an_empty_peak_frame_writes_no_rows(self):
+        empty = pd.DataFrame({"sample_peak_id": [], "mz": [], "intensity": []})
+
+        assert (
+            claim_reagent_peaks(empty, reagent_library_for("BR"), claim_ppm=ORBI_PPM)[0]
+            == []
+        )
+
+    def test_a_spectrum_of_analytes_only_writes_no_rows(self):
+        peaks = pd.DataFrame(
+            {
+                "sample_peak_id": ["p1", "p2"],
+                "mz": np.array([200.12345, 301.54321]),
+                "intensity": np.array([1e6, 5e5]),
+            }
+        )
+
+        assert (
+            claim_reagent_peaks(peaks, reagent_library_for("BR"), claim_ppm=ORBI_PPM)[0]
+            == []
+        )
+
+
+class TestWhatStageALosesWithTheClaim:
+    """An ion is inverted as a family: one M0 and its isotopologue children,
+    the children naming the M0 as their owner. So excluding the single ROW that
+    landed on a claimed peak is not enough - it leaves the children behind with
+    nothing to belong to, and they invert as ownerless `iso_child` rows with one
+    of them relabelled M0. The whole ion has to go.
+    """
+
+    @staticmethod
+    def _frame() -> pd.DataFrame:
+        """One target ion's family: an M0 and two isotopologues."""
+        return pd.DataFrame(
+            {
+                "target_ion_id": ["ion-1", "ion-1", "ion-1", "ion-2"],
+                "target_isotope_formula": [
+                    "C2H9N4O2",
+                    "C1[13C]H9N4O2",
+                    "C2H9[15N]N3O2",
+                    "C6H13O6",
+                ],
+                "sample_peak_id": ["p1", "p2", "p3", "p4"],
+                "mz": [121.0720, 122.0754, 122.0690, 181.0707],
+            }
+        )
+
+    def test_claiming_an_m0_drops_its_whole_family(self):
+        kept = drop_ions_claimed_elsewhere(self._frame(), {"p1"})
+
+        assert kept["target_ion_id"].tolist() == ["ion-2"]
+
+    def test_another_ion_is_untouched(self):
+        kept = drop_ions_claimed_elsewhere(self._frame(), {"p1"})
+
+        assert kept["sample_peak_id"].tolist() == ["p4"]
+
+    def test_a_claimed_child_takes_only_itself(self):
+        """Its M0 is still in the ledger, so the rest of the family still has
+        something to be children of."""
+        kept = drop_ions_claimed_elsewhere(self._frame(), {"p2"})
+
+        assert kept["sample_peak_id"].tolist() == ["p1", "p3", "p4"]
+
+    def test_no_row_survives_on_a_claimed_peak(self):
+        """The invariant the ledger needs whichever part of a family was hit:
+        one row per peak, and the reagent pass owns these."""
+        claimed = {"p1", "p4"}
+        kept = drop_ions_claimed_elsewhere(self._frame(), claimed)
+
+        assert not set(kept["sample_peak_id"]) & claimed
+
+    def test_nothing_claimed_changes_nothing(self):
+        frame = self._frame()
+
+        assert len(drop_ions_claimed_elsewhere(frame, set())) == len(frame)

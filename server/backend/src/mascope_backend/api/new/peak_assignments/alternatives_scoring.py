@@ -86,10 +86,10 @@ def _m0_by_ion(scored_df: pd.DataFrame) -> dict[str, pd.Series]:
     own mass*, so the claim being measured is that the peak IS that ion's
     monoisotopic peak - not that it is some isotopologue of it. The M0 is the
     same reference the engine's roles and labels count from
-    (``engine.monoisotopic_row``): the isotopologue whose formula carries no
-    isotope marker, or the lightest where the frame carries no formula; reading
-    it positionally would depend on frame order, which the matcher does not
-    promise.
+    (``engine.monoisotopic_row``): the isotopologue whose formula names no
+    isotope beyond the ion's own label, or the lightest where the frame carries
+    no formula; reading it positionally would depend on frame order, which the
+    matcher does not promise.
 
     :param scored_df: The gated, fit-scored seeded frame.
     :return: ion id -> its monoisotopic row.
@@ -262,7 +262,7 @@ async def score_row_alternatives(
         # M0 by construction: the shortlist proposes a composition for this
         # peak's own mass, and only the ion's monoisotopic peak was allowed to
         # pair with it above. Said out loud because `set_assignment` reads it
-        # to decide whether the committed row is a compound or a satellite.
+        # to decide whether the committed row is a compound or an isotopologue.
         entry["isotope_label"] = "M0"
         entry["adducts_matched"] = len(candidates)
         data.append(entry)

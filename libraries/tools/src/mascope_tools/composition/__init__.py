@@ -1,6 +1,16 @@
 from .finder import assign_compositions
 from .heuristic_filter import formula_plausibility
-from .models import CompositionSearchConfig, HeuristicFilterConfig
+from .mass_accuracy import (
+    MASS_ACCURACY_MIN_ANCHORS,
+    MASS_OFFSET_MIN_ANCHORS,
+    PRED_SIGMA_PPM,
+    fit_mass_accuracy,
+    fit_sample_mass_accuracy,
+    mass_accuracy_anchors,
+    scoring_sigma_ppm,
+)
+from .models import CompositionSearchConfig, HeuristicFilterConfig, PatternScoring
+from .profiles import resolve_fallback_sigma_ppm, resolve_match_tolerance_ppm
 
 
 # `formula_plausibility` is exported because it is not an internal detail of the
@@ -23,9 +33,32 @@ from .models import CompositionSearchConfig, HeuristicFilterConfig
 # reproducing a tier needs `str -> float`, not a frame and a log; bulk scoring
 # is a comprehension over the memoized `formula_plausibility`, which is exactly
 # what `chemical_plausibility` does inside.
+# `PatternScoring` is exported for the same reason as the two configs beside
+# it: a caller that runs a search describes its sample with all three, and the
+# scoring one is what makes the answer instrument-correct rather than
+# Orbitrap-shaped.
+#
+# The mass-accuracy names and `resolve_fallback_sigma_ppm` are exported for the
+# same reason once removed: `PatternScoring` is only instrument-correct if the
+# caller can fill it in, and what fills its width is a fit over the sample's
+# own anchors falling back to the instrument class's. An engine that scores a
+# sample against Mascope's - a reference run, a comparison, a re-analysis -
+# must judge a mass error at the width Mascope judges it at, and a second
+# implementation of the fit would make every difference between the two
+# engines partly a difference in how each measured the ruler.
 __all__ = [
     "assign_compositions",
     "CompositionSearchConfig",
+    "fit_mass_accuracy",
+    "fit_sample_mass_accuracy",
     "formula_plausibility",
     "HeuristicFilterConfig",
+    "mass_accuracy_anchors",
+    "MASS_ACCURACY_MIN_ANCHORS",
+    "MASS_OFFSET_MIN_ANCHORS",
+    "PatternScoring",
+    "PRED_SIGMA_PPM",
+    "resolve_fallback_sigma_ppm",
+    "resolve_match_tolerance_ppm",
+    "scoring_sigma_ppm",
 ]

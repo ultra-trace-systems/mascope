@@ -45,12 +45,32 @@ independent evidence* and *arbitrating between candidates that all fit the mass*
 Every peak is assigned in a two-stage engine:
 
 - **Stage A — database-first.** The peak is matched against the sample's known target
-  library (the same target isotopologues used by [target matching](matching.md)); the
-  best-fitting known composition wins the peak.
+  library (the same target isotopologues used by [target matching](matching.md)) and
+  against any reference lists your deployment has loaded; the best-fitting known
+  composition wins the peak. A reference list is matched only within its own element,
+  carbon and mass window, under a ceiling the sample's chemistry context sets; only in
+  the polarity it is detected in; and it contributes radicals only if it allows them.
 - **Stage B — untargeted.** Peaks that Stage A left unexplained are run through a
   bounded composition search that enumerates every elemental formula whose ion lands
   within the mass tolerance — the classic mass-decomposition problem
   ([Böcker & Lipták 2007][bl07]) — and scores each candidate the same way.
+
+**A list compound meets the search.** When a run searches formulas, every peak Stage A
+assigned is put to Stage B too, with the list's compound as one of its candidates. The
+compound's place on a list counts for it: a closed-shell formula from the search takes
+the peak only where its evidence (fit × plausibility, see
+[Arbitration](#arbitration-competing-the-candidates)) is more than twice the compound's,
+and ahead of it by more than a tie. It must also explain the compound's own isotope
+lines, the ones the spectrum shows where the compound predicts them: the fit charges a
+reading for a line it predicts and the spectrum lacks, but never charges a rival for a
+line the spectrum holds and the rival leaves unexplained. A siloxane's silicon lines, or
+the bromine line of a bromide adduct, keep the list's compound on its peak against a
+formula without them. A compound of your own target library keeps its peak in any case.
+Where a rival does take the peak, the row shows the search's formula, with the list's
+compound first among its alternatives, so promoting it by hand restores the list's
+reading. The compound's isotope lines leave the ledger with it, and the search's own
+pattern can hold them. Where the compound keeps its peak, the search's rivals still count
+against it (*rivals left standing*, below).
 
 Peaks that neither stage explains are recorded as *unassigned*, so a run is a complete,
 queryable ledger: one row per observed peak.
@@ -61,6 +81,66 @@ A predicted isotopologue that has no real peak is left unmatched rather than bei
 a nearby, out-of-tolerance peak — that peak is released to the untargeted stage (or left
 unassigned) so it can get its own correct assignment instead of being mislabelled as a
 poorly-fitting isotopologue of something else.
+
+## The chemistry a run searches under
+
+A run searches under two presets:
+
+- **A chemistry profile:** how the sample was ionized. It decides which cluster ions the
+  source makes of itself, and which elements the sample's compounds can be built from.
+- **A chemistry context:** what was sampled.
+
+**What they set.** A run first sets aside the cluster ions a CIMS profile's reagent
+makes, as *reagent* peaks, so neither stage reads them as compounds. An electrospray
+profile has no single reagent and sets none aside. Then:
+
+- the profile gives the untargeted stage its element grid, its m/z window on each
+  instrument class, and the extra channels a source of its kind produces;
+- the context narrows that grid, never widening it;
+- the context also rejects formulas whose hydrogen, oxygen, nitrogen or
+  ring-and-double-bond count per carbon no such sample holds, in the manner of the
+  element-ratio rules of [Kind & Fiehn 2007][kf07];
+- the context caps the window a reference list is matched in.
+
+| Profile | Polarity | Recognised by | Context it takes |
+|---|---|---|---|
+| Bromide CIMS | negative | `+Br-` | Ambient air |
+| Uronium (urea) CIMS | positive | `+(CH4N2O)H+` | Uronium |
+| Nitrate CIMS | negative | `+NO3-` | Ambient air |
+| 15N-nitrate CIMS | negative | `+^NO3-` | Ambient air |
+| Iodide CIMS | negative | `+I-` | Ambient air |
+| Positive ESI / APCI | positive | no diagnostic mechanism | none |
+| Negative ESI / APCI | negative | no diagnostic mechanism | none |
+
+The contexts are ambient air, chamber, indoor air, object headspace, combustion, water,
+food and beverage, and uronium. Each describes itself where it is chosen.
+
+**Auto.** Both presets default to **Auto**. The profile is read off the sample's
+ionization mechanisms: a mode carrying the bromide mechanism is a bromide source, whatever
+the mode is called. A mode with no diagnostic mechanism gets the ESI profile of the
+sample's polarity. The context is the one the profile is normally used with.
+
+**No profile and No context.** *No profile* switches the layer off: the run searches
+the engine's original wide grid at a fixed 10 ppm window. *No context* applies no
+matrix prior.
+
+**In the launchers.** *Assign peaks* and the batch's *Search untargeted* both offer the
+two presets. Each says what *Auto* resolves to: for the sample, or for each group of the
+batch's samples, since a batch can hold more than one ionization mode. With a single
+answer, the formula range field shows the grid the run would search.
+
+A named profile applies to every sample it reaches. The launcher warns when that profile
+belongs to the other polarity from the samples. The choice is remembered with the other
+launch settings, and *Reset to defaults* puts both presets back on *Auto*.
+
+**In the run selector.** Each in-app run names the profile it searched under beside its
+engine. Hovering the name shows:
+
+- whether the profile was read off the mechanisms or named for the run;
+- the context;
+- the element grid and the m/z window;
+- the extra channels searched;
+- any channel the spectrum showed but the deployment has no mechanism for.
 
 ## The fit score — a pure measurement
 
@@ -87,6 +167,14 @@ isotope-pattern matching of **SIRIUS** ([Böcker et al. 2009][bo09]; [Dührkop e
 awareness. The full mathematical model is in the developer reference,
 `libraries/tools/docs/fit_score.md`.
 
+The Gaussian's width and centre are the sample's own where it can measure them, from
+the lines of your target library that it matched. Where fewer than eight matched, the
+width is the instrument class's, and the centre is the median mass error of the reagent
+ions the run claimed, if it claimed at least three and their offset exceeds that width;
+otherwise the sample is scored on its nominal masses. The reagent ions stand in only
+there: they sit at the low end of the mass range and need not agree with the offset
+your library measures.
+
 **A consequence users see:** a lone mass-only match (one peak, no isotopic corroboration)
 scores *low* by design, while a fully corroborated isotope envelope scores near 1.0. This
 is intentional — mass alone is weak evidence.
@@ -96,8 +184,11 @@ each element's most abundant isotope — and the offsets count from it, as in an
 table. It is the row that carries a compound's assignment, the peak its isotopologues
 fold under in the ledgers, and the peak a verdict is recorded on. For most ions it is
 also the tallest peak of the cluster; for a bromine- or chlorine-rich ion it is the
-lightest, and the tallest peak is its M+2. Abundances in the inspector are fractions of
-the family's most abundant isotopologue, so nothing reads above 100 %.
+lightest, and the tallest peak is its M+2. For an ion made with an isotopically labelled
+reagent, such as 15N-nitrate, the labelled atom is at its label: the M0 is the labelled
+peak, and the reagent's unlabelled remainder, a small peak one mass unit below it, reads
+M-1. Abundances in the inspector are fractions of the family's most abundant
+isotopologue, so nothing reads above 100 %.
 
 ## Chemical plausibility — the Seven Golden Rules
 
@@ -191,6 +282,142 @@ confidence, since that is how the field communicates identification certainty.
 > evolve. The current tier thresholds are provisional and will be recalibrated per
 > instrument; tying a tier to a calibrated probability of being correct is still where this
 > is heading, and still waits on calibration coverage across instruments.
+
+### Why a row holds its tier
+
+The evidence sets the highest tier a row can reach. A second pass then asks each committed
+row the questions the evidence cannot answer, and it can only lower a tier, never raise
+one; the one thing it does besides is to read a peak as another compound's isotope line,
+which replaces the row's reading rather than raising it (below). The peak inspector lists
+its answers under **Why this tier**: every committed row carries at least one, naming
+either what capped it at *candidate* or what it kept its tier on. The sentence under each
+is the run's own, about that row.
+
+What caps a row at candidate:
+
+- **radical neutral** — the committed neutral breaks the even-valence rule, the first of
+  the SENIOR rules among [Kind & Fiehn 2007][kf07]'s checks: its ring-and-double-bond count
+  is a half-integer, so it has an unpaired electron and names a radical rather than a
+  molecule. Radicals are real chemistry, but a formula search chooses a radical reading of
+  an ion rather than measuring it against a closed-shell one. A curated identity is exempt,
+  because it was matched to a compound somebody authored rather than chosen by the search.
+- **no oxygen to cluster on** — the peak was read as nitrate clustered with a neutral that
+  has no oxygen. Nitrate holds on to a molecule by hydrogen bonds from its oxygen-bearing
+  groups, and quantum-chemical modelling of what a nitrate source detects puts the bar at
+  two such hydrogen-bond donors ([Hyttinen et al. 2015][hy15]); a neutral with no oxygen
+  offers none of them. The row keeps its formula, since its mass and isotope pattern
+  still fit. The rule covers every form of the nitrate channel: the plain and the
+  15N-labelled ion, and their clusters with nitric acid. Carbonate clusters are not
+  judged this way. A second ionization channel does not lift the cap. A compound of your
+  own target library is exempt; a formula from a loaded reference list is not, since a
+  list names a compound rather than the channel it is seen through.
+- **polyhalide: air or source** — the peak was read as a halide attached to a neutral
+  made only of halogens: IBr read through bromide is the polyhalide anion IBr2-. A
+  halide source measures the air's halogen molecules exactly this way, and it also makes
+  them from its own, from impurities in its halogen supply and from species its walls
+  give back ([Wang et al. 2021][wa21]), so the mass and the isotope pattern cannot tell
+  the air from the source. The row keeps its formula; only how the peak moves over time
+  can settle where it came from. A second ionization channel does not lift the cap, and
+  a compound of your own target library is exempt.
+- **rivals left standing** — the peak's own evidence could not separate the committed
+  formula from at least one other, and no second ionization channel of the run committed
+  the same neutral. A compound matched from a list is asked this too. When the run
+  searches formulas, the search also looks at that compound's peak: the formulas its
+  element ranges hold for the mass are scored beside the list's, and any the evidence
+  cannot tell apart count as rivals, named in the reason. A radical does not count,
+  since the run never holds one at *assigned*. A list's presence is evidence for a
+  formula, not a label on it, so a list compound is only held at *assigned* where
+  nothing plausible competes with it.
+- **a neighbour's isotope line** — a committed neighbouring compound's isotope pattern
+  predicts a line on this peak, and the peak is no more than twice as tall as that line,
+  so the line could account for all of it. The neighbour must itself be a reading the
+  run stands behind, at *candidate* or above.
+- **read as a neighbour's line** — where that neighbour is held at *assigned*, the peak
+  is read as its isotopologue instead, at *candidate*: the run first committed it as a
+  compound of its own, which is exactly the doubt. The formula it held before is the
+  first of its close alternatives, so assigning it by hand puts it back. The peak stays
+  what it was, with the reason saying why, where the neighbour is at *candidate*, where
+  the peak is a compound of your own target library, where another ionization channel
+  of the run committed its neutral, where the neighbour already has a line there, or
+  where the peak's mass error does not follow the neighbour's even allowing for what the
+  line can deliver (next item). The peak's own isotope lines go with it where the
+  neighbour's pattern predicts them too, and are left unassigned where it does not.
+  Every check then runs again over what the run now holds, so the calibration is no
+  longer measured with the peak as a compound of its own.
+- **line in doubt** and **off its M0** — an isotope line's mass error should follow its
+  M0's, since both are measured on one axis. Within the instrument's precision it does,
+  and the line corroborates the M0. A faint line is placed less well - its own noise
+  widens the margin by the square root of how much fainter it is than a line at a
+  signal-to-noise of 15 - and a line with another peak within two peak widths of it is
+  pushed off its place, by up to a quarter of a width for a neighbour at least as tall
+  (read off the file's resolving power). A line that misses its M0 by no more than that
+  is in doubt: it is held at *candidate*, and not taken lower for a distance from the
+  calibration that the same causes explain. A line that misses by more is off its M0,
+  and is held at *candidate* at least, like any row off calibration beyond that. Neither
+  corroborates its M0.
+- **oxygen lattice** and **carbon-free formula** — shapes a mass search produces rather
+  than a source: more than 1.3 oxygens per carbon with at least five oxygens, or no carbon
+  at all without being one of the small inorganics these sources make. A curated identity
+  is exempt here too, for the same reason: both shapes describe what a search arrives at,
+  and a curated row was not arrived at by one.
+- **off calibration**, **ambiguous nitrogen** and **minor channel only** — caps the run
+  applied earlier, restated here so every reason is in one place: a mass error far from
+  the run's own fitted calibration with nothing corroborating it; an ion that reads just
+  as well as a neutral with a different nitrogen count, the nitrogen moved between the
+  compound and a reagent channel that carries nitrogen (ammonium, urea, nitrate), with no
+  second channel of the run to settle the count; and a commitment through a channel the
+  ionization mode treats as secondary, with no isotopologue or second channel behind it.
+  The last applies to the formula search's own results only. Only a compound of your own
+  target library is exempt from the nitrogen count. The calibration check exempts only a
+  line one of whose isotopologues tracks its mass error: your library's lines help measure
+  the calibration, but a list names a compound rather than where each of its lines has to
+  sit, so a line of it far off calibration with no isotopologue behind it is capped like
+  any other. A formula from a loaded reference list is a prior matched against every
+  sample rather than a list assembled for your data. The run gives it the other readings
+  of its ion that the formula search would have considered, shown with its close
+  alternatives - dimethylformamide with a proton is the same ion as acrolein with
+  ammonium - and questions its nitrogen count whichever side of that split the list
+  chose. Those reference matches also play no part in measuring the sample's own mass
+  accuracy. The calibration's centre can follow
+  the mass range: where the run's assignments show their mass error changing with m/z the
+  way a fixed offset in millidaltons does, growing in ppm as the mass falls, each ion is
+  measured from the centre at its own m/z, so a small ion a couple of ppm out can sit
+  exactly on calibration.
+
+What a row that keeps its tier kept it on: **second channel** (the same neutral committed
+through two or more of the run's ionization channels), **no close rival** (the evidence
+separated the formula from every other candidate the run competed for the peak), or **not
+measured** (nothing the pass reads was recorded for the row, which is a statement of
+absence rather than a finding). An isotopologue **follows its M0**: it is the M0's ion
+seen at another isotope, so it takes the M0's answer and loses the top tier with it, and
+the inspector shows the M0's reasons beneath its own. What was found about its own line -
+in doubt, off its M0, read as the M0's line - is listed above that.
+
+**Beside the reasons.** The peak inspector also shows two measurements the reasons
+read.
+
+- ***mass z*** sits beside the m/z error. It is the row's distance from the run's own
+  mass calibration at its m/z, counted in the calibration's widths. Hovering it gives
+  the run's centre and width, and the distances at which *off calibration* caps a row.
+  The value is marked when it is past the distance that caps a row at *candidate*.
+- ***Same ion, read another way*** sits under the reasons. It lists the other neutrals
+  the committed ion reads as through the run's other channels, which the nitrogen check
+  is about. Two such readings have the same mass and isotope pattern, so the spectrum
+  cannot choose between them; a second channel of the run can.
+
+The close alternatives mark three kinds of entry that are not simply runners-up:
+
+- *same ion*: another reading of the same ion;
+- *earlier reading*: what the run first read the peak as, before a neighbour's isotope
+  line claimed it;
+- *list compound*: a list's compound that a formula from the search took the peak from.
+
+*Use this* on either of the last two puts that reading back.
+
+A reason can name a rule that lowered nothing: a row its evidence already put below
+*candidate* keeps that tier, and the rule still says what it found. The run records the
+rule set's version and thresholds with its configuration, because a tier can only be
+compared between two runs together with the rules that produced it.
 
 ## Assigning a peak yourself
 
@@ -302,9 +529,13 @@ peaks, so the focused peak's m/z is read in the same place on every card. Its la
 count from the monoisotopic peak, the way an isotope table does - a bromine-rich ion reads
 M0, M+2, M+4, M+6, with M0 the lightest peak of the cluster rather than the tallest - and
 its abundances are fractions of the most abundant isotopologue, so nothing reads above
-100 %. When none of the predicted isotopologues pairs with the family's main peak, the
-card keeps the pattern's numbers and adds a *main peak* line saying which prediction came
-nearest, how far away it lies, and whether it paired with a peak elsewhere.
+100 %. Where a line's isotopologue formula is known, the line is named by how it differs
+from the monoisotopic peak instead, such as `[13C]` or `[81Br]2`. For an ion made with a
+labelled reagent such as 15N-nitrate, whose monoisotopic peak is the labelled one, the
+reagent's unlabelled remainder - its M-1 - reads `[14N]`, its labelled atom at 14N. When
+none of the predicted isotopologues pairs with the family's main peak, the card keeps the
+pattern's numbers and adds a *main peak* line saying which prediction came nearest, how
+far away it lies, and whether it paired with a peak elsewhere.
 
 The sample browser marks each sample's assignment status with a tag badge in a column of
 its own, after the sample name by default (the table-controls cog moves or hides it like
@@ -456,6 +687,16 @@ batch ledger* puts Mascope's own view back.
 - <a id="sch14"></a>Schymanski, E. L. et al. *Identifying small molecules via high
   resolution mass spectrometry: communicating confidence.* Environ. Sci. Technol. 2014,
   48(4):2097–2098. [link](https://pubs.acs.org/doi/10.1021/es5002105)
+- <a id="hy15"></a>Hyttinen, N.; Kupiainen-Määttä, O.; Rissanen, M. P.; Muuronen, M.;
+  Ehn, M.; Kurtén, T. *Modeling the charging of highly oxidized cyclohexene ozonolysis
+  products using nitrate-based chemical ionization.* J. Phys. Chem. A 2015,
+  119(24):6339–6345. [link](https://doi.org/10.1021/acs.jpca.5b01818)
+- <a id="wa21"></a>Wang, M.; He, X.-C.; Finkenzeller, H.; Iyer, S.; Chen, D.; Shen, J.;
+  Simon, M.; Hofbauer, V.; Kirkby, J.; Curtius, J.; Maier, N.; Kurtén, T.; Worsnop, D. R.;
+  Kulmala, M.; Rissanen, M.; Volkamer, R.; Tham, Y. J.; Donahue, N. M.; Sipilä, M.
+  *Measurement of iodine species and sulfuric acid using bromide chemical ionization mass
+  spectrometers.* Atmos. Meas. Tech. 2021, 14:4187–4202.
+  [link](https://doi.org/10.5194/amt-14-4187-2021)
 - <a id="sum07"></a>Sumner, L. W. et al. *Proposed minimum reporting standards for chemical
   analysis (Metabolomics Standards Initiative).* Metabolomics 2007, 3:211–221.
   [link](https://doi.org/10.1007/s11306-007-0082-2)
@@ -468,4 +709,6 @@ batch ledger* puts Mascope's own view back.
 [sch17]: #sch17
 [sch14]: #sch14
 [sum07]: #sum07
+[hy15]: #hy15
+[wa21]: #wa21
 [platt]: #platt

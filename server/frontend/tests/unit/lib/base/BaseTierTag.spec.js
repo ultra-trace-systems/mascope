@@ -85,7 +85,7 @@ describe('BaseTierTag manual mark', () => {
   })
 })
 
-// Curating a peak also strips the isotopologue satellites of the formula its M0
+// Curating a peak also strips the isotopologues of the formula its M0
 // no longer holds, and the backend leaves source = 'manual' on each stripped row
 // so the ledger's source filter shows the whole footprint of one override. Those
 // rows are a person's doing without anyone having chosen a formula for them -
@@ -132,5 +132,76 @@ describe('BaseTierTag demoted mark', () => {
       expect(wrapper.find('[data-testid="demoted-mark"]').exists(), String(source)).toBe(false)
       expect(wrapper.find('[data-testid="manual-mark"]').exists(), String(source)).toBe(false)
     }
+  })
+})
+
+// A reagent or artifact peak is accounted for by what made it. Its row sits at
+// tier `unassigned` because no compound was assigned, and a chip saying so would
+// read as a peak nothing explained - so the role is the chip.
+describe('BaseTierTag reagent and artifact peaks', () => {
+  const roleIcon = (wrapper) => wrapper.find('.role-icon')
+
+  it('shows the role in place of the tier, with no evidence', () => {
+    for (const role of ['reagent', 'artifact']) {
+      const wrapper = mountTag({ tier: 'unassigned', evidence: 0.5, role, source: role })
+
+      expect(wrapper.find('.tag').text()).toBe(role)
+      expect(wrapper.find('.tag').text()).not.toContain('unassigned')
+      // The chip is the role, so no second mark repeats it.
+      expect(roleIcon(wrapper).exists()).toBe(false)
+    }
+  })
+
+  // The class is what colours the chip: the role's own colour, the spectrum's,
+  // rather than the recessive dashed style an unassigned chip wears.
+  it("wears the role's class, not the tier's", () => {
+    for (const role of ['reagent', 'artifact']) {
+      const classes = mountTag({ tier: 'unassigned', role }).find('.tag').classes()
+
+      expect(classes).toEqual(expect.arrayContaining(['role', role]))
+      expect(classes).not.toContain('tier')
+      expect(classes).not.toContain('unassigned')
+    }
+    const tier = mountTag({ tier: 'unassigned', role: 'unassigned' }).find('.tag').classes()
+    expect(tier).toEqual(expect.arrayContaining(['tier', 'unassigned']))
+    expect(tier).not.toContain('role')
+  })
+
+  it('says what made the peak, and that it is not counted as a compound', () => {
+    const reagent = mountTag({ tier: 'unassigned', role: 'reagent', source: 'reagent' })
+    expect(reagent.vm.autoTooltip).toBe(
+      [
+        "Reagent: an ion the ionization source makes of itself, not one of the sample's compounds",
+        "Counted apart from the sample's compounds",
+        'Source: reagent'
+      ].join('\n')
+    )
+
+    const artifact = mountTag({ tier: 'unassigned', role: 'artifact' })
+    expect(artifact.vm.autoTooltip).toBe(
+      [
+        'Artifact: a ringing side lobe of a very intense neighbouring peak, not a species',
+        "Counted apart from the sample's compounds"
+      ].join('\n')
+    )
+  })
+
+  it('keeps the tier on an isotopologue, marked as one', () => {
+    const wrapper = mountTag({ tier: 'assigned', evidence: 0.9, role: 'iso_child' })
+
+    expect(wrapper.find('.tag').text()).toContain('assigned')
+    expect(roleIcon(wrapper).exists()).toBe(true)
+  })
+
+  it('leaves a monoisotopic row and an unknown role on their tier', () => {
+    for (const role of ['M0', 'unassigned', 'constructor', null]) {
+      const wrapper = mountTag({ tier: 'candidate', role })
+      expect(wrapper.find('.tag').text(), String(role)).toBe('candidate')
+    }
+  })
+
+  it('yields to an explicit tooltip here too', () => {
+    const wrapper = mountTag({ tier: 'unassigned', role: 'reagent', tooltip: 'say this' })
+    expect(wrapper.vm.autoTooltip).toBe('say this')
   })
 })

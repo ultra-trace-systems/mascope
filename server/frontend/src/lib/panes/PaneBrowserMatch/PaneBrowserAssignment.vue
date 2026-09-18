@@ -27,7 +27,7 @@ import {
   P_CORRECT_TOOLTIP,
   uncalibratedReason as reasonForNoPCorrect
 } from '@/lib/pCorrect'
-import { tierBucket, tierRank } from '@/lib/tiers'
+import { TIERS, tierBucket, tierRank } from '@/lib/tiers'
 import { prettyTrim } from '@/lib/utils'
 import { scrollVirtualRowIntoView } from '@/lib/virtualScroll'
 import { useApp } from '@/stores'
@@ -211,12 +211,22 @@ function focusPeak(assignment) {
 // batch-peaks pane, which is the point of sharing it - two ledgers side by side
 // that ranked tiers differently would be worse than either being wrong alone.
 
-// Histogram bucket for a row: reagent/artifact roles are their own bucket,
-// matching the counts strip and the spectrum coloring. Tier ranking itself
-// lives in @/lib/tiers so this ledger and the batch-peak ledger cannot drift.
+// The roles that account for a peak without a formula, each its own bucket
+// beside the tiers: a reagent peak is the source's own ion, an artifact the
+// instrument's ringing. Their rows are written at tier `unassigned`, so without
+// this they would be filtered, counted and sorted among the peaks nothing
+// explained. Tier ranking itself lives in @/lib/tiers so this ledger and the
+// batch-peak ledger cannot drift.
+const ROLE_BUCKETS = ['reagent', 'artifact']
 function bucketOf(row) {
-  if (row.role === 'reagent' || row.role === 'artifact') return 'reagent'
+  if (ROLE_BUCKETS.includes(row.role)) return row.role
   return tierBucket(row.tier)
+}
+// Sorted after every tier, in the strip's order, so the tier column groups the
+// rows by the chip they show.
+function rankOf(row) {
+  const role = ROLE_BUCKETS.indexOf(row.role)
+  return role === -1 ? tierRank(row.tier) : TIERS.length + role
 }
 
 // Active tier filters (empty = show all); clicking a histogram chip toggles it.
@@ -309,7 +319,7 @@ const rows = computed(() => {
     )
     .map((row) => ({
       ...row,
-      tierRank: tierRank(row.tier),
+      tierRank: rankOf(row),
       // Null where the producing engine stated no tier, and null rather than a
       // rank so `compareBy` sorts those rows last in both directions - "this
       // engine said nothing" is not a position on the scale. Guarded because
@@ -322,7 +332,22 @@ const rows = computed(() => {
       // from a backend that predates the slim ledger projection.
       pCorrect: row.p_correct ?? row.provenance?.p_correct ?? null,
       pProvisional: row.p_correct_provisional ?? row.provenance?.calibration?.provisional ?? false,
-      corrobAdducts: row.corroboration_adducts ?? row.provenance?.corroboration?.n_adducts ?? 0,
+      // The ledger-measured channel count first: it reaches every committed
+      // row, where the curated per-compound count reaches only what Stage A
+      // claimed - a handful of rows on most samples and none at all on many.
+      // Where both exist the first is a superset of the second, so preferring
+      // it never shrinks the marker.
+      corrobAdducts:
+        row.corroboration_channels ??
+        row.provenance?.cross_channel?.channels?.length ??
+        row.corroboration_adducts ??
+        row.provenance?.corroboration?.n_adducts ??
+        0,
+      // Whether that count is the one folded into p_correct. Only the curated
+      // count is; the channel count is evidence the run recorded, not a score
+      // it applied, and the marker's tooltip must not claim otherwise.
+      corrobScored:
+        (row.corroboration_channels ?? row.provenance?.cross_channel?.channels?.length) == null,
       corrobInherited: false,
       mech: mechById.value.get(row.ionization_mechanism_id) ?? null,
       isChild: false
@@ -339,12 +364,16 @@ const rows = computed(() => {
       .slice()
       .sort((a, b) => (a.sample_peak_mz ?? 0) - (b.sample_peak_mz ?? 0))
       .map((child) => {
-        // Adduct corroboration is written onto the M0 winner alone: an isotopologue
-        // is the same ion measured at another isotope, not a second sighting of
+        // Corroboration is written onto the M0 winner alone: an isotopologue is
+        // the same ion measured at another isotope, not a second sighting of
         // the compound, so it never carries a count of its own. The evidence is
         // about the formula the family shares, so the isotopologue shows its
         // parent's count and the marker says where it came from.
-        const own = child.corroboration_adducts ?? child.provenance?.corroboration?.n_adducts
+        const own =
+          child.corroboration_channels ??
+          child.provenance?.cross_channel?.channels?.length ??
+          child.corroboration_adducts ??
+          child.provenance?.corroboration?.n_adducts
         return {
           ...child,
           tierRank: parent.tierRank,
@@ -358,6 +387,7 @@ const rows = computed(() => {
           pProvisional:
             child.p_correct_provisional ?? child.provenance?.calibration?.provisional ?? false,
           corrobAdducts: own ?? parent.corrobAdducts,
+          corrobScored: parent.corrobScored,
           // True whenever the count on this row is the parent's, independent of
           // whether it clears the marker's threshold, so the row stays
           // self-describing to anything that reads it below that threshold.
@@ -372,9 +402,16 @@ const rows = computed(() => {
 })
 
 // Label for an unfolded isotopologue child row (compact substitution label,
-// falling back to the offset label).
+// falling back to the offset label). Counted from the family's M0, which the ion
+// formula names for a labelled ion (see formatIsotopeFormula): the row's own,
+// or its M0's when the row recorded none.
 const childLabel = (row) =>
-  row.isotope_formula ? formatIsotopeFormula(row.isotope_formula) : row.isotope_label || 'iso'
+  row.isotope_formula
+    ? formatIsotopeFormula(
+        row.isotope_formula,
+        row.ion_formula ?? assignments.value.m0Of(row)?.ion_formula
+      )
+    : row.isotope_label || 'iso'
 
 // Calibrated probability formatter for the P(correct) column.
 const pctFmt = new Intl.NumberFormat('en-US', { style: 'percent', maximumFractionDigits: 0 })
@@ -399,16 +436,23 @@ const pCorrectTooltip = (row) =>
 // dash, where the reason can be the row's own.
 const pCorrectHeaderTooltip = P_CORRECT_TOOLTIP
 
-// Tooltip for the adduct-corroboration marker. An isotopologue shows the count its
-// M0 was corroborated by, so it has to say both that the evidence is the
-// family's and that the boost is in the M0's P(correct) - the engine folds it
-// into the record carrying the corroboration and never into a child's, so
-// the number this marker sits beside does not include it.
-const corrobTooltip = (row) =>
-  row.corrobInherited
-    ? `Supported by ${row.corrobAdducts} adducts, via the M0 of this isotopologue family ` +
-      "(folded into the M0's P(correct), not into this row's)"
-    : `Supported by ${row.corrobAdducts} adducts (already folded into P(correct))`
+// Tooltip for the corroboration marker. It has two things to be careful about.
+// An isotopologue shows the count its M0 was corroborated by, so it must say the
+// evidence is the family's. And whether the number beside it accounts for the
+// corroboration depends on WHICH count this is: the curated per-compound one is
+// folded into p_correct (into the record carrying it, never into a child's), the
+// ledger-measured channel count is not folded into anything.
+const corrobTooltip = (row) => {
+  const scoring = row.corrobScored
+    ? row.corrobInherited
+      ? "folded into the M0's P(correct), not into this row's"
+      : 'already folded into P(correct)'
+    : 'not included in the P(correct) beside it'
+  return row.corrobInherited
+    ? `Supported by ${row.corrobAdducts} channels, via the M0 of this isotopologue family ` +
+        `(${scoring})`
+    : `Supported by ${row.corrobAdducts} channels (${scoring})`
+}
 
 // Two-way selection tied to the focused peak: clicking a row focuses its peak,
 // and focusing a peak elsewhere (spectrum click, inspector) highlights its row.
@@ -635,13 +679,17 @@ const breadcrumb = computed(() => {
           doc: app.ui.help.docUrl('how-it-works/peak-assignment/#confidence-tiers')
         }"
       >
+        <!-- The four tiers count the sample's compounds and the peaks nothing
+             explained; the two roles after them count the peaks the source and
+             the instrument made, which are neither. -->
         <button
           v-for="t in [
             { key: 'assigned', label: 'assigned', count: tierCounts.assigned },
             { key: 'candidate', label: 'candidate', count: tierCounts.candidate },
-            { key: 'reagent', label: 'reagent', count: tierCounts.reagent },
             { key: 'below_assignability', label: 'below', count: tierCounts.below_assignability },
-            { key: 'unassigned', label: 'unassigned', count: tierCounts.unassigned }
+            { key: 'unassigned', label: 'unassigned', count: tierCounts.unassigned },
+            { key: 'reagent', label: 'reagent', count: tierCounts.reagent },
+            { key: 'artifact', label: 'artifact', count: tierCounts.artifact }
           ]"
           :key="t.key"
           type="button"
@@ -649,6 +697,7 @@ const breadcrumb = computed(() => {
           :class="[
             t.key === 'below_assignability' ? 'below' : t.key,
             {
+              'roles-start': t.key === ROLE_BUCKETS[0],
               active: activeTiers.has(t.key),
               dim: activeTiers.size && !activeTiers.has(t.key)
             }
@@ -988,7 +1037,7 @@ const breadcrumb = computed(() => {
     </div>
 
     <Dialog v-model:visible="configVisible" modal header="Assign peaks" :style="{ width: '26rem' }">
-      <PeakAssignConfigForm />
+      <PeakAssignConfigForm :sample-item-id="app.data.sample.focusedId" />
       <template #footer>
         <Button label="Cancel" text severity="secondary" @click="configVisible = false" />
         <Button label="Assign" icon="pi ph ph-magic-wand" :loading="submitting" @click="launch" />
@@ -1084,8 +1133,13 @@ const breadcrumb = computed(() => {
 .tier-stat.candidate b {
   color: var(--state-warning);
 }
-.tier-stat.reagent b {
+.tier-stat.reagent b,
+.tier-stat.artifact b {
   color: #8a5ed0;
+}
+/* Set off from the tiers: what follows is not a confidence. */
+.tier-stat.roles-start {
+  margin-left: 0.4rem;
 }
 .tier-stat.below b,
 .tier-stat.unassigned b {

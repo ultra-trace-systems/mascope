@@ -117,6 +117,61 @@ That is it. The compounds are now annotated wherever the assignment engine
 produces a matching formula - the **Identity** column in peak assignment, and the
 `known_only` suspect-screening prior on the composition query.
 
+### How a loaded source may be matched
+
+Every load records three things on its source row about how its compounds may be
+matched:
+
+- **A window**: the elements a formula may carry, its largest carbon count and
+  its largest monoisotopic mass. Any of the three can be unbounded.
+- **Whether its radicals may be matched**, read from each formula (a half-integer
+  DBE), never from a flag on the row.
+- **The polarity its compounds are detected in**: `positive`, `negative`, or both.
+
+What a load writes depends on what the source is. A list someone authored - a
+`custom` CSV, a list file, the lists Mascope ships - is its own bound and loads
+unbounded, because every formula in it was chosen. A public database is not: it
+holds hundreds of thousands of formulas no sample of these chemistries carries,
+so `pubchem`, `comptox`, `chebi`, `hmdb`, `lipidmaps`, `coconut` and `norman`
+load at the atmospheric window, C, H, N, O and S with at most 40 carbons and
+700 Da. `mascope reference sources` names the window each adapter writes, and
+`mascope reference status` shows what each load recorded.
+
+Flags on the sync set any of it:
+
+```sh
+# Bound a hand-authored list to the elements it should match in.
+mascope reference sync custom siloxanes.csv --name my-siloxanes -v 1 --elements C,H,O,Si --max-carbon 20
+
+# Let a database's silicon and phosphorus formulas through; 'any' lifts a bound.
+mascope reference sync norman susdat.csv -v 2024 --elements C,H,N,O,S,Si,P --max-mass any
+
+# A CSV of radicals, matched as radicals.
+mascope reference sync custom ro2.csv --name my-ro2 -v 1 --allow-radicals
+
+# A list measured in positive mode.
+mascope reference sync custom esi_background.csv --name my-background -v 1 --polarity positive
+```
+
+A list file's header says `allow_radicals` and `polarity` itself, and its
+radicals are held back at ingest unless the header allows them, whatever the
+flag says.
+
+Stage A of peak assignment reads all three for every source:
+
+- **A formula is matched only inside the source's window**, intersected with a
+  ceiling the sample's chemistry context sets. Every shipped context opens C, H,
+  N, O, S, Si, P, F, Cl, Br and I at 40 carbons and 700 Da, so a list brings its
+  siloxanes, organophosphates, perfluorinated acids and iodine species in, while a
+  database mirror stays inside its own window. The identity context `none` sets
+  no ceiling. The run records the ceiling as `known_window` in its resolved
+  profile.
+- **A radical is matched only from a source whose row allows radicals.**
+- **A source detected in one polarity is not matched against a sample measured
+  in the other.** A list that says `both`, and a CSV, are matched in either.
+
+A formula carries the identities of the sources that admit it and no others.
+
 ### In a deployment (production)
 
 `mascope reference` is a developer command: it pulls the chemistry dependencies
@@ -143,8 +198,9 @@ deployment, depending on how it was installed:
   ```
 
   It takes the same arguments as `mascope reference sync` (`source`, `file`,
-  `--version`, `--name`, `--batch-size`, `--prune`, `--stage`) and runs the
-  identical versioned ingest - just where the dependencies live. The database is
+  `--version`, `--name`, `--batch-size`, `--prune`, `--stage`, `--elements`,
+  `--max-carbon`, `--max-mass`, `--allow-radicals`, `--polarity`) and runs the identical
+  versioned ingest - just where the dependencies live. The database is
   the one the backend is already configured for, so no connection flags are
   needed.
 
@@ -175,7 +231,14 @@ mascope reference sync custom apinene_hom.csv --name apinene-hom-2019 -v 2020 --
 
 **Stage without exposing.** `--stage` ingests a load without activating it (it
 does not replace the current version) - useful to prepare an update and flip it
-in later by re-syncing without `--stage`.
+in later with `mascope reference activate <name> --version <version>`.
+
+**Take a source out.** `mascope reference deactivate <name>` leaves no version of
+the source active, so annotation and peak assignment stop reading it. Nothing is
+deleted: `mascope reference activate <name> --version <version>` brings the load
+back, and `mascope reference seed` loads a shipped list again. In a deployment,
+run `python -m mascope_backend.db.scripts.reference_deactivate <name>` inside the
+backend container.
 
 **License / attribution.** Set a per-record `license` column if the list carries
 one; it is carried through to every annotation, so results stay attributable.
@@ -200,3 +263,95 @@ InChIKey where available).
 
 See [public_database_integration.md](public_database_integration.md) §2 for the
 public sources and where to obtain their dumps.
+
+---
+
+## 6. The lists that ship with Mascope
+
+Mascope carries a small curated seed of atmospheric CIMS lists: a monoterpene
+HOM list, isoprene's oxidation products, mass spectrometry background
+contaminants, and families of species no formula grid reaches, such as reactive
+iodine, perfluorocarboxylic acids, cyclic and linear siloxanes and
+organophosphates. They live in
+`libraries/reference/src/mascope_reference/lists/`, one list per file, and
+nothing loads them unasked:
+
+```sh
+mascope reference seed --list                      # what ships, and what loads by default
+mascope reference seed                             # load the default lists
+mascope reference seed monoterpene-ro2-kang2021    # load an opt-in list by its id
+```
+
+In a deployment, run `python -m mascope_backend.db.scripts.reference_seed`
+inside the backend container instead (see [maintaining.md](../maintaining.md)).
+Each list becomes its own source, named by its id and versioned by its
+`data_version`, and seeding again loads only the lists whose version changed.
+A list's row is written unbounded, with the radical allowance and the polarity
+its header names, and seeding again brings the row of a list that is already
+loaded up to date with them. A list that says it was measured in `both`
+polarities is recorded as both.
+
+The lists are curated in a JSON format (schema 2). A list's header says what
+belongs to the whole list, and its species are neutral formulas:
+
+```json
+{
+  "schema_version": 2,
+  "id": "monoterpene-hom-kang2021",
+  "label": "Monoterpene OH-oxidation HOM, closed-shell (alpha-pinene proxy)",
+  "data_version": "2026.09",
+  "license": "CC-BY-4.0",
+  "references": [{"citation": "S. Kang, ... 2021.", "isbn": "978-3-95806-596-3"}],
+  "polarity": "negative",
+  "native_detection": "[M+NO3]-",
+  "applies_to_contexts": ["monoterpene_ox", "biogenic_soa"],
+  "species": [
+    {"formula": "C10H16O7", "conditions": ["pure", "NOx"], "evidence": "formula"}
+  ]
+}
+```
+
+- **The header.**
+  - `id` is the source name: lower-case words joined by hyphens, and the file's
+    name as well.
+  - `license` is one of the licence tags the Stage A gate knows.
+  - Every entry in `references` carries a DOI or an ISBN.
+- **A species** may add a `name`, its own `reference`, an `evidence` grade
+  (`standard`, `ms2` or `formula`), `conditions` and a `note`.
+  - Its own `reference` is a DOI, for a list compiled from several papers.
+  - Only the name and that DOI reach the database. Everything else stays in the
+    file, because the identities Stage A matches are copied into the provenance
+    of every row they match.
+- **Radical status is read from the formula.** A neutral with a half-integer
+  DBE has an unpaired electron.
+  - Only a list that says `"allow_radicals": true` may hold one. In any other
+    list such a formula is held back at ingest.
+  - A `"radical"` field on a species is allowed only as a claim, and the checks
+    hold it to the formula.
+- **`"load_by_default": false` makes a list opt-in.** The monoterpene RO2
+  radicals are opt-in, because a radical competes with the closed-shell molecule
+  for the same peak.
+- **`provenance` says where the list came from:** what it was extracted or
+  compiled from, its caveats, and, for a list taken from one work, the licence
+  statement its `license` tag rests on. Like the references, it stays in the
+  file.
+- **`polarity` is recorded on the list's source row**, and Stage A matches the
+  list only against samples measured in that polarity (`both` matches either).
+- **`applies_to_contexts` and `always_active` are read, but nothing acts on them
+  yet.** They say which chemistry contexts a list belongs to, and whether it
+  should match in every context; the cyclic siloxanes, for example, are a
+  background of every inlet. Until a source row carries tags, Stage A matches
+  every loaded list in every context, under that context's ceiling.
+
+`libraries/reference/tests/test_seed_lists.py` holds every shipped list to these
+checks, so a list that breaks one fails CI instead of loading.
+
+The same `peaklist` adapter reads a list file of your own, and schema 1 files
+too, which is the format peaky's lists use:
+
+```sh
+mascope reference sync peaklist my_list.json --name my-list --version 2026-09
+```
+
+A schema 1 list names no licence, so its rows carry `custom`, and its radicals
+are held back.

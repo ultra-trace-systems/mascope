@@ -149,7 +149,8 @@ class PeakAssignmentsResource(BaseResource):
 
         Rows are the slim ledger projection: per-peak scalars plus the
         flattened provenance scalars (``evidence``, ``p_correct``,
-        ``p_correct_provisional``, ``corroboration_adducts``). The
+        ``p_correct_provisional``, ``corroboration_adducts``,
+        ``corroboration_channels``, ``candidate_density``, ``mass_z``). The
         inspector-detail JSON (``alternatives``, ``provenance``) of a single
         assignment is served by :meth:`detail`.
 
@@ -219,6 +220,30 @@ class PeakAssignmentsResource(BaseResource):
                    measurement.
                  - ``p_correct``, ``p_correct_provisional``,
                    ``corroboration_adducts``
+                 - ``corroboration_channels``: how many of the run's ionization
+                   channels committed this row's neutral. Independent evidence
+                   for the formula rather than for the peak, and unlike
+                   ``corroboration_adducts`` it reaches untargeted rows too -
+                   that one counts the adducts a CURATED compound matched
+                   through. Not folded into ``p_correct``. The run's
+                   ``config.cross_channel`` holds the channels it searched.
+                 - ``candidate_density``: how many formulas the peak's own
+                   evidence could not tell apart from the one this row commits,
+                   1 meaning nothing ties it. Not recoverable from
+                   ``alternatives``, which the run caps at ``max_alternatives``.
+                   Null on an isotopologue and on an imported row - an external
+                   engine's own count, where it publishes one, stays in
+                   ``provenance.engine_provenance`` and is not read into this
+                   column, because it is a different measurement.
+                 - ``mass_z``: how far the row's mass error sits from the
+                   centre the run fitted over its own corroborated
+                   assignments, in the widths it fitted there. Where the run's
+                   commits follow the mass range the centre does too, and is
+                   read at the row's own m/z. The run's
+                   ``config.mass_calibration`` holds that fit, its ``centre``
+                   and any ``trend``; a row beyond three widths with nothing
+                   but the mass fit behind it is capped, and says so in its
+                   detail provenance.
                  - ``target_compound_id``, ``target_ion_id`` (set for
                    database-sourced assignments)
                  - ``owner_peak_assignment_id`` (for isotope children, the
@@ -338,13 +363,47 @@ class PeakAssignmentsResource(BaseResource):
         alternative compositions considered for the peak and the full scoring
         provenance.
 
+        Every committed row's provenance carries ``tier_reasons``: why it holds
+        the tier it holds, as a list of ``{rule, detail, caps}``. ``caps`` marks
+        a reason that would take the top tier - a radical neutral, a nitrate
+        cluster around a neutral with no oxygen (rule ``oxygen_free_cluster``),
+        a peak whose evidence left rivals standing with nothing else
+        corroborating it, a formula shaped like a mass fit, a peak a committed
+        neighbour's envelope already predicts, an isotopologue whose mass error
+        does not follow its monoisotopic row's, or a demote an earlier pass
+        made. A row with no such reason lists what it kept its tier ON instead.
+        Rules only ever demote, and the run's ``config.tiering`` records the
+        rule set's version and the thresholds it judged at - a tier is only
+        comparable across two runs together with those. A peak read as an
+        assigned neighbour's isotopologue (rule ``envelope_claim``) carries
+        ``provenance.envelope_claim``: the line, its predicted and observed
+        height, how its mass error follows the neighbour's, and the reading it
+        displaced, which is also its first alternative. The displaced reading's
+        ``tier`` is the one its evidence gave it, before any rule of the run
+        held it lower. A list hit of a run that searched carries
+        ``provenance.grid_rivals``: the known set's own density, how many
+        closed-shell formulas the search held for its peak that its evidence
+        could not separate (counted into ``candidate_density``), the first few
+        of them by name, its fit on the search's scale, and whether the
+        searched element box holds its formula. Where a rival cleared the
+        list's prior and the list hit kept its peak all the same, the block
+        names that rival under ``held_against``, with ``why``:
+        ``unexplained_lines`` (the rival leaves the hit's own tracking isotope
+        lines, listed by m/z, unexplained) or ``target_library``. A search row
+        that took a list hit's peak carries ``provenance.list_reading``: the
+        list's formula, ion, source, compound and tier, the evidence of both
+        readings, and the prior they were weighed with. As on a claim's
+        displaced reading, that ``tier`` is the one the list reading's evidence
+        gave it, before any rule of the run held it lower. The list's reading is
+        also the row's first alternative, marked ``displaced_by_rival``.
+
         On a hand-curated row (``source`` ``manual``) the provenance also
         carries a ``manual`` block recording who changed what: ``action``,
         ``user_id``, ``at``, and ``previous`` - the displaced winner, kept
         verbatim so an override can be audited and undone. When the override
-        stripped the previous compound's isotopologue satellites, they are
-        archived under ``manual.demoted`` (one entry per satellite) so
-        committing that compound back restores them. Those stripped satellites
+        stripped the previous compound's isotopologues, they are
+        archived under ``manual.demoted`` (one entry per isotopologue) so
+        committing that compound back restores them. Those stripped isotopologues
         are themselves ``source`` ``manual`` rows, but ``unassigned`` and
         carrying no formula - a manual row is not necessarily an assigned one.
 

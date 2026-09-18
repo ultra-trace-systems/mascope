@@ -935,15 +935,49 @@ Mount the dump into the backend service first; the path is resolved inside the
 container. `custom` is the adapter for hand-authored CSV/TSV lists - the public
 databases have their own adapters, and each load is versioned.
 
+Each load also records the window its formulas may be matched in, whether its
+radicals may be, and its polarity. A public database loads at C, H, N, O and S
+with at most 40 carbons and 700 Da, and a hand-authored list loads unbounded;
+`--elements`, `--max-carbon`, `--max-mass`, `--allow-radicals` and `--polarity`
+set them otherwise ([reference_data_authoring.md](dev/reference_data_authoring.md)).
+
 A load replaces the active version of that source only once it has successfully
 read records, so a dump the adapter cannot parse leaves the existing mirror
 serving rather than emptying it. Re-running the same source is how you update
 it; prior versions stay on disk until pruned.
 
+Mascope also ships a small curated seed of atmospheric lists: a monoterpene HOM
+list, mass spectrometry background contaminants, and families of species no
+formula grid reaches. Nothing loads them on its own. Every active reference
+formula is one that Stage A of peak assignment matches peaks against, so loading
+them is a choice. To load the lists that load by default:
+
+```sh
+docker compose exec backend python -m mascope_backend.db.scripts.reference_seed
+```
+
+- `--list` shows what ships and which lists are opt-in.
+- Name a list to load it, e.g. `... reference_seed monoterpene-ro2-kang2021`.
+- Each list becomes its own source.
+- Running it again loads only the lists whose version changed. After an upgrade,
+  that is how a revised list reaches the database.
+- Running it again also brings the row of every list already loaded up to date
+  with the window, radical allowance and polarity the list names. Run it once
+  after upgrading to a release that added those fields.
+
+To take a source out without deleting it:
+
+```sh
+docker compose exec backend python -m mascope_backend.db.scripts.reference_deactivate cyclic-siloxanes
+```
+
+Annotation and peak assignment stop reading it at once. `reference_seed` loads a
+shipped list again, and a new `reference_sync` loads any other source.
+
 ### Reference licence gating
 
 Every mirrored record carries a licence **tag** - a short exact string, not a
-licence document. The eight registered adapters carry six distinct tags between
+licence document. The nine registered adapters carry six distinct tags between
 them, and a hand-authored list can also set the tag per row, in which case the
 row's own tag wins over the adapter's:
 
@@ -951,7 +985,7 @@ row's own tag wins over the adapter's:
 |---|---|---|
 | `CC-BY-4.0` | `chebi`, `lipidmaps` | attribution required |
 | `CC0` | `coconut` | |
-| `custom` | `custom` | every hand-authored row with no `license` column of its own |
+| `custom` | `custom`, `peaklist` | every hand-authored row with no `license` column of its own, and every row of a schema 1 list file |
 | `hmdb-attribution` | `hmdb` | free with attribution; verify commercial terms first |
 | `open` | `norman` | |
 | `public-domain` | `comptox`, `pubchem` | |

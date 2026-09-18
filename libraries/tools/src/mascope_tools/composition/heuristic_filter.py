@@ -3,7 +3,7 @@ Based on 7 Golden Rules by https://bmcbioinformatics.biomedcentral.com/articles/
 """
 
 from functools import lru_cache
-from typing import Any
+from typing import Any, Sequence
 
 import numpy as np
 import polars as pl
@@ -12,21 +12,57 @@ from pyteomics.mass import Composition
 from scipy.spatial.distance import cosine
 
 from mascope_tools.composition.config import (
+    CONTEXT_RATIO_MIN_CARBON,
     ELECTRON_MASS,
     ISOTOPE_ABUNDANCE_THRESHOLD,
     ISOTOPE_MATCHING_INTENSITY_TOLERANCE,
     ISOTOPE_MATCHING_MZ_TOLERANCE_PPM,
 )
 from mascope_tools.composition.custom_elements import CUSTOM_ELEMENTS
-from mascope_tools.composition.models import HeuristicFilterConfig
+from mascope_tools.composition.grid import admits
+from mascope_tools.composition.models import (
+    CompositionSearchConfig,
+    HeuristicFilterConfig,
+    PatternScoring,
+)
 from mascope_tools.composition.utils import (
+    combine_counts_and_ionization,
+    ionization_composition,
     normalize_formula_with_isotopes,
+    parse_composition,
+    parse_ionization,
+    to_hill_order,
     to_pyteomics,
 )
 
 
 # Limit isotopic matching to the most plausible candidates
 ISOTOPE_CANDIDATE_LIMIT = 64
+
+# Expected signal-to-noise at which a predicted line counts as one the spectrum
+# should have shown. The fit score charges an absent line above it and ignores
+# one below (`score_pattern_v2`'s `k_detect`); the envelope predictor stops at
+# the same place, because a line nobody could have seen is not worth predicting
+# either. One constant so the two cannot disagree about what "detectable" means.
+DETECT_SNR_K = 3.0
+
+#: Key under which `match_isotopic_pattern` records whether a candidate's
+#: envelope holds the two lines a reading needs to be evidence at all: the ion's
+#: own, and the one the prediction leads with. A separate statement from the
+#: score because the v2 fit CHARGES an absent line rather than refusing on it -
+#: a reading missing the brightest line scores low, not zero - so the refusal
+#: has to be said out loud instead of being read off a zero.
+PATTERN_REQUIRED_LINES = "pattern_has_required_lines"
+
+#: Key under which `match_isotopic_pattern` records the signal-to-noise of the
+#: peak the candidates were enumerated for - the number the detectability gate
+#: divides by, and the one that decides how deep the envelope was predicted.
+#: A property of the peak rather than of the candidate, so every reading of one
+#: peak carries the same value. Absent when the peak list carries no estimate,
+#: which is the difference between a fit scored against the noise and one
+#: scored against abundance alone, and the only way a reader can tell them
+#: apart after the fact.
+PATTERN_BASE_SNR = "pattern_base_snr"
 
 # --- Labelled-reagent custom elements ('^X' notation) ------------------------
 # A labelled reagent atom is not 100% pure; e.g. 15N-nitrate is ~98% 15N / 2% 14N.
@@ -506,11 +542,115 @@ def rule_known_chemical_space(
     return mask, log_messages  # Placeholder, always returns True
 
 
+# Elements that count as carbon and as hydrogen when a ratio window is
+# evaluated. Silicon is a tetravalent backbone atom, so it belongs in the
+# denominator with carbon; the halogens are monovalent H-substituents, so they
+# belong in the numerator with hydrogen. Without the substitution a halogenated
+# compound fails a window it never violated: trichloroacetic acid C2HCl3O2 reads
+# H/C 0.5 raw and (H+X)/C 2.0 effective.
+_CARBON_EQUIVALENT = ("C", "Si")
+_HYDROGEN_EQUIVALENT = ("H", "F", "Cl", "Br", "I")
+
+# DBE = 1 + (C+Si) + (N+P)/2 - (H+F+Cl+Br+I)/2. Divalent O and S contribute
+# nothing. The same convention as `finder.get_unsaturation`, restated on element
+# counts because this rule reads a formula, not the finder's atom list.
+_DBE_PLUS = ("C", "Si")
+_DBE_HALF_PLUS = ("N", "P")
+
+
+def effective_counts(counts: dict[str, int]) -> tuple[float, float, float]:
+    """(carbon-equivalent, hydrogen-equivalent, DBE) for a formula's counts.
+
+    Public because more than one rule reads a formula this way and they have
+    to agree: the context ratio windows, the closed-shell test and the
+    implausibility signatures all mean the same carbon by counting silicon
+    with it, and the same hydrogen by counting the halogens with it. A second
+    spelling of the convention would be a second thing to keep in step.
+
+    :param counts: Element counts, as :func:`element_counts` returns them.
+    :return: Carbon-equivalent count, hydrogen-equivalent count, and DBE.
+    """
+    carbon = float(sum(counts.get(el, 0) for el in _CARBON_EQUIVALENT))
+    hydrogen = float(sum(counts.get(el, 0) for el in _HYDROGEN_EQUIVALENT))
+    dbe = 1.0 + carbon + sum(counts.get(el, 0) for el in _DBE_HALF_PLUS) / 2.0
+    dbe -= hydrogen / 2.0
+    return carbon, hydrogen, dbe
+
+
+def _context_ratios_ok(
+    counts: dict[str, int], windows: dict[str, tuple[float, float]]
+) -> bool:
+    """Whether a formula's counts sit inside a context's ratio windows.
+
+    Above the carbon floor the four windows apply on effective counts. Below it
+    the windows are meaningless (see ``CONTEXT_RATIO_MIN_CARBON``) and give way
+    to two valence-level checks that catch the O- and N-stuffed one- and
+    two-carbon formulas a narrow mass window still admits.
+    """
+    carbon, hydrogen, dbe = effective_counts(counts)
+    n_o = counts.get("O", 0)
+    n_n = counts.get("N", 0)
+    if carbon >= CONTEXT_RATIO_MIN_CARBON:
+        values = {
+            "H/C": hydrogen / carbon,
+            "O/C": n_o / carbon,
+            "N/C": n_n / carbon,
+            "DBE/C": dbe / carbon,
+        }
+        for key, (low, high) in windows.items():
+            value = values.get(key)
+            if value is not None and not (low <= value <= high):
+                return False
+        return True
+    if carbon >= 1:
+        return n_o <= 2 * carbon + 2 and n_n <= carbon + 1
+    # No carbon-equivalent backbone at all. The organic grid floors carbon at 1,
+    # so a formula reaching this rule carbon-free came from a caller that wanted
+    # it; a context has nothing to say about it either way.
+    return True
+
+
+def rule_context_ratios(
+    candidates: pl.DataFrame, **kwargs
+) -> tuple[pl.Series, list[str]]:
+    """The chemistry context's Van Krevelen windows, as a boolean gate.
+
+    A matrix prior: ambient air does not produce a C10 neutral with fifteen
+    oxygens, and a uronium source does not produce one with eight nitrogens,
+    however well either fits the mass. The windows and the elements they are
+    computed on come from ``mascope_tools.composition.profiles``; this rule only
+    applies them.
+
+    Off unless a caller supplies ``context_ratio_windows``, so the long-standing
+    composition search and any caller that names no context are untouched. Like
+    every rule here it fails open: an unparseable formula is deferred, never
+    rejected.
+    """
+    log_messages: list[str] = []
+    if candidates.is_empty():
+        return pl.Series([], dtype=pl.Boolean), log_messages
+
+    heuristics_config = kwargs.get("heuristics_config") or HeuristicFilterConfig()
+    windows = heuristics_config.context_ratio_windows
+    if not windows:
+        return pl.Series([True] * candidates.height, dtype=pl.Boolean), log_messages
+
+    mask: list[bool] = []
+    for formula in candidates.get_column("formula").to_list():
+        counts = element_counts(formula)
+        if counts is None:
+            mask.append(True)  # unparseable here -> defer, never reject
+            continue
+        mask.append(_context_ratios_ok(counts, windows))
+    return pl.Series(mask, dtype=pl.Boolean), log_messages
+
+
 # From lightweight to heavyweight, these rules are applied in order.
 HEURISTIC_RULES = [
     rule_element_ratio,
     rule_valence,
     rule_senior,
+    rule_context_ratios,
     rule_known_chemical_space,
 ]
 
@@ -556,17 +696,589 @@ def apply_heuristic_rules(
     return candidates_df.to_dicts(), log_messages
 
 
+# ---------------------------------------------------------------------------
+# Same-ion families.
+#
+# Two candidates that combine into the same ion formula are not two hypotheses
+# about the peak. They are one hypothesis split two ways between the analyte and
+# the mechanism: X.[M+NH4]+ and (X+NH3).[M+H]+ are the same ion, so they sit at
+# the same mass, predict the same isotope envelope and score identically. No
+# spectrum can separate them, and a ranking that appears to separate them is
+# really ranking the order the finder enumerated its mechanisms in - which is
+# how the [M+H]+ reading kept 378 of 384 such peaks.
+#
+# So the family is scored once, because the evidence belongs to the ion rather
+# than to the split, and ranked by two rules in this order.
+#
+# 1. Prefer the reading whose neutral is a molecule. Whether two readings of an
+#    ion differ on that at all depends on the fragment between them: adding a
+#    fragment F to a neutral moves its DBE by DBE(F) - 1, so the two neutrals
+#    differ in parity exactly when F's own DBE is a half-integer. HCO3 is such
+#    a fragment, and so is a carbon read as a nitrogen, which is why this key
+#    decides the carbonate readings. NH3, urea, HNO3 and HBr are not: there the
+#    two neutrals are both molecules or both radicals, the key is silent, and
+#    rule 2 decides alone - which covers the ammonium, urea-cluster and
+#    nitrate-against-deprotonation families, most of the gate's.
+#
+#    Where the key does speak, the molecule is the far likelier analyte and
+#    wins. It is a tie-break and not a filter: where a radical is the ONLY
+#    reading of an ion it is still committed, which is what a nitrate source
+#    measuring RO2 requires.
+# 2. Then the mechanism carrying the most mass wins - the adduct or cluster
+#    reading over the covalent one. That is the chemistry a chemical-ionization
+#    source runs, and reading the reagent into the analyte's own formula invents
+#    a neutral nobody sampled.
+#
+# The order was measured, not assumed. On the mass rule alone the gate's nitrate
+# set read 159 deprotonated acids as carbonate adducts of radicals instead -
+# C17H23O4- as [C16H23O + CO3]- rather than [C17H24O4 - H]- - and lost that many
+# agreements with the reference. On that same build the reference's own neutral
+# is closed-shell in 390 of the 390 readings the two engines split differently
+# whose DBE the comparison computes (the three it leaves blank are carbon-free,
+# ammonia and nitric acid, and closed-shell as well), and in every reading the
+# two agree on. The rule is what the reference has been doing all along.
+#
+# The losing readings ride along on the winner. They are not weaker candidates;
+# they are the same evidence read differently, which is exactly what an analyst
+# needs to see.
+# ---------------------------------------------------------------------------
+
+#: Key under which an elected family winner carries the readings it displaced.
+SAME_ION_ALTERNATIVES = "same_ion_alternatives"
+
+
+@lru_cache(maxsize=512)
+def mechanism_mass_contribution(notation: str | None) -> float:
+    """The signed mass an ionization mechanism contributes to the ion it makes.
+
+    Positive for an addition, negative for a subtraction - the ``ion_shift`` of
+    :func:`finder.find_compositions`, restated on the notation because a scored
+    candidate carries the notation rather than the parsed mechanism.
+
+    :param notation: A mechanism's Mascope notation (``"+NH4+"``, ``"-H+"``).
+    :return: The contribution in Da. 0.0 when the notation is missing or
+        unparseable, which ranks it below every addition and above every
+        subtraction rather than letting an unreadable mechanism decide a family.
+    """
+    if not notation:
+        return 0.0
+    try:
+        mechanism = parse_ionization(notation)
+    except Exception:
+        # Fail-open: a mechanism this module cannot read is not grounds to drop
+        # a candidate the finder already accepted, only grounds not to rank on it.
+        return 0.0
+    return mechanism.mass if mechanism.addition else -mechanism.mass
+
+
+@lru_cache(maxsize=4096)
+def neutral_is_closed_shell(formula: str) -> bool:
+    """Whether a neutral formula is an even-electron molecule.
+
+    An integer DBE means every valence is satisfied; a half-integer one means an
+    unpaired electron, so the formula names a radical. Both are real chemistry -
+    a nitrate source measures RO2 radicals - but between two readings of one ion
+    the molecule is the likelier analyte by a wide margin.
+
+    Two readings of an ion do not always differ here. They differ exactly when
+    the fragment between them has a half-integer DBE of its own, as HCO3 does
+    and NH3, urea, HNO3 and HBr do not, so on an ammonium or reagent-cluster
+    family this test returns the same answer for both members and the ranking
+    falls through to :func:`mechanism_mass_contribution`.
+
+    :param formula: A neutral formula in Hill order.
+    :return: True for a closed-shell neutral, and for anything unparseable, so
+        an unreadable formula is never demoted on a test that could not run.
+    """
+    counts = element_counts(formula)
+    if counts is None:
+        return True
+    _, _, dbe = effective_counts(counts)
+    return float(dbe).is_integer()
+
+
+#: Reagent anions that hold on to a neutral by hydrogen bonds from its
+#: oxygen-bearing groups, written as the anion's composition. Nitrate is one:
+#: modelling of the oxidised molecules a nitrate source detects puts the bar at
+#: two hydrogen-bond donor groups, hydroperoxides in that study (Hyttinen et al.,
+#: J. Phys. Chem. A 119 (2015) 6339-6345, DOI 10.1021/acs.jpca.5b01818). A
+#: neutral with no oxygen has none of those groups, so a reading that clusters
+#: nitrate with one names an ion the source is unlikely to make.
+#:
+#: Carbonate is not among them. On the assignment gate the reference engine
+#: commits the same oxygen-free neutral on 20 of the 27 carbonate clusters such a
+#: rule would take from assigned.
+OXYGEN_BOUND_ANIONS: frozenset[str] = frozenset({"NO3"})
+
+
+@lru_cache(maxsize=512)
+def clusters_on_oxygen(notation: str | None) -> bool:
+    """Whether a channel is a cluster of an anion that holds on to oxygen.
+
+    Read off the mechanism, as :func:`mechanism_mass_contribution` is, so every
+    spelling of the cluster a deployment may hold is recognised: the anion alone
+    (``+NO3-``), with its conjugate acid (``+(HNO3)NO3-``), and with a labelled
+    reagent's atom in place of the ordinary one (``+[15N]O3-``, ``+^NO3-``).
+
+    :param notation: A mechanism's Mascope notation.
+    :return: True for such a cluster. False for any other channel, and for a
+        notation nobody can parse, so an unreadable mechanism is never judged.
+    """
+    if not notation:
+        return False
+    try:
+        mechanism = parse_ionization(notation)
+        moiety = ionization_composition(mechanism.formula)
+    except Exception:  # noqa: BLE001 - a mechanism nobody can parse holds on to nothing
+        return False
+    if not mechanism.addition or mechanism.charge >= 0 or not moiety:
+        return False
+    counts: dict[str, int] = {}
+    for symbol, n in moiety.items():
+        element = (
+            CUSTOM_ELEMENTS[symbol].base_element
+            if symbol in CUSTOM_ELEMENTS
+            else symbol
+        )
+        counts[element] = counts.get(element, 0) + n
+    return any(_is_acid_cluster(counts, anion) for anion in OXYGEN_BOUND_ANIONS)
+
+
+def _is_acid_cluster(counts: dict[str, int], anion: str) -> bool:
+    """Whether element counts are the anion with n of its conjugate acids.
+
+    :param counts: A moiety's element counts, labels folded into their elements.
+    :param anion: The anion's composition (``"NO3"``).
+    :return: True for ``A``, ``(HA)A``, ``(HA)2A`` and so on.
+    """
+    unit = {symbol: n for symbol, n in parse_composition(anion).items() if n}
+    key = min(symbol for symbol in unit if symbol != "H")
+    units, remainder = divmod(counts.get(key, 0), unit[key])
+    if units < 1 or remainder:
+        return False
+    expected = {symbol: n * units for symbol, n in unit.items()}
+    expected["H"] = expected.get("H", 0) + units - 1
+    return {symbol: n for symbol, n in expected.items() if n} == counts
+
+
+def oxygen_free_cluster(formula: str | None, notation: str | None) -> bool:
+    """Whether a reading clusters an oxygen-bound anion with an oxygen-free neutral.
+
+    :param formula: The reading's neutral formula.
+    :param notation: The mechanism it was read through.
+    :return: True when the channel is such a cluster (:func:`clusters_on_oxygen`)
+        and the neutral carries no oxygen. False otherwise, and for a formula
+        that cannot be parsed, which is never judged on a test that could not
+        run.
+    """
+    if not formula or not clusters_on_oxygen(notation):
+        return False
+    counts = element_counts(str(formula))
+    return counts is not None and not counts.get("O", 0)
+
+
+#: The elements a polyhalide anion is made of.
+HALOGENS: frozenset[str] = frozenset({"F", "Cl", "Br", "I"})
+
+
+@lru_cache(maxsize=512)
+def attaches_halogens_only(notation: str | None) -> bool:
+    """Whether a channel attaches an anion made of halogens and nothing else.
+
+    A halide (``+Br-``, ``+I-``, ``+Cl-``) or a dihalide (``+Br2-``), read off the
+    mechanism as :func:`clusters_on_oxygen` reads its channel, so a hydrate, an
+    acid cluster or an oxyanion of a halogen (``+H2O+Br-``, ``+(HBr)Br-``,
+    ``+BrO-``) is not one.
+
+    :param notation: A mechanism's Mascope notation.
+    :return: True for such a channel. False for any other, and for a notation
+        nobody can parse, so an unreadable mechanism is never judged.
+    """
+    if not notation:
+        return False
+    try:
+        mechanism = parse_ionization(notation)
+        moiety = ionization_composition(mechanism.formula)
+    except Exception:  # noqa: BLE001 - a mechanism nobody can parse attaches nothing
+        return False
+    if not mechanism.addition or mechanism.charge >= 0 or not moiety:
+        return False
+    elements = {
+        CUSTOM_ELEMENTS[symbol].base_element if symbol in CUSTOM_ELEMENTS else symbol
+        for symbol, n in moiety.items()
+        if n
+    }
+    return bool(elements) and elements <= HALOGENS
+
+
+def polyhalide_cluster(formula: str | None, notation: str | None) -> bool:
+    """Whether a reading attaches a halide to a neutral made of halogens only.
+
+    IBr read through ``+Br-`` is the polyhalide anion IBr2-, and a halide source
+    makes such anions from the halogen molecules that reach it - those of the air
+    it samples, which is how a bromide instrument measures I2, IBr and ICl, and
+    those of the source itself, where impurities of a halogen supply make ICl
+    and IBr and species held on the walls return to the gas phase (Wang et al.,
+    Atmos. Meas. Tech. 14 (2021) 4187-4202, DOI 10.5194/amt-14-4187-2021). Mass
+    and envelope fit both origins alike, so the reading cannot say which it is.
+
+    :param formula: The reading's neutral formula.
+    :param notation: The mechanism it was read through.
+    :return: True when the channel attaches halogens only
+        (:func:`attaches_halogens_only`) and every element of the neutral is a
+        halogen. False otherwise, and for a formula that cannot be parsed.
+    """
+    if not formula or not attaches_halogens_only(notation):
+        return False
+    counts = element_counts(str(formula))
+    if not counts:
+        return False
+    present = {element for element, n in counts.items() if n}
+    return bool(present) and present <= HALOGENS
+
+
+def elect_same_ion_families(
+    candidates: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Collapse candidates that make the same ion into one ranked hypothesis.
+
+    The reading elected is the one whose neutral is a closed-shell molecule and,
+    among those, whose mechanism carries the most mass.
+
+    :param candidates: Scored or unscored candidate dicts, each carrying ``ion``
+        and ``ionization_mechanism``.
+    :return: One candidate per distinct ion, the elected reading of each,
+        carrying the readings it displaced under
+        :data:`SAME_ION_ALTERNATIVES`. A family of one is returned untouched and
+        carries no such key, so the common case adds nothing to the row.
+    """
+    by_ion: dict[str, list[dict[str, Any]]] = {}
+    for candidate in candidates:
+        by_ion.setdefault(str(candidate.get("ion") or ""), []).append(candidate)
+
+    elected: list[dict[str, Any]] = []
+    for members in by_ion.values():
+        if len(members) == 1:
+            elected.append(members[0])
+            continue
+        # Closed-shell neutral first, then the most massive mechanism; the
+        # formula only breaks the impossible case of two mechanisms of identical
+        # mass, so the order is total and never falls through to enumeration
+        # order.
+        ranked = sorted(
+            members,
+            key=lambda c: (
+                not neutral_is_closed_shell(str(c.get("formula") or "")),
+                -mechanism_mass_contribution(c.get("ionization_mechanism")),
+                str(c.get("formula") or ""),
+            ),
+        )
+        winner = dict(ranked[0])
+        winner[SAME_ION_ALTERNATIVES] = [
+            {
+                "formula": member.get("formula"),
+                "ion": member.get("ion"),
+                "ionization_mechanism": member.get("ionization_mechanism"),
+                "neutral_mass": member.get("neutral_mass"),
+                "unsaturation": member.get("unsaturation"),
+            }
+            for member in ranked[1:]
+        ]
+        elected.append(winner)
+    return elected
+
+
+def propose_same_ion_readings(
+    readings: Sequence[tuple[str, str]],
+    notations: Sequence[str],
+    config: CompositionSearchConfig,
+    heuristics_config: HeuristicFilterConfig | None = None,
+) -> list[list[dict[str, Any]]]:
+    """The family a search would have given each reading's ion.
+
+    :func:`elect_same_ion_families` collapses the readings of one ion that the
+    finder enumerated. A reading the finder did not make - a formula a reference
+    list names, matched through one mechanism - arrives with no family, and this
+    builds the one its ion would have had: through every other mechanism of the
+    search, the neutral that makes the same ion formula, kept where the grid
+    holds it (:func:`grid.admits`) and the heuristic rules pass it, the two cuts
+    every enumerated candidate goes through before an election sees it.
+
+    It is arithmetic on one ion, not a search. Readings of the same ion formula
+    share its mass and its envelope, so a split needs no window and no score to
+    be a member. A mechanism of the other charge makes no reading. A split that
+    would need a negative count, or the label of a labelled reagent, is one no
+    grid holds, and :func:`grid.admits` refuses it: the finder never proposes a
+    labelled neutral. Nor is the reagent ion itself a reading of an analyte.
+
+    :param readings: ``(neutral formula, mechanism notation)`` pairs.
+    :param notations: Every mechanism the search runs, the readings' own among
+        them.
+    :param config: The search whose element box and unsaturation window a
+        split has to sit in.
+    :param heuristics_config: The filter a split has to pass.
+    :return: For each reading, in order, the other readings of its ion - each
+        carrying the formula, ion and mechanism an election's displaced reading
+        does - and an empty list where the ion has none.
+    """
+    mechanisms = {}
+    for notation in dict.fromkeys(notations):
+        try:
+            mechanism = parse_ionization(notation)
+        except Exception:  # noqa: BLE001 - a mechanism nobody can parse splits nothing
+            continue
+        moiety = ionization_composition(mechanism.formula) if mechanism.formula else {}
+        sign = 1 if mechanism.addition else -1
+        mechanisms[notation] = (
+            mechanism,
+            {symbol: sign * n for symbol, n in moiety.items()},
+        )
+
+    splits: list[list[tuple[str, str, str]]] = []
+    for formula, notation in readings:
+        members: list[tuple[str, str, str]] = []
+        try:
+            counts = dict(parse_composition(formula))
+        except Exception:  # noqa: BLE001 - a formula nobody can parse has no family
+            counts = {}
+        if counts and notation in mechanisms:
+            own, own_moiety = mechanisms[notation]
+            for other, (mechanism, moiety) in mechanisms.items():
+                if other == notation or (mechanism.charge > 0) != (own.charge > 0):
+                    continue
+                split = dict(counts)
+                for symbol, n in own_moiety.items():
+                    split[symbol] = split.get(symbol, 0) + n
+                for symbol, n in moiety.items():
+                    split[symbol] = split.get(symbol, 0) - n
+                split = {symbol: n for symbol, n in split.items() if n}
+                if split and admits(config, split):
+                    members.append(
+                        (
+                            to_hill_order(split),
+                            combine_counts_and_ionization(split, mechanism),
+                            other,
+                        )
+                    )
+        splits.append(members)
+
+    formulas = sorted({member[0] for members in splits for member in members})
+    passed, _ = apply_heuristic_rules(
+        [{"formula": formula} for formula in formulas], heuristics_config
+    )
+    kept = {candidate["formula"] for candidate in passed}
+    return [
+        [
+            {"formula": formula, "ion": ion, "ionization_mechanism": notation}
+            for formula, ion, notation in members
+            if formula in kept
+        ]
+        for members in splits
+    ]
+
+
+def _candidate_rank_key(candidate: dict[str, Any]) -> tuple:
+    """Order distinct ions by evidence, then by the data, never by row order.
+
+    Score first, closest mass next, then chemical plausibility, and the ion's
+    own name last so that two hypotheses the measurement cannot separate still
+    come back in the same order on every run and every machine.
+    """
+    error_ppm = candidate.get("composition_error_ppm")
+    return (
+        -float(candidate.get("isotopic_pattern_score") or 0.0),
+        abs(float(error_ppm)) if error_ppm is not None else float("inf"),
+        -formula_plausibility(str(candidate.get("formula") or "")),
+        str(candidate.get("formula") or ""),
+        str(candidate.get("ion") or ""),
+    )
+
+
+def monoisotopic_index(predicted_mz, labels: Sequence[str]) -> int:
+    """Which line of a predicted envelope is the ion itself.
+
+    The line LABELLED ``M0``, not the first one and not the lightest one.
+    IsoSpec orders configurations by abundance, so index 0 is the most abundant
+    isotopologue and is the monoisotopic one only for an ion with no
+    heavy-isotope-rich element; for a dibromide the most abundant line sits two
+    mass units above the ion. And the lightest line is not it either: a 98% 15N
+    reagent predicts its 14N impurity one mass unit BELOW the ion.
+
+    :param predicted_mz: The envelope's m/z values, in the predictor's order.
+    :param labels: The isotope label of each line, same order.
+    :return: The position of the monoisotopic line, falling back to the
+        lightest when nothing carries the label.
+    """
+    for position, label in enumerate(labels):
+        if label == "M0":
+            return position
+    return int(np.argmin(predicted_mz))
+
+
+def anchor_on_monoisotopic(
+    predicted_mz, predicted_intensity, labels: Sequence[str]
+) -> tuple[np.ndarray, np.ndarray, list[str]]:
+    """Reorder a predicted envelope so the ion's own line comes first.
+
+    Three separate places downstream read index 0 as "the ion": the intensity
+    an envelope is normalised to, :func:`score_pattern`'s
+    "require monoisotopic detection" guard, and the finder's
+    ``process_isotopes``, which writes its main row there. IsoSpec's order makes
+    that true only by accident - for an ion with no heavy-isotope-rich element
+    the most abundant configuration IS the monoisotopic one - and false exactly
+    where it costs most.
+
+    On a bromide source it cost bright peaks outright. A ``+Br2-`` candidate is
+    enumerated for a peak, its envelope is anchored on the 79Br81Br line two
+    mass units above, that line is matched to whatever small peak sits there,
+    and the target then measures thousands of percent too bright for its own
+    monoisotopic line and goes unmatched - while the pattern still scores well
+    enough to beat the mono-bromide reading that matched the target and its 13C
+    line. The finder then wrote its main row at the anchor's m/z, and the peak
+    the candidate was enumerated FOR got no row at all.
+
+    Anchoring on the monoisotopic line removes the whole class, because that
+    line is the target by construction: the composition search matched the
+    ion's monoisotopic mass against the peak's m/z to propose it.
+
+    :param predicted_mz: The envelope's m/z values.
+    :param predicted_intensity: Their abundances, same order.
+    :param labels: Their isotope labels, same order.
+    :return: The three arrays with the monoisotopic line first, the rest in
+        their original relative order.
+    """
+    predicted_mz = np.asarray(predicted_mz, dtype=float)
+    predicted_intensity = np.asarray(predicted_intensity, dtype=float)
+    labels = list(labels)
+    if predicted_mz.size == 0:
+        return predicted_mz, predicted_intensity, labels
+    position = monoisotopic_index(predicted_mz, labels)
+    if position == 0:
+        return predicted_mz, predicted_intensity, labels
+    order = [position] + [i for i in range(predicted_mz.size) if i != position]
+    return (
+        predicted_mz[order],
+        predicted_intensity[order],
+        [labels[i] for i in order],
+    )
+
+
+def envelope_floor_for_peak(
+    base_intensity: float,
+    base_snr: float | None,
+    faintest_intensity: float,
+    scoring: PatternScoring,
+) -> float:
+    """How deep to predict a peak's envelope, relative to the ion's own line.
+
+    Two bounds, and the shallower one wins. What the peak's own noise allows: a
+    line at :data:`DETECT_SNR_K` over its signal-to-noise sits at the edge of
+    visibility, and one below that is exactly what the fit score's
+    detectability gate declines to charge for being absent, so predicting it
+    buys nothing. And what the peak list can hold at all: a line fainter than
+    the faintest measured peak is not in there whatever the noise says.
+
+    The result is clamped between the sample's own abundance floor and the 1%
+    default, so no peak's envelope is shallower than the fixed cutoff the finder
+    used to apply to every peak alike, and none is deeper than the floor Stage A
+    generates its isotopes at. A bright peak on a clean spectrum therefore
+    reaches far below 1% - which is where the faint lines that are really there
+    live - while a weak one does not pay for a depth it could not use.
+
+    :param base_intensity: Intensity of the peak the candidates explain.
+    :param base_snr: Its signal-to-noise, when the file carries one.
+    :param faintest_intensity: The smallest intensity in the peak list.
+    :param scoring: The sample's scoring parameters; its ``abundance_floor`` is
+        the deepest this may return.
+    :return: The relative abundance below which lines are not predicted.
+    """
+    reach = 0.0
+    if base_snr is not None and np.isfinite(base_snr) and base_snr > 0:
+        reach = DETECT_SNR_K / float(base_snr)
+    if base_intensity > 0 and faintest_intensity > 0:
+        reach = max(reach, float(faintest_intensity) / float(base_intensity))
+    if reach <= 0:
+        # Neither bound could be evaluated - an empty frame, or one whose
+        # intensities are all zero. Predict to the floor rather than invent a
+        # depth from nothing.
+        return float(scoring.abundance_floor)
+    return float(min(max(reach, scoring.abundance_floor), ISOTOPE_ABUNDANCE_THRESHOLD))
+
+
+def _target_peak(
+    candidates: list[dict[str, Any]],
+    mzs: np.ndarray,
+    intensities: np.ndarray,
+    snrs: np.ndarray | None,
+) -> tuple[float, float | None]:
+    """The intensity and SNR of the peak a list of candidates was enumerated for.
+
+    Every candidate here explains one observed peak - they are the compositions
+    the search found for its mass - so the peak is a property of the list, read
+    once. Answers ``(0.0, None)`` when the candidates do not say which peak they
+    came from, which is what a hand-built candidate list looks like.
+    """
+    target_mz = None
+    for candidate in candidates:
+        try:
+            value = float(candidate.get("observed_mass"))  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            continue
+        if np.isfinite(value):
+            target_mz = value
+            break
+    if target_mz is None or not mzs.size:
+        return 0.0, None
+    upper = int(np.searchsorted(mzs, target_mz))
+    nearby = [i for i in (upper - 1, upper) if 0 <= i < mzs.size]
+    position = min(nearby, key=lambda i: abs(float(mzs[i]) - target_mz))
+    snr = float(snrs[position]) if snrs is not None else None
+    return float(intensities[position]), snr
+
+
 def match_isotopic_pattern(
-    candidates: list[dict[str, Any]], peaks: pl.DataFrame
+    candidates: list[dict[str, Any]],
+    peaks: pl.DataFrame,
+    scoring: PatternScoring | None = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, np.ndarray | list[str]]]]:
     """Matches isotopic patterns against candidates.
 
+    Candidates making the same ion are collapsed into one hypothesis first (see
+    :func:`elect_same_ion_families`), so what is scored and ranked here is one
+    reading per distinct ion. The returned lists are in ranked order, best
+    first, and the two are aligned index for index: they are ordered by one
+    computed permutation rather than by two sorts that agree only while no two
+    candidates tie.
+
+    Ranking is the fit score (:func:`score_pattern_v2`), judged at the sample's
+    own mass width: it charges a predicted line that is absent where the noise
+    says it should have been visible, and ignores one below the noise. That is
+    the difference that decides an election. Its predecessor averaged its terms
+    over the lines a candidate DID match, so a reading that predicted three
+    lines and found one scored above a reading that predicted one and found it -
+    and a reading whose lines cannot be there at all, which is what a
+    sulfur-rich radical is on a spectrum with no sulfur, scored best of all.
+
     :param candidates: List of candidate formula dicts.
     :type candidates: list[dict[str, Any]]
-    :param peaks: Sorted dataframe of peaks with 'mz' and 'intensity' columns.
+    :param peaks: Sorted dataframe of peaks with 'mz' and 'intensity' columns,
+        and optionally 'signal_to_noise' - the per-peak noise estimate the
+        detectability gate and the mass width read. Without it the score falls
+        back to its no-SNR mode, where an absent line is charged on its
+        predicted abundance alone.
     :type peaks: pl.DataFrame
-    :return: Tuple of filtered candidates, and a list of isotope data dicts (per
-        candidate). An isotope dict has one entry per predicted isotopologue, zero
+    :param scoring: The sample's scoring parameters - fitted mass width and
+        offset, match window, envelope floor. Defaults to the fixed
+        Orbitrap-shaped constants the finder carried before a caller could
+        describe the sample.
+    :type scoring: PatternScoring, optional
+    :return: Tuple of ranked candidates, and a list of isotope data dicts (per
+        candidate). Each candidate also carries
+        :data:`PATTERN_REQUIRED_LINES`, whether its envelope holds the two lines
+        a reading needs to be evidence at all, and :data:`PATTERN_BASE_SNR`, the
+        signal-to-noise the detectability gate judged its absent lines against.
+        An isotope dict has one entry per
+        predicted isotopologue, zero
         where nothing matched, and reports BOTH errors signed - `intensity_errors`
         as observed/predicted - 1, `mass_errors_ppm` as
         (observed - predicted)/predicted * 1e6. That is the targeted matcher's
@@ -575,38 +1287,77 @@ def match_isotopic_pattern(
         scoring take the magnitude; the sign is evidence, not a penalty.
     :rtype: tuple[list[dict[str, Any]], list[dict[str, np.ndarray | list[str]]]]
     """
+    scoring = scoring or PatternScoring()
     mzs = peaks["mz"].to_numpy()
     intensities = peaks["intensity"].to_numpy()
+    snrs = (
+        peaks["signal_to_noise"].to_numpy()
+        if "signal_to_noise" in peaks.columns
+        else None
+    )
 
-    candidates_df = pl.DataFrame(candidates)
-    if candidates_df.is_empty():
-        candidates_df = candidates_df.with_columns(
-            pl.lit(0.0, dtype=pl.Float64).alias("isotopic_pattern_score")
-        )
-        return candidates_df.to_dicts(), []
+    if not candidates:
+        return [], []
+
+    # One hypothesis per distinct ion, elected before anything heavy runs. A
+    # family shares an envelope exactly, so scoring it once is not an
+    # optimisation but the statement that its members are one claim - and the
+    # candidate limit below then counts distinct hypotheses instead of spending
+    # three of its slots on three splits of one ion.
+    ranked = elect_same_ion_families(candidates)
 
     # Keep only the most promising candidates for heavy work
-    candidates_df = candidates_df.sort(pl.col("composition_error_ppm").abs()).head(
-        ISOTOPE_CANDIDATE_LIMIT
-    )
+    ranked.sort(key=lambda c: abs(float(c.get("composition_error_ppm") or 0.0)))
+    ranked = ranked[:ISOTOPE_CANDIDATE_LIMIT]
 
     # If ionization peak: skip isotopic matching and return score 1.0
-    if "()" in candidates_df.get_column("formula").to_list():
-        candidates_df = candidates_df.with_columns(
-            pl.lit(1.0, dtype=pl.Float64).alias("isotopic_pattern_score")
-        )
-        return candidates_df.to_dicts(), []
+    if any(candidate.get("formula") == "()" for candidate in ranked):
+        return [
+            dict(
+                candidate, isotopic_pattern_score=1.0, **{PATTERN_REQUIRED_LINES: True}
+            )
+            for candidate in ranked
+        ], []
 
     ion_formulas, ion_charges = _extract_formulae_and_charges(
-        candidates_df.get_column("ion")
+        pl.Series("ion", [str(candidate.get("ion") or "") for candidate in ranked])
     )
 
-    scores = np.zeros(candidates_df.height, dtype=float)
+    # How deep every candidate's envelope is predicted. One depth for the whole
+    # list, because they all explain the same observed peak and it is that
+    # peak's noise that decides what a line of theirs could look like; scoring
+    # two candidates to different depths would also make their scores
+    # incomparable, which is the one thing this ranking may not do.
+    base_intensity, base_snr = _target_peak(ranked, mzs, intensities, snrs)
+    reported_snr = (
+        float(base_snr)
+        if base_snr is not None and np.isfinite(base_snr) and base_snr > 0
+        else None
+    )
+    # The smallest intensity the list actually HOLDS, which is not its minimum:
+    # a peak frame carries zeros for peaks that averaged to nothing over the
+    # window, and a zero would say the spectrum can hold a line of any depth.
+    positive = intensities[intensities > 0]
+    faintest = float(positive.min()) if positive.size else 0.0
+    envelope_floor = envelope_floor_for_peak(
+        base_intensity, base_snr, faintest, scoring
+    )
+
+    scores = np.zeros(len(ranked), dtype=float)
+    has_required_lines = np.zeros(len(ranked), dtype=bool)
     all_isotope_data = []
 
     for ind, (ion_formula, ion_charge) in enumerate(zip(ion_formulas, ion_charges)):
         predicted_mzs, predicted_intensities, isotope_labels = predict_isotopes(
-            ion_formula, ion_charge
+            ion_formula, ion_charge, threshold=envelope_floor
+        )
+        # The ion's own line first, whatever order the predictor returned. Every
+        # index-0 assumption below - the intensity the envelope is normalised
+        # to, the line matched before any other, score_pattern's requirement
+        # that it be observed at all - means the monoisotopic line and not the
+        # most abundant one. See :func:`anchor_on_monoisotopic`.
+        predicted_mzs, predicted_intensities, isotope_labels = anchor_on_monoisotopic(
+            predicted_mzs, predicted_intensities, isotope_labels
         )
         is_isotope_predicted = len(predicted_mzs) > 0
         if not is_isotope_predicted:
@@ -626,13 +1377,20 @@ def match_isotopic_pattern(
         observed_intensities = observed_masses.copy()
         observed_mass_errors_ppm = observed_masses.copy()
         observed_intensity_error = observed_masses.copy()
+        # Per-line signal-to-noise, NaN where the line was not matched or the
+        # file carries none. It only ever widens a tolerance in the score, so a
+        # NaN costs the candidate nothing it had earned.
+        observed_snr = np.full(predicted_mzs.size, np.nan)
 
-        # Normalize predicted intensities relative to monoisotopic (base) peak
+        # Relative to the ion's own line, which anchor_on_monoisotopic put at
+        # index 0. An isotopologue's predicted share may therefore exceed 1 - a
+        # dibromide's 79Br81Br line is 1.95 times its monoisotopic one - which
+        # is what an abundance relative to the ion means.
         predicted_rel = predicted_intensities / predicted_intensities[0]
 
         base_peak_intensity = None
         for i, p_mz in enumerate(predicted_mzs):
-            mz_delta = p_mz * ISOTOPE_MATCHING_MZ_TOLERANCE_PPM * 1e-6
+            mz_delta = p_mz * scoring.mz_tolerance_ppm * 1e-6
             mz_min, mz_max = p_mz - mz_delta, p_mz + mz_delta
 
             start_idx = np.searchsorted(mzs, mz_min, side="left")
@@ -650,12 +1408,18 @@ def match_isotopic_pattern(
             matched_index = np.argmin(np.abs(window_mzs - p_mz))
             matched_mz = window_mzs[matched_index]
             matched_intensity = window_intensities[matched_index]
-            is_base_peak = i == 0
+            matched_snr = (
+                float(snrs[start_idx:end_idx][matched_index])
+                if snrs is not None
+                else np.nan
+            )
+            is_monoisotopic = i == 0
 
-            if is_base_peak:
+            if is_monoisotopic:
                 base_peak_intensity = matched_intensity
                 observed_intensities[0] = matched_intensity
                 observed_masses[0] = matched_mz
+                observed_snr[0] = matched_snr
                 # Signed, (observed - predicted)/predicted: the same convention as
                 # the targeted matcher's match_mz_error, so a consumer can recover the
                 # predicted m/z as observed / (1 + error/1e6).
@@ -663,7 +1427,10 @@ def match_isotopic_pattern(
                 observed_intensity_error[0] = 0.0
                 continue  # move to next isotope
 
-            # Require monoisotopic established before evaluating higher isotopes
+            # Require the ion's own line established before any isotopologue. A
+            # candidate whose monoisotopic line the spectrum does not hold
+            # matches nothing and scores zero, which is the point: that line is
+            # the peak the candidate was enumerated for.
             if base_peak_intensity is None or base_peak_intensity == 0:
                 continue
 
@@ -674,18 +1441,36 @@ def match_isotopic_pattern(
             # the predicted relative abundance as observed_rel / (1 + error).
             intensity_error = observed_rel_intensity / predicted_rel_intensity - 1.0
 
+            # A line whose height is nowhere near its prediction is not this
+            # ion's line, and the deeper envelope makes that gate matter more
+            # than it did: a trace prediction has a real chance of landing on an
+            # unrelated peak, and this is what keeps the ion from claiming it.
+            # What the score then sees is an ABSENT line, which the
+            # detectability gate charges or ignores according to whether the
+            # noise says it should have been there.
             if abs(intensity_error) <= ISOTOPE_MATCHING_INTENSITY_TOLERANCE:
                 observed_intensities[i] = matched_intensity
                 observed_masses[i] = matched_mz
                 observed_mass_errors_ppm[i] = (matched_mz - p_mz) / p_mz * 1e6
                 observed_intensity_error[i] = intensity_error
+                observed_snr[i] = matched_snr
 
-        scores[ind] = score_pattern(
-            observed_masses,
-            observed_mass_errors_ppm,
+        # Two lines have to be there for the envelope to be evidence at all: the
+        # ion's own, which is the peak the candidate was enumerated for, and the
+        # one the prediction leads with. Both are absence tests rather than
+        # quality tests, and they are stated here rather than left to the score
+        # because the fit charges an absent line instead of refusing on it.
+        brightest = int(np.argmax(predicted_rel)) if predicted_rel.size else 0
+        has_required_lines[ind] = bool(
+            observed_intensities[0] > 0 and observed_intensities[brightest] > 0
+        )
+        scores[ind] = score_pattern_v2(
+            observed_mass_errors_ppm - scoring.mu_ppm,
             observed_intensities,
-            observed_intensity_error,
+            observed_snr,
             predicted_rel,
+            sigma_ppm=scoring.sigma_ppm,
+            k_detect=DETECT_SNR_K,
         )
 
         matched_isotopes = {
@@ -699,14 +1484,25 @@ def match_isotopic_pattern(
 
         all_isotope_data.append(matched_isotopes)
 
-    candidates_df = candidates_df.with_columns(
-        pl.Series(values=scores, name="isotopic_pattern_score")
-    ).sort("isotopic_pattern_score", descending=True)
+    ranked = [
+        dict(
+            candidate,
+            isotopic_pattern_score=float(score),
+            **{
+                PATTERN_REQUIRED_LINES: bool(required),
+                PATTERN_BASE_SNR: reported_snr,
+            },
+        )
+        for candidate, score, required in zip(ranked, scores, has_required_lines)
+    ]
+    # One permutation for both lists. Two independent sorts on the score alone
+    # agree only while no two candidates tie on it, and a tie is common - every
+    # candidate whose envelope found nothing scores the same. Where they
+    # disagreed, the isotope pattern of one composition was stamped onto
+    # another's row.
+    order = sorted(range(len(ranked)), key=lambda i: _candidate_rank_key(ranked[i]))
 
-    score_sorted_indices = np.argsort(scores)[::-1]
-    all_isotope_data = [all_isotope_data[i] for i in score_sorted_indices]
-
-    return candidates_df.to_dicts(), all_isotope_data
+    return [ranked[i] for i in order], [all_isotope_data[i] for i in order]
 
 
 def _custom_isotope_combinations(
@@ -728,7 +1524,10 @@ def _custom_isotope_combinations(
 
 
 def _predict_isotopes_custom(
-    ion_formula: str, ion_charge: int, purity: float
+    ion_formula: str,
+    ion_charge: int,
+    purity: float,
+    threshold: float = ISOTOPE_ABUNDANCE_THRESHOLD,
 ) -> tuple[np.ndarray, np.ndarray, list[str]]:
     """predict_isotopes for an ion containing labelled '^X' custom elements: base
     (non-custom) envelope via IsoSpec, convolved with the labelled distribution(s)
@@ -743,9 +1542,7 @@ def _predict_isotopes_custom(
     base_formula = to_hill_order(base) if base else ""
 
     if base_formula:
-        peaks = IsoThreshold(
-            formula=base_formula, threshold=ISOTOPE_ABUNDANCE_THRESHOLD, get_confs=True
-        )
+        peaks = IsoThreshold(formula=base_formula, threshold=threshold, get_confs=True)
         base_masses = [float(m) for m in peaks.masses]
         base_probs = [float(p) for p in peaks.probs]
         base_labels = extract_isotope_labels(base_formula, peaks)
@@ -773,7 +1570,7 @@ def _predict_isotopes_custom(
             prob = bp
             for c in combo:
                 prob *= c[1]
-            if prob < ISOTOPE_ABUNDANCE_THRESHOLD:
+            if prob < threshold:
                 continue
             deviations = [
                 f"{light_mn}{regular}" + (str(n_light) if n_light > 1 else "")
@@ -801,7 +1598,10 @@ def _predict_isotopes_custom(
 
 
 def predict_isotopes(
-    ion_formula: str, ion_charge: int, purity: float | None = None
+    ion_formula: str,
+    ion_charge: int,
+    purity: float | None = None,
+    threshold: float | None = None,
 ) -> tuple[np.ndarray, np.ndarray, list[str]]:
     """Predict isotopic pattern for a given ion formula and charge.
 
@@ -814,22 +1614,37 @@ def predict_isotopes(
         reagent; the caller passes its value. Ignored for non-labelled ions.
         Defaults to ``LABELLED_REAGENT_PURITY``.
     :type purity: float, optional
+    :param threshold: Abundance below which a line is left out of the envelope,
+        relative to the most abundant one. Defaults to
+        :data:`ISOTOPE_ABUNDANCE_THRESHOLD`, which is what the scoring path
+        wants: a line it cannot measure is noise in a cosine distance.
+
+        A caller that CLAIMS peaks wants a lower one, because for it an omitted
+        line is not a rounding error but a peak left in the residual for
+        something else to explain. The reagent pre-pass passes its own isotopologue
+        floor: the 18O line of a two-oxygen ion is 0.40% of the parent, under
+        the 1% default, and on the gate that line was bright enough (7e4 counts,
+        19th peak of the sample) for the untargeted stage to fit an analyte to
+        once the reagent claimed its parent.
+    :type threshold: float, optional
     :return: Tuple of predicted m/z values, relative intensities, and isotope labels.
     :rtype: tuple[np.ndarray, np.ndarray, list[str]]
     """
+    cutoff = ISOTOPE_ABUNDANCE_THRESHOLD if threshold is None else threshold
     if "^" in ion_formula:
         try:
             return _predict_isotopes_custom(
                 ion_formula,
                 ion_charge,
                 LABELLED_REAGENT_PURITY if purity is None else purity,
+                cutoff,
             )
         except Exception:
             return [], [], []
     try:
         predicted_peaks = IsoThreshold(
             formula=ion_formula,
-            threshold=ISOTOPE_ABUNDANCE_THRESHOLD,
+            threshold=cutoff,
             get_confs=True,
         )
         predicted_masses_neutral = np.fromiter(predicted_peaks.masses, dtype=float)
@@ -897,9 +1712,30 @@ def score_pattern(
     """
     Scores the match between observed and predicted isotopic patterns.
     Returns a score between 0 and 1, where 1 is a perfect match.
+
+    Two lines have to be there for the pattern to be evidence of anything: the
+    ion's own, at index 0, and the one the prediction says is brightest. The
+    first is the peak the candidate was proposed for. The second is what stops a
+    reading standing on its M0 alone - a dibromide whose 79Br81Br line should be
+    1.95 times the target and is not in the spectrum is not a dibromide,
+    however well that single line's mass agrees. Both are absence tests, not
+    quality tests: what the observed lines are worth is scored below.
+
+    The second used to be implicit, because the caller passed the brightest line
+    first and this function required index 0. Anchoring the envelope on the
+    monoisotopic line (`anchor_on_monoisotopic`) separated the two, and without
+    stating it again the anchoring would have traded one phantom for another -
+    on a bromide grid, `+Br2-` readings winning peaks with no envelope at all.
+
+    No longer ranks anything in the composition finder: `match_isotopic_pattern`
+    scores with `score_pattern_v2` (see it, and the block below for what the two
+    do differently). Kept because the scoring harness in `tooling/score_eval`
+    measures v2 against it, and its numbers are what the harness's goldens hold.
     """
-    # Require monoisotopic detection
-    if observed_intensities[0] > 0:
+    predicted_rel = np.asarray(predicted_rel, dtype=float)
+    brightest = int(np.argmax(predicted_rel)) if predicted_rel.size else 0
+    # Require the ion's own line, and the line the prediction leads with.
+    if observed_intensities[0] > 0 and observed_intensities[brightest] > 0:
         observed_rel_intensities = observed_intensities / observed_intensities[0]
         matched_peaks_count = np.sum(observed_masses > 0)
 
@@ -1016,16 +1852,22 @@ def score_pattern_v2(
     """Detectability-gated, SNR-aware match score in [0, 1].
 
     Per predicted isotopologue i (predicted relative abundance `predicted_rel[i]`;
-    index 0 is the BASE peak — the most abundant predicted isotopologue, which the caller
-    puts first and which for a polyhalogenated ion is not the monoisotopic one): a matched
+    index 0 is the ANCHOR - the line every other is measured against, which the caller
+    puts first and normalises `predicted_rel` to. The targeted path anchors on the most
+    abundant predicted isotopologue, which for a polyhalogenated ion is not the
+    monoisotopic one; the composition finder anchors on the monoisotopic line, which is
+    the peak its candidates were enumerated for, and then `predicted_rel` runs above 1
+    for a brighter isotopologue. Every term below is anchor-relative, so both are
+    correct as long as the caller is consistent - the observed intensities, the
+    abundances and the SNR at index 0 must all describe the one line): a matched
     peak contributes a Gaussian mass likelihood (its width the fitted instrument sigma in
     quadrature with an SNR-dependent centroiding term, `MASS_SNR_K/SNR`) times an
     intensity likelihood whose tolerance is set by the peak's own SNR; an ABSENT peak
     contributes `miss_penalty` iff it should have been detectable
     (`predicted_rel[i]*SNR_base >= k_detect`), else it is excluded (below noise, not
     evidence). Aggregation is a predicted-abundance-weighted geometric mean. Returns
-    0 if the base peak is absent. Satellite peaks must be excluded by the
-    caller. Pair with `calibrate_score` to get P(correct).
+    0 if the base peak is absent. Satellite peaks (FT side lobes, not
+    isotopologues) must be excluded by the caller. Pair with `calibrate_score` to get P(correct).
 
     **SNR is optional.** Every SNR term above is a *concession granted on evidence that a
     peak is noisy* — it only ever WIDENS a tolerance. `observed_snr=None`, or a per-row

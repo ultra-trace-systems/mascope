@@ -35,17 +35,43 @@ class CompositionSearchConfig:
     peak_height_threshold: float = 0.0
 
 
-@dataclass()
-class CompositionSearchState:
-    """Current state of the composition search for a given m/z"""
+@dataclass(frozen=True)
+class PatternScoring:
+    """How a candidate's isotope envelope is predicted, matched and scored.
 
-    ion_shift: float
-    mz_tolerance_da: float
-    atoms: list[Atom]
-    min_inner_mass: list[float]
-    max_inner_mass: list[float]
-    ionization_mechanism: IonizationMechanism
-    results_found: int = 0
+    Every field is a property of the sample being searched rather than a
+    constant of the search, which is what makes the finder's ranking
+    instrument-correct: the mass width the score is judged against, the window
+    a predicted line is matched in, and how deep the envelope is predicted
+    before the spectrum stops being able to hold a line at all.
+
+    The defaults reproduce the fixed constants the finder used before a caller
+    could say anything about the sample - a 5 ppm window and a 1% envelope,
+    both Orbitrap-shaped - so a caller that passes nothing searches exactly as
+    it did.
+
+    :param sigma_ppm: The sample's fitted mass-error width, the Gaussian width
+        of the fit score's mass term. ``None`` falls back to
+        ``score_pattern_v2``'s own Orbitrap-appropriate default, which is wrong
+        for a TOF.
+    :param mu_ppm: The sample's fitted mass-error offset, subtracted before
+        scoring. Reported mass errors stay raw: the offset is a property of the
+        calibration, not of the assignment, and a reader comparing a row against
+        the instrument's own accuracy needs the number the instrument produced.
+    :param mz_tolerance_ppm: How far from its prediction a line may sit and
+        still be this ion's. The sample's match tolerance, so a peak claimed
+        here would be claimed by the targeted matcher too.
+    :param abundance_floor: The deepest the envelope is ever predicted,
+        relative to the ion's own line - the sample's match-params abundance
+        floor, the same floor Stage A generates its isotopes at. How deep it
+        actually goes is decided per peak by what that peak's noise allows
+        (:func:`heuristic_filter.envelope_floor_for_peak`); this only bounds it.
+    """
+
+    sigma_ppm: float | None = None
+    mu_ppm: float = 0.0
+    mz_tolerance_ppm: float = config.ISOTOPE_MATCHING_MZ_TOLERANCE_PPM
+    abundance_floor: float = config.ISOTOPE_ABUNDANCE_THRESHOLD
 
 
 @dataclass(frozen=True)
@@ -84,6 +110,18 @@ class HeuristicFilterConfig:
     # caller would silently narrow the results of the long-standing composition
     # search. The peak-centric engine opts in explicitly.
     use_senior: bool = False
+
+    # A chemistry context's Van Krevelen ratio windows, keyed by the constants in
+    # `profiles` ("H/C", "O/C", "N/C", "DBE/C") and evaluated on EFFECTIVE counts
+    # rather than raw ones -- see `rule_context_ratios`, which applies them.
+    #
+    # Deliberately separate from `carbon_element_ratio_range`, which carries the
+    # universal Wiley bands and is applied per raw element pair: a context window
+    # is a much tighter statement about one matrix, and reading it through the
+    # raw-count rule would reject urea (H/C 4.0) and trichloroacetic acid
+    # (H/C 0.5) on ratios neither of them violates. Empty by default, so a caller
+    # that names no context filters exactly as it did before contexts existed.
+    context_ratio_windows: dict[str, tuple[float, float]] = field(default_factory=dict)
 
 
 @dataclass

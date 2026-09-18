@@ -163,6 +163,8 @@ def member_row(member: Any, anchor: Any) -> dict:
         "p_correct": member.p_correct,
         "p_correct_provisional": None,
         "corroboration_adducts": None,
+        "corroboration_channels": None,
+        "candidate_density": None,
         "batch_peak_id": member.batch_peak_id,
     }
 

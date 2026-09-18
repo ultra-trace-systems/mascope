@@ -54,6 +54,27 @@ const props = defineProps({
 // the same four tiers or a "below" chip can outrank an "assigned" one.
 const meta = computed(() => tierMeta(props.tier))
 
+// A reagent or an artifact peak is accounted for by what made it, not by a
+// formula. The engine writes such a row at tier `unassigned`, which is true -
+// no compound was assigned - but a chip reading "unassigned" says nothing
+// explained the peak, the opposite of what the role says. So the role is the
+// chip, and it shows no evidence: none was measured.
+const ROLE_CHIPS = Object.freeze({
+  reagent: {
+    label: 'reagent',
+    icon: 'ph ph-flask',
+    line: "Reagent: an ion the ionization source makes of itself, not one of the sample's compounds"
+  },
+  artifact: {
+    label: 'artifact',
+    icon: 'ph ph-wave-sine',
+    line: 'Artifact: a ringing side lobe of a very intense neighbouring peak, not a species'
+  }
+})
+const roleChip = computed(() =>
+  Object.prototype.hasOwnProperty.call(ROLE_CHIPS, props.role) ? ROLE_CHIPS[props.role] : null
+)
+
 const percentFormatter = new Intl.NumberFormat('en-US', {
   style: 'percent',
   minimumFractionDigits: 0,
@@ -67,22 +88,16 @@ const evidence = computed(() => {
     : null
 })
 
-const label = computed(() =>
-  evidence.value ? `${meta.value.label} · ${evidence.value}` : meta.value.label
-)
-
-const roleIcon = computed(() => {
-  switch (props.role) {
-    case 'reagent':
-      return 'pi ph ph-flask'
-    case 'artifact':
-      return 'pi ph ph-warning'
-    case 'iso_child':
-      return 'pi ph ph-arrow-elbow-down-right'
-    default:
-      return null
-  }
+const label = computed(() => {
+  if (roleChip.value) return roleChip.value.label
+  return evidence.value ? `${meta.value.label} · ${evidence.value}` : meta.value.label
 })
+
+// The small mark beside the chip, for the one role that does not replace it: an
+// isotopologue holds its M0's tier, and the mark says so.
+const roleIcon = computed(() =>
+  props.role === 'iso_child' ? 'pi ph ph-arrow-elbow-down-right' : null
+)
 
 // A curated row is the one case where the source is not a stage but a person,
 // so it gets a mark of its own rather than a line in the hover text: a reader
@@ -92,7 +107,7 @@ const isManual = computed(() => props.source === 'manual')
 
 // But 'manual' covers two different acts, and only one of them is a choice
 // about this row. When a person reassigns a peak, the backend also strips the
-// isotopologue satellites of the formula the M0 no longer holds
+// isotopologues of the formula the M0 no longer holds
 // (curation.py's _demote) and leaves source = 'manual' on each of them, so the
 // ledger's source filter shows the whole footprint of one override. That
 // produces UNASSIGNED rows a person's edit is responsible for without anyone
@@ -128,29 +143,33 @@ const sourceLine = computed(() => {
   return props.source ? `Source: ${props.source}` : null
 })
 
-const autoTooltip = computed(
-  () =>
-    props.tooltip ??
-    [
-      `Tier: ${props.tier}`,
-      props.evidence != null && !Number.isNaN(props.evidence)
-        ? `Evidence: ${percentFormatter.format(props.evidence)} (fit x plausibility)`
-        : null,
-      sourceLine.value,
-      props.role ? `Role: ${props.role}` : null
-    ]
+const autoTooltip = computed(() => {
+  if (props.tooltip != null) return props.tooltip
+  if (roleChip.value) {
+    return [roleChip.value.line, "Counted apart from the sample's compounds", sourceLine.value]
       .filter(Boolean)
       .join('\n')
-)
+  }
+  return [
+    `Tier: ${props.tier}`,
+    props.evidence != null && !Number.isNaN(props.evidence)
+      ? `Evidence: ${percentFormatter.format(props.evidence)} (fit x plausibility)`
+      : null,
+    sourceLine.value,
+    props.role ? `Role: ${props.role}` : null
+  ]
+    .filter(Boolean)
+    .join('\n')
+})
 </script>
 
 <template>
   <span class="tier-tag" v-tooltip.top="autoTooltip">
     <Tag
       :value="label"
-      :severity="meta.severity"
-      :icon="`pi ${meta.icon}`"
-      :class="['tier', tier]"
+      :severity="roleChip ? 'secondary' : meta.severity"
+      :icon="`pi ${roleChip ? roleChip.icon : meta.icon}`"
+      :class="roleChip ? ['role', role] : ['tier', tier]"
       style="font-size: 11px"
     />
     <span v-if="roleIcon" :class="[roleIcon, 'role-icon']" />
@@ -169,6 +188,14 @@ const autoTooltip = computed(
   align-items: center;
   gap: 0.3rem;
   white-space: nowrap;
+}
+
+/* The source's and the instrument's peaks, in the colour the spectrum draws
+   them in: accounted for, and not the sample's. */
+.role {
+  color: #8a5ed0;
+  border: 1px solid color-mix(in srgb, #8a5ed0 45%, transparent);
+  background: color-mix(in srgb, #8a5ed0 10%, transparent);
 }
 
 /* Unassigned is a first-class outcome but visually recessive: dashed + pale. */

@@ -1,0 +1,27 @@
+{
+  "schema_version": 2,
+  "id": "nitroaromatics",
+  "label": "Nitrated phenols, brown-carbon tracers",
+  "data_version": "2026.09",
+  "license": "CC-BY-4.0",
+  "references": [
+    {
+      "citation": "C. Mohr, F. D. Lopez-Hilfiker, P. Zotter, et al., Contribution of nitrated phenols to wood burning brown carbon light absorption in Detling, United Kingdom during winter time. Environmental Science & Technology 47 (2013) 6316-6324.",
+      "doi": "10.1021/es400683v"
+    },
+    {
+      "citation": "K. Song, S. Guo, H. Wang, et al., Measurement report: Online measurement of gas-phase nitrated phenols utilizing a CI-LToF-MS: primary sources and secondary formation. Atmospheric Chemistry and Physics 21 (2021) 7917-7932.",
+      "doi": "10.5194/acp-21-7917-2021"
+    }
+  ],
+  "polarity": "negative",
+  "provenance": {
+    "compiled_from": "The reference engine's known-species families, keeping the species a verified paper reports observed in ambient or indoor air, in a chamber study, or as a mass-spectrometry background; each species cites that paper. Formulas checked against PubChem."
+  },
+  "species": [
+    {"formula": "C6H5NO3", "name": "Nitrophenol", "reference": "10.1021/es400683v", "note": "Isomers not resolved; e.g. 4-nitrophenol"},
+    {"formula": "C6H5NO4", "name": "Nitrocatechol", "reference": "10.1021/es400683v", "note": "e.g. 4-nitrocatechol"},
+    {"formula": "C6H4N2O5", "name": "Dinitrophenol", "reference": "10.1021/es400683v", "note": "e.g. 2,4-dinitrophenol"},
+    {"formula": "C7H6N2O5", "name": "Methyl-dinitrophenol", "reference": "10.5194/acp-21-7917-2021", "note": "e.g. 4,6-dinitro-o-cresol (DNOC)"}
+  ]
+}
