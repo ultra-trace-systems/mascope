@@ -37,12 +37,13 @@ step PRs land on the epic and are named here as they merge.
 | 2.7 - stage 2 gate, engine 0.5.0 | #2152 | measured: the 0.5.0 build re-assigned all 43 gate samples, read against the frozen and the refreshed reference. Against the refreshed one G1 meets 20% on A, C, C2 and D (6.1, 10.9, 19.8, 7.8) and misses on B (32.7, of it 23.7 points the reference's silence); G1 conditioned meets it on all eight sets, the TOF sets included; G2's formula bound holds on all five Orbitrap sets and its ion bound on A; G5, G7 and G8 are 0; every committed row carries its reasons, and the top-24 view holds no reagent peak fitted as an analyte. Before the round C2 was recalibrated on weak lines, its two calibrants being its two brightest (the plan owner's rule, now step 3.6): its commits move from -1.14 to -0.08 ppm and it has a usable reference again. The plan owner's IBr2- decision is the polyhalide rule, which takes the top tier from six rows no reference confirms |
 | 2.2b - mass-dependent centre for the mass gate | #2131 | measured: a run's mass gate judges a row at its own m/z where the run's commits demand a centre that follows `ppm = a + b * 1000 / mz`, accepted on peaky's rules; the line is fitted over every committed monoisotopic row (the plan owner's answer, recorded in the step), and the constant centre and the width stay the anchors'. A takes a line on all six samples (-0.113 to -0.137 mDa over m/z 57 to about 500) and C2 on one (-0.077); every other run keeps the constant centre and records the rule that refused the line. It moves no tier, formula, role, owner or cap on 48,894 peaks, and G1, G1 conditioned and G2 are identical on every set: every row that crosses three widths was already below assignability. What moves is `mass_z` - 2,316 rows on A, 130 on C2 - and A's seven itemised curated rows come inside three widths (-3.49..-4.38 to -0.80..-1.62). The plan owner kept the target library's exemption from the cap for now, to be revisited after 2.5d's review (decision 3's third addendum) |
 | 2.7a - reference refresh: peaky's branch rebased on main 0.8.0, re-pinned, the 43 runs re-published | #2151, peaky `epic/v2-fit-reference` at `26e0ff3` | measured: the branch is rebased on peaky's main, pinned to this epic's head and green in CI for the first time since 2.1b, and all 43 runs are re-published at `26e0ff3`, the batch sets pinned to the gate's samples because main's `batch` now picks its own. Against the refreshed reference G1 is 6.1 on A, 10.9 on C, 7.9 on D and 32.7 on B, where the reference is silent on 23.7 points, and G1 conditioned meets 20% on the TOF sets for the first time (E 13.0, F1 7.8, F2 17.1). C2's refreshed reference scores at no offset: step 2.5d's list edits left it four anchors, and peaky skips the labelled reagent's own lines, so C2 is read against the frozen reference until it is recalibrated. `compare_runs.py --engine-b-before` reads the frozen reference from the store |
+| 2.8 - the band first, one reading per ion, the inspector's ionization and list names | - | built, round pending |
 | 3.1 - series detection on the batch ledger | - | planned |
 | 3.2 - time-series coherence | - | planned |
 | 3.3 - calibration from verdicts, per profile | - | planned |
 | 3.4 - gate automation | - | planned |
 | 3.5 - profiles as versioned rows, routing by detection | - | planned |
-| 3.6 - m/z calibrants below the brightest lines (calibration node) | - | planned |
+| 3.6 - m/z calibrants below the brightest lines, and an offset term (calibration node) | - | planned |
 
 ## Purpose
 
@@ -1386,6 +1387,47 @@ its own status.
   Fixes to peaky land on main; the reference branch holds only the twelve
   commits that need the unreleased library (decision 16).
 
+### 2.8 The band first, one reading per ion
+
+- **What.** Four changes, from the plan owner's reading of the peak inspector
+  on the 0.5.0 round (decision 20):
+  - **The band leads the reasons.** A row under the top band names it first
+    (`evidence_band`): its evidence, the fit and plausibility it is the
+    product of, and the band it falls short of. The tier is the band's before
+    any rule, and a row the band held low listed only what it stood on.
+  - **One reading per ion.** The cross-channel pass caps at candidate a row
+    whose ion also reads as a closed-shell molecule through another channel,
+    unless a second channel committed its neutral: `ambiguous_nitrogen` where
+    the two readings put a different number of nitrogen atoms on the
+    compound, two nitrogen-carrying adducts against each other included, and
+    `ambiguous_adduct` where they do not. A radical reading, the target
+    library and a second channel settle it, and the row says which
+    (`same_ion_settled`); `no_close_rival` no longer says the evidence
+    separates the readings of one ion.
+  - **A channel is searched once.** A mode that declares a channel its
+    profile also opens searched it twice - set C's modes declare `+CO3-`
+    since 2026-09-15 - and every reading through it came back as another
+    reading of its own ion.
+  - **The inspector names the ionization and the lists.** The ionization
+    mechanism, and what a reference list calls the formula, sit above the
+    evidence. The detail read looks the names up for the row, its close
+    alternatives and the other readings of its ion (`known_compounds`), from
+    the sources the deployment matches against, and the inspector marks a
+    name the run did not match from the list as *potential*.
+- **Why.** The inspector showed dimethylformamide `[M+H]+` at m/z 74 below
+  assignability under two ticks, a second channel and no close rival: its fit
+  of 8% set the band, and nothing said so. And 3,677 of the round's 8,567
+  assigned monoisotopic rows carry another reading of their ion: a second
+  channel settles 2,866, the other reading is only a radical on 736, and
+  nothing settles 75 - 70 urea adducts against an ammonium reading, which the
+  nitrogen rule did not ask because both channels carry nitrogen, and 5
+  bromide clusters. 265 rows on C listed their own reading as another one.
+- **Verify.** The gate round at rules 6: which rows move and why; every row
+  under the top band names it first; no row lists its own reading; G7 at 0.
+  G1 and G2 are read and reported, not targeted (decision 20).
+- **Size.** S. The engine stays at 0.5.0, since steps inside a stage do not
+  bump; the rule set is 6.
+
 ## Stage 3 - use the batch (engine 0.6.0)
 
 Corroboration that only a batch can give, on the batch ledger.
@@ -1477,12 +1519,24 @@ Corroboration that only a batch can give, on the batch ledger.
   opportunistic channels on a labelled run; peaky #30).
 - **Size.** L. Decision D5.
 
-### 3.6 Calibrants below the brightest lines
+### 3.6 Calibrants below the brightest lines, and an offset term
 
 - **What.** The m/z calibration node leaves out a calibrant line brighter
   than a cap, as it already leaves out one below `peak_intensity_min`. The
   cap is a node parameter, absolute or relative to the base peak, with an
-  instrument-class default, and the fit records it.
+  instrument-class default, and the fit records it. Where its calibrants
+  span the mass range, the Orbitrap fit also takes an offset beside its
+  factor, the `ppm = a + b * 1000 / mz` form of step 2.2b's line, so a
+  constant offset in millidaltons is calibrated out rather than scored.
+- **Why the offset.** Set A's axis carries -0.11 to -0.14 mDa (step 2.2b's
+  table), which one factor cannot remove, and at m/z 74 it puts the axis
+  1.1 ppm low. The engine's fit scores every line against one centre for the
+  sample, so dimethylformamide `[M+H]+` fits at 5 to 16% on all six samples
+  while the run's own line puts it within half a width of calibration (step
+  2.8). Centring the fit on the run's line in the engine is not the fix -
+  estimated on A it moves 155 rows up and 176 down, as the line and the
+  anchors also disagree at high m/z - and the plan owner's rule is to
+  calibrate before assigning (decision 20).
 - **Why.** The brightest lines are the worst calibrants on both instruments
   (the plan owner, 2026-09-18). On the assignment gate the two brightest
   reagent lines read above every weaker line of the same ladder on every
@@ -4149,6 +4203,26 @@ belongs in the fitted axis once anchors reach below m/z 100, which is step
       on would re-measure each would-be rival first. About 188 peaks would have
       stayed with the list on the first election round, at the cost of a
       second pass over the list peaks.
+20. **One reading per ion, and the reference is read rather than targeted**
+    (taken 2026-09-18 by the plan owner, on the peak inspector's tier
+    reasons).
+    - **The same-ion rule reaches every reagent.** A row whose ion also reads
+      as a closed-shell molecule through another of the run's channels is
+      held at candidate unless a second channel committed its neutral (step
+      2.8). Step 2.3 scoped the rule to nitrogen on the reference's agreement
+      with the bromide prior - 246 of 277 lone bromide readings against 79 of
+      409 lone nitrogen ones - but the reference prefers the cluster reading by
+      a policy of its own, so the agreement measures two priors rather than the
+      spectrum. A radical reading is no rival, since the tiering pass already
+      refuses radicals the top tier, and the target library stays exempt.
+    - **The reference is read, not targeted.** The reference engine's tiering
+      is being reworked on its own branch, so a step is no longer tuned
+      toward agreement with it. The gate still reports G1 and G2, and the plan
+      returns to them when the rework lands.
+    - **A mass offset across the range is the calibration node's to remove.**
+      The offset term goes into the node's fit (step 3.6) rather than a
+      second centre into the engine's scoring: data is calibrated before it
+      is assigned.
 
 ## Risks
 
