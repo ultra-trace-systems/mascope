@@ -118,7 +118,9 @@ def _recompute(candidate: dict) -> tuple[float, float] | None:
             polarity=candidate["polarity"],
         )
     except Exception as exc:  # noqa: BLE001
-        runtime.logger.warning(
+        # INFO per file: run() raises one summary WARNING for the lot, so a
+        # server missing many raw files does not report one event per file.
+        runtime.logger.info(
             f"  Cannot read {candidate['filename']} "
             f"(polarity {candidate['polarity']}): {exc}"
         )
@@ -216,6 +218,11 @@ async def run() -> None:
         f"already correct: {unchanged}, unreadable: {unreadable}"
     )
     runtime.logger.info("=" * 80)
+    if unreadable:
+        runtime.logger.warning(
+            f"Acquisition window fix could not read {unreadable} files; "
+            "see the INFO lines above"
+        )
 
 
 def main() -> None:
