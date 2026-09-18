@@ -179,6 +179,13 @@ The agent prints its version when it starts, and uninstalling (Windows
   (`filename_prefix = 'Orbion_'`), which the guided setup offers to do for
   you. The agent does not retry these: the server has understood the name
   and refused it, so the file is set aside in `failed_uploads` immediately.
+- *The upload succeeded but the file has no samples*: the file arrived, but
+  processing it failed, most often because its name matches no ionization
+  mode token (see [Import data files](../guides/import-files.md#prerequisites)).
+  The error is shown as it happens to anyone viewing that instrument's raw
+  files and, for a paired agent, to the person who approved its pairing.
+  Fix the cause, then re-process the file (see
+  [Import data files → Troubleshooting](../guides/import-files.md#troubleshooting)).
 - *"The server rejected the access token"* or *"This agent credential has
   expired"*: the machine's token has lapsed or its device was revoked.
   Answer the prompt the agent shows in its window, or close it and start

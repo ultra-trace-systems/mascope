@@ -386,6 +386,7 @@ async def process_sample_item_route(
         independent_transaction=True,
         user_id=user.id,
         process_id=process_id,
+        instrument=sample_file.get("instrument"),
     )
 
     return {
