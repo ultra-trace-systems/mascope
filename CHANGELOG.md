@@ -250,6 +250,16 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   reads the second engine's newest run created before that instant instead,
   so a reference that has been re-published can still be read as it was.
 
+- **The peak inspector names the ionization and what a reference list calls
+  the formula.** Above the evidence it shows the ionization mechanism the ion
+  was read through, and the reference-list compound the run matched the
+  formula from, or - marked *potential* - a compound a list holds for a
+  formula the run reached through the formula search. The same names appear
+  beside the other readings of the ion and beside the close alternatives. The
+  assignment detail endpoint returns them as `known_compounds`, on the row and
+  on each alternative a list holds, from the sources the deployment matches
+  against.
+
 ### Changed
 
 - **The formula search can take a peak a reference list matched.** A run
@@ -305,6 +315,33 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   `polyhalide_cluster` ("polyhalide: air or source" in the peak inspector), and
   a second ionization channel does not lift it. A compound of the workspace's
   target library is exempt. `config.tiering` records rule set 5.
+
+- **A peak whose ion another molecule explains as well is no longer held at
+  assigned, whatever the reagent.** Two readings of one ion - dimethylformamide
+  with a proton and acrolein with ammonium, a bromide cluster and the
+  deprotonated molecule that holds the hydrogen bromide - have the same mass,
+  isotope pattern and fit. A run now caps at candidate a row whose ion also
+  reads as a closed-shell molecule through another of its channels, unless a
+  second channel committed the same neutral, and its isotopologues follow. The
+  reason is `ambiguous_nitrogen` where the two readings put a different number
+  of nitrogen atoms on the compound, two nitrogen-carrying adducts against each
+  other included, and `ambiguous_adduct` ("ambiguous adduct") where they do not.
+  A reading that is a radical is no rival, and a compound of the workspace's
+  target library is exempt. Where a second channel, the target library or a
+  radical settles the question, the row says which (`same_ion_settled`, "same
+  ion, settled"). `config.tiering` records rule set 6.
+
+- **A row under the top tier names the band its evidence falls short of,
+  first.** The tier is read off the evidence (fit x plausibility) before any
+  rule, so a row the bands put below assignability used to list only what it
+  stood on - a second channel, no close rival - with nothing saying why it
+  stood low. Its first reason is now `evidence_band` ("evidence band"), such
+  as "evidence 8% (fit 8% x plausibility 100%) is under the candidate band of
+  45%".
+
+- **An ionization mode that declares a channel its chemistry profile also
+  opens searches the channel once.** Searched twice, every reading through it
+  came back as another reading of its own ion.
 
 - **A nitrate cluster of a neutral with no oxygen is no longer held at
   assigned.** Nitrate holds on to a molecule by hydrogen bonds from its
