@@ -25,11 +25,13 @@ from mascope_backend.api.new.peak_assignments.tiering import (
     HELD_NEIGHBOUR_NOT_ASSIGNED,
     HELD_TARGET_LIBRARY,
     HELD_UNTRACKED,
+    REASON_AMBIGUOUS_ADDUCT,
     REASON_AMBIGUOUS_NITROGEN,
     REASON_CANDIDATE_DENSITY,
     REASON_CORROBORATED,
     REASON_ENVELOPE_CLAIM,
     REASON_ENVELOPE_NEIGHBOUR,
+    REASON_EVIDENCE_BAND,
     REASON_INHERITED,
     REASON_MINOR_CHANNEL,
     REASON_NO_CLOSE_RIVAL,
@@ -38,6 +40,7 @@ from mascope_backend.api.new.peak_assignments.tiering import (
     REASON_OFF_CALIBRATION,
     REASON_OXYGEN_FREE_CLUSTER,
     REASON_POLYHALIDE_CLUSTER,
+    REASON_SAME_ION_SETTLED,
     TIERING_RULES_VERSION,
     apply_tiering,
     envelope_neighbours,
@@ -109,6 +112,7 @@ def run(rows: list[dict], **kwargs) -> dict:
         mz_tolerance_ppm=kwargs.pop("mz_tolerance_ppm", 5.0),
         abundance_floor=kwargs.pop("abundance_floor", 0.01),
         notation_by_id=kwargs.pop("notation_by_id", None),
+        tier_bands=kwargs.pop("tier_bands", None),
     )
 
 
@@ -597,8 +601,32 @@ class TestWhatTheEarlierPassesDecided:
         [
             ({"mass_gate": {"capped": True}}, REASON_OFF_CALIBRATION),
             (
-                {"cross_channel": {"channels": ["+NH4+"], "capped": True}},
+                {
+                    "cross_channel": {
+                        "channels": ["+NH4+"],
+                        "ambiguous_nitrogen": {"alternative": "C6H15NO6", "via": "+H+"},
+                    }
+                },
                 REASON_AMBIGUOUS_NITROGEN,
+            ),
+            (
+                {
+                    "cross_channel": {
+                        "channels": ["+Br-"],
+                        "ambiguous_adduct": {"alternative": "C6H13BrO6", "via": "-H+"},
+                    }
+                },
+                REASON_AMBIGUOUS_ADDUCT,
+            ),
+            (
+                {
+                    "cross_channel": {
+                        "inherited_from": "pa-0",
+                        "capped": "candidate",
+                        "reason": "ambiguous_adduct",
+                    }
+                },
+                REASON_AMBIGUOUS_ADDUCT,
             ),
             ({"minor_channel": {"capped": True}}, REASON_MINOR_CHANNEL),
         ],
@@ -615,21 +643,23 @@ class TestWhatTheEarlierPassesDecided:
                 "C6H12O6",
                 "C6H15NO6",
                 "+H+",
-                "the same ion reads as C6H15NO6 through a channel donating no "
-                "nitrogen, and no channel of this run fixes the count",
+                "the same ion reads as C6H15NO6 through +H+, which puts one more "
+                "nitrogen on the analyte, and no second channel of this run "
+                "settles the count",
             ),
-            # A reference mirror's row read through a channel donating none is
-            # in doubt from the other side, and the sentence says which.
+            # Dimethylformamide through +H+ is acrolein through +NH4+: the doubt
+            # runs the other way, and the sentence says which.
             (
                 "C3H7NO",
                 "C3H4O",
                 "+NH4+",
-                "the same ion reads as C3H4O through a channel that donates "
-                "nitrogen, and no channel of this run fixes the count",
+                "the same ion reads as C3H4O through +NH4+, which puts one fewer "
+                "nitrogen on the analyte, and no second channel of this run "
+                "settles the count",
             ),
         ],
     )
-    def test_the_nitrogen_reason_names_the_side_the_doubt_is_from(
+    def test_the_nitrogen_reason_says_which_way_the_count_moves(
         self, formula, alternative, via, detail
     ):
         cross_channel = {
@@ -652,6 +682,50 @@ class TestWhatTheEarlierPassesDecided:
             if reason["rule"] == REASON_AMBIGUOUS_NITROGEN
         ]
         assert reason["detail"] == detail
+
+    def test_the_adduct_reason_names_the_other_molecule(self):
+        cross_channel = {
+            "channels": ["+Br-"],
+            "ambiguous_adduct": {"alternative": "CH3BrO2", "via": "-H+"},
+        }
+        rows = [
+            row(
+                "pa-1",
+                "CH2O2",
+                tier="candidate",
+                provenance={"cross_channel": cross_channel},
+            )
+        ]
+        run(rows)
+        (reason,) = [
+            reason
+            for reason in rows[0]["provenance"]["tier_reasons"]
+            if reason["rule"] == REASON_AMBIGUOUS_ADDUCT
+        ]
+        assert reason["detail"] == (
+            "the same ion reads as CH3BrO2 through -H+, another molecule the "
+            "spectrum cannot tell from this one, and no second channel of this "
+            "run settles which"
+        )
+        assert reason["caps"] is True
+
+    def test_a_rival_on_a_row_already_lower_is_stated_all_the_same(self):
+        # The pass recorded the rival without lowering anything, and the row
+        # still says what it is in doubt with.
+        cross_channel = {
+            "channels": ["+NH4+"],
+            "ambiguous_nitrogen": {"alternative": "C6H15NO6", "via": "+H+"},
+        }
+        rows = [
+            row(
+                "pa-1",
+                tier="below_assignability",
+                provenance={"cross_channel": cross_channel},
+            )
+        ]
+        summary = run(rows)
+        assert REASON_AMBIGUOUS_NITROGEN in rules_on(rows, "pa-1")
+        assert summary["capped"] == 0
 
     def test_this_pass_does_not_count_their_caps_as_its_own(self):
         # They already took the tier. Counting it again would report the run
@@ -745,11 +819,11 @@ class TestTheRunsRecord:
     def test_the_rule_version_is_recorded(self):
         assert run([row("pa-1")])["version"] == TIERING_RULES_VERSION
 
-    def test_the_rule_set_is_5(self):
+    def test_the_rule_set_is_6(self):
         # The number, not the imported constant: a tier is comparable across
         # runs only under the same rules, so the set moves on purpose and this
         # test moves with it.
-        assert run([row("pa-1")])["version"] == 5
+        assert run([row("pa-1")])["version"] == 6
 
     def test_the_thresholds_are_recorded_with_it(self):
         summary = run([row("pa-1")])
@@ -801,6 +875,203 @@ class TestWhatAStandingRowClaims:
     def test_a_standing_reason_never_caps(self):
         rows = [row("pa-1", channels=["+H+", "+NH4+"])]
         run(rows)
+        assert not any(r["caps"] for r in rows[0]["provenance"]["tier_reasons"])
+
+
+BANDS = {"assigned": 0.75, "candidate": 0.45}
+
+
+def banded(row_id: str, evidence: float, **kwargs) -> dict:
+    """A row the bands put where its evidence says, fit and plausibility shown."""
+    entry = row(row_id, **kwargs)
+    entry["fit_score"] = evidence
+    entry["provenance"].update(evidence=evidence, plausibility=1.0)
+    return entry
+
+
+class TestTheBandComesFirst:
+    """A row's tier is its band's before any rule lowers it, and a row under the
+    top band says so before anything else."""
+
+    def test_a_row_under_the_candidate_band_names_it_first(self):
+        rows = [banded("pa-1", 0.081, tier="below_assignability")]
+        run(rows, tier_bands=BANDS)
+        assert rows[0]["provenance"]["tier_reasons"][0] == {
+            "rule": REASON_EVIDENCE_BAND,
+            "detail": (
+                "evidence 8% (fit 8% x plausibility 100%) is under the candidate "
+                "band of 45%"
+            ),
+            "caps": True,
+            "band": "below_assignability",
+        }
+
+    def test_a_row_under_the_assigned_band_names_that_one(self):
+        rows = [banded("pa-1", 0.62, tier="candidate")]
+        run(rows, tier_bands=BANDS)
+        first = rows[0]["provenance"]["tier_reasons"][0]
+        assert first["detail"] == (
+            "evidence 62% (fit 62% x plausibility 100%) is under the assigned band "
+            "of 75%"
+        )
+        assert first["band"] == "candidate"
+
+    def test_a_row_the_top_band_holds_names_no_band(self):
+        rows = [banded("pa-1", 0.91)]
+        run(rows, tier_bands=BANDS)
+        assert REASON_EVIDENCE_BAND not in rules_on(rows, "pa-1")
+
+    def test_a_row_just_under_a_band_is_not_shown_at_it(self):
+        # 74.96% rounds to the band it misses; the sentence is precise enough
+        # not to read as "75% is under 75%".
+        rows = [banded("pa-1", 0.7496, tier="candidate")]
+        run(rows, tier_bands=BANDS)
+        assert rows[0]["provenance"]["tier_reasons"][0]["detail"] == (
+            "evidence 74.96% (fit 74.96% x plausibility 100.00%) is under the "
+            "assigned band of 75.00%"
+        )
+
+    def test_it_does_not_hide_what_the_row_stands_on(self):
+        # The DMF case: held below by its fit, seen through a second channel and
+        # separated from every other ion. The band says why it is low; the rest
+        # still say what it has.
+        rows = [
+            banded("pa-1", 0.081, tier="below_assignability", channels=["+H+", "+U+"])
+        ]
+        run(rows, tier_bands=BANDS)
+        assert [r["rule"] for r in rows[0]["provenance"]["tier_reasons"]] == [
+            REASON_EVIDENCE_BAND,
+            REASON_CORROBORATED,
+            REASON_NO_CLOSE_RIVAL,
+        ]
+
+    def test_it_is_not_a_cap_of_this_pass(self):
+        rows = [banded("pa-1", 0.081, tier="below_assignability")]
+        summary = run(rows, tier_bands=BANDS)
+        assert (summary["capped"], summary["capped_by_rule"]) == (0, {})
+        assert summary["under_band"] == 1
+
+    def test_nor_does_it_take_an_isotopologue_down_with_its_owner(self):
+        # An isotopologue carries its ion's fit and is banded on it, so the band
+        # reached it already; following the owner down is for the rules.
+        rows = [
+            banded("pa-owner", 0.62, tier="candidate"),
+            row("pa-kid", role="iso_child", owner="pa-owner"),
+        ]
+        run(rows, tier_bands=BANDS)
+        assert tier_of(rows, "pa-kid") == "assigned"
+
+    def test_a_run_that_states_no_bands_names_none(self):
+        rows = [banded("pa-1", 0.081, tier="below_assignability")]
+        summary = run(rows)
+        assert REASON_EVIDENCE_BAND not in rules_on(rows, "pa-1")
+        assert summary["under_band"] == 0
+
+    def test_a_row_with_no_evidence_names_none(self):
+        rows = [row("pa-1", tier="candidate")]
+        run(rows, tier_bands=BANDS)
+        assert REASON_EVIDENCE_BAND not in rules_on(rows, "pa-1")
+
+
+def settled(by: str, **extra) -> dict:
+    return {
+        "channels": ["+H+", "+(CH4N2O)H+"] if by == "second_channel" else ["+H+"],
+        "same_ion_settled": {
+            "alternative": "C3H4O",
+            "via": "+NH4+",
+            "by": by,
+            **extra,
+        },
+    }
+
+
+class TestAReadingOfTheSameIonThatSomethingSettled:
+    def detail_of(self, rows: list[dict], rule: str) -> str:
+        return next(
+            reason["detail"]
+            for reason in rows[0]["provenance"]["tier_reasons"]
+            if reason["rule"] == rule
+        )
+
+    def test_a_second_channel_says_which(self):
+        rows = [
+            row(
+                "pa-1",
+                "C3H7NO",
+                provenance={
+                    "cross_channel": settled("second_channel", through=["+(CH4N2O)H+"])
+                },
+            )
+        ]
+        run(rows)
+        assert self.detail_of(rows, REASON_SAME_ION_SETTLED) == (
+            "the same ion also reads as C3H4O through +NH4+; C3H7NO is also "
+            "committed through +(CH4N2O)H+, which settles it"
+        )
+
+    def test_the_target_library_says_its_curation_chose(self):
+        rows = [
+            row(
+                "pa-1",
+                "C3H7NO",
+                source="database",
+                compound="tc-1",
+                provenance={"cross_channel": settled("target_library")},
+            )
+        ]
+        run(rows)
+        assert self.detail_of(rows, REASON_SAME_ION_SETTLED) == (
+            "the same ion also reads as C3H4O through +NH4+; this row is a "
+            "compound of the target library, whose curation chose the reading"
+        )
+
+    def test_a_radical_is_no_rival(self):
+        rows = [row("pa-1", "C3H7NO", provenance={"cross_channel": settled("radical")})]
+        run(rows)
+        assert self.detail_of(rows, REASON_SAME_ION_SETTLED) == (
+            "the same ion also reads as C3H4O through +NH4+, a radical rather "
+            "than a molecule, so it is no rival"
+        )
+
+    def test_no_close_rival_does_not_claim_the_readings_apart(self):
+        # The density weighs the formulas the run competed for the peak, and
+        # another reading of the ion is the same measurement, not one of them.
+        rows = [row("pa-1", "C3H7NO", provenance={"cross_channel": settled("radical")})]
+        run(rows)
+        assert self.detail_of(rows, REASON_NO_CLOSE_RIVAL) == (
+            "the evidence separates this ion from every other the run competed "
+            "for the peak; which reading of the ion it is, the evidence cannot say"
+        )
+
+    def test_a_row_whose_ion_reads_one_way_keeps_the_formula_sentence(self):
+        rows = [row("pa-1")]
+        run(rows)
+        assert self.detail_of(rows, REASON_NO_CLOSE_RIVAL) == (
+            "the evidence separates this formula from every other candidate the "
+            "run competed for the peak"
+        )
+
+    def test_it_stands_between_the_channels_and_the_rivals(self):
+        rows = [
+            row(
+                "pa-1",
+                "C3H7NO",
+                provenance={
+                    "cross_channel": settled("second_channel", through=["+(CH4N2O)H+"])
+                },
+            )
+        ]
+        run(rows)
+        assert [r["rule"] for r in rows[0]["provenance"]["tier_reasons"]] == [
+            REASON_CORROBORATED,
+            REASON_SAME_ION_SETTLED,
+            REASON_NO_CLOSE_RIVAL,
+        ]
+
+    def test_it_never_caps(self):
+        rows = [row("pa-1", "C3H7NO", provenance={"cross_channel": settled("radical")})]
+        run(rows)
+        assert tier_of(rows, "pa-1") == "assigned"
         assert not any(r["caps"] for r in rows[0]["provenance"]["tier_reasons"])
 
 
