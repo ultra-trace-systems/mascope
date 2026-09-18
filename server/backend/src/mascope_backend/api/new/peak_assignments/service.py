@@ -1108,20 +1108,27 @@ def _searched_mechanisms(
     set as the untargeted search: which channels a neutral COULD have been seen
     through is what makes seeing it in one of them evidence or not.
 
+    Each channel is searched once. A mode can declare a channel its profile
+    also names as secondary, and searched twice it proposes every neutral
+    through it twice: the election keeps one reading and holds the other as
+    another reading of the same ion, which is the row's own reading again.
+
     :param mechanisms: The mode's own polarity-matching mechanisms.
     :param secondary_mechanisms: The deployment's rows for the profile's
         secondary channels (:func:`_resolve_secondary_channels`).
     :param resolved_profile: The resolution that says which of those this
         sample runs.
-    :return: The mode's mechanisms and the secondary ones the sample runs, or
-        none when the mode declares none.
+    :return: The mode's mechanisms and the secondary ones the sample runs that
+        the mode does not declare itself, or none when the mode declares none.
     """
     if not mechanisms:
         return []
+    declared = {mechanism.ionization_mechanism_id for mechanism in mechanisms}
     return mechanisms + [
         mechanism
         for mechanism in secondary_mechanisms
         if mechanism.ionization_mechanism in resolved_profile.minor_channels
+        and mechanism.ionization_mechanism_id not in declared
     ]
 
 
