@@ -33,6 +33,14 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   last set the mass axis for both. Both are matched on the acquisition axis
   until each polarity can carry its own calibration.
 
+- **A file name must match one ionization mode per polarity.** Auto-processing
+  accepted the ionization mode tokens in a file name as soon as the number of
+  matches equalled the number of polarities in the file. A `+-` file whose name
+  matched two positive modes and no negative one was therefore processed twice
+  as positive and never as negative. Every polarity of the file must now match
+  exactly one mode. Otherwise the file gets no samples, and the error names the
+  polarity and the modes that matched.
+
 ## [1.8.1] - 2026.09.16
 
 ### Added

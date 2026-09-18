@@ -39,7 +39,7 @@ the table below and ticks its item on #2098.
 
 | Phase | Content | State |
 |---|---|---|
-| 0 | Stop losing information: method identity, stream census, token-rule and notification fixes | in progress: method identity (#2155), dual-polarity calibration order (#2153) and the instrument-config delete (#2156) shipped |
+| 0 | Stop losing information: method identity, stream census, token-rule and notification fixes | in progress; section 10 marks each item as it ships |
 | 1 | Per-file processing state, persistent notifications, "needs a chemistry" | open |
 | 2 | Method bindings: routing without tokens | open |
 | 3 | The part contract: stream and window honoured by every consumer | open |
@@ -85,7 +85,7 @@ Related designs, and how this one relates to them (section 13):
 
 | Problem | Where | Effect |
 |---|---|---|
-| Routing is a substring of the file name | `resolve_ionization_modes_by_tokens` | Configuration has to be written into file names. Tokens from different sites cannot be merged. A `+-` file that matches two `+` tokens is accepted. `resolve_ionization_modes_by_peaks` is a `NotImplementedError` stub. |
+| Routing is a substring of the file name | `resolve_ionization_modes_by_tokens` | Configuration has to be written into file names. Tokens from different sites cannot be merged. A `+-` file that matched two `+` tokens was accepted until #2158. `resolve_ionization_modes_by_peaks` is a `NotImplementedError` stub. |
 | An unrouted file is a row with no samples | `_auto_process_sample_file` | The failure notification goes to the uploading account's room. For agent uploads that is the machine account, so nobody sees it (#1910). |
 | Scans are selected by polarity, MS order and time only | `OpenTFRawBackend._selected`, `ScanSelector` | Two same-polarity streams with different scan ranges or scan modes are pooled into one averaged spectrum, one peak list, one time axis and one instrument fit. Averages divide by every selected scan, so an ion seen by only one range is diluted. |
 | An item's window is stored and then ignored | `compute_match_isotopes`, `extract_peaks`, peak-assignment peak loading, calibration, `create_sample_items` TIC | A windowed item is matched and assigned as if it were the whole polarity. |
@@ -774,7 +774,7 @@ Effort is rough.
      mixed across both polarities.
 3. **Flag mixed streams.** A file with more than one MS1 stream in a polarity
    gets a processing detail and an INFO line, until phase 4 handles it.
-4. **Fix the token rule**: one mode per polarity.
+4. **Fix the token rule**: one mode per polarity. Shipped in #2158.
 5. **Route the failure notification** to the instrument room and the device
    sponsor. This is the minimal #1910 fix; phase 1 makes it persistent.
 6. **Fix the dual-polarity calibration defect of 2.1.** Shipped in #2153.
