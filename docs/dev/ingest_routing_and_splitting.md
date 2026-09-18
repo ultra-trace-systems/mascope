@@ -791,7 +791,9 @@ Effort is rough.
      matched on whatever record the file already carries.
    - The full fix is per-stream calibration (phase 4).
 7. **Operator tool** `mascope file scans <path>`: streams, blocks, ranges,
-   top peaks. This is this design's census as a supported command.
+   top peaks. This is this design's census as a supported command. Shipped
+   in #2161; `python -m mascope_thermo.streams <path>` prints the same report
+   as JSON wherever the reader is installed.
 
 ### Phase 1: processing state and review (1-2 weeks)
 

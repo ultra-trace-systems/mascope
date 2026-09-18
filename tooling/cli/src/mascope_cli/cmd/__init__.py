@@ -7,5 +7,6 @@
 from .cert import cert_app
 from .demo import demo_app
 from .env import env_app
+from .file import file_app
 from .logs import logs_app
 from .prod import prod_app
