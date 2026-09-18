@@ -745,6 +745,12 @@ class TestTheRunsRecord:
     def test_the_rule_version_is_recorded(self):
         assert run([row("pa-1")])["version"] == TIERING_RULES_VERSION
 
+    def test_the_rule_set_is_5(self):
+        # The number, not the imported constant: a tier is comparable across
+        # runs only under the same rules, so the set moves on purpose and this
+        # test moves with it.
+        assert run([row("pa-1")])["version"] == 5
+
     def test_the_thresholds_are_recorded_with_it(self):
         summary = run([row("pa-1")])
         assert summary["density_limit"] == DENSITY_LIMIT

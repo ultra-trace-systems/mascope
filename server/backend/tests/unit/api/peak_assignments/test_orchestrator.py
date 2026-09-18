@@ -940,6 +940,30 @@ class TestAReferenceMirrorsNitrogenCount:
         assert (cross_channel["capped"], cross_channel["capped_mirror"]) == (1, 1)
 
 
+class TestTheRunRow:
+    @pytest.mark.asyncio
+    async def test_it_names_this_engine_and_its_version(self):
+        from mascope_backend.api.new.peak_assignments.config import (
+            IN_APP_ENGINE,
+            PeakAssignmentConfig,
+        )
+        from mascope_backend.api.new.peak_assignments.service import _create_run
+
+        session = MagicMock()
+        session.commit = AsyncMock()
+        ctx = AsyncMock()
+        ctx.__aenter__ = AsyncMock(return_value=session)
+        ctx.__aexit__ = AsyncMock(return_value=False)
+        with patch(f"{_MOD}.async_session", return_value=ctx):
+            run = await _create_run("si-1", PeakAssignmentConfig())
+
+        session.add.assert_called_once_with(run)
+        # The number, not the imported constant: two runs are comparable only
+        # under the same engine, so the version moves on purpose and this test
+        # moves with it.
+        assert (run.engine, run.engine_version) == (IN_APP_ENGINE, "0.5.0")
+
+
 class TestRunFinalization:
     @pytest.mark.asyncio
     async def test_successful_run_is_finalized_completed(self):
