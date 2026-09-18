@@ -612,6 +612,53 @@ async def test_both_polarities_with_calibrants_match_on_the_acquisition_axis():
     assert mocks["assign"].call_count == 2
 
 
+@pytest.mark.parametrize(
+    ("record", "matched"),
+    [
+        # An earlier run's failure marker: the verified gate would refuse both.
+        ({"status": "failed", "verified": False}, set()),
+        # An earlier run's verified fit stays, and both match on it.
+        ({"mode": "one-point", "verified": True}, {"si-neg", "si-pos"}),
+        # A TOF converter record is the acquisition axis, not a failed fit.
+        ({"mode": 1, "par": [1.0, 0.0], "status": "unfitted"}, {"si-neg", "si-pos"}),
+    ],
+)
+@pytest.mark.asyncio
+async def test_skipped_shared_calibration_judges_the_record_an_earlier_run_left(
+    record, matched
+):
+    """
+    Re-running the pipeline without a reset keeps an earlier run's record.
+
+    A file with a calibrant on both polarities is not calibrated here, so it
+    is matched on whatever that record describes - and an unverified one would
+    trip the verified gate and fail the pipeline, as on the single-calibration
+    path.
+    """
+    from mascope_backend.api.controllers.sample.files.process.service import (
+        auto_process_sample_file,
+    )
+
+    async def calibrate(sample, sample_file):
+        raise AssertionError("a shared-calibration file must not be calibrated")
+
+    mocks, sample_file = _start_dual_polarity(
+        calibrate=calibrate, neg_collection="cal-neg", pos_collection="cal-pos"
+    )
+    sample_file.mz_calibration = record
+
+    result = await auto_process_sample_file(
+        sample_file_id="sf-001", independent_transaction=True, process_id="proc-001"
+    )
+
+    mocks["calibrate"].assert_not_called()
+    assert {
+        c.kwargs["sample_item_id"] for c in mocks["match"].call_args_list
+    } == matched
+    assert mocks["assign"].call_count == len(matched)
+    assert "Auto-processing complete" in result["message"]
+
+
 @pytest.mark.asyncio
 async def test_unverified_calibration_holds_back_the_other_polarity():
     """

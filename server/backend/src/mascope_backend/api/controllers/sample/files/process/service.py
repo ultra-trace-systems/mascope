@@ -593,8 +593,9 @@ async def _auto_process_sample_file(
     # Each polarity drifts on its own, but a file holds one m/z calibration: a
     # second polarity's fit replaces the first's, so whichever is calibrated
     # last would set the axis for both. Until each polarity can carry its own
-    # fit, a file whose samples would calibrate more than once is matched on
-    # the acquisition axis instead.
+    # fit, a file whose samples would calibrate more than once is not
+    # calibrated here. With exactly one calibrating sample, its fit rescales
+    # the whole file, so the file's other samples are matched on that fit too.
     calibrating_sample_ids = {
         sample_item_id
         for sample_item_id, ionization_mode in ionization_modes.items()
@@ -603,13 +604,24 @@ async def _auto_process_sample_file(
         and not is_blank_sample_file
     }
     shared_calibration = len(calibrating_sample_ids) > 1
+    mz_calibration = None
     if shared_calibration:
+        # Fresh uploads and the re-process route start from the acquisition
+        # axis; re-running the pipeline without a reset keeps an earlier fit.
+        mz_calibration = (
+            await fetch_sample_file(sample_file_id=sample_file_id)
+        ).mz_calibration
+        axis = (
+            "the acquisition axis"
+            if mz_calibration is None or is_unfitted_record(mz_calibration)
+            else "the calibration already on the file"
+        )
         # INFO: a data condition, fires for every such file
         runtime.logger.info(
             f"Skipping m/z calibration for '{sample_file.filename}': "
             f"{len(calibrating_sample_ids)} of its samples have a calibration "
             "collection, and the file holds one m/z calibration for all of "
-            "them. Matching on the acquisition axis."
+            f"them. Matching on {axis}."
         )
         calibrating_sample_ids.clear()
 
@@ -657,15 +669,19 @@ async def _auto_process_sample_file(
         matchable_sample_ids.add(sample_item_id)
 
     # A calibration that was not verified leaves the file record unverified
-    # unless an earlier fit survives it, and the verified gate in
-    # match_compute_sample would then fail the pipeline for the file's other
-    # samples too - so judge the record as calibration left it.
-    mz_calibration = (
-        (await fetch_sample_file(sample_file_id=sample_file_id)).mz_calibration
-        if calibrating_sample_ids and matchable_sample_ids
-        else None
-    )
-    if mz_calibration is not None and not mz_calibration.get("verified", False):
+    # unless an earlier fit survives it, and a skipped calibration leaves
+    # whatever an earlier run stored. The verified gate in match_compute_sample
+    # would then fail the pipeline for every sample of the file - so judge the
+    # record as calibration left it.
+    if calibrating_sample_ids and matchable_sample_ids:
+        mz_calibration = (
+            await fetch_sample_file(sample_file_id=sample_file_id)
+        ).mz_calibration
+    if (
+        mz_calibration is not None
+        and not is_unfitted_record(mz_calibration)
+        and not mz_calibration.get("verified", False)
+    ):
         runtime.logger.info(
             "Skipping matching and peak assignment for "
             f"{len(matchable_sample_ids)} sample(s) of '{sample_file.filename}': "
