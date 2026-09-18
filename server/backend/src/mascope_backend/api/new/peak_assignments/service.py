@@ -1132,7 +1132,7 @@ def _searched_mechanisms(
     ]
 
 
-def _read_nitrogen_counts(
+def _read_other_readings(
     stage_a_assignments: list[dict],
     stage_b_assignments: list[dict],
     *,
@@ -1147,8 +1147,8 @@ def _read_nitrogen_counts(
     the search's without the family written first. It is built under the
     untargeted search's own box and filter, whether or not that stage ran, so it
     is the family the search would have held. A run and the run-less ingest fold
-    both call this, so a reference-list row capped for its nitrogen count in a
-    run is capped on the batch ledger too.
+    both call this, so a reference-list row capped for another reading of its
+    ion in a run is capped on the batch ledger too.
 
     :param stage_a_assignments: Stage A's rows, mirror rows modified in place.
     :param stage_b_assignments: The untargeted stage's rows; none on the fold.
@@ -1188,7 +1188,7 @@ def _record_mirror_readings(
     max_alternatives: int,
 ) -> int:
     """Give each reference mirror row its ion's family (the first half of
-    :func:`_read_nitrogen_counts`), which reads no tier and so is written once
+    :func:`_read_other_readings`), which reads no tier and so is written once
     however many times the passes after it run.
 
     :return: How many mirror rows carry same-ion readings.
@@ -1240,6 +1240,7 @@ def judge_commits(
     abundance_floor: float,
     max_alternatives: int,
     lines: SpectrumLines | None = None,
+    tier_bands: dict[str, float] | None = None,
 ) -> JudgedCommits:
     """Run the mass gate, the cross-channel pass and the tiering pass, and read
     the lines they find in doubt as their neighbours'.
@@ -1260,6 +1261,8 @@ def judge_commits(
     :param abundance_floor: The run's envelope floor.
     :param max_alternatives: Cap on stored alternatives per row.
     :param lines: The sample's peaks, read for how well each places its line.
+    :param tier_bands: The run's evidence bands, which a row under the top one
+        names first among its reasons.
     :return: The judged rows and each pass's summary.
     """
     claims: dict[str, EnvelopeClaim] = {}
@@ -1281,6 +1284,7 @@ def judge_commits(
             mz_tolerance_ppm=mz_tolerance_ppm,
             abundance_floor=abundance_floor,
             notation_by_id=notation_by_id,
+            tier_bands=tier_bands,
         )
         found, held = find_envelope_claims(
             judged,
@@ -2724,7 +2728,7 @@ async def _run_sample_assignment(
         #   reading kept an isotopologue, and which peak a curated identity
         #   claimed;
         # - what the sample's other channels say about each committed neutral,
-        #   and the nitrogen a reagent adduct can hide;
+        #   and which readings of one ion nothing measured tells apart;
         # - why every committed row holds the tier it holds, which reads what
         #   the two above recorded and the finished ledger's own envelopes.
         # All three only ever demote, so their order decides which pass is named
@@ -2741,6 +2745,10 @@ async def _run_sample_assignment(
             abundance_floor=scoring.abundance_floor,
             max_alternatives=config.max_alternatives,
             lines=lines,
+            tier_bands={
+                "assigned": config.assigned_threshold,
+                "candidate": config.candidate_threshold,
+            },
         )
         mass_calibration = judged.mass_calibration
         cross_channel = judged.cross_channel
@@ -2782,15 +2790,15 @@ async def _run_sample_assignment(
             f"Sample '{sample.sample_item_name}' corroborates "
             f"{cross_channel['corroborated']} of {cross_channel['committed_m0']} "
             f"committed readings across {len(cross_channel['channels'])} channels; "
-            + (
-                f"{cross_channel['capped']} capped for an unfixable nitrogen count, "
-                f"{cross_channel['capped_mirror']} of them reference-list matches "
-                f"({cross_channel['capped_isotopologues']} isotopologues with them)"
-                if cross_channel["reagent_rule_applied"]
-                else "no channel of this mode donates nitrogen, so none is gated on it"
-            )
-            + f"; {mirror_families} reference-list matches carry other readings "
-            "of their ion"
+            f"{cross_channel['ambiguous_nitrogen'] + cross_channel['ambiguous_adduct']} "
+            "read an ion another molecule explains as well "
+            f"({cross_channel['ambiguous_nitrogen']} with another nitrogen count), "
+            f"{cross_channel['capped']} of them capped, "
+            f"{cross_channel['capped_mirror']} of those reference-list matches "
+            f"({cross_channel['capped_isotopologues']} isotopologues with them); "
+            f"{sum(cross_channel['settled'].values())} others settled "
+            f"({cross_channel['settled']}); {mirror_families} reference-list "
+            "matches carry other readings of their ion"
         )
         runtime.logger.info(
             f"Sample '{sample.sample_item_name}' tiers "
@@ -3029,13 +3037,12 @@ async def _fold_sample_peaks_without_run(
     parent is held at candidate on both paths. The tiering pass does not run
     here, so no line is read as a neighbour's isotopologue on this path.
 
-    The reagent-N rule runs here too, for the same reason
-    (:func:`_read_nitrogen_counts`): a reference mirror's row whose ion reads as
-    a neutral with a different nitrogen count through another of the channels a
-    run would read is capped at candidate on this ledger as in a run. What can
-    fix the count differs, since a second channel here can only be another of
-    Stage A's commits, so this path can cap a row that a run's untargeted
-    readings would have corroborated.
+    The same-ion rule runs here too, for the same reason
+    (:func:`_read_other_readings`): a reference mirror's row whose ion reads as
+    another molecule through another of the channels a run would read is capped
+    at candidate on this ledger as in a run. What can settle it differs, since a
+    second channel here can only be another of Stage A's commits, so this path
+    can cap a row that a run's untargeted readings would have corroborated.
 
     :param sample_item_id: The sample to fold.
     :param defer_consensus_to: As for ``fold_sample_into_batch_peaks``: a
@@ -3107,13 +3114,13 @@ async def _fold_sample_peaks_without_run(
         fallback_sigma_ppm=resolved_profile.fallback_sigma_ppm,
         lines=SpectrumLines.from_peaks(peaks_df, await _resolution_of(sample)),
     )
-    # ...and the run's nitrogen check, through the channels a run would read,
+    # ...and the run's same-ion check, through the channels a run would read,
     # so a reference-list row whose ion reads as well another way is not held
     # at a tier a run takes from it.
     resolved_profile, secondary_mechanisms = await _resolve_secondary_channels(
         sample, resolved_profile, peaks_df
     )
-    _, cross_channel = _read_nitrogen_counts(
+    _, cross_channel = _read_other_readings(
         stage_a,
         [],
         searched_mechanisms=_searched_mechanisms(
@@ -3132,7 +3139,7 @@ async def _fold_sample_peaks_without_run(
         f"Stage A assigned {len(stage_a)} of {len(peaks_df)} peaks of sample "
         f"'{sample.sample_item_name}' ({len(reagent)} claimed by the reagent "
         f"pre-pass, {len(artifact)} by the artifact one, "
-        f"{cross_channel['capped']} capped for an unfixable nitrogen count); "
+        f"{cross_channel['capped']} capped for another reading of their ion); "
         "folding into the batch ledger without a run"
     )
     from mascope_backend.api.new.peak_assignments.batch_peaks_controller import (
