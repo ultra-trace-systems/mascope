@@ -126,6 +126,9 @@ class _ScanlessRawFile:
 
         return datetime(2026, 8, 19, 7, 42, tzinfo=timezone.utc)
 
+    def method_file(self):
+        return ""
+
 
 class _PopulatedRawFile:
     def scan_times(self, ms_type=None):  # noqa: ARG002
@@ -208,6 +211,9 @@ class _Ms2OnlyRawFile:
         from datetime import datetime, timezone
 
         return datetime(2026, 9, 4, 16, 12, tzinfo=timezone.utc)
+
+    def method_file(self):
+        return ""
 
 
 class TestThermoMs1LessAcquisition:
@@ -390,6 +396,8 @@ class _ScanlessOpenTFRaw:
     num_scans = 0
     #: Read by OpenTFRawBackend.created(): an Xcalibur audit timestamp.
     created = 1755589320.0
+    #: Read by OpenTFRawBackend.method_file(): the header's sample information.
+    sample_info = {"inst_method": ""}
 
     def iter_scans(self):
         return iter(())

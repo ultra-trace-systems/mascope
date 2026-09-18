@@ -608,3 +608,21 @@ def test_reconstructed_profile_matches_thermo(monkeypatch, path):
     assert 0.9 <= float(np.median(apex_ratios)) <= 1.1, (
         f"median reconstructed apex ratio vs Thermo = {np.median(apex_ratios):.3f}"
     )
+
+
+@pytest.mark.skipif(not RAW_FILES, reason="no .raw files in test_files/")
+@pytest.mark.parametrize("path", RAW_FILES, ids=lambda p: p.name)
+def test_method_file_matches_thermo(monkeypatch, path):
+    """OpenTFRaw's instrument method must be the string Thermo's
+    ``SampleInformation.InstrumentMethodFile`` reports, byte for byte: rows
+    written before and after the reader switch are matched on it."""
+    path = str(path)
+
+    monkeypatch.setenv("MASCOPE_THERMO_BACKEND", "thermo")
+    with open_backend(path) as backend:
+        th = backend.method_file()
+    monkeypatch.setenv("MASCOPE_THERMO_BACKEND", "opentfraw")
+    with open_backend(path) as backend:
+        ot = backend.method_file()
+
+    assert ot == th

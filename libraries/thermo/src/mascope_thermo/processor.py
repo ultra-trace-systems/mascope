@@ -198,16 +198,27 @@ class RawProcessor(BaseFileProcessor):
             raise EmptyAcquisitionError(EMPTY_ACQUISITION_MESSAGE) from e
 
     @property
+    @with_file_context
     def method_file(self) -> str:
-        """Instrument method file name.
+        """Instrument method file the acquisition ran with.
 
-        Not exposed by the OpenTFRaw reader, so reported as empty (the Thermo
-        backend also returned "" when absent).
+        The Xcalibur path of the ``.meth`` file as the file records it, see
+        ``ReaderBackend.method_file``. Like ``acquisition_params`` this is
+        descriptive metadata, so a reader that cannot supply it degrades to ""
+        and a warning rather than failing ingestion.
 
-        :return: Instrument method file name
+        :return: Instrument method file path, or "" when absent or unreadable
         :rtype: str
         """
-        return ""
+        try:
+            return self.file_handle.method_file()
+        except Exception:
+            _log.warning(
+                "Could not read the instrument method for %s",
+                self.file_to_process,
+                exc_info=True,
+            )
+            return ""
 
     @property
     def mz_calibration(self) -> None:

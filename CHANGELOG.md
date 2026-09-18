@@ -6,6 +6,15 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 ### Fixed
 
+- **Orbitrap sample files record their instrument method again.** Since
+  ingestion moved onto the open-source raw-file reader, every Orbitrap file
+  was stored with an empty method file, although the name is in the raw file
+  itself. Both readers now report it, and it is stored on the sample file and
+  on the instrument config fitted for it, as before. Files ingested in the
+  meantime are repaired by `mascope prod db script run
+  populate_orbitrap_method_file`, which reads only the raw file header and
+  takes `DRY_RUN=1` to preview.
+
 - **Deleting an instrument config deletes only that config.** Every sample
   file gets an instrument config of its own, but the delete also removed
   every other config with the same instrument and method file, and unlinked
