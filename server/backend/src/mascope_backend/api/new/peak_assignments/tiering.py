@@ -16,6 +16,13 @@ it was capped or not: a row that keeps its tier says what it kept it on, which
 is the difference between a ledger a reader can audit and one they have to take
 on trust.
 
+A row under the top band names its band first (``evidence_band``, from the run's
+``tier_bands``). The band is not a rule of this pass - it is the floor the rules
+lower from - and it is named because nothing else says why such a row stands
+where it does: without it, a row its evidence holds below assignability lists
+only what it stands on, a second channel or no close rival, and reads as a row
+with nothing against it.
+
 The rules, and what each is worth on the 43-sample assignment gate
 -----------------------------------------------------------------
 
@@ -96,6 +103,14 @@ this row a candidate" gets one answer wherever the demote came from. It does not
 re-apply them - a row they capped is already capped. That includes what the
 gate found of an isotopologue's line: that it tracks its parent only within
 what its noise and neighbours explain, or not at all.
+
+The cross-channel pass's same-ion rule (``ambiguous_nitrogen``,
+``ambiguous_adduct``) is folded in wherever it found a rival molecule, whether
+or not it lowered the tier. Where another reading of the row's ion is settled -
+by a second channel, by the target library, or by being a radical - the row
+says so among what it stands on (``same_ion_settled``), and its ``no_close_rival``
+says the evidence separates the ion from the peak's other candidates, not the
+readings of the ion from each other.
 """
 
 from __future__ import annotations
@@ -107,9 +122,14 @@ from typing import Any, Iterable
 import numpy as np
 
 from mascope_backend.api.new.peak_assignments.cross_channel import (
+    AMBIGUITY_REASONS,
     CHANNELS_FOR_CORROBORATION,
+    REASON_AMBIGUOUS_ADDUCT,
     REASON_AMBIGUOUS_NITROGEN,
-    donates_nitrogen,
+    SAME_ION_SETTLED,
+    SETTLED_BY_RADICAL,
+    SETTLED_BY_SECOND_CHANNEL,
+    SETTLED_BY_TARGET_LIBRARY,
 )
 from mascope_backend.api.new.peak_assignments.engine import (
     GRID_RIVALS,
@@ -134,11 +154,13 @@ from mascope_backend.api.new.peak_assignments.mass_gate import (
 )
 from mascope_backend.api.new.peak_assignments.tiers import (
     TIER_ASSIGNED,
+    TIER_BELOW_ASSIGNABILITY,
     TIER_CANDIDATE,
 )
 from mascope_tools.composition.arbitration import CANDIDATE_DENSITY
 from mascope_tools.composition.heuristic_filter import (
     anchor_on_monoisotopic,
+    element_counts,
     neutral_is_closed_shell,
     oxygen_free_cluster,
     polyhalide_cluster,
@@ -151,7 +173,12 @@ from mascope_tools.composition.implausibility import implausible_signatures
 #: run, because a tier is only comparable across runs together with the rules
 #: that produced it - the same statement the tier BANDS carry, for the same
 #: reason.
-TIERING_RULES_VERSION = 5
+TIERING_RULES_VERSION = 6
+
+#: The row's evidence is under the band its tier would need. Not a rule of
+#: this pass: the band is the floor every rule here lowers from, and naming it
+#: first is what lets a row's reasons explain the tier it holds.
+REASON_EVIDENCE_BAND = "evidence_band"
 
 #: The row names a radical rather than a molecule.
 REASON_ODD_ELECTRON = "odd_electron"
@@ -203,6 +230,10 @@ REASON_NO_CLOSE_RIVAL = "no_close_rival"
 REASON_CORROBORATED = "corroborated"
 REASON_INHERITED = "inherited_from_owner"
 
+#: A row whose ion reads another way, where something settled which reading it
+#: is (the cross-channel pass's record of the same name).
+REASON_SAME_ION_SETTLED = SAME_ION_SETTLED
+
 #: Reasons the earlier passes recorded, folded into this list rather than
 #: re-derived. ``off_calibration`` is the mass gate's (step 2.2) and
 #: ``minor_channel`` the reagent-channel cap's.
@@ -221,6 +252,7 @@ _EARLIER_RULES = frozenset(
     {
         REASON_OFF_CALIBRATION,
         REASON_AMBIGUOUS_NITROGEN,
+        REASON_AMBIGUOUS_ADDUCT,
         REASON_MINOR_CHANNEL,
         REASON_ISOTOPOLOGUE_IN_DOUBT,
         REASON_ISOTOPOLOGUE_UNTRACKED,
@@ -324,25 +356,25 @@ def earlier_reasons(row: dict) -> list[dict]:
             )
         )
     cross_channel = provenance.get("cross_channel") or {}
-    if cross_channel.get("capped"):
-        ambiguity = cross_channel.get("ambiguous_nitrogen") or {}
-        alternative = ambiguity.get("alternative")
-        # A reference mirror's row can be in doubt from the other side: read
-        # through a channel donating none, its ion reads through a donor as a
-        # neutral that leaves the nitrogen to the reagent.
-        if donates_nitrogen(ambiguity.get("via")):
-            detail = (
-                "the same ion reads as "
-                f"{alternative or 'a nitrogen-poorer neutral'} through a channel "
-                "that donates nitrogen, and no channel of this run fixes the count"
+    # Recorded whether or not the pass lowered the tier: a row its evidence
+    # already put lower says what the reading is in doubt with all the same.
+    for rule in AMBIGUITY_REASONS:
+        ambiguity = cross_channel.get(rule)
+        if isinstance(ambiguity, dict):
+            reasons.append(
+                _reason(rule, ambiguity_detail(row, rule, ambiguity), caps=True)
             )
-        else:
-            detail = (
-                "the same ion reads as "
-                f"{alternative or 'a nitrogen-richer neutral'} through a channel "
-                "donating no nitrogen, and no channel of this run fixes the count"
+    # An isotopologue the pass capped with its monoisotopic row carries the
+    # row's reason and not its record.
+    if cross_channel.get("inherited_from") and cross_channel.get("reason"):
+        reasons.append(
+            _reason(
+                str(cross_channel["reason"]),
+                "its monoisotopic row's ion reads as another molecule too, and no "
+                "second channel of this run settles which",
+                caps=True,
             )
-        reasons.append(_reason(REASON_AMBIGUOUS_NITROGEN, detail, caps=True))
+        )
     minor_channel = provenance.get("minor_channel") or {}
     if minor_channel.get("capped"):
         reasons.append(
@@ -354,6 +386,127 @@ def earlier_reasons(row: dict) -> list[dict]:
             )
         )
     return reasons
+
+
+def _nitrogen(formula) -> int:
+    return (element_counts(str(formula or "")) or {}).get("N", 0)
+
+
+def _count_word(count: int) -> str:
+    return {1: "one", 2: "two", 3: "three"}.get(count, str(count))
+
+
+def ambiguity_detail(row: dict, rule: str, ambiguity: dict) -> str:
+    """What a reading its ion shares with another molecule says about the row.
+
+    :param row: A committed monoisotopic row.
+    :param rule: One of the cross-channel pass's ambiguity reasons.
+    :param ambiguity: Its record: the rival molecule and its channel.
+    :return: The reason's sentence.
+    """
+    alternative = ambiguity.get("alternative") or "another molecule"
+    via = ambiguity.get("via") or "another channel"
+    if rule == REASON_AMBIGUOUS_NITROGEN:
+        difference = _nitrogen(alternative) - _nitrogen(row.get("assigned_formula"))
+        moved = (
+            f", which puts {_count_word(abs(difference))} "
+            f"{'more' if difference > 0 else 'fewer'} nitrogen on the analyte"
+            if difference
+            else ""
+        )
+        return (
+            f"the same ion reads as {alternative} through {via}{moved}, and no "
+            "second channel of this run settles the count"
+        )
+    return (
+        f"the same ion reads as {alternative} through {via}, another molecule the "
+        "spectrum cannot tell from this one, and no second channel of this run "
+        "settles which"
+    )
+
+
+def settled_detail(row: dict, settled: dict) -> str:
+    """Why another reading of the row's ion takes nothing from it.
+
+    :param row: A committed monoisotopic row.
+    :param settled: The cross-channel pass's record: the other reading, its
+        channel, what settled it and, for a second channel, which.
+    :return: The reason's sentence.
+    """
+    reading = (
+        f"the same ion also reads as {settled.get('alternative') or 'another neutral'}"
+        f" through {settled.get('via') or 'another channel'}"
+    )
+    by = settled.get("by")
+    if by == SETTLED_BY_RADICAL:
+        return f"{reading}, a radical rather than a molecule, so it is no rival"
+    if by == SETTLED_BY_TARGET_LIBRARY:
+        return (
+            f"{reading}; this row is a compound of the target library, whose "
+            "curation chose the reading"
+        )
+    through = ", ".join(settled.get("through") or []) or "another channel"
+    if by == SETTLED_BY_SECOND_CHANNEL:
+        return (
+            f"{reading}; {row.get('assigned_formula')} is also committed through "
+            f"{through}, which settles it"
+        )
+    return reading
+
+
+def _digits(value: float, against: float) -> int:
+    """How many decimals a percentage needs not to read as ``against``."""
+    for digits in (0, 1):
+        if f"{value:.{digits}%}" != f"{against:.{digits}%}":
+            return digits
+    return 2
+
+
+def band_reason(row: dict, tier_bands: dict | None) -> dict | None:
+    """The evidence band a row sits in, where it is under the top one.
+
+    The tier is read off the evidence first (``engine.tier_for_evidence``) and
+    every rule of this pass only lowers it from there, so a row under the top
+    band is where it is for this reason before any other. Named first on the
+    row, because without it the reasons a row keeps say what it stands on and
+    not why it stands low.
+
+    :param row: A committed monoisotopic row.
+    :param tier_bands: The run's bands, ``assigned`` and ``candidate``, or None
+        where the caller has none to state.
+    :return: The reason, carrying the band the evidence reaches, or None where
+        the evidence clears the top band or the row has none.
+    """
+    provenance = _provenance(row)
+    evidence = provenance.get("evidence")
+    if not tier_bands or not isinstance(evidence, (int, float)):
+        return None
+    assigned = float(tier_bands["assigned"])
+    candidate = float(tier_bands["candidate"])
+    if evidence >= assigned:
+        return None
+    if evidence >= candidate:
+        band, name, edge = TIER_CANDIDATE, "assigned", assigned
+    else:
+        band, name, edge = TIER_BELOW_ASSIGNABILITY, "candidate", candidate
+    # One precision for every number in the sentence, as fine as it takes for
+    # the evidence not to read as the band it misses.
+    digits = _digits(evidence, edge)
+    fit, plausibility = row.get("fit_score"), provenance.get("plausibility")
+    product = (
+        f" (fit {fit:.{digits}%} x plausibility {plausibility:.{digits}%})"
+        if isinstance(fit, (int, float)) and isinstance(plausibility, (int, float))
+        else ""
+    )
+    return {
+        **_reason(
+            REASON_EVIDENCE_BAND,
+            f"evidence {evidence:.{digits}%}{product} is under the {name} band of "
+            f"{edge:.{digits}%}",
+            caps=True,
+        ),
+        "band": band,
+    }
 
 
 def odd_electron_reason(row: dict) -> dict | None:
@@ -686,13 +839,26 @@ def standing_reasons(row: dict) -> list[dict]:
                 caps=False,
             )
         )
+    settled = (_provenance(row).get("cross_channel") or {}).get(SAME_ION_SETTLED)
+    if isinstance(settled, dict):
+        reasons.append(
+            _reason(REASON_SAME_ION_SETTLED, settled_detail(row, settled), caps=False)
+        )
     density = _provenance(row).get(CANDIDATE_DENSITY)
     if isinstance(density, int) and density < DENSITY_LIMIT:
         reasons.append(
             _reason(
                 REASON_NO_CLOSE_RIVAL,
-                "the evidence separates this formula from every other candidate "
-                "the run competed for the peak",
+                # The density counts the formulas the run weighed against each
+                # other, and another reading of this row's ion is not one of
+                # them: it is the same measurement, which the evidence cannot
+                # separate from the row by construction.
+                "the evidence separates this ion from every other the run "
+                "competed for the peak; which reading of the ion it is, the "
+                "evidence cannot say"
+                if isinstance(settled, dict)
+                else "the evidence separates this formula from every other "
+                "candidate the run competed for the peak",
                 caps=False,
             )
         )
@@ -722,6 +888,7 @@ def apply_tiering(
     mz_tolerance_ppm: float,
     abundance_floor: float,
     notation_by_id: dict[str, str] | None = None,
+    tier_bands: dict[str, float] | None = None,
 ) -> dict:
     """Give every committed row its reasons, and cap the rows that earned it.
 
@@ -736,6 +903,9 @@ def apply_tiering(
     :param abundance_floor: The run's own envelope floor, for the same rule.
     :param notation_by_id: The run's mechanisms, by the id the rows carry, for
         the rule that reads a row's channel. Without them no row names a channel.
+    :param tier_bands: The run's evidence bands, ``assigned`` and ``candidate``,
+        which a row under the top one names first (:func:`band_reason`). Without
+        them no row names its band.
     :return: What the run should record about this pass: its rule version, what
         each rule capped, and the thresholds it capped on - a tier is only
         comparable across runs together with the rules that produced it.
@@ -756,6 +926,7 @@ def apply_tiering(
     capped_here: set[str] = set()
     capped_earlier: set[str] = set()
     capped = 0
+    under_band = 0
 
     for row in m0:
         reasons = earlier_reasons(row)
@@ -774,8 +945,16 @@ def apply_tiering(
             for reason in reasons
             if reason["caps"] and reason["rule"] not in _EARLIER_RULES
         ]
-        if not any(reason["caps"] for reason in reasons):
+        held_down = any(reason["caps"] for reason in reasons)
+        if not held_down:
             reasons.extend(standing_reasons(row))
+        # The band leads, and it is not a rule: it is the floor the rules lower
+        # from, so it neither counts as a cap here nor hides what the row
+        # stands on - a row the band holds low still says what it has.
+        band = band_reason(row, tier_bands)
+        if band:
+            reasons.insert(0, band)
+            under_band += 1
         if mine and _cap(row):
             capped += 1
             for reason in mine:
@@ -789,7 +968,7 @@ def apply_tiering(
         row_id = str(row.get("peak_assignment_id"))
         if mine:
             capped_here.add(row_id)
-        elif any(reason["caps"] for reason in reasons):
+        elif held_down:
             capped_earlier.add(row_id)
 
     capped_isotopologues = 0
@@ -863,6 +1042,9 @@ def apply_tiering(
         # had carried as compounds of their own that went with them.
         "claimed": claimed,
         "claimed_with_their_lines": carried,
+        # Monoisotopic rows whose evidence is under the top band, which name
+        # the band first.
+        "under_band": under_band,
         "density_limit": DENSITY_LIMIT,
         "envelope_height_tolerance": ENVELOPE_HEIGHT_TOLERANCE,
     }

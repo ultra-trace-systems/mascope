@@ -459,6 +459,34 @@ class TestTheJudgedLedger:
         }
 
     @pytest.mark.asyncio
+    async def test_the_passes_are_handed_the_runs_own_bands(self):
+        # A row under the top band names it among its reasons, so the bands the
+        # tiering pass reads are the ones the run tiered on.
+        from mascope_backend.api.new.peak_assignments import service
+        from mascope_backend.api.new.peak_assignments.config import (
+            PeakAssignmentConfig,
+        )
+
+        judge = service.judge_commits
+        handed = {}
+
+        def recording(rows, **kwargs):
+            handed.update(kwargs)
+            return judge(rows, **kwargs)
+
+        peaks = _peaks_df([("p1", 181.0707, 10000.0), ("p2", 182.0741, 660.0)])
+        _start(_patches(_Recorder(), peaks, _stage_a_rows()))
+        patch(f"{_MOD}.judge_commits", side_effect=recording).start()
+
+        await _run(
+            PeakAssignmentConfig(
+                run_untargeted=False, assigned_threshold=0.8, candidate_threshold=0.5
+            )
+        )
+
+        assert handed["tier_bands"] == {"assigned": 0.8, "candidate": 0.5}
+
+    @pytest.mark.asyncio
     async def test_the_run_records_what_its_claims_did(self):
         from mascope_backend.api.new.peak_assignments.config import (
             PeakAssignmentConfig,

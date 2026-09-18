@@ -1,5 +1,5 @@
-"""What a sample's other channels say about a reading, and the nitrogen a
-reagent adduct can hide.
+"""What a sample's other channels say about a reading, and the readings of one
+ion that nothing measured can tell apart.
 
 A compound in a reagent-ionization spectrum rarely appears once. It appears
 through whichever of the mode's channels it can take - protonated and
@@ -24,8 +24,8 @@ Nothing here promotes a row on that evidence - the flag is recorded and step
 2.4's mechanical tiers are where it is weighed. What this module does demote is
 the one reading the flag's ABSENCE leaves resting on a prior, below.
 
-The reagent-N rule
-------------------
+The same-ion rule
+-----------------
 
 ``+NH4+`` on a neutral M and ``+H+`` on the neutral M+NH3 are the same ion
 formula. Not similar - the same, so the same exact mass, the same isotope
@@ -41,52 +41,58 @@ winner's own fit and mass error, because they are the same measurement split
 differently rather than weaker hypotheses.
 
 That policy is a prior, and a defensible one. What it is not is an observation:
-on a run where nothing else saw the neutral, the analyte's nitrogen count is the
-prior's answer and no part of the spectrum's. So a winner through a
-nitrogen-donating channel, whose own family holds a reading through a channel
-that donates none, is capped at ``candidate`` with the reason
-:data:`REASON_AMBIGUOUS_NITROGEN` - keeping its formula - unless a second
-channel fixed the count.
+on a run where nothing else saw the neutral, which molecule the ion came from is
+the prior's answer and no part of the spectrum's. So a committed reading whose
+ion also reads as another molecule is capped at ``candidate`` - keeping its
+formula - unless something settled which reading it is. The reason says what
+the two readings disagree about. :data:`REASON_AMBIGUOUS_NITROGEN` is the
+analyte's nitrogen count: an ammonium, urea or nitrate adduct against a plain
+channel, or two such adducts against each other, since urea through its proton
+is ammonium plus isocyanic acid. :data:`REASON_AMBIGUOUS_ADDUCT` is the rest: a
+bromide cluster against the deprotonated molecule that holds the hydrogen
+bromide, a water cluster against the hydrate.
 
-Whether the prior deserves trusting is a question about the reagent, and the
-gate answers it differently for different ones. On the bromide set, where
-``+Br-`` on M is likewise ``-H+`` on M+HBr, 277 lone bromide readings sit at
-assigned tier and the reference confirms 246 of them - 89%. On the uronium set
-the same population is 409 rows and the reference confirms 79 - 19%. The
-bromide prior is borne out and the nitrogen prior is not, which is why this rule
-is scoped to nitrogen rather than to same-ion families in general.
+Three things settle it, and a row that one of them settles records which
+(:data:`SAME_ION_SETTLED`):
 
-What CAN fix the count is another channel. If the same neutral is also committed
-through a channel that donates no nitrogen, its composition is observed rather
-than assumed. If it is committed through two DIFFERENT nitrogen-donating
-reagents, the alternative reading would need a different analyte for each, the
-two differing by exactly the difference of the two reagents - so the pair fixes
-the count as well.
+- **A second channel.** If the same neutral is also committed through any other
+  channel, the alternative reading would need a different analyte for each ion,
+  the two differing by exactly the difference of the two channels' moieties -
+  one neutral explains both, two coincidences are needed to avoid it.
+- **The target library.** The workspace named that compound for the modes its
+  collection is attached to, so which reading the ion is was its curation's
+  decision.
+- **A radical.** A neutral that breaks the nitrogen rule names a radical rather
+  than a molecule, and the tiering pass refuses to hold one at the top tier on
+  the measurement (``tiering.odd_electron_reason``: the reference engine confirms
+  none of 1,794). A reading whose ion reads otherwise only as a radical has no
+  rival. The carbonate radical anion's families are the common case - C5H8O5
+  through ``-H+`` is the radical C4H7O2 through ``+CO3-`` - and exactly one
+  reading of every such family is a radical.
+
+The rule reaches every reagent, not only the ones that donate nitrogen. The
+bromide prior looks borne out on the gate - the reference engine confirms 246 of
+277 lone bromide readings against 79 of 409 lone nitrogen ones - but that engine
+prefers the cluster reading by a policy of its own, so its agreement says the
+two priors agree, not that the spectrum chose. A reading the spectrum cannot
+tell from another molecule is not assigned on a prior (the plan owner's rule,
+step 2.8).
 
 A reference mirror's row
 ------------------------
 
-A Stage A row is matched rather than elected, and a row of the target library
-stays exempt: the workspace named that compound, so its nitrogen sits where the
-curation put it. A reference mirror's row is a list's formula matched against
-every sample, and the same arithmetic reaches it - dimethylformamide through
-``+H+`` is the same ion as acrolein through ``+NH4+``. Such a row is given the
-readings the untargeted search would have held in its ion's family
-(``engine.record_mirror_same_ion_readings``) and asked what an election is
-asked, from both sides. An election is asked from the donor's: its policy
-prefers the mechanism carrying the most mass, which put the nitrogen on the
-reagent, and that preference is the prior in doubt. A list can name the
-nitrogen on either side, so a mirror row read through a channel that donates
-none is in doubt too, where its ion reads through a donor as a neutral with
-less nitrogen. A second channel fixes the count from either side, because each
-of its ions would need an alternative analyte of its own.
+A Stage A row is matched rather than elected. A reference mirror's row is a
+list's formula matched against every sample, and the same arithmetic reaches
+it - dimethylformamide through ``+H+`` is the same ion as acrolein through
+``+NH4+``. Such a row is given the readings the untargeted search would have held
+in its ion's family (``engine.record_mirror_same_ion_readings``) and asked what
+an election is asked.
 
-A labelled reagent donates no nitrogen for this purpose, and that is the whole
-reason to run one: the 15N of a ``+[15N]O3-`` reagent is 0.997 Da from an
-analyte's own nitrogen, so the two readings are two ions at two masses and the
-spectrum chooses between them. The finder never proposes the labelled neutral,
-so such a row has no same-ion family at all - but the channel is excluded on its
-own terms here rather than left to that.
+A labelled reagent donates no nitrogen, and that is the whole reason to run
+one: the 15N of a ``+[15N]O3-`` reagent is 0.997 Da from an analyte's own
+nitrogen, so the two readings are two ions at two masses and the spectrum
+chooses between them. The finder never proposes the labelled neutral, so such a
+row has no same-ion family at all.
 """
 
 from __future__ import annotations
@@ -100,7 +106,10 @@ from mascope_backend.api.new.peak_assignments.engine import (
 from mascope_backend.api.new.peak_assignments.mass_gate import is_committed
 from mascope_backend.api.new.peak_assignments.tiers import TIER_CANDIDATE, TIER_RANK
 from mascope_tools.composition.custom_elements import CUSTOM_ELEMENTS
-from mascope_tools.composition.heuristic_filter import element_counts
+from mascope_tools.composition.heuristic_filter import (
+    element_counts,
+    neutral_is_closed_shell,
+)
 from mascope_tools.composition.utils import parse_ionization
 
 
@@ -110,21 +119,38 @@ from mascope_tools.composition.utils import parse_ionization
 #: independent measurement of the same neutral through different chemistry.
 CHANNELS_FOR_CORROBORATION = 2
 
-#: The reason a row capped for an unfixable nitrogen count carries.
+#: The reason a row carries whose ion also reads as a molecule with another
+#: nitrogen count, when nothing settled which.
 REASON_AMBIGUOUS_NITROGEN = "ambiguous_nitrogen"
+
+#: The reason a row carries whose ion also reads as another molecule with the
+#: same nitrogen count, when nothing settled which.
+REASON_AMBIGUOUS_ADDUCT = "ambiguous_adduct"
+
+#: The two reasons, in the order a record is read for them.
+AMBIGUITY_REASONS = (REASON_AMBIGUOUS_NITROGEN, REASON_AMBIGUOUS_ADDUCT)
 
 #: The flag the finder puts on a same-ion alternative: not a weaker hypothesis
 #: but this row's own measurement, split differently between analyte and
 #: mechanism (``engine.untargeted_matches_to_peak_assignments``).
 SAME_ION = "same_ion"
 
+#: The record a row carries whose ion reads another way, where something
+#: settled which reading it is - and what did.
+SAME_ION_SETTLED = "same_ion_settled"
+SETTLED_BY_SECOND_CHANNEL = "second_channel"
+SETTLED_BY_TARGET_LIBRARY = "target_library"
+SETTLED_BY_RADICAL = "radical"
+
 
 def donates_nitrogen(notation: str | None) -> bool:
     """Whether this channel's moiety carries nitrogen an analyte could carry.
 
-    The question the reagent-N rule turns on, asked of the mechanism rather than
-    of a table of known reagents, so a deployment that adds a channel gets the
-    rule for free.
+    Asked of the mechanism rather than of a table of known reagents, so a
+    deployment that adds a channel is described for free. The run records the
+    answer (``reagent_channels``); the same-ion rule itself reads the nitrogen
+    of the two readings' neutrals, which says the same thing for a pair of
+    channels and also covers two donors against each other.
 
     A LABELLED moiety answers False. ``+[15N]O3-`` carries a nitrogen no analyte
     has - 0.997 Da from the ordinary one - so the deprotonated nitrate ester is
@@ -180,35 +206,88 @@ def same_ion_readings(row: dict, notation_by_id: dict[str, str]) -> list[dict]:
     return readings
 
 
-def nitrogen_ambiguity(
-    row: dict, notation_by_id: dict[str, str], donors: frozenset[str]
-) -> dict | None:
-    """The reading that would put this row's nitrogen somewhere else.
+def other_readings(row: dict, notation_by_id: dict[str, str]) -> list[dict]:
+    """The readings of this row's ion other than the row's own.
 
-    The row is ambiguous exactly when its ion holds both splits: one through a
-    channel that donates nitrogen and one through a channel that does not. Then
-    the count on the reported neutral is a prior's answer rather than the
-    spectrum's.
-
-    An election is asked only where its own reading is the donor's, because the
-    preference that elected it is the prior in doubt. A reference mirror's row
-    is asked from both sides: its list, not that preference, chose the split.
+    A family can hold the row's own reading a second time - a channel searched
+    twice proposes every neutral through it twice, and the election keeps the
+    twin - and a reading that restates the row is no other reading of it.
 
     :param row: A committed monoisotopic row.
     :param notation_by_id: The run's mechanisms, by the id the rows carry.
-    :param donors: The channels that donate nitrogen.
-    :return: The displaced reading, or None where the count is not in question.
+    :return: The displaced readings that name another neutral or channel.
     """
-    channel = notation_by_id.get(str(row.get("ionization_mechanism_id")))
-    if channel is None:
+    own_channel = notation_by_id.get(str(row.get("ionization_mechanism_id")))
+    own_neutral = neutral_key(row.get("assigned_formula"))
+    return [
+        reading
+        for reading in same_ion_readings(row, notation_by_id)
+        if reading["channel"] != own_channel
+        or neutral_key(reading.get("assigned_formula")) != own_neutral
+    ]
+
+
+def is_molecule(formula: str | None) -> bool:
+    """Whether a reading's neutral is a closed-shell molecule.
+
+    A formula nothing can read is not one: the rule that asks this caps a row
+    on the answer, and a rule that caps fails open.
+    """
+    text = str(formula or "")
+    return element_counts(text) is not None and neutral_is_closed_shell(text)
+
+
+def ambiguity_of(row: dict, reading: dict) -> str:
+    """What two readings of one ion disagree about.
+
+    :param row: A committed monoisotopic row.
+    :param reading: Another reading of its ion, a molecule.
+    :return: :data:`REASON_AMBIGUOUS_NITROGEN` where the two put a different
+        number of nitrogen atoms on the analyte, else
+        :data:`REASON_AMBIGUOUS_ADDUCT`.
+    """
+    own = element_counts(str(row.get("assigned_formula") or "")) or {}
+    other = element_counts(str(reading.get("assigned_formula") or "")) or {}
+    if own.get("N", 0) != other.get("N", 0):
+        return REASON_AMBIGUOUS_NITROGEN
+    return REASON_AMBIGUOUS_ADDUCT
+
+
+def same_ion_question(
+    row: dict, notation_by_id: dict[str, str], *, corroborated: bool
+) -> tuple[str, dict] | None:
+    """Whether this row's ion reads another way, and what that leaves it.
+
+    :param row: A committed monoisotopic row.
+    :param notation_by_id: The run's mechanisms, by the id the rows carry.
+    :param corroborated: Whether a second channel committed the row's neutral.
+    :return: None where the ion has no other reading this can read. Otherwise
+        the reason and its record: one of :data:`AMBIGUITY_REASONS` with the
+        rival molecule where nothing settled it, or :data:`SAME_ION_SETTLED`
+        with the reading and what settled it (``by``).
+    """
+    # A reading whose formula nothing can parse is neither a molecule nor a
+    # radical: it is not weighed at all.
+    others = [
+        reading
+        for reading in other_readings(row, notation_by_id)
+        if element_counts(str(reading.get("assigned_formula") or "")) is not None
+    ]
+    if not others:
         return None
-    donates = channel in donors
-    if not donates and not is_reference_mirror_row(row):
-        return None
-    for reading in same_ion_readings(row, notation_by_id):
-        if (reading["channel"] in donors) != donates:
-            return reading
-    return None
+    rival = next(
+        (reading for reading in others if is_molecule(reading.get("assigned_formula"))),
+        None,
+    )
+    shown = rival or others[0]
+    record = {"alternative": shown.get("assigned_formula"), "via": shown["channel"]}
+    if rival is None:
+        return SAME_ION_SETTLED, {**record, "by": SETTLED_BY_RADICAL}
+    if is_target_library_row(row):
+        return SAME_ION_SETTLED, {**record, "by": SETTLED_BY_TARGET_LIBRARY}
+    if corroborated:
+        return SAME_ION_SETTLED, {**record, "by": SETTLED_BY_SECOND_CHANNEL}
+    return ambiguity_of(row, rival), record
 
 
 def neutral_key(formula: str | None) -> str:
@@ -294,15 +373,16 @@ def apply_cross_channel(
     *,
     notation_by_id: dict[str, str],
 ) -> dict:
-    """Record each commit's channels and cap the nitrogen counts nothing observed.
+    """Record each commit's channels, and cap the readings nothing settled.
 
     Modifies the rows in place, after both stages have built them: which
     channels a neutral was seen through is a property of the whole ledger.
 
-    A row of the target library is exempt. The workspace named the compound, so
-    the nitrogen sits where its curation put it rather than where a prior did. A
-    reference mirror's row is not exempt, and is asked from both sides
-    (:func:`nitrogen_ambiguity`).
+    Every committed monoisotopic row whose ion reads another way records what
+    that leaves it (:func:`same_ion_question`): the rival molecule where nothing
+    settled it, capped at ``candidate``, or what settled it. The rival is
+    recorded whether or not the cap lowered the tier - a row its evidence
+    already put below says so too - and only the cap counts as ``capped``.
 
     :param assignments: Every row built for this sample, modified in place.
     :param notation_by_id: The run's mechanisms, by the id the rows carry.
@@ -318,25 +398,35 @@ def apply_cross_channel(
         "committed_m0": 0,
         "neutrals": len(channels),
         "corroborated": 0,
-        "ambiguous_nitrogen": 0,
+        # Rows whose ion also reads as another molecule that nothing settled,
+        # by what the two readings disagree about.
+        REASON_AMBIGUOUS_NITROGEN: 0,
+        REASON_AMBIGUOUS_ADDUCT: 0,
         "capped": 0,
-        # Of the two counts above, the rows a reference mirror committed. Named
-        # apart because the rule asks a list's formula from both sides and an
-        # election from one, so the two reaches are different questions.
+        # Of the counts above, the rows a reference mirror committed: a list's
+        # formula is matched rather than elected, so its reach is a different
+        # question from the search's.
         "ambiguous_nitrogen_mirror": 0,
+        "ambiguous_adduct_mirror": 0,
         "capped_mirror": 0,
+        # Rows whose ion reads another way and that something settled, by what.
+        "settled": {
+            SETTLED_BY_SECOND_CHANNEL: 0,
+            SETTLED_BY_TARGET_LIBRARY: 0,
+            SETTLED_BY_RADICAL: 0,
+        },
         # Stored as `capped_satellites` on runs written by earlier builds. Only
         # this summary's own log line reads the count back, so a stored run is
         # never translated; a reader of old run configs has to accept both.
         "capped_isotopologues": 0,
-        # Whether the REAGENT-N RULE had anything to gate. The corroboration half
-        # above runs on every sample and is recorded whatever this says, so the
-        # two are named apart: a bromide run records hundreds of corroborated
-        # readings with no nitrogen rule to apply.
+        # Whether a channel of this mode donates nitrogen - which is what the
+        # nitrogen reason can be about. The same-ion rule itself runs on every
+        # sample, whatever this says.
         "reagent_rule_applied": bool(donors),
     }
 
-    capped_owners: set[str] = set()
+    # Owner id -> the reason its cap carried, which its isotopologues carry too.
+    capped_owners: dict[str, str] = {}
     for row in assignments:
         if not is_committed(row) or row.get("role") != ROLE_M0:
             continue
@@ -344,29 +434,31 @@ def apply_cross_channel(
         seen = channels.get(neutral_key(row.get("assigned_formula")), {})
         corroborated = len(seen) >= CHANNELS_FOR_CORROBORATION
         summary["corroborated"] += corroborated
+        own_channel = notation_by_id.get(str(row.get("ionization_mechanism_id")))
         record: dict = {
             "channels": sorted(seen),
             "corroborated": corroborated,
-            "partner_tier": partner_tier(
-                seen, notation_by_id.get(str(row.get("ionization_mechanism_id")))
-            ),
+            "partner_tier": partner_tier(seen, own_channel),
         }
-        # A second channel is what fixes the count, whichever side of the donor
-        # boundary the row's own reading sits on (the module docstring's reasons).
-        if not corroborated and not is_target_library_row(row):
-            displaced = nitrogen_ambiguity(row, notation_by_id, donors)
-            if displaced is not None:
+        question = same_ion_question(row, notation_by_id, corroborated=corroborated)
+        if question is not None:
+            reason, found = question
+            if reason == SAME_ION_SETTLED:
+                if found["by"] == SETTLED_BY_SECOND_CHANNEL:
+                    # The channels that settled it, which is what the row's
+                    # reason names.
+                    found["through"] = sorted(set(seen) - {own_channel})
+                record[SAME_ION_SETTLED] = found
+                summary["settled"][found["by"]] += 1
+            else:
                 mirror = is_reference_mirror_row(row)
-                record["ambiguous_nitrogen"] = {
-                    "alternative": displaced.get("assigned_formula"),
-                    "via": displaced["channel"],
-                }
-                summary["ambiguous_nitrogen"] += 1
-                summary["ambiguous_nitrogen_mirror"] += mirror
-                if _cap(row, record):
+                record[reason] = found
+                summary[reason] += 1
+                summary[f"{reason}_mirror"] += mirror
+                if _cap(row, record, reason):
                     summary["capped"] += 1
                     summary["capped_mirror"] += mirror
-                    capped_owners.add(str(row["peak_assignment_id"]))
+                    capped_owners[str(row["peak_assignment_id"])] = reason
         row.setdefault("provenance", {})["cross_channel"] = record
 
     # An isotopologue is its parent's ion on a second line of one envelope, so it
@@ -380,17 +472,17 @@ def apply_cross_channel(
         if owner_id not in capped_owners:
             continue
         record = {"inherited_from": owner_id}
-        if _cap(row, record):
+        if _cap(row, record, capped_owners[owner_id]):
             summary["capped_isotopologues"] += 1
         row.setdefault("provenance", {})["cross_channel"] = record
     return summary
 
 
-def _cap(row: dict, record: dict) -> bool:
+def _cap(row: dict, record: dict, reason: str) -> bool:
     """Cap a row at ``candidate``, downwards only, and say so on the row."""
     if TIER_RANK[row["tier"]] <= TIER_RANK[TIER_CANDIDATE]:
         return False
     row["tier"] = TIER_CANDIDATE
     record["capped"] = TIER_CANDIDATE
-    record["reason"] = REASON_AMBIGUOUS_NITROGEN
+    record["reason"] = reason
     return True

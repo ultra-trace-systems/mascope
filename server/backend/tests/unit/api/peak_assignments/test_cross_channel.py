@@ -1,10 +1,16 @@
-"""What a sample's channels corroborate, and the nitrogen a reagent can hide."""
+"""What a sample's channels corroborate, and the readings of one ion that
+nothing measured tells apart."""
 
 from __future__ import annotations
 
 from mascope_backend.api.new.peak_assignments.cross_channel import (
     CHANNELS_FOR_CORROBORATION,
+    REASON_AMBIGUOUS_ADDUCT,
     REASON_AMBIGUOUS_NITROGEN,
+    SAME_ION_SETTLED,
+    SETTLED_BY_RADICAL,
+    SETTLED_BY_SECOND_CHANNEL,
+    SETTLED_BY_TARGET_LIBRARY,
     apply_cross_channel,
     channels_by_neutral,
     donates_nitrogen,
@@ -20,6 +26,7 @@ UREA = "urea"
 NITRATE = "nit"
 DEPROT = "deprot"
 BROMIDE = "brom"
+CARBONATE = "carb"
 
 POSITIVE = {
     PROTON: "+H+",
@@ -30,6 +37,7 @@ NEGATIVE = {
     DEPROT: "-H+",
     NITRATE: "+NO3-",
     BROMIDE: "+Br-",
+    CARBONATE: "+CO3-",
 }
 SODIUM = "sod"
 
@@ -43,27 +51,29 @@ def row(
     role: str = "M0",
     source: str = "untargeted",
     owner: str | None = None,
-    displaced: tuple[str, str] | None = None,
+    displaced: tuple[str, str] | list[tuple[str, str]] | None = None,
     compound: str | None = None,
 ) -> dict:
     """One committed row.
 
     ``displaced`` is the reading of the same ion the row's own reading set
-    aside, as ``(neutral, mechanism id)`` - what ``elect_same_ion_families``
-    stores on an election, what ``record_mirror_same_ion_readings`` writes on a
-    reference mirror's row, and what the reagent-N rule reads. A row without
-    one is a row whose ion had only one reading. ``compound`` is the target
-    library compound a Stage A row was committed for; a ``database`` row without
-    one is a reference mirror's.
+    aside, as ``(neutral, mechanism id)``, or a list of them - what
+    ``elect_same_ion_families`` stores on an election, what
+    ``record_mirror_same_ion_readings`` writes on a reference mirror's row, and
+    what the same-ion rule reads. A row without one is a row whose ion had only
+    one reading. ``compound`` is the target library compound a Stage A row was
+    committed for; a ``database`` row without one is a reference mirror's.
     """
     alternatives = None
     if displaced is not None:
+        readings = [displaced] if isinstance(displaced, tuple) else displaced
         alternatives = [
             {
-                "assigned_formula": displaced[0],
-                "ionization_mechanism_id": displaced[1],
+                "assigned_formula": neutral,
+                "ionization_mechanism_id": mechanism_id,
                 "same_ion": True,
             }
+            for neutral, mechanism_id in readings
         ]
     return {
         "peak_assignment_id": row_id,
@@ -189,7 +199,7 @@ class TestWhatCorroboratesANeutral:
         assert CHANNELS_FOR_CORROBORATION == 2
 
 
-class TestTheReagentNRule:
+class TestTheSameIonRule:
     def test_a_lone_ammonium_reading_cannot_fix_its_nitrogen_count(self):
         rows = [ammoniated("a", "C6H12O6", "C6H15NO6")]
         summary = gate(rows)
@@ -249,21 +259,46 @@ class TestTheReagentNRule:
         assert gate(rows)["ambiguous_nitrogen"] == 0
         assert rows[0]["tier"] == "assigned"
 
-    def test_a_family_of_two_donors_leaves_the_count_in_question(self):
-        # A displaced reading through ANOTHER nitrogen donor moves the nitrogen
-        # between reagents, not onto the analyte, so it settles nothing - the
-        # rule needs a reading that donates none.
-        rows = [row("a", "C6H12O6", AMMONIUM, displaced=("C5H8O5", UREA))]
-        assert gate(rows)["ambiguous_nitrogen"] == 0
+    def test_two_donors_leave_the_count_in_question_too(self):
+        # Urea through its proton is ammonium plus isocyanic acid, so the urea
+        # adduct of C6H10O5 is the ammonium adduct of C7H11NO6: one more
+        # nitrogen on the analyte, which neither donor settles.
+        rows = [row("a", "C6H10O5", UREA, displaced=("C7H11NO6", AMMONIUM))]
+        summary = gate(rows)
+        assert (summary["ambiguous_nitrogen"], summary["capped"]) == (1, 1)
+        record = rows[0]["provenance"]["cross_channel"]
+        assert record["reason"] == REASON_AMBIGUOUS_NITROGEN
+        assert record["ambiguous_nitrogen"] == {
+            "alternative": "C7H11NO6",
+            "via": "+NH4+",
+        }
 
-    def test_a_target_library_identity_is_exempt(self):
-        # The workspace named the compound, so the nitrogen sits where its
-        # curation put it rather than where the sort key did.
+    def test_the_target_library_settles_it(self):
+        # The workspace named the compound, so which reading the ion is was its
+        # curation's decision rather than the sort key's.
         rows = [
             ammoniated("a", "C6H12O6", "C6H15NO6", source="database", compound="tc-1")
         ]
-        assert gate(rows)["ambiguous_nitrogen"] == 0
+        summary = gate(rows)
+        assert summary["ambiguous_nitrogen"] == 0
         assert rows[0]["tier"] == "assigned"
+        assert rows[0]["provenance"]["cross_channel"][SAME_ION_SETTLED] == {
+            "alternative": "C6H15NO6",
+            "via": "+H+",
+            "by": SETTLED_BY_TARGET_LIBRARY,
+        }
+        assert summary["settled"][SETTLED_BY_TARGET_LIBRARY] == 1
+
+    def test_a_second_channel_settles_it_and_says_which(self):
+        rows = [ammoniated("a", "C6H12O6", "C6H15NO6"), row("b", "C6H12O6", PROTON)]
+        summary = gate(rows)
+        assert rows[0]["provenance"]["cross_channel"][SAME_ION_SETTLED] == {
+            "alternative": "C6H15NO6",
+            "via": "+H+",
+            "by": SETTLED_BY_SECOND_CHANNEL,
+            "through": ["+H+"],
+        }
+        assert summary["settled"][SETTLED_BY_SECOND_CHANNEL] == 1
 
     def test_the_cap_only_goes_downwards(self):
         rows = [ammoniated("a", "C6H12O6", "C6H15NO6", tier="below_assignability")]
@@ -271,6 +306,82 @@ class TestTheReagentNRule:
         assert summary["ambiguous_nitrogen"] == 1
         assert summary["capped"] == 0
         assert rows[0]["tier"] == "below_assignability"
+        # The rival is recorded all the same: the row says what it is in doubt
+        # with, whatever its evidence already took from it.
+        record = rows[0]["provenance"]["cross_channel"]
+        assert record["ambiguous_nitrogen"]["alternative"] == "C6H15NO6"
+        assert "capped" not in record
+
+    def test_a_radical_reading_is_no_rival(self):
+        # C5H8O5 through -H+ is the radical C4H7O2 through the carbonate radical
+        # anion, and a radical is refused the top tier on its own rule.
+        rows = [row("a", "C5H8O5", DEPROT, displaced=("C4H7O2", CARBONATE))]
+        summary = apply_cross_channel(rows, notation_by_id=dict(NEGATIVE))
+        assert summary["capped"] == 0
+        assert rows[0]["tier"] == "assigned"
+        assert rows[0]["provenance"]["cross_channel"][SAME_ION_SETTLED] == {
+            "alternative": "C4H7O2",
+            "via": "+CO3-",
+            "by": SETTLED_BY_RADICAL,
+        }
+        assert summary["settled"][SETTLED_BY_RADICAL] == 1
+
+    def test_a_molecule_beside_a_radical_is_still_a_rival(self):
+        # C5H8O4 through nitrate is the radical C4H8NO4 through carbonate and
+        # the molecule C5H9NO7 through -H+; the molecule is the question.
+        rows = [
+            row(
+                "a",
+                "C5H8O4",
+                NITRATE,
+                displaced=[("C4H8NO4", CARBONATE), ("C5H9NO7", DEPROT)],
+            )
+        ]
+        summary = apply_cross_channel(rows, notation_by_id=dict(NEGATIVE))
+        assert summary["capped"] == 1
+        assert rows[0]["provenance"]["cross_channel"]["ambiguous_nitrogen"] == {
+            "alternative": "C5H9NO7",
+            "via": "-H+",
+        }
+
+    def test_the_rows_own_reading_again_is_no_other_reading(self):
+        # A channel searched twice proposes every neutral through it twice, and
+        # the election keeps the twin as another reading of the ion.
+        rows = [
+            row(
+                "a",
+                "C15H32O",
+                CARBONATE,
+                displaced=[("C15H32O", CARBONATE), ("C16H33O4", DEPROT)],
+            )
+        ]
+        summary = apply_cross_channel(rows, notation_by_id=dict(NEGATIVE))
+        assert summary["capped"] == 0
+        assert rows[0]["provenance"]["cross_channel"][SAME_ION_SETTLED] == {
+            "alternative": "C16H33O4",
+            "via": "-H+",
+            "by": SETTLED_BY_RADICAL,
+        }
+
+    def test_a_twin_alone_raises_no_question(self):
+        rows = [row("a", "C15H32O", CARBONATE, displaced=("C15H32O", CARBONATE))]
+        apply_cross_channel(rows, notation_by_id=dict(NEGATIVE))
+        assert set(rows[0]["provenance"]["cross_channel"]) == {
+            "channels",
+            "corroborated",
+            "partner_tier",
+        }
+
+    def test_a_reading_nothing_can_read_is_not_weighed(self):
+        # A rule that caps fails open: an unreadable formula is not a rival.
+        rows = [row("a", "C6H12O6", AMMONIUM, displaced=("not a formula", PROTON))]
+        summary = gate(rows)
+        assert summary["capped"] == 0
+        assert set(rows[0]["provenance"]["cross_channel"]) == {
+            "channels",
+            "corroborated",
+            "partner_tier",
+        }
 
     def test_the_nitrate_channel_is_gated_the_same_way(self):
         rows = [row("a", "C5H8O4", NITRATE, displaced=("C5H9NO7", DEPROT))]
@@ -281,18 +392,34 @@ class TestTheReagentNRule:
             == "C5H9NO7"
         )
 
-    def test_a_bromide_run_has_nothing_to_gate(self):
-        # `+Br-` on M is `-H+` on M+HBr by the same arithmetic, and the finder
-        # displaces the one for the other - but the gate measures that prior to
-        # be borne out (89% of lone bromide readings confirmed against 19% of
-        # lone nitrogen ones), so the rule is scoped to nitrogen.
+    def test_a_bromide_cluster_is_asked_the_same(self):
+        # `+Br-` on M is `-H+` on M+HBr by the same arithmetic. The reference
+        # engine prefers the cluster by a policy of its own, so its agreeing is
+        # no measurement of which reading the spectrum holds.
         rows = [row("a", "CH2O2", BROMIDE, displaced=("CH3BrO2", DEPROT))]
         summary = apply_cross_channel(
             rows, notation_by_id={DEPROT: "-H+", BROMIDE: "+Br-"}
         )
         assert summary["reagent_rule_applied"] is False
-        assert summary["capped"] == 0
-        assert rows[0]["tier"] == "assigned"
+        assert (summary["ambiguous_adduct"], summary["capped"]) == (1, 1)
+        assert rows[0]["tier"] == "candidate"
+        record = rows[0]["provenance"]["cross_channel"]
+        assert record["reason"] == REASON_AMBIGUOUS_ADDUCT
+        assert record["ambiguous_adduct"] == {"alternative": "CH3BrO2", "via": "-H+"}
+
+    def test_its_isotopologues_carry_the_reason_they_were_capped_for(self):
+        rows = [
+            row("a", "CH2O2", BROMIDE, displaced=("CH3BrO2", DEPROT)),
+            row("b", "CH2O2", BROMIDE, role="iso_child", owner="a"),
+        ]
+        summary = apply_cross_channel(
+            rows, notation_by_id={DEPROT: "-H+", BROMIDE: "+Br-"}
+        )
+        assert summary["capped_isotopologues"] == 1
+        assert rows[1]["tier"] == "candidate"
+        assert rows[1]["provenance"]["cross_channel"]["reason"] == (
+            REASON_AMBIGUOUS_ADDUCT
+        )
 
 
 class TestWhatHappensToTheIsotopologues:
@@ -336,10 +463,10 @@ class TestTheRunsRecord:
         assert summary["channels"] == ["+(CH4N2O)H+", "+H+", "+NH4+"]
         assert summary["reagent_channels"] == ["+(CH4N2O)H+", "+NH4+"]
 
-    def test_a_run_with_no_donor_channel_names_which_half_stood_down(self):
-        # The corroboration half runs on every sample whatever the mode is, so
-        # the flag has to say the REAGENT RULE found nothing to gate rather
-        # than reading as though the pass did not run.
+    def test_a_run_with_no_donor_channel_says_so(self):
+        # The flag says whether a channel of this mode donates nitrogen - what
+        # the nitrogen reason can be about. Corroboration and the same-ion rule
+        # run on every sample whatever it says.
         rows = [row("a", "CH2O2", DEPROT), row("b", "CH2O2", BROMIDE)]
         summary = apply_cross_channel(
             rows, notation_by_id={DEPROT: "-H+", BROMIDE: "+Br-"}
@@ -454,6 +581,18 @@ class TestAReferenceMirrorsRow:
             1,
         )
 
+    def test_the_run_counts_a_lists_other_doubts_apart_too(self):
+        rows = [
+            mirror("a", "CH2O2", BROMIDE, displaced=("CH3BrO2", DEPROT)),
+            row("b", "C2H4O2", BROMIDE, displaced=("C2H5BrO2", DEPROT)),
+        ]
+        summary = apply_cross_channel(rows, notation_by_id=dict(NEGATIVE))
+        assert (summary["ambiguous_adduct"], summary["ambiguous_adduct_mirror"]) == (
+            2,
+            1,
+        )
+        assert (summary["capped"], summary["capped_mirror"]) == (2, 1)
+
     def test_a_donor_channel_on_the_same_neutral_fixes_the_count(self):
         # That ion would need an alternative analyte of its own, one urea
         # heavier where the first is one ammonia lighter: one neutral explains
@@ -480,12 +619,12 @@ class TestAReferenceMirrorsRow:
         ]
         assert gate(rows)["ambiguous_nitrogen"] == 1
 
-    def test_an_election_through_a_plain_channel_is_still_asked_one_way(self):
-        # The preference for the heavier mechanism did not elect it, so that
-        # prior is not what put its nitrogen where it is.
+    def test_an_election_through_a_plain_channel_is_asked_too(self):
+        # Whichever reading the ion was committed as, the other is a molecule
+        # nothing measured tells apart from it.
         rows = [row("a", "C3H7NO", PROTON, displaced=("C3H4O", AMMONIUM))]
-        assert gate(rows)["ambiguous_nitrogen"] == 0
-        assert rows[0]["tier"] == "assigned"
+        assert gate(rows)["ambiguous_nitrogen"] == 1
+        assert rows[0]["tier"] == "candidate"
 
     def test_a_target_library_row_is_exempt_from_either_side(self):
         rows = [

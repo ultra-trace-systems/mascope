@@ -7,6 +7,8 @@ explains equally well, and it must not let one hand out the ledger's strongest
 word on its own authority.
 """
 
+from types import SimpleNamespace
+
 import pandas as pd
 import pytest
 
@@ -19,6 +21,7 @@ from mascope_backend.api.new.peak_assignments.profiles import (
     resolve_profile,
     with_secondary_channels,
 )
+from mascope_backend.api.new.peak_assignments.service import _searched_mechanisms
 from mascope_backend.api.new.peak_assignments.tiers import (
     TIER_ASSIGNED,
     TIER_CANDIDATE,
@@ -243,3 +246,54 @@ def test_the_gate_sets_profiles_declare_their_channels(profile, expected):
     from mascope_tools.composition.reagents import secondary_channels
 
     assert len(secondary_channels(profile)) == expected
+
+
+def _mechanism(mechanism_id: str, notation: str) -> SimpleNamespace:
+    return SimpleNamespace(
+        ionization_mechanism_id=mechanism_id,
+        ionization_mechanism=notation,
+        ionization_mechanism_polarity="-",
+    )
+
+
+class TestTheChannelsASampleIsSearchedThrough:
+    NITRATE = _mechanism("im-no3", "+^NO3-")
+    DEPROTONATION = _mechanism("im-h", "-H+")
+    CARBONATE = _mechanism("im-co3", "+CO3-")
+
+    @staticmethod
+    def _running(*notations):
+        return SimpleNamespace(minor_channels=frozenset(notations))
+
+    def test_a_secondary_channel_the_source_runs_is_added(self):
+        searched = _searched_mechanisms(
+            [self.NITRATE, self.DEPROTONATION], [self.CARBONATE], self._running("+CO3-")
+        )
+        assert [m.ionization_mechanism_id for m in searched] == [
+            "im-no3",
+            "im-h",
+            "im-co3",
+        ]
+
+    def test_one_the_mode_declares_itself_is_searched_once(self):
+        # Searched twice, it proposes every neutral through it twice, and the
+        # election keeps the twin as another reading of the row's own ion.
+        searched = _searched_mechanisms(
+            [self.NITRATE, self.DEPROTONATION, self.CARBONATE],
+            [self.CARBONATE],
+            self._running("+CO3-"),
+        )
+        assert [m.ionization_mechanism_id for m in searched] == [
+            "im-no3",
+            "im-h",
+            "im-co3",
+        ]
+
+    def test_one_the_source_does_not_run_is_left_out(self):
+        searched = _searched_mechanisms(
+            [self.NITRATE], [self.CARBONATE], self._running()
+        )
+        assert [m.ionization_mechanism_id for m in searched] == ["im-no3"]
+
+    def test_a_mode_that_declares_nothing_searches_nothing(self):
+        assert _searched_mechanisms([], [self.CARBONATE], self._running("+CO3-")) == []

@@ -17,6 +17,8 @@
  * server's, and hiding it would make a capped row read as one nothing capped.
  */
 export const TIER_REASON_LABELS = Object.freeze({
+  // Where the row's evidence puts it, before any rule: named first.
+  evidence_band: 'evidence band',
   // What takes the top tier.
   odd_electron: 'radical neutral',
   oxygen_free_cluster: 'no oxygen to cluster on',
@@ -28,9 +30,11 @@ export const TIER_REASON_LABELS = Object.freeze({
   // What an earlier pass of the run took it on, restated in the same list.
   off_calibration: 'off calibration',
   ambiguous_nitrogen: 'ambiguous nitrogen',
+  ambiguous_adduct: 'ambiguous adduct',
   minor_channel: 'minor channel only',
   // What a row that kept its tier kept it on.
   corroborated: 'second channel',
+  same_ion_settled: 'same ion, settled',
   no_close_rival: 'no close rival',
   not_measured: 'not measured',
   // An isotopologue is judged through its M0, and on its own line.
@@ -111,7 +115,10 @@ export function reasonIcon(reason) {
 export function reasonTooltip(reason, tier, { viaM0 = false } = {}) {
   const subject = viaM0 ? 'the M0' : 'this row'
   let text
-  if (!reason?.caps) {
+  if (reason?.rule === 'evidence_band') {
+    // Not a rule that lowered the tier but the floor every rule lowers from.
+    text = `Sets ${subject}'s tier: the reasons below can only lower it further`
+  } else if (!reason?.caps) {
     text = `Caps nothing: ${subject} holds the tier its evidence earned`
   } else if (tier === 'candidate') {
     text = `Holds ${subject} at candidate - it cannot be assigned while this stands`
