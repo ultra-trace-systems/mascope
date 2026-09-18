@@ -37,6 +37,7 @@ from mascope_backend.api.new.peak_assignments.tiering import (
     REASON_ODD_ELECTRON,
     REASON_OFF_CALIBRATION,
     REASON_OXYGEN_FREE_CLUSTER,
+    REASON_POLYHALIDE_CLUSTER,
     TIERING_RULES_VERSION,
     apply_tiering,
     envelope_neighbours,
@@ -191,6 +192,8 @@ CHANNELS = {
     "m-deprotonation": "-H+",
     "m-bromide": "+Br-",
     "m-carbonate": "+CO3-",
+    "m-iodide": "+I-",
+    "m-dibromide": "+Br2-",
 }
 
 
@@ -292,6 +295,95 @@ class TestAClusterWithNothingToHoldOnTo:
         ]
         assert "C10H16" in detail
         assert "+[15N]O3-" in detail
+
+
+def halide(
+    row_id: str, formula: str = "BrI", mechanism: str = "m-bromide", **kwargs
+) -> dict:
+    """A reference list's row read through one of :data:`CHANNELS`."""
+    kwargs.setdefault("source", "database")
+    return cluster(row_id, formula, mechanism, **kwargs)
+
+
+class TestAPolyhalideTheSourceCanMakeToo:
+    def test_a_halogen_through_a_halide_loses_the_top_tier(self):
+        rows = [halide("pa-1")]
+        summary = run(rows, notation_by_id=CHANNELS)
+        assert tier_of(rows, "pa-1") == "candidate"
+        assert REASON_POLYHALIDE_CLUSTER in rules_on(rows, "pa-1")
+        assert summary["capped"] == 1
+        assert summary["capped_by_rule"] == {REASON_POLYHALIDE_CLUSTER: 1}
+
+    @pytest.mark.parametrize(
+        "formula, mechanism",
+        [("I2", "m-bromide"), ("ClI", "m-iodide"), ("BrI", "m-dibromide")],
+    )
+    def test_every_halogen_through_every_halide_is_asked(self, formula, mechanism):
+        rows = [halide("pa-1", formula, mechanism)]
+        run(rows, notation_by_id=CHANNELS)
+        assert tier_of(rows, "pa-1") == "candidate"
+
+    def test_the_row_keeps_its_reading(self):
+        # The air's IBr is measured this way too: the reading stays, and only
+        # the tier the run stands behind it at goes.
+        rows = [halide("pa-1")]
+        run(rows, notation_by_id=CHANNELS)
+        assert rows[0]["assigned_formula"] == "BrI"
+        assert rows[0]["ionization_mechanism_id"] == "m-bromide"
+
+    @pytest.mark.parametrize("formula", ["HBr", "HOI", "CH2Br2"])
+    def test_a_neutral_with_anything_but_halogens_is_not_asked(self, formula):
+        rows = [halide("pa-1", formula)]
+        run(rows, notation_by_id=CHANNELS)
+        assert tier_of(rows, "pa-1") == "assigned"
+        assert REASON_POLYHALIDE_CLUSTER not in rules_on(rows, "pa-1")
+
+    @pytest.mark.parametrize(
+        "mechanism", ["m-nitrate", "m-deprotonation", "m-carbonate"]
+    )
+    def test_a_reading_through_another_channel_is_not_asked(self, mechanism):
+        rows = [halide("pa-1", mechanism=mechanism)]
+        run(rows, notation_by_id=CHANNELS)
+        assert REASON_POLYHALIDE_CLUSTER not in rules_on(rows, "pa-1")
+
+    def test_a_target_library_row_is_exempt(self):
+        rows = [halide("pa-1", compound="compound-7")]
+        run(rows, notation_by_id=CHANNELS)
+        assert tier_of(rows, "pa-1") == "assigned"
+        assert REASON_POLYHALIDE_CLUSTER not in rules_on(rows, "pa-1")
+
+    def test_a_second_channel_does_not_rescue_it(self):
+        # What the rule doubts is where the ion came from, not whether the
+        # neutral was seen.
+        rows = [halide("pa-1", channels=["+Br-", "+I-"])]
+        run(rows, notation_by_id=CHANNELS)
+        assert tier_of(rows, "pa-1") == "candidate"
+
+    def test_without_the_run_s_mechanisms_no_row_is_asked(self):
+        rows = [halide("pa-1")]
+        run(rows)
+        assert tier_of(rows, "pa-1") == "assigned"
+
+    def test_its_isotopologues_follow_it_down(self):
+        rows = [
+            halide("pa-1"),
+            halide("pa-kid", role="iso_child", owner="pa-1", mz=286.74),
+        ]
+        summary = run(rows, notation_by_id=CHANNELS)
+        assert tier_of(rows, "pa-kid") == "candidate"
+        assert rules_on(rows, "pa-kid") == {REASON_INHERITED}
+        assert summary["capped_isotopologues"] == 1
+
+    def test_the_reason_names_the_neutral_and_the_channel(self):
+        rows = [halide("pa-1")]
+        run(rows, notation_by_id=CHANNELS)
+        (detail,) = [
+            reason["detail"]
+            for reason in rows[0]["provenance"]["tier_reasons"]
+            if reason["rule"] == REASON_POLYHALIDE_CLUSTER
+        ]
+        assert "BrI" in detail
+        assert "+Br-" in detail
 
 
 class TestTheDensityRule:
