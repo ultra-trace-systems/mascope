@@ -42,11 +42,13 @@ measurement.
 ``polyhalide_cluster`` - the row reads the peak as a halide attached to a
 neutral made of halogens only, a polyhalide anion (IBr through bromide is
 IBr2-) that a halide source makes from the air's halogens and from its own
-(:func:`polyhalide_cluster_reason`). On the gate it names 8 rows, the reactive
-iodine list's IBr on the three bromide sets, 5 of them at assigned. Neither
-reference engine reads IBr on any of the eight: the frozen one reads all eight
-as the bromide source's own cluster and the refreshed one six, both by a
-mass-defect rule rather than an identification.
+(:func:`polyhalide_cluster_reason`). On the gate it names 10 rows, all from the
+reactive iodine list on the three bromide sets - IBr on eight peaks and ICl on
+two - and takes the top tier from six of them, none a row either reference
+engine confirms. Neither reads IBr on any of the eight: the frozen one reads all
+eight as the bromide source's own cluster and the refreshed one six, both by a
+mass-defect rule rather than an identification. Both commit ICl on one of the
+two ICl peaks, where the row already stood at candidate.
 
 ``candidate_density`` - the run could not separate this peak's winner from other
 formulas, and nothing outside the peak corroborates it. Density is measured in
