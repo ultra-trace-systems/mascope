@@ -4,6 +4,16 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 ## [Unreleased]
 
+### Fixed
+
+- **Deleting an instrument config deletes only that config.** Every sample
+  file gets an instrument config of its own, but the delete also removed
+  every other config with the same instrument and method file, and unlinked
+  all of their sample files. For Orbitrap files converted while the method
+  name was not being read, that meant every config on the instrument.
+  `DELETE /api/instrument_configs/{id}` now removes the named config, and only
+  the sample file that pointed at it loses its link.
+
 ## [1.8.1] - 2026.09.16
 
 ### Added
