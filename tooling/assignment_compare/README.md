@@ -36,7 +36,8 @@ uv run python tooling/assignment_compare/compare_runs.py \
 created before that instant instead of its latest, so a reference that was
 re-published can still be read as it stood before (the timestamp is UTC unless
 it carries an offset). The nightly run prune keeps two completed runs per sample
-and engine by default, so on such a deployment this reaches back one publish.
+and engine by default, so on such a deployment this reaches back one publish once
+the prune has run, and further between a publish and the next prune.
 `summary.json` records the timestamp, and every joined row names the run it
 read.
 
