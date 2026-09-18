@@ -192,6 +192,12 @@ class PeakAssignmentDetailRecord(PeakAssignmentRecord):
 
     alternatives: list | None = None
     provenance: dict | None = None
+    #: The reference-list compounds ``assigned_formula`` is listed as, looked up
+    #: when the row is read (``service.with_known_compounds``): name, source,
+    #: licence, InChIKey and the source's own id. Each alternative a list holds
+    #: carries the same key. Empty where no list holds the formula, and None
+    #: where the row commits none or the lookup could not run.
+    known_compounds: list | None = None
 
 
 class PeakAssignmentsResponse(BaseModel):

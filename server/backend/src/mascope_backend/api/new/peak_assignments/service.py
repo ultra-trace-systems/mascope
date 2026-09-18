@@ -142,6 +142,7 @@ from mascope_backend.api.new.peak_assignments.tiering import (
     apply_tiering,
     find_envelope_claims,
 )
+from mascope_backend.api.new.reference import service as reference_service
 from mascope_backend.db import (
     AssignmentVerification,
     BatchPeakOccurrence,
@@ -165,6 +166,7 @@ from mascope_backend.socket.notifications import (
 from mascope_file.name import get_instrument_type
 from mascope_match import compute_match_isotopes
 from mascope_reference import iter_known_compositions, known_state_fingerprint
+from mascope_reference.known import DEFAULT_MAX_IDENTITIES
 from mascope_reference.scope import SAMPLE_POLARITIES
 from mascope_tools.composition.arbitration import CANDIDATE_DENSITY
 from mascope_tools.composition.calibration import (
@@ -636,7 +638,7 @@ async def get_peak_assignment_detail(
                     f"for sample '{sample.sample_item_name}'"
                 ),
                 "results": 1,
-                "data": [member_detail(*found)],
+                "data": [await with_known_compounds(member_detail(*found))],
             }
         assignment = await session.get(PeakAssignment, peak_assignment_id)
         if assignment is None or assignment.sample_item_id != sample_item_id:
@@ -664,8 +666,73 @@ async def get_peak_assignment_detail(
             f"'{sample.sample_item_name}'"
         ),
         "results": 1,
-        "data": [record],
+        "data": [await with_known_compounds(record)],
     }
+
+
+#: What the detail read names a reference-list compound by. The structure
+#: fields a record also carries are left out: the inspector names a compound,
+#: and a formula a large list shares with many compounds would otherwise carry
+#: all of their structures.
+_KNOWN_COMPOUND_FIELDS = ("name", "source", "license", "inchikey", "source_native_id")
+
+
+async def with_known_compounds(record: dict) -> dict:
+    """Name the reference-list compounds a row's formulas are listed as.
+
+    Looked up when the row is read rather than recorded by the run, and for
+    every formula the row shows - the committed one, each close alternative and
+    each other reading of its ion - so a formula a list holds is named wherever
+    it appears. A run records the identities of the list formulas it MATCHED
+    (``provenance.reference_identities``); this answers the wider question of
+    which formulas a list holds at all, including ones the run reached through
+    the formula search, on runs of any build and of any engine. A list names
+    candidates; a formula match is not an identification.
+
+    Only the sources the deployment matches against are named
+    (:func:`reference_license_gate`). A lookup that fails leaves the row as it
+    was: the names are a reading aid, and the row reads without them.
+
+    :param record: One full assignment row, modified in place.
+    :return: The row, with ``known_compounds`` on it and on each alternative a
+        list holds.
+    """
+    alternatives = [
+        alternative
+        for alternative in record.get("alternatives") or []
+        if isinstance(alternative, dict)
+    ]
+    formulas = [
+        str(formula)
+        for formula in (
+            record.get("assigned_formula"),
+            *(alternative.get("assigned_formula") for alternative in alternatives),
+        )
+        if formula
+    ]
+    if not formulas:
+        return record
+    try:
+        annotated = await reference_service.annotate_formulas(
+            formulas, licenses=reference_license_gate()
+        )
+    except Exception as error:  # noqa: BLE001 - a name lookup never fails a read
+        runtime.logger.debug(f"Reference names skipped on an assignment read: {error}")
+        return record
+
+    def named(formula) -> list[dict]:
+        return [
+            {field: known.get(field) for field in _KNOWN_COMPOUND_FIELDS}
+            for known in (annotated.get(str(formula)) or [])[:DEFAULT_MAX_IDENTITIES]
+        ]
+
+    if record.get("assigned_formula"):
+        record["known_compounds"] = named(record["assigned_formula"])
+    for alternative in alternatives:
+        known = named(alternative.get("assigned_formula"))
+        if known:
+            alternative["known_compounds"] = known
+    return record
 
 
 # -------------------------------------------------------------------

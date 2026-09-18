@@ -19,22 +19,32 @@ def _to_dict(record: ReferenceRecord) -> dict:
 
 
 async def annotate_formulas(
-    formulas: list[str], collapse: bool = True
+    formulas: list[str],
+    collapse: bool = True,
+    licenses: list[str] | None = None,
 ) -> dict[str, list[dict]]:
     """Look up known compounds for many formulas in one indexed query.
 
     By default the per-source records for each formula are collapsed on
     InChIKey into one identity per compound (contributing sources preserved in
     ``xrefs['sources']``), which is what an analyst wants to read. Pass
-    ``collapse=False`` to keep the raw one-row-per-(compound, source) records -
-    needed for license-aware filtering.
+    ``collapse=False`` to keep the raw one-row-per-(compound, source) records.
 
     :param formulas: Assigned/neutral formulas to annotate (any notation).
     :param collapse: Collapse each formula's records on InChIKey. Defaults True.
+    :param licenses: Keep only records under these licences, filtered before
+        the collapse so a compound is named only from sources the deployment
+        accepts. None keeps every record.
     :return: Mapping of each input formula to its known-compound records.
     """
     async with async_session() as session:
         annotated = await _annotate_formulas(session, formulas)
+    if licenses is not None:
+        allowed = set(licenses)
+        annotated = {
+            formula: [record for record in records if record.license in allowed]
+            for formula, records in annotated.items()
+        }
     return {
         formula: [
             _to_dict(record)
