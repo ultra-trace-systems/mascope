@@ -20,6 +20,7 @@ export const TIER_REASON_LABELS = Object.freeze({
   // What takes the top tier.
   odd_electron: 'radical neutral',
   oxygen_free_cluster: 'no oxygen to cluster on',
+  polyhalide_cluster: 'polyhalide: air or source',
   candidate_density: 'rivals left standing',
   envelope_neighbour: "a neighbour's isotope line",
   oxygen_lattice: 'oxygen lattice',

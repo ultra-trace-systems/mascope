@@ -311,6 +311,14 @@ What caps a row at candidate:
   judged this way. A second ionization channel does not lift the cap. A compound of your
   own target library is exempt; a formula from a loaded reference list is not, since a
   list names a compound rather than the channel it is seen through.
+- **polyhalide: air or source** — the peak was read as a halide attached to a neutral
+  made only of halogens: IBr read through bromide is the polyhalide anion IBr2-. A
+  halide source measures the air's halogen molecules exactly this way, and it also makes
+  them from its own, from impurities in its halogen supply and from species its walls
+  give back ([Wang et al. 2021][wa21]), so the mass and the isotope pattern cannot tell
+  the air from the source. The row keeps its formula; only how the peak moves over time
+  can settle where it came from. A second ionization channel does not lift the cap, and
+  a compound of your own target library is exempt.
 - **rivals left standing** — the peak's own evidence could not separate the committed
   formula from at least one other, and no second ionization channel of the run committed
   the same neutral. A compound matched from a list is asked this too. When the run
@@ -683,6 +691,12 @@ batch ledger* puts Mascope's own view back.
   Ehn, M.; Kurtén, T. *Modeling the charging of highly oxidized cyclohexene ozonolysis
   products using nitrate-based chemical ionization.* J. Phys. Chem. A 2015,
   119(24):6339–6345. [link](https://doi.org/10.1021/acs.jpca.5b01818)
+- <a id="wa21"></a>Wang, M.; He, X.-C.; Finkenzeller, H.; Iyer, S.; Chen, D.; Shen, J.;
+  Simon, M.; Hofbauer, V.; Kirkby, J.; Curtius, J.; Maier, N.; Kurtén, T.; Worsnop, D. R.;
+  Kulmala, M.; Rissanen, M.; Volkamer, R.; Tham, Y. J.; Donahue, N. M.; Sipilä, M.
+  *Measurement of iodine species and sulfuric acid using bromide chemical ionization mass
+  spectrometers.* Atmos. Meas. Tech. 2021, 14:4187–4202.
+  [link](https://doi.org/10.5194/amt-14-4187-2021)
 - <a id="sum07"></a>Sumner, L. W. et al. *Proposed minimum reporting standards for chemical
   analysis (Metabolomics Standards Initiative).* Metabolomics 2007, 3:211–221.
   [link](https://doi.org/10.1007/s11306-007-0082-2)
@@ -696,4 +710,5 @@ batch ledger* puts Mascope's own view back.
 [sch14]: #sch14
 [sum07]: #sum07
 [hy15]: #hy15
+[wa21]: #wa21
 [platt]: #platt

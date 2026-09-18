@@ -877,6 +877,66 @@ def oxygen_free_cluster(formula: str | None, notation: str | None) -> bool:
     return counts is not None and not counts.get("O", 0)
 
 
+#: The elements a polyhalide anion is made of.
+HALOGENS: frozenset[str] = frozenset({"F", "Cl", "Br", "I"})
+
+
+@lru_cache(maxsize=512)
+def attaches_halogens_only(notation: str | None) -> bool:
+    """Whether a channel attaches an anion made of halogens and nothing else.
+
+    A halide (``+Br-``, ``+I-``, ``+Cl-``) or a dihalide (``+Br2-``), read off the
+    mechanism as :func:`clusters_on_oxygen` reads its channel, so a hydrate, an
+    acid cluster or an oxyanion of a halogen (``+H2O+Br-``, ``+(HBr)Br-``,
+    ``+BrO-``) is not one.
+
+    :param notation: A mechanism's Mascope notation.
+    :return: True for such a channel. False for any other, and for a notation
+        nobody can parse, so an unreadable mechanism is never judged.
+    """
+    if not notation:
+        return False
+    try:
+        mechanism = parse_ionization(notation)
+        moiety = ionization_composition(mechanism.formula)
+    except Exception:  # noqa: BLE001 - a mechanism nobody can parse attaches nothing
+        return False
+    if not mechanism.addition or mechanism.charge >= 0 or not moiety:
+        return False
+    elements = {
+        CUSTOM_ELEMENTS[symbol].base_element if symbol in CUSTOM_ELEMENTS else symbol
+        for symbol, n in moiety.items()
+        if n
+    }
+    return bool(elements) and elements <= HALOGENS
+
+
+def polyhalide_cluster(formula: str | None, notation: str | None) -> bool:
+    """Whether a reading attaches a halide to a neutral made of halogens only.
+
+    IBr read through ``+Br-`` is the polyhalide anion IBr2-, and a halide source
+    makes such anions from the halogen molecules that reach it - those of the air
+    it samples, which is how a bromide instrument measures I2, IBr and ICl, and
+    those of the source itself, where impurities of a halogen supply make ICl
+    and IBr and species held on the walls return to the gas phase (Wang et al.,
+    Atmos. Meas. Tech. 14 (2021) 4187-4202, DOI 10.5194/amt-14-4187-2021). Mass
+    and envelope fit both origins alike, so the reading cannot say which it is.
+
+    :param formula: The reading's neutral formula.
+    :param notation: The mechanism it was read through.
+    :return: True when the channel attaches halogens only
+        (:func:`attaches_halogens_only`) and every element of the neutral is a
+        halogen. False otherwise, and for a formula that cannot be parsed.
+    """
+    if not formula or not attaches_halogens_only(notation):
+        return False
+    counts = element_counts(str(formula))
+    if not counts:
+        return False
+    present = {element for element, n in counts.items() if n}
+    return bool(present) and present <= HALOGENS
+
+
 def elect_same_ion_families(
     candidates: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:

@@ -279,6 +279,16 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   and its reason names the rivals. Radicals do not count. The row records
   `provenance.grid_rivals`, and the run records `search_scope.list_hits`.
 
+- **A halogen molecule read through a halide is no longer held at assigned.**
+  IBr read through bromide is the polyhalide anion IBr2-, which a halide source
+  makes from the halogens of the air it samples and from its own, so a run now
+  caps at candidate a row whose neutral is made only of halogens (I2, IBr, ICl,
+  Br2) when it is read through a halide or dihalide channel, and its
+  isotopologues follow. The row keeps its formula, the tier reason is
+  `polyhalide_cluster` ("polyhalide: air or source" in the peak inspector), and
+  a second ionization channel does not lift it. A compound of the workspace's
+  target library is exempt. `config.tiering` records rule set 5.
+
 - **A nitrate cluster of a neutral with no oxygen is no longer held at
   assigned.** Nitrate holds on to a molecule by hydrogen bonds from its
   oxygen-bearing groups, so a run now caps at candidate a row read through a
