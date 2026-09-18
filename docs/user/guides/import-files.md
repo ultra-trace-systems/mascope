@@ -56,6 +56,10 @@ Name files as:
   `2024.01.15-14h30m00s`). Mascope uses it to place and order the file.
 - **Ionization token** — the short token of a configured **ionization mode** must
   appear in the name. This is how Mascope knows how the sample was ionized.
+  The name must match exactly one mode for each polarity in the file: a file
+  acquired in both polarities needs the token of a positive mode and the token
+  of a negative mode. A name that matches two modes of the same polarity is
+  ambiguous, and the file gets no samples.
 
 **Configured ionization modes.** Because the filename must contain a known
 ionization token, the ionization modes you use have to exist first. This is a
