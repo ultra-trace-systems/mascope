@@ -32,6 +32,7 @@ app.add_typer(cmd.demo_app, name="demo")
 app.add_typer(cmd.prod_app, name="prod")
 app.add_typer(cmd.logs_app, name="logs")
 app.add_typer(cmd.cert_app, name="cert")
+app.add_typer(cmd.file_app, name="file")
 # Developer commands — they operate on the monorepo source tree (run
 # services, migrations, test suites, reference-database ingestion), so they are
 # only registered when the CLI runs from a checkout. A wheel install neither

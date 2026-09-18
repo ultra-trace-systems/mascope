@@ -18,6 +18,14 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   a method that alternates two scan ranges, is now logged at INFO. On the
   internal regression corpus that is one file in 182.
 
+- **`mascope file scans <file.raw>` shows what a raw file measured.** It lists
+  the file's scan streams, each with its scan count, blocks, time span and
+  strongest peaks, and says when a polarity has more than one MS1 stream.
+  `--json` prints the full census, parsed signatures and acquisition
+  parameters included. A checkout reads the file itself; the operator CLI
+  copies it into the running backend container, reads it there and removes
+  the copy.
+
 ### Fixed
 
 - **Orbitrap sample files record their instrument method again.** Since
