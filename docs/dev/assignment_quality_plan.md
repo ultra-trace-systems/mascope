@@ -6355,11 +6355,13 @@ terms, this is the point at which the feature can be re-presented.
 #### Verify, item by item
 
 - **Tests at the head.**
-  - The whole backend suite passes: 3,559 passed and 6 skipped.
+  - The whole backend suite passes: 3,561 passed and 6 skipped.
   - The library suite (687) and the frontend unit suite (1,247) pass.
   - ruff and the strict docs build are clean.
 - **Reversions.** Each new line of the polyhalide rule was reverted and its
-  tests re-run: 7 of 7 red. The frontend label's reversion is red too.
+  tests re-run: 7 of 7 red. So are the frontend label's reversion and undoing
+  either version bump: a test pins each number, the rule set's 5 on the
+  tiering record and the engine's 0.5.0 on the run row.
 - **The round.** 43 of 43 runs completed at 0.5.0. The row counts, owners and
   G2 are identical to the round before, except for the rule's six rows.
 - **C2's recalibration.** The six stored records moved by exactly their fitted
