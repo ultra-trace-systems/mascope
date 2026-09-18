@@ -15,6 +15,7 @@ import {
   P_CORRECT_TOOLTIP,
   uncalibratedReason
 } from '@/lib/pCorrect'
+import { listingName, listingOf, listingSource, listingTooltip } from '@/lib/referenceListings'
 import { reasonIcon, reasonTooltip, tierReasonsOf } from '@/lib/tierReasons'
 import { EVIDENCE_LEVELS, VERDICT_META } from '@/lib/verification'
 import { useBatchPeakCuration } from './stores/batchPeakCuration.js'
@@ -489,6 +490,8 @@ const altTooltip = (alt, index) => {
   // adduct already shows it as its ion formula in the row above.
   if (altAdduct(alt)) lines.push(`adduct: ${altAdduct(alt)}`)
   if (alt.source) lines.push(`source: ${alt.source}`)
+  const listing = listingOf(alt)
+  if (listing) lines.push(listingTooltip(listing))
   // Why this one carries no usable "use this". Said here as well as on the
   // control because the row is where the pointer actually is: the control only
   // fades in on hover and is disabled, and a disabled button dispatches no
@@ -713,6 +716,25 @@ const SAME_ION_TOOLTIP =
   'The same ion read as another neutral through another adduct. Its mass and isotope ' +
   "pattern are this row's own, so the spectrum cannot choose between the two readings; " +
   'a second channel of the run can.'
+
+// --- How the ion was made, and what a list calls it ----------------------------
+// The mechanism is half of an assignment: the neutral and the ion formula imply
+// it, but a reader should not have to take one from the other to see it.
+const ionization = computed(() => channelOf(focusedAssignment.value))
+const ionizationTooltip = computed(() => {
+  const row = focusedAssignment.value
+  if (!ionization.value) return ''
+  const reaction =
+    row?.assigned_formula && row?.ion_formula
+      ? `\n${row.assigned_formula} ${ionization.value} gives ${row.ion_formula}`
+      : ''
+  return `The ionization mechanism: how the neutral became the ion seen at this peak.${reaction}`
+})
+// What a reference list calls the committed formula: the identities the run
+// matched (in the row's provenance), else the compounds a list holds for it.
+const listedAs = computed(() =>
+  listingOf(focusedDetail.value, provenance.value?.reference_identities)
+)
 
 // Three kinds of close alternative are not simply runners-up, and each says
 // which it is: a reading of the same ion, the reading a neighbour's isotope line
@@ -1045,6 +1067,31 @@ const demotedCount = computed(() => {
           &middot; {{ focusedAssignment.source }}</span
         >
       </div>
+      <!-- Named outright rather than left between the lines of the neutral and
+           the ion formula: the mechanism is half of the assignment, and a list's
+           name for the formula is the first thing a reader checks it against. -->
+      <div v-if="ionization || listedAs" class="identity" data-testid="identity">
+        <div v-if="ionization" class="ev" data-testid="ionization">
+          <span class="k" v-tooltip.top="ionizationTooltip">ionization</span>
+          <span class="v">{{ ionization }}</span>
+        </div>
+        <div
+          v-if="listedAs"
+          class="ev listed"
+          data-testid="listed-as"
+          v-tooltip.top="listingTooltip(listedAs)"
+        >
+          <span class="k"
+            >reference list<span v-if="!listedAs.matched" class="potential">
+              &middot; potential</span
+            ></span
+          >
+          <span class="v"><span class="pi ph ph-flask" /> {{ listingName(listedAs) }}</span>
+          <span v-if="listingSource(listedAs)" class="list-source">{{
+            listingSource(listedAs)
+          }}</span>
+        </div>
+      </div>
       <div
         class="evidence"
         v-help.right="{
@@ -1233,6 +1280,13 @@ const demotedCount = computed(() => {
             <span class="reading-formula">{{ reading.assigned_formula }}</span>
             <span v-if="channelOf(reading)" class="reading-channel">
               through {{ channelOf(reading) }}
+            </span>
+            <span
+              v-if="listingOf(reading)"
+              class="reading-listed"
+              v-tooltip.left="listingTooltip(listingOf(reading))"
+            >
+              <span class="pi ph ph-flask" /> {{ listingName(listingOf(reading)) }}
             </span>
           </li>
         </ul>
@@ -1486,7 +1540,10 @@ const demotedCount = computed(() => {
               >{{ alt.assigned_formula || alt.ion_formula || '?'
               }}<span v-if="alternativeKind(alt)" class="alt-kind">{{
                 alternativeKind(alt).label
-              }}</span></span
+              }}</span
+              ><span v-if="listingOf(alt)" class="alt-listed"
+                ><span class="pi ph ph-flask" /> {{ listingName(listingOf(alt)) }}</span
+              ></span
             >
             <span class="s">
               <span v-if="altFit(alt) != null"
@@ -1951,6 +2008,17 @@ const demotedCount = computed(() => {
 .reading-channel {
   opacity: 0.65;
 }
+/* A list's name for a formula, wherever the card shows one: the flask the
+   search panel marks known compounds with, in the reading's own size. */
+.reading-listed,
+.alt-listed {
+  opacity: 0.75;
+}
+.alt-listed {
+  margin-left: 0.4rem;
+  font-family: var(--p-font-family, inherit);
+  font-size: 0.72rem;
+}
 /* What kind of alternative a row is, beside its formula rather than in a
    column of its own: the list's columns are the numbers. */
 .alt-kind {
@@ -1960,6 +2028,25 @@ const demotedCount = computed(() => {
   border-radius: 0.25rem;
   font-size: 0.7rem;
   opacity: 0.7;
+}
+/* The ionization and a list's name for the formula, in the evidence grid's
+   key/value voice, above it: they say what the row is, the grid how well. */
+.identity {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 0.4rem 1rem;
+}
+.identity .listed .v {
+  overflow-wrap: anywhere;
+}
+.identity .potential {
+  text-transform: none;
+  letter-spacing: normal;
+}
+.identity .list-source {
+  font-size: 0.72rem;
+  opacity: 0.6;
+  overflow-wrap: anywhere;
 }
 .alts-list {
   display: flex;
