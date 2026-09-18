@@ -110,7 +110,9 @@ def _read_method(filename: str) -> str | None:
         with open_backend(m_name.filename_to_datafile_path(filename)) as reader:
             return reader.method_file()
     except Exception as exc:  # noqa: BLE001
-        runtime.logger.warning(f"  Cannot read {filename}: {exc}")
+        # INFO per file: run() raises one summary WARNING for the lot, so a
+        # server missing many raw files does not report one event per file.
+        runtime.logger.info(f"  Cannot read {filename}: {exc}")
         return None
 
 
@@ -160,7 +162,7 @@ def _plan(
             )
         elif len(resolved - {""}) > 1:
             ambiguous_configs += 1
-            runtime.logger.warning(
+            runtime.logger.info(
                 f"  Instrument config {config_id} is shared by files recorded "
                 f"with different methods {sorted(resolved - {''})}; left empty"
             )
@@ -252,6 +254,12 @@ async def run() -> None:
         f"configs with conflicting methods: {plan['ambiguous_configs']}"
     )
     runtime.logger.info("=" * 80)
+    if plan["unreadable"] or plan["ambiguous_configs"]:
+        runtime.logger.warning(
+            f"Orbitrap method backfill left {plan['unreadable']} unreadable "
+            f"sample files and {plan['ambiguous_configs']} instrument configs "
+            "with conflicting methods; see the INFO lines above"
+        )
 
 
 def main() -> None:

@@ -12,6 +12,7 @@ from pathlib import Path
 import pytest
 
 from mascope_backend.db.scripts import populate_orbitrap_method_file as script
+from mascope_backend.runtime import runtime
 
 
 _REPO_ROOT = Path(__file__).resolve().parents[5]
@@ -141,3 +142,46 @@ def test_a_missing_file_reads_as_unreadable(monkeypatch, tmp_path):
         lambda _filename: str(tmp_path / "gone" / "data.raw"),
     )
     assert script._read_method("ORBI-1_file1.raw") is None
+
+
+def _warnings(work) -> list:
+    """Run ``work`` and return the WARNING-or-above records it logged."""
+    records = []
+    sink_id = runtime.logger.add(
+        lambda message: records.append(message.record), level="TRACE"
+    )
+    try:
+        work()
+    finally:
+        runtime.logger.remove(sink_id)
+    return [r for r in records if r["level"].no >= runtime.logger.level("WARNING").no]
+
+
+def test_per_file_problems_stay_below_the_monitoring_threshold(monkeypatch, tmp_path):
+    # Error monitoring subscribes at WARNING, and scripts run where it is wired
+    # up: a server missing many raw files must not report one event per file.
+    # run() raises a single summary WARNING instead.
+    monkeypatch.setattr(
+        script.m_name,
+        "filename_to_datafile_path",
+        lambda _filename: str(tmp_path / "gone" / "data.raw"),
+    )
+    shared = {
+        "if1": {
+            "files": [
+                {"filename": "ORBI-1_file1.raw", "method_file": ""},
+                {"filename": "ORBI-1_file2.raw", "method_file": ""},
+            ]
+        }
+    }
+    assert _warnings(lambda: script._read_method("ORBI-1_file1.raw")) == []
+    assert (
+        _warnings(
+            lambda: script._plan(
+                [_candidate(1, "if1"), _candidate(2, "if1")],
+                shared,
+                _reader({"ORBI-1_file1.raw": POS, "ORBI-1_file2.raw": NEG}),
+            )
+        )
+        == []
+    )
