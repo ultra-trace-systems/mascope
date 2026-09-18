@@ -577,22 +577,49 @@ async def _auto_process_sample_file(
     # Blank files are stored without an instrument config and should skip calibration.
     is_blank_sample_file = sample_file.instrument_function_id is None
 
-    # --- Perform calibration and matching for created ACQUISITION samples --- #
+    # --- Calibrate every ACQUISITION sample of the file before matching any --- #
+    # The m/z calibration belongs to the FILE, not the sample item: applying a
+    # fit rescales the whole peak store and removes the matches of every sample
+    # item on the file (calibration_mz_apply). A dual-polarity file has one
+    # sample item per polarity, so matching one before calibrating the other
+    # would lose its matches to the apply.
+    ionization_modes = {}
     for sample in acquisition_samples:
-        sample_item_id = sample["sample_item_id"]
-
-        # Get ionization mode to check calibration collection
         async with async_session() as session:
-            ionization_mode = await session.get(
+            ionization_modes[sample["sample_item_id"]] = await session.get(
                 IonizationMode, sample["ionization_mode_id"]
             )
 
+    # Each polarity drifts on its own, but a file holds one m/z calibration: a
+    # second polarity's fit replaces the first's, so whichever is calibrated
+    # last would set the axis for both. Until each polarity can carry its own
+    # fit, a file whose samples would calibrate more than once is matched on
+    # the acquisition axis instead.
+    calibrating_sample_ids = {
+        sample_item_id
+        for sample_item_id, ionization_mode in ionization_modes.items()
+        if ionization_mode
+        and ionization_mode.calibration_collection_id
+        and not is_blank_sample_file
+    }
+    shared_calibration = len(calibrating_sample_ids) > 1
+    if shared_calibration:
+        # INFO: a data condition, fires for every such file
+        runtime.logger.info(
+            f"Skipping m/z calibration for '{sample_file.filename}': "
+            f"{len(calibrating_sample_ids)} of its samples have a calibration "
+            "collection, and the file holds one m/z calibration for all of "
+            "them. Matching on the acquisition axis."
+        )
+        calibrating_sample_ids.clear()
+
+    matchable_sample_ids: set[str] = set()
+    for sample in acquisition_samples:
+        sample_item_id = sample["sample_item_id"]
+        ionization_mode = ionization_modes[sample_item_id]
+
         # Perform calibration only when collection is configured and file is not blank.
-        if (
-            ionization_mode
-            and ionization_mode.calibration_collection_id
-            and not is_blank_sample_file
-        ):
+        if sample_item_id in calibrating_sample_ids:
             calibrated = await calibrate_with_retry(
                 sample=sample,
                 sample_file_id=sample_file.sample_file_id,
@@ -616,7 +643,7 @@ async def _auto_process_sample_file(
                 f"'{sample['sample_item_name']}'. "
                 "Calibration is not applicable."
             )
-        else:
+        elif not shared_calibration:
             ionization_mode_name = (
                 ionization_mode.ionization_mode_name if ionization_mode else "unknown"
             )
@@ -627,6 +654,30 @@ async def _auto_process_sample_file(
                 "Calibration collection is not set for the ionization mode "
                 f"'{ionization_mode_name}'."
             )
+        matchable_sample_ids.add(sample_item_id)
+
+    # A calibration that was not verified leaves the file record unverified
+    # unless an earlier fit survives it, and the verified gate in
+    # match_compute_sample would then fail the pipeline for the file's other
+    # samples too - so judge the record as calibration left it.
+    mz_calibration = (
+        (await fetch_sample_file(sample_file_id=sample_file_id)).mz_calibration
+        if calibrating_sample_ids and matchable_sample_ids
+        else None
+    )
+    if mz_calibration is not None and not mz_calibration.get("verified", False):
+        runtime.logger.info(
+            "Skipping matching and peak assignment for "
+            f"{len(matchable_sample_ids)} sample(s) of '{sample_file.filename}': "
+            "the file's m/z calibration is not verified."
+        )
+        matchable_sample_ids.clear()
+
+    # --- Match and assign the samples --- #
+    for sample in acquisition_samples:
+        sample_item_id = sample["sample_item_id"]
+        if sample_item_id not in matchable_sample_ids:
+            continue
 
         await match_compute_sample(
             sample_item_id=sample_item_id,

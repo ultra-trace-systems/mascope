@@ -14,6 +14,16 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   `DELETE /api/instrument_configs/{id}` now removes the named config, and only
   the sample file that pointed at it loses its link.
 
+- **Dual-polarity files keep the matches of both polarities.** Auto-processing
+  a `+-` file creates one sample per polarity and used to calibrate, match and
+  assign them one after the other. The m/z calibration belongs to the file, so
+  calibrating one polarity removed the matches just computed for the other.
+  Every sample of a file is now calibrated before any of them is matched.
+  A file with a calibrant collection on both polarities is no longer
+  calibrated: the second fit replaced the first, so the polarity processed
+  last set the mass axis for both. Both are matched on the acquisition axis
+  until each polarity can carry its own calibration.
+
 ## [1.8.1] - 2026.09.16
 
 ### Added
