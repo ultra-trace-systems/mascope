@@ -15,11 +15,13 @@ a vote across the samples the peak appears in, not a threshold on one number.
   the evidence is too weak to trust.
 - **unassigned** &mdash; no composition explained the peak.
 
-The peak inspector says why a row holds its tier, under **Why this tier**: what
-capped it at *candidate* &mdash; a radical neutral, a peak whose evidence left
-other formulas standing, a line a neighbouring compound's isotope pattern
-already predicts &mdash; or what it kept its tier on. These rules only ever lower
-a tier, never raise one. A row assigned by hand, a run imported from another
+The peak inspector says why a row holds its tier, under **Why this tier**. A row
+whose evidence falls short of a tier's band says so first, with the numbers.
+After that come what capped it at *candidate* &mdash; a radical neutral, a peak
+whose evidence left other formulas standing, an ion another molecule explains
+just as well through another channel, a line a neighbouring compound's isotope
+pattern already predicts &mdash; or what it kept its tier on. These rules only
+ever lower a tier, never raise one. A row assigned by hand, a run imported from another
 engine and a run made before Mascope recorded reasons show none.
 
 A run computed outside Mascope and imported can carry a second tier: the one the
