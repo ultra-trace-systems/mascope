@@ -6,6 +6,16 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 ### Fixed
 
+- **A File Agent upload that fails to process now tells someone.** When
+  auto-processing an uploaded file failed, for example because no ionization
+  mode token matched its name, the error went only to the uploading account.
+  A paired File Agent uploads as a machine account that nobody signs in as,
+  so nobody saw the error and the file just had no samples (#1910). The error
+  now also goes to everyone viewing that instrument's raw files. An error
+  from a paired agent's upload goes to the person who sponsors the agent's
+  device rather than to its machine account. The notification is still
+  live only: whoever is not signed in at the time does not see it.
+
 - **Orbitrap sample files record their instrument method again.** Since
   ingestion moved onto the open-source raw-file reader, every Orbitrap file
   was stored with an empty method file, although the name is in the raw file

@@ -86,7 +86,7 @@ Related designs, and how this one relates to them (section 13):
 | Problem | Where | Effect |
 |---|---|---|
 | Routing is a substring of the file name | `resolve_ionization_modes_by_tokens` | Configuration has to be written into file names. Tokens from different sites cannot be merged. A `+-` file that matched two `+` tokens was accepted until #2158. `resolve_ionization_modes_by_peaks` is a `NotImplementedError` stub. |
-| An unrouted file is a row with no samples | `_auto_process_sample_file` | The failure notification goes to the uploading account's room. For agent uploads that is the machine account, so nobody sees it (#1910). |
+| An unrouted file is a row with no samples | `_auto_process_sample_file` | The failure notification went only to the uploading account's room. For agent uploads that is the machine account, so nobody saw it (#1910). Since #2159 it also reaches the instrument room, and a paired agent's errors go to the device sponsor, but only live: someone who is not signed in at the time never learns of it. |
 | Scans are selected by polarity, MS order and time only | `OpenTFRawBackend._selected`, `ScanSelector` | Two same-polarity streams with different scan ranges or scan modes are pooled into one averaged spectrum, one peak list, one time axis and one instrument fit. Averages divide by every selected scan, so an ion seen by only one range is diluted. |
 | An item's window is stored and then ignored | `compute_match_isotopes`, `extract_peaks`, peak-assignment peak loading, calibration, `create_sample_items` TIC | A windowed item is matched and assigned as if it were the whole polarity. |
 | Calibration and the instrument function are per file | `calibration_mz_fit` `_apply_sync`, `calibration_mz_apply` | Two items of one file share one m/z factor. Applying a new fit rescales every peak row in the file and removes the matches of every item in the file. #2153 contains the damage: every sample of a file is calibrated before any is matched, and a file with two calibrating modes is not calibrated at all. |
@@ -777,6 +777,7 @@ Effort is rough.
 4. **Fix the token rule**: one mode per polarity. Shipped in #2158.
 5. **Route the failure notification** to the instrument room and the device
    sponsor. This is the minimal #1910 fix; phase 1 makes it persistent.
+   Shipped in #2159.
 6. **Fix the dual-polarity calibration defect of 2.1.** Shipped in #2153.
    - Every sample of a file is calibrated before any is matched.
    - A file with two calibrating modes is not calibrated at all, and is

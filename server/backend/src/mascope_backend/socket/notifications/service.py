@@ -3,6 +3,9 @@
 from copy import deepcopy
 from typing import Any
 
+from sqlalchemy import select
+
+from mascope_backend.db import AgentDevice, async_session
 from mascope_backend.runtime import runtime
 from mascope_backend.socket import sio
 from mascope_backend.socket.notifications.schemas import UserNotification
@@ -252,6 +255,58 @@ async def send_progress_user_notification(
         await emit_user_notification(notification_copy, user_id=user_id)
 
 
+async def device_sponsor_id(user_id: int) -> int | None:
+    """The sponsor of the device that authenticates as this account, if any.
+
+    Only a machine account (an instrument agent's credential) has a device, so
+    a person's id finds none. Neither does a machine whose device lost its
+    sponsor when the sponsor's account was removed.
+
+    :param user_id: The account to look up.
+    :type user_id: int
+    :return: The sponsor's user id, or ``None``.
+    :rtype: int | None
+    """
+    async with async_session() as session:
+        return await session.scalar(
+            select(AgentDevice.sponsor_user_id)
+            .where(
+                AgentDevice.machine_user_id == user_id,
+                AgentDevice.sponsor_user_id.is_not(None),
+            )
+            .limit(1)
+        )
+
+
+async def error_recipient(user_id: int | None) -> int | None:
+    """The account that reads an error from a task this account started.
+
+    Nobody signs in as a machine account, so its personal room never has a
+    browser in it: an error addressed there reaches no one. When a paired
+    agent's upload fails to process, the person who sponsors the agent's
+    device reads the error instead. Everyone else reads their own.
+
+    The lookup must not cost the error it is routing: if it fails, the
+    account itself stays the recipient.
+
+    :param user_id: The account the task ran for, if any.
+    :type user_id: int | None
+    :return: The account to address the error to.
+    :rtype: int | None
+    """
+    if user_id is None:
+        return None
+    try:
+        sponsor_id = await device_sponsor_id(user_id)
+    except Exception:  # noqa: BLE001 - the error being routed matters more
+        runtime.logger.opt(exception=True).warning(
+            f"Could not look up a device sponsor for account {user_id}; "
+            "addressing its error notification to the account itself"
+        )
+        return user_id
+    return sponsor_id if sponsor_id is not None else user_id
+
+
 async def handle_notifications(
     rooms: list[str],
     notification: UserNotification,
@@ -267,6 +322,13 @@ async def handle_notifications(
     Extraction priority:
         room_id: kwargs[key] → result[key] → result['data'][key] → result['_notification_data'][key]
         user_id: kwargs['user_id'] → result['_notification_data']['user_id']
+
+    An error is addressed to :func:`error_recipient` of that user: a task a
+    paired agent started reports its errors to the agent's sponsor, not to the
+    agent's machine account. Other notifications keep the user they ran for,
+    so an agent's routine successes do not follow its sponsor around the app.
+    So does a ``silent`` error, which only ends a progress bar in the browser
+    that started the task.
 
     When neither resolves there is nobody to send to. For an ordinary
     notification that is an actionable fault - a message meant for a user was
@@ -288,6 +350,8 @@ async def handle_notifications(
         if notification_data := result.get("_notification_data"):
             if isinstance(notification_data, dict):
                 user_id = notification_data.get("user_id")
+    if notification.status == "error" and not notification.silent:
+        user_id = await error_recipient(user_id)
 
     for room_key in rooms:
         room_id = kwargs.get(room_key)
