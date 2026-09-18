@@ -25,6 +25,7 @@ Everything below assumes an Ubuntu host provisioned with
 | Back up now | `mascope prod db backup create` |
 | **Require a new password from every user** | Manage users in the app, or `mascope prod db script run require_password_change` |
 | **Clear a lost second factor (2FA)** | Manage users in the app, or `mascope prod mfa reset <email>` |
+| What a raw file measured (its scan streams) | `mascope file scans <file.raw>` |
 | **Disk monitor status / run now** | `systemctl list-timers mascope-disk-check.timer` / `sudo systemctl start mascope-disk-check.service` |
 | Disk monitor history | `journalctl -u mascope-disk-check.service` |
 | Assignment-run retention status / run now | `systemctl list-timers mascope-assignment-prune.timer` / `sudo systemctl start mascope-assignment-prune.service` |
@@ -1144,6 +1145,15 @@ The scripts are discovered and run inside the backend container, so the stack
 must be up: `mascope prod ps`, then `mascope prod up --detach`. The nightly
 `mascope-assignment-prune.service` is affected the same way - a firing while
 the stack is down fails, and the next one runs the pass again.
+
+**A file was processed in an unexpected way** - samples missing, or peaks that
+look like two measurements mixed together. `mascope file scans <file.raw>` lists
+the file's scan streams: what each group of scans measured (polarity, scan
+range, scan mode, resolution), when, and its strongest peaks, which usually
+include the reagent ions of its chemistry. A polarity with more than one MS1
+stream is pooled into one peak list by processing, and the command says so. It
+reads a copy of the file on this machine, inside the backend container, so the
+stack must be up.
 
 **Backend unhealthy after an update.** The updater stops and leaves the stack in
 place (no automatic rollback). Investigate with `mascope prod logs backend`. To
