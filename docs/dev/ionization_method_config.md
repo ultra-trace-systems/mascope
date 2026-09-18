@@ -18,7 +18,7 @@ what still needs a human decision. Current state, last verified 2026-07-28:
 |---|---|
 | 1. Harvest `scan_parameters()` into `.props` | **Shipped** (PR #1723) |
 | 2. Bump opentfraw off 1.2.0 | **Already done on develop** - see below |
-| 3. Populate `method_file` | **Open, unblocked, next** |
+| 3. Populate `method_file` | **Shipped** (2026-09-18); backfill with `populate_orbitrap_method_file` |
 | 4. Fix `delete_instrument_config` fan-out | **Fixed** (2026-09-18): deletes the named config only |
 | 5. File upstream opentfraw issues | **Open** |
 | 6-9. Presets, notation, pane UX, run-config stamp | **Open** |
@@ -131,6 +131,10 @@ Other evidence:
   TODO (`api/new/ionization/modes/util.py:87-108`).
 
 ### 2.2 A live data-loss path, found while researching this
+
+> Fixed 2026-09-18 (Phase 0 item 3): both reader backends now report the
+> method, and `populate_orbitrap_method_file` backfills the affected rows. The
+> analysis below describes the state before that fix.
 
 `SampleFile.method_file` is **hardcoded to `""` for every Orbitrap file**:
 

@@ -118,6 +118,12 @@ class ReaderBackend(Protocol):
         cannot provide it."""
         ...
 
+    def method_file(self) -> str:
+        """Instrument method the file was acquired with, as recorded in its
+        sample information: the Xcalibur path of the ``.meth`` file, verbatim.
+        Empty when the file records none."""
+        ...
+
     def scan_acquisition_settings(
         self,
         polarity: Polarity | None = None,
@@ -652,6 +658,9 @@ class ThermoBackend:
         d = self._raw.CreationDate
         return datetime(d.Year, d.Month, d.Day, d.Hour, d.Minute, d.Second)
 
+    def method_file(self) -> str:
+        return str(self._raw.SampleInformation.InstrumentMethodFile or "")
+
     def scan_acquisition_settings(
         self,
         polarity: Polarity | None = None,
@@ -1155,6 +1164,12 @@ class OpenTFRawBackend:
         if ts is None:
             return None
         return datetime.fromtimestamp(float(ts), tz=timezone.utc).replace(tzinfo=None)
+
+    def method_file(self) -> str:
+        # The sample-information block of the file header; reading it touches
+        # no scan data.
+        info = self._raw.sample_info or {}
+        return str(info.get("inst_method") or "")
 
     def scan_indices(
         self,
