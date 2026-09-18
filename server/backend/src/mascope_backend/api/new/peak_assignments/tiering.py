@@ -39,6 +39,15 @@ nitrate set: the reference engine commits the same formula on one of the ten
 and nothing on the other nine. Carbonate clusters are not asked, on the same
 measurement.
 
+``polyhalide_cluster`` - the row reads the peak as a halide attached to a
+neutral made of halogens only, a polyhalide anion (IBr through bromide is
+IBr2-) that a halide source makes from the air's halogens and from its own
+(:func:`polyhalide_cluster_reason`). On the gate it names 8 rows, the reactive
+iodine list's IBr on the three bromide sets, 5 of them at assigned. Neither
+reference engine reads IBr on any of the eight: the frozen one reads all eight
+as the bromide source's own cluster and the refreshed one six, both by a
+mass-defect rule rather than an identification.
+
 ``candidate_density`` - the run could not separate this peak's winner from other
 formulas, and nothing outside the peak corroborates it. Density is measured in
 the finder over the full candidate list (``arbitration.candidate_density``),
@@ -130,6 +139,7 @@ from mascope_tools.composition.heuristic_filter import (
     anchor_on_monoisotopic,
     neutral_is_closed_shell,
     oxygen_free_cluster,
+    polyhalide_cluster,
     predict_isotopes,
 )
 from mascope_tools.composition.implausibility import implausible_signatures
@@ -139,7 +149,7 @@ from mascope_tools.composition.implausibility import implausible_signatures
 #: run, because a tier is only comparable across runs together with the rules
 #: that produced it - the same statement the tier BANDS carry, for the same
 #: reason.
-TIERING_RULES_VERSION = 4
+TIERING_RULES_VERSION = 5
 
 #: The row names a radical rather than a molecule.
 REASON_ODD_ELECTRON = "odd_electron"
@@ -147,6 +157,9 @@ REASON_ODD_ELECTRON = "odd_electron"
 #: The row clusters an anion that holds on to oxygen with a neutral that has
 #: none.
 REASON_OXYGEN_FREE_CLUSTER = "oxygen_free_cluster"
+
+#: The row attaches a halide to a neutral made of halogens only.
+REASON_POLYHALIDE_CLUSTER = "polyhalide_cluster"
 
 #: The peak is a line another committed reading's envelope predicts.
 REASON_ENVELOPE_NEIGHBOUR = "envelope_neighbour"
@@ -413,6 +426,44 @@ def oxygen_free_cluster_reason(
         f"{formula} carries no oxygen, and a {notation} cluster holds on to a "
         "neutral by hydrogen bonds from its oxygen-bearing groups, so the source "
         "is unlikely to make this ion",
+        caps=True,
+    )
+
+
+def polyhalide_cluster_reason(row: dict, notation_by_id: dict[str, str]) -> dict | None:
+    """A halide attached to a neutral made of halogens only.
+
+    The ion is a polyhalide anion, and a halide source makes those from any
+    halogen molecule that reaches it: the air's, which is how a bromide source
+    measures I2, IBr and ICl, and its own, from impurities of a halogen supply
+    and from species the walls give back
+    (``heuristic_filter.polyhalide_cluster``). The mass and the envelope fit
+    both origins alike, so the reading is kept at candidate rather than refused:
+    only how the peak moves over time can tell the air from the source.
+
+    No corroboration lifts it, for the oxygen-free cluster's reason: the doubt
+    is about where the ion came from, and a second channel's reading of the
+    neutral does not say.
+
+    A row of the target library is exempt, as it is from the oxygen-free
+    cluster: the workspace named that compound for the modes its collection is
+    attached to.
+
+    :param row: A committed monoisotopic row.
+    :param notation_by_id: The run's mechanisms, by the id the rows carry.
+    :return: The reason, or None where the reading is not such a cluster.
+    """
+    if is_target_library_row(row):
+        return None
+    formula = row.get("assigned_formula")
+    notation = notation_by_id.get(str(row.get("ionization_mechanism_id")))
+    if not polyhalide_cluster(formula, notation):
+        return None
+    return _reason(
+        REASON_POLYHALIDE_CLUSTER,
+        f"{formula} is made of halogens only, and through {notation} it makes a "
+        "polyhalide anion that a halide source also makes from its own halogens, "
+        "so the peak cannot say whether it came from the air or from the source",
         caps=True,
     )
 
@@ -709,6 +760,7 @@ def apply_tiering(
         for reason in (
             odd_electron_reason(row),
             oxygen_free_cluster_reason(row, notation_by_id),
+            polyhalide_cluster_reason(row, notation_by_id),
             density_reason(row),
             envelope_reason(row, on_a_neighbours_line),
         ):

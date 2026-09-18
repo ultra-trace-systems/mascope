@@ -15,6 +15,7 @@ import {
 const SERVER_RULES = [
   'odd_electron',
   'oxygen_free_cluster',
+  'polyhalide_cluster',
   'candidate_density',
   'envelope_neighbour',
   'oxygen_lattice',
