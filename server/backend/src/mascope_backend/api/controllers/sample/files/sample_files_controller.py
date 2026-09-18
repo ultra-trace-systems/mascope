@@ -532,6 +532,7 @@ async def create_sample_file(
             independent_transaction=True,
             user_id=user_id,
             process_id=process_id,
+            instrument=new_sample_file.instrument,
         )
 
         # Step 7: Return created sample file

@@ -269,6 +269,7 @@ async def auto_process_sample_file(
     user_id: int | None = None,
     process_id: str | None = None,
     parent_id: str | None = None,
+    instrument: str | None = None,
 ) -> dict:
     """
     Main orchestrator for automatic sample file processing pipeline.
@@ -298,6 +299,11 @@ async def auto_process_sample_file(
     :type process_id: str | None, optional
     :param parent_id: Parent process ID for tracking hierarchical processes
     :type parent_id: str | None, optional
+    :param instrument: The file's instrument. The pipeline itself never reads
+        it: it names the room that hears how the run ended. A finished run
+        also reports its instrument in its result, but a failed run has no
+        result, so this is the only way its error reaches that room.
+    :type instrument: str | None, optional
     :return: Processing results with affected IDs
     """
     for attempt in range(_AUTO_PROCESS_RETRIES + 1):
@@ -483,6 +489,7 @@ async def spawn_auto_process_sample_file(
     user_id: int | None = None,
     process_id: str | None = None,
     parent_id: str | None = None,
+    instrument: str | None = None,
 ) -> None:
     """Start the auto-processing pipeline detached from the request that triggered it.
 
@@ -508,6 +515,7 @@ async def spawn_auto_process_sample_file(
         "independent_transaction": independent_transaction,
         "user_id": user_id,
         "parent_id": parent_id,
+        "instrument": instrument,
     }
     # Omitted rather than forwarded as None. api_controller_background_task
     # reads it as ``kwargs.get("process_id", gen_id(8))``, so an absent key
