@@ -6045,7 +6045,11 @@ and its committed mass error.
 | F2 | 96.7 -> 83.9 | 29.0 -> 41.2 / 29.0 -> 43.1 | 69 -> 318 | 0 of 10 | 31 -> 68 (2 -> 4) |
 
 **G1 falls because the reference speaks, not because it agrees more.** Its
-three parts:
+three parts, over the engine's assigned monoisotopic rows: the reference reads
+the peak as another ion, as another compound's isotopologue, or as reagent or
+artifact (contradicts); it reads the same ion as another neutral and adduct,
+which no spectrum can separate (the split); or it commits nothing on the peak
+at all.
 
 | set | contradicts | same ion, other split | does not commit | = G1 |
 |---|---|---|---|---|
@@ -6098,10 +6102,11 @@ axis or its anchors are fixed.
   - So a claim that displaces a reading its evidence called assigned is the
     contested kind. The re-read takes the tier so, and the block needs no
     second tier.
-- **The height rule's tails (2.4e).** Over the 247 claims the refreshed
-  reference confirms 17% below 0.6 of the predicted height, 57% between 0.6 and
-  1.4, and 26% between 1.4 and 2.0 (frozen: 16%, 53% and 13%). The low tail is
-  where the doubt is.
+- **The height rule's tails (2.4e).** Over the 247 claims a row makes for
+  itself - six more rows are carried with one - the refreshed reference confirms
+  17% below 0.6 of the predicted height, 57% between 0.6 and 1.4, and 26%
+  between 1.4 and 2.0 (frozen: 16%, 53% and 13%). The low tail is where the
+  doubt is.
 - **The widened bar on the TOF sets (2.4e).** The refreshed reference now
   speaks there, and the lines in doubt fare worse than the lines that track.
   - It confirms 24% of the TOF isotopologue rows whose line tracks (7% frozen)
