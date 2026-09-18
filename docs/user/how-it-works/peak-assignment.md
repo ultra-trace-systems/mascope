@@ -293,6 +293,13 @@ its answers under **Why this tier**: every committed row carries at least one, n
 either what capped it at *candidate* or what it kept its tier on. The sentence under each
 is the run's own, about that row.
 
+A row whose evidence is under the top band says so first: **evidence band** gives its
+evidence, the fit and plausibility it is the product of, and the band it falls short of -
+*evidence 8% (fit 8% x plausibility 100%) is under the candidate band of 45%*. The
+band is where the row stands before any rule, so the reasons after it say what else holds
+it down, or what it has going for it: a row can be seen through a second channel and
+still stand below assignability on a poor fit.
+
 What caps a row at candidate:
 
 - **radical neutral** — the committed neutral breaks the even-valence rule, the first of
@@ -360,50 +367,69 @@ What caps a row at candidate:
   at all without being one of the small inorganics these sources make. A curated identity
   is exempt here too, for the same reason: both shapes describe what a search arrives at,
   and a curated row was not arrived at by one.
-- **off calibration**, **ambiguous nitrogen** and **minor channel only** — caps the run
-  applied earlier, restated here so every reason is in one place: a mass error far from
-  the run's own fitted calibration with nothing corroborating it; an ion that reads just
-  as well as a neutral with a different nitrogen count, the nitrogen moved between the
-  compound and a reagent channel that carries nitrogen (ammonium, urea, nitrate), with no
-  second channel of the run to settle the count; and a commitment through a channel the
+- **ambiguous nitrogen** and **ambiguous adduct** — the committed ion reads just as well
+  as another molecule through another of the run's ionization channels, and no second
+  channel of the run settles which. Dimethylformamide with a proton is the same ion as
+  acrolein with ammonium: the same mass, the same isotope pattern and the same fit, so the
+  spectrum cannot choose between them. *Ambiguous nitrogen* is where the two readings put
+  a different number of nitrogen atoms on the compound - an ammonium, urea or nitrate
+  adduct against a plain channel, or two such adducts against each other; *ambiguous
+  adduct* is the rest, such as a bromide cluster against the deprotonated molecule that
+  holds the hydrogen bromide. The row keeps its formula. A radical reading is no rival,
+  since the run never holds a radical at *assigned*, and a compound of your own target
+  library is exempt, since your curation chose the reading. A formula from a loaded
+  reference list is asked too: the run gives it the other readings of its ion that the
+  formula search would have considered, shown with its close alternatives.
+- **off calibration** and **minor channel only** — caps the run applied earlier, restated
+  here so every reason is in one place: a mass error far from the run's own fitted
+  calibration with nothing corroborating it; and a commitment through a channel the
   ionization mode treats as secondary, with no isotopologue or second channel behind it.
-  The last applies to the formula search's own results only. Only a compound of your own
-  target library is exempt from the nitrogen count. The calibration check exempts only a
-  line one of whose isotopologues tracks its mass error: your library's lines help measure
-  the calibration, but a list names a compound rather than where each of its lines has to
-  sit, so a line of it far off calibration with no isotopologue behind it is capped like
-  any other. A formula from a loaded reference list is a prior matched against every
-  sample rather than a list assembled for your data. The run gives it the other readings
-  of its ion that the formula search would have considered, shown with its close
-  alternatives - dimethylformamide with a proton is the same ion as acrolein with
-  ammonium - and questions its nitrogen count whichever side of that split the list
-  chose. Those reference matches also play no part in measuring the sample's own mass
-  accuracy. The calibration's centre can follow
+  The last applies to the formula search's own results only. The calibration check
+  exempts only a line one of whose isotopologues tracks its mass error: your library's
+  lines help measure the calibration, but a list names a compound rather than where each
+  of its lines has to sit, so a line of it far off calibration with no isotopologue
+  behind it is capped like any other. A formula from a loaded reference list is a prior
+  matched against every sample rather than a list assembled for your data, and its
+  matches play no part in measuring the sample's own mass accuracy. The calibration's
+  centre can follow
   the mass range: where the run's assignments show their mass error changing with m/z the
   way a fixed offset in millidaltons does, growing in ppm as the mass falls, each ion is
   measured from the centre at its own m/z, so a small ion a couple of ppm out can sit
   exactly on calibration.
 
 What a row that keeps its tier kept it on: **second channel** (the same neutral committed
-through two or more of the run's ionization channels), **no close rival** (the evidence
-separated the formula from every other candidate the run competed for the peak), or **not
-measured** (nothing the pass reads was recorded for the row, which is a statement of
-absence rather than a finding). An isotopologue **follows its M0**: it is the M0's ion
+through two or more of the run's ionization channels), **same ion, settled** (the ion
+reads as another molecule too, and something settled which: a second channel, your target
+library, or the other reading being a radical - the sentence says which), **no close
+rival** (the evidence separated the formula from every other candidate the run competed
+for the peak; where the ion reads another way, it separated the ion from every other ion,
+since two readings of one ion are one measurement), or **not measured** (nothing the pass
+reads was recorded for the row, which is a statement of absence rather than a finding). An isotopologue **follows its M0**: it is the M0's ion
 seen at another isotope, so it takes the M0's answer and loses the top tier with it, and
 the inspector shows the M0's reasons beneath its own. What was found about its own line -
 in doubt, off its M0, read as the M0's line - is listed above that.
 
-**Beside the reasons.** The peak inspector also shows two measurements the reasons
-read.
+**Beside the reasons.** The peak inspector also names what the row is, and shows two
+measurements the reasons read.
 
+- ***ionization*** and ***reference list*** sit above the evidence. The first is the
+  ionization mechanism the ion was read through (*+H+*, *+NH4+*, *-H+* ...): the neutral
+  and the ion formula imply it, but it is half of the assignment. The second is what a
+  reference list calls the formula, with the list it comes from: the compound the run
+  matched it from, or - marked *potential* - a compound a list holds for a formula the run
+  reached through the formula search, which is a lead to check rather than a match the run
+  made. A formula match names candidate compounds, not an identification; hovering lists
+  every compound the lists name for it. The same names appear beside the other readings
+  of the ion and beside the close alternatives.
 - ***mass z*** sits beside the m/z error. It is the row's distance from the run's own
   mass calibration at its m/z, counted in the calibration's widths. Hovering it gives
   the run's centre and width, and the distances at which *off calibration* caps a row.
   The value is marked when it is past the distance that caps a row at *candidate*.
 - ***Same ion, read another way*** sits under the reasons. It lists the other neutrals
-  the committed ion reads as through the run's other channels, which the nitrogen check
-  is about. Two such readings have the same mass and isotope pattern, so the spectrum
-  cannot choose between them; a second channel of the run can.
+  the committed ion reads as through the run's other channels, which *ambiguous
+  nitrogen*, *ambiguous adduct* and *same ion, settled* are about. Two such readings
+  have the same mass and isotope pattern, so the spectrum cannot choose between them; a
+  second channel of the run can.
 
 The close alternatives mark three kinds of entry that are not simply runners-up:
 
