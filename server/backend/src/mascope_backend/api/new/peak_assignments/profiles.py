@@ -91,6 +91,8 @@ class ResolvedProfile:
         profile's secondary channels - present or not, and on what.
     :param unavailable_channels: Channels the spectrum showed but the
         deployment has no mechanism row for, so they could not be searched.
+    :param mode_channels: The notations the sample's ionization mode declares
+        itself. A secondary channel the mode also declares is the mode's own.
     """
 
     profile: ReagentProfile
@@ -104,6 +106,7 @@ class ResolvedProfile:
     mz_precision_source: str
     channel_evidence: tuple[ChannelEvidence, ...] = ()
     unavailable_channels: tuple[str, ...] = ()
+    mode_channels: tuple[str, ...] = ()
 
     @property
     def minor_channels(self) -> frozenset[str]:
@@ -113,8 +116,14 @@ class ResolvedProfile:
         carrier *and* the deployment can express it as a mechanism; the two
         conditions are recorded separately, so a run says which of the two an
         absent channel failed.
+
+        A channel the mode declares itself is never in it. The mode is what an
+        operator configured the sample's chemistry as, so such a channel is
+        searched once, as the mode's own, and none of what a secondary channel
+        is held to reaches it: the minor-channel cap, the tie that goes to the
+        mode's channel, the snapshot's secondary channels.
         """
-        unavailable = set(self.unavailable_channels)
+        unavailable = set(self.unavailable_channels) | set(self.mode_channels)
         return frozenset(
             notation
             for notation in present_notations(self.channel_evidence)
@@ -305,6 +314,7 @@ def resolve_profile(
         requested_context=requested_context,
         element_ranges_source=element_ranges_source,
         mz_precision_source=mz_precision_source,
+        mode_channels=tuple(mechanism_notations),
     )
 
 
