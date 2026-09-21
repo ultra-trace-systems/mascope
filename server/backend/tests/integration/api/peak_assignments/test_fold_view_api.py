@@ -362,7 +362,7 @@ async def test_the_derived_detail_carries_the_anchors_other_identities(
     assert batch["consensus_formula"] == "C6H12O6"
     assert detail["provenance"]["p_correct"] == pytest.approx(0.91)
     # Looked up like a run's own row: no list holds the formula here.
-    assert detail["known_compounds"] == []
+    assert (detail["known_compounds"], detail["known_compounds_total"]) == ([], 0)
 
     missing = await guest_client.get(
         f"/api/peak-assignments/sample/{s1}/assignment/"

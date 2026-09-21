@@ -22,11 +22,13 @@ isotopologues per sample:
 """
 
 import json
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from mascope_reference.normalize import canonical_formula
 from mascope_reference.peaklist import is_odd_electron
 from mascope_reference.query import _STABLE_ORDER, active_join
 from mascope_reference.schema import reference_compound, reference_source
@@ -127,6 +129,98 @@ async def known_state_fingerprint(session: AsyncSession) -> tuple:
     )
 
 
+def _admitted_statement(
+    *,
+    licenses: set[str] | None,
+    ceiling: KnownWindow | None,
+    polarity: str | None,
+):
+    """The compound rows Stage A may match, before each source's own window.
+
+    :param licenses: Keep only records under these licences; None keeps all.
+    :param ceiling: The chemistry context's ceiling; its mass cap is applied
+        here, the rest per row by :class:`_Admission`.
+    :param polarity: The sample's polarity; a source recording the other one
+        contributes nothing.
+    :return: A SELECT of the identity and scope columns, active sources only.
+    """
+    stmt = active_join(*_KNOWN_COLUMNS, *_SCOPE_COLUMNS)
+    # Charged species are recorded, not matched: Stage A pairs a NEUTRAL formula
+    # with an ionization mechanism, so an intrinsically charged row has no
+    # neutral precursor to expand and could only ever produce a false identity
+    # (issue #1726). NULL is both the pre-charge-column state and the neutral
+    # default, so it passes.
+    stmt = stmt.where(
+        or_(
+            reference_compound.c.charge.is_(None),
+            reference_compound.c.charge == 0,
+        )
+    )
+    if licenses is not None:
+        stmt = stmt.where(reference_compound.c.license.in_(licenses))
+    if polarity is not None:
+        stmt = stmt.where(
+            or_(
+                reference_source.c.polarity.is_(None),
+                reference_source.c.polarity == polarity,
+            )
+        )
+    if ceiling is not None and ceiling.max_mass is not None:
+        # The ceiling bounds every source, so its mass cap can be left to the
+        # index; each source's own cap is applied per row.
+        stmt = stmt.where(reference_compound.c.monoisotopic_mass <= ceiling.max_mass)
+    # Totally ordered, so which identities survive a cap is the same on every
+    # read of the same data rather than whatever order the rows arrive in.
+    return stmt.order_by(*_STABLE_ORDER)
+
+
+class _Admission:
+    """Whether a row's source admits its formula.
+
+    Its window under the ceiling, and whether its radicals may be matched: what
+    each source admits is read once, and each (source, formula) decided once -
+    a formula repeats within a source only as isomers, and across sources each
+    has its own window to answer to.
+
+    :param ceiling: The chemistry context's ceiling, or None.
+    """
+
+    def __init__(self, ceiling: KnownWindow | None) -> None:
+        self._ceiling = ceiling
+        self._by_source: dict[int, tuple[KnownWindow, bool]] = {}
+        self._decided: dict[tuple[int, str], bool] = {}
+
+    def __call__(self, row) -> bool:
+        key = (row.source_id, row.formula)
+        admitted = self._decided.get(key)
+        if admitted is None:
+            scope = self._by_source.get(row.source_id)
+            if scope is None:
+                source = SourceScope.from_row(row)
+                scope = (
+                    source.known_window.intersect(self._ceiling),
+                    source.allow_radicals,
+                )
+                self._by_source[row.source_id] = scope
+            window, allow_radicals = scope
+            admitted = window.admits(row.formula, row.monoisotopic_mass) and (
+                allow_radicals or not is_odd_electron(row.formula)
+            )
+            self._decided[key] = admitted
+        return admitted
+
+
+def _identity(row) -> KnownIdentity:
+    return KnownIdentity(
+        name=row.name,
+        source=row.source_name,
+        license=row.license,
+        inchikey=row.inchikey,
+        source_native_id=row.source_native_id,
+        xrefs=row.xrefs or {},
+    )
+
+
 async def iter_known_compositions(
     session: AsyncSession,
     *,
@@ -154,80 +248,92 @@ async def iter_known_compositions(
     :param max_identities: Cap on identities retained per formula.
     :return: Known compositions, one per unique formula, ascending by formula.
     """
-    stmt = active_join(*_KNOWN_COLUMNS, *_SCOPE_COLUMNS)
-    # Charged species are recorded, not matched: Stage A pairs a NEUTRAL formula
-    # with an ionization mechanism, so an intrinsically charged row has no
-    # neutral precursor to expand and could only ever produce a false identity
-    # (issue #1726). NULL is both the pre-charge-column state and the neutral
-    # default, so it passes.
-    stmt = stmt.where(
-        or_(
-            reference_compound.c.charge.is_(None),
-            reference_compound.c.charge == 0,
-        )
-    )
-    if licenses is not None:
-        stmt = stmt.where(reference_compound.c.license.in_(licenses))
-    if polarity is not None:
-        stmt = stmt.where(
-            or_(
-                reference_source.c.polarity.is_(None),
-                reference_source.c.polarity == polarity,
-            )
-        )
-    if ceiling is not None and ceiling.max_mass is not None:
-        # The ceiling bounds every source, so its mass cap can be left to the
-        # index; each source's own cap is applied per row below.
-        stmt = stmt.where(reference_compound.c.monoisotopic_mass <= ceiling.max_mass)
-    # Totally ordered, so which identities survive ``max_identities`` is the same
-    # on every run over the same data rather than whatever order the rows arrive in.
-    stmt = stmt.order_by(*_STABLE_ORDER)
-
+    stmt = _admitted_statement(licenses=licenses, ceiling=ceiling, polarity=polarity)
+    admits = _Admission(ceiling)
     by_formula: dict[str, KnownComposition] = {}
-    # What each source admits, read once per source: its window under the
-    # ceiling, and whether its radicals may be matched.
-    admits_by_source: dict[int, tuple[KnownWindow, bool]] = {}
-    # Decided once per (source, formula): a formula repeats within a source only
-    # as isomers, and across sources each has its own window to answer to.
-    decided: dict[tuple[int, str], bool] = {}
     # Streamed, not materialized: only the kept set and the decisions stay in
     # memory, so an off-domain mirror costs a scan rather than the whole table
     # resident in the worker.
     result = await session.stream(stmt.execution_options(yield_per=_STREAM_BATCH))
     async for row in result:
-        formula = row.formula
-        key = (row.source_id, formula)
-        admitted = decided.get(key)
-        if admitted is None:
-            scope = admits_by_source.get(row.source_id)
-            if scope is None:
-                source = SourceScope.from_row(row)
-                scope = (source.known_window.intersect(ceiling), source.allow_radicals)
-                admits_by_source[row.source_id] = scope
-            window, allow_radicals = scope
-            admitted = window.admits(formula, row.monoisotopic_mass) and (
-                allow_radicals or not is_odd_electron(formula)
-            )
-            decided[key] = admitted
-        if not admitted:
+        if not admits(row):
             continue
-        known = by_formula.get(formula)
+        known = by_formula.get(row.formula)
         if known is None:
             known = KnownComposition(
-                formula=formula,
+                formula=row.formula,
                 monoisotopic_mass=row.monoisotopic_mass,
                 identities=[],
             )
-            by_formula[formula] = known
+            by_formula[row.formula] = known
         if len(known.identities) < max_identities:
-            known.identities.append(
-                KnownIdentity(
-                    name=row.name,
-                    source=row.source_name,
-                    license=row.license,
-                    inchikey=row.inchikey,
-                    source_native_id=row.source_native_id,
-                    xrefs=row.xrefs or {},
-                )
-            )
+            known.identities.append(_identity(row))
     return list(by_formula.values())
+
+
+@dataclass
+class KnownListing:
+    """What the known set names one formula as.
+
+    :param identities: Up to the cap of them, in the stable order.
+    :param total: How many compound records name the formula, the ones past the
+        cap included.
+    """
+
+    identities: list[KnownIdentity] = field(default_factory=list)
+    total: int = 0
+
+
+async def known_listings(
+    session: AsyncSession,
+    formulas: Iterable[str],
+    *,
+    licenses: set[str] | None = None,
+    ceiling: KnownWindow | None = None,
+    polarity: str | None = None,
+    max_identities: int = DEFAULT_MAX_IDENTITIES,
+) -> dict[str, KnownListing]:
+    """The identities the known set holds for each of these formulas.
+
+    Stage A's own scope (:func:`iter_known_compositions`), asked of a handful of
+    formulas instead of expanded over the whole set: a record names a formula
+    here only where Stage A, for a sample of this polarity under this ceiling,
+    would have matched it - neutral, from a source of the sample's polarity,
+    inside that source's window, and a radical only from a source that allows
+    radicals. The structure columns are not read.
+
+    :param session: Active async session.
+    :param formulas: Neutral formulas in any notation; each is canonicalized,
+        and the result is keyed by the formula as given.
+    :param licenses: As :func:`iter_known_compositions`.
+    :param ceiling: As :func:`iter_known_compositions`.
+    :param polarity: As :func:`iter_known_compositions`.
+    :param max_identities: Cap on the identities kept per formula; ``total``
+        counts past it.
+    :return: A listing per given formula the known set names; a formula it does
+        not name is absent.
+    """
+    canon_to_inputs: dict[str, list[str]] = {}
+    for raw in dict.fromkeys(formulas):
+        canon = canonical_formula(raw)
+        if canon is not None:
+            canon_to_inputs.setdefault(canon, []).append(raw)
+    if not canon_to_inputs:
+        return {}
+    stmt = _admitted_statement(
+        licenses=licenses, ceiling=ceiling, polarity=polarity
+    ).where(reference_compound.c.formula.in_(canon_to_inputs.keys()))
+    admits = _Admission(ceiling)
+    by_canon: dict[str, KnownListing] = {}
+    for row in (await session.execute(stmt)).all():
+        if not admits(row):
+            continue
+        listing = by_canon.setdefault(row.formula, KnownListing())
+        listing.total += 1
+        if len(listing.identities) < max_identities:
+            listing.identities.append(_identity(row))
+    return {
+        raw: listing
+        for canon, listing in by_canon.items()
+        for raw in canon_to_inputs[canon]
+    }
