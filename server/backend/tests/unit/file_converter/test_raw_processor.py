@@ -163,20 +163,13 @@ class _TwoRangesPerPolarity:
         return {}
 
 
-def test_pooled_ms1_streams_are_reported_once_at_info(monkeypatch, caplog):
+def test_pooled_ms1_streams_are_reported_once_at_info():
     """Peak detection pools the two ranges into one peak list. That is a
     property of the acquisition, reported once, and not a fault."""
     import logging
     from contextlib import contextmanager
 
-    # Read from the processor's own stdlib logger rather than through the
-    # runtime logger it is bridged to. Alembic's env.py calls
-    # logging.config.fileConfig, which replaces the root handlers (the bridge
-    # among them) and disables every logger that already exists, so once the
-    # migration tests have run in the same session nothing reaches the bridge.
-    processor_logger = logging.getLogger("mascope_thermo.processor")
-    monkeypatch.setattr(processor_logger, "disabled", False)
-    caplog.set_level(logging.INFO, logger=processor_logger.name)
+    from mascope_backend.runtime import runtime
 
     processor = RawProcessor(
         socket_client=None, file_queue=Queue(), shutdown_event=Event()
@@ -188,17 +181,27 @@ def test_pooled_ms1_streams_are_reported_once_at_info(monkeypatch, caplog):
         yield _TwoRangesPerPolarity()
 
     processor._file_context_manager = _context
-    streams = processor.scan_streams
+
+    # Read through the runtime logger the processor's stdlib logger is bridged
+    # to: that is where the log files and the monitoring sink see the record.
+    captured = []
+    sink_id = runtime.logger.add(
+        lambda message: captured.append(message.record), level="TRACE"
+    )
+    try:
+        streams = processor.scan_streams
+    finally:
+        runtime.logger.remove(sink_id)
 
     assert len(streams) == 2
-    records = [r for r in caplog.records if r.name == processor_logger.name]
-    pooled = [r for r in records if "MS1 scan streams" in r.getMessage()]
-    assert [r.levelname for r in pooled] == ["INFO"]
-    message = pooled[0].getMessage()
+    records = [r for r in captured if r["name"] == "mascope_thermo.processor"]
+    pooled = [r for r in records if "MS1 scan streams" in r["message"]]
+    assert [r["level"].name for r in pooled] == ["INFO"]
+    message = pooled[0]["message"]
     assert "2 MS1 scan streams in polarity -" in message
     assert "[40.0000-160.0000]" in message
     assert "[128.0000-600.0000]" in message
-    assert not [r for r in records if r.levelno >= logging.WARNING]
+    assert not [r for r in records if r["level"].no >= logging.WARNING]
 
 
 def test_method_file_never_fails_ingestion(props, monkeypatch):

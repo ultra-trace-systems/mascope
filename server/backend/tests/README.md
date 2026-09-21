@@ -74,6 +74,8 @@ Tests that verify Alembic migration scripts and their consistency with SQLAlchem
 
 The Alembic directory is resolved from `conftest.py`'s own location, so the suite always tests the migrations of the checkout it lives in. It must not be derived from `MASCOPE_PATH`: that is the shared runtime home (database volumes, secrets, `.runtime`) and normally points at the main checkout, so from a worktree the drift test would compare *develop's* migrations against *this* tree's models and report a convincing but bogus failure. The same rule applies to `mascope dev migrate` — see `mascope_cli.checkout.backend_path`.
 
+These tests run Alembic in-process, in the same session as the unit and system tests after them, so `env.py` must leave the session's logging alone: `alembic.ini`'s logging setup applies only when Alembic runs from its own command line. Applied in-process, `logging.config.fileConfig` would replace the root handlers (the runtime's bridge from stdlib logging into loguru among them), raise the root level to WARNING and disable every existing logger, and every later test asserting on log records would see nothing from a stdlib logger. `test_env_logging.py` pins both cases.
+
 ## Directory Structure Overview 📂
 
 ```

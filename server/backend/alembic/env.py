@@ -8,6 +8,14 @@ from the active runtime env. The override is required so that the stairway
 test (and any other programmatic Alembic invocation) can target a dedicated
 ephemeral test database without depending on whichever Mascope env happens
 to be active.
+
+Logging: `alembic.ini`'s logging sections apply only when Alembic runs from
+its own command line, which is how the db-init container and `mascope dev
+migrate` run it. A program that runs Alembic in-process - the migration
+tests - owns its process's logging, and `fileConfig` would rewrite it: it
+replaces the root handlers (the runtime's bridge from stdlib logging into
+loguru among them), raises the root level to WARNING, and by default disables
+every logger that already exists.
 """
 
 from logging.config import fileConfig
@@ -27,9 +35,12 @@ config = context.config  # Alembic config from alembic.ini
 db_cfg = cast(BackendConfig, runtime.config).database  # Mascope database config
 target_metadata = Base.metadata  # SQLAlchemy models metadata ('autogenerate' support)
 
-# Interpret the config file for Python logging (sets up loggers basically).
-if config.config_file_name is not None:
-    fileConfig(config.config_file_name)
+# Interpret the config file for Python logging - on Alembic's command line
+# only, the one caller that sets `cmd_opts` (see the module docstring). The
+# backend and its libraries are imported by this point, so their loggers are
+# kept enabled.
+if config.config_file_name is not None and config.cmd_opts is not None:
+    fileConfig(config.config_file_name, disable_existing_loggers=False)
 
 
 # other values from the config, defined by the needs of env.py,
