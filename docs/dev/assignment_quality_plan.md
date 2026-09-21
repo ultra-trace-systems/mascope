@@ -1408,14 +1408,16 @@ its own status.
     separates the readings of one ion. A reading of the row's own neutral, one
     that puts a labelled atom on the analyte and one nothing can read are not
     weighed, nor is a row whose own channel the run cannot name.
-  - **A channel the mode declares is the mode's own.** A mode that declares a
-    channel its profile also opens - set C's modes declare `+CO3-` since
-    2026-09-15 - searched it twice, and every reading through it came back as
-    another reading of its own ion; and the channel was still held to what a
-    secondary channel is: the cap on an uncorroborated winner, the tie that
-    goes to the mode's channel. The resolved profile leaves a declared
-    channel out of its minor channels, so the run and the batch search alike
-    search it once, as the mode's own.
+  - **A channel is searched once, and a secondary one stays secondary.** A
+    mode that declares a channel its profile also opens - set C's modes
+    declare `+CO3-` since 2026-09-15, so that the monitor's carbonate reading
+    can be matched - searched it twice, and every reading through it came back
+    as another reading of its own ion. The resolved profile adds to the search
+    only the secondary channels the mode does not declare, in the run and the
+    batch search alike. A declared channel the profile names secondary is
+    still held to what a secondary channel is, whatever the spectrum showed:
+    the cap on an uncorroborated winner and the tie that goes to the mode's
+    other channels (decision 20).
   - **The inspector names the ionization and the lists.** The ionization
     mechanism, and what a reference list calls the formula, sit above the
     evidence. The detail read looks the names up for the row, its close
@@ -4234,6 +4236,13 @@ belongs in the fitted axis once anchors reach below m/z 100, which is step
       The offset term goes into the node's fit (step 3.6) rather than a
       second centre into the engine's scoring: data is calibrated before it
       is assigned.
+    - **Declaring a channel does not make its reagent the mode's own**
+      (added 2026-09-21 by the plan owner, on the review of step 2.8).
+      Carbonate on a nitrate source is an opportunistic side channel: a mode
+      declares it so the run can search and match through it, and an
+      uncorroborated winner through it stays capped at candidate. A channel
+      the profile names secondary stays secondary wherever a mode declares
+      it.
 
 ## Risks
 

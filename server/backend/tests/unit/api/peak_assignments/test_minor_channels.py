@@ -200,10 +200,11 @@ class TestResolution:
         assert resolved.minor_channels == frozenset()
         assert resolved.unavailable_channels == ("+NH4+",)
 
-    def test_a_channel_the_mode_declares_itself_is_not_secondary(self):
-        # The mode is what the operator configured the chemistry as, so a
-        # channel it declares is the mode's own: searched once, never capped as
-        # a secondary one, never losing a tie as one.
+    def test_a_channel_the_mode_declares_is_still_secondary(self):
+        # Declaring a channel lets the run search and match through it; it does
+        # not make an opportunistic reagent the mode's own. So it is capped and
+        # loses a tie as a secondary channel does, and is not added to the
+        # search again, since the mode's own mechanism already searches it.
         resolved = with_secondary_channels(
             resolve_profile(
                 PeakAssignmentConfig(),
@@ -215,10 +216,53 @@ class TestResolution:
             [1.0e6, 1.0e4],
             ["+NH4+"],
         )
-        assert resolved.minor_channels == frozenset()
-        assert resolved.snapshot()["secondary_channels"] == []
-        # What the spectrum showed is still recorded.
-        assert resolved.snapshot()["channel_evidence"][0]["present"] is True
+        assert resolved.minor_channels == frozenset({"+NH4+"})
+        assert resolved.added_channels == frozenset()
+        assert resolved.snapshot()["secondary_channels"] == ["+NH4+"]
+
+    def test_so_is_one_whose_carrier_the_spectrum_does_not_show(self):
+        # The mode searches it either way, so the spectrum's silence cannot make
+        # a reading through it any less opportunistic.
+        resolved = with_secondary_channels(
+            resolve_profile(
+                PeakAssignmentConfig(),
+                UREA + ["+NH4+"],
+                instrument_type="orbi",
+                polarity="+",
+            ),
+            [50.0, 100.0, 400.0],
+            [1.0e6, 1.0e5, 1.0e4],
+            ["+NH4+"],
+        )
+        assert resolved.channel_evidence[0].present is False
+        assert resolved.minor_channels == frozenset({"+NH4+"})
+        assert resolved.added_channels == frozenset()
+
+    def test_carbonate_on_a_labelled_nitrate_mode_that_declares_it(self):
+        # A window starting above every carbonate line cannot show the channel,
+        # and the nitrate profiles take that silence as no evidence either way.
+        declared = ["+^NO3-", "-H+", "+CO3-"]
+        resolved = with_secondary_channels(
+            resolve_profile(
+                PeakAssignmentConfig(profile="NO3_15N"),
+                declared,
+                instrument_type="orbi",
+                polarity="-",
+            ),
+            [131.0, 210.0898, 300.0],
+            [1.0e4, 1.0e6, 1.0e5],
+            ["+CO3-"],
+        )
+        assert resolved.channel_evidence[0].status == "unobservable"
+        assert resolved.minor_channels == frozenset({"+CO3-"})
+        assert resolved.added_channels == frozenset()
+
+    def test_a_declared_channel_the_profile_does_not_name_is_the_modes_own(self):
+        resolved = with_secondary_channels(
+            self._resolved(), [100.0, 138.0986], [1.0e6, 1.0e4], ["+NH4+"]
+        )
+        assert resolved.minor_channels == frozenset({"+NH4+"})
+        assert resolved.added_channels == frozenset({"+NH4+"})
 
     def test_a_profile_with_no_secondary_channels_is_untouched(self):
         resolved = resolve_profile(

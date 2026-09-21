@@ -1213,9 +1213,9 @@ def _searched_mechanisms(
     set as the untargeted search: which channels a neutral COULD have been seen
     through is what makes seeing it in one of them evidence or not.
 
-    Each channel is searched once: a channel the mode declares itself is not
-    among the profile's minor channels (``ResolvedProfile.minor_channels``), so
-    it is not added again.
+    Each channel is searched once: a secondary channel the mode declares itself
+    is searched through the mode's mechanism, so only the ones the profile adds
+    (``ResolvedProfile.added_channels``) are appended.
 
     :param mechanisms: The mode's own polarity-matching mechanisms.
     :param secondary_mechanisms: The deployment's rows for the profile's
@@ -1230,7 +1230,7 @@ def _searched_mechanisms(
     return mechanisms + [
         mechanism
         for mechanism in secondary_mechanisms
-        if mechanism.ionization_mechanism in resolved_profile.minor_channels
+        if mechanism.ionization_mechanism in resolved_profile.added_channels
     ]
 
 
