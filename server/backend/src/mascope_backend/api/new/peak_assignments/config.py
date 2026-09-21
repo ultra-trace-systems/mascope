@@ -4,6 +4,7 @@ import os
 
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator
 
+from mascope_backend.api.new.peak_assignments.tiers import TIER_ASSIGNED, TIER_CANDIDATE
 from mascope_backend.runtime import runtime
 from mascope_tools.composition.profiles import (
     CHEMISTRY_CONTEXTS,
@@ -475,6 +476,18 @@ class PeakAssignmentConfig(BaseModel):
         created and reported to the client.
         """
         return known_preset_name(value, info.field_name)
+
+    def tier_bands(self) -> dict[str, float]:
+        """The evidence bands this config tiers with, keyed by the tier each opens.
+
+        One mapping for everything that states them - the run record's
+        ``tier_bands`` and the band the tiering pass names on a row under the
+        top one - so the two cannot cite different bands.
+        """
+        return {
+            TIER_ASSIGNED: self.assigned_threshold,
+            TIER_CANDIDATE: self.candidate_threshold,
+        }
 
 
 def known_preset_name(value: str | None, field_name: str) -> str:
