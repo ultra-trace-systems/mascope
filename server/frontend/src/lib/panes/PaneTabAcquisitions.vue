@@ -3,6 +3,7 @@ import { ref, reactive, computed, watch, onMounted, onUnmounted } from 'vue'
 
 import Button from 'primevue/button'
 import Select from 'primevue/select'
+import Tag from 'primevue/tag'
 import DatePicker from 'primevue/datepicker'
 import DataTable from 'primevue/datatable'
 import Column from 'primevue/column'
@@ -29,6 +30,7 @@ import {
 import { InstrumentSelector } from '@/lib/toolbars'
 
 import { api } from '@/api'
+import { PROCESSING_STATUS_FILTERS, processingStatus } from '@/lib/processingStatus'
 import { useApp } from '@/stores'
 
 const app = useApp()
@@ -317,6 +319,16 @@ const currentPageReportTemplate =
         style="max-width: 100px"
         placeholder="Polarity"
       />
+      <Select
+        inputId="processing-status"
+        v-model="app.data.acquisition.processingStatus"
+        :options="PROCESSING_STATUS_FILTERS"
+        optionLabel="label"
+        optionValue="value"
+        style="max-width: 160px"
+        placeholder="Status"
+        aria-label="Processing status"
+      />
       <div class="search-cell">
         <FloatLabel style="width: 100%">
           <IconField class="full">
@@ -395,6 +407,24 @@ const currentPageReportTemplate =
               >
                 <template #body="{ data }">
                   <span :title="data.filename">{{ data.filename }}</span>
+                </template>
+              </Column>
+              <Column
+                header="Status"
+                field="processing_status"
+                sortable
+                style="width: 170px"
+                bodyClass="ellipsis-cell"
+              >
+                <template #body="{ data }">
+                  <Tag
+                    v-if="processingStatus(data)"
+                    v-tooltip.top="{ value: processingStatus(data).tooltip, showDelay: 300 }"
+                    :value="processingStatus(data).label"
+                    :severity="processingStatus(data).severity"
+                    :icon="`pi ${processingStatus(data).icon}`"
+                    :class="['processing-status', processingStatus(data).state]"
+                  />
                 </template>
               </Column>
               <Column header="Polarity" field="polarity" sortable style="width: 90px" />
@@ -609,6 +639,11 @@ menu :deep(.full) {
 
 .inactive {
   opacity: 0.5;
+}
+
+.processing-status {
+  font-size: 11px;
+  white-space: nowrap;
 }
 
 .info-line {

@@ -11,6 +11,7 @@ from mascope_backend.api.models.base_pydantic_model import (
     QueryParamsModel,
     RequestBodyModel,
 )
+from mascope_backend.api.models.sample.files.config import ProcessingStatus
 from mascope_file.name import resolve_instrument_type
 
 
@@ -208,6 +209,9 @@ SampleFileSortColumn = Literal[
     "utc_offset_source",
     "instrument_type",
     "source_filename",
+    "processing_status",
+    "processing_updated_utc",
+    "sample_file_utc_created",
 ]
 
 
@@ -216,6 +220,13 @@ class GetSampleFilesQueryParams(QueryParamsModel):
     datetime_max: Optional[dt] = Field(None, description="Maximum datetime filter")
     instrument: Optional[str] = Field(None, description="Filter by instrument")
     filename: Optional[str] = Field(None, description="Filter by filename")
+    processing_status: list[ProcessingStatus] | None = Field(
+        None,
+        description=(
+            "Filter by processing status: the stages auto-processing reached. "
+            "Repeat the parameter for several."
+        ),
+    )
     sort: SampleFileSortColumn | None = Field(
         "datetime_utc",
         description="The column name by which you want to sort the results.",

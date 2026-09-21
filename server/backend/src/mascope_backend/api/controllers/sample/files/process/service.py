@@ -28,6 +28,11 @@ from mascope_backend.api.controllers.match.match_controller import (
 from mascope_backend.api.controllers.sample.batches.sample_batches_controller import (
     get_or_create_acquisition_batch,
 )
+from mascope_backend.api.controllers.sample.files.process.status import (
+    compose_detail,
+    read_pooled_streams_note,
+    record_processing_status,
+)
 from mascope_backend.api.controllers.sample.items.sample_items_controller import (
     create_sample_items,
 )
@@ -47,6 +52,7 @@ from mascope_backend.api.models.sample.batches.config import sample_batch_config
 from mascope_backend.api.models.sample.batches.sample_batch_pydantic_model import (
     SampleBatchCreate,
 )
+from mascope_backend.api.models.sample.files.config import ProcessingStatus
 from mascope_backend.api.models.sample.items.sample_item_pydantic_model import (
     SampleItemCreate,
 )
@@ -234,6 +240,57 @@ def _is_recoverable_error(exc: Exception) -> bool:
     return isinstance(exc, (SQLAlchemyTimeoutError, OperationalError, InterfaceError))
 
 
+class ChemistryNotBoundError(ValueError):
+    """No ionization mode could be bound to the file.
+
+    A ValueError with the routing's own message, so it is reported exactly as
+    the routing error it wraps. Its own type tells the pipeline that the
+    file's status already says ``needs_chemistry``, which a generic failure
+    must not overwrite.
+    """
+
+
+def _failure_detail(exc: BaseException) -> str:
+    """What a person is told about the error that stopped a pipeline."""
+    if isinstance(exc, ApiException):
+        return str(exc.user_message)
+    return str(exc) or type(exc).__name__
+
+
+def _bound_detail(ionization_modes: list[IonizationMode]) -> str:
+    """Name the modes a file was bound to, and what bound it."""
+    names = [
+        f"'{mode.ionization_mode_name}' ({mode.ionization_mode_polarity})"
+        for mode in ionization_modes
+    ]
+    tokens = "token" if len(names) == 1 else "tokens"
+    return f"Bound by file-name {tokens} to {' and '.join(names)}."
+
+
+def _calibration_failure_detail(mz_calibration: dict | None) -> str:
+    """Say what is wrong with a file's m/z calibration record.
+
+    Reads the record calibration left on the file: a failed fit carries its
+    error, a fit below the quality bar its reasons.
+    """
+    record = mz_calibration or {}
+    if record.get("status") == "failed":
+        error = str(record.get("error") or "").strip().rstrip(".")
+        return (
+            f"The m/z calibration failed: {error}."
+            if error
+            else "The m/z calibration failed."
+        )
+    issues = [
+        str(issue.get("message", "")).strip()
+        for issue in record.get("quality_issues") or []
+        if isinstance(issue, dict) and issue.get("message")
+    ]
+    if record.get("status") == "poor" and issues:
+        return f"The m/z calibration is below the quality bar: {' '.join(issues)}"
+    return "The file's m/z calibration is not verified."
+
+
 async def _delete_partial_acquisition_items(sample_file_id: str) -> None:
     """Delete ACQUISITION sample items an earlier pipeline run left behind.
 
@@ -380,6 +437,10 @@ async def auto_process_sample_file(
                 # Terminal. Name the file here or the shortfall is only
                 # discoverable by counting rows afterwards.
                 _report_given_up(sample_file_id, attempts=attempt + 1, error=e)
+                if not isinstance(e, ChemistryNotBoundError):
+                    await record_processing_status(
+                        sample_file_id, ProcessingStatus.FAILED, _failure_detail(e)
+                    )
                 raise
             delay = _AUTO_PROCESS_RETRY_DELAYS_S[attempt]
             # INFO: a retry that usually succeeds, and the line names the file,
@@ -586,6 +647,9 @@ async def _auto_process_sample_file(
 
     # --- Validate sample file existence --- #
     sample_file = await fetch_sample_file(sample_file_id=sample_file_id)
+    # Describes the file rather than a stage, so every status this run
+    # records carries it.
+    streams_note = await read_pooled_streams_note(sample_file.filename)
 
     # --- Get ACQUISITION dataset for the instrument --- #
     # The year-dataset and the daily batch inside it must be dated off the SAME
@@ -605,6 +669,19 @@ async def _auto_process_sample_file(
         )
     ).get("data")
 
+    # --- Bind the file to its ionization modes --- #
+    # After the dataset on purpose: a file that binds to nothing still gets
+    # its instrument's workspace, which is where its modes are configured.
+    try:
+        bound_modes = await resolve_ionization_modes_by_tokens(sample_file)
+    except ValueError as e:
+        await record_processing_status(
+            sample_file_id,
+            ProcessingStatus.NEEDS_CHEMISTRY,
+            compose_detail(str(e), streams_note),
+        )
+        raise ChemistryNotBoundError(str(e)) from e
+
     # --- Create ACQUISITION batches and sample items for each ionization mode --- #
     (
         acquisition_samples,
@@ -612,6 +689,12 @@ async def _auto_process_sample_file(
     ) = await create_acquisition_batches_and_items(
         sample_file=sample_file,
         dataset_id=acquisition_dataset.get("dataset_id"),
+        ionization_modes=bound_modes,
+    )
+    await record_processing_status(
+        sample_file_id,
+        ProcessingStatus.BOUND,
+        compose_detail(_bound_detail(bound_modes), streams_note),
     )
 
     # Extract batch and sample IDs for notifications
@@ -654,6 +737,10 @@ async def _auto_process_sample_file(
     }
     shared_calibration = len(calibrating_sample_ids) > 1
     mz_calibration = None
+    # For the file's final status: what became of its calibration when that
+    # is worth saying, and why nothing was matched when calibration stopped it.
+    calibration_note: str | None = None
+    unmatched_reason: str | None = None
     if shared_calibration:
         # Fresh uploads and the re-process route start from the acquisition
         # axis; re-running the pipeline without a reset keeps an earlier fit.
@@ -672,7 +759,29 @@ async def _auto_process_sample_file(
             "collection, and the file holds one m/z calibration for all of "
             f"them. Matching on {axis}."
         )
+        calibration_note = (
+            f"Not m/z calibrated: {len(calibrating_sample_ids)} of its samples "
+            "have a calibration collection, and a file holds one m/z "
+            f"calibration for all of them. Matched on {axis}."
+        )
         calibrating_sample_ids.clear()
+    elif is_blank_sample_file:
+        calibration_note = "Blank measurement: no peaks to calibrate, match or assign."
+    elif not calibrating_sample_ids:
+        uncalibrated_modes = sorted(
+            {
+                f"'{mode.ionization_mode_name}'"
+                for mode in ionization_modes.values()
+                if mode is not None
+            }
+        )
+        calibration_note = (
+            f"Not m/z calibrated: ionization mode {', '.join(uncalibrated_modes)} "
+            "has no calibration collection."
+            if len(uncalibrated_modes) == 1
+            else "Not m/z calibrated: ionization modes "
+            f"{', '.join(uncalibrated_modes)} have no calibration collection."
+        )
 
     matchable_sample_ids: set[str] = set()
     for sample in acquisition_samples:
@@ -697,7 +806,17 @@ async def _auto_process_sample_file(
                     "Skipping matching and peak assignment for sample "
                     f"'{sample['sample_item_name']}': m/z calibration not verified."
                 )
+                unmatched_reason = _calibration_failure_detail(
+                    (
+                        await fetch_sample_file(sample_file_id=sample_file_id)
+                    ).mz_calibration
+                )
                 continue
+            await record_processing_status(
+                sample_file_id,
+                ProcessingStatus.CALIBRATED,
+                compose_detail(streams_note),
+            )
         elif is_blank_sample_file:
             # A blank has no peaks, so there is nothing to match or assign
             # either. Held back explicitly, as batch matching does:
@@ -742,6 +861,10 @@ async def _auto_process_sample_file(
             "the file's m/z calibration is not verified."
         )
         matchable_sample_ids.clear()
+        unmatched_reason = _calibration_failure_detail(mz_calibration)
+    elif mz_calibration is not None and mz_calibration.get("status") == "poor":
+        # Verified under a gate that only warns, and matched on.
+        calibration_note = _calibration_failure_detail(mz_calibration)
 
     # --- Match and assign the samples --- #
     for sample in acquisition_samples:
@@ -804,6 +927,37 @@ async def _auto_process_sample_file(
             include_objects=True,
         )
     ).affected_samples
+
+    # Recorded last, so that `done` means the run returned: a failure in
+    # anything above is recorded as `failed` by the wrapper instead.
+    if matchable_sample_ids:
+        matched = len(matchable_sample_ids)
+        await record_processing_status(
+            sample_file_id,
+            ProcessingStatus.DONE,
+            compose_detail(
+                f"Matched {matched} sample{'s' if matched != 1 else ''}.",
+                calibration_note,
+                streams_note,
+            ),
+        )
+    elif is_blank_sample_file:
+        # Nothing was matched because there is nothing to match: finished.
+        await record_processing_status(
+            sample_file_id,
+            ProcessingStatus.DONE,
+            compose_detail(calibration_note, streams_note),
+        )
+    else:
+        await record_processing_status(
+            sample_file_id,
+            ProcessingStatus.CALIBRATION_FAILED,
+            compose_detail(
+                unmatched_reason,
+                "Matching and peak assignment were skipped.",
+                streams_note,
+            ),
+        )
 
     return {
         "message": (
@@ -1130,12 +1284,14 @@ async def _clear_sample_items_for_reprocessing(
 
 
 async def create_acquisition_batches_and_items(
-    sample_file: SampleFile, dataset_id: str
+    sample_file: SampleFile,
+    dataset_id: str,
+    ionization_modes: list[IonizationMode],
 ) -> tuple[list[dict], list[dict]]:
     """
     Create ACQUISITION batches and sample items for each ionization mode of sample file.
 
-    For each ionization mode in the sample file:
+    For each ionization mode the file was bound to:
     - Get or create daily ACQUISITION batch in provided acquisition dataset
     - Create ACQUISITION sample item within the batch
     - Configure batch with appropriate target collections and ionization mechanisms
@@ -1144,13 +1300,13 @@ async def create_acquisition_batches_and_items(
     :type sample_file: SampleFile
     :param dataset_id: ID of ACQUISITION dataset to create batches in
     :type dataset_id: str
+    :param ionization_modes: The modes the file is bound to, one per polarity
+    :type ionization_modes: list[IonizationMode]
     :return: Tuple of (created sample items, created/retrieved batches)
     :rtype: tuple[list[dict], list[dict]]
     """
     sample_items_to_create = []
     acquisition_sample_batches = []
-
-    ionization_modes = await resolve_ionization_modes_by_tokens(sample_file)
 
     for ionization_mode in ionization_modes:
         # --- Generate daily ACQUISITION batch name for this ionization mode ---

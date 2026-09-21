@@ -40,7 +40,7 @@ the table below and ticks its item on #2098.
 | Phase | Content | State |
 |---|---|---|
 | 0 | Stop losing information: method identity, stream census, token-rule and notification fixes | in progress; section 10 marks each item as it ships |
-| 1 | Per-file processing state, persistent notifications, "needs a chemistry" | open |
+| 1 | Per-file processing state, persistent notifications, "needs a chemistry" | in progress; section 10 marks each item as it ships |
 | 2 | Method bindings: routing without tokens | open |
 | 3 | The part contract: stream and window honoured by every consumer | open |
 | 4 | Per-stream state: calibration, instrument function, one item per stream, MS2 | open |
@@ -94,7 +94,7 @@ Related designs, and how this one relates to them (section 13):
 | A TOF file with no fit is never matched | `create_sample_file`, the verified gate in `match_compute_sample` | Registration stores a TOF file's converter coefficients as a record marked `unfitted` and not verified, and the gate refuses it. A TOF file whose mode names no calibrant collection is therefore never matched: every run ends on the gate's warning to calibrate the file, though the pipeline has no calibrants to calibrate it against. Phase 0 item 8. |
 | MS2-only acquisitions are refused; MS2 is reachable only through an item's polarity and window | `RawProcessor._get_sample_file_props`, `api/new/ms2` | #2068 |
 | The method identity was lost | `RawProcessor.method_file` returned `""` | Orbitrap files ingested from July 2026 carry no method name, and it is the routing key section 2.4 argues for. #2155 reads it again, and its `populate_orbitrap_method_file` script restores it on the files already ingested. |
-| Nothing records how far a file got | `sample_file` | The File Agent only learns that its bytes arrived. |
+| Nothing recorded how far a file got | `sample_file` | The File Agent only learns that its bytes arrived. Phase 1 records a processing status on each file. |
 
 ---
 
@@ -572,6 +572,14 @@ it is new work.
   - The per-stream state lives on `acquisition_stream`.
   - Values: `converting`, `converted`, `bound`, `needs_chemistry`,
     `calibrated`, `calibration_failed`, `matched`, `done`, `failed`.
+  - The pipeline writes all but two. `converting` needs a row that exists
+    during conversion, and the converter registers the file only after it.
+    `matched` needs matching to run as a stage of its own, while today each
+    sample is matched and assigned in turn.
+  - A restart marks the runs it cut short (`converted`, `bound`,
+    `calibrated`) as `failed`.
+  - `sample_file_utc_created` records when the converter registered the file
+    (#482). Unlike `processing_updated_utc`, no later stage overwrites it.
 - **Notifications** become rows: recipient, kind, severity, payload, read,
   resolved.
   - Processing events for an instrument address the device sponsor and the
@@ -784,9 +792,10 @@ Effort is rough.
      library renders it per scan and OpenTFRaw never does. The one remaining
      difference between the backends is source fragmentation, which
      OpenTFRaw sometimes omits (one file of the corpus).
-3. **Flag mixed streams** (the INFO line shipped in #2160; the processing
-   detail needs phase 1). A file with more than one MS1 stream in a polarity
-   gets a processing detail and an INFO line, until phase 4 handles it.
+3. **Flag mixed streams** (the INFO line shipped in #2160, the processing
+   detail with phase 1's status columns in #2164). A file with more than one
+   MS1 stream in a polarity gets a processing detail and an INFO line, until
+   phase 4 handles it.
 4. **Fix the token rule**: one mode per polarity. Shipped in #2158.
 5. **Route the failure notification** to the instrument room and the device
    sponsor. This is the minimal #1910 fix; phase 1 makes it persistent.
@@ -818,7 +827,10 @@ Effort is rough.
 
 Steps 6 and 7 of the setup-simplification proposal:
 
-- the `sample_file` processing columns;
+- the `sample_file` processing columns. Shipped in #2164: every stage
+  writes its status and a detail for a person, and the detail says when a
+  polarity pools MS1 streams. Raw files shows and filters the status, and
+  `GET /api/sample/files` takes `processing_status`;
 - the persistent notification table with addressed recipients;
 - the `needs_chemistry` state and a review list in Raw files, with
   one-click resolution that resumes the pipeline;

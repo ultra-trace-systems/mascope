@@ -67,6 +67,15 @@ export const useAcquisition = defineStore('app.data.acquisition', () => {
     await load()
   })
 
+  // --- processing status filter: the statuses to keep, or null for any.
+  // Server-side, so it spans every page; a change reloads from page 0.
+  const processingStatus = ref(null)
+  watch(processingStatus, async () => {
+    unfocus()
+    first.value = 0
+    await load()
+  })
+
   // --- instrument: reset to page 0 + reload on change; manage socket rooms.
   watch(
     computed(() => instrument.focused?.instrument),
@@ -102,9 +111,13 @@ export const useAcquisition = defineStore('app.data.acquisition', () => {
           sort: SORT_FIELD_MAP[sortField.value] ?? sortField.value,
           order: sortOrder.value === 1 ? 'asc' : 'desc',
           days: daysCount,
+          processing_status: processingStatus.value ?? undefined,
           page: Math.floor(first.value / rows.value),
           limit: rows.value
         },
+        // Repeat the key for each status (`a=1&a=2`), the form the API reads
+        // a list from.
+        paramsSerializer: { indexes: null },
         type: 'load_recent_sample_files'
       })
       const { data: items = [], results = 0 } = response.data ?? {}
@@ -124,9 +137,11 @@ export const useAcquisition = defineStore('app.data.acquisition', () => {
           instrument: instrument.focused?.instrument,
           sort: SORT_FIELD_MAP[sortField.value] ?? sortField.value,
           order: sortOrder.value === 1 ? 'asc' : 'desc',
+          processing_status: processingStatus.value ?? undefined,
           page: Math.floor(first.value / rows.value),
           limit: rows.value
         },
+        paramsSerializer: { indexes: null },
         type: 'load_sample_file_range'
       })
       const { data: items = [], results = 0 } = response.data ?? {}
@@ -189,6 +204,7 @@ export const useAcquisition = defineStore('app.data.acquisition', () => {
     first.value = 0
     time.mode = initTime().mode
     time.range = initTime().range
+    processingStatus.value = null
   }
 
   return {
@@ -200,6 +216,7 @@ export const useAcquisition = defineStore('app.data.acquisition', () => {
     unfocus,
     ready,
     time,
+    processingStatus,
     first,
     rows,
     total,

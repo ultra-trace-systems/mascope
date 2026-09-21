@@ -6,6 +6,22 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 ### Added
 
+- **Raw files shows how far processing got for each file.** Auto-processing
+  records a status on every sample file it handles: converted, bound,
+  calibrated, then done, needs a chemistry, calibration failed or failed. A
+  file that ended with no samples, or with samples that were never matched,
+  now says why, and hovering the status shows the detail. The Raw files table
+  has a Status column and a server-side status filter, and
+  `GET /api/sample/files` takes `processing_status` (repeat it for several),
+  so a File Agent can read back what became of its upload. When a method
+  alternates scan ranges or scan modes within a polarity, the detail also says
+  that peak detection pools those scan streams. A server restart marks the
+  files whose processing it interrupted as failed. Files processed before this
+  change carry no status. Each file also records when it was registered
+  (`sample_file_utc_created`, which the file list sorts by), for listing
+  recently added files (#482); files registered before this change have no
+  registration time.
+
 - **Each Orbitrap file's scan streams are recorded.** The converter groups a
   file's scans by what they measured: the fields of the scan filter (analyzer,
   polarity, data type, source, source fragmentation, FAIMS CV, scan mode, MS

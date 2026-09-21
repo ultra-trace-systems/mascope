@@ -7,6 +7,7 @@ Tests verify the orchestration logic of ``auto_process_sample_file``:
 - Batch and sample item creation
 - Calibration skip logic (blank files, missing calibration collection)
 - Match computation for each sample
+- The processing status recorded at each stage
 - Return structure
 
 All external dependencies are mocked — no DB, file I/O, or Socket.IO required.
@@ -125,6 +126,11 @@ def _base_patches():
         "get_acquisition_dataset": patch(
             f"{_SVC}.get_acquisition_dataset", new_callable=AsyncMock
         ),
+        "resolve": patch(
+            f"{_SVC}.resolve_ionization_modes_by_tokens",
+            new_callable=AsyncMock,
+            return_value=[_make_ionization_mode()],
+        ),
         "create_batches": patch(
             f"{_SVC}.create_acquisition_batches_and_items", new_callable=AsyncMock
         ),
@@ -148,6 +154,28 @@ def _stop_all_patches():
     """Safety net — stop all patches after each test."""
     yield
     patch.stopall()
+
+
+@pytest.fixture(autouse=True)
+def status():
+    """The processing-status writer, recorded instead of written.
+
+    Also stubs the scan stream census, which would read the file's props
+    from the filestore. Request the fixture by name to read what was
+    recorded: ``[(status, detail), ...]`` in order via :func:`_recorded`.
+    """
+    with (
+        patch(f"{_SVC}.record_processing_status", new_callable=AsyncMock) as record,
+        patch(f"{_SVC}.read_pooled_streams_note", new_callable=AsyncMock) as note,
+    ):
+        note.return_value = None
+        record.note = note
+        yield record
+
+
+def _recorded(status) -> list[tuple[str, str | None]]:
+    """The (status, detail) pairs recorded, in order."""
+    return [(call.args[1].value, call.args[2]) for call in status.call_args_list]
 
 
 # ---------------------------------------------------------------------------
@@ -770,6 +798,7 @@ async def test_creates_batches_with_correct_dataset_id():
     mocks["create_batches"].assert_called_once_with(
         sample_file=sample_file,
         dataset_id="ds-specific",
+        ionization_modes=mocks["resolve"].return_value,
     )
 
 
@@ -1141,3 +1170,298 @@ async def test_a_client_class_error_outside_the_api_stays_at_info():
 
     assert len(_gave_up_at_info(records)) == 1, _lines(records)
     assert _monitored(records) == [], _lines(_monitored(records))
+
+
+# ---------------------------------------------------------------------------
+# Processing status
+# ---------------------------------------------------------------------------
+
+
+def _start_single(
+    *, calibration_collection_id="cal-001", instrument_function_id="ifunc-001"
+):
+    """Start the base patches for a one-polarity file bound to one mode."""
+    sample_file = _make_sample_file(instrument_function_id=instrument_function_id)
+    sample_file.mz_calibration = None
+    ion_mode = _make_ionization_mode(
+        calibration_collection_id=calibration_collection_id
+    )
+    sample_item = _make_sample_item()
+
+    patches = _base_patches()
+    mocks = {k: p.start() for k, p in patches.items()}
+    mocks["fetch_sample_file"].return_value = sample_file
+    mocks["get_acquisition_dataset"].return_value = {"data": _make_dataset()}
+    mocks["resolve"].return_value = [ion_mode]
+    mocks["create_batches"].return_value = ([sample_item], [_make_batch()])
+    mocks["fetch_affected"].return_value = _make_affected_data([sample_item])
+
+    mock_session = AsyncMock()
+    mock_session.get = AsyncMock(return_value=ion_mode)
+    mock_ctx = AsyncMock()
+    mock_ctx.__aenter__ = AsyncMock(return_value=mock_session)
+    mock_ctx.__aexit__ = AsyncMock(return_value=False)
+    mocks["async_session"].return_value = mock_ctx
+    return mocks, sample_file
+
+
+async def _run_pipeline():
+    from mascope_backend.api.controllers.sample.files.process.service import (
+        auto_process_sample_file,
+    )
+
+    return await auto_process_sample_file(
+        sample_file_id="sf-001",
+        independent_transaction=True,
+        user_id=42,
+        process_id="proc-001",
+    )
+
+
+@pytest.mark.asyncio
+async def test_records_each_stage_a_calibrated_file_reaches(status):
+    _start_single()
+
+    await _run_pipeline()
+
+    recorded = _recorded(status)
+    assert [state for state, _ in recorded] == ["bound", "calibrated", "done"]
+    assert recorded[0][1] == "Bound by file-name token to 'Bromide RI' (-)."
+    assert recorded[-1][1] == "Matched 1 sample."
+    assert all(call.args[0] == "sf-001" for call in status.call_args_list)
+
+
+@pytest.mark.asyncio
+async def test_a_file_that_binds_to_nothing_needs_a_chemistry(status):
+    """Routing failed: the file is parked with the routing's own words."""
+    mocks, _ = _start_single()
+    message = (
+        "No ionization mode tokens found for file 2025.09.20_test_file.raw. "
+        "Configure tokens in ionization settings"
+    )
+    mocks["resolve"].side_effect = ValueError(message)
+
+    with patch(f"{_FEATURES}.handle_notifications", new_callable=AsyncMock) as notify:
+        await _run_pipeline()
+
+    # Recorded once, and not overwritten as a generic failure by the wrapper.
+    assert _recorded(status) == [("needs_chemistry", message)]
+    mocks["create_batches"].assert_not_called()
+    # The error is still reported as it was before the status existed.
+    (call,) = notify.call_args_list
+    assert call.args[1].status == "error"
+    assert message in call.args[1].message
+
+
+@pytest.mark.asyncio
+async def test_a_failed_calibration_is_the_files_outcome(status):
+    mocks, sample_file = _start_single()
+
+    async def calibrate(**_):
+        sample_file.mz_calibration = {
+            "status": "failed",
+            "verified": False,
+            "error": "No calibration peaks found.",
+        }
+        return False
+
+    mocks["calibrate"].side_effect = calibrate
+
+    await _run_pipeline()
+
+    recorded = _recorded(status)
+    assert [state for state, _ in recorded] == ["bound", "calibration_failed"]
+    assert recorded[-1][1] == (
+        "The m/z calibration failed: No calibration peaks found. "
+        "Matching and peak assignment were skipped."
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_calibration_below_the_bar_names_its_reasons(status):
+    mocks, sample_file = _start_single()
+
+    async def calibrate(**_):
+        sample_file.mz_calibration = {
+            "status": "poor",
+            "verified": False,
+            "quality_issues": [{"message": "Only 2 calibration points."}],
+        }
+        return False
+
+    mocks["calibrate"].side_effect = calibrate
+
+    await _run_pipeline()
+
+    state, detail = _recorded(status)[-1]
+    assert state == "calibration_failed"
+    assert detail.startswith(
+        "The m/z calibration is below the quality bar: Only 2 calibration points."
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_fit_below_the_bar_that_the_gate_lets_through_is_done(status):
+    """Under a gate that only warns, the file is matched and says why to look."""
+    mocks, sample_file = _start_single()
+
+    async def calibrate(**_):
+        sample_file.mz_calibration = {
+            "status": "poor",
+            "verified": True,
+            "quality_issues": [{"message": "Mean error 4.1 ppm."}],
+        }
+        return True
+
+    mocks["calibrate"].side_effect = calibrate
+
+    await _run_pipeline()
+
+    assert _recorded(status)[-1] == (
+        "done",
+        "Matched 1 sample. The m/z calibration is below the quality bar: "
+        "Mean error 4.1 ppm.",
+    )
+
+
+@pytest.mark.asyncio
+async def test_done_says_why_a_file_was_not_calibrated(status):
+    _start_single(calibration_collection_id=None)
+
+    await _run_pipeline()
+
+    assert _recorded(status)[-1] == (
+        "done",
+        "Matched 1 sample. Not m/z calibrated: ionization mode 'Bromide RI' "
+        "has no calibration collection.",
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_blank_file_is_done_without_being_matched(status):
+    """A blank has no peaks: nothing to calibrate or match, and nothing wrong."""
+    mocks, _ = _start_single(instrument_function_id=None)
+
+    await _run_pipeline()
+
+    mocks["match"].assert_not_called()
+    assert _recorded(status) == [
+        ("bound", "Bound by file-name token to 'Bromide RI' (-)."),
+        ("done", "Blank measurement: no peaks to calibrate, match or assign."),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_done_says_a_shared_calibration_was_skipped(status):
+    async def calibrate(sample, sample_file):
+        raise AssertionError("a shared-calibration file must not be calibrated")
+
+    _start_dual_polarity(
+        calibrate=calibrate, neg_collection="cal-neg", pos_collection="cal-pos"
+    )
+
+    await _run_pipeline()
+
+    assert _recorded(status)[-1] == (
+        "done",
+        "Matched 2 samples. Not m/z calibrated: 2 of its samples have a "
+        "calibration collection, and a file holds one m/z calibration for all "
+        "of them. Matched on the acquisition axis.",
+    )
+
+
+@pytest.mark.asyncio
+async def test_an_unverified_record_holds_back_the_whole_file(status):
+    """The failure of one polarity's fit is the outcome for both."""
+
+    async def calibrate(sample, sample_file):
+        sample_file.mz_calibration = {"status": "failed", "verified": False}
+        return False
+
+    _start_dual_polarity(
+        calibrate=calibrate, neg_collection=None, pos_collection="cal-pos"
+    )
+
+    await _run_pipeline()
+
+    assert _recorded(status)[-1] == (
+        "calibration_failed",
+        "The m/z calibration failed. Matching and peak assignment were skipped.",
+    )
+
+
+@pytest.mark.asyncio
+async def test_every_status_carries_the_pooled_streams_note(status):
+    """The note describes the file, so no stage may drop it."""
+    note = "Polarity - pools 2 MS1 scan streams into one peak list: A; B."
+    status.note.return_value = note
+    _start_single()
+
+    await _run_pipeline()
+
+    recorded = _recorded(status)
+    assert [state for state, _ in recorded] == ["bound", "calibrated", "done"]
+    assert all(detail.endswith(note) for _, detail in recorded)
+    assert recorded[1][1] == note
+
+
+@pytest.mark.asyncio
+async def test_a_pipeline_that_gives_up_is_marked_failed(status):
+    from mascope_backend.api.controllers.sample.files.process import service
+    from mascope_backend.api.lib.exceptions.api_exceptions import ApiException
+
+    body = AsyncMock(side_effect=ApiException("The peak store is corrupt", {}, 400))
+
+    with (
+        patch(f"{_SVC}._auto_process_sample_file", new=body),
+        patch(f"{_SVC}._delete_partial_acquisition_items", new=AsyncMock()),
+        patch(f"{_FEATURES}.handle_notifications", new_callable=AsyncMock),
+        patch(f"{_FEATURES}.handle_reloads", new_callable=AsyncMock),
+    ):
+        await service.auto_process_sample_file(
+            sample_file_id="sf-corrupt", independent_transaction=True
+        )
+
+    assert status.call_args.args[0] == "sf-corrupt"
+    assert _recorded(status) == [("failed", "The peak store is corrupt")]
+
+
+@pytest.mark.asyncio
+async def test_a_retry_that_recovers_records_no_failure(status):
+    from mascope_backend.api.controllers.sample.files.process import service
+    from mascope_backend.api.lib.exceptions.api_exceptions import ApiException
+
+    body = AsyncMock(side_effect=[ApiException("busy", {}, 503), {"message": "ok"}])
+
+    with (
+        patch(f"{_SVC}._auto_process_sample_file", new=body),
+        patch(f"{_SVC}._delete_partial_acquisition_items", new=AsyncMock()),
+        patch.object(service, "_AUTO_PROCESS_RETRY_DELAYS_S", (0, 0, 0)),
+        patch(f"{_FEATURES}.handle_notifications", new_callable=AsyncMock),
+        patch(f"{_FEATURES}.handle_reloads", new_callable=AsyncMock),
+    ):
+        await service.auto_process_sample_file(
+            sample_file_id="sf-retry", independent_transaction=True
+        )
+
+    status.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_a_file_that_needs_a_chemistry_is_not_marked_failed(status):
+    """The wrapper leaves a routing failure's own status in place."""
+    from mascope_backend.api.controllers.sample.files.process import service
+
+    body = AsyncMock(side_effect=service.ChemistryNotBoundError("No tokens"))
+
+    with (
+        patch(f"{_SVC}._auto_process_sample_file", new=body),
+        patch(f"{_SVC}._delete_partial_acquisition_items", new=AsyncMock()),
+        patch(f"{_FEATURES}.handle_notifications", new_callable=AsyncMock),
+        patch(f"{_FEATURES}.handle_reloads", new_callable=AsyncMock),
+    ):
+        await service.auto_process_sample_file(
+            sample_file_id="sf-unbound", independent_transaction=True
+        )
+
+    status.assert_not_called()
