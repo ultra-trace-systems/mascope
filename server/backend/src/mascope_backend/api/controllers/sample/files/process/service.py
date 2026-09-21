@@ -142,6 +142,55 @@ def _log_cancellation(message: str) -> None:
         runtime.logger.error(message)
 
 
+#: ApiException statuses that carry a warning rather than a fault (see
+#: ``raise_api_warning``). The pipeline's decorator delivers them to the user as
+#: a warning notification.
+_WARNING_STATUS_CODES = (200, 207)
+
+
+def _report_given_up(sample_file_id: str, attempts: int, error: Exception) -> None:
+    """Report a pipeline that stopped for good, at a level that matches its cause.
+
+    The file is named at INFO whatever the cause. Nothing downstream says which
+    file it was: the sample_file row stays, its batch still settles ``ready``,
+    and the only trace is an absence - no matched peaks, and no sample items
+    either when a retry had already cleared the partial ones.
+
+    A raised warning ends the pipeline too - an m/z calibration the match gate
+    will not accept, for one - but it describes the data, not a fault:
+    ``raise_api_warning`` has already logged it at INFO, and the decorator
+    hands it to the user as a warning notification. The INFO line is all it
+    gets here.
+
+    Anything else is a fault and is reported at ERROR, under text that names
+    neither the file nor the error: the error-monitoring sink groups issues by
+    the formatted message, so a message carrying them opened a separate issue
+    for every file - hundreds a day from one instrument's routine files, and
+    one per queued file when an outage hits an ingest burst. The status code
+    (or the exception type) stays in the text, so distinct faults still group
+    apart.
+
+    :param sample_file_id: File whose pipeline gave up.
+    :param attempts: Attempts spent, the last one included.
+    :param error: What the last attempt raised.
+    """
+    runtime.logger.info(
+        f"Auto-processing gave up on sample file {sample_file_id} after "
+        f"{attempts} attempt(s); it will have no matched peaks: {error}"
+    )
+    if isinstance(error, ApiException):
+        if error.status_code in _WARNING_STATUS_CODES:
+            return
+        cause = f"status {error.status_code}"
+    else:
+        cause = type(error).__name__
+    runtime.logger.error(
+        f"Auto-processing gave up on a sample file after {attempts} attempt(s) "
+        f"({cause}); it will have no matched peaks. The file and the cause are "
+        "named at INFO in this worker's log"
+    )
+
+
 def _observe_background_task(task: asyncio.Task) -> None:
     """Log the failure of a background task and release its reference."""
     _background_tasks.discard(task)
@@ -284,7 +333,8 @@ async def auto_process_sample_file(
       (the uploading user becomes workspace owner if the workspace is newly created)
     - Create ACQUISITION batches and sample items for each sample file ionization mode
     - Perform calibration and match computation for created ACQUISITION samples
-      (calibration is skipped for blank files or when no calibration collection is set)
+      (blank files skip all of it; calibration is also skipped when no
+      calibration collection is set)
     - Schedule rematch tasks for other affected samples
     - Return processing results with affected IDs or UI reloads
 
@@ -332,17 +382,9 @@ async def auto_process_sample_file(
             raise
         except Exception as e:
             if attempt >= _AUTO_PROCESS_RETRIES or not _is_recoverable_error(e):
-                # Terminal. Nothing downstream says which file this was: the
-                # sample_file row stays, its batch still settles `ready`, and
-                # the only trace is an absence - no matched peaks, and no
-                # sample items either when a retry had already cleared the
-                # partial ones. Name the file here or the shortfall is only
+                # Terminal. Name the file here or the shortfall is only
                 # discoverable by counting rows afterwards.
-                runtime.logger.error(
-                    f"Auto-processing gave up on sample file {sample_file_id} "
-                    f"after {attempt + 1} attempt(s); it will have no matched "
-                    f"peaks: {e}"
-                )
+                _report_given_up(sample_file_id, attempts=attempt + 1, error=e)
                 raise
             delay = _AUTO_PROCESS_RETRY_DELAYS_S[attempt]
             runtime.logger.warning(
@@ -582,7 +624,8 @@ async def _auto_process_sample_file(
         sample["sample_item_id"] for sample in acquisition_samples
     )
 
-    # Blank files are stored without an instrument config and should skip calibration.
+    # Blank files are stored without an instrument config and have no peaks:
+    # they skip calibration, matching and peak assignment.
     is_blank_sample_file = sample_file.instrument_function_id is None
 
     # --- Calibrate every ACQUISITION sample of the file before matching any --- #
@@ -658,11 +701,16 @@ async def _auto_process_sample_file(
                 )
                 continue
         elif is_blank_sample_file:
+            # A blank has no peaks, so there is nothing to match or assign
+            # either. Held back explicitly, as batch matching already does:
+            # match_compute_sample refuses a blank with a raised warning, which
+            # failed the whole pipeline and reported every routine blank to the
+            # instrument room as a warning.
             runtime.logger.info(
-                "Skipping m/z calibration for blank file "
-                f"'{sample['sample_item_name']}'. "
-                "Calibration is not applicable."
+                "Skipping m/z calibration, matching and peak assignment for "
+                f"blank file '{sample['sample_item_name']}': it has no peaks."
             )
+            continue
         elif not shared_calibration:
             ionization_mode_name = (
                 ionization_mode.ionization_mode_name if ionization_mode else "unknown"

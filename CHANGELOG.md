@@ -99,6 +99,19 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   exactly one mode. Otherwise the file gets no samples, and the error names the
   polarity and the modes that matched.
 
+- **Auto-processing no longer opens an error-monitoring issue per file.** Since
+  1.8.0 a file whose auto-processing stopped early was logged as an error
+  naming the file and the reason, so error monitoring opened a separate issue,
+  with its own alert, for every such file: over three hundred in three days on
+  one production server. Almost none were faults. Most were blank files: a
+  blank has no peaks, so matching refused it with a warning that ended the run
+  and reached everyone viewing the instrument's raw files. Blank files now skip
+  matching and peak assignment as they already skipped calibration, and finish
+  like any other file. A run that a warning ends, such as an m/z calibration
+  the match gate does not accept, is logged at INFO, and the user is told as
+  before. A run that a fault ends is still an error, now under one message per
+  kind of fault, with the file and the reason logged at INFO beside it.
+
 - **Log checks in the backend tests hold in the full suite.** The migration
   tests run Alembic in-process, and `alembic/env.py` applied `alembic.ini`'s
   logging setup on every command, which cut stdlib loggers off from the
