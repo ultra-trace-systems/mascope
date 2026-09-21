@@ -170,13 +170,31 @@ re-processed long after it was acquired is listed too.
 |---|---|
 | Converted, Queued, Bound, Calibrated | Still being processed: the file was read (or processing was asked for again, and waits its turn), its samples exist, and its m/z axis was calibrated. |
 | Done | Every sample of the file was matched, or it is a blank measurement with nothing to match. The detail says when the file was not calibrated, and why. |
-| Needs a chemistry | No ionization mode token matched the file's name, so it has no samples. Set a token its name contains, then re-process it. |
+| Needs a chemistry | No ionization mode token matched the file's name, so it has no samples yet. Choose its chemistry (below), or set a token its name contains and re-process it. |
 | Calibration failed | An m/z calibration failed or is below the quality bar, so some or all of the samples were not matched. A TOF file is matched only on a verified m/z calibration, so one whose ionization mode has no calibration collection ends here too, and the detail names the missing collection. |
 | Failed | Processing stopped on an error, or was interrupted by a server restart. Re-process the file. |
 
 Files processed before Mascope recorded the status show none. When an Orbitrap
 method alternates scan ranges or scan modes within one polarity, the detail
 also says that peak detection pools those scan streams into one peak list.
+
+### Choose the chemistry of a file that needs one
+
+A file whose name carries no ionization mode token is still converted and
+stored, but it waits as **Needs a chemistry** until someone says which
+chemistry it was acquired under. The people answerable for the instrument find
+it under **Needs attention** in the notifications pane.
+
+1. In the **Raw files** tab, set the status filter to **Needs a chemistry**.
+2. Select the files that share a chemistry, right-click them and choose
+   **Choose chemistry**.
+3. Pick an ionization mode for each polarity the files hold, then **Process**.
+
+The files are processed under those modes as if their names carried the
+modes' tokens: calibrated, matched, and filed in the daily acquisition
+batches. Re-processing such a file later keeps the modes it was given. Only
+files without samples can be given a chemistry this way; an editor of the
+instrument may do it.
 
 !!! tip "Finding files after upload"
     The table shows one time window at a time (default: the last 24 hours). Use
@@ -262,7 +280,9 @@ batch has samples, you can go straight to analysis:
   polarity from the dropdown.
 - **A file needs re-processing.** Right-click it in the raw-files table and choose
   **Re-process** to rebuild its acquisition data under the current ionization
-  modes. This is only available for files not tied to a batch you created.
+  modes. A file whose name matches no token keeps the modes its samples have,
+  such as one whose chemistry was chosen by hand. This is only available for
+  files not tied to a batch you created.
 - **Uploads from the File Agent keep failing.** See the File Agent's
   [troubleshooting section](../instruments/index.md#troubleshooting-uploads) —
   it covers rejected tokens, HTTP 404s, and the 100 MB size limit.

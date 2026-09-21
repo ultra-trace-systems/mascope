@@ -301,6 +301,7 @@ RESULT_STATUS_NOTIFICATION = {
     "skipped": "success",  # nothing to do is not a problem
     "partial": "warning",
     "locked": "warning",  # another process holds the item; it was not touched
+    "parked": "warning",  # waits for a person to decide; nothing failed
     "failed": "error",
     "error": "error",  # the same outcome under the name the API layer uses
 }

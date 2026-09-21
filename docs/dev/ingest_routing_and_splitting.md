@@ -563,6 +563,9 @@ it is new work.
 - **Only ambiguous and unobservable streams park.** A parked stream has
   converted peaks but no items; resolving it resumes the pipeline from
   binding.
+  - Until the ladder has more rungs than the token, every file the token
+    binds to nothing parks. Since #2167 that is the whole file, at status
+    `needs_chemistry`.
 
 ### 5.6 Processing state and notifications
 
@@ -857,7 +860,13 @@ Steps 6 and 7 of the setup-simplification proposal:
   #2166: a digest per person, kind and instrument, listed under Needs
   attention in the notifications pane;
 - the `needs_chemistry` state and a review list in Raw files, with
-  one-click resolution that resumes the pipeline;
+  one-click resolution that resumes the pipeline. Shipped in #2167:
+  - a file no token binds is parked instead of failed;
+  - Raw files filters to it, and **Choose chemistry** binds the selected
+    files to one mode per polarity through `POST /api/sample/files/bind`;
+  - re-processing keeps a file's modes when no token binds it. This is the
+    explicit rung of section 5.2, kept on the file's samples until phase 2
+    gives bindings a table;
 - the upload capability flag;
 - the agent status poller, in the next agent release.
 

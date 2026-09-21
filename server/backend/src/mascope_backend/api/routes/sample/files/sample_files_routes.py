@@ -21,6 +21,7 @@ from mascope_backend.api.controllers.dataset.acquisition.service import (
     recorded_instrument_type,
 )
 from mascope_backend.api.controllers.sample.files.process.service import (
+    bind_sample_files,
     re_process_sample_files,
     spawn_auto_process_sample_file,
 )
@@ -48,6 +49,7 @@ from mascope_backend.api.controllers.sample.files.sample_files_controller import
 from mascope_backend.api.lib.api_features import api_route
 from mascope_backend.api.models.sample.files.config import ProcessingStatus
 from mascope_backend.api.models.sample.files.sample_file_pydantic_model import (
+    BindSampleFilesBody,
     DeleteSampleFilesBody,
     GetRecentSampleFilesQueryParams,
     GetSampleFilePeaksQueryParams,
@@ -411,6 +413,31 @@ async def process_sample_item_route(
         "message": f"Processing file '{sample_file.get('filename')}', please wait.",
         "process_id": process_id,
     }
+
+
+@sample_files_router.post("/bind")
+@api_route(status_code=202)
+async def bind_sample_files_route(
+    body: BindSampleFilesBody,
+    user=Depends(current_active_user),
+):
+    """Process files that need a chemistry under ionization modes chosen for them.
+
+    For files whose names carry no token of a configured mode. Each is bound
+    to the chosen mode of each polarity it holds and processed as a token
+    would have had it processed. Only files without samples are bound, so
+    nothing is rebuilt here, and an editor may choose.
+
+    :param body: The files, and the modes chosen for them.
+    :param user: The current authenticated user with editor permissions.
+    :return: The files started and the files refused, with why.
+    """
+    await check_sample_file_instrument_access_bulk(body.sample_file_ids, user, "editor")
+    return await bind_sample_files(
+        sample_file_ids=body.sample_file_ids,
+        ionization_mode_ids=body.ionization_mode_ids,
+        user_id=user.id,
+    )
 
 
 @sample_files_router.post("/reprocess")

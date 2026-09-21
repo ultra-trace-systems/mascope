@@ -1215,7 +1215,7 @@ def _start_single(
     return mocks, sample_file
 
 
-async def _run_pipeline():
+async def _run_pipeline(**kwargs):
     from mascope_backend.api.controllers.sample.files.process.service import (
         auto_process_sample_file,
     )
@@ -1225,6 +1225,7 @@ async def _run_pipeline():
         independent_transaction=True,
         user_id=42,
         process_id="proc-001",
+        **kwargs,
     )
 
 
@@ -1242,8 +1243,8 @@ async def test_records_each_stage_a_calibrated_file_reaches(status):
 
 
 @pytest.mark.asyncio
-async def test_a_file_that_binds_to_nothing_needs_a_chemistry(status):
-    """Routing failed: the file is parked with the routing's own words."""
+async def test_a_file_that_binds_to_nothing_waits_for_a_chemistry(status):
+    """Routing found no mode: the file is parked, not failed."""
     mocks, _ = _start_single()
     message = (
         "No ionization mode tokens found for file 2025.09.20_test_file.raw. "
@@ -1252,15 +1253,20 @@ async def test_a_file_that_binds_to_nothing_needs_a_chemistry(status):
     mocks["resolve"].side_effect = ValueError(message)
 
     with patch(f"{_FEATURES}.handle_notifications", new_callable=AsyncMock) as notify:
-        await _run_pipeline()
+        result = await _run_pipeline()
 
-    # Recorded once, and not overwritten as a generic failure by the wrapper.
-    assert _recorded(status) == [("needs_chemistry", message)]
+    parked = f"{message}. Or choose its chemistry in Raw files."
+    assert _recorded(status) == [("needs_chemistry", parked)]
     mocks["create_batches"].assert_not_called()
-    # The error is still reported as it was before the status existed.
+    mocks["calibrate"].assert_not_called()
+    mocks["match"].assert_not_called()
+    assert result["status"] == "parked"
+    # Reported as a warning for the instrument, not as a failed run.
     (call,) = notify.call_args_list
-    assert call.args[1].status == "error"
-    assert message in call.args[1].message
+    assert call.args[0] == ["instrument"]
+    assert call.args[1].status == "warning"
+    assert call.args[1].message == parked
+    assert result["_notification_data"]["instrument"] == "Orbion"
 
 
 @pytest.mark.asyncio
@@ -1581,23 +1587,90 @@ async def test_a_retry_that_recovers_records_no_failure(status):
 
 
 @pytest.mark.asyncio
-async def test_a_file_that_needs_a_chemistry_is_not_marked_failed(status):
-    """The wrapper leaves a routing failure's own status in place."""
-    from mascope_backend.api.controllers.sample.files.process import service
+async def test_modes_chosen_for_a_file_bind_it_without_its_tokens(status):
+    mocks, _ = _start_single()
+    chosen = _make_ionization_mode(ionization_mode_name="Nitrate")
 
-    body = AsyncMock(side_effect=service.ChemistryNotBoundError("No tokens"))
+    with patch(
+        f"{_SVC}.fetch_ionization_modes",
+        new_callable=AsyncMock,
+        return_value=[chosen],
+    ) as fetch:
+        await _run_pipeline(ionization_mode_ids=["im-001"])
 
-    with (
-        patch(f"{_SVC}._auto_process_sample_file", new=body),
-        patch(f"{_SVC}._delete_partial_acquisition_items", new=AsyncMock()),
-        patch(f"{_FEATURES}.handle_notifications", new_callable=AsyncMock),
-        patch(f"{_FEATURES}.handle_reloads", new_callable=AsyncMock),
+    fetch.assert_awaited_once_with(["im-001"])
+    mocks["resolve"].assert_not_called()
+    assert mocks["create_batches"].call_args.kwargs["ionization_modes"] == [chosen]
+    assert _recorded(status)[0] == (
+        "bound",
+        "Bound to 'Nitrate' (-) without a file-name token.",
+    )
+    assert _recorded(status)[-1][0] == "done"
+
+
+@pytest.mark.asyncio
+async def test_chosen_modes_that_do_not_fit_the_file_fail_it(status):
+    """A file of both polarities needs a mode for each."""
+    mocks, sample_file = _start_single()
+    sample_file.polarity = "+-"
+
+    with patch(
+        f"{_SVC}.fetch_ionization_modes",
+        new_callable=AsyncMock,
+        return_value=[_make_ionization_mode()],
     ):
-        await service.auto_process_sample_file(
-            sample_file_id="sf-unbound", independent_transaction=True
-        )
+        await _run_pipeline(ionization_mode_ids=["im-001"])
 
-    status.assert_not_called()
+    mocks["create_batches"].assert_not_called()
+    ((state, detail),) = _recorded(status)
+    assert state == "failed"
+    assert "must include one per polarity" in detail
+    assert "none has polarity +" in detail
+
+
+def _mode_of(polarity: str, name: str):
+    return _make_ionization_mode(
+        ionization_mode_id=f"im-{name}",
+        ionization_mode_name=name,
+        ionization_mode_polarity=polarity,
+    )
+
+
+def test_each_polarity_of_a_file_takes_the_chosen_mode_of_its_polarity():
+    from mascope_backend.api.controllers.sample.files.process.service import (
+        choose_ionization_modes,
+    )
+
+    negative, positive = _mode_of("-", "neg"), _mode_of("+", "pos")
+
+    both = choose_ionization_modes(
+        _make_sample_file(polarity="+-"), [negative, positive]
+    )
+    only = choose_ionization_modes(
+        _make_sample_file(polarity="-"), [negative, positive]
+    )
+
+    assert both == [positive, negative]
+    assert only == [negative]
+
+
+@pytest.mark.parametrize(
+    ("modes", "problem"),
+    [
+        ([], "none has polarity -"),
+        ([("-", "a"), ("-", "b")], "2 have polarity -"),
+    ],
+)
+def test_a_polarity_without_exactly_one_chosen_mode_is_refused(modes, problem):
+    from mascope_backend.api.controllers.sample.files.process.service import (
+        choose_ionization_modes,
+    )
+
+    with pytest.raises(ValueError, match=problem):
+        choose_ionization_modes(
+            _make_sample_file(polarity="-"),
+            [_mode_of(polarity, name) for polarity, name in modes],
+        )
 
 
 async def _give_up():
