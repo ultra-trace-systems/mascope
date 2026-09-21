@@ -563,9 +563,12 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   was read through, and the reference-list compound the run matched the
   formula from, or - marked *potential* - a compound a list holds for a
   formula the run reached through the formula search. The same names appear
-  beside the other readings of the ion and beside the close alternatives. The
-  assignment detail endpoint returns them as `known_compounds`, on the row and
-  on each alternative a list holds, from the sources the deployment matches
+  beside the other readings of the ion and beside the close alternatives, and
+  a formula many compounds share says how many. The assignment detail endpoint
+  returns them as `known_compounds`, with `known_compounds_total`, on the row
+  and on each alternative a list holds. They are scoped as the run matches: the
+  sample's polarity, each source's window under the run's ceiling, radicals
+  only from a source that allows them, and the licences the deployment matches
   against.
 
 ### Changed
@@ -647,9 +650,12 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   as "evidence 8% (fit 8% x plausibility 100%) is under the candidate band of
   45%".
 
-- **An ionization mode that declares a channel its chemistry profile also
-  opens searches the channel once.** Searched twice, every reading through it
-  came back as another reading of its own ion.
+- **A channel an ionization mode declares is the mode's own, even where its
+  chemistry profile also opens it as a secondary channel.** It is searched
+  once - searched twice, every reading through it came back as another reading
+  of its own ion - and none of what a secondary channel is held to reaches it:
+  the cap on an uncorroborated secondary-channel winner, the tie that goes to
+  the mode's own channel, the run's list of secondary channels.
 
 - **A nitrate cluster of a neutral with no oxygen is no longer held at
   assigned.** Nitrate holds on to a molecule by hydrogen bonds from its
