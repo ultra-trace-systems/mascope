@@ -650,12 +650,13 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   as "evidence 8% (fit 8% x plausibility 100%) is under the candidate band of
   45%".
 
-- **A channel an ionization mode declares is the mode's own, even where its
-  chemistry profile also opens it as a secondary channel.** It is searched
-  once - searched twice, every reading through it came back as another reading
-  of its own ion - and none of what a secondary channel is held to reaches it:
-  the cap on an uncorroborated secondary-channel winner, the tie that goes to
-  the mode's own channel, the run's list of secondary channels.
+- **An ionization mode that declares a channel its chemistry profile also
+  opens searches it once, and the channel stays secondary.** Searched twice,
+  every reading through it came back as another reading of its own ion.
+  Declaring a channel lets the run search it and match target compounds
+  through it; it does not make an opportunistic reagent, such as carbonate on
+  a nitrate source, the mode's own. An uncorroborated winner through it is
+  still held at candidate, as on a mode that does not declare it.
 
 - **A nitrate cluster of a neutral with no oxygen is no longer held at
   assigned.** Nitrate holds on to a molecule by hydrogen bonds from its

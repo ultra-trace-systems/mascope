@@ -76,6 +76,7 @@ from mascope_backend.api.new.peak_assignments.profiles import (
 )
 from mascope_backend.api.new.peak_assignments.seeded_scoring import score_seeds
 from mascope_backend.api.new.peak_assignments.service import (
+    _searched_mechanisms,
     _seeded_fits,
     _untargeted_ionization_notations,
     fetch_mechanisms_by_notation,
@@ -301,13 +302,10 @@ async def _search_sample(
         frame["intensity"].to_numpy(),
         [m.ionization_mechanism for m in secondary_mechanisms],
     )
+    # The per-sample run's own rule, so a secondary channel the mode declares
+    # is searched once here too.
     notations, mechanism_id_by_notation = _untargeted_ionization_notations(
-        mechanisms
-        + [
-            mechanism
-            for mechanism in secondary_mechanisms
-            if mechanism.ionization_mechanism in resolved_profile.minor_channels
-        ]
+        _searched_mechanisms(mechanisms, secondary_mechanisms, resolved_profile)
     )
     runtime.logger.info(
         f"Untargeted batch search of sample '{sample.sample_item_name}' "
