@@ -1,9 +1,10 @@
 <script setup>
-import { computed, ref, watch } from 'vue'
+import { computed, ref, useId, watch } from 'vue'
 
 import Button from 'primevue/button'
-import Select from 'primevue/select'
 import InputText from 'primevue/inputtext'
+import Popover from 'primevue/popover'
+import RadioButton from 'primevue/radiobutton'
 
 import { useApp } from '@/stores'
 import { BaseTierTag, BaseVerdictBadge } from '@/lib/base'
@@ -138,14 +139,15 @@ const anchorVerdictTooltip = computed(() => {
 // without a formula. Read off the M0, since that is the row being judged.
 const verifiable = computed(() => Boolean(verifyTarget.value?.assigned_formula))
 
-const editing = ref(false) // form open despite an existing verdict (re-verify)
+const editing = ref(false) // verdict buttons shown despite an existing verdict (re-verify)
 const evidenceLevel = ref(null)
 const note = ref('')
 const submitting = ref(false)
 const pendingVerdict = ref(null) // which button is mid-submit
 const denied = ref(false) // 403: not an editor on this sample
 
-// Show the capture form when there is no verdict yet, or the user chose to edit.
+// Show the verdict buttons when there is no verdict yet, or the user chose to
+// change it.
 const showVerifyForm = computed(
   () => verifiable.value && !denied.value && (!verification.value || editing.value)
 )
@@ -156,27 +158,52 @@ function startEdit() {
   editing.value = true
 }
 
+// The evidence level and the note belong to a confirmation, so Confirm asks for
+// them in a small dialog rather than the card carrying both for every peak. A
+// rejection or an "unsure" is recorded as it is clicked.
+const confirmDialog = ref(null)
+const dialogId = useId()
+// Where focus lands as the dialog opens: the level already picked, when the
+// verdict being changed carries one, else the strongest. The dialog focuses
+// nothing on its own (Popover only looks for an `[autofocus]` child).
+const autofocusLevel = computed(() => evidenceLevel.value ?? EVIDENCE_LEVELS[0].value)
+
+const openConfirm = (event) => confirmDialog.value?.show(event)
+
+// Resolves whether the verdict was recorded.
 async function submitVerdict(verdict) {
+  const confirming = verdict === 'confirmed'
   // Confirm requires an evidence level (also enforced server-side).
-  if (verdict === 'confirmed' && !evidenceLevel.value) return
+  if (confirming && !evidenceLevel.value) return false
   submitting.value = true
   pendingVerdict.value = verdict
   try {
     await app.data.peakAssignment.verification.verify({
       peak_assignment_id: verifyTarget.value.peak_assignment_id,
       verdict,
-      evidence_level: evidenceLevel.value || null,
-      note: note.value?.trim() || null
+      evidence_level: confirming ? evidenceLevel.value : null,
+      note: confirming ? note.value?.trim() || null : null
     })
     editing.value = false
     note.value = ''
+    return true
   } catch (error) {
     // The http layer already toasts; only 403 changes the UI (hide the control).
     if (error?.response?.status === 403) denied.value = true
+    return false
   } finally {
     submitting.value = false
     pendingVerdict.value = null
   }
+}
+
+// The dialog's own Confirm. It stays open on a failure, with what was entered,
+// so the confirmation can be sent again; a refusal closes it, since the button
+// it opened from gives way to the note that says editor access is required.
+async function submitConfirm() {
+  if (submitting.value) return
+  const recorded = await submitVerdict('confirmed')
+  if (recorded || denied.value) confirmDialog.value?.hide()
 }
 
 // Fresh form per compound, not per peak: the form judges the family's M0, so
@@ -190,6 +217,8 @@ watch(
     editing.value = false
     evidenceLevel.value = null
     note.value = ''
+    // An open dialog confirms the compound it was opened on, and no other.
+    confirmDialog.value?.hide()
   }
 )
 watch(
@@ -605,8 +634,7 @@ const plausibility = computed(
 // shows nothing rather than a placeholder.
 //
 // A derived row's provenance is its anchor's consensus record, and its tier is
-// a vote across the batch that no rule judged, so it has nothing to show here -
-// the same reason its chip carries no evidence percentage.
+// a vote across the batch that no rule judged, so it has nothing to show here.
 const tierReasons = computed(() => (derivedRun.value ? [] : tierReasonsOf(provenance.value)))
 
 // An isotopologue carries one reason of its own, that it follows its M0: every
@@ -1021,8 +1049,18 @@ const demotedCount = computed(() => {
   >
     <section v-if="focusedAssignment" class="inspector">
       <div class="insp-head">
-        <div class="insp-formula">
-          {{ focusedAssignment.assigned_formula || 'Unassigned' }}
+        <!-- The mechanism beside the neutral, as a chemist writes the pair: it
+             is half of the assignment, and the ion formula under it only
+             implies it. -->
+        <div class="insp-title">
+          <span class="insp-formula">{{ focusedAssignment.assigned_formula || 'Unassigned' }}</span>
+          <span
+            v-if="ionization"
+            class="insp-ionization"
+            data-testid="ionization"
+            v-tooltip.top="ionizationTooltip"
+            >{{ ionization }}</span
+          >
         </div>
         <!-- Both chips in one box, because the head is `space-between`: a third
              child of it would put this server's tier in the middle of the row
@@ -1043,14 +1081,12 @@ const demotedCount = computed(() => {
           />
           <!-- The producing engine's own verdict, spelled out rather than left to
                the marker on the chip above: this is the detail view, and the
-               disagreement is the reason to open an imported row at all.
-               `show-evidence` is off deliberately - the evidence is this server's
-               product and it did not produce this tier, so borrowing it here
-               would pair a number with a band it never put the row in. -->
+               disagreement is the reason to open an imported row at all. It is
+               given no evidence - the evidence is this server's product and did
+               not produce this tier. -->
           <BaseTierTag
             v-if="focusedAssignment.engine_tier"
             :tier="focusedAssignment.engine_tier"
-            :show-evidence="false"
             :tooltip="engineTierTooltip"
           />
         </div>
@@ -1059,30 +1095,25 @@ const demotedCount = computed(() => {
            evidence grid below is empty, so the peak itself has to name the
            card. -->
       <div class="insp-sub" v-if="!focusedAssignment.assigned_formula">{{ peakSummary }}</div>
+      <!-- The one place the card names the row's isotope, beside the ion it is
+           a line of; the isotopologue table below marks the same row. Read off
+           the measured row, which labels a derived row's isotope where the row
+           itself names none. -->
       <div
         class="insp-sub"
         v-if="
-          focusedAssignment.ion_formula ||
-          focusedAssignment.isotope_label ||
-          focusedAssignment.source
+          focusedAssignment.ion_formula || evidenceRow.isotope_label || focusedAssignment.source
         "
       >
         <span v-if="focusedAssignment.ion_formula">{{ focusedAssignment.ion_formula }}</span>
-        <span v-if="focusedAssignment.isotope_label">
-          &middot; {{ focusedAssignment.isotope_label }}</span
-        >
+        <span v-if="evidenceRow.isotope_label"> &middot; {{ evidenceRow.isotope_label }}</span>
         <span v-if="focusedAssignment.source" class="src">
           &middot; {{ focusedAssignment.source }}</span
         >
       </div>
-      <!-- Named outright rather than left between the lines of the neutral and
-           the ion formula: the mechanism is half of the assignment, and a list's
-           name for the formula is the first thing a reader checks it against. -->
-      <div v-if="ionization || listedAs" class="identity" data-testid="identity">
-        <div v-if="ionization" class="ev" data-testid="ionization">
-          <span class="k" v-tooltip.top="ionizationTooltip">ionization</span>
-          <span class="v">{{ ionization }}</span>
-        </div>
+      <!-- A list's name for the formula is the first thing a reader checks the
+           assignment against, so it is named outright, above the evidence. -->
+      <div v-if="listedAs" class="identity" data-testid="identity">
         <div
           v-if="listedAs"
           class="ev listed"
@@ -1142,10 +1173,6 @@ const demotedCount = computed(() => {
           <span class="v">{{
             num.relativeAbundanceError.format(evidenceRow.abundance_error)
           }}</span>
-        </div>
-        <div class="ev" v-if="evidenceRow.isotope_label">
-          <span class="k">isotope</span>
-          <span class="v">{{ evidenceRow.isotope_label }}</span>
         </div>
         <div class="ev" v-if="plausibility != null">
           <span class="k" v-tooltip.top="'Chemical plausibility (Seven Golden Rules)'"
@@ -1468,61 +1495,102 @@ const demotedCount = computed(() => {
             @click="startEdit"
           />
         </div>
-        <template v-else-if="showVerifyForm">
-          <div class="verify-buttons">
-            <Button
-              label="Confirm"
-              icon="pi ph ph-check-circle"
-              size="small"
-              severity="success"
-              :disabled="submitting || !evidenceLevel"
-              :loading="submitting && pendingVerdict === 'confirmed'"
-              v-tooltip.top="!evidenceLevel ? 'Pick an evidence level to confirm' : ''"
-              @click="submitVerdict('confirmed')"
-            />
-            <Button
-              label="Reject"
-              icon="pi ph ph-x-circle"
-              size="small"
-              severity="danger"
-              :disabled="submitting"
-              :loading="submitting && pendingVerdict === 'rejected'"
-              @click="submitVerdict('rejected')"
-            />
-            <Button
-              label="Unsure"
-              icon="pi ph ph-question"
-              size="small"
-              severity="secondary"
-              :disabled="submitting"
-              :loading="submitting && pendingVerdict === 'unsure'"
-              @click="submitVerdict('unsure')"
-            />
-          </div>
-          <Select
-            v-model="evidenceLevel"
-            :options="EVIDENCE_LEVELS"
-            optionLabel="label"
-            optionValue="value"
-            placeholder="Evidence level (required to confirm)"
+        <div v-else-if="showVerifyForm" class="verify-buttons">
+          <Button
+            label="Confirm"
+            icon="pi ph ph-check-circle"
             size="small"
-            showClear
-            fluid
+            severity="success"
+            class="verdict-button"
+            aria-haspopup="dialog"
+            :disabled="submitting"
+            :loading="submitting && pendingVerdict === 'confirmed'"
+            v-tooltip.top="'Pick the evidence behind the confirmation'"
+            @click="openConfirm"
           />
-          <InputText v-model="note" placeholder="Note (optional)" size="small" fluid />
-          <div v-if="editing" class="verify-edit-actions">
-            <Button
-              label="Cancel"
-              size="small"
-              text
-              severity="secondary"
-              @click="editing = false"
-            />
-          </div>
-        </template>
+          <Button
+            label="Reject"
+            icon="pi ph ph-x-circle"
+            size="small"
+            severity="danger"
+            class="verdict-button"
+            :disabled="submitting"
+            :loading="submitting && pendingVerdict === 'rejected'"
+            @click="submitVerdict('rejected')"
+          />
+          <Button
+            label="Unsure"
+            icon="pi ph ph-question"
+            size="small"
+            severity="secondary"
+            class="verdict-button"
+            :disabled="submitting"
+            :loading="submitting && pendingVerdict === 'unsure'"
+            @click="submitVerdict('unsure')"
+          />
+          <Button
+            v-if="editing"
+            label="Cancel"
+            size="small"
+            text
+            severity="secondary"
+            v-tooltip.top="'Keep the verdict as it is'"
+            @click="editing = false"
+          />
+        </div>
         <div v-else-if="denied" class="verify-denied">
           <span class="pi ph ph-lock-simple" /> Editor access is required to verify.
         </div>
+        <!-- No help card in here: the card above covers it, and one inside a
+             popover re-registers on every open. Radio buttons rather than a
+             Select, which would swallow the Escape that closes the dialog. -->
+        <Popover ref="confirmDialog" aria-label="Confirm the assignment">
+          <div class="confirm-dialog" data-testid="confirm-dialog">
+            <div class="confirm-claim">
+              Confirm <span class="confirm-formula">{{ verifyTarget?.assigned_formula }}</span>
+            </div>
+            <div class="confirm-levels" role="radiogroup" :aria-labelledby="`${dialogId}-levels`">
+              <span :id="`${dialogId}-levels`" class="alts-label">Evidence level</span>
+              <div v-for="level in EVIDENCE_LEVELS" :key="level.value" class="confirm-level">
+                <RadioButton
+                  v-model="evidenceLevel"
+                  :value="level.value"
+                  :name="`${dialogId}-level`"
+                  :inputId="`${dialogId}-${level.value}`"
+                  :pt="{ input: { autofocus: level.value === autofocusLevel } }"
+                />
+                <label :for="`${dialogId}-${level.value}`">{{ level.label }}</label>
+              </div>
+            </div>
+            <InputText
+              v-model="note"
+              placeholder="Note (optional)"
+              aria-label="Note"
+              size="small"
+              fluid
+              @keydown.enter="submitConfirm"
+            />
+            <div class="confirm-actions">
+              <Button
+                label="Cancel"
+                size="small"
+                text
+                severity="secondary"
+                @click="confirmDialog?.hide()"
+              />
+              <Button
+                label="Confirm"
+                icon="pi ph ph-check-circle"
+                size="small"
+                severity="success"
+                data-testid="confirm-submit"
+                :disabled="submitting || !evidenceLevel"
+                :loading="submitting"
+                @click="submitConfirm"
+              />
+            </div>
+          </div>
+        </Popover>
       </div>
       <div
         v-if="alternatives.length"
@@ -1640,10 +1708,29 @@ const demotedCount = computed(() => {
   justify-content: space-between;
   gap: 0.75rem;
 }
+/* The formula and its ionization on one baseline; a long pair wraps before it
+   pushes the tier chips off the row. */
+.insp-title {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 0 0.45rem;
+  min-width: 0;
+}
 .insp-formula {
   font-family: var(--font-mono, ui-monospace, monospace);
   font-size: 1.35rem;
   font-weight: 700;
+  overflow-wrap: anywhere;
+}
+/* Second to the neutral it ionized: the same type, lighter and smaller. */
+.insp-ionization {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 1.05rem;
+  font-weight: 600;
+  opacity: 0.6;
+  white-space: nowrap;
+  cursor: default;
 }
 /* This server's tier and the producing engine's, kept adjacent at the right
    edge instead of being spread apart by the head's `space-between`. */
@@ -1776,7 +1863,7 @@ const demotedCount = computed(() => {
 
 /* Verification (labelling) capture. Confirm / Reject / Unsure share equal width
    -> equal prominence (reject is a first-class negative label, not an
-   afterthought). */
+   afterthought); Cancel, when changing a verdict, takes only its own. */
 .verify {
   display: flex;
   flex-direction: column;
@@ -1807,12 +1894,43 @@ const demotedCount = computed(() => {
   display: flex;
   gap: 0.4rem;
 }
-.verify-buttons > :deep(.p-button) {
+.verify-buttons > .verdict-button {
   flex: 1;
 }
-.verify-edit-actions {
+/* Confirm's dialog: the claim, the evidence levels strongest first, a note. */
+.confirm-dialog {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  width: 17rem;
+  max-width: 85vw;
+}
+.confirm-claim {
+  font-size: 0.85rem;
+}
+.confirm-formula {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+.confirm-levels {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+.confirm-level {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.85rem;
+}
+.confirm-level label {
+  cursor: pointer;
+}
+.confirm-actions {
   display: flex;
   justify-content: flex-end;
+  gap: 0.4rem;
 }
 .verify-denied {
   display: inline-flex;
@@ -2037,12 +2155,11 @@ const demotedCount = computed(() => {
   font-size: 0.7rem;
   opacity: 0.7;
 }
-/* The ionization and a list's name for the formula, in the evidence grid's
-   key/value voice, above it: they say what the row is, the grid how well. */
+/* A list's name for the formula, in the evidence grid's key/value voice, above
+   it and as wide as the card: it says what the row is, the grid how well. */
 .identity {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-  gap: 0.4rem 1rem;
+  display: flex;
+  flex-direction: column;
 }
 .identity .listed .v {
   overflow-wrap: anywhere;

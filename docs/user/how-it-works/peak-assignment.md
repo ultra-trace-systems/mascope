@@ -265,11 +265,14 @@ earns the top tier on the strength of the match. The band a row lands in is read
 same quantity that won it the peak in the first place, so the tier and the arbitration
 cannot disagree.
 
-**The percentage on a tier chip is that combined evidence, not the match quality alone.**
-The fit score is unchanged — still recorded, still shown beside the assignment as the pure
-measurement — so the two stay visible apart. A *batch peak*'s chip carries no percentage
-at all: its consensus tier is a weighted vote over what the batch's samples each concluded
-about the peak, not a threshold on any single number.
+**A tier chip names the tier alone.** A percentage beside it would read as the chance that
+the assignment is right, and the evidence is not that: it measures how well the formula
+explains the peak, and *P(correct)* is the calibrated probability. Hovering the chip gives
+the evidence, and the peak inspector shows it beside the fit score, which is unchanged —
+still recorded, still shown as the pure measurement — so the two stay visible apart. A
+*batch peak*'s chip names no evidence at all: its consensus tier is a weighted vote over
+what the batch's samples each concluded about the peak, not a threshold on any single
+number.
 
 The long-term goal is to report a community-standard **identification level** ([Schymanski
 et al. 2014][sch14]; MSI reporting standards, [Sumner et al. 2007][sum07]) alongside the
@@ -412,13 +415,14 @@ in doubt, off its M0, read as the M0's line - is listed above that.
 **Beside the reasons.** The peak inspector also names what the row is, and shows two
 measurements the reasons read.
 
-- ***ionization*** and ***reference list*** sit above the evidence. The first is the
-  ionization mechanism the ion was read through (*+H+*, *+NH4+*, *-H+* ...): the neutral
-  and the ion formula imply it, but it is half of the assignment. The second is what a
-  reference list calls the formula, with the list it comes from: the compound the run
-  matched it from, or - marked *potential* - a compound a list holds for a formula the run
-  reached through the formula search, which is a lead to check rather than a match the run
-  made. A list names a formula only where a run of the sample could have matched it from
+- The ***ionization*** follows the formula at the head of the card: the mechanism the ion
+  was read through (*+H+*, *+NH4+*, *-H+* ...). The neutral and the ion formula under it
+  imply it, but it is half of the assignment, and hovering it spells out the reaction.
+- ***reference list***, above the evidence, is what a reference list calls the formula,
+  with the list it comes from: the compound the run matched it from, or - marked
+  *potential* - a compound a list holds for a formula the run reached through the formula
+  search, which is a lead to check rather than a match the run made. A list names a
+  formula only where a run of the sample could have matched it from
   that list: in the sample's polarity, inside the list's window, and a radical only from
   a list that allows radicals. A formula match names candidate compounds, not an
   identification. Hovering lists the compounds by name, up to 25, and says how many more
@@ -490,10 +494,12 @@ and each weaker level is worth correspondingly less as a label. Verdicts deliber
 capture the *evidence* behind a judgment rather than echoing the model's own score,
 so the labelled record stays informative for recalibration.
 
-Verdicts are recorded from the peak inspector's form, or from the ledger's Verdict column:
-the cell is a button, as in the *Batch peaks* ledger, so an unverified row shows a faint
-seal that opens the same form in place. A verdict is about the compound, so it is recorded
-on the family's M0 whichever member the row is.
+Verdicts are recorded from the peak inspector, or from the ledger's Verdict column. In the
+inspector, *Reject* and *Unsure* are recorded as they are clicked, and *Confirm* opens a
+small dialog for the evidence level and an optional note. In the ledger the cell is a
+button, as in the *Batch peaks* ledger, so an unverified row shows a faint seal that opens
+a verdict form in place. A verdict is about the compound, so it is recorded on the family's
+M0 whichever member the row is.
 
 ### Batch-level verdicts
 

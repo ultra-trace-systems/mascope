@@ -35,20 +35,20 @@ describe('BaseTierTag manual mark', () => {
   // The mark is additional to the tier, not a tier of its own: a curated row
   // still carries whatever tier its evidence earns under the run's bands, and
   // the chip has to keep saying so.
-  it('keeps showing the tier and evidence it was given', () => {
+  it('keeps showing the tier it was given', () => {
     const wrapper = mountTag({ tier: 'assigned', evidence: 0.91, source: 'manual' })
 
-    expect(wrapper.find('.tag').text()).toContain('91%')
+    expect(wrapper.find('.tag').text()).toBe('assigned')
   })
 
-  // The number is the evidence, not the fit, and the two come apart exactly
-  // where it matters: a chemically implausible formula can fit beautifully. The
-  // chip must never pair a low tier with the high fit that did not earn it.
-  it('shows the evidence that produced the tier, not the fit', () => {
+  // A percentage beside the tier reads as the chance the assignment is right,
+  // which the evidence is not. The chip names the tier; the hover text gives
+  // the evidence it was banded on, named as the product it is.
+  it('names the tier alone, and the evidence on hover as what it is', () => {
     const wrapper = mountTag({ tier: 'below_assignability', evidence: 0.38 })
 
-    expect(wrapper.find('.tag').text()).toContain('38%')
-    expect(wrapper.vm.autoTooltip).toContain('fit x plausibility')
+    expect(wrapper.find('.tag').text()).toBe('below')
+    expect(wrapper.vm.autoTooltip).toContain('Evidence: 38% (fit x plausibility)')
   })
 
   // A tier that was not derived from a single number carries no number. The

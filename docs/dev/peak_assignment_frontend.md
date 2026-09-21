@@ -30,7 +30,8 @@ socket/notification, join keys — and keeps net-new UI deliberately small.*
 is a 3-pane nested splitter:
 
 - **top-left — inspector** ([`PanePeakAssign.vue`](../../server/frontend/src/lib/panes/PanePeakAssign/PanePeakAssign.vue)):
-  a compact committed-assignment card for the focused peak — formula, `BaseTierTag`, evidence grid
+  a compact committed-assignment card for the focused peak — formula and its ionization,
+  `BaseTierTag`, the ion formula · isotope · source line, evidence grid
   (fit, m/z error, abundance error), chemical **plausibility**, arbitration **confidence** + tie flag,
   and calibrated **P(correct)** (shown only for database-stage winners with `provenance.calibrated`;
   renders null as "uncalibrated", flags a provisional curve). Below: the isotopologue **family** table
@@ -159,8 +160,10 @@ occurrences go stale until it is folded again and the follow quietly stops worki
 
 **Verification.** Assignments can be hand-labelled confirm / reject / unsure: the inspector renders
 the current verdict as a [`BaseVerdictBadge`](../../server/frontend/src/lib/base/BaseVerdictBadge.vue)
-(shared constants in [`lib/verification.js`](../../server/frontend/src/lib/verification.js)) with a
-small verdict form posting through `verification.verify()`. **One verdict covers the isotopologue
+(shared constants in [`lib/verification.js`](../../server/frontend/src/lib/verification.js)) and
+the three verdict buttons, posting through `verification.verify()`: Reject and Unsure post as
+clicked, and Confirm opens a `Popover` for the evidence level (radio buttons, required) and an
+optional note. **One verdict covers the isotopologue
 family**: both the read and the write resolve a row to its family's M0 (`peak.m0Of`), so an isotopologue
 shows its compound's verdict and verifying from one writes a single label against the M0. Backend
 surface: `GET /sample/{id}/verifications`, `POST /sample/{id}/verify` (editor), and the superuser
@@ -586,7 +589,7 @@ Layout is unchanged. Most work is reframing three existing panes + one new tag +
 | [`PanePeakAssign.vue`](../../server/frontend/src/lib/panes/PanePeakAssign/PanePeakAssign.vue) | The **inspector**. When the focused peak has an assignment, render committed winner + evidence + `alternatives` + known-compound; demote the existing on-demand `/cheminfo/mz/match` search to a **"Re-search"** action. (The whole current file becomes the fallback path.) | M |
 | [`ChartSampleSpectrum/data.js`](../../server/frontend/src/lib/charts/ChartSampleSpectrum/data.js) | **Annotated spectrum.** Split the single grey `Peak` trace into one trace per tier (color from `byPeakId`), plus a reagent/artifact trace. Focus/preview traces unchanged. Legend = trace names. | S |
 | [`PaneBrowserMatch.vue`](../../server/frontend/src/lib/panes/PaneBrowserMatch/PaneBrowserMatch.vue) | Add an **"Assignments"** tab beside the existing Targets/collections view: run selector + `tierCounts` histogram + a per-peak list backed by `usePeakAssignment`. Row click ⇒ `app.data.peak.focused = <matching peak>` (drives the Sample tab). Existing `MatchIonTable` stays under a "Targets" tab. | M |
-| `BaseTierTag.vue` **(new)** | 4-tier chip + `evidence` + role icon. The number is the **evidence** (fit × plausibility) the tier was banded off, not the raw `fit_score` — so the label and the number beside it cannot disagree; a caller whose tier came from no single quantity (the batch ledger's consensus vote over member tiers) passes none, and the chip shows the tier alone. One shared component; keep `BaseMatchTag` for the legacy targeted view. | S |
+| `BaseTierTag.vue` **(new)** | 4-tier chip + role icon, naming the tier alone. Its hover text gives the **evidence** (fit × plausibility) the tier was banded off, not the raw `fit_score`; the face carries no number, where a percentage would read as the chance the assignment is right. A caller whose tier came from no single quantity (the batch ledger's consensus vote over member tiers) passes no evidence, and the hover text names the tier alone. One shared component; keep `BaseMatchTag` for the legacy targeted view. | S |
 | Run-config dialog **(new)** | `run_untargeted`, `mz_precision_ppm`, `formula_ranges`, `max_untargeted_peaks`, `peak_intensity_threshold`, `max_alternatives`. Reuse `SidebarMatchParams` patterns; submit ⇒ `run.assign(...)`. | S |
 | `Dashboard.vue` tab label | `"Match"` → `"Fit"` (see §4). Help text updated. | XS |
 

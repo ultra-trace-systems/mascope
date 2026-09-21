@@ -1,8 +1,9 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { mount } from '@vue/test-utils'
+import { flushPromises, mount } from '@vue/test-utils'
 import { ref } from 'vue'
 
 import { num } from '@/lib/formatters'
+import { EVIDENCE_LEVELS } from '@/lib/verification'
 
 // The inspector card for a peak with no committed formula. Two states reach it:
 // a ledger row of tier `unassigned` (a real assignment row, just formula-less),
@@ -126,10 +127,41 @@ vi.mock('@/lib/base', () => ({
   BaseVerdictBadge: { props: ['record', 'compact'], template: '<span class="verdict-badge" />' }
 }))
 
+// Confirm's dialog renders its content only while shown, as Popover does, so a
+// test reads what the card shows before Confirm is clicked and after.
+const PopoverStub = {
+  data: () => ({ visible: false }),
+  methods: {
+    show() {
+      this.visible = true
+    },
+    hide() {
+      this.visible = false
+    }
+  },
+  template: '<div v-if="visible" class="popover" role="dialog"><slot /></div>'
+}
+
 const GLOBAL_STUBS = {
   Button: { props: ['label'], template: '<button><slot />{{ label }}</button>' },
-  Select: true,
-  InputText: true
+  InputText: {
+    props: ['modelValue'],
+    emits: ['update:modelValue'],
+    template:
+      '<input class="input-text" :value="modelValue" ' +
+      '@input="$emit(\'update:modelValue\', $event.target.value)" />'
+  },
+  Popover: PopoverStub,
+  // Marks the input Popover would focus, which the component names through
+  // the input's passthrough options.
+  RadioButton: {
+    props: ['modelValue', 'value', 'inputId', 'name', 'pt'],
+    emits: ['update:modelValue'],
+    template:
+      '<input type="radio" :id="inputId" :name="name" :value="value" ' +
+      ':checked="modelValue === value" :data-autofocus="pt?.input?.autofocus ? \'\' : null" ' +
+      '@change="$emit(\'update:modelValue\', value)" />'
+  }
 }
 
 const { default: PanePeakAssign } = await import('@/lib/panes/PanePeakAssign/PanePeakAssign.vue')
@@ -286,6 +318,187 @@ describe('PanePeakAssign verification gating', () => {
     const wrapper = await mountPane()
 
     expect(wrapper.find('.verdict-badge').exists()).toBe(true)
+  })
+})
+
+// A confirmation carries the evidence behind it, and may carry a note; a
+// rejection or an "unsure" is the verdict alone. So the card shows the three
+// verdicts, and Confirm asks for the rest in a small dialog of its own.
+describe('PanePeakAssign confirm dialog', () => {
+  const ROW = assignment({ formula: 'C10H12', tier: 'assigned' })
+  const verdictButton = (wrapper, label) =>
+    wrapper.findAll('.verify-buttons button').find((button) => button.text() === label)
+  const dialog = (wrapper) => wrapper.find('[data-testid="confirm-dialog"]')
+  const submit = (wrapper) => dialog(wrapper).find('[data-testid="confirm-submit"]')
+  const level = (wrapper, value) => dialog(wrapper).find(`input[type="radio"][value="${value}"]`)
+
+  beforeEach(() => {
+    focusedAssignment = ROW
+  })
+
+  it('shows the three verdicts, and asks for the evidence only once Confirm is clicked', async () => {
+    const wrapper = await mountPane()
+
+    expect(wrapper.findAll('.verify-buttons .verdict-button').map((b) => b.text())).toEqual([
+      'Confirm',
+      'Reject',
+      'Unsure'
+    ])
+    expect(dialog(wrapper).exists()).toBe(false)
+    expect(wrapper.find('input[type="radio"]').exists()).toBe(false)
+    expect(wrapper.find('input.input-text').exists()).toBe(false)
+
+    await verdictButton(wrapper, 'Confirm').trigger('click')
+
+    expect(dialog(wrapper).text()).toContain('Confirm C10H12')
+    expect(
+      dialog(wrapper)
+        .findAll('label')
+        .map((label) => label.text())
+    ).toEqual(EVIDENCE_LEVELS.map(({ label }) => label))
+    expect(dialog(wrapper).find('input.input-text').exists()).toBe(true)
+    expect(verify).not.toHaveBeenCalled()
+  })
+
+  it('records a rejection as it is clicked, with no level and no note', async () => {
+    const wrapper = await mountPane()
+    // Entered in the dialog, which was then closed without confirming.
+    wrapper.vm.evidenceLevel = 'msms'
+    wrapper.vm.note = 'not this one'
+
+    await verdictButton(wrapper, 'Reject').trigger('click')
+    await flushPromises()
+
+    expect(dialog(wrapper).exists()).toBe(false)
+    expect(verify.mock.calls).toEqual([
+      [{ peak_assignment_id: 'pa-1', verdict: 'rejected', evidence_level: null, note: null }]
+    ])
+  })
+
+  it('records an unsure as it is clicked', async () => {
+    const wrapper = await mountPane()
+
+    await verdictButton(wrapper, 'Unsure').trigger('click')
+    await flushPromises()
+
+    expect(verify.mock.calls[0][0]).toMatchObject({ verdict: 'unsure', evidence_level: null })
+  })
+
+  it('will not confirm until a level is picked, then records it with the note', async () => {
+    const wrapper = await mountPane()
+    await verdictButton(wrapper, 'Confirm').trigger('click')
+
+    expect(submit(wrapper).attributes('disabled')).toBeDefined()
+
+    await level(wrapper, 'pattern').trigger('change')
+    await dialog(wrapper).find('input.input-text').setValue('  both adducts line up  ')
+    expect(submit(wrapper).attributes('disabled')).toBeUndefined()
+
+    await submit(wrapper).trigger('click')
+    await flushPromises()
+
+    expect(verify.mock.calls).toEqual([
+      [
+        {
+          peak_assignment_id: 'pa-1',
+          verdict: 'confirmed',
+          evidence_level: 'pattern',
+          note: 'both adducts line up'
+        }
+      ]
+    ])
+    expect(dialog(wrapper).exists()).toBe(false)
+  })
+
+  it('confirms from the note with Enter', async () => {
+    const wrapper = await mountPane()
+    await verdictButton(wrapper, 'Confirm').trigger('click')
+    await level(wrapper, 'msms').trigger('change')
+
+    await dialog(wrapper).find('input.input-text').trigger('keydown', { key: 'Enter' })
+    await flushPromises()
+
+    expect(verify.mock.calls[0][0]).toMatchObject({ verdict: 'confirmed', evidence_level: 'msms' })
+    expect(dialog(wrapper).exists()).toBe(false)
+  })
+
+  it('keeps the dialog and what was entered when the confirmation fails', async () => {
+    verify.mockRejectedValueOnce(new Error('network'))
+    const wrapper = await mountPane()
+    await verdictButton(wrapper, 'Confirm').trigger('click')
+    await level(wrapper, 'msms').trigger('change')
+    await dialog(wrapper).find('input.input-text').setValue('matches the standard')
+
+    await submit(wrapper).trigger('click')
+    await flushPromises()
+
+    expect(dialog(wrapper).exists()).toBe(true)
+    expect(level(wrapper, 'msms').element.checked).toBe(true)
+    expect(dialog(wrapper).find('input.input-text').element.value).toBe('matches the standard')
+  })
+
+  it('closes on a refusal, where the card says editor access is required', async () => {
+    verify.mockRejectedValueOnce({ response: { status: 403 } })
+    const wrapper = await mountPane()
+    await verdictButton(wrapper, 'Confirm').trigger('click')
+    await level(wrapper, 'msms').trigger('change')
+
+    await submit(wrapper).trigger('click')
+    await flushPromises()
+
+    expect(dialog(wrapper).exists()).toBe(false)
+    expect(wrapper.find('.verify-denied').text()).toContain('Editor access is required to verify')
+  })
+
+  it('focuses the strongest level on a fresh confirmation', async () => {
+    const wrapper = await mountPane()
+    await verdictButton(wrapper, 'Confirm').trigger('click')
+
+    const focused = dialog(wrapper).findAll('input[data-autofocus]')
+    expect(focused.map((input) => input.attributes('value'))).toEqual([EVIDENCE_LEVELS[0].value])
+  })
+
+  it('opens on the verdict being changed, its level picked and focused', async () => {
+    verdictRecord = { ...VERDICT, note: 'matches the standard' }
+    const wrapper = await mountPane()
+
+    await wrapper.find('.verify-current button').trigger('click')
+    await verdictButton(wrapper, 'Confirm').trigger('click')
+
+    expect(level(wrapper, 'msms').element.checked).toBe(true)
+    expect(
+      dialog(wrapper)
+        .findAll('input[data-autofocus]')
+        .map((i) => i.attributes('value'))
+    ).toEqual(['msms'])
+    expect(dialog(wrapper).find('input.input-text').element.value).toBe('matches the standard')
+  })
+
+  it('offers a way back to the verdict as it was while changing it', async () => {
+    verdictRecord = VERDICT
+    const wrapper = await mountPane()
+    await wrapper.find('.verify-current button').trigger('click')
+
+    await verdictButton(wrapper, 'Cancel').trigger('click')
+
+    expect(wrapper.find('.verify-buttons').exists()).toBe(false)
+    expect(wrapper.find('.verdict-badge').exists()).toBe(true)
+  })
+
+  it('closes when the focus moves to another compound', async () => {
+    const wrapper = await mountPane()
+    await verdictButton(wrapper, 'Confirm').trigger('click')
+
+    focusedAssignment = {
+      ...ROW,
+      peak_assignment_id: 'pa-2',
+      sample_peak_id: 'p-9',
+      assigned_formula: 'C6H6'
+    }
+    focusedPeak.value = { ...PEAK, peak_id: 'p-9' }
+    await wrapper.vm.$nextTick()
+
+    expect(dialog(wrapper).exists()).toBe(false)
   })
 })
 
@@ -2051,7 +2264,8 @@ describe('PanePeakAssign on-demand evidence for a derived row', () => {
     )
     const grid = wrapper.find('.evidence').text()
     expect(grid).toContain(num.mzError.format(1.1))
-    expect(grid).toContain('M+1')
+    // The row names no isotope of its own; the measurement labels it.
+    expect(wrapper.find('.insp-sub').text()).toContain('M+1')
   })
 
   it('asks nothing for a run of its own, whose rows carry their numbers', async () => {
@@ -2335,22 +2549,38 @@ describe('PanePeakAssign ionization and reference lists', () => {
     ]
   })
 
-  it('names the ionization, and says on hover what it made of the neutral', async () => {
+  it('names the ionization after the formula, and says on hover what it made of it', async () => {
     const wrapper = await mountPane({ recordTooltips: true })
+    const title = [...wrapper.find('.insp-head .insp-title').element.children]
 
-    expect(field(wrapper, 'ionization').find('.k').text()).toBe('ionization')
-    expect(field(wrapper, 'ionization').find('.v').text()).toBe('+H+')
-    expect(field(wrapper, 'ionization').find('.k').attributes('data-tooltip')).toContain(
+    expect(title.map((node) => node.textContent)).toEqual(['C3H7NO', '+H+'])
+    expect(title[1].dataset.testid).toBe('ionization')
+    expect(field(wrapper, 'ionization').attributes('data-tooltip')).toContain(
       'C3H7NO +H+ gives C3H8NO+'
     )
   })
 
-  it('stands above the evidence', async () => {
+  it('stands above the evidence, the list line with the list name alone', async () => {
+    detailRecord = { provenance: { reference_identities: [LISTED] }, known_compounds: [] }
     const wrapper = await mountPane()
     const order = [...wrapper.find('section.inspector').element.children].map(
       (node) => node.classList[0]
     )
+
     expect(order.indexOf('identity')).toBe(order.indexOf('evidence') - 1)
+    expect(field(wrapper, 'identity').findAll('.ev').length).toBe(1)
+    expect(wrapper.findAll('[data-testid="ionization"]').length).toBe(1)
+  })
+
+  // The line under the formula names the isotope beside the ion it is a line
+  // of, and the isotopologue table marks the same row; a third place in the
+  // evidence grid said it again.
+  it('names the isotope once, in the line under the formula', async () => {
+    focusedAssignment = { ...DMF, isotope_label: 'M0' }
+    const wrapper = await mountPane()
+
+    expect(wrapper.find('.insp-sub').text()).toMatch(/^C3H8NO\+\s*·\s*M0\s*·\s*database$/)
+    expect(wrapper.findAll('.evidence .ev .k').map((key) => key.text())).not.toContain('isotope')
   })
 
   it('leaves the ionization out where the deployment does not list the mechanism', async () => {
@@ -2397,6 +2627,8 @@ describe('PanePeakAssign ionization and reference lists', () => {
     detailRecord = { provenance: {}, known_compounds: [] }
     const wrapper = await mountPane()
     expect(field(wrapper, 'listed-as').exists()).toBe(false)
+    // Nor an empty block, which would still take its gap in the card.
+    expect(field(wrapper, 'identity').exists()).toBe(false)
   })
 
   it('names what a list calls another reading of the ion', async () => {

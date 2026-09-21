@@ -72,8 +72,9 @@ isotopologue focused the control judges the family's M0 instead, and says so (§
 
 - Three buttons: **Confirm · Reject · Unsure**. Confirm and Reject get **equal visual weight**
   (Reject is a first-class negative label, not a destructive-styled afterthought).
-- An **evidence-level** dropdown (the 5 options above, with labels). Required to enable Confirm.
-- An optional **note** field.
+- Reject and Unsure submit as they are clicked. Confirm opens a small dialog (a `Popover` on the
+  button) with the **evidence level** as radio buttons (the 5 options above, with labels), required
+  to enable its own Confirm, and an optional **note** field. The card itself carries neither.
 - Submit → `POST …/verify`. On success, collapse to the badge (2b) showing the new verdict.
 
 ### 2b. Verdict badge
@@ -95,8 +96,9 @@ a small select). "Unverified" = no current verdict. This makes a labelling pass 
 │ supported by 2 adducts                                   │
 │                                                          │
 │  Verify:  [ ✓ Confirm ]  [ ✕ Reject ]  [ ? Unsure ]      │
-│  Evidence: ( Reference standard        ▾ )   ← req. to   │
-│  Note:     [___________________________]        confirm  │
+│             └ dialog: Confirm C10H14O9                   │
+│                ( ) Reference standard ... ( ) Visual     │
+│                [Note (optional)]   Cancel  [ ✓ Confirm ] │
 │                                                          │
 │  — after submit —                                        │
 │  ✓ Confirmed · reference standard   (you, 2m ago)  [edit]│
@@ -197,8 +199,8 @@ Consequences worth knowing:
 
 | state | UI |
 |---|---|
-| idle, no verdict | the three buttons + evidence + note |
-| Confirm chosen, no evidence | Confirm submit disabled (or inline "pick an evidence level") |
+| idle, no verdict | the three buttons |
+| Confirm clicked | the dialog: evidence level + note; its Confirm disabled until a level is picked |
 | submitting | disable buttons, spinner |
 | success | collapse to the badge (2b); toast optional |
 | error (403 non-editor) | inline "you need editor access to verify" — hide the control for guests |
