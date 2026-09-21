@@ -12,6 +12,7 @@ import { useApp } from '@/stores'
 import { beautifySnakeCase } from '@/lib/utils'
 
 import { useSidebarMenu } from './state.js'
+import NotificationInbox from './NotificationInbox.vue'
 
 const app = useApp()
 const sidebarMenu = useSidebarMenu()
@@ -46,7 +47,12 @@ const vHelpLayer = app.ui.help.directive(layer)
         Notifications are shown as toasts in the bottom right corner in real time.
         Here you can view a log of past notifications.
       </p>
-      <p>Clearing empties this list and the unread badge; nothing is deleted on the server.</p>
+      <p>
+        Under <b>Needs attention</b> are the files of your instruments that failed, need a
+        chemistry or could not be calibrated. They are kept until you mark them read, even
+        when you were not signed in, and <b>Show files</b> opens them in Raw files.
+      </p>
+      <p>Clearing empties the log below and the unread badge; nothing is deleted on the server.</p>
       `
     "
     style="min-height: calc(100vh - 300px)"
@@ -64,6 +70,7 @@ const vHelpLayer = app.ui.help.directive(layer)
         @click="app.ui.notification.clearLog()"
       />
     </div>
+    <NotificationInbox />
     <IconField style="width: 100%">
       <InputIcon>
         <i class="pi pi-search" />

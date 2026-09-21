@@ -47,25 +47,36 @@ async def reset_interrupted_processing() -> dict:
     over, and a database not yet upgraded to the columns can legitimately
     lack them. A failure is logged and swallowed.
 
-    :return: Operation results with the count of reset files
+    :return: Operation results with the count of reset files, and the files
+        themselves under ``data.files``
     :rtype: dict
     """
     try:
         async with async_session() as session:
-            update_result = await session.execute(
-                update(SampleFile)
-                .where(
-                    SampleFile.processing_status.in_(
-                        [status.value for status in IN_PROGRESS]
+            files = [
+                dict(row._mapping)
+                for row in await session.execute(
+                    update(SampleFile)
+                    .where(
+                        SampleFile.processing_status.in_(
+                            [status.value for status in IN_PROGRESS]
+                        )
+                    )
+                    .values(
+                        processing_status=ProcessingStatus.FAILED.value,
+                        processing_detail=INTERRUPTED_DETAIL,
+                        processing_updated_utc=datetime.now(timezone.utc),
+                    )
+                    .returning(
+                        SampleFile.sample_file_id,
+                        SampleFile.filename,
+                        SampleFile.instrument,
+                        SampleFile.datetime_utc,
+                        SampleFile.uploaded_by_user_id,
                     )
                 )
-                .values(
-                    processing_status=ProcessingStatus.FAILED.value,
-                    processing_detail=INTERRUPTED_DETAIL,
-                    processing_updated_utc=datetime.now(timezone.utc),
-                )
-            )
-            reset_count = update_result.rowcount
+            ]
+            reset_count = len(files)
             await session.commit()
     except Exception as error:
         message = f"Could not reset interrupted sample file processing: {error}"
@@ -73,7 +84,7 @@ async def reset_interrupted_processing() -> dict:
         return {
             "status": "skipped",
             "message": message,
-            "data": {"reset_count": 0},
+            "data": {"reset_count": 0, "files": []},
         }
 
     if reset_count == 0:
@@ -91,7 +102,7 @@ async def reset_interrupted_processing() -> dict:
     return {
         "status": "success",
         "message": message,
-        "data": {"reset_count": reset_count},
+        "data": {"reset_count": reset_count, "files": files},
     }
 
 

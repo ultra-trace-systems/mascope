@@ -416,6 +416,75 @@ class UserRecoveryCode(Base):
     user = relationship("User", back_populates="recovery_code")
 
 
+class Notification(Base):
+    """
+    A message kept for one person until they have read it.
+
+    A live notification reaches only the browsers open when it is sent. A row
+    here is what a person finds when they next sign in: the outcome of an
+    instrument's processing that needs someone, addressed to the people
+    answerable for that instrument (``api/new/notifications/service.py``).
+
+    One unread row stands for every file of one instrument that ends the same
+    way before the row is read: ``count`` and the files in ``payload`` grow,
+    and the message follows. Reading it closes the digest, and the next such
+    file starts a new row - the partial unique index keeps it to one open row
+    per (person, kind, instrument). ``resolved_utc`` is set once no file of the
+    instrument is left in the state the row reports, and cleared if one
+    arrives again before the row is read.
+    """
+
+    __tablename__ = "notification"
+
+    notification_id: Mapped[str] = mapped_column(String(16), primary_key=True)
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("user.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    # What happened: a NotificationKind value (api/new/notifications/config.py).
+    kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    # How it reads: "info", "warning" or "error", as on a live notification.
+    severity: Mapped[str] = mapped_column(String(16), nullable=False)
+    # The instrument whose files it is about, when it is about any.
+    instrument: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    message: Mapped[str] = mapped_column(Text, nullable=False)
+    # How many events the row stands for.
+    count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=1, server_default=text("1")
+    )
+    # What a client needs to act on it, e.g. the latest files it names.
+    payload: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    created_utc: Mapped[dt] = mapped_column(
+        TIMESTAMP(timezone=True),
+        nullable=False,
+        default=lambda: dt.now(timezone.utc),
+    )
+    updated_utc: Mapped[dt] = mapped_column(
+        TIMESTAMP(timezone=True),
+        nullable=False,
+        default=lambda: dt.now(timezone.utc),
+    )
+    read_utc: Mapped[Optional[dt]] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=True
+    )
+    resolved_utc: Mapped[Optional[dt]] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=True
+    )
+
+    __table_args__ = (
+        # One open digest per person, kind and instrument. NULLS NOT DISTINCT
+        # so a notification about no instrument is one digest too.
+        Index(
+            "uq_notification_open",
+            "user_id",
+            "kind",
+            "instrument",
+            unique=True,
+            postgresql_where=text("read_utc IS NULL"),
+            postgresql_nulls_not_distinct=True,
+        ),
+    )
+
+
 class AgentDevice(Base):
     """
     A machine paired to hold an agent credential (e.g. the File Agent on an
@@ -2494,6 +2563,7 @@ __all__ = [
     "Role",
     "AccessToken",
     "UserRecoveryCode",
+    "Notification",
     "AgentDevice",
     "Dataset",
     "SampleBatch",
