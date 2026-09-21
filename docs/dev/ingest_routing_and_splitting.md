@@ -773,7 +773,7 @@ Effort is rough.
    - Sample `acquisition_parameters` per stream instead of over five scans
      mixed across both polarities.
    - Shipped in #2160: `mascope_thermo.scan_filter` parses the filter and
-     `mascope_thermo.streams` takes the census. Each stream carries
+     `mascope_thermo.streams` takes the census. Each MS1 stream carries
      parameters sampled from its own scans; the whole-file sample stays
      beside them. `lock` is left out of the signature, because the Thermo
      library renders it per scan and OpenTFRaw never does. The one remaining

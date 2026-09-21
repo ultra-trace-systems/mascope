@@ -34,7 +34,8 @@ class SampleFileProps(BaseModel):
             "mode, MS order, targeted precursors, scan ranges) plus the FT "
             "resolution. Per stream: key, signature, scans, blocks, t_first and "
             "t_last [s], filters, and acquisition_params sampled from its own "
-            "scans. A census stored only in .props: processing still pools every "
+            "scans (MS1 streams only; an MSn stream carries {}). A census "
+            "stored only in .props: processing still pools every "
             "MS1 scan of a polarity. Empty for TofDaq files, for files converted "
             "before the census existed, and when the reader cannot supply it."
         ),

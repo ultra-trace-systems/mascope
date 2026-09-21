@@ -65,8 +65,10 @@ def scan_streams(backend: ReaderBackend) -> list[dict]:
       only for data-dependent fragmentation, whose filter names each
       precursor. Flags that report one scan's outcome (``lock``) do not make
       a filter distinct, so both backends count alike;
-    - ``acquisition_params``: the trailers of up to five of its own scans,
-      summarised as ``ReaderBackend.acquisition_parameters`` does.
+    - ``acquisition_params``: for an MS1 stream, the trailers of up to five of
+      its own scans, summarised as ``ReaderBackend.acquisition_parameters``
+      does. An MSn stream carries ``{}``: a targeted method has one stream per
+      precursor, and ``.props`` is read too often to carry a summary for each.
 
     Every scan counts, including an outlier first scan that scan selection
     leaves out: this describes the file rather than selecting from it.
@@ -108,8 +110,12 @@ def scan_streams(backend: ReaderBackend) -> list[dict]:
         stream["filters"] = len(stream.pop("_filters"))
         stream["t_first"] = float(stream["t_first"])
         stream["t_last"] = float(stream["t_last"])
-        stream["acquisition_params"] = backend.acquisition_parameters(
-            max_scans=_PARAMETER_SCANS, scan_numbers=scan_numbers
+        stream["acquisition_params"] = (
+            backend.acquisition_parameters(
+                max_scans=_PARAMETER_SCANS, scan_numbers=scan_numbers
+            )
+            if stream["signature"]["ms_order"] == 1
+            else {}
         )
         census.append(stream)
     return census
