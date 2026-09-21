@@ -82,6 +82,18 @@ export function tierReasonsOf(provenance) {
 }
 
 /**
+ * Whether a reason is why the row stands lower than the top tier: a rule that
+ * caps it, or the evidence band, which is no rule and never `caps` but is where
+ * the row stood before any rule.
+ *
+ * @param {object} reason - one entry of `tierReasonsOf`
+ * @returns {boolean}
+ */
+export function holdsTierDown(reason) {
+  return reason?.caps === true || reason?.rule === 'evidence_band'
+}
+
+/**
  * The icon a reason is marked with: a down arrow for one that caps, a dash for
  * one that claims nothing, an elbow for an isotopologue that follows its M0
  * without being taken down, a check for what a row kept its tier on.
@@ -93,7 +105,7 @@ export function tierReasonsOf(provenance) {
  * @returns {string} a phosphor icon class
  */
 export function reasonIcon(reason) {
-  if (reason?.caps) return 'ph-arrow-down'
+  if (holdsTierDown(reason)) return 'ph-arrow-down'
   if (reason?.rule === 'not_measured') return 'ph-minus'
   if (reason?.rule === 'inherited_from_owner') return 'ph-arrow-elbow-down-right'
   return 'ph-check'

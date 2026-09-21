@@ -8,7 +8,7 @@ import InputText from 'primevue/inputtext'
 import { useApp } from '@/stores'
 import { BaseTierTag, BaseVerdictBadge } from '@/lib/base'
 import { num } from '@/lib/formatters'
-import { formatIsotopeFormula } from '@/lib/chem'
+import { formatIsotopeFormula, neutralKey } from '@/lib/chem'
 import {
   LEDGER_CONFIDENCE_TOOLTIP,
   LEDGER_P_CORRECT_TOOLTIP,
@@ -16,7 +16,7 @@ import {
   uncalibratedReason
 } from '@/lib/pCorrect'
 import { listingName, listingOf, listingSource, listingTooltip } from '@/lib/referenceListings'
-import { reasonIcon, reasonTooltip, tierReasonsOf } from '@/lib/tierReasons'
+import { holdsTierDown, reasonIcon, reasonTooltip, tierReasonsOf } from '@/lib/tierReasons'
 import { EVIDENCE_LEVELS, VERDICT_META } from '@/lib/verification'
 import { useBatchPeakCuration } from './stores/batchPeakCuration.js'
 
@@ -223,9 +223,10 @@ const storedAlternatives = computed(() => {
   const stored = focusedDetail.value?.alternatives ?? focusedAssignment.value?.alternatives ?? []
   const committed = focusedAssignment.value
   if (!committed?.assigned_formula) return stored
+  const committedNeutral = neutralKey(committed.assigned_formula)
   return stored.filter(
     (alt) =>
-      alt?.assigned_formula !== committed.assigned_formula ||
+      neutralKey(alt?.assigned_formula) !== committedNeutral ||
       (alt?.ion_formula != null && alt.ion_formula !== committed.ion_formula)
   )
 })
@@ -709,9 +710,16 @@ const channelOf = (entry) =>
   entry?.ionization_mechanism_id != null
     ? (notationById.value.get(entry.ionization_mechanism_id) ?? null)
     : null
-const sameIonReadings = computed(() =>
-  alternatives.value.filter((alt) => alt?.same_ion === true && alt.assigned_formula)
-)
+// A reading of the row's own neutral is the row's reading again, whatever
+// channel it names - a run that searched a channel twice stored one - so it is
+// left out however it is spelled.
+const sameIonReadings = computed(() => {
+  const own = neutralKey(focusedAssignment.value?.assigned_formula)
+  return alternatives.value.filter(
+    (alt) =>
+      alt?.same_ion === true && alt.assigned_formula && neutralKey(alt.assigned_formula) !== own
+  )
+})
 const SAME_ION_TOOLTIP =
   'The same ion read as another neutral through another adduct. Its mass and isotope ' +
   "pattern are this row's own, so the spectrum cannot choose between the two readings; " +
@@ -1232,7 +1240,7 @@ const demotedCount = computed(() => {
           <li
             v-for="(reason, i) in tierReasons"
             :key="`own-${i}`"
-            :class="['reason', { caps: reason.caps }]"
+            :class="['reason', { caps: holdsTierDown(reason) }]"
             v-tooltip.left="reasonTooltip(reason, focusedAssignment.tier)"
           >
             <span :class="['pi', 'ph', reasonIcon(reason), 'reason-icon']" />
@@ -1244,7 +1252,7 @@ const demotedCount = computed(() => {
           <li
             v-for="(reason, i) in ownerReasons"
             :key="`m0-${i}`"
-            :class="['reason', 'inherited', { caps: reason.caps }]"
+            :class="['reason', 'inherited', { caps: holdsTierDown(reason) }]"
             v-tooltip.left="reasonTooltip(reason, reasonsOwner.tier, { viaM0: true })"
           >
             <span :class="['pi', 'ph', reasonIcon(reason), 'reason-icon']" />

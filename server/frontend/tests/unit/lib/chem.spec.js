@@ -7,6 +7,7 @@ import {
   formatIsotopeFormula,
   isMonoisotopicFormula,
   labelledIsotopes,
+  neutralKey,
   parseCompoundPaste,
   validateCompoundPaste
 } from '@/lib/chem'
@@ -345,5 +346,27 @@ describe('formatIsotopeFormula of an unlabelled ion', () => {
     ['[13C]C2H6O3/C3H6[18O]O2', '[13C]/[18O]']
   ])('formats %s of its own ion as %s', (formula, expected) => {
     expect(formatIsotopeFormula(formula, 'C3H6O3')).toBe(expected)
+  })
+})
+
+describe('neutralKey', () => {
+  it('reads one neutral the same however it is written', () => {
+    expect(neutralKey('C1H4N2O1')).toBe(neutralKey('CH4N2O'))
+    expect(neutralKey('C3H7NO')).toBe(neutralKey('C3H7N1O1'))
+  })
+
+  it('tells different neutrals apart', () => {
+    expect(neutralKey('C3H7NO')).not.toBe(neutralKey('C3H4O'))
+  })
+
+  it('keeps a labelled atom its own', () => {
+    expect(neutralKey('C5H9[15N]O7')).not.toBe(neutralKey('C5H9NO7'))
+    expect(neutralKey('H^NO3')).not.toBe(neutralKey('HNO3'))
+  })
+
+  it('gives back a formula it cannot read as it was, and nothing for none', () => {
+    expect(neutralKey('Ca(OH)2')).toBe('Ca(OH)2')
+    expect(neutralKey('')).toBe('')
+    expect(neutralKey(null)).toBe('')
   })
 })

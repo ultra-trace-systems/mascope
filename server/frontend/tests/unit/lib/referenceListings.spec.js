@@ -9,7 +9,8 @@ describe('listingOf', () => {
   it('reads the identities the run matched as a match', () => {
     expect(listingOf({ reference_identities: [DMF] })).toEqual({
       matched: true,
-      identities: [DMF]
+      identities: [DMF],
+      total: 1
     })
   })
 
@@ -17,18 +18,21 @@ describe('listingOf', () => {
     // A row keeps them in its provenance, not on the record itself.
     expect(listingOf({ known_compounds: [ACROLEIN] }, [DMF])).toEqual({
       matched: true,
-      identities: [DMF]
+      identities: [DMF],
+      total: 1
     })
   })
 
   it('reads what a list holds for the formula as a lead, where the run matched none', () => {
     expect(listingOf({ known_compounds: [ACROLEIN] })).toEqual({
       matched: false,
-      identities: [ACROLEIN]
+      identities: [ACROLEIN],
+      total: 1
     })
     expect(listingOf({ reference_identities: [], known_compounds: [ACROLEIN] })).toEqual({
       matched: false,
-      identities: [ACROLEIN]
+      identities: [ACROLEIN],
+      total: 1
     })
   })
 
@@ -82,5 +86,33 @@ describe('listingTooltip', () => {
 
   it('is empty for no listing', () => {
     expect(listingTooltip(null)).toBe('')
+  })
+})
+
+// A listing carries at most as many names as a run keeps; the lookup counts
+// every record that names the formula, and the listing says so.
+describe('a listing past the names it carries', () => {
+  const many = { known_compounds: [DMF, ACROLEIN], known_compounds_total: 300 }
+
+  it('counts every record that names the formula', () => {
+    expect(listingOf(many).total).toBe(300)
+    expect(listingName(listingOf(many))).toBe('N,N-Dimethylformamide +299')
+  })
+
+  it('says on hover how many it does not list', () => {
+    const lines = listingTooltip(listingOf(many)).split('\n')
+    expect(lines).toContain('and 298 more the lists hold for it')
+  })
+
+  it("counts the run's own match by the lookup too", () => {
+    const listing = listingOf(many, [DMF])
+    expect(listing.matched).toBe(true)
+    expect(listingName(listing)).toBe('N,N-Dimethylformamide +299')
+  })
+
+  it('never counts fewer than the names it carries', () => {
+    const listing = listingOf({ known_compounds: [DMF, ACROLEIN], known_compounds_total: 1 })
+    expect(listing.total).toBe(2)
+    expect(listingTooltip(listing)).not.toContain('more the lists hold')
   })
 })

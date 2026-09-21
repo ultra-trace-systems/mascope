@@ -2,6 +2,35 @@ import { norm } from '@/lib/utils'
 import { fromSpreadsheet } from '@/lib/table'
 
 /**
+ * A neutral formula's identity, however it is written: its element counts in a
+ * fixed order, so `C1H4N2O1` and `CH4N2O` are one neutral. A labelled atom
+ * (`[15N]`, `^N`) counts as its own symbol. A formula that does not read as
+ * one comes back as it was given, so it is never merged with another.
+ *
+ * @param {string|null|undefined} formula - a neutral formula
+ * @returns {string} the identity; empty for no formula
+ */
+export function neutralKey(formula) {
+  const text = typeof formula === 'string' ? formula.trim() : ''
+  if (!text) return ''
+  const token = /^(\[\d+[A-Z][a-z]?\]|\^?[A-Z][a-z]?)(\d*)/
+  const counts = new Map()
+  let rest = text
+  while (rest) {
+    const match = token.exec(rest)
+    if (!match) return text
+    const [whole, symbol, count] = match
+    counts.set(symbol, (counts.get(symbol) ?? 0) + (count ? Number(count) : 1))
+    rest = rest.slice(whole.length)
+  }
+  return [...counts.entries()]
+    .filter(([, n]) => n > 0)
+    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+    .map(([symbol, n]) => `${symbol}${n}`)
+    .join(' ')
+}
+
+/**
  * Validates chemical formula format
  * Supports standard chemical notation including parentheses and empty parentheses ()
  *
