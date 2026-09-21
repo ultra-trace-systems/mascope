@@ -1976,10 +1976,7 @@ async def _create_run(
         # The same thresholds an import has to declare, recorded here too so a
         # tier means the same thing on either engine's run without reading into
         # the config blob.
-        tier_bands={
-            "assigned": config.assigned_threshold,
-            "candidate": config.candidate_threshold,
-        },
+        tier_bands=config.tier_bands(),
         peak_assignment_run_utc_created=dt.now(timezone.utc),
     )
     async with async_session() as session:
@@ -2847,10 +2844,7 @@ async def _run_sample_assignment(
             abundance_floor=scoring.abundance_floor,
             max_alternatives=config.max_alternatives,
             lines=lines,
-            tier_bands={
-                "assigned": config.assigned_threshold,
-                "candidate": config.candidate_threshold,
-            },
+            tier_bands=config.tier_bands(),
         )
         mass_calibration = judged.mass_calibration
         cross_channel = judged.cross_channel
