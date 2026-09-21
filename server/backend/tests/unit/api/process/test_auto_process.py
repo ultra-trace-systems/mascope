@@ -16,6 +16,7 @@ from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from test_utils import captured_logs
 
 
 # Module path prefix for patching
@@ -335,8 +336,15 @@ async def test_failed_calibration_skips_matching_and_assignment():
 
 
 @pytest.mark.asyncio
-async def test_skips_calibration_for_blank_file():
-    """Blank files (instrument_function_id is None) skip calibration but still match."""
+async def test_blank_file_skips_calibration_matching_and_assignment():
+    """Blank files (instrument_function_id is None) skip everything that needs peaks.
+
+    Matching used to run anyway, but match_compute_sample refuses a blank with
+    a raised warning - so in production the pipeline never got as far as
+    assignment: it failed on every blank, and each one reached the instrument
+    room as a warning and error monitoring as an issue of its own. A blank is
+    fully processed once its sample items exist.
+    """
     from mascope_backend.api.controllers.sample.files.process.service import (
         auto_process_sample_file,
     )
@@ -362,7 +370,7 @@ async def test_skips_calibration_for_blank_file():
     mock_ctx.__aexit__ = AsyncMock(return_value=False)
     mocks["async_session"].return_value = mock_ctx
 
-    await auto_process_sample_file(
+    result = await auto_process_sample_file(
         sample_file_id="sf-001",
         independent_transaction=True,
         user_id=42,
@@ -370,10 +378,10 @@ async def test_skips_calibration_for_blank_file():
     )
 
     mocks["calibrate"].assert_not_called()
-    # Match should still run
-    mocks["match"].assert_called_once()
-    # Stage-A peak assignment runs even for a blank file (the engine skips it internally)
-    mocks["assign"].assert_called_once()
+    mocks["match"].assert_not_called()
+    mocks["assign"].assert_not_called()
+    # Completed rather than failed: the created sample is reported as usual.
+    assert result["_notification_data"]["affected_sample_item_ids"] == ["si-001"]
 
 
 @pytest.mark.asyncio
@@ -950,6 +958,54 @@ async def test_concurrent_pipelines_are_bounded():
     assert peak == service._AUTO_PROCESS_CONCURRENCY
 
 
+async def _run_until_given_up(
+    sample_file_id: str,
+    error: Exception,
+    independent_transaction: bool = False,
+) -> tuple[list[str], list[str], AsyncMock]:
+    """
+    Run the pipeline wrapper with a body that always raises ``error``.
+
+    As spawned in production (an independent transaction) the decorator ends
+    the run itself; otherwise it re-raises, as ApiException, to the caller.
+
+    :return: The give-up lines logged at INFO and at ERROR, and the body mock.
+    """
+    from mascope_backend.api.controllers.sample.files.process import service
+    from mascope_backend.api.lib.exceptions.api_exceptions import ApiException
+
+    body = AsyncMock(side_effect=error)
+
+    async def run():
+        await service.auto_process_sample_file(
+            sample_file_id=sample_file_id,
+            independent_transaction=independent_transaction,
+        )
+
+    with (
+        patch(f"{_SVC}._auto_process_sample_file", new=body),
+        patch(f"{_SVC}._delete_partial_acquisition_items", new=AsyncMock()),
+        patch.object(service, "_AUTO_PROCESS_RETRY_DELAYS_S", (0, 0, 0)),
+        patch(f"{_NOTIF}.handle_notifications", new_callable=AsyncMock),
+        patch(f"{_UTILS}.handle_reloads", new_callable=AsyncMock),
+        captured_logs() as records,
+    ):
+        if independent_transaction:
+            await run()
+        else:
+            with pytest.raises(ApiException):
+                await run()
+
+    def gave_up(level: str) -> list[str]:
+        return [
+            record["message"]
+            for record in records
+            if record["level"].name == level and "gave up" in record["message"]
+        ]
+
+    return gave_up("INFO"), gave_up("ERROR"), body
+
+
 @pytest.mark.asyncio
 async def test_names_the_file_when_it_gives_up():
     """
@@ -958,52 +1014,80 @@ async def test_names_the_file_when_it_gives_up():
     A file whose pipeline never completes keeps its sample_file row and its
     batch still settles `ready`, so without this the shortfall is only
     visible by counting rows afterwards - the demo bundle shipped incomplete
-    goldens exactly that way (see the demo coverage guard).
+    goldens exactly that way (see the demo coverage guard). It is named at
+    INFO, which reaches the container and file logs; see the grouping test
+    below for why the ERROR does not name it.
     """
     from mascope_backend.api.controllers.sample.files.process import service
     from mascope_backend.api.lib.exceptions.api_exceptions import ApiException
 
-    body = AsyncMock(side_effect=ApiException("busy", {}, 503))
-    logged: list[str] = []
+    info, errors, body = await _run_until_given_up(
+        "sf-gaveup", ApiException("busy", {}, 503)
+    )
 
-    with (
-        patch(f"{_SVC}._auto_process_sample_file", new=body),
-        patch(f"{_SVC}._delete_partial_acquisition_items", new=AsyncMock()),
-        patch.object(service, "_AUTO_PROCESS_RETRY_DELAYS_S", (0, 0, 0)),
-        patch.object(service.runtime.logger, "error", side_effect=logged.append),
-        patch(f"{_NOTIF}.handle_notifications", new_callable=AsyncMock),
-        patch(f"{_UTILS}.handle_reloads", new_callable=AsyncMock),
-    ):
-        with pytest.raises(ApiException):
-            await service.auto_process_sample_file(
-                sample_file_id="sf-gaveup", independent_transaction=False
-            )
-
-    assert any("sf-gaveup" in line for line in logged), logged
-    assert any("gave up" in line for line in logged), logged
+    assert body.call_count == service._AUTO_PROCESS_RETRIES + 1
+    assert len(info) == 1 and "sf-gaveup" in info[0] and "busy" in info[0], info
+    # Still a fault, so still an ERROR - saying which kind.
+    assert len(errors) == 1 and "status 503" in errors[0], errors
 
 
 @pytest.mark.asyncio
 async def test_names_the_file_on_a_non_recoverable_error():
     """The give-up log covers the no-retry path too, not just exhaustion."""
-    from mascope_backend.api.controllers.sample.files.process import service
     from mascope_backend.api.lib.exceptions.api_exceptions import ApiException
 
-    body = AsyncMock(side_effect=ApiException("corrupt", {}, 400))
-    logged: list[str] = []
+    info, errors, body = await _run_until_given_up(
+        "sf-corrupt", ApiException("corrupt", {}, 400)
+    )
 
-    with (
-        patch(f"{_SVC}._auto_process_sample_file", new=body),
-        patch(f"{_SVC}._delete_partial_acquisition_items", new=AsyncMock()),
-        patch.object(service, "_AUTO_PROCESS_RETRY_DELAYS_S", (0, 0, 0)),
-        patch.object(service.runtime.logger, "error", side_effect=logged.append),
-        patch(f"{_NOTIF}.handle_notifications", new_callable=AsyncMock),
-        patch(f"{_UTILS}.handle_reloads", new_callable=AsyncMock),
-    ):
-        with pytest.raises(ApiException):
-            await service.auto_process_sample_file(
-                sample_file_id="sf-corrupt", independent_transaction=False
-            )
-
-    assert any("sf-corrupt" in line for line in logged), logged
     assert body.call_count == 1  # not retried
+    assert len(info) == 1 and "sf-corrupt" in info[0], info
+    assert len(errors) == 1 and "status 400" in errors[0], errors
+
+
+@pytest.mark.asyncio
+async def test_give_up_error_reads_the_same_for_every_file():
+    """
+    The ERROR text depends on the kind of fault only, never on the file.
+
+    Error monitoring groups issues by the formatted message. The give-up ERROR
+    used to carry the file id and the error text, which opened a new issue -
+    and a new alert - for every file: over three hundred in three days from a
+    single production server. The same fault on two files has to read
+    identically, while different faults still read apart.
+    """
+    from mascope_backend.api.lib.exceptions.api_exceptions import ApiException
+
+    _, first, _ = await _run_until_given_up(
+        "sf-first", ApiException("Sample 'one' is corrupt", {}, 400)
+    )
+    _, second, _ = await _run_until_given_up(
+        "sf-second", ApiException("Sample 'two' is corrupt", {}, 400)
+    )
+    _, other, _ = await _run_until_given_up("sf-third", RuntimeError("boom"))
+
+    assert len(first) == 1 and first == second, (first, second)
+    assert "sf-" not in first[0] and "corrupt" not in first[0], first
+    assert len(other) == 1 and "RuntimeError" in other[0], other
+
+
+@pytest.mark.asyncio
+async def test_raised_warning_gives_up_at_info_only():
+    """
+    A raised warning is a data condition, not a fault: no ERROR for it.
+
+    An m/z calibration the match gate will not accept, say. The decorator
+    already hands the warning to the instrument room as a notification, and
+    the file is still named at INFO.
+    """
+    from mascope_backend.api.lib.exceptions.api_exceptions import ApiException
+
+    info, errors, body = await _run_until_given_up(
+        "sf-unverified",
+        ApiException("m/z calibration is not verified for sample file", {}, 200),
+        independent_transaction=True,
+    )
+
+    assert body.call_count == 1  # not retried
+    assert len(info) == 1 and "sf-unverified" in info[0], info
+    assert errors == [], errors
