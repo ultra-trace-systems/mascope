@@ -10,7 +10,7 @@ specific acquisition.
 import numpy as np
 import pandas as pd
 import pytest
-from conftest import POS_ORBI_FILE_PATH
+from thermo_test_support import POS_ORBI_FILE_PATH
 
 import mascope_thermo.thermo as m_thermo
 

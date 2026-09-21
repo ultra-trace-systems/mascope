@@ -14,7 +14,7 @@ import subprocess
 import sys
 
 import pytest
-from conftest import NEG_ORBI_FILE_PATH, POS_ORBI_FILE_PATH
+from thermo_test_support import NEG_ORBI_FILE_PATH, POS_ORBI_FILE_PATH
 
 from mascope_thermo.backend import _summarize_acquisition_parameters, open_backend
 from mascope_thermo.streams import pooled_ms1_streams, scan_streams, stream_report

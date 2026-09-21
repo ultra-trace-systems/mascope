@@ -15,7 +15,7 @@ import math
 
 import numpy as np
 import pytest
-from conftest import POS_ORBI_FILE_PATH
+from thermo_test_support import POS_ORBI_FILE_PATH
 
 from mascope_thermo import backend as m_backend
 from mascope_thermo.backend import open_backend

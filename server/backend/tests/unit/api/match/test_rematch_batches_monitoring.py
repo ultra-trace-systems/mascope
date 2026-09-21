@@ -31,7 +31,7 @@ Socket.IO server are involved.
 from unittest.mock import AsyncMock, patch
 
 import pytest
-from conftest import counting_session
+from rematch_test_support import counting_session
 from test_utils import captured_logs
 
 from mascope_backend.api.controllers.match.match_controller import rematch_batches

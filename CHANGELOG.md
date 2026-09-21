@@ -85,6 +85,15 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   rather than dropped. Deployments are otherwise unaffected: they migrate from
   the command line, in the db-init container.
 
+- **Test selections spanning several directories collect in any order.**
+  Fifteen backend and library tests imported shared helpers with
+  `from conftest import ...`. pytest registers every conftest.py under the one
+  module name `conftest`, so the import reached whichever conftest had loaded
+  last, and a hand-picked selection failed to collect unless the right
+  directory happened to come last. The helpers now live in plain modules
+  beside the tests that use them. Full runs, CI's included, were never
+  affected.
+
 ## [1.8.1] - 2026.09.16
 
 ### Added

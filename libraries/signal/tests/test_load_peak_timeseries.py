@@ -15,7 +15,7 @@ and answer by asking for peak detection.
 import numpy as np
 import pytest
 import xarray as xr
-from conftest import SIGNAL_TEST_FILENAME
+from signal_test_support import SIGNAL_TEST_FILENAME
 
 import mascope_file.io as m_io
 import mascope_signal.compute as m_compute

@@ -1,6 +1,6 @@
 import numpy as np
 import pytest
-from conftest import NEG_ORBI_FILE_PATH, POS_ORBI_FILE_PATH, read_or_xfail
+from thermo_test_support import NEG_ORBI_FILE_PATH, POS_ORBI_FILE_PATH, read_or_xfail
 
 import mascope_thermo.thermo as m_thermo
 from mascope_thermo.backend import open_backend
