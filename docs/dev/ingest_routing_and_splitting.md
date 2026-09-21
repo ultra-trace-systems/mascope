@@ -612,8 +612,7 @@ it is new work.
     - The uploader is addressed too: for a person's upload the person, for
       an agent's the device sponsor.
 - **The file list endpoint** already accepts a device token and returns every
-  column. The File Agent's status poller reads the new columns (next agent
-  release).
+  column. The File Agent's status poller reads the new columns (#2169).
 
 ---
 
@@ -883,7 +882,11 @@ Steps 6 and 7 of the setup-simplification proposal:
   and the pairing start response carry the server's capabilities
   (`mascope_backend/capabilities.py`), and the browser lets a token-less name
   through when `files_uploads_without_ionization_token` is announced;
-- the agent status poller, in the next agent release.
+- the agent status poller, in the next agent release. Shipped in
+  #2169: after each upload the agent reads its file's row from
+  `GET /api/sample/files` (by the name the server stores it under), at a
+  widening interval for up to three hours, and logs one line per status it
+  reaches. It stops asking a server whose rows carry no `processing_status`.
 
 Needed before any rung can be provisional or park.
 

@@ -15,6 +15,7 @@ import mascope_sdk
 from mascope_file_agent import __version__
 from mascope_file_agent import config as agent_config
 from mascope_file_agent.config import ConfigError
+from mascope_file_agent.status import StatusFollower
 from mascope_file_agent.wizard import (
     CREDENTIAL_OK,
     CREDENTIAL_REJECTED,
@@ -67,6 +68,10 @@ _instrument = None
 # user-facing config.toml (None in dev, where the CLI owns the config).
 _config_path = None
 _settings = None
+
+# Follows each uploaded file until the server settles it, and logs what became
+# of it. None until the agent starts.
+_status_follower = None
 
 
 def current_access_token() -> str | None:
@@ -226,6 +231,19 @@ def _renewal_loop(stop_event) -> None:
 def _start_token_renewal(stop_event) -> None:
     """Start the background token-renewal thread (daemon)."""
     thread = Thread(target=_renewal_loop, args=(stop_event,), daemon=True)
+    thread.start()
+
+
+def _start_status_follower(stop_event) -> None:
+    """Start following what becomes of each uploaded file (daemon thread)."""
+    global _status_follower
+    _status_follower = StatusFollower(
+        URL,
+        current_access_token,
+        runtime.logger,
+        verify=getattr(runtime.config, "verify_tls", True),
+    )
+    thread = Thread(target=_status_follower.run, args=(stop_event,), daemon=True)
     thread.start()
 
 
@@ -510,6 +528,12 @@ def upload_sample_file(filepath: str) -> None:
         instrument=_instrument,
     )
     runtime.logger.info(f"File upload of file {os.path.basename(filepath)} succeeded!")
+    if _status_follower is not None:
+        _status_follower.follow(
+            upload_filename or os.path.basename(filepath),
+            _instrument,
+            os.path.basename(filepath),
+        )
 
 
 def mkdir(*args: tuple) -> str:
@@ -924,6 +948,7 @@ def run() -> None:
     uploader.watcher.run_as_daemon()
     _check_credential_at_start()
     _start_token_renewal(uploader.shutdown_event)
+    _start_status_follower(uploader.shutdown_event)
     uploader.run_until_complete()
     executor.shutdown(wait=True)
 

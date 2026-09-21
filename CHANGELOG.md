@@ -28,6 +28,15 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   name matches no token, so a file given its chemistry by hand can be
   processed again too.
 
+- **The File Agent says what became of each file it uploaded.** "Upload
+  succeeded" used to be its last word on a file, so it could not tell a
+  processed file from one the server could not process. After each upload it
+  now asks the server at a widening interval, for up to three hours, and logs
+  one line per stage the file reaches: converted, bound, calibrated, and then
+  processed, needs a chemistry, calibration failed or processing failed, each
+  with the server's reason. The failures are warning or error lines. A server
+  that reports no processing status is not asked again.
+
 - **The browser uploads a file whose name carries no ionization mode token.**
   The upload used to refuse such a file and offer to rename it. It now goes
   through, with one note for the drop that such files may need their

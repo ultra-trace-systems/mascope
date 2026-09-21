@@ -159,6 +159,24 @@ place and your settings are kept. Installs made with older agent versions
 The agent prints its version when it starts, and uninstalling (Windows
 **Settings → Apps**) never removes your configuration.
 
+### What became of each file
+
+After each upload the agent asks the server, at a widening interval, how far
+processing got, and writes one line to its window and its log for each stage
+the file reaches:
+
+```
+Orbion_2026.09.03-10h12m01s_ambient.raw: converted
+Orbion_2026.09.03-10h12m01s_ambient.raw: bound to its ionization modes. Bound by file-name token to 'Bromide' (-).
+Orbion_2026.09.03-10h12m01s_ambient.raw: processed. Matched 1 sample.
+```
+
+A file that failed to process is an error line. A file that waits for a
+chemistry, or whose m/z calibration failed, is a warning line that says why.
+The agent follows each file for up to three hours, and says so if the server
+still has no record of it by then: converting it may have failed. A server
+too old to report processing is not asked again.
+
 ### Troubleshooting uploads
 
 - Logs are written to `%APPDATA%\Mascope\FileAgent\logs\prod\`.
@@ -180,7 +198,7 @@ The agent prints its version when it starts, and uninstalling (Windows
   you. The agent does not retry these: the server has understood the name
   and refused it, so the file is set aside in `failed_uploads` immediately.
 - *The upload succeeded but the file has no samples*: the file arrived, but
-  it could not be processed. Most often its name matches no ionization mode
+  it could not be processed; the agent's own line about it says why. Most often its name matches no ionization mode
   token (see [Import data files](../guides/import-files.md#prerequisites)),
   and it waits in Raw files as *Needs a chemistry* until someone
   [chooses its chemistry](../guides/import-files.md#choose-the-chemistry-of-a-file-that-needs-one).
