@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest'
 
 import {
   TIER_REASON_LABELS,
+  holdsTierDown,
   reasonIcon,
   reasonTooltip,
   tierReasonLabel,
@@ -158,13 +159,17 @@ describe('reasonTooltip', () => {
   // The band is where the row's evidence put it before any rule, so it does
   // not "hold" or "would hold" anything: it is the floor the rules lower from.
   it('says the evidence band sets the tier, whatever the tier is', () => {
-    const band = { rule: 'evidence_band', caps: true }
+    // It never caps: no rule took anything. It is still why the row is low.
+    const band = { rule: 'evidence_band', caps: false }
     for (const tier of ['candidate', 'below_assignability']) {
       expect(reasonTooltip(band, tier)).toBe(
         "Sets this row's tier: the reasons below can only lower it further"
       )
     }
     expect(reasonIcon(band)).toBe('ph-arrow-down')
+    expect(holdsTierDown(band)).toBe(true)
+    expect(holdsTierDown({ rule: 'corroborated', caps: false })).toBe(false)
+    expect(holdsTierDown({ rule: 'odd_electron', caps: true })).toBe(true)
   })
 
   it("names the M0 as the row a reason read off an isotopologue's M0 is about", () => {
