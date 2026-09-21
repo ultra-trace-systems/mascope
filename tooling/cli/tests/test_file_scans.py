@@ -10,6 +10,7 @@ shows. The reader itself is tested in ``libraries/thermo/tests``.
 """
 
 import json
+import os
 import subprocess
 
 import pytest
@@ -70,7 +71,7 @@ class FakeDocker:
 
     def __init__(self, *, python=CONTAINER_PYTHON, stdout=None, read_exit=0):
         self.python = python
-        self.stdout = json.dumps(REPORT) if stdout is None else stdout
+        self.stdout = stdout
         self.read_exit = read_exit
         self.calls: list[list[str]] = []
 
@@ -85,8 +86,13 @@ class FakeDocker:
                 return subprocess.CompletedProcess(cmd, 1, "", "")
             return subprocess.CompletedProcess(cmd, 0, self.python + "\n", "")
         if "-m" in cmd:
+            # The real reader names the copy it was handed, not the original.
+            copy = cmd[cmd.index("-m") + 2]
+            stdout = self.stdout
+            if stdout is None:
+                stdout = json.dumps({**REPORT, "file": os.path.basename(copy)})
             return subprocess.CompletedProcess(
-                cmd, self.read_exit, self.stdout, "Traceback: reader exploded"
+                cmd, self.read_exit, stdout, "Traceback: reader exploded"
             )
         if "rm" in cmd:
             return subprocess.CompletedProcess(cmd, 0, "", "")
@@ -132,6 +138,7 @@ def test_an_operator_install_reads_the_file_in_the_backend_container(
     result = cli_runner.invoke(app, ["file", "scans", str(raw_file), "--json"])
 
     assert result.exit_code == 0, result.output
+    # The report names the operator's file, not the copy the reader was given.
     assert json.loads(result.output) == REPORT
 
     (copy,) = operator_install.commands("cp")
@@ -145,6 +152,24 @@ def test_an_operator_install_reads_the_file_in_the_backend_container(
 
     (remove,) = operator_install.commands("rm")
     assert remove[-1] == target
+
+
+def test_a_symlinked_file_is_copied_as_its_target(
+    cli_runner, raw_file, tmp_path, operator_install
+):
+    """`docker cp` copies a link as the link, which dangles in the container."""
+    link = tmp_path / "linked.raw"
+    try:
+        link.symlink_to(raw_file)
+    except OSError:
+        pytest.skip("this platform cannot create symbolic links here")
+
+    result = cli_runner.invoke(app, ["file", "scans", str(link), "--json"])
+
+    assert result.exit_code == 0, result.output
+    (copy,) = operator_install.commands("cp")
+    assert copy[2] == str(raw_file.resolve())
+    assert json.loads(result.output)["file"] == "linked.raw"
 
 
 def test_the_copy_is_removed_even_when_the_reader_fails(
@@ -212,13 +237,19 @@ def test_a_missing_file_is_refused(cli_runner, tmp_path, operator_install):
         "INFO loaded the reader\n" + json.dumps(REPORT) + "\n\n",
         # A colourised log line leaves its reset code on the next line.
         "\x1b[2m INFO loaded\n\x1b[0m" + json.dumps(REPORT) + "\r\n",
+        # Whatever an exit handler prints after it does not hide it.
+        json.dumps(REPORT) + "\nINFO shutting down\n",
+        json.dumps(REPORT) + '\nINFO context {"key": "value"}\n',
     ],
 )
-def test_the_report_is_the_last_line_of_the_readers_output(stdout):
+def test_the_report_is_found_among_the_readers_output(stdout):
     assert file_cmd._parse_report(stdout) == REPORT
 
 
-@pytest.mark.parametrize("stdout", ["", "\n", "INFO no report here\n"])
+@pytest.mark.parametrize(
+    "stdout",
+    ["", "\n", "INFO no report here\n", '{"not": "a report"}\n', "{broken\n"],
+)
 def test_output_without_a_report_is_an_error(stdout):
     with pytest.raises(ValueError):
         file_cmd._parse_report(stdout)

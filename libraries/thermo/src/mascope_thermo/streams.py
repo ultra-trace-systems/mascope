@@ -22,7 +22,7 @@ import sys
 
 import numpy as np
 
-from mascope_thermo.backend import ReaderBackend, open_backend
+from mascope_thermo.backend import ReaderBackend, _sample_evenly, open_backend
 from mascope_thermo.scan_filter import parse_scan_filter
 
 
@@ -31,6 +31,11 @@ FT_RESOLUTION = "FT Resolution:"
 # Trailers sampled per stream for its acquisition parameters, as many as the
 # whole-file capture samples.
 _PARAMETER_SCANS = 5
+
+# Scans averaged for a stream's top peaks in stream_report. The leading peaks
+# of an evenly spread sample are those of the whole stream, and a long file
+# holds tens of thousands of scans.
+_TOP_PEAK_SCANS = 200
 
 
 def _resolution(trailer: dict) -> int | str | None:
@@ -156,8 +161,8 @@ def stream_report(datafile_path: str, top: int = 10) -> dict:
 
     The file's instrument model, method and scan count, then its streams from
     :func:`scan_streams`. Each MS1 stream also gets ``top_peaks``: the
-    ``top`` strongest centroids averaged over that stream's own scans, as
-    ``[m/z, intensity]`` pairs. The reagent ions of a chemistry are usually
+    ``top`` strongest centroids averaged over up to 200 of that stream's own
+    scans, spread evenly, as ``[m/z, intensity]`` pairs. The reagent ions of a chemistry are usually
     among them, which is what an operator looks for first.
 
     :param datafile_path: Path to a Thermo ``.raw`` file.
@@ -180,9 +185,9 @@ def stream_report(datafile_path: str, top: int = 10) -> dict:
 
 
 def _top_peaks(backend: ReaderBackend, scan_numbers: list[int], top: int) -> list:
-    """The ``top`` strongest centroids averaged over these scans."""
+    """The ``top`` strongest centroids averaged over an even sample of these scans."""
     masses, intensities, *_ = backend.average_centroids(
-        scan_numbers, ppm=1, average=True
+        _sample_evenly(scan_numbers, _TOP_PEAK_SCANS), ppm=1, average=True
     )
     masses = np.asarray(masses, dtype=float)
     intensities = np.asarray(intensities, dtype=float)

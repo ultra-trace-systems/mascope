@@ -57,24 +57,32 @@ def _report_in_process(path: Path, top: int) -> dict:
 
 def _parse_report(stdout: str) -> dict:
     """
-    The report from the reader's stdout: its last line, as JSON.
+    The report from the reader's stdout: the last line that holds one.
 
-    The reader silences logging before it opens the file, but anything logged
-    while it was imported is flushed first. A colourised log line leaves its
-    reset code at the start of the line after it, so the report is read from
-    its first brace.
+    The reader prints the report as one line of JSON. It silences logging
+    before it opens the file, but anything logged while it was imported is
+    flushed first, and a colourised log line leaves its reset code at the
+    start of the line after it. Lines are therefore tried from the end, each
+    from its first brace, and the first JSON object with ``streams`` in it is
+    the report, whatever was printed around it.
 
     :param stdout: What ``python -m mascope_thermo.streams`` printed.
     :type stdout: str
     :return: The parsed report.
     :rtype: dict
-    :raises ValueError: When the last line holds no JSON object.
+    :raises ValueError: When no line holds a report.
     """
-    lines = [line for line in stdout.splitlines() if line.strip()]
-    if not lines or "{" not in lines[-1]:
-        raise ValueError("the reader printed no report")
-    last = lines[-1]
-    return json.loads(last[last.index("{") :])
+    for line in reversed(stdout.splitlines()):
+        start = line.find("{")
+        if start < 0:
+            continue
+        try:
+            report = json.loads(line[start:])
+        except ValueError:
+            continue
+        if isinstance(report, dict) and "streams" in report:
+            return report
+    raise ValueError("the reader printed no report")
 
 
 def _report_in_container(path: Path, top: int) -> dict:
@@ -91,10 +99,11 @@ def _report_in_container(path: Path, top: int) -> dict:
         raise typer.Exit(1)
 
     # Named uniquely, so two operators reading the same file cannot remove
-    # each other's copy.
+    # each other's copy. The source is resolved first: `docker cp` copies a
+    # symbolic link as the link itself, which would dangle in the container.
     target = f"/tmp/mascope-file-scans-{uuid.uuid4().hex}{path.suffix.lower()}"
     copied = subprocess.run(
-        ["docker", "cp", str(path), f"{container}:{target}"],
+        ["docker", "cp", str(path.resolve()), f"{container}:{target}"],
         capture_output=True,
         text=True,
         check=False,
@@ -136,10 +145,13 @@ def _report_in_container(path: Path, top: int) -> dict:
         )
         raise typer.Exit(1)
     try:
-        return _parse_report(result.stdout)
+        report = _parse_report(result.stdout)
     except ValueError as exc:
         runtime.logger.error(f"Reading {path.name} in '{container}' failed: {exc}")
         raise typer.Exit(1) from exc
+    # The reader named the copy it was given; the operator asked about this.
+    report["file"] = path.name
+    return report
 
 
 def _print_report(report: dict) -> None:
