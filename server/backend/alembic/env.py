@@ -15,7 +15,12 @@ migrate` run it. A program that runs Alembic in-process - the migration
 tests - owns its process's logging, and `fileConfig` would rewrite it: it
 replaces the root handlers (the runtime's bridge from stdlib logging into
 loguru among them), raises the root level to WARNING, and by default disables
-every logger that already exists.
+every logger that already exists. In the backend test session that would
+leave the log assertions of every later test blind to stdlib loggers: a test
+that a record arrives would fail, and a test that no WARNING arrives would
+pass whatever the code logged. On the command line the backend and its
+libraries are imported before `fileConfig` runs, so their loggers are kept
+enabled.
 """
 
 from logging.config import fileConfig
@@ -35,11 +40,23 @@ config = context.config  # Alembic config from alembic.ini
 db_cfg = cast(BackendConfig, runtime.config).database  # Mascope database config
 target_metadata = Base.metadata  # SQLAlchemy models metadata ('autogenerate' support)
 
-# Interpret the config file for Python logging - on Alembic's command line
-# only, the one caller that sets `cmd_opts` (see the module docstring). The
-# backend and its libraries are imported by this point, so their loggers are
-# kept enabled.
-if config.config_file_name is not None and config.cmd_opts is not None:
+
+def _started_from_command_line() -> bool:
+    """Whether Alembic was started from its own command line.
+
+    Its argument parser records the chosen command on `cmd_opts` as `cmd`, and
+    nothing else does. `cmd_opts` alone does not tell the two apart: an
+    in-process caller sets it as well to pass `-x` arguments, which
+    `EnvironmentContext.get_x_argument` reads from there.
+
+    :return: True for the `alembic` command, False for an in-process caller
+    :rtype: bool
+    """
+    return getattr(config.cmd_opts, "cmd", None) is not None
+
+
+# Interpret the config file for Python logging - see the module docstring.
+if config.config_file_name is not None and _started_from_command_line():
     fileConfig(config.config_file_name, disable_existing_loggers=False)
 
 

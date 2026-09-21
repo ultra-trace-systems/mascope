@@ -6,6 +6,7 @@ Provides:
 - Test database connection parameters (`TEST_DB_HOST` / `_PORT` / `_USER`)
   and password resolution (`get_test_password`)
 - Test database naming (`TEST_ENV`, `scoped_db_name`)
+- Log capture (`captured_logs`)
 
 The connection and naming helpers are used by both the root conftest (async
 engine factory) and the migrations test conftest (sync engines). Centralised
@@ -16,9 +17,12 @@ it talks to and what it may call a database on it.
 import hashlib
 import os
 import re
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 
 from mascope_backend.db.id import gen_id
+from mascope_backend.runtime import runtime
 
 
 # --- Test database connection parameters ---
@@ -243,3 +247,30 @@ def gen_test_id(size: int = 16) -> str:
     :rtype: str
     """
     return gen_id(size)
+
+
+# --- Log capture ---
+
+
+@contextmanager
+def captured_logs(level: str = "TRACE") -> Iterator[list[dict]]:
+    """Capture what the runtime logger emits inside the block.
+
+    Records from stdlib loggers arrive too, through the runtime's bridge from
+    stdlib logging into loguru - the path the log files and the monitoring
+    sink read them from. The sink is process-wide, so a record another thread
+    emits inside the block is captured as well.
+
+    :param level: Lowest level captured
+    :type level: str
+    :yield: The loguru records emitted inside the block, in order
+    :rtype: Iterator[list[dict]]
+    """
+    records: list[dict] = []
+    sink_id = runtime.logger.add(
+        lambda message: records.append(message.record), level=level
+    )
+    try:
+        yield records
+    finally:
+        runtime.logger.remove(sink_id)

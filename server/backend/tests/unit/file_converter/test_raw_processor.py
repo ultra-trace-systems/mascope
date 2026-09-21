@@ -169,7 +169,7 @@ def test_pooled_ms1_streams_are_reported_once_at_info():
     import logging
     from contextlib import contextmanager
 
-    from mascope_backend.runtime import runtime
+    from test_utils import captured_logs
 
     processor = RawProcessor(
         socket_client=None, file_queue=Queue(), shutdown_event=Event()
@@ -184,17 +184,12 @@ def test_pooled_ms1_streams_are_reported_once_at_info():
 
     # Read through the runtime logger the processor's stdlib logger is bridged
     # to: that is where the log files and the monitoring sink see the record.
-    captured = []
-    sink_id = runtime.logger.add(
-        lambda message: captured.append(message.record), level="TRACE"
-    )
-    try:
+    # Nothing else runs inside the block, so every record is the census's own,
+    # whichever module logs it.
+    with captured_logs() as records:
         streams = processor.scan_streams
-    finally:
-        runtime.logger.remove(sink_id)
 
     assert len(streams) == 2
-    records = [r for r in captured if r["name"] == "mascope_thermo.processor"]
     pooled = [r for r in records if "MS1 scan streams" in r["message"]]
     assert [r["level"].name for r in pooled] == ["INFO"]
     message = pooled[0]["message"]
