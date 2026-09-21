@@ -43,7 +43,10 @@ from mascope_backend.api.controllers.sample.lib.fetch_affected_sample_data impor
 from mascope_backend.api.controllers.sample.lib.sample_file_fetch import (
     fetch_sample_file,
 )
-from mascope_backend.api.lib.api_features import api_controller_background_task
+from mascope_backend.api.lib.api_features import (
+    api_controller,
+    api_controller_background_task,
+)
 from mascope_backend.api.lib.exceptions.api_exceptions import (
     ApiException,
     is_expected_client_error,
@@ -241,14 +244,81 @@ def _is_recoverable_error(exc: Exception) -> bool:
     return isinstance(exc, (SQLAlchemyTimeoutError, OperationalError, InterfaceError))
 
 
-class ChemistryNotBoundError(ValueError):
-    """No ionization mode could be bound to the file.
+#: What a person can do for a file that needs a chemistry, besides naming
+#: it after a mode's token.
+CHOOSE_CHEMISTRY = "Or choose its chemistry in Raw files."
 
-    A ValueError with the routing's own message, so it is reported exactly as
-    the routing error it wraps. Its own type tells the pipeline that the
-    file's status already says ``needs_chemistry``, which a generic failure
-    must not overwrite.
+
+def choose_ionization_modes(
+    sample_file: SampleFile, ionization_modes: list[IonizationMode]
+) -> list[IonizationMode]:
+    """The chosen modes that apply to a file: one for each polarity it holds.
+
+    Modes are chosen for several files at once, so a mode of a polarity the
+    file does not hold is passed over for that file rather than refused.
+
+    :param sample_file: The file to bind.
+    :param ionization_modes: The modes chosen for it.
+    :raises ValueError: When a polarity of the file has no chosen mode, or
+        more than one.
+    :return: One mode per polarity of the file, in the file's polarity order.
     """
+    chosen, problems = [], []
+    for polarity in sample_file.polarity:
+        matching = [
+            mode
+            for mode in ionization_modes
+            if mode.ionization_mode_polarity == polarity
+        ]
+        if len(matching) == 1:
+            chosen.append(matching[0])
+        elif not matching:
+            problems.append(f"none has polarity {polarity}")
+        else:
+            problems.append(f"{len(matching)} have polarity {polarity}")
+    if problems:
+        raise ValueError(
+            f"The chosen ionization modes must include one per polarity of file "
+            f"{sample_file.filename}, but {'; '.join(problems)}"
+        )
+    return chosen
+
+
+async def fetch_ionization_modes(
+    ionization_mode_ids: list[str],
+) -> list[IonizationMode]:
+    """The ionization modes with these ids.
+
+    :raises ValueError: When an id names no mode.
+    """
+    async with async_session() as session:
+        modes = (
+            await session.scalars(
+                select(IonizationMode).where(
+                    IonizationMode.ionization_mode_id.in_(ionization_mode_ids)
+                )
+            )
+        ).all()
+    missing = set(ionization_mode_ids) - {mode.ionization_mode_id for mode in modes}
+    if missing:
+        raise ValueError(f"No ionization mode has the id {', '.join(sorted(missing))}")
+    return list(modes)
+
+
+async def _acquisition_item_mode_ids(sample_file_id: str) -> list[str]:
+    """The ionization modes a file's ACQUISITION samples were created under."""
+    async with async_session() as session:
+        return list(
+            await session.scalars(
+                select(SampleItem.ionization_mode_id)
+                .where(
+                    SampleItem.sample_file_id == sample_file_id,
+                    SampleItem.sample_item_type == "ACQUISITION",
+                    SampleItem.ionization_mode_id.is_not(None),
+                )
+                .distinct()
+            )
+        )
 
 
 def _failure_detail(exc: BaseException) -> str:
@@ -309,14 +379,54 @@ async def _record_failed(sample_file_id: str, error: Exception) -> None:
         raise
 
 
-def _bound_detail(ionization_modes: list[IonizationMode]) -> str:
+def _bound_detail(ionization_modes: list[IonizationMode], by_token: bool) -> str:
     """Name the modes a file was bound to, and what bound it."""
-    names = [
+    names = " and ".join(
         f"'{mode.ionization_mode_name}' ({mode.ionization_mode_polarity})"
         for mode in ionization_modes
-    ]
-    tokens = "token" if len(names) == 1 else "tokens"
-    return f"Bound by file-name {tokens} to {' and '.join(names)}."
+    )
+    if not by_token:
+        return f"Bound to {names} without a file-name token."
+    tokens = "token" if len(ionization_modes) == 1 else "tokens"
+    return f"Bound by file-name {tokens} to {names}."
+
+
+async def _park_needing_chemistry(
+    sample_file: SampleFile, reason: str, streams_note: str | None
+) -> dict:
+    """Leave a file that binds to no ionization mode waiting for a chemistry.
+
+    Nothing has failed: the file is converted and stored, and only a person
+    can say which chemistry it was acquired under. It gets no samples until
+    then. Its status says so, which keeps it for the people answerable for
+    the instrument (``api/new/notifications``), and the run reports a warning
+    rather than an error.
+
+    :param sample_file: The file.
+    :param reason: What the routing found.
+    :param streams_note: The file's pooled-streams note, if any.
+    :return: The run's result.
+    """
+    reason = reason.strip().rstrip(".") + "."
+    await record_processing_status(
+        sample_file.sample_file_id,
+        ProcessingStatus.NEEDS_CHEMISTRY,
+        compose_detail(reason, CHOOSE_CHEMISTRY, streams_note),
+    )
+    # INFO: a data condition a person resolves, not a fault
+    runtime.logger.info(
+        f"Sample file '{sample_file.filename}' needs a chemistry: {reason}"
+    )
+    return {
+        "status": "parked",
+        "message": f"{reason} {CHOOSE_CHEMISTRY}",
+        "_notification_data": {
+            "affected_sample_batch_ids": [],
+            "affected_sample_item_ids": [],
+            "instrument": sample_file.instrument,
+            "sample_file_id": sample_file.sample_file_id,
+        },
+    }
 
 
 def _calibration_failure_detail(mz_calibration: dict | None) -> str:
@@ -459,6 +569,7 @@ async def auto_process_sample_file(
     process_id: str | None = None,
     parent_id: str | None = None,
     instrument: str | None = None,
+    ionization_mode_ids: list[str] | None = None,
 ) -> dict:
     """
     Main orchestrator for automatic sample file processing pipeline.
@@ -494,6 +605,10 @@ async def auto_process_sample_file(
         also reports its instrument in its result, but a failed run has no
         result, so this is the only way its error reaches that room.
     :type instrument: str | None, optional
+    :param ionization_mode_ids: The modes to bind the file to, chosen by a
+        person or kept from its samples. None binds it by its file-name
+        tokens, and a file they bind to nothing waits for a chemistry.
+    :type ionization_mode_ids: list[str] | None, optional
     :return: Processing results with affected IDs
     """
     for attempt in range(_AUTO_PROCESS_RETRIES + 1):
@@ -511,6 +626,7 @@ async def auto_process_sample_file(
                     user_id=user_id,
                     process_id=process_id,
                     parent_id=parent_id,
+                    ionization_mode_ids=ionization_mode_ids,
                 )
         except asyncio.CancelledError:
             # CancelledError is a BaseException, so every `except Exception` in
@@ -525,8 +641,7 @@ async def auto_process_sample_file(
                 # Terminal. Name the file here or the shortfall is only
                 # discoverable by counting rows afterwards.
                 _report_given_up(sample_file_id, attempts=attempt + 1, error=e)
-                if not isinstance(e, ChemistryNotBoundError):
-                    await _record_failed(sample_file_id, e)
+                await _record_failed(sample_file_id, e)
                 raise
             delay = _AUTO_PROCESS_RETRY_DELAYS_S[attempt]
             # INFO: a retry that usually succeeds, and the line names the file,
@@ -677,6 +792,7 @@ async def spawn_auto_process_sample_file(
     process_id: str | None = None,
     parent_id: str | None = None,
     instrument: str | None = None,
+    ionization_mode_ids: list[str] | None = None,
 ) -> None:
     """Start the auto-processing pipeline detached from the request that triggered it.
 
@@ -703,6 +819,7 @@ async def spawn_auto_process_sample_file(
         "user_id": user_id,
         "parent_id": parent_id,
         "instrument": instrument,
+        "ionization_mode_ids": ionization_mode_ids,
     }
     # Omitted rather than forwarded as None. api_controller_background_task
     # reads it as ``kwargs.get("process_id", gen_id(8))``, so an absent key
@@ -726,6 +843,7 @@ async def _auto_process_sample_file(
     user_id: int | None = None,
     process_id: str | None = None,
     parent_id: str | None = None,
+    ionization_mode_ids: list[str] | None = None,
 ) -> dict:
     """Gated body of ``auto_process_sample_file`` - see the public wrapper."""
     # Initialize collector for affected sample items
@@ -758,15 +876,16 @@ async def _auto_process_sample_file(
     # --- Bind the file to its ionization modes --- #
     # After the dataset on purpose: a file that binds to nothing still gets
     # its instrument's workspace, which is where its modes are configured.
-    try:
-        bound_modes = await resolve_ionization_modes_by_tokens(sample_file)
-    except ValueError as e:
-        await record_processing_status(
-            sample_file_id,
-            ProcessingStatus.NEEDS_CHEMISTRY,
-            compose_detail(str(e), streams_note),
+    by_token = ionization_mode_ids is None
+    if by_token:
+        try:
+            bound_modes = await resolve_ionization_modes_by_tokens(sample_file)
+        except ValueError as e:
+            return await _park_needing_chemistry(sample_file, str(e), streams_note)
+    else:
+        bound_modes = choose_ionization_modes(
+            sample_file, await fetch_ionization_modes(ionization_mode_ids)
         )
-        raise ChemistryNotBoundError(str(e)) from e
 
     # --- Create ACQUISITION batches and sample items for each ionization mode --- #
     (
@@ -780,7 +899,7 @@ async def _auto_process_sample_file(
     await record_processing_status(
         sample_file_id,
         ProcessingStatus.BOUND,
-        compose_detail(_bound_detail(bound_modes), streams_note),
+        compose_detail(_bound_detail(bound_modes, by_token), streams_note),
     )
 
     # Extract batch and sample IDs for notifications
@@ -1060,6 +1179,124 @@ async def _auto_process_sample_file(
     }
 
 
+@api_controller()
+async def bind_sample_files(
+    sample_file_ids: list[str],
+    ionization_mode_ids: list[str],
+    user_id: int | None = None,
+) -> dict:
+    """
+    Process files that need a chemistry under the ionization modes chosen for them.
+
+    For files whose names carry no token of a configured mode: the ones a
+    ``needs_chemistry`` status names. Each file is bound to the chosen mode of
+    each polarity it holds and processed as a token would have had it
+    processed - its samples created, calibrated and matched - in a detached
+    pipeline per file, behind the same ingest gate as every upload.
+
+    Only a file without samples is bound. One with samples is bound already,
+    and re-processing is the way to rebuild it; re-processing keeps the modes
+    a file bound here has, since no token binds it again. A file the chosen
+    modes do not fit is refused with the reason, and the others go ahead.
+
+    :param sample_file_ids: The files to bind.
+    :type sample_file_ids: list[str]
+    :param ionization_mode_ids: The modes chosen, at most one per polarity.
+    :type ionization_mode_ids: list[str]
+    :param user_id: The person who chose, told how each run ends.
+    :type user_id: int | None, optional
+    :raises ApiException: 422 when no file could be bound.
+    :return: The files started and the files refused, with why.
+    :rtype: dict
+    """
+    try:
+        ionization_modes = await fetch_ionization_modes(ionization_mode_ids)
+    except ValueError as e:
+        raise ApiException(user_message=str(e), tech_message={}, status_code=422) from e
+
+    async with async_session() as session:
+        sample_files = {
+            sample_file.sample_file_id: sample_file
+            for sample_file in await session.scalars(
+                select(SampleFile).where(SampleFile.sample_file_id.in_(sample_file_ids))
+            )
+        }
+        with_samples = set(
+            await session.scalars(
+                select(SampleItem.sample_file_id)
+                .where(SampleItem.sample_file_id.in_(sample_file_ids))
+                .distinct()
+            )
+        )
+
+    started: list[tuple[SampleFile, list[str]]] = []
+    refused: list[dict] = []
+    for sample_file_id in sample_file_ids:
+        sample_file = sample_files.get(sample_file_id)
+        if sample_file is None:
+            refused.append(
+                {
+                    "sample_file_id": sample_file_id,
+                    "filename": None,
+                    "message": f"Sample file with ID '{sample_file_id}' not found",
+                }
+            )
+            continue
+        if sample_file_id in with_samples:
+            refused.append(
+                {
+                    "sample_file_id": sample_file_id,
+                    "filename": sample_file.filename,
+                    "message": (
+                        f"{sample_file.filename} has samples already; re-process "
+                        "it to rebuild them"
+                    ),
+                }
+            )
+            continue
+        try:
+            chosen = choose_ionization_modes(sample_file, ionization_modes)
+        except ValueError as e:
+            refused.append(
+                {
+                    "sample_file_id": sample_file_id,
+                    "filename": sample_file.filename,
+                    "message": str(e),
+                }
+            )
+            continue
+        started.append((sample_file, [mode.ionization_mode_id for mode in chosen]))
+
+    reasons = "\n".join(f"{refusal['message']}." for refusal in refused)
+    if not started:
+        raise ApiException(
+            user_message=f"No file could be bound:\n{reasons}",
+            tech_message={"refused": refused},
+            status_code=422,
+        )
+
+    for sample_file, mode_ids in started:
+        await spawn_auto_process_sample_file(
+            sample_file_id=sample_file.sample_file_id,
+            independent_transaction=True,
+            user_id=user_id,
+            instrument=sample_file.instrument,
+            ionization_mode_ids=mode_ids,
+        )
+
+    files = f"{len(started)} file{'' if len(started) == 1 else 's'}"
+    message = f"Processing {files} under the chosen chemistry."
+    if refused:
+        message += f" {len(refused)} could not be bound:\n{reasons}"
+    return {
+        "message": message,
+        "data": {
+            "started": [sample_file.sample_file_id for sample_file, _ in started],
+            "refused": refused,
+        },
+    }
+
+
 @api_controller_background_task(
     success_notification_rooms=["user_id"],
     success_reload=[
@@ -1154,6 +1391,8 @@ async def re_process_sample_files(
 
     # --- Validate each file --- #
     valid_sample_files = []
+    # Files no token binds, re-processed under the modes their samples have.
+    kept_mode_ids: dict[str, list[str]] = {}
 
     for sample_file in sample_files:
         # Check for user-created samples
@@ -1175,15 +1414,20 @@ async def re_process_sample_files(
         try:
             await resolve_ionization_modes_by_tokens(sample_file)
         except ValueError as ve:
-            # Ionization mode resolution failed
-            failed_files.append(
-                {
-                    "sample_file_id": sample_file.sample_file_id,
-                    "filename": sample_file.filename,
-                    "message": str(ve),
-                }
-            )
-            continue
+            # A file bound without a token - its chemistry chosen by hand -
+            # has no token to bind it again, so it keeps the modes its
+            # samples were created under. Read before they are cleared.
+            kept = await _kept_mode_ids(sample_file)
+            if kept is None:
+                failed_files.append(
+                    {
+                        "sample_file_id": sample_file.sample_file_id,
+                        "filename": sample_file.filename,
+                        "message": str(ve),
+                    }
+                )
+                continue
+            kept_mode_ids[sample_file.sample_file_id] = kept
         except Exception as e:
             # Other unexpected errors
             failed_files.append(
@@ -1254,6 +1498,7 @@ async def re_process_sample_files(
                 user_id=user_id,
                 process_id=gen_id(8),
                 parent_id=process_id,
+                ionization_mode_ids=kept_mode_ids.get(sample_file.sample_file_id),
             )
 
             processed_files.append(
@@ -1332,6 +1577,24 @@ async def re_process_sample_files(
             )
         )
         raise_api_warning(message, notification_data, status_code=207)
+
+
+async def _kept_mode_ids(sample_file: SampleFile) -> list[str] | None:
+    """The modes a file's samples have, when they still bind it.
+
+    :return: One mode id per polarity of the file, or None when its samples
+        do not give one - it has none, or a mode was deleted since.
+    """
+    mode_ids = await _acquisition_item_mode_ids(sample_file.sample_file_id)
+    if not mode_ids:
+        return None
+    try:
+        modes = choose_ionization_modes(
+            sample_file, await fetch_ionization_modes(mode_ids)
+        )
+    except ValueError:
+        return None
+    return [mode.ionization_mode_id for mode in modes]
 
 
 async def _clear_sample_items_for_reprocessing(

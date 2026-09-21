@@ -6,6 +6,18 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 ### Added
 
+- **A file that matches no ionization mode token waits for a chemistry
+  instead of failing.** It is converted and stored as before, and Raw files
+  shows it as *Needs a chemistry* with no samples. The upload is reported as a
+  warning rather than an error, and the file is kept under **Needs attention**
+  for the people answerable for the instrument. Select such files in Raw
+  files, right-click, and **Choose chemistry**: pick a mode for each polarity
+  they hold, and they are processed under those modes as if their names
+  carried the tokens. `POST /api/sample/files/bind` does the same for files
+  without samples, and needs editor access to the instrument. Re-processing a
+  file whose name matches no token now keeps the modes its samples have, so a
+  file given its chemistry by hand can be re-processed too.
+
 - **Files that need someone are kept as notifications until read.** When
   auto-processing leaves a file failed, needing a chemistry, or unmatched
   because its calibration failed, the people answerable for the instrument

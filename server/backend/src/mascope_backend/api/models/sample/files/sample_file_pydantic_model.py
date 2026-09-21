@@ -388,6 +388,32 @@ class DeleteSampleFilesBody(RequestBodyModel):
         return self
 
 
+class BindSampleFilesBody(RequestBodyModel):
+    sample_file_ids: list[str] = Field(
+        ...,
+        description="The files to bind, ones without samples",
+        min_length=1,
+        max_length=1000,
+    )
+    ionization_mode_ids: list[str] = Field(
+        ...,
+        description=(
+            "The ionization modes chosen for them, at most one per polarity. "
+            "Each file is bound to the one of each polarity it holds."
+        ),
+        min_length=1,
+        max_length=2,
+    )
+
+    @field_validator("sample_file_ids", "ionization_mode_ids")
+    @classmethod
+    def validate_unique_ids(cls, v: list[str]) -> list[str]:
+        """Validate that the IDs are unique."""
+        if len(set(v)) != len(v):
+            raise ValueError("IDs must be unique")
+        return v
+
+
 class ReprocessSampleFilesBody(RequestBodyModel):
     sample_file_ids: list[str] = Field(
         ..., description="List of sample file IDs to re-process", min_length=1

@@ -42,8 +42,9 @@ export const PROCESSING_STATUSES = {
     severity: 'warn',
     icon: 'ph ph-flask',
     description:
-      'No ionization mode could be bound to the file, so it has no samples. ' +
-      'Set an ionization mode token that its name contains, then re-process it.'
+      'No ionization mode could be bound to the file, so it has no samples yet. ' +
+      'Right-click it and choose its chemistry, or set an ionization mode token ' +
+      'its name contains and re-process it.'
   },
   calibration_failed: {
     label: 'Calibration failed',

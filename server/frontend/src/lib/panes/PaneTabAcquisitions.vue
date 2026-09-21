@@ -25,6 +25,7 @@ import '@uppy/drop-target/css/style.min.css'
 import {
   DialogSampleOp,
   DialogBatchImport,
+  DialogChooseChemistry,
   DialogFileUpload,
   DialogIonizationOp
 } from '@/lib/dialogs'
@@ -72,11 +73,27 @@ defineProps({
 const dialog = reactive({
   sample: null,
   batchImport: false,
-  mechanism: null
+  mechanism: null,
+  chemistry: false
 })
+
+// Files that bound to no ionization mode wait for someone to choose theirs.
+const allNeedChemistry = () =>
+  app.data.acquisition.selected.length > 0 &&
+  app.data.acquisition.selected.every(
+    ({ processing_status }) => processing_status === 'needs_chemistry'
+  )
 
 const contextMenuRef = ref(null)
 const contextMenuItems = ref([
+  {
+    label: 'Choose chemistry',
+    icon: 'pi ph ph-flask',
+    visible: allNeedChemistry,
+    command: () => {
+      dialog.chemistry = true
+    }
+  },
   {
     label: 'Download',
     icon: 'pi pi-download',
@@ -492,6 +509,11 @@ const currentPageReportTemplate =
         "
       />
       <DialogIonizationOp v-model:visible="dialog.mechanism" />
+      <DialogChooseChemistry
+        v-model:visible="dialog.chemistry"
+        :files="app.data.acquisition.selected"
+        @submit="app.data.acquisition.unfocus()"
+      />
       <ContextMenu :model="contextMenuItems" ref="contextMenuRef" />
     </div>
   </div>
