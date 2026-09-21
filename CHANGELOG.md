@@ -103,14 +103,16 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   1.8.0 a file whose auto-processing stopped early was logged as an error
   naming the file and the reason, so error monitoring opened a separate issue,
   with its own alert, for every such file: over three hundred in three days on
-  one production server. Almost none were faults. Most were blank files: a
-  blank has no peaks, so matching refused it with a warning that ended the run
-  and reached everyone viewing the instrument's raw files. Blank files now skip
+  one production server. None were faults. Most were blank files: a blank has
+  no peaks, so matching refused it with a warning that ended the run and
+  reached everyone viewing the instrument's raw files. Blank files now skip
   matching and peak assignment as they already skipped calibration, and finish
-  like any other file. A run that a warning ends, such as an m/z calibration
-  the match gate does not accept, is logged at INFO, and the user is told as
-  before. A run that a fault ends is still an error, now under one message per
-  kind of fault, with the file and the reason logged at INFO beside it.
+  like any other file. A run that a routine outcome ends, such as an m/z
+  calibration the match gate does not accept, is logged at INFO, and the user
+  is told as before. So is each retry after a transient error, which was a
+  warning per file and attempt. A run that a fault ends is reported once,
+  under a message that names no file, and the file and the reason are logged
+  at INFO beside it.
 
 - **Log checks in the backend tests hold in the full suite.** The migration
   tests run Alembic in-process, and `alembic/env.py` applied `alembic.ini`'s

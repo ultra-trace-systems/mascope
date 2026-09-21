@@ -40,6 +40,7 @@ from mascope_backend.api.controllers.sample.lib.sample_file_fetch import (
 from mascope_backend.api.lib.api_features import api_controller_background_task
 from mascope_backend.api.lib.exceptions.api_exceptions import (
     ApiException,
+    is_expected_client_error,
     raise_api_warning,
 )
 from mascope_backend.api.models.sample.batches.config import sample_batch_config
@@ -142,12 +143,6 @@ def _log_cancellation(message: str) -> None:
         runtime.logger.error(message)
 
 
-#: ApiException statuses that carry a warning rather than a fault (see
-#: ``raise_api_warning``). The pipeline's decorator delivers them to the user as
-#: a warning notification.
-_WARNING_STATUS_CODES = (200, 207)
-
-
 def _report_given_up(sample_file_id: str, attempts: int, error: Exception) -> None:
     """Report a pipeline that stopped for good, at a level that matches its cause.
 
@@ -156,19 +151,21 @@ def _report_given_up(sample_file_id: str, attempts: int, error: Exception) -> No
     and the only trace is an absence - no matched peaks, and no sample items
     either when a retry had already cleared the partial ones.
 
-    A raised warning ends the pipeline too - an m/z calibration the match gate
-    will not accept, for one - but it describes the data, not a fault:
-    ``raise_api_warning`` has already logged it at INFO, and the decorator
-    hands it to the user as a warning notification. The INFO line is all it
-    gets here.
+    Only an ApiException can also need an ERROR here. Anything else still
+    reaches the background-task decorator, whose ``process_exception`` logs it
+    at the level its class deserves - with the traceback when it is a fault -
+    so an ERROR here would report the same incident twice. An ApiException
+    passes the decorator unlogged, and is classified on the terms the rest of
+    the API uses (:func:`is_expected_client_error`). A routine outcome - a
+    raised warning, such as an m/z calibration the match gate will not accept,
+    or a 4xx such as a file deleted mid-run - stays at INFO: the decorator
+    still hands it to the user, and it is nothing an operator can act on.
 
-    Anything else is a fault and is reported at ERROR, under text that names
-    neither the file nor the error: the error-monitoring sink groups issues by
-    the formatted message, so a message carrying them opened a separate issue
-    for every file - hundreds a day from one instrument's routine files, and
-    one per queued file when an outage hits an ingest burst. The status code
-    (or the exception type) stays in the text, so distinct faults still group
-    apart.
+    A fault's ERROR names neither the file nor the error. The error-monitoring
+    sink groups issues by the formatted message, so text that carries either
+    opens an issue per file - one for every queued file when an outage hits an
+    ingest burst. The status code stays in the text, so distinct faults still
+    group apart.
 
     :param sample_file_id: File whose pipeline gave up.
     :param attempts: Attempts spent, the last one included.
@@ -178,16 +175,14 @@ def _report_given_up(sample_file_id: str, attempts: int, error: Exception) -> No
         f"Auto-processing gave up on sample file {sample_file_id} after "
         f"{attempts} attempt(s); it will have no matched peaks: {error}"
     )
-    if isinstance(error, ApiException):
-        if error.status_code in _WARNING_STATUS_CODES:
-            return
-        cause = f"status {error.status_code}"
-    else:
-        cause = type(error).__name__
+    if not isinstance(error, ApiException) or is_expected_client_error(
+        error, error.status_code
+    ):
+        return
     runtime.logger.error(
         f"Auto-processing gave up on a sample file after {attempts} attempt(s) "
-        f"({cause}); it will have no matched peaks. The file and the cause are "
-        "named at INFO in this worker's log"
+        f"(status {error.status_code}); it will have no matched peaks. The file "
+        "and the cause are named at INFO in this worker's log"
     )
 
 
@@ -387,7 +382,10 @@ async def auto_process_sample_file(
                 _report_given_up(sample_file_id, attempts=attempt + 1, error=e)
                 raise
             delay = _AUTO_PROCESS_RETRY_DELAYS_S[attempt]
-            runtime.logger.warning(
+            # INFO: a retry that usually succeeds, and the line names the file,
+            # so at WARNING it would open a monitoring issue per file and per
+            # attempt. A retry that does not help ends in the give-up above.
+            runtime.logger.info(
                 f"Auto-processing attempt {attempt + 1} for sample file "
                 f"{sample_file_id} hit a recoverable error ({e}); retrying "
                 f"in {delay}s"
@@ -702,9 +700,9 @@ async def _auto_process_sample_file(
                 continue
         elif is_blank_sample_file:
             # A blank has no peaks, so there is nothing to match or assign
-            # either. Held back explicitly, as batch matching already does:
+            # either. Held back explicitly, as batch matching does:
             # match_compute_sample refuses a blank with a raised warning, which
-            # failed the whole pipeline and reported every routine blank to the
+            # would end the whole run and report a routine file to the
             # instrument room as a warning.
             runtime.logger.info(
                 "Skipping m/z calibration, matching and peak assignment for "
