@@ -37,7 +37,7 @@ step PRs land on the epic and are named here as they merge.
 | 2.7 - stage 2 gate, engine 0.5.0 | #2152 | measured: the 0.5.0 build re-assigned all 43 gate samples, read against the frozen and the refreshed reference. Against the refreshed one G1 meets 20% on A, C, C2 and D (6.1, 10.9, 19.8, 7.8) and misses on B (32.7, of it 23.7 points the reference's silence); G1 conditioned meets it on all eight sets, the TOF sets included; G2's formula bound holds on all five Orbitrap sets and its ion bound on A; G5, G7 and G8 are 0; every committed row carries its reasons, and the top-24 view holds no reagent peak fitted as an analyte. Before the round C2 was recalibrated on weak lines, its two calibrants being its two brightest (the plan owner's rule, now step 3.6): its commits move from -1.14 to -0.08 ppm and it has a usable reference again. The plan owner's IBr2- decision is the polyhalide rule, which takes the top tier from six rows no reference confirms |
 | 2.2b - mass-dependent centre for the mass gate | #2131 | measured: a run's mass gate judges a row at its own m/z where the run's commits demand a centre that follows `ppm = a + b * 1000 / mz`, accepted on peaky's rules; the line is fitted over every committed monoisotopic row (the plan owner's answer, recorded in the step), and the constant centre and the width stay the anchors'. A takes a line on all six samples (-0.113 to -0.137 mDa over m/z 57 to about 500) and C2 on one (-0.077); every other run keeps the constant centre and records the rule that refused the line. It moves no tier, formula, role, owner or cap on 48,894 peaks, and G1, G1 conditioned and G2 are identical on every set: every row that crosses three widths was already below assignability. What moves is `mass_z` - 2,316 rows on A, 130 on C2 - and A's seven itemised curated rows come inside three widths (-3.49..-4.38 to -0.80..-1.62). The plan owner kept the target library's exemption from the cap for now, to be revisited after 2.5d's review (decision 3's third addendum) |
 | 2.7a - reference refresh: peaky's branch rebased on main 0.8.0, re-pinned, the 43 runs re-published | #2151, peaky `epic/v2-fit-reference` at `26e0ff3` | measured: the branch is rebased on peaky's main, pinned to this epic's head and green in CI for the first time since 2.1b, and all 43 runs are re-published at `26e0ff3`, the batch sets pinned to the gate's samples because main's `batch` now picks its own. Against the refreshed reference G1 is 6.1 on A, 10.9 on C, 7.9 on D and 32.7 on B, where the reference is silent on 23.7 points, and G1 conditioned meets 20% on the TOF sets for the first time (E 13.0, F1 7.8, F2 17.1). C2's refreshed reference scores at no offset: step 2.5d's list edits left it four anchors, and peaky skips the labelled reagent's own lines, so C2 is read against the frozen reference until it is recalibrated. `compare_runs.py --engine-b-before` reads the frozen reference from the store |
-| 2.8 - the band first, one reading per ion, the inspector's ionization and list names | #2154 | measured: every row under the top band names it first (14,855 of the round's monoisotopic rows); a row whose ion also reads as a closed-shell molecule through another channel is held at candidate unless a second channel committed its neutral (decision 20), which takes 75 rows from assigned - 70 urea adducts against an ammonium reading the nitrogen rule did not ask and 5 bromide clusters - and returns 12 nitrate clusters on F2 whose only other reading is a carbonate radical; a channel the mode declares is the mode's own even where its profile opens it too: searched once, so no row lists its own reading as another one (265 on C before), and under no secondary channel's cap, which returns 170 carbonate readings on C to assigned (G1 on C 10.9 -> 18.0); no owner changes; G2 identical, G7 0; the inspector names the ionization and the reference lists' compounds, looked up on the detail read as Stage A matches |
+| 2.8 - the band first, one reading per ion, the inspector's ionization and list names | #2154 | measured: every row under the top band names it first (14,855 of the round's monoisotopic rows); a row whose ion also reads as a closed-shell molecule through another channel is held at candidate unless a second channel committed its neutral (decision 20), which takes 75 rows from assigned - 70 urea adducts against an ammonium reading the nitrogen rule did not ask and 5 bromide clusters - and returns 12 nitrate clusters on F2 whose only other reading is a carbonate radical; a channel the mode and its profile both name is searched once, so no row lists its own reading as another one (265 on C before), and stays secondary: C's declared carbonate channel keeps the minor-channel cap, on the plan owner's call (decision 20); no owner changes; G2 identical, G7 0; the inspector names the ionization and the reference lists' compounds, looked up on the detail read as Stage A matches |
 | 3.1 - series detection on the batch ledger | - | planned |
 | 3.2 - time-series coherence | - | planned |
 | 3.3 - calibration from verdicts, per profile | - | planned |
@@ -6466,17 +6466,17 @@ terms, this is the point at which the feature can be re-presented.
 
 ### After step 2.8, the band first and one reading per ion (2026-09-18)
 
-All 43 samples re-run on `step-2.8-tier-reasons-same-ion-2026.09.21-92c9479`,
+All 43 samples re-run on `step-2.8-tier-reasons-same-ion-2026.09.21-6f308c3`,
 the step's head after its review, compared with the 0.5.0 round of step 2.7.
-The engine stays at 0.5.0 and every run records rule set 6. The step's first
-round, on `1c4ac51` before the review, differs from this one in tier only on
-C, where the review found a declared channel still held to a secondary
-channel's cap: the 170 rows below were that cap.
+The engine stays at 0.5.0 and every run records rule set 6. Every peak's tier
+equals the step's first round, on `1c4ac51` before the review. A round between
+the two let C's declared carbonate channel out of the minor-channel cap; the
+plan owner kept the cap (decision 20), and what it holds is below.
 
 #### What the round changed
 
 No peak changes owner, formula, role or mechanism on any of the 48,894 peaks,
-and every set's row counts are identical. 257 monoisotopic rows change tier, and
+and every set's row counts are identical. 87 monoisotopic rows change tier, and
 7 isotopologues follow them.
 - **75 go from assigned to candidate**, each on the same-ion rule:
   - A 13 and B 57 on `ambiguous_nitrogen`: urea adducts whose ion also reads as
@@ -6499,19 +6499,6 @@ and every set's row counts are identical. 257 monoisotopic rows change tier, and
   are oxygen-rich formulas that the time-of-flight evidence alone holds at
   assigned, C19H18O24 and C39H39NO25 among them: a question for that evidence,
   not for this rule.
-- **170 on C go from candidate to assigned.** Each is a carbonate reading of a
-  closed-shell molecule, untargeted, with no second channel and no
-  isotopologue, at evidence 0.75 to 1.0: the minor-channel cap held them.
-  C's modes declare `+CO3-` and their profile opens it as a secondary channel
-  too, and the run held the declared channel to the cap on an uncorroborated
-  secondary-channel winner. As the mode's own channel it is under no such cap,
-  as a nitrate reading is not. 167 have a radical as the only other reading of
-  their ion and 3 have none. The reference commits the same formula on 96, at
-  its own candidate tier on 94 of them; it reads 46 as the same ion split
-  another way, and commits nothing on 23, an isotopologue on 4 and another
-  formula on 1. The brightest are C11H20O12 at m/z 404 on every sample, which
-  the reference leaves unassigned, and C13H14 at m/z 230, which the reference
-  reads as C14H14O3 taking the charge with no adduct.
 
 #### What the rules now say
 
@@ -6525,9 +6512,15 @@ and every set's row counts are identical. 257 monoisotopic rows change tier, and
 - **The band.** 14,855 monoisotopic rows sit under the top band and every one
   names it first; none of the 17,713 at the top band does. None records it as a
   cap: the band is where the row stood before any rule.
-- **The minor-channel cap** reaches no channel a mode declares: 174 rows on C
-  lose it, 170 of them rise with it and 4 keep their tier, and the 3,030 rows
-  it caps on the other sets are unchanged.
+- **The minor-channel cap** holds C's declared carbonate channel as the
+  profile's secondary one. 174 rows on C carry it, and 170 stand at candidate
+  on it alone: untargeted carbonate readings of closed-shell molecules with no
+  second channel and no isotopologue, at evidence 0.75 to 1.0, 167 of them
+  with a radical as the only other reading of their ion. Let out of the cap
+  they stood at assigned, and the reference commits the same formula on 96 of
+  them, at its own candidate tier on 94; it reads 46 as the same ion split
+  another way and commits nothing on 23. The brightest is C11H20O12 at m/z
+  404 on every sample. The cap holds 3,030 rows on the other sets.
 - **The inspector's card** for set A's dimethylformamide `[M+H]+`, read through
   the API: the band first ("evidence 8% (fit 8% x plausibility 100%) is under
   the candidate band of 45%"), then the second channel, the other reading
@@ -6545,7 +6538,7 @@ Against the refreshed reference (decision 20):
 |---|---|---|---|---|
 | A | 1012 -> 999 | 6.1 -> 6.2 | 2.8 (977 -> 964) | 95.2 / 96.6 |
 | B | 4078 -> 4021 | 32.7 -> 32.0 | 10.2 -> 9.7 (3057 -> 3026) | 93.8 / 94.8 |
-| C | 615 -> 785 | 10.9 -> 18.0 | 1.1 -> 7.6 (554 -> 697) | 93.7 / 93.7 |
+| C | 615 | 10.9 | 1.1 (554) | 93.7 / 93.7 |
 | C2 | 313 | 19.8 | 2.7 (258) | 87.2 / 87.2 |
 | D | 898 -> 895 | 7.8 -> 7.7 | 1.7 (842 -> 840) | 85.0 / 86.6 |
 | E | 235 | 66.0 | 13.0 (92) | 54.4 / 56.8 |
@@ -6553,15 +6546,12 @@ Against the refreshed reference (decision 20):
 | F2 | 721 -> 733 | 83.9 | 17.1 -> 18.1 (140 -> 144) | 41.2 / 43.1 |
 
 G2 is identical on every set. G5, G7 and G8 are 0, G6 at assigned falls on B
-from 51 to 44 and rises on C from 9 to 13, and all 38,190 committed rows carry
-their reasons. C's conditioned G1 rises by the 47 of the 170 the reference
-commits another way: 46 as the same ion split differently, 1 as another
-formula.
+from 51 to 44, and all 38,190 committed rows carry their reasons.
 
 #### Verify, item by item
 
 - **Tests at the head.**
-  - The whole backend suite passes: 3,614 passed and 6 skipped. The
+  - The whole backend suite passes: 3,618 passed and 6 skipped. The
     reference library passes: 207.
   - The frontend unit suite passes: 1,282 tests in 112 files.
   - ruff and the strict docs build are clean.
@@ -6570,10 +6560,11 @@ formula.
   settles it, the band and its place and precision, the rule set's 6, the bands
   reaching the pass, and the detail read's names, their licence filter, bound
   and failure. So are twelve reversions in the frontend, 12 of 12. The review's
-  fixes add 17 of 17 in the backend - the declared channel out of the minor
-  ones, the nitrogen rival first, the own-channel guard, the own neutral and a
-  labelled analyte left out, the band's `caps`, the lookup's scope and count,
-  and the bands stated once - and 14 of 14 in the frontend.
+  fixes add 23 of 23 in the backend - the channel searched once and kept
+  secondary, in the run and the batch search alike, the nitrogen rival first,
+  the own-channel guard, the own neutral and a labelled analyte left out, the
+  band's `caps`, the lookup's scope and count, and the bands stated once - and
+  14 of 14 in the frontend.
 - **The round.** 43 of 43 runs completed on the head's build. No owner changes;
   the tier moves are the ones above.
 - **G7 and the tier reasons** were read from the store over every committed row
