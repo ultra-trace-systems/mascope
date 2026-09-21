@@ -7,10 +7,12 @@ import Tus from '@uppy/tus'
 import { useAuth } from './auth'
 import { useInstrument } from './data/modules/instrument'
 import { useIonizationMode } from './data/modules/ionization'
+import { TOKENLESS_UPLOADS, useServer } from './server'
 import { useUi } from './ui'
 
 import { api } from '@/api'
 import { maxUploadBytes } from '@/lib/features'
+import { hasIonizationToken } from '@/lib/ionizationModes'
 import { runtime } from '@/lib/runtime.js'
 import { genId } from '@/lib/utils'
 
@@ -41,15 +43,15 @@ function validateInstrument(file) {
 }
 
 function validateIonization(file) {
-  const ionization = useIonizationMode().list.some((i) =>
-    file.name.includes(i.ionization_mode_token)
+  return (
+    hasIonizationToken(file.name, useIonizationMode().list) || useServer().can(TOKENLESS_UPLOADS)
   )
-  if (!ionization) return false
-  return true
 }
 
 export const useUppy = defineStore('app.uppy', () => {
   const ui = useUi()
+  // Created with this store, so it reads the capabilities at sign-in.
+  useServer()
 
   const invalidFiles = ref([])
 
@@ -66,6 +68,15 @@ export const useUppy = defineStore('app.uppy', () => {
       if (!isValid) {
         invalidFiles.value = [...invalidFiles.value, currentFile]
         return false
+      }
+      if (!hasIonizationToken(currentFile.name, useIonizationMode().list)) {
+        ui.notification.push({
+          type: 'sample_file_upload',
+          status: 'info',
+          message:
+            `${currentFile.name} carries no ionization mode token. Once uploaded it ` +
+            'waits in Raw files for its chemistry to be chosen.'
+        })
       }
     }
   }).use(Tus, {

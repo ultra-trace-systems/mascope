@@ -782,6 +782,7 @@ same hysteresis and dwell logic as a trace.
   - Browser upload stops rejecting token-less names only when the server
     announces the capability. The file then parks rather than being refused,
     the same capability pattern as `files_uploads_under_reported_instrument`.
+    Shipped in #2168 as `files_uploads_without_ionization_token`.
 - **File Agents need no change.** The status poller and sidecar upload are
   later additions, and older agents stay on today's path.
 - **The fleet regression corpus manifest** is re-baselined with an expected
@@ -878,7 +879,10 @@ Steps 6 and 7 of the setup-simplification proposal:
     items of ACQUISITION batches in ACQUISITION datasets of system
     workspaces. A file with a person's sample keeps its calibration when it
     is bound, and re-processing still refuses it;
-- the upload capability flag;
+- the upload capability flag. Shipped in #2168: `GET /api/version`
+  and the pairing start response carry the server's capabilities
+  (`mascope_backend/capabilities.py`), and the browser lets a token-less name
+  through when `files_uploads_without_ionization_token` is announced;
 - the agent status poller, in the next agent release.
 
 Needed before any rung can be provisional or park.
