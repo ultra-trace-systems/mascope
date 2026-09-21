@@ -193,11 +193,16 @@ class PeakAssignmentDetailRecord(PeakAssignmentRecord):
     alternatives: list | None = None
     provenance: dict | None = None
     #: The reference-list compounds ``assigned_formula`` is listed as, looked up
-    #: when the row is read (``service.with_known_compounds``): name, source,
-    #: licence, InChIKey and the source's own id. Each alternative a list holds
-    #: carries the same key. Empty where no list holds the formula, and None
-    #: where the row commits none or the lookup could not run.
+    #: when the row is read and scoped as Stage A matches
+    #: (``service.with_known_compounds``): name, source, licence, InChIKey, the
+    #: source's own id and its cross-references, at most as many as a run keeps.
+    #: Each alternative a list holds carries the same key. Empty where no list
+    #: holds the formula, and None where the row commits none or the lookup could
+    #: not run.
     known_compounds: list | None = None
+    #: How many records name ``assigned_formula``, the ones past the cap of
+    #: ``known_compounds`` included; 0 where none does.
+    known_compounds_total: int | None = None
 
 
 class PeakAssignmentsResponse(BaseModel):

@@ -166,7 +166,6 @@ from mascope_backend.socket.notifications import (
 from mascope_file.name import get_instrument_type
 from mascope_match import compute_match_isotopes
 from mascope_reference import iter_known_compositions, known_state_fingerprint
-from mascope_reference.known import DEFAULT_MAX_IDENTITIES
 from mascope_reference.scope import SAMPLE_POLARITIES
 from mascope_tools.composition.arbitration import CANDIDATE_DENSITY
 from mascope_tools.composition.calibration import (
@@ -620,6 +619,7 @@ async def get_peak_assignment_detail(
     :return: Dictionary with status, message, and the one full assignment row
     """
     sample = await fetch_sample(sample_item_id)
+    polarity = SAMPLE_POLARITIES.get(sample.polarity)
 
     async with async_session() as session:
         if is_fold_id(peak_assignment_id):
@@ -631,24 +631,36 @@ async def get_peak_assignment_detail(
                     f"Assignment '{peak_assignment_id}' not found for sample "
                     f"'{sample.sample_item_name}'"
                 )
-            return {
-                "status": "success",
-                "message": (
-                    f"Retrieved batch-derived assignment '{peak_assignment_id}' "
-                    f"for sample '{sample.sample_item_name}'"
-                ),
-                "results": 1,
-                "data": [await with_known_compounds(member_detail(*found))],
-            }
-        assignment = await session.get(PeakAssignment, peak_assignment_id)
-        if assignment is None or assignment.sample_item_id != sample_item_id:
-            raise NotFoundException(
-                f"Assignment '{peak_assignment_id}' not found for sample "
-                f"'{sample.sample_item_name}'"
+            derived = member_detail(*found)
+        else:
+            derived = None
+            assignment = await session.get(PeakAssignment, peak_assignment_id)
+            if assignment is None or assignment.sample_item_id != sample_item_id:
+                raise NotFoundException(
+                    f"Assignment '{peak_assignment_id}' not found for sample "
+                    f"'{sample.sample_item_name}'"
+                )
+            record = assignment.to_dict()
+            run = await session.get(
+                PeakAssignmentRun, assignment.peak_assignment_run_id
             )
-        record = assignment.to_dict()
-        run = await session.get(PeakAssignmentRun, assignment.peak_assignment_run_id)
-        run_calibration = run.confidence_calibration if run is not None else None
+            run_calibration = run.confidence_calibration if run is not None else None
+            run_config = run.config if run is not None else None
+
+    # The names are looked up after the session closes: the lookup opens its own,
+    # and a read should not hold two connections for one row.
+    if derived is not None:
+        # A row derived from the batch ledger has no run, so no run recorded the
+        # ceiling it would have matched under: each source's own window bounds it.
+        return {
+            "status": "success",
+            "message": (
+                f"Retrieved batch-derived assignment '{peak_assignment_id}' "
+                f"for sample '{sample.sample_item_name}'"
+            ),
+            "results": 1,
+            "data": [await with_known_compounds(derived, polarity=polarity)],
+        }
 
     # The calibration the run applied is recorded once on the run; fold it back
     # into the row so the provenance keeps the shape the inspector and the SDK
@@ -666,18 +678,37 @@ async def get_peak_assignment_detail(
             f"'{sample.sample_item_name}'"
         ),
         "results": 1,
-        "data": [await with_known_compounds(record)],
+        "data": [
+            await with_known_compounds(
+                record, polarity=polarity, ceiling=_recorded_ceiling(run_config)
+            )
+        ],
     }
 
 
-#: What the detail read names a reference-list compound by. The structure
-#: fields a record also carries are left out: the inspector names a compound,
-#: and a formula a large list shares with many compounds would otherwise carry
-#: all of their structures.
-_KNOWN_COMPOUND_FIELDS = ("name", "source", "license", "inchikey", "source_native_id")
+def _recorded_ceiling(run_config) -> KnownWindow | None:
+    """The ceiling a run's chemistry context put over every reference source.
+
+    :param run_config: A run's stored config, or None.
+    :return: The window the run recorded, or None where it recorded none - an
+        imported run, or a context that sets no ceiling.
+    """
+    resolved = (run_config or {}).get(RESOLVED_PROFILE_KEY) or {}
+    window = resolved.get("known_window")
+    if not isinstance(window, dict):
+        return None
+    try:
+        return KnownWindow.from_json(window)
+    except Exception:  # noqa: BLE001 - an unreadable record bounds nothing
+        return None
 
 
-async def with_known_compounds(record: dict) -> dict:
+async def with_known_compounds(
+    record: dict,
+    *,
+    polarity: str | None = None,
+    ceiling: KnownWindow | None = None,
+) -> dict:
     """Name the reference-list compounds a row's formulas are listed as.
 
     Looked up when the row is read rather than recorded by the run, and for
@@ -685,17 +716,24 @@ async def with_known_compounds(record: dict) -> dict:
     each other reading of its ion - so a formula a list holds is named wherever
     it appears. A run records the identities of the list formulas it MATCHED
     (``provenance.reference_identities``); this answers the wider question of
-    which formulas a list holds at all, including ones the run reached through
-    the formula search, on runs of any build and of any engine. A list names
-    candidates; a formula match is not an identification.
+    which formulas the lists hold that a run of this sample could have matched,
+    including ones the run reached through the formula search, on runs of any
+    build and of any engine. A list names candidates; a formula match is not an
+    identification.
 
-    Only the sources the deployment matches against are named
-    (:func:`reference_license_gate`). A lookup that fails leaves the row as it
-    was: the names are a reading aid, and the row reads without them.
+    Scoped as Stage A matches (``reference_service.known_listings``): the
+    licences the deployment matches against (:func:`reference_license_gate`),
+    the sample's polarity, each source's window under the run's ceiling, and a
+    radical only from a source that allows radicals. A lookup that fails leaves
+    the row as it was: the names are a reading aid, and the row reads without
+    them.
 
     :param record: One full assignment row, modified in place.
-    :return: The row, with ``known_compounds`` on it and on each alternative a
-        list holds.
+    :param polarity: The sample's polarity, ``positive`` or ``negative``.
+    :param ceiling: The ceiling the run's chemistry context recorded, or None.
+    :return: The row, with ``known_compounds`` and ``known_compounds_total`` on
+        it, and on each alternative a list holds: the names, at most as many as a
+        run keeps, and how many records name the formula in all.
     """
     alternatives = [
         alternative
@@ -713,25 +751,25 @@ async def with_known_compounds(record: dict) -> dict:
     if not formulas:
         return record
     try:
-        annotated = await reference_service.annotate_formulas(
-            formulas, licenses=reference_license_gate()
+        listings = await reference_service.known_listings(
+            formulas,
+            licenses=reference_license_gate(),
+            ceiling=ceiling,
+            polarity=polarity,
         )
     except Exception as error:  # noqa: BLE001 - a name lookup never fails a read
         runtime.logger.debug(f"Reference names skipped on an assignment read: {error}")
         return record
 
-    def named(formula) -> list[dict]:
-        return [
-            {field: known.get(field) for field in _KNOWN_COMPOUND_FIELDS}
-            for known in (annotated.get(str(formula)) or [])[:DEFAULT_MAX_IDENTITIES]
-        ]
-
     if record.get("assigned_formula"):
-        record["known_compounds"] = named(record["assigned_formula"])
+        listing = listings.get(str(record["assigned_formula"])) or {}
+        record["known_compounds"] = listing.get("identities", [])
+        record["known_compounds_total"] = listing.get("total", 0)
     for alternative in alternatives:
-        known = named(alternative.get("assigned_formula"))
-        if known:
-            alternative["known_compounds"] = known
+        listing = listings.get(str(alternative.get("assigned_formula")))
+        if listing:
+            alternative["known_compounds"] = listing["identities"]
+            alternative["known_compounds_total"] = listing["total"]
     return record
 
 

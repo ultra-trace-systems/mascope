@@ -14,7 +14,9 @@ from mascope_reference.ingest import IngestResult, ingest
 from mascope_reference.known import (
     KnownComposition,
     KnownIdentity,
+    KnownListing,
     iter_known_compositions,
+    known_listings,
     known_state_fingerprint,
 )
 from mascope_reference.normalize import (
@@ -55,9 +57,11 @@ __all__ = [
     "annotate_formulas",
     "collapse_by_inchikey",
     "iter_known_compositions",
+    "known_listings",
     "known_state_fingerprint",
     "KnownComposition",
     "KnownIdentity",
+    "KnownListing",
     "available_sources",
     "get_adapter",
     "ingest",
