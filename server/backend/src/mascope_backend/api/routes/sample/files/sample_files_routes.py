@@ -10,6 +10,7 @@ from fastapi import (
     File,
     Form,
     HTTPException,
+    Query,
     Request,
     UploadFile,
 )
@@ -79,7 +80,7 @@ sample_files_router = APIRouter(prefix="/api/sample/files", tags=["Sample Files"
 @sample_files_router.get("")
 @api_route(token_access=True)
 async def get_sample_files_route(
-    query_params: GetSampleFilesQueryParams = Depends(),
+    query_params: GetSampleFilesQueryParams = Query(),
     user=Depends(current_active_user),
 ):
     """Retrieve a list of sample files with optional filtering and pagination.
@@ -103,7 +104,7 @@ async def get_sample_files_route(
 @sample_files_router.get("/recent")
 @api_route()
 async def get_recent_sample_files_route(
-    query_params: GetRecentSampleFilesQueryParams = Depends(),
+    query_params: GetRecentSampleFilesQueryParams = Query(),
     user=Depends(current_active_user),
 ):
     """Retrieve recent sample files within a specified date range.

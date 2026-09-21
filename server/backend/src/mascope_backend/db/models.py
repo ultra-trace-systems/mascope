@@ -754,6 +754,24 @@ class SampleFile(Base):
     # The file's name on the uploading machine, before the server filed it
     # under the instrument the agent reported. NULL when nothing renamed it.
     source_filename: Mapped[Optional[str]] = mapped_column(String(256), nullable=True)
+    # When the converter registered the file, set by the database on insert.
+    # NULL on rows registered before the column existed: their time is not
+    # known, and nothing stands in for it - a file's samples are recreated
+    # when it is re-processed, so their times do not say when it arrived.
+    sample_file_utc_created: Mapped[Optional[dt]] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=True, index=True, server_default=func.now()
+    )
+    # How far auto-processing got, written by each stage of the pipeline: a
+    # ProcessingStatus value (api/controllers/sample/files/process/status.py),
+    # a sentence or two saying what it means for this file, and when it was
+    # written. NULL on rows processed before the status was recorded.
+    processing_status: Mapped[Optional[str]] = mapped_column(
+        String(24), nullable=True, index=True
+    )
+    processing_detail: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    processing_updated_utc: Mapped[Optional[dt]] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=True
+    )
 
     # Relationships
     instrument_function = relationship(

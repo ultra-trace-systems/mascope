@@ -2,7 +2,7 @@ import asyncio
 import math
 import os
 import shutil
-from datetime import datetime
+from datetime import datetime, timezone
 from uuid import uuid4
 
 from fastapi import BackgroundTasks, HTTPException, UploadFile
@@ -18,6 +18,9 @@ from mascope_backend.api.controllers.dataset.acquisition.service import (
     create_acquisition_datasets,
     delete_acquisition_datasets,
 )
+from mascope_backend.api.controllers.sample.files.process.status import (
+    read_pooled_streams_note,
+)
 from mascope_backend.api.controllers.sample.lib.fetch_affected_sample_data import (
     fetch_affected_sample_data,
 )
@@ -32,6 +35,7 @@ from mascope_backend.api.lib.exceptions.api_exceptions import (
     raise_api_warning,
 )
 from mascope_backend.api.lib.sorting import order_by_column
+from mascope_backend.api.models.sample.files.config import ProcessingStatus
 from mascope_backend.api.models.sample.files.sample_file_pydantic_model import (
     SampleFileCreate,
     SampleFileSortColumn,
@@ -275,6 +279,7 @@ async def get_sample_files(
     datetime_max: datetime | None = None,
     instrument: str | None = None,
     filename: str | None = None,
+    processing_status: list[str] | None = None,
     sort: str = "datetime_utc",
     order: str = "asc",
     page: int | None = None,
@@ -284,12 +289,14 @@ async def get_sample_files(
 ) -> dict:
     """
     Retrieves a paginated list of sample files, optionally filtered by date range,
-    instrument, or filename, and sorted by a specified column.
+    instrument, filename or processing status, and sorted by a specified column.
 
     :param datetime_min: Minimum date and time for filtering sample files, optional.
     :param datetime_max: Maximum date and time for filtering sample files, optional.
     :param instrument: Instrument name for filtering sample files, optional.
     :param filename: Filename for filtering sample files, optional.
+    :param processing_status: Processing statuses to keep, optional; a file
+        matches when its status is any of them.
     :param sort: Column to sort by, defaults to "datetime_utc".
     :param order: Sorting order, "asc" for ascending or "desc" for descending.
     :param page: Page number for pagination, defaults to None (no pagination).
@@ -348,6 +355,12 @@ async def get_sample_files(
             stmt = stmt.where(SampleFile.instrument == instrument)
         if filename:
             stmt = stmt.where(SampleFile.filename == filename)
+        if processing_status:
+            stmt = stmt.where(
+                SampleFile.processing_status.in_(
+                    [str(status) for status in processing_status]
+                )
+            )
 
         # --- Apply sorting
         stmt = stmt.order_by(
@@ -489,6 +502,7 @@ async def create_sample_file(
 
         # Step 2: Construct new sample file. The uploading user comes from
         # the authenticated request (user_id), not from the request body.
+        # Registered means converted: auto-processing takes it from here.
         new_sample_file = SampleFile(
             sample_file_id=gen_id(16),
             **sample_file_create.model_dump(
@@ -497,6 +511,11 @@ async def create_sample_file(
             mz_calibration=mz_calibration,
             uploaded_by_device_id=device_id,
             uploaded_by_user_id=user_id,
+            processing_status=ProcessingStatus.CONVERTED.value,
+            processing_detail=await read_pooled_streams_note(
+                sample_file_create.filename
+            ),
+            processing_updated_utc=datetime.now(timezone.utc),
         )
         session.add(new_sample_file)
 

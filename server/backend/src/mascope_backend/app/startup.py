@@ -7,7 +7,7 @@ race conditions on shared state.
 
 Tasks:
 - File system cleanup and setup
-- Application state reset (stuck batch recovery)
+- Application state reset (stuck batch recovery, interrupted file processing)
 - Idempotent data initialization (acquisition datasets)
 """
 
@@ -25,6 +25,9 @@ from mascope_backend.db.admin.peak_assignments.reset_running_runs import (
     reset_running_batch_peak_runs,
     reset_running_peak_assignment_runs,
 )
+from mascope_backend.db.admin.sample_file.reset_interrupted_processing import (
+    reset_interrupted_processing,
+)
 from mascope_backend.runtime import runtime
 from mascope_file.gc import gc_filestore
 
@@ -38,6 +41,7 @@ async def init_main_process() -> None:
     - Garbage collect orphaned files from filestore
     - Configure a short-lived DB engine for one-time startup tasks
     - Reset any batches stuck in 'processing' from a previous run
+    - Mark sample files whose processing a restart interrupted as failed
     - Auto-create missing acquisition datasets for all instruments
     - Dispose the engine — each worker initialises its own independently
 
@@ -71,6 +75,9 @@ async def init_main_process() -> None:
 
         runtime.logger.info("Main process: resetting interrupted batch peak runs")
         await reset_running_batch_peak_runs()
+
+        runtime.logger.info("Main process: resetting interrupted file processing")
+        await reset_interrupted_processing()
 
         runtime.logger.info("Main process: initializing acquisition datasets")
         await create_acquisition_datasets()

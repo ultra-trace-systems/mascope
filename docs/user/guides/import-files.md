@@ -153,16 +153,33 @@ To import files you already have on your machine:
 4. Watch the progress notification until the uploads finish.
 
 However they arrive, uploaded files appear in the raw-files table (listed by
-filename, polarity, and datetime), and Mascope processes each one automatically
-in the background: for every ionization mode in the file it creates a
-calibrated, matched **sample** in the instrument's `Acquisitions <instrument>`
-workspace. Those acquisition records are read-only — to analyse the data, copy
-the samples into a batch of your own. That is the next step.
+filename, status, polarity, and datetime), and Mascope processes each one
+automatically in the background: for every ionization mode in the file it
+creates a calibrated, matched **sample** in the instrument's
+`Acquisitions <instrument>` workspace. Those acquisition records are read-only —
+to analyse the data, copy the samples into a batch of your own. That is the
+next step.
+
+The **Status** column says how far processing got. Hover a status to read what
+it means for that file, and use the status filter at the top of the tab to list
+the files that need attention across every page.
+
+| Status | Meaning |
+|---|---|
+| Converted, Bound, Calibrated | Still being processed: the file was read, its samples exist, and its m/z axis was calibrated. |
+| Done | Every sample of the file was matched. The detail says when the file was not calibrated, and why. |
+| Needs a chemistry | No ionization mode token matched the file's name, so it has no samples. Set a token its name contains, then re-process it. |
+| Calibration failed | The m/z calibration failed or is below the quality bar, so the samples were not matched. |
+| Failed | Processing stopped on an error, or was interrupted by a server restart. Re-process the file. |
+
+Files processed before Mascope recorded the status show none. When an Orbitrap
+method alternates scan ranges or scan modes within one polarity, the detail
+also says that peak detection pools those scan streams into one peak list.
 
 !!! tip "Finding files after upload"
     The table shows one time window at a time (default: the last 24 hours). Use
-    the time-range and polarity filters and the filename search at the top of the
-    tab to locate older files.
+    the time-range, status and polarity filters and the filename search at the
+    top of the tab to locate older files.
 
 ## Build your batch from the acquisition samples
 
