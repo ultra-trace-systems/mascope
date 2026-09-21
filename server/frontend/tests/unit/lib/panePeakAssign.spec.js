@@ -2487,6 +2487,45 @@ describe('PanePeakAssign the row read again', () => {
     expect(readings.map((reading) => reading.text())).toEqual(['C16H33O4'])
   })
 
+  it('offers no close alternative that restates the row in another spelling', async () => {
+    detailRecord = {
+      alternatives: [
+        { assigned_formula: 'C15H32O1', ion_formula: 'C16H32O4-', fit_score: 0.9 },
+        { assigned_formula: 'C14H30O2', ion_formula: 'C15H30O5-', fit_score: 0.4 }
+      ]
+    }
+    const wrapper = await mountPane()
+
+    expect(wrapper.findAll('.alt .f').map((cell) => cell.text())).toEqual(['C14H30O2'])
+  })
+
+  it('leaves out the own reading even where the ledger row carries no ion formula', async () => {
+    // Without the row's ion the close alternatives keep the entry, as a
+    // different ion could be behind it; the same ion's readings still know it
+    // is the row's own neutral.
+    focusedAssignment = { ...ROW, ion_formula: null }
+    detailRecord = {
+      alternatives: [
+        {
+          assigned_formula: 'C15H32O',
+          ion_formula: 'C16H32O4-',
+          ionization_mechanism_id: 'm-co3',
+          same_ion: true
+        },
+        {
+          assigned_formula: 'C16H33O4',
+          ion_formula: 'C16H32O4-',
+          ionization_mechanism_id: 'm-h',
+          same_ion: true
+        }
+      ]
+    }
+    const wrapper = await mountPane()
+    const readings = wrapper.findAll('[data-testid="same-ion"] .reading-formula')
+
+    expect(readings.map((reading) => reading.text())).toEqual(['C16H33O4'])
+  })
+
   it('names the count of a formula the lists hold past the names it carries', async () => {
     detailRecord = {
       provenance: {},
