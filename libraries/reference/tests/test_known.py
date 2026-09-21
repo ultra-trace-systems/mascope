@@ -19,7 +19,10 @@ from sqlalchemy.ext.asyncio import (  # noqa: E402
     create_async_engine,
 )
 
-from mascope_reference.known import iter_known_compositions  # noqa: E402
+from mascope_reference.known import (  # noqa: E402
+    iter_known_compositions,
+    known_listings,
+)
 from mascope_reference.schema import reference_compound, reference_source  # noqa: E402
 from mascope_reference.scope import MIRROR_WINDOW, UNBOUNDED  # noqa: E402
 from mascope_tools.composition.known_window import KnownWindow  # noqa: E402
@@ -389,3 +392,110 @@ async def test_known_state_fingerprint_tracks_active_sources(sync_engine, db_pat
             assert await known_state_fingerprint(s) == ()
     finally:
         await engine.dispose()
+
+
+async def _listings(db_path, formulas, **kw):
+    engine = create_async_engine(f"sqlite+aiosqlite:///{db_path}")
+    try:
+        async with async_sessionmaker(engine)() as s:
+            return await known_listings(s, formulas, **kw)
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_a_formula_is_named_by_what_its_sources_hold(sync_engine, db_path):
+    _seed(
+        sync_engine,
+        [
+            (
+                {"name": "list-a", "window": UNBOUNDED},
+                [{"formula": "C3H7NO", "mass": 73.05, "name": "dimethylformamide"}],
+            ),
+            (
+                {"name": "list-b", "window": UNBOUNDED},
+                [{"formula": "C3H7NO", "mass": 73.05, "name": "propanamide"}],
+            ),
+        ],
+    )
+    # Keyed by the formula as asked, however it was spelled.
+    listings = await _listings(db_path, ["C3H7N1O1", "C9H9N"], ceiling=_CEILING)
+    assert set(listings) == {"C3H7N1O1"}
+    listing = listings["C3H7N1O1"]
+    assert [i.name for i in listing.identities] == ["dimethylformamide", "propanamide"]
+    assert [i.source for i in listing.identities] == ["list-a", "list-b"]
+    assert listing.total == 2
+
+
+@pytest.mark.asyncio
+async def test_a_listing_is_scoped_as_stage_a_matches(sync_engine, db_path):
+    # Every row here names a formula Stage A would not match for a negative
+    # sample under the ceiling, and so names nothing.
+    _seed(
+        sync_engine,
+        [
+            (
+                {"name": "positive-list", "window": UNBOUNDED, "polarity": "positive"},
+                [{"formula": "C8H24O4Si4", "mass": 296.08}],
+            ),
+            (
+                {"name": "no-radicals", "window": UNBOUNDED},
+                [{"formula": "C10H15O8", "mass": 263.077}],
+            ),
+            (
+                {"name": "mirror"},
+                [{"formula": "C4H11PS", "mass": 122.03}],
+            ),
+            (
+                {"name": "charged", "window": UNBOUNDED},
+                [{"formula": "C4H12N", "mass": 74.1, "charge": 1}],
+            ),
+            (
+                {"name": "closed-list", "window": UNBOUNDED, "license": "restricted"},
+                [{"formula": "C2HF3O2", "mass": 113.99, "license": "restricted"}],
+            ),
+        ],
+    )
+    formulas = ["C8H24O4Si4", "C10H15O8", "C4H11PS", "C4H12N", "C2HF3O2"]
+    listings = await _listings(
+        db_path,
+        formulas,
+        ceiling=_CEILING,
+        polarity="negative",
+        licenses={"public-domain"},
+    )
+    assert listings == {}
+    # Without the sample's polarity or the deployment's licences, the rows those
+    # held back name their formulas. What each source's own row bounds - its
+    # radicals, its window - and a charged row still name nothing.
+    assert set(await _listings(db_path, formulas)) == {"C8H24O4Si4", "C2HF3O2"}
+
+
+@pytest.mark.asyncio
+async def test_a_listing_counts_past_its_cap(sync_engine, db_path):
+    _seed(
+        sync_engine,
+        [
+            (
+                {"name": "s"},
+                [
+                    {
+                        "formula": "C10H16O3",
+                        "mass": 184.11,
+                        "name": f"iso-{i}",
+                        "id": f"x{i}",
+                    }
+                    for i in range(10)
+                ],
+            )
+        ],
+    )
+    listing = (await _listings(db_path, ["C10H16O3"], max_identities=3))["C10H16O3"]
+    assert [i.name for i in listing.identities] == ["iso-0", "iso-1", "iso-2"]
+    assert listing.total == 10
+
+
+@pytest.mark.asyncio
+async def test_nothing_to_look_up_asks_nothing(sync_engine, db_path):
+    assert await _listings(db_path, []) == {}
+    assert await _listings(db_path, ["not a formula"]) == {}

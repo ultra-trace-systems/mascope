@@ -39,12 +39,17 @@ def _compound(source_id: int, formula: str, name: str, license: str):
 
 @pytest_asyncio.fixture
 async def listed(async_session_factory):
-    """The fixture row's formula in an open list, its alternative's in a closed one."""
+    """The fixture row's formula in an open list, its alternative's in a closed one.
+
+    A third list, detected in negative mode only, also holds the row's formula:
+    the fixture's sample is positive, so it names nothing there.
+    """
     source_ids = []
     async with async_session_factory() as session:
-        for name, license, formula, compound in (
-            ("open-list", "CC-BY-4.0", "C6H12O6", "glucose"),
-            ("closed-list", "restricted", "C7H16O5", "a heptitol"),
+        for name, license, formula, compound, polarity in (
+            ("open-list", "CC-BY-4.0", "C6H12O6", "glucose", None),
+            ("closed-list", "restricted", "C7H16O5", "a heptitol", None),
+            ("negative-list", "CC-BY-4.0", "C6H12O6", "fructose", "negative"),
         ):
             source = ReferenceSource(
                 name=name,
@@ -53,6 +58,8 @@ async def listed(async_session_factory):
                 record_count=1,
                 is_active=True,
                 ingested_at=_NOW,
+                known_window={},
+                polarity=polarity,
             )
             session.add(source)
             await session.flush()
@@ -93,8 +100,10 @@ async def test_the_row_and_its_alternative_are_named(
     guest_client, pa_test_data, listed
 ):
     record = await _detail(guest_client, pa_test_data)
+    # The negative-only list's fructose is no name on a positive sample.
     assert [known["name"] for known in record["known_compounds"]] == ["glucose"]
     assert record["known_compounds"][0]["source"] == "open-list"
+    assert record["known_compounds_total"] == 1
     alternative = record["alternatives"][0]
     assert alternative["assigned_formula"] == "C7H16O5"
     assert [known["name"] for known in alternative["known_compounds"]] == ["a heptitol"]
@@ -115,4 +124,4 @@ async def test_with_no_list_holding_it_the_row_names_nothing(
     guest_client, pa_test_data
 ):
     record = await _detail(guest_client, pa_test_data)
-    assert record["known_compounds"] == []
+    assert (record["known_compounds"], record["known_compounds_total"]) == ([], 0)
