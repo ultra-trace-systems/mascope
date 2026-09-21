@@ -32,9 +32,9 @@ and makes you its owner.
 File Agent versions upload each file in a single request capped at
 100 MB - download the newest installer to lift the limit.
 
-**A filename Mascope can read.** Mascope reads three things out of the filename,
-so uploads are rejected if any is missing. This applies to both upload paths.
-Name files as:
+**A filename Mascope can read.** Mascope reads three things out of the filename.
+An upload without the first two is rejected; one without the third waits for you
+to choose its chemistry. This applies to both upload paths. Name files as:
 
 ```
 <instrument>_<timestamp>_<ionization-token>...<.raw|.h5>
@@ -54,12 +54,14 @@ Name files as:
 - **Timestamp** — an acquisition date/time somewhere in the name, in one of the
   recognised forms (for example `20240115_1430`, `20240115143000`, or
   `2024.01.15-14h30m00s`). Mascope uses it to place and order the file.
-- **Ionization token** — the short token of a configured **ionization mode** must
-  appear in the name. This is how Mascope knows how the sample was ionized.
-  The name must match exactly one mode for each polarity in the file: a file
-  acquired in both polarities needs the token of a positive mode and the token
-  of a negative mode. A name that matches two modes of the same polarity is
-  ambiguous, and the file gets no samples.
+- **Ionization token** — the short token of a configured **ionization mode** in
+  the name is how Mascope knows how the sample was ionized, and lets it
+  process the file on its own. The name must match exactly one mode for each
+  polarity in the file: a file acquired in both polarities needs the token of a
+  positive mode and the token of a negative mode. A file whose name matches no
+  mode, or two modes of the same polarity, is still uploaded and converted, but
+  it gets no samples until you
+  [choose its chemistry](#choose-the-chemistry-of-a-file-that-needs-one).
 
 **Configured ionization modes.** Because the filename must contain a known
 ionization token, the ionization modes you use have to exist first. This is a
@@ -148,8 +150,10 @@ To import files you already have on your machine:
 2. Either click **Upload** and pick your files, or drag them onto the pane. You
    can add many files at once (up to 2.5 GB each).
 3. Mascope validates each file's name against the rules above. Anything it cannot
-   read (unknown instrument prefix, wrong extension, or no matching ionization
-   token) is listed as invalid and left out; fix the name and try again.
+   read (unknown instrument prefix or wrong extension) is listed as invalid and
+   left out; fix the name and try again. A file whose name carries no
+   ionization token is uploaded, with a note that it will wait for its
+   chemistry to be chosen.
 4. Watch the progress notification until the uploads finish.
 
 However they arrive, uploaded files appear in the raw-files table (listed by
@@ -280,9 +284,9 @@ batch has samples, you can go straight to analysis:
 ## Troubleshooting
 
 - **A file was rejected as invalid on upload.** The name is missing something
-  Mascope needs. Check the instrument prefix matches the extension, that a
-  timestamp is present, and that the name contains a configured ionization
-  token. Add the ionization mode (or fix the name) and re-upload.
+  Mascope needs. Check the instrument prefix matches the extension and that a
+  timestamp is present, then fix the name and re-upload. A missing ionization
+  token no longer rejects a file: it waits in Raw files as *Needs a chemistry*.
 - **The filename token isn't recognised.** Confirm an ionization mode with that
   exact token exists in **Edit ionizations → Ionization Modes**, and that the
   token field is filled in (a mode with no token cannot match a filename).

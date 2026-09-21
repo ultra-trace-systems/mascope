@@ -29,6 +29,7 @@ from mascope_backend.api.new.auth.pairing.exceptions import (
     PairingCodeAlreadyApprovedException,
     PairingCodeInvalidException,
 )
+from mascope_backend.capabilities import SERVER_CAPABILITIES
 from mascope_backend.db import AgentDevice, User, async_session
 from mascope_backend.runtime import runtime
 from mascope_backend.socket.storage import redis_storage_client
@@ -114,7 +115,7 @@ async def start_pairing(
         # What this server does with what the agent reports, so the agent's
         # setup can skip the questions an older server needed answered - the
         # upload prefix, in particular. An older server sends no such key.
-        "capabilities": {"files_uploads_under_reported_instrument": True},
+        "capabilities": dict(SERVER_CAPABILITIES),
     }
 
 

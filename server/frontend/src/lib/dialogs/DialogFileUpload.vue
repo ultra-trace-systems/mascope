@@ -12,12 +12,16 @@ import DialogIonizationOp from './DialogIonizationOp.vue'
 
 import { useApp } from '@/stores'
 import { useInstrument } from '@/stores/data/modules/instrument'
+import { TOKENLESS_UPLOADS, useServer } from '@/stores/server'
 
 const app = useApp()
 // The class of an instrument by name: recorded for its files where the
 // server knows it, the name rule otherwise. The same answer the server
 // files by, so what this dialog offers is what it will accept.
 const instrumentClass = useInstrument().typeOf
+// A server that keeps a file without a token, for someone to choose its
+// chemistry, needs no token added here.
+const server = useServer()
 
 const props = defineProps({
   files: {
@@ -71,7 +75,10 @@ const processed = computed(() => {
       validInstrumentName = false
     }
     let validIonization = true
-    if (!availableIonizationModes.value.some((mode) => file.name.includes(mode.token))) {
+    if (
+      !server.can(TOKENLESS_UPLOADS) &&
+      !availableIonizationModes.value.some((mode) => file.name.includes(mode.token))
+    ) {
       invalid.ionization.push(file)
       validIonization = false
     }

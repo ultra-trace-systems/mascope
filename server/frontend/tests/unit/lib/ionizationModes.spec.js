@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 
-import { ionizationModeChoices } from '@/lib/ionizationModes'
+import { hasIonizationToken, ionizationModeChoices } from '@/lib/ionizationModes'
 
 const mode = (id, name, token, polarity) => ({
   ionization_mode_id: id,
@@ -98,5 +98,23 @@ describe('ionizationModeChoices', () => {
     // Both tokens are really in the filename, so telling the user it carries
     // none would be false - the ambiguity is the reason, not their naming.
     expect(reasonFor('inst_NH4_PTR_001.raw')).toBe('ambiguous')
+  })
+})
+
+describe('hasIonizationToken', () => {
+  it("finds a configured mode's token in the name", () => {
+    expect(hasIonizationToken('inst_2026_NO3_001.raw', MODES)).toBe(true)
+  })
+
+  it('finds none in a name without one', () => {
+    expect(hasIonizationToken('inst_2026_001.raw', MODES)).toBe(false)
+    expect(hasIonizationToken('inst_2026_001.raw', [])).toBe(false)
+  })
+
+  it('never counts a mode that has no token', () => {
+    // `'...'.includes(null)` searches for the text "null".
+    expect(hasIonizationToken('inst_null_001.raw', [mode('m4', 'Untokenized', null, '+')])).toBe(
+      false
+    )
   })
 })

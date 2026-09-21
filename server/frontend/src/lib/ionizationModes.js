@@ -10,6 +10,18 @@
  * costs the user a preselected default, not the ability to process the file.
  */
 
+/**
+ * Whether a file name carries the token of a configured ionization mode.
+ *
+ * @param {string} filename - The file's name.
+ * @param {Array<object>} modes - Configured ionization modes.
+ * @returns {boolean}
+ */
+export const hasIonizationToken = (filename, modes = []) =>
+  modes.some(
+    ({ ionization_mode_token: token }) => Boolean(token) && (filename ?? '').includes(token)
+  )
+
 //: Why no mode was preselected, indexed by the number of tokens that matched
 //: (two or more are all the same case). Only the count differs; the field ends
 //: up empty either way, but the two say opposite things about the filename.
