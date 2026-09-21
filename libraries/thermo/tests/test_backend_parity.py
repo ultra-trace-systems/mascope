@@ -29,8 +29,9 @@ import pytest
 from thermo_test_support import TEST_FILES_DIR
 
 import mascope_thermo.thermo as m_thermo
-from mascope_thermo.backend import OPENTFRAW_UNAVAILABLE_SCAN_STATS, open_backend
+from mascope_thermo.backend import MS_SCAN_DETECTOR_STATS, open_backend
 from mascope_thermo.lib import thermo_available
+from mascope_thermo.scan_filter import parse_scan_filter
 
 
 # Every test here compares OpenTFRaw against the Thermo backend, which needs the
@@ -47,10 +48,46 @@ RAW_FILES = sorted(TEST_FILES_DIR.glob("*.raw"))
 # coverage (e.g. MASCOPE_PARITY_MAX_XIC_TARGETS=1000) at the cost of runtime.
 MAX_XIC_TARGETS = int(os.environ.get("MASCOPE_PARITY_MAX_XIC_TARGETS", "200"))
 
-# Filter tokens the Thermo library renders from scan-event flags that opentfraw
-# does not decode: lock (the scan found its lock mass) and sid= (source
-# fragmentation). Scan filters are compared without them.
-_UNDECODED_FILTER_TOKENS = re.compile(r" (?:lock|sid=-?[\d.]+)(?=\s|$)")
+# The decimals of a filter's first scan-range bound: the m/z precision the
+# rendering used.
+_RANGE_DECIMALS = re.compile(r"\[\d+\.(\d+)-")
+
+
+def _assert_same_filter(ours: str | None, theirs: str) -> None:
+    """OpenTFRaw's rendering of a scan filter says what the Thermo library's does.
+
+    OpenTFRaw may leave out the tokens it does not render (``lock``, ``sid=``,
+    ``cv=``, the other flags, the ``{segment,event}`` prefix), but whatever it
+    does write must agree. It writes m/z to four decimals, so m/z is compared to
+    the last decimal of the precision the Thermo library rendered.
+    """
+    assert ours is not None, f"OpenTFRaw renders no filter for {theirs!r}"
+    o, t = parse_scan_filter(ours), parse_scan_filter(theirs)
+    context = f"{ours!r} vs {theirs!r}"
+    for name in (
+        "analyzer",
+        "polarity",
+        "data_type",
+        "source",
+        "dependent",
+        "scan_mode",
+        "ms_order",
+    ):
+        assert getattr(o, name) == getattr(t, name), f"{name}: {context}"
+    assert set(o.flags) <= set(t.flags), context
+    for name in ("source_fragmentation", "compensation_voltage", "segment", "event"):
+        assert getattr(o, name) in (None, getattr(t, name)), f"{name}: {context}"
+    match = _RANGE_DECIMALS.search(theirs)
+    tolerance = 10.0 ** -(len(match.group(1)) if match else 4) + 1e-9
+    assert [p.activation for p in o.precursors] == [
+        p.activation for p in t.precursors
+    ], context
+    assert [p.mz for p in o.precursors] == pytest.approx(
+        [p.mz for p in t.precursors], abs=tolerance
+    ), context
+    assert len(o.scan_ranges) == len(t.scan_ranges), context
+    for ours_range, theirs_range in zip(o.scan_ranges, t.scan_ranges):
+        assert ours_range == pytest.approx(theirs_range, abs=tolerance), context
 
 
 def _run_under(monkeypatch, backend, fn, *args, **kwargs):
@@ -254,17 +291,19 @@ def test_ms2_events_match_thermo(monkeypatch, path):
 @pytest.mark.parametrize("path", RAW_FILES, ids=lambda p: p.name)
 def test_scan_statistics_match_thermo(monkeypatch, path):
     """OpenTFRaw's mapped scan statistics must match Thermo for the fields it
-    provides (the scan-statistics metadata remap), and be None for the rest.
-    Uses only the base opentfraw typed scan dict.
+    provides (the scan-statistics metadata remap), on the scans of every MS
+    order. ``ScanType`` is compared as a parsed filter (``_assert_same_filter``),
+    and the detector fields must hold the same fixed values, which is what
+    reporting them for OpenTFRaw rests on.
     """
     path = str(path)
 
     monkeypatch.setenv("MASCOPE_THERMO_BACKEND", "thermo")
     with open_backend(path) as backend:
-        th = backend.scan_statistics()
+        th = backend.scan_statistics(ms_type=None)
     monkeypatch.setenv("MASCOPE_THERMO_BACKEND", "opentfraw")
     with open_backend(path) as backend:
-        ot = backend.scan_statistics()
+        ot = backend.scan_statistics(ms_type=None)
 
     assert set(ot) == set(th), "scan set differs"
     for scan_number, t in th.items():
@@ -279,12 +318,11 @@ def test_scan_statistics_match_thermo(monkeypatch, path):
         assert o["LowMass"] == pytest.approx(t["LowMass"], rel=1e-9)
         assert o["HighMass"] == pytest.approx(t["HighMass"], rel=1e-9)
         assert o["ScanNumber"] == t["ScanNumber"]
+        assert o["ScanEventNumber"] == t["ScanEventNumber"]
         assert o["IsCentroidScan"] == t["IsCentroidScan"]
-        assert _UNDECODED_FILTER_TOKENS.sub("", o["ScanType"]) == (
-            _UNDECODED_FILTER_TOKENS.sub("", t["ScanType"])
-        )
-        for name in OPENTFRAW_UNAVAILABLE_SCAN_STATS:
-            assert o[name] is None, name
+        _assert_same_filter(o["ScanType"], t["ScanType"])
+        for name in MS_SCAN_DETECTOR_STATS:
+            assert o[name] == t[name] and type(o[name]) is type(t[name]), name
 
 
 def _hcd_tuple(value):

@@ -31,7 +31,11 @@ All implementations must satisfy the `ReaderBackend` protocol, which defines a c
 To ensure consistency across backends, the following field sets are enforced:
 
 - **`INSTRUMENT_FIELDS`**: Serialized instrument metadata including `Model`, `SerialNumber`, and `SoftwareVersion`.
-- **`SCAN_STAT_FIELDS`**: Per-scan statistics such as `BasePeakIntensity`, `TIC`, `ScanType`, and `IsCentroidScan`, named as in Thermo's `ScanStats`. Both backends return every field for every scan; a field a backend cannot read is `None`. For OpenTFRaw those are `OPENTFRAW_UNAVAILABLE_SCAN_STATS`: the UV, PDA and analog detector fields (`Frequency`, the wavelength fields, `NumberOfChannels`, `IsUniformTime`, `AbsorbanceUnitScale`, `WavelengthStep`), which are zero on MS scans, and the per-scan `PacketCount`, `ScanEventNumber`, `SegmentNumber` and `CycleNumber`. OpenTFRaw decodes the first three but does not pass them to Python ([Sigilweaver/OpenTFRaw#56](https://github.com/Sigilweaver/OpenTFRaw/pull/56)).
+- **`SCAN_STAT_FIELDS`**: Per-scan statistics such as `BasePeakIntensity`, `TIC`, `ScanType`, and `IsCentroidScan`, named as in Thermo's `ScanStats`. Both backends return every field for every scan. OpenTFRaw fills them as follows:
+  - `ScanType` is the scan filter as OpenTFRaw renders it (see [Scan Streams](#scan-streams) for how the renderings differ), and `IsCentroidScan` is read from that filter's scan data type.
+  - `ScanEventNumber` is the trailer's `Scan Event:` minus one.
+  - The UV, PDA and analog detector fields (`Frequency`, the wavelength fields, `NumberOfChannels`, `IsUniformTime`, `AbsorbanceUnitScale`, `WavelengthStep`) hold the fixed values Thermo's `ScanStats` holds for every MS scan (`MS_SCAN_DETECTOR_STATS`).
+  - A field a backend cannot read is `None`. For OpenTFRaw those are `PacketCount`, `SegmentNumber` and `CycleNumber` (`OPENTFRAW_UNAVAILABLE_SCAN_STATS`). It decodes the scan-index words behind the first two but does not pass them to Python ([Sigilweaver/OpenTFRaw#56](https://github.com/Sigilweaver/OpenTFRaw/pull/56)).
 - **`_OTF_TRAILER_FIELDS`**: Descriptive labels for acquisition data decoded by OpenTFRaw (Ion Injection Time, Precursor m/z).
 
 ## Public Methods
@@ -47,37 +51,49 @@ All methods returning time values convert internal units (minutes) to **seconds*
 
 ### Scan-Level Metadata
 
-- **`polarities()`**: Returns the ion polarity (+ or -) for each scan.
-- **`scan_times()`**: Returns the acquisition start time for each scan in seconds.
-- **`tic_per_scan()`**: Returns the Total Ion Current (TIC) for every scan.
-- **`scan_statistics(scan_number)`**: Retrieves per-scan metrics (e.g., BasePeakIntensity, ScanType) defined in `SCAN_STAT_FIELDS`, plus `MsType`, with the same keys from both backends.
-- **`scan_acquisition_settings(scan_number)`**: Returns detailed acquisition parameters.
+- **`polarities()`**: Returns the set of polarities (`+`, `-`) present in the file.
+- **`scan_times(polarity, t_min, t_max, ms_type)`**: Returns the start time in seconds of each selected scan.
+- **`tic_per_scan(polarity, t_min, t_max, ms_type)`**: Returns the start times and Total Ion Current (TIC) of the selected scans.
+- **`scan_statistics(polarity, t_min, t_max, ms_type)`**: Returns the selected scans' metrics (e.g., BasePeakIntensity, ScanType) defined in `SCAN_STAT_FIELDS`, plus `MsType`, with the same keys from both backends.
+- **`scan_acquisition_settings(polarity, t_min, t_max, ms_type)`**: Returns a per-scan table of acquisition settings for the selected scans: the full trailer from the Thermo backend, the `_OTF_TRAILER_FIELDS` subset from OpenTFRaw.
 - **`scan_filters()`**: Returns every scan's number, start time in seconds and filter text, in acquisition order, with no scan left out.
 - **`scan_trailer(scan_number)`**: Returns one scan's trailer, the instrument's own `{label: value}` table. Values are text from the Thermo backend and typed scalars from OpenTFRaw.
 - **`acquisition_parameters(max_scans, scan_numbers)`**: Summarises the trailers of up to `max_scans` scans, sampled evenly from `scan_numbers` (every MS1 scan by default), into the values constant across them and the names of those that vary.
-- **`scan_indices()`**: Returns the integer indices for all scans in the raw file.
-- **`mass_range(scan_number)`**: Returns the m/z range for the specified scan.
+- **`scan_indices(polarity, t_min, t_max, ms_type)`**: Returns the 1-based numbers of the selected scans.
+- **`mass_range()`**: Returns the run's `(low, high)` m/z range.
 
 ### Data Access and Processing
 
-- **`profile_per_scan(scan_number)`**: Retrieves the raw profile m/z and intensity arrays for a single scan.
-- **`centroids_per_scan(scan_number)`**: Retrieves the centroided peaks (m/z and intensity) for a given scan.
-- **`centroids_meta(scan_number)`**: Returns resolution and Signal-to-Noise (S/N) for each centroided peak per scan decoded from the scan's centroid labels.
-- **`average_profile(scan_indices)`**: Executes frequency-domain averaging across multiple scans, including m/z calibration, jitter correction, and $n/\sqrt{N}$ S/N scaling.
-- **`average_centroids(scan_indices)`**: Returns an approximation of centroids derived from an averaged profile.
-- **`xic(mz_range, scan_range)`**: Generates an Extracted Ion Chromatogram for a target m/z window across a range of scans.
+- **`profile_per_scan(polarity, t_min, t_max, ms_type, mz_min, mz_max)`**: Retrieves the raw profile m/z and intensity arrays of each selected scan, with the scan times.
+- **`centroids_per_scan(polarity, t_min, t_max, ms_type, mz_min, mz_max)`**: Retrieves the centroided peaks (m/z, intensity, resolution, S/N) of each selected scan.
+- **`centroids_meta()`**: Returns every scan's centroid m/z, intensity, resolution and noise, decoded from its centroid labels.
+- **`average_profile(scan_indices, ppm, average, reconstruct)`**: Executes frequency-domain averaging across multiple scans, including m/z calibration, jitter correction, and $n/\sqrt{N}$ S/N scaling.
+- **`average_centroids(scan_indices, ppm, average)`**: Returns an approximation of centroids derived from an averaged profile.
+- **`xic(mzs, ppm, polarity, t_min, t_max, ms_type)`**: Generates an Extracted Ion Chromatogram within `ppm` of each target m/z across the selected scans.
 
 ### MS2 Specific Methods
 
-- **`ms2_events_by_scan(scan_number)`**: Decodes and returns the precursor m/z and activation (e.g. `hcd40.00`) for MS2 acquisition events. The activation is what separates the steps of a stepped-energy acquisition, whose scans share one precursor.
-- **`ms2_acquisition_info(scan_number)`**: Returns specialized MS2 metadata, such as isolation width and collision energy.
+- **`ms2_events_by_scan(polarity, t_min, t_max)`**: Decodes and returns the precursor m/z and activation (e.g. `hcd40.00`) for MS2 acquisition events. The activation is what separates the steps of a stepped-energy acquisition, whose scans share one precursor.
+- **`ms2_acquisition_info(polarity, t_min, t_max)`**: Returns the MS2 isolation width and each MS2 scan's collision energy.
 - **`ms2_centroids_for_scans(scan_indices)`**: Retrieves centroid data specifically for a set of MS2 scans.
 
 ## Scan Streams
 
 `mascope_thermo.scan_filter` parses a scan filter (`FTMS - p NSI Full ms [40.0000-600.0000]`) into the signature that tells scan streams apart: analyzer, polarity, scan data type, source, source fragmentation, FAIMS CV, scan mode, MS order, the precursors of targeted MSn scans, and the scan ranges. `mascope_thermo.streams.scan_streams` groups a file's scans by that signature plus the trailer's FT resolution, and reports per stream its scan count, blocks and time span, plus, for an MS1 stream, the acquisition parameters of its own scans. The converter stores the result in `.props` as `scan_streams`.
 
-The two backends render some filters differently, because OpenTFRaw does not decode two flags of the scan event. The Thermo library writes `lock` on each scan that found its lock mass (its trailer's `Number of LM Found` is above zero), and OpenTFRaw never does ([Sigilweaver/OpenTFRaw#58](https://github.com/Sigilweaver/OpenTFRaw/issues/58)); `lock` describes one scan's outcome, so it is left out of the signature. The Thermo library also writes the source fragmentation of a scan acquired with in-source CID (`sid=20.00`), which OpenTFRaw renders without it ([Sigilweaver/OpenTFRaw#57](https://github.com/Sigilweaver/OpenTFRaw/issues/57)). On the internal regression corpus, the census agrees between the backends on 181 of the 182 files both read, and that is the one difference. Three more files, each a single scan, open only in the Thermo library: OpenTFRaw's search for the trailer's layout fails on some files of fewer than five scans ([Sigilweaver/OpenTFRaw#54](https://github.com/Sigilweaver/OpenTFRaw/pull/54)).
+The two backends render some filters differently, because OpenTFRaw does not render every token of the filter.
+
+- **`lock`.** The Thermo library writes `lock` on each scan that found its lock mass (its trailer's `Number of LM Found` is above zero), and OpenTFRaw never does ([Sigilweaver/OpenTFRaw#58](https://github.com/Sigilweaver/OpenTFRaw/issues/58)). `lock` describes one scan's outcome, so it is left out of the signature.
+- **Other tokens OpenTFRaw leaves out:**
+  - the source fragmentation of a scan acquired with in-source CID (`sid=20.00`, [Sigilweaver/OpenTFRaw#57](https://github.com/Sigilweaver/OpenTFRaw/issues/57));
+  - the FAIMS compensation voltage (`cv=`);
+  - flags such as wideband activation (`w`) and multiplexing (`msx`);
+  - the `{segment,event}` prefix.
+
+  The signature leaves out the prefix too. The others stay in it, so where a file carries one, the stream keys differ between the backends. On an LTQ FT Ultra file the MS2 stream is `ITMS + c ESI d w Full ms2 ...` under the Thermo library and has no `w` under OpenTFRaw. Scans that differ only in such a token pool into one stream under OpenTFRaw.
+- **Precision.** OpenTFRaw writes m/z to four decimals, where the Thermo library follows the file's precision. The parser normalises numbers, so this does not change a key.
+
+On the internal regression corpus, the census agrees between the backends on 181 of the 182 files both read, and the one difference is `sid=`. Three more files, each a single scan, open only in the Thermo library: OpenTFRaw's search for the trailer's layout fails on some files of fewer than five scans ([Sigilweaver/OpenTFRaw#54](https://github.com/Sigilweaver/OpenTFRaw/pull/54)).
 
 ## Underlying Algorithms
 

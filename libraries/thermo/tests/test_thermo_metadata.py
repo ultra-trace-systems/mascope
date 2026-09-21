@@ -13,7 +13,11 @@ import pytest
 from thermo_test_support import POS_ORBI_FILE_PATH
 
 import mascope_thermo.thermo as m_thermo
-from mascope_thermo.backend import OPENTFRAW_UNAVAILABLE_SCAN_STATS, SCAN_STAT_FIELDS
+from mascope_thermo.backend import (
+    MS_SCAN_DETECTOR_STATS,
+    OPENTFRAW_UNAVAILABLE_SCAN_STATS,
+    SCAN_STAT_FIELDS,
+)
 
 
 # Run every test under each reader backend.
@@ -77,10 +81,16 @@ class TestRawFileMetadata:
             "LowMass",
             "HighMass",
             "ScanNumber",
+            "ScanEventNumber",
             "ScanType",
             "IsCentroidScan",
         ):
             assert sample[key] is not None
+        # Neither backend reads a non-MS controller, so the detector fields hold
+        # the values ScanStats gives every MS scan, types included.
+        for row in stats.values():
+            for name, value in MS_SCAN_DETECTOR_STATS.items():
+                assert row[name] == value and type(row[name]) is type(value), name
         if backend == "opentfraw":
             unavailable = {key for key, value in sample.items() if value is None}
             assert unavailable == set(OPENTFRAW_UNAVAILABLE_SCAN_STATS)
