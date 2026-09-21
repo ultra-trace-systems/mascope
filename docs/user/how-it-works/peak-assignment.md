@@ -418,9 +418,12 @@ measurements the reasons read.
   reference list calls the formula, with the list it comes from: the compound the run
   matched it from, or - marked *potential* - a compound a list holds for a formula the run
   reached through the formula search, which is a lead to check rather than a match the run
-  made. A formula match names candidate compounds, not an identification; hovering lists
-  every compound the lists name for it. The same names appear beside the other readings
-  of the ion and beside the close alternatives.
+  made. A list names a formula only where a run of the sample could have matched it from
+  that list: in the sample's polarity, inside the list's window, and a radical only from
+  a list that allows radicals. A formula match names candidate compounds, not an
+  identification. Hovering lists the compounds by name, up to 25, and says how many more
+  the lists hold. The same names appear beside the other readings of the ion and beside
+  the close alternatives.
 - ***mass z*** sits beside the m/z error. It is the row's distance from the run's own
   mass calibration at its m/z, counted in the calibration's widths. Hovering it gives
   the run's centre and width, and the distances at which *off calibration* caps a row.
