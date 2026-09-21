@@ -62,6 +62,17 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   populate_orbitrap_method_file`, which reads only the raw file header and
   takes `DRY_RUN=1` to preview.
 
+- **Reading an Orbitrap sample file's metadata no longer fails.**
+  `GET /api/sample/files/{id}/metadata` answered 400 Bad Request for files
+  read by OpenTFRaw, the default raw-file reader, with "Out of range float
+  values are not JSON compliant: nan". OpenTFRaw leaves the charge state,
+  precursor m/z and collision energy empty on most MS1 scans, and building
+  the per-scan statistics (`stats_per_scan`) turned those gaps into NaN,
+  which JSON cannot represent. They are now `null`, as is any other missing
+  value in the metadata and any value that is not a finite number. An
+  integer the reader reports, such as a charge state, also stays an integer
+  instead of arriving as `1.0`.
+
 - **Deleting an instrument config deletes only that config.** Every sample
   file gets an instrument config of its own, but the delete also removed
   every other config with the same instrument and method file, and unlinked
