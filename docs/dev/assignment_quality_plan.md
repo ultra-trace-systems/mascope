@@ -1394,26 +1394,37 @@ its own status.
   - **The band leads the reasons.** A row under the top band names it first
     (`evidence_band`): its evidence, the fit and plausibility it is the
     product of, and the band it falls short of. The tier is the band's before
-    any rule, and a row the band held low listed only what it stood on.
+    any rule, and a row the band held low listed only what it stood on. The
+    band is not a rule, so it never `caps`.
   - **One reading per ion.** The cross-channel pass caps at candidate a row
     whose ion also reads as a closed-shell molecule through another channel,
     unless a second channel committed its neutral: `ambiguous_nitrogen` where
     the two readings put a different number of nitrogen atoms on the
     compound, two nitrogen-carrying adducts against each other included, and
-    `ambiguous_adduct` where they do not. A radical reading, the target
-    library and a second channel settle it, and the row says which
+    `ambiguous_adduct` where they do not, a nitrogen rival named before one of
+    the same count whatever order the family is stored in. A radical reading,
+    the target library and a second channel settle it, and the row says which
     (`same_ion_settled`); `no_close_rival` no longer says the evidence
-    separates the readings of one ion.
-  - **A channel is searched once.** A mode that declares a channel its
-    profile also opens searched it twice - set C's modes declare `+CO3-`
-    since 2026-09-15 - and every reading through it came back as another
-    reading of its own ion.
+    separates the readings of one ion. A reading of the row's own neutral, one
+    that puts a labelled atom on the analyte and one nothing can read are not
+    weighed, nor is a row whose own channel the run cannot name.
+  - **A channel the mode declares is the mode's own.** A mode that declares a
+    channel its profile also opens - set C's modes declare `+CO3-` since
+    2026-09-15 - searched it twice, and every reading through it came back as
+    another reading of its own ion; and the channel was still held to what a
+    secondary channel is: the cap on an uncorroborated winner, the tie that
+    goes to the mode's channel. The resolved profile leaves a declared
+    channel out of its minor channels, so the run and the batch search alike
+    search it once, as the mode's own.
   - **The inspector names the ionization and the lists.** The ionization
     mechanism, and what a reference list calls the formula, sit above the
     evidence. The detail read looks the names up for the row, its close
-    alternatives and the other readings of its ion (`known_compounds`), from
-    the sources the deployment matches against, and the inspector marks a
-    name the run did not match from the list as *potential*.
+    alternatives and the other readings of its ion (`known_compounds`), scoped
+    as Stage A matches - the sample's polarity, each source's window under the
+    run's ceiling, radicals only from a source that allows them, the
+    deployment's licences - with how many records name each formula in all
+    (`known_compounds_total`). The inspector marks a name the run did not match
+    from the list as *potential*.
 - **Why.** The inspector showed dimethylformamide `[M+H]+` at m/z 74 below
   assignability under two ticks, a second channel and no close rival: its fit
   of 8% set the band, and nothing said so. And 3,677 of the round's 8,567
