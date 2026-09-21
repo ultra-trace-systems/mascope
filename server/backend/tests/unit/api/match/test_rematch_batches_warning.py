@@ -18,7 +18,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 import pytest_asyncio
-from conftest import counting_session
+from rematch_test_support import counting_session
 from test_utils import gen_test_id
 
 from mascope_backend.api.controllers.match import match_controller

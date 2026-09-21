@@ -20,7 +20,7 @@ the handler imported them into.
 from unittest.mock import AsyncMock, patch
 
 import pytest
-from conftest import get_test_calibration_handler
+from calibration_test_support import get_test_calibration_handler
 
 from mascope_backend.api.controllers.calibration.lib.calibration_mz_fit import (
     EMPTY_CALIBRATION_COLLECTION_WARNING,

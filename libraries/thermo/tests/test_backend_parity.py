@@ -25,7 +25,7 @@ import os
 import numpy as np
 import opentfraw
 import pytest
-from conftest import TEST_FILES_DIR
+from thermo_test_support import TEST_FILES_DIR
 
 import mascope_thermo.thermo as m_thermo
 from mascope_thermo.backend import open_backend

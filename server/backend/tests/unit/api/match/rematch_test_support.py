@@ -4,6 +4,10 @@ Several test modules drive ``rematch_batches`` with its dependencies mocked.
 They all have to stand in for the one query it runs itself - the grouped
 ``COUNT`` that sizes each batch's share of the progress bar - so that stub
 lives here rather than being copied into each of them.
+
+A plain module rather than conftest.py content, so the tests can import it:
+`from conftest import ...` binds to whichever conftest pytest loaded last,
+which in a run spanning several test directories is another directory's.
 """
 
 from contextlib import asynccontextmanager

@@ -2,7 +2,7 @@
 
 import numpy as np
 import pandas as pd
-from conftest import get_test_calibration_handler
+from calibration_test_support import get_test_calibration_handler
 
 
 def _make_isotope_row(mz):

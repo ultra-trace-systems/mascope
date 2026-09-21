@@ -3,7 +3,7 @@ import os
 import numpy as np
 import xarray as xr
 import zarr
-from conftest import SIGNAL_TEST_FILENAME
+from signal_test_support import SIGNAL_TEST_FILENAME
 
 import mascope_file.name as m_name
 import mascope_signal.compute as m_compute

@@ -6,7 +6,7 @@ reader backend: the Xcalibur path of the ``.meth`` file, verbatim.
 """
 
 import pytest
-from conftest import NEG_ORBI_FILE_PATH, POS_ORBI_FILE_PATH
+from thermo_test_support import NEG_ORBI_FILE_PATH, POS_ORBI_FILE_PATH
 
 from mascope_thermo.backend import open_backend
 
