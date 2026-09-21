@@ -10,6 +10,7 @@ defaults to the OpenTFRaw backend; the Thermo backend is opt-in via
 
 from __future__ import annotations
 
+import math
 from typing import Iterable, Literal
 
 import dask.array as da
@@ -1158,6 +1159,23 @@ class RawFileMetadata:
             )
 
 
+def _non_finite_as_none(value):
+    """Return ``value`` with every float JSON cannot represent (NaN, +/-inf) as None.
+
+    Dicts and lists are walked; any other value is returned as it is, so an
+    integer stays an integer and text stays text, even text that reads "NaN".
+    A strict encoder (``json.dumps(allow_nan=False)``) refuses a non-finite
+    float, however deep it sits.
+    """
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
+    if isinstance(value, dict):
+        return {key: _non_finite_as_none(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_non_finite_as_none(item) for item in value]
+    return value
+
+
 class RawFileMetadataLegacy(RawFileMetadata):
     """Class to access metadata of a Thermo Fisher raw file."""
 
@@ -1221,15 +1239,26 @@ class RawFileMetadataLegacy(RawFileMetadata):
 
         The dictionary contains the number of scans, statistics per scan, and statistics
         per file. The statistics per scan and per file are represented as dictionaries.
+        Values are as the reader reports them: one it leaves unset (an MS1 scan's
+        precursor m/z, say) is None, and so is any float strict JSON cannot represent
+        (NaN, +/-inf), wherever it sits.
         """
-        # Concat scan-related data into a single dataframe
-        per_scan_df = pd.concat([self.statistics, self.trailer], axis=0)
-        # Merge per file data into a single dataframe (we currently have only one file)
-        per_file_df = self.instrument
-
-        return {
-            "num_of_scans": self.num_of_scans,
-            "stats_per_scan": per_scan_df.to_dict(),
-            "stats_per_file": per_file_df.to_dict(),
-            "centroids_meta": self.centroids_meta,
+        # Built from the reader's dicts rather than the DataFrame views: a pandas
+        # round trip turns a None into NaN, and an integer in a numeric scan
+        # column into a float.
+        acquisition = self.scan_acquisition_settings
+        labels = acquisition["header_labels"]
+        settings = acquisition["settings"]
+        stats_per_scan = {
+            scan: {**stats, **dict(zip(labels, settings[scan]))}
+            for scan, stats in self.scan_statistics.items()
         }
+
+        return _non_finite_as_none(
+            {
+                "num_of_scans": self.num_of_scans,
+                "stats_per_scan": stats_per_scan,
+                "stats_per_file": {"Value": self.instrument_details},
+                "centroids_meta": self.centroids_meta,
+            }
+        )
