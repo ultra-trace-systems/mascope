@@ -902,7 +902,8 @@ class TestTheBandComesFirst:
                 "evidence 8% (fit 8% x plausibility 100%) is under the candidate "
                 "band of 45%"
             ),
-            "caps": True,
+            # No rule took anything: a reader counting capped rows counts rules.
+            "caps": False,
             "band": "below_assignability",
         }
 

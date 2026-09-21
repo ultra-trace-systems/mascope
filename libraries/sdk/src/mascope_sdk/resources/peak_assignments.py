@@ -372,6 +372,9 @@ class PeakAssignmentsResource(BaseResource):
         neighbour's envelope already predicts, an isotopologue whose mass error
         does not follow its monoisotopic row's, or a demote an earlier pass
         made. A row with no such reason lists what it kept its tier ON instead.
+        A row whose evidence is under the top band names that band first (rule
+        ``evidence_band``, with the ``band`` its evidence reaches). It is where
+        the row stands before any rule, not a rule, so it never ``caps``.
         Rules only ever demote, and the run's ``config.tiering`` records the
         rule set's version and the thresholds it judged at - a tier is only
         comparable across two runs together with those. A peak read as an
