@@ -1,20 +1,13 @@
 """
 Running Alembic in-process leaves the process's logging as it was.
 
-`alembic/env.py` runs on every Alembic command, and `alembic.ini` carries a
-logging setup meant for Alembic's own command line. Applied inside another
-program, `logging.config.fileConfig` rewrites that program's logging: it
-replaces the root handlers - in the backend, the runtime's bridge from stdlib
-logging into loguru - raises the root level to WARNING, and by default disables
-every logger that already exists. The migration tests run Alembic in-process,
-in the same session as the tests after them, so there a loguru sink would see
-nothing from a library that logs through `logging.getLogger`: a test that a
-record arrives would fail in the full suite while passing alone, and a test
-that no WARNING arrives would pass whatever the code logged.
+`alembic/env.py` applies `alembic.ini`'s logging setup only when Alembic runs
+from its own command line; its module docstring says what that setup would do
+to a process that runs Alembic in-process, as the migration tests do.
 
-env.py runs here in offline mode with a migration function that yields no
-steps, so its module-level code runs in full, nothing is migrated, and no
-database is needed.
+`fileConfig` is recorded rather than applied throughout. A real call would
+rewrite this session's logging - the very harm under test - for every test
+that runs after it, and close pytest's own handlers along the way.
 """
 
 import argparse
@@ -23,11 +16,11 @@ import logging
 import logging.config
 from pathlib import Path
 
-from alembic.config import Config
+import pytest
+from alembic.config import CommandLine, Config
 from alembic.runtime.environment import EnvironmentContext
 from alembic.script import ScriptDirectory
-
-from mascope_backend.runtime import runtime
+from test_utils import captured_logs
 
 
 # This checkout's migrations, not MASCOPE_PATH's - see conftest.BACKEND_PATH.
@@ -37,10 +30,25 @@ _ALEMBIC_INI = Path(__file__).resolve().parents[2] / "alembic.ini"
 _OFFLINE_URL = "postgresql+psycopg2://offline@localhost/offline"
 
 
-def _run_env(cmd_opts: argparse.Namespace | None) -> None:
-    """Run env.py the way an Alembic command does, migrating nothing.
+@pytest.fixture
+def file_config_calls(monkeypatch) -> list[tuple[tuple, dict]]:
+    """Record every `fileConfig` call env.py makes, instead of applying it."""
+    calls: list[tuple[tuple, dict]] = []
+    monkeypatch.setattr(
+        logging.config,
+        "fileConfig",
+        lambda *args, **kwargs: calls.append((args, kwargs)),
+    )
+    return calls
 
-    :param cmd_opts: The parsed command line, or None for an in-process caller
+
+def _run_env_in_process(cmd_opts: argparse.Namespace | None) -> None:
+    """Run env.py the way an in-process Alembic command does, migrating nothing.
+
+    Offline mode, with a migration function that yields no steps: env.py's
+    module-level code runs in full, and no database is needed.
+
+    :param cmd_opts: What the caller put on `Config.cmd_opts`
     """
     cfg = Config(str(_ALEMBIC_INI), output_buffer=io.StringIO(), cmd_opts=cmd_opts)
     cfg.set_main_option("sqlalchemy.url", _OFFLINE_URL)
@@ -62,43 +70,44 @@ def _settings() -> dict[logging.Logger, tuple]:
     }
 
 
-def test_an_in_process_run_leaves_logging_as_it_was():
-    # Created here rather than at import, so that no earlier Alembic run in
-    # the session can have disabled it before this one gets the chance.
+@pytest.mark.parametrize(
+    "cmd_opts",
+    [
+        pytest.param(None, id="no-cmd-opts"),
+        # `-x` arguments are read from `cmd_opts`, so a caller passing them
+        # sets it without being Alembic's command line.
+        pytest.param(argparse.Namespace(x=["probe=1"]), id="x-arguments"),
+    ],
+)
+def test_an_in_process_run_leaves_logging_as_it_was(file_config_calls, cmd_opts):
     library_logger = logging.getLogger(f"{__name__}.library")
     before = _settings()
 
-    _run_env(cmd_opts=None)
+    _run_env_in_process(cmd_opts)
 
+    assert file_config_calls == []
     after = _settings()
     changed = [logger.name for logger in before if after[logger] != before[logger]]
     assert changed == []
 
     # The property the rest of the suite relies on: a stdlib record still
     # reaches a sink on the runtime logger.
-    records = []
-    sink_id = runtime.logger.add(
-        lambda message: records.append(message.record), level="TRACE"
-    )
-    try:
+    with captured_logs() as records:
         library_logger.info("logged after an in-process Alembic run")
-    finally:
-        runtime.logger.remove(sink_id)
     assert "logged after an in-process Alembic run" in [r["message"] for r in records]
 
 
 def test_the_command_line_gets_the_ini_logging_and_keeps_existing_loggers(
-    monkeypatch,
+    file_config_calls,
 ):
-    # Recorded rather than applied: a real fileConfig would rewrite this
-    # session's logging, closing pytest's own handlers along the way.
-    calls = []
-    monkeypatch.setattr(
-        logging.config,
-        "fileConfig",
-        lambda *args, **kwargs: calls.append((args, kwargs)),
+    # Alembic's real entry point, so that this fails if it ever stops marking
+    # its runs as the command line. A `head:head` range in --sql mode runs
+    # env.py in full and generates nothing.
+    CommandLine(prog="alembic").main(
+        ["--raiseerr", "-c", str(_ALEMBIC_INI), "upgrade", "head:head", "--sql"]
     )
 
-    _run_env(cmd_opts=argparse.Namespace())
-
-    assert calls == [((str(_ALEMBIC_INI),), {"disable_existing_loggers": False})]
+    assert len(file_config_calls) == 1
+    args, kwargs = file_config_calls[0]
+    assert Path(args[0]) == _ALEMBIC_INI
+    assert kwargs.get("disable_existing_loggers") is False
