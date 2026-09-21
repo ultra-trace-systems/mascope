@@ -91,11 +91,15 @@ an election is asked.
 A labelled reagent donates no nitrogen, and that is the whole reason to run
 one: the 15N of a ``+[15N]O3-`` reagent is 0.997 Da from an analyte's own
 nitrogen, so the two readings are two ions at two masses and the spectrum
-chooses between them. The finder never proposes the labelled neutral, so such a
-row has no same-ion family at all.
+chooses between them. The finder never proposes the labelled neutral, and a
+reading whose neutral carries a labelled atom is not weighed if one ever
+reaches a row (:func:`carries_label`): the label is the reagent's, and an
+analyte does not carry it.
 """
 
 from __future__ import annotations
+
+import re
 
 from mascope_backend.api.new.peak_assignments.engine import (
     ROLE_ISO_CHILD,
@@ -134,6 +138,10 @@ AMBIGUITY_REASONS = (REASON_AMBIGUOUS_NITROGEN, REASON_AMBIGUOUS_ADDUCT)
 #: but this row's own measurement, split differently between analyte and
 #: mechanism (``engine.untargeted_matches_to_peak_assignments``).
 SAME_ION = "same_ion"
+
+#: An explicitly labelled atom in a formula: the bracketed isotope form the
+#: finder writes a labelled reagent's atom in (``[15N]``).
+_LABELLED_ATOM = re.compile(r"\[\d+[A-Z][a-z]?\]")
 
 #: The record a row carries whose ion reads another way, where something
 #: settled which reading it is - and what did.
@@ -207,24 +215,36 @@ def same_ion_readings(row: dict, notation_by_id: dict[str, str]) -> list[dict]:
 
 
 def other_readings(row: dict, notation_by_id: dict[str, str]) -> list[dict]:
-    """The readings of this row's ion other than the row's own.
+    """The readings of this row's ion that name another neutral.
 
-    A family can hold the row's own reading a second time - a channel searched
-    twice proposes every neutral through it twice, and the election keeps the
-    twin - and a reading that restates the row is no other reading of it.
+    A reading of the row's own neutral is the row's reading again, whatever
+    channel it names: one ion and one neutral leave one moiety between them. A
+    family can hold one - a channel searched twice proposes every neutral
+    through it twice, and the election keeps the twin - and it is no other
+    reading of the ion.
 
     :param row: A committed monoisotopic row.
     :param notation_by_id: The run's mechanisms, by the id the rows carry.
-    :return: The displaced readings that name another neutral or channel.
+    :return: The displaced readings that name another neutral.
     """
-    own_channel = notation_by_id.get(str(row.get("ionization_mechanism_id")))
     own_neutral = neutral_key(row.get("assigned_formula"))
     return [
         reading
         for reading in same_ion_readings(row, notation_by_id)
-        if reading["channel"] != own_channel
-        or neutral_key(reading.get("assigned_formula")) != own_neutral
+        if neutral_key(reading.get("assigned_formula")) != own_neutral
     ]
+
+
+def carries_label(formula: str | None) -> bool:
+    """Whether a neutral carries an explicitly labelled atom.
+
+    A labelled reagent's atom, written ``[15N]`` or ``^N``: a reading that puts
+    one on the analyte names an analyte the source does not make.
+    """
+    text = str(formula or "")
+    return bool(_LABELLED_ATOM.search(text)) or any(
+        symbol in text for symbol in CUSTOM_ELEMENTS
+    )
 
 
 def is_molecule(formula: str | None) -> bool:
@@ -237,6 +257,11 @@ def is_molecule(formula: str | None) -> bool:
     return element_counts(text) is not None and neutral_is_closed_shell(text)
 
 
+def nitrogen_count(formula: str | None) -> int:
+    """How many nitrogen atoms a neutral carries; 0 for one nothing can read."""
+    return (element_counts(str(formula or "")) or {}).get("N", 0)
+
+
 def ambiguity_of(row: dict, reading: dict) -> str:
     """What two readings of one ion disagree about.
 
@@ -246,9 +271,9 @@ def ambiguity_of(row: dict, reading: dict) -> str:
         number of nitrogen atoms on the analyte, else
         :data:`REASON_AMBIGUOUS_ADDUCT`.
     """
-    own = element_counts(str(row.get("assigned_formula") or "")) or {}
-    other = element_counts(str(reading.get("assigned_formula") or "")) or {}
-    if own.get("N", 0) != other.get("N", 0):
+    if nitrogen_count(row.get("assigned_formula")) != nitrogen_count(
+        reading.get("assigned_formula")
+    ):
         return REASON_AMBIGUOUS_NITROGEN
     return REASON_AMBIGUOUS_ADDUCT
 
@@ -258,26 +283,44 @@ def same_ion_question(
 ) -> tuple[str, dict] | None:
     """Whether this row's ion reads another way, and what that leaves it.
 
+    Only readings this can weigh are asked: one whose formula nothing can
+    parse, or that puts a labelled atom on the analyte (:func:`carries_label`),
+    is neither a molecule nor a radical. A row whose own channel the run cannot
+    name is not asked at all, as a formula nothing can read is not.
+
+    Where the ion reads as more than one molecule, a reading that puts a
+    different number of nitrogen atoms on the analyte is the rival: the count
+    is the sharper doubt, and the order the family was stored in does not
+    decide which doubt the row records.
+
     :param row: A committed monoisotopic row.
     :param notation_by_id: The run's mechanisms, by the id the rows carry.
     :param corroborated: Whether a second channel committed the row's neutral.
-    :return: None where the ion has no other reading this can read. Otherwise
+    :return: None where the ion has no other reading this can weigh. Otherwise
         the reason and its record: one of :data:`AMBIGUITY_REASONS` with the
         rival molecule where nothing settled it, or :data:`SAME_ION_SETTLED`
         with the reading and what settled it (``by``).
     """
-    # A reading whose formula nothing can parse is neither a molecule nor a
-    # radical: it is not weighed at all.
+    if notation_by_id.get(str(row.get("ionization_mechanism_id"))) is None:
+        return None
     others = [
         reading
         for reading in other_readings(row, notation_by_id)
         if element_counts(str(reading.get("assigned_formula") or "")) is not None
+        and not carries_label(reading.get("assigned_formula"))
     ]
     if not others:
         return None
+    molecules = [
+        reading for reading in others if is_molecule(reading.get("assigned_formula"))
+    ]
     rival = next(
-        (reading for reading in others if is_molecule(reading.get("assigned_formula"))),
-        None,
+        (
+            reading
+            for reading in molecules
+            if ambiguity_of(row, reading) == REASON_AMBIGUOUS_NITROGEN
+        ),
+        molecules[0] if molecules else None,
     )
     shown = rival or others[0]
     record = {"alternative": shown.get("assigned_formula"), "via": shown["channel"]}

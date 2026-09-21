@@ -363,6 +363,60 @@ class TestTheSameIonRule:
             "by": SETTLED_BY_RADICAL,
         }
 
+    def test_the_nitrogen_doubt_is_named_whatever_order_the_family_is_in(self):
+        # DMF clustered with hydronium is C3H9NO2 through a proton (the same
+        # nitrogen) and C3H6O2 through ammonium (one fewer). The count is the
+        # sharper doubt, and it is named even though the family lists the
+        # same-nitrogen reading first.
+        rows = [
+            row(
+                "a",
+                "C3H7NO",
+                "h3o",
+                displaced=[("C3H9NO2", PROTON), ("C3H6O2", AMMONIUM)],
+            )
+        ]
+        summary = apply_cross_channel(rows, notation_by_id={**POSITIVE, "h3o": "+H3O+"})
+        record = rows[0]["provenance"]["cross_channel"]
+        assert record["reason"] == REASON_AMBIGUOUS_NITROGEN
+        assert record["ambiguous_nitrogen"] == {"alternative": "C3H6O2", "via": "+NH4+"}
+        assert (summary["ambiguous_nitrogen"], summary["ambiguous_adduct"]) == (1, 0)
+
+    def test_a_reading_of_the_rows_own_neutral_is_the_row_again_on_any_channel(self):
+        # One ion and one neutral leave one moiety between them, so the same
+        # neutral through another channel's name is the row's own reading.
+        rows = [row("a", "C15H32O", CARBONATE, displaced=("C15H32O", DEPROT))]
+        summary = apply_cross_channel(rows, notation_by_id=dict(NEGATIVE))
+        assert summary["capped"] == 0
+        assert set(rows[0]["provenance"]["cross_channel"]) == {
+            "channels",
+            "corroborated",
+            "partner_tier",
+        }
+
+    def test_a_row_whose_channel_the_run_cannot_name_is_not_asked(self):
+        rows = [row("a", "C6H12O6", "unnamed", displaced=("C6H15NO6", PROTON))]
+        summary = gate(rows)
+        assert summary["capped"] == 0
+        assert rows[0]["tier"] == "assigned"
+        assert "ambiguous_nitrogen" not in rows[0]["provenance"]["cross_channel"]
+
+    def test_a_reading_that_puts_a_labelled_atom_on_the_analyte_is_not_weighed(self):
+        # The label is the labelled reagent's: an analyte does not carry it, so
+        # the deprotonated ester of the labelled acid is no rival reading.
+        rows = [
+            row("a", "C5H8O4", "labelled", displaced=("C5H9[15N]O7", DEPROT)),
+        ]
+        summary = apply_cross_channel(
+            rows, notation_by_id={DEPROT: "-H+", "labelled": "+[15N]O3-"}
+        )
+        assert summary["capped"] == 0
+        assert set(rows[0]["provenance"]["cross_channel"]) == {
+            "channels",
+            "corroborated",
+            "partner_tier",
+        }
+
     def test_a_twin_alone_raises_no_question(self):
         rows = [row("a", "C15H32O", CARBONATE, displaced=("C15H32O", CARBONATE))]
         apply_cross_channel(rows, notation_by_id=dict(NEGATIVE))
