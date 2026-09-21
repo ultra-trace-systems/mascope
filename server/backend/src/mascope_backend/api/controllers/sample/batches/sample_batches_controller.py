@@ -807,6 +807,7 @@ async def import_sample_items(
     # --- Resolve ionization methods for the sample items to be created --- #
     for item in sample_items:
         sample_file = await fetch_sample_file(sample_file_id=item.sample_file_id)
+        # One mode per polarity of the file, or a ValueError naming what matched.
         ionization_modes = await resolve_ionization_modes_by_tokens(sample_file)
         # Filter ionization modes by polarity
         ionization_modes = [
@@ -818,11 +819,6 @@ async def import_sample_items(
             raise ValueError(
                 f"Could not resolve ionization mode for file '{sample_file.filename}'. "
                 "No valid ionization mode token in the filename for the selected polarity."
-            )
-        if len(ionization_modes) > 1:
-            raise ValueError(
-                f"Could not resolve ionization mode for file '{sample_file.filename}'. "
-                "Multiple ionization mode tokens matched the filename."
             )
         item.ionization_mode_id = ionization_modes[0].ionization_mode_id
 
