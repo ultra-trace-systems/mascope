@@ -939,7 +939,6 @@ const breadcrumb = computed(() => {
             <BaseTierTag
               v-if="data.engine_tier"
               :tier="data.engine_tier"
-              :show-evidence="false"
               :tooltip="engineTierTooltip(data)"
             />
             <span v-else class="no-engine-tier">&mdash;</span>

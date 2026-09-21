@@ -251,19 +251,32 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   so a reference that has been re-published can still be read as it was.
 
 - **The peak inspector names the ionization and what a reference list calls
-  the formula.** Above the evidence it shows the ionization mechanism the ion
-  was read through, and the reference-list compound the run matched the
-  formula from, or - marked *potential* - a compound a list holds for a
-  formula the run reached through the formula search. The same names appear
-  beside the other readings of the ion and beside the close alternatives, and
-  a formula many compounds share says how many. The assignment detail endpoint
-  returns them as `known_compounds`, with `known_compounds_total`, on the row
-  and on each alternative a list holds. They are scoped as the run matches: the
-  sample's polarity, each source's window under the run's ceiling, radicals
-  only from a source that allows them, and the licences the deployment matches
-  against.
+  the formula.** Its heading names the ionization mechanism the ion was read
+  through, after the formula. Above the evidence it shows the reference-list
+  compound the run matched the formula from, or - marked *potential* - a
+  compound a list holds for a formula the run reached through the formula
+  search. The same names appear beside the other readings of the ion and
+  beside the close alternatives, and a formula many compounds share says how
+  many. The assignment detail endpoint returns them as `known_compounds`, with
+  `known_compounds_total`, on the row and on each alternative a list holds.
+  They are scoped as the run matches: the sample's polarity, each source's
+  window under the run's ceiling, radicals only from a source that allows
+  them, and the licences the deployment matches against.
 
 ### Changed
+
+- **The tier chip names the tier alone, and the peak inspector is more
+  compact.**
+  - **The tier chip** no longer prints the evidence beside the tier as a
+    percentage, which read as the chance that the assignment is right.
+    Hovering the chip gives the evidence, and the inspector shows it beside
+    the fit score.
+  - **The inspector** names a row's isotope once, in the line under the
+    formula, rather than again in the evidence grid.
+  - **Verifying in the inspector:** *Reject* and *Unsure* are recorded as
+    they are clicked, and *Confirm* opens a small dialog for the evidence
+    level and an optional note, which the card no longer shows for every
+    peak. A rejection or an *unsure* recorded there carries no note.
 
 - **The formula search can take a peak a reference list matched.** A run
   that searches formulas now holds an election on every peak it assigned

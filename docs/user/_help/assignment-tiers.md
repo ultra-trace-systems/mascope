@@ -1,10 +1,12 @@
 Each assignment lands in a confidence tier from its evidence &mdash; how well it
 fits the peak, weighted by how chemically plausible the formula is. A
 composition that matches the mass beautifully but describes an unlikely molecule
-does not reach the top tier on the strength of the match alone. The percentage
-on the tier chip is that combined evidence; the fit score on its own is shown
-beside the assignment. A *batch peak*'s chip carries no percentage: its tier is
-a vote across the samples the peak appears in, not a threshold on one number.
+does not reach the top tier on the strength of the match alone. The tier chip
+names the tier alone: the evidence measures how well the formula explains the
+peak, not the chance it is right, so it is not printed beside the tier as a
+percentage. Hovering the chip gives it, and the peak inspector shows it beside
+the fit score. A *batch peak*'s tier is a vote across the samples the peak
+appears in, not a threshold on one number, so its chip names no evidence.
 
 - **assigned** &mdash; strong, corroborated evidence: this formula is the call for
   the peak, and you can build on it. It is a *composition*, not a confirmed

@@ -80,8 +80,9 @@ const resultsHelp = {
     <b>DBE</b> is the degree of unsaturation.${
       peakAssignmentEnabled
         ? ` The seal column shows each
-    candidate's fit score and confidence tier, the atom column its chemical
-    plausibility, and a flask names a match in a public reference database.`
+    candidate's confidence tier and sorts by its fit score, the atom column its
+    chemical plausibility, and a flask names a match in a public reference
+    database.`
         : ` The seal column shows each candidate's match score.`
     }
     A database icon marks formulas that already exist among your target compounds.
@@ -553,7 +554,7 @@ watch(
         <template #header>
           <span
             class="pi ph ph-seal-check"
-            v-tooltip="{ value: 'Fit score & confidence tier', showDelay: 500 }"
+            v-tooltip="{ value: 'Confidence tier, sorted by fit score', showDelay: 500 }"
           />
         </template>
         <template #body="{ data }">

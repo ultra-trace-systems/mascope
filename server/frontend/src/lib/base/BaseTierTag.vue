@@ -6,21 +6,20 @@ import Tag from 'primevue/tag'
 import { FALLBACK_TIER, tierMeta } from '@/lib/tiers'
 
 // Confidence-tier chip for a peak assignment. Replaces BaseMatchTag's 0/1/2
-// match_category with the four peak-centric tiers, optionally showing the
-// evidence and a role marker (reagent/artifact/iso_child are orthogonal to tier).
+// match_category with the four peak-centric tiers, with a role marker
+// (reagent/artifact/iso_child are orthogonal to tier).
 //
-// The number beside the tier is the EVIDENCE (fit x chemical plausibility), not
-// the fit. It was the fit until tiers were bound to evidence, and the pairing
-// then became a contradiction on exactly the rows that matter most: a
-// chemically implausible formula with a superb mass fit would have read
-// "below assignability · 95%". The chip shows the quantity that put the row in
-// that band, so the label and the number can never disagree. The raw fit is
-// still served on the row and shown in the inspector as the pure measurement.
+// The chip names the tier alone. A percentage beside it reads as the chance
+// that the assignment is right, and the number the tier is banded on is not
+// one: it is the EVIDENCE, fit x chemical plausibility, a measure of how well
+// the formula explains the peak. The hover text gives it, named as what it is,
+// and the inspector shows it beside its two factors; P(correct) is the
+// calibrated probability, shown apart from the tier.
 //
 // Where a tier is not derived from a single number at all - the batch ledger's
 // consensus tier is a weighted vote over member tiers - the caller passes no
-// evidence and the chip shows the tier alone, rather than borrowing a number
-// that did not produce it.
+// evidence and the hover text names the tier alone, rather than borrowing a
+// number that did not produce it.
 const props = defineProps({
   tier: {
     type: String,
@@ -37,11 +36,6 @@ const props = defineProps({
   source: {
     type: String,
     default: null
-  },
-  // Append the evidence to the tier label.
-  showEvidence: {
-    type: Boolean,
-    default: true
   },
   tooltip: {
     type: String,
@@ -81,17 +75,7 @@ const percentFormatter = new Intl.NumberFormat('en-US', {
   maximumFractionDigits: 0
 })
 
-const evidence = computed(() => {
-  const value = props.evidence
-  return props.showEvidence && value != null && !Number.isNaN(value)
-    ? percentFormatter.format(value)
-    : null
-})
-
-const label = computed(() => {
-  if (roleChip.value) return roleChip.value.label
-  return evidence.value ? `${meta.value.label} · ${evidence.value}` : meta.value.label
-})
+const label = computed(() => (roleChip.value ? roleChip.value.label : meta.value.label))
 
 // The small mark beside the chip, for the one role that does not replace it: an
 // isotopologue holds its M0's tier, and the mark says so.
