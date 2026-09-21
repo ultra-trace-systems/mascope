@@ -130,6 +130,7 @@ from mascope_backend.api.new.peak_assignments.cross_channel import (
     SETTLED_BY_RADICAL,
     SETTLED_BY_SECOND_CHANNEL,
     SETTLED_BY_TARGET_LIBRARY,
+    nitrogen_count,
 )
 from mascope_backend.api.new.peak_assignments.engine import (
     GRID_RIVALS,
@@ -160,7 +161,6 @@ from mascope_backend.api.new.peak_assignments.tiers import (
 from mascope_tools.composition.arbitration import CANDIDATE_DENSITY
 from mascope_tools.composition.heuristic_filter import (
     anchor_on_monoisotopic,
-    element_counts,
     neutral_is_closed_shell,
     oxygen_free_cluster,
     polyhalide_cluster,
@@ -388,10 +388,6 @@ def earlier_reasons(row: dict) -> list[dict]:
     return reasons
 
 
-def _nitrogen(formula) -> int:
-    return (element_counts(str(formula or "")) or {}).get("N", 0)
-
-
 def _count_word(count: int) -> str:
     return {1: "one", 2: "two", 3: "three"}.get(count, str(count))
 
@@ -407,7 +403,9 @@ def ambiguity_detail(row: dict, rule: str, ambiguity: dict) -> str:
     alternative = ambiguity.get("alternative") or "another molecule"
     via = ambiguity.get("via") or "another channel"
     if rule == REASON_AMBIGUOUS_NITROGEN:
-        difference = _nitrogen(alternative) - _nitrogen(row.get("assigned_formula"))
+        difference = nitrogen_count(alternative) - nitrogen_count(
+            row.get("assigned_formula")
+        )
         moved = (
             f", which puts {_count_word(abs(difference))} "
             f"{'more' if difference > 0 else 'fewer'} nitrogen on the analyte"
