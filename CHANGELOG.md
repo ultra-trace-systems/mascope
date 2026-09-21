@@ -26,6 +26,17 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   copies it into the running backend container, reads it there and removes
   the copy.
 
+### Changed
+
+- **Both raw-file readers report the same per-scan statistics.** A Thermo raw
+  file's per-scan statistics (`stats_per_scan` in a sample file's metadata)
+  held twenty fields when the Thermo library read the file and eight when
+  OpenTFRaw did. Both readers now report all twenty, and a field the reader
+  cannot read is empty (`null`) rather than missing. OpenTFRaw also fills two
+  more: `ScanType`, the scan filter, and `IsCentroidScan`. It leaves empty the
+  UV, PDA and analog detector fields, which are zero on mass spectra, and
+  `PacketCount`, `ScanEventNumber`, `SegmentNumber` and `CycleNumber` (#1527).
+
 ### Fixed
 
 - **A File Agent upload that fails to process now tells someone.** When

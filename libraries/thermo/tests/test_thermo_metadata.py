@@ -13,6 +13,7 @@ import pytest
 from thermo_test_support import POS_ORBI_FILE_PATH
 
 import mascope_thermo.thermo as m_thermo
+from mascope_thermo.backend import OPENTFRAW_UNAVAILABLE_SCAN_STATS, SCAN_STAT_FIELDS
 
 
 # Run every test under each reader backend.
@@ -61,12 +62,28 @@ class TestRawFileMetadata:
         for values in acq["settings"].values():
             assert len(values) == n_labels
 
-    def test_scan_statistics_shape(self):
+    def test_scan_statistics_shape(self, backend):
         stats = self.md.scan_statistics
         assert stats
+        # Every backend returns every field; the ones it cannot read are None.
+        for row in stats.values():
+            assert list(row) == [*SCAN_STAT_FIELDS, "MsType"]
         sample = next(iter(stats.values()))
-        for key in ("TIC", "StartTime", "BasePeakMass", "BasePeakIntensity", "MsType"):
-            assert key in sample
+        for key in (
+            "TIC",
+            "StartTime",
+            "BasePeakMass",
+            "BasePeakIntensity",
+            "LowMass",
+            "HighMass",
+            "ScanNumber",
+            "ScanType",
+            "IsCentroidScan",
+        ):
+            assert sample[key] is not None
+        if backend == "opentfraw":
+            unavailable = {key for key, value in sample.items() if value is None}
+            assert unavailable == set(OPENTFRAW_UNAVAILABLE_SCAN_STATS)
         # Default scan_type="Ms" selects MS1 scans only.
         assert all(row["MsType"] == "Ms" for row in stats.values())
 
