@@ -573,18 +573,21 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 ### Changed
 
-- **The tier chip names the tier alone, and the peak inspector is more
-  compact.**
+- **The peak inspector is more compact and has a column of its own, and the
+  tier chip names the tier alone.**
+  - **The Sample tab** puts the inspector in a column of its own, the tab's
+    full height, beside the spectrum over the time series (or the
+    composition search). The column's width is remembered, and the
+    spectrum's share of the rows keeps the split set before.
   - **The tier chip** no longer prints the evidence beside the tier as a
     percentage, which read as the chance that the assignment is right.
     Hovering the chip gives the evidence, and the inspector shows it beside
     the fit score.
   - **The inspector** names a row's isotope once, in the line under the
     formula, rather than again in the evidence grid.
-  - **Verifying in the inspector:** *Reject* and *Unsure* are recorded as
-    they are clicked, and *Confirm* opens a small dialog for the evidence
-    level and an optional note, which the card no longer shows for every
-    peak. A rejection or an *unsure* recorded there carries no note.
+  - **Verifying in the inspector:** each verdict opens a small dialog for an
+    optional note, and *Confirm*'s also asks for the evidence level. The
+    card no longer shows either field for every peak.
 
 - **The formula search can take a peak a reference list matched.** A run
   that searches formulas now holds an election on every peak it assigned

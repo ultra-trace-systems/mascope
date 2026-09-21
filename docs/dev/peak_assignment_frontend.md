@@ -27,9 +27,12 @@ socket/notification, join keys — and keeps net-new UI deliberately small.*
 > layout uses `sample-tab-assign-split`.
 
 **The Sample tab is the single workspace** (flag on). [`PaneTabSample.vue`](../../server/frontend/src/lib/panes/PaneTabSample.vue)
-is a 3-pane nested splitter:
+is a 3-pane nested splitter: the inspector in a column of its own, the tab's full height, beside
+the spectrum over the time series. The column's width is saved under `sample-tab-assign-columns`
+and the rows' split under `sample-tab-assign-split`; the column divider resizes both charts
+through their exposed `resize()`, since it changes their width and not the `height` they watch.
 
-- **top-left — inspector** ([`PanePeakAssign.vue`](../../server/frontend/src/lib/panes/PanePeakAssign/PanePeakAssign.vue)):
+- **left — inspector** ([`PanePeakAssign.vue`](../../server/frontend/src/lib/panes/PanePeakAssign/PanePeakAssign.vue)):
   a compact committed-assignment card for the focused peak — formula and its ionization,
   `BaseTierTag`, the ion formula · isotope · source line, evidence grid
   (fit, m/z error, abundance error), chemical **plausibility**, arbitration **confidence** + tie flag,
@@ -38,11 +41,11 @@ is a 3-pane nested splitter:
   (M0 + children, theoretical rel. abundance, poor-match flag) and **close alternatives** (each with
   fit / m/z error / plausibility inline + on hover). No panel header; no "Verify fit" button. An
   Unassigned peak shows a minimal card with a Re-search button.
-- **top-right — annotated spectrum** ([`ChartSampleSpectrum`](../../server/frontend/src/lib/charts/ChartSampleSpectrum/data.js)):
+- **right, top — annotated spectrum** ([`ChartSampleSpectrum`](../../server/frontend/src/lib/charts/ChartSampleSpectrum/data.js)):
   one Plotly trace per confidence tier (+ reagent/artifact), the focused-peak and preview traces, and
   a **theoretical isotopologue envelope** overlay recovered from the stored errors. Clicking focuses
   the nearest peak; focus zooms to an **instrument-aware** m/z window (±0.05 Th orbi, ±0.3 Th tof).
-- **bottom (spans both) — assignment time series**
+- **right, bottom — assignment time series**
   ([`ChartAssignmentTimeseries.vue`](../../server/frontend/src/lib/charts/ChartAssignmentTimeseries/ChartAssignmentTimeseries.vue)):
   the focused assignment's family (M0 + children), or the bare focused peak, plotted per member + a
   summed trace. Data comes from the **existing per-peak REST endpoint**
@@ -161,9 +164,9 @@ occurrences go stale until it is folded again and the follow quietly stops worki
 **Verification.** Assignments can be hand-labelled confirm / reject / unsure: the inspector renders
 the current verdict as a [`BaseVerdictBadge`](../../server/frontend/src/lib/base/BaseVerdictBadge.vue)
 (shared constants in [`lib/verification.js`](../../server/frontend/src/lib/verification.js)) and
-the three verdict buttons, posting through `verification.verify()`: Reject and Unsure post as
-clicked, and Confirm opens a `Popover` for the evidence level (radio buttons, required) and an
-optional note. **One verdict covers the isotopologue
+the three verdict buttons, each opening a `Popover` that posts through `verification.verify()`:
+every verdict takes an optional note, and Confirm's also asks for the evidence level (radio
+buttons, required). **One verdict covers the isotopologue
 family**: both the read and the write resolve a row to its family's M0 (`peak.m0Of`), so an isotopologue
 shows its compound's verdict and verifying from one writes a single label against the M0. Backend
 surface: `GET /sample/{id}/verifications`, `POST /sample/{id}/verify` (editor), and the superuser

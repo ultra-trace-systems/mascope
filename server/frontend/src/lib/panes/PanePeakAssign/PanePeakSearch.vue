@@ -23,9 +23,10 @@ import { usePreview } from './preview.js'
 import { canCurateHit, curationBodyForHit, hitKey } from './searchHit.js'
 
 // On-demand composition search for the focused peak. Lives in the Sample view's
-// bottom pane, shown in place of the time series while "Re-search" is active
-// (mounted only then, so it searches whenever it is on screen). Extracted from
-// PanePeakAssign so the inspector stays a compact committed-assignment card.
+// pane under the spectrum, shown in place of the time series while "Re-search"
+// is active (mounted only then, so it searches whenever it is on screen).
+// Extracted from PanePeakAssign so the inspector stays a compact
+// committed-assignment card.
 
 const app = useApp()
 const preview = usePreview()

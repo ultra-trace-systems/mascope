@@ -11,6 +11,9 @@ import { mount, flushPromises } from '@vue/test-utils'
 let familyRows
 let peaks
 
+// Plotly's own resize, which the chart's exposed one passes on to.
+const { plotResize } = vi.hoisted(() => ({ plotResize: vi.fn() }))
+
 vi.mock('@/stores', () => ({
   useApp: () => ({
     data: {
@@ -43,6 +46,7 @@ vi.mock('@/api', () => ({
 vi.mock('@/lib/charts/BaseChartPlotly.vue', () => ({
   default: {
     props: ['id', 'title', 'data', 'layout', 'loading'],
+    methods: { resize: plotResize },
     template:
       '<div><span v-for="trace in data" :key="trace.name" class="trace">{{ trace.name }}</span></div>'
   }
@@ -110,5 +114,23 @@ describe('ChartAssignmentTimeseries trace names', () => {
     ])
 
     expect(await traceNames()).toEqual(['M0 328.6817', '[81Br]2 332.6776', 'Sum'])
+  })
+})
+
+// A splitter divider beside the chart changes its width and not its height,
+// which the chart's height watcher never sees: the Sample tab asks it to resize.
+describe('ChartAssignmentTimeseries resize', () => {
+  it('passes a resize on to its plot', async () => {
+    familyRows = [row('m0', 251.0903, '[15N]C9H16O7-', { role: 'M0' })]
+    peaks = [{ peak_id: 'p-m0', mz: 251.0903 }]
+    const wrapper = mount(ChartAssignmentTimeseries, {
+      global: { stubs: { ToggleSwitch: true }, directives: { help: {} } }
+    })
+    await flushPromises()
+    plotResize.mockClear()
+
+    wrapper.vm.resize()
+
+    expect(plotResize).toHaveBeenCalledTimes(1)
   })
 })

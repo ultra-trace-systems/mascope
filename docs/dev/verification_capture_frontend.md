@@ -72,9 +72,9 @@ isotopologue focused the control judges the family's M0 instead, and says so (§
 
 - Three buttons: **Confirm · Reject · Unsure**. Confirm and Reject get **equal visual weight**
   (Reject is a first-class negative label, not a destructive-styled afterthought).
-- Reject and Unsure submit as they are clicked. Confirm opens a small dialog (a `Popover` on the
-  button) with the **evidence level** as radio buttons (the 5 options above, with labels), required
-  to enable its own Confirm, and an optional **note** field. The card itself carries neither.
+- Each opens a small dialog (a `Popover` on the button) with an optional **note** field.
+  Confirm's also asks for the **evidence level** as radio buttons (the 5 options above, with
+  labels), required to enable its own Confirm. The card itself carries neither field.
 - Submit → `POST …/verify`. On success, collapse to the badge (2b) showing the new verdict.
 
 ### 2b. Verdict badge
@@ -200,7 +200,7 @@ Consequences worth knowing:
 | state | UI |
 |---|---|
 | idle, no verdict | the three buttons |
-| Confirm clicked | the dialog: evidence level + note; its Confirm disabled until a level is picked |
+| a verdict clicked | its dialog: a note, and for Confirm the evidence level, which its Confirm waits for |
 | submitting | disable buttons, spinner |
 | success | collapse to the badge (2b); toast optional |
 | error (403 non-editor) | inline "you need editor access to verify" — hide the control for guests |
