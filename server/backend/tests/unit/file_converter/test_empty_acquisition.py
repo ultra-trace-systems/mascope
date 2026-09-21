@@ -31,6 +31,7 @@ from threading import Event
 
 import numpy as np
 import pytest
+from test_utils import captured_logs
 
 from mascope_backend.file_converter.base_processor import BaseFileProcessor
 from mascope_backend.file_converter.errors import (
@@ -42,7 +43,6 @@ from mascope_backend.file_converter.errors import (
     describe_exception,
     is_routine_file_failure,
 )
-from mascope_backend.runtime import runtime
 from mascope_thermo.processor import RawProcessor
 from mascope_thermo.thermo import NoScansFoundError
 from mascope_tofwerk.processor import H5Processor
@@ -79,14 +79,8 @@ def _tof(buf_times):
 
 def _captured(work):
     """Run ``work`` with every log record of the runtime logger captured."""
-    records = []
-    sink_id = runtime.logger.add(
-        lambda message: records.append(message.record), level="TRACE"
-    )
-    try:
+    with captured_logs() as records:
         work()
-    finally:
-        runtime.logger.remove(sink_id)
     return records
 
 

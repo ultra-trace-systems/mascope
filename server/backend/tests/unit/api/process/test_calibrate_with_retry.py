@@ -12,6 +12,7 @@ All external dependencies are mocked - no DB, file I/O, or Socket.IO required.
 from unittest.mock import AsyncMock, patch
 
 import pytest
+from test_utils import captured_logs
 
 from mascope_backend.api.controllers.sample.files.process.service import (
     CALIBRATION_ITERATIONS,
@@ -38,10 +39,6 @@ async def _run(side_effect, user_id: int | None = 1) -> tuple[AsyncMock, list]:
     are exposed as attributes on the returned calibrate mock (``recorder`` /
     ``notifier`` / ``result``) for outcome assertions.
     """
-    records = []
-    sink_id = runtime.logger.add(
-        lambda message: records.append(message.record), level="TRACE"
-    )
     # Without a side effect, a calibration that applied a verified fit.
     calibrate = AsyncMock(
         side_effect=side_effect,
@@ -49,17 +46,15 @@ async def _run(side_effect, user_id: int | None = 1) -> tuple[AsyncMock, list]:
     )
     recorder = AsyncMock()
     notifier = AsyncMock()
-    try:
-        with (
-            patch(f"{_SVC}.calibration_mz_calibrate_sample", calibrate),
-            patch(f"{_SVC}._record_calibration_failure", recorder),
-            patch(f"{_SVC}.emit_user_notification", notifier),
-        ):
-            result = await calibrate_with_retry(
-                sample=_SAMPLE, sample_file_id="sf-001", user_id=user_id
-            )
-    finally:
-        runtime.logger.remove(sink_id)
+    with (
+        captured_logs() as records,
+        patch(f"{_SVC}.calibration_mz_calibrate_sample", calibrate),
+        patch(f"{_SVC}._record_calibration_failure", recorder),
+        patch(f"{_SVC}.emit_user_notification", notifier),
+    ):
+        result = await calibrate_with_retry(
+            sample=_SAMPLE, sample_file_id="sf-001", user_id=user_id
+        )
     calibrate.recorder = recorder
     calibrate.notifier = notifier
     calibrate.result = result

@@ -12,6 +12,7 @@ import pytest
 from fastapi import HTTPException
 from fastapi.exceptions import RequestValidationError
 from sqlalchemy.exc import SQLAlchemyError
+from test_utils import captured_logs
 
 from mascope_backend.api.lib.exceptions.api_exceptions import (
     ApiException,
@@ -119,6 +120,8 @@ class TestProcessExceptionDoesNotLeakInternals:
             ]
         )
 
+        # Rendered lines rather than captured_logs() records: the formatted
+        # traceback is part of what must not carry the value.
         logged: list[str] = []
         sink_id = runtime.logger.add(
             lambda message: logged.append(str(message)), level="TRACE"
@@ -167,17 +170,11 @@ class TestApiExceptionStr:
         assert secret_path not in str(exc)
 
     def test_processed_log_line_names_the_cause(self):
-        records = []
-        sink_id = runtime.logger.add(
-            lambda message: records.append(message.record), level="TRACE"
-        )
-        try:
+        with captured_logs() as records:
             _raise_and_process(
                 ApiException("m/z fitting warning: few peaks", {"data": {}}, 200),
                 context="Warning during Calibration Mz Fit",
             )
-        finally:
-            runtime.logger.remove(sink_id)
 
         assert len(records) == 1
         assert "m/z fitting warning: few peaks" in records[0]["message"]
@@ -191,14 +188,8 @@ class TestProcessExceptionLogLevels:
     """
 
     def _process_and_capture(self, exc: Exception) -> dict:
-        records = []
-        sink_id = runtime.logger.add(
-            lambda message: records.append(message.record), level="TRACE"
-        )
-        try:
+        with captured_logs() as records:
             _raise_and_process(exc)
-        finally:
-            runtime.logger.remove(sink_id)
         assert len(records) == 1
         return records[0]
 

@@ -11,6 +11,7 @@ handler must still be recorded with its traceback.
 from unittest.mock import AsyncMock, patch
 
 import pytest
+from test_utils import captured_logs
 
 # mascope_backend.socket.auth and mascope_backend.api.new.auth import each
 # other; importing the socket side first hits the cycle mid-initialization.
@@ -31,10 +32,6 @@ async def _call_guarded_event(session, handler=None) -> list:
     ``session`` is either the session dict get_session_user returns or the
     exception it raises.
     """
-    records = []
-    sink_id = runtime.logger.add(
-        lambda message: records.append(message.record), level="TRACE"
-    )
 
     @socket_auth(minimum_role="guest")
     async def handle_event(sid, *args, **kwargs):
@@ -47,11 +44,11 @@ async def _call_guarded_event(session, handler=None) -> list:
         if isinstance(session, Exception)
         else AsyncMock(return_value=session)
     )
-    try:
-        with patch(f"{_DECORATORS}.get_session_user", new=get_session_user):
-            await handle_event("sid-001")
-    finally:
-        runtime.logger.remove(sink_id)
+    with (
+        captured_logs() as records,
+        patch(f"{_DECORATORS}.get_session_user", new=get_session_user),
+    ):
+        await handle_event("sid-001")
     return records
 
 
