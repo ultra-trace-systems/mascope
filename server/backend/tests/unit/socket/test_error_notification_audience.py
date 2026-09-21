@@ -25,8 +25,8 @@ scripted.
 from unittest.mock import AsyncMock, patch
 
 import pytest
+from test_utils import captured_logs
 
-from mascope_backend.runtime import runtime
 from mascope_backend.socket.notifications import handle_notifications
 from mascope_backend.socket.notifications.schemas import UserNotification
 
@@ -137,19 +137,13 @@ async def test_a_failed_lookup_keeps_the_error_with_the_account(emit, monkeypatc
     monkeypatch.setattr(
         f"{_SVC}.device_sponsor_id", AsyncMock(side_effect=RuntimeError("db down"))
     )
-    records = []
-    sink = runtime.logger.add(
-        lambda message: records.append(message.record), level="WARNING"
-    )
-    try:
+    with captured_logs(level="WARNING") as records:
         await handle_notifications(
             ["instrument"],
             _notification("error"),
             {"user_id": MACHINE, "instrument": "Instr-A"},
             None,
         )
-    finally:
-        runtime.logger.remove(sink)
 
     assert emit.await_args.kwargs == {"room_id": "Instr-A", "user_id": MACHINE}
     assert [record["level"].name for record in records] == ["WARNING"]

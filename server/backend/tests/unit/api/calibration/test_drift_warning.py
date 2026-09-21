@@ -6,6 +6,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from test_utils import captured_logs
 
 from mascope_backend.api.controllers.calibration import calibration_controller
 from mascope_backend.api.controllers.calibration.calibration_controller import (
@@ -24,7 +25,6 @@ from mascope_backend.api.controllers.sample.lib.fetch_affected_sample_data impor
     AffectedSampleData,
 )
 from mascope_backend.api.models.calibration.config import calibration_config
-from mascope_backend.runtime import runtime
 
 
 ORBI_FILE = "ORBI-1_file.raw"
@@ -43,14 +43,8 @@ def reset_drift_suppression():
 
 def _observe(fit, instrument="ORBI-1", filename=ORBI_FILE):
     """Run one drift observation, returning the log records it produced."""
-    records = []
-    sink_id = runtime.logger.add(
-        lambda message: records.append(message.record), level="TRACE"
-    )
-    try:
+    with captured_logs() as records:
         warn_on_acquisition_drift(fit, instrument, filename)
-    finally:
-        runtime.logger.remove(sink_id)
     return records
 
 
@@ -590,32 +584,26 @@ async def _calibrate_sample(fit: dict, previous: dict | None, manual: bool) -> l
             kwargs["fit"], previous, ORBI_FILE, manual=kwargs["manual"]
         )
 
-    records = []
-    sink_id = runtime.logger.add(
-        lambda message: records.append(message.record), level="TRACE"
-    )
-    try:
-        with (
-            patch(f"{_CTRL}.fetch_sample", AsyncMock(return_value=sample)),
-            patch(
-                f"{_CTRL}.fetch_affected_sample_data",
-                AsyncMock(return_value=AffectedSampleData([], [], [], [])),
-            ),
-            patch(f"{_CTRL}.send_progress_user_notification", AsyncMock()),
-            patch(
-                f"{_CTRL}.calibration_mz_fit",
-                AsyncMock(return_value={"data": {"fit": fit}}),
-            ),
-            patch(f"{_CTRL}.calibration_mz_apply", AsyncMock(side_effect=_apply_stub)),
-        ):
-            await calibration_mz_calibrate_sample.__wrapped__(
-                sample_item_id="si-1",
-                mz_calibration_params=None,
-                manual=manual,
-                user_id=7,
-            )
-    finally:
-        runtime.logger.remove(sink_id)
+    with (
+        captured_logs() as records,
+        patch(f"{_CTRL}.fetch_sample", AsyncMock(return_value=sample)),
+        patch(
+            f"{_CTRL}.fetch_affected_sample_data",
+            AsyncMock(return_value=AffectedSampleData([], [], [], [])),
+        ),
+        patch(f"{_CTRL}.send_progress_user_notification", AsyncMock()),
+        patch(
+            f"{_CTRL}.calibration_mz_fit",
+            AsyncMock(return_value={"data": {"fit": fit}}),
+        ),
+        patch(f"{_CTRL}.calibration_mz_apply", AsyncMock(side_effect=_apply_stub)),
+    ):
+        await calibration_mz_calibrate_sample.__wrapped__(
+            sample_item_id="si-1",
+            mz_calibration_params=None,
+            manual=manual,
+            user_id=7,
+        )
     return records
 
 

@@ -17,12 +17,12 @@ from queue import Empty
 from threading import Event
 
 import pytest
+from test_utils import captured_logs
 
 from mascope_backend.file_converter.errors import (
     EMPTY_ACQUISITION_MESSAGE,
     EmptyAcquisitionError,
 )
-from mascope_backend.runtime import runtime
 from mascope_runtime.logging import _SENTRY_LEVELS
 from mascope_tofwerk.processor import H5Processor
 
@@ -83,14 +83,8 @@ def _run_once(failure):
     processor.moved_aside = []
     processor._handle_failed_file = processor.moved_aside.append
 
-    records = []
-    sink_id = runtime.logger.add(
-        lambda message: records.append(message.record), level="TRACE"
-    )
-    try:
+    with captured_logs() as records:
         processor.run()
-    finally:
-        runtime.logger.remove(sink_id)
     return records, socket, processor
 
 

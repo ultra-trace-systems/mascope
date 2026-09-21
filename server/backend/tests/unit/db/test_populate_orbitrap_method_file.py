@@ -10,6 +10,7 @@ Everything here stays hermetic - no server, no database.
 from pathlib import Path
 
 import pytest
+from test_utils import captured_logs
 
 from mascope_backend.db.scripts import populate_orbitrap_method_file as script
 from mascope_backend.runtime import runtime
@@ -146,14 +147,8 @@ def test_a_missing_file_reads_as_unreadable(monkeypatch, tmp_path):
 
 def _warnings(work) -> list:
     """Run ``work`` and return the WARNING-or-above records it logged."""
-    records = []
-    sink_id = runtime.logger.add(
-        lambda message: records.append(message.record), level="TRACE"
-    )
-    try:
+    with captured_logs() as records:
         work()
-    finally:
-        runtime.logger.remove(sink_id)
     return [r for r in records if r["level"].no >= runtime.logger.level("WARNING").no]
 
 

@@ -32,6 +32,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 from conftest import counting_session
+from test_utils import captured_logs
 
 from mascope_backend.api.controllers.match.match_controller import rematch_batches
 from mascope_backend.api.lib.exceptions.api_exceptions import (
@@ -57,18 +58,13 @@ class _Records:
     too - the point of the fix is to stop paging, not to lose the record.
     """
 
-    def __init__(self):
-        self.records = []
-
     def __enter__(self):
-        self._sink_id = runtime.logger.add(
-            lambda message: self.records.append(message.record), level="DEBUG"
-        )
+        self._capture = captured_logs(level="DEBUG")
+        self.records = self._capture.__enter__()
         return self
 
     def __exit__(self, *exc_info):
-        runtime.logger.remove(self._sink_id)
-        return False
+        return self._capture.__exit__(*exc_info)
 
     @property
     def monitored(self) -> list:
