@@ -10,9 +10,11 @@ says what the instrument was told to measure in that scan::
 
 Scans that share a signature form a scan stream
 (``docs/dev/ingest_routing_and_splitting.md``, section 4). Both reader
-backends hand the filter over as text: OpenTFRaw as the file stores it, the
-Thermo library re-rendered from its parsed ``IScanFilter``. One parser serves
-both, and it normalises numbers, so the two agree on every key.
+backends hand the filter over as text rendered from the file's scan events:
+OpenTFRaw by its own filter builder, the Thermo library from its parsed
+``IScanFilter``. One parser serves both, and it normalises numbers, so a
+difference in precision does not split a key: OpenTFRaw writes m/z to four
+decimals, the Thermo library to the file's own precision.
 
 The grammar is Xcalibur's. An optional mass analyzer and ``{segment,event}``
 come first, then the polarity, the scan data type and the ionization source.
@@ -22,13 +24,16 @@ than dropped. A key that is too fine splits a file needlessly; one that is too
 coarse pools scans that must not be pooled, and only the second goes
 unnoticed.
 
-The two renderings are not identical. The Thermo library writes ``lock`` into
-the filter of every scan that found its lock mass, and OpenTFRaw never does.
+The two renderings are not identical, because OpenTFRaw does not render every
+token the Thermo library writes. The Thermo library writes ``lock`` into the
+filter of every scan that found its lock mass, and OpenTFRaw never does.
 Whether a scan found it is a per-scan outcome, so ``lock`` is kept in
-``flags`` but left out of the signature. The Thermo library also writes the
-source fragmentation of some scans (``sid=20.00``) that OpenTFRaw renders
-without it. That one stays in the signature, because it changes what a scan
-measures, so there the backends' keys can differ.
+``flags`` but left out of the signature. OpenTFRaw also leaves out the source
+fragmentation (``sid=20.00``), the FAIMS compensation voltage (``cv=``), flags
+such as wideband activation (``w``) and multiplexing (``msx``), and the
+``{segment,event}`` prefix. The signature leaves out the prefix too; the
+others stay in it, because they change what a scan measures, so there the
+backends' keys can differ.
 """
 
 from __future__ import annotations

@@ -15,7 +15,7 @@ The list focuses on the metadata fields relevant for Orbitrap Exploris instrumen
 - BasePeakMass: m/z value of the most intense peak.
 - TIC: Total ion current, sum of all ion intensities in the scan.
 - StartTime: Scan start time (in minutes).
-- PacketCount: Number of data packets in the scan.
+- PacketCount: Size of the scan's data packet in bytes, as recorded in the scan index.
 - NumberOfChannels: Number of detector channels.
 - ScanNumber: Sequential index of the scan in the run.
 - ScanEventNumber: Instrument-defined event identifier for the scan.
@@ -25,7 +25,7 @@ The list focuses on the metadata fields relevant for Orbitrap Exploris instrumen
 - IsUniformTime: Indicates constant time spacing between data points.
 - AbsorbanceUnitScale: Scaling factor for absorbance intensity values.
 - WavelengthStep: Increment between consecutive wavelength points.
-- ScanType: Acquisition mode (e.g., MS, MS/MS).
+- ScanType: The scan filter, e.g. `FTMS + p NSI Full ms [40.0000-600.0000]`. Mascope reports the MS order alone as `MsType` (e.g., `Ms`, `Ms2`).
 - CycleNumber: Acquisition cycle index grouping related scans.
 
 ## Instrument / Metadata Variables

@@ -28,14 +28,17 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 ### Changed
 
-- **Both raw-file readers report the same per-scan statistics.** A Thermo raw
-  file's per-scan statistics (`stats_per_scan` in a sample file's metadata)
-  held twenty fields when the Thermo library read the file and eight when
-  OpenTFRaw did. Both readers now report all twenty, and a field the reader
-  cannot read is empty (`null`) rather than missing. OpenTFRaw also fills two
-  more: `ScanType`, the scan filter, and `IsCentroidScan`. It leaves empty the
-  UV, PDA and analog detector fields, which are zero on mass spectra, and
-  `PacketCount`, `ScanEventNumber`, `SegmentNumber` and `CycleNumber` (#1527).
+- **Both raw-file readers report every per-scan statistics field.** The
+  per-scan statistics a raw-file reader reports (`scan_statistics`, the
+  twenty fields named after Thermo's `ScanStats`) held all twenty from the
+  Thermo library and seven from OpenTFRaw, the default reader. OpenTFRaw now
+  reports all twenty:
+  - it also fills `ScanType`, the scan filter as OpenTFRaw renders it,
+    `IsCentroidScan` and `ScanEventNumber`;
+  - the UV, PDA and analog detector fields get the fixed values the Thermo
+    library reports for mass spectra;
+  - `PacketCount`, `SegmentNumber` and `CycleNumber` are empty (`null`)
+    rather than missing, since OpenTFRaw does not expose them (#1527).
 
 ### Fixed
 

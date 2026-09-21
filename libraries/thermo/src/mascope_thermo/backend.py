@@ -59,8 +59,8 @@ def _parse_ms2_event(filter_string: str) -> tuple[float, str] | None:
     ``None`` when the filter carries no resolvable MS2 event.
 
     The activation is lower-cased. It becomes the group key, and the two
-    backends render the filter by different routes -- Thermo re-renders it from
-    the parsed ``IScanFilter``, OpenTFRaw returns the stored string -- so a
+    backends render the filter by different routes -- Thermo from its parsed
+    ``IScanFilter``, OpenTFRaw from the scan event it decodes -- so a
     difference in case alone would otherwise split one acquisition's scans into
     two groups depending on which backend read it. Digits are left as rendered,
     so the key still mirrors the instrument's own notation.
@@ -189,6 +189,12 @@ class ReaderBackend(Protocol):
         backend lacks it instead of meeting a ``KeyError`` on one backend
         only. The OpenTFRaw backend's are
         :data:`OPENTFRAW_UNAVAILABLE_SCAN_STATS`.
+
+        ``ScanType`` is the scan filter as the backend renders it, and the two
+        render some filters differently (``libraries/thermo/docs/backend.md``,
+        "Scan Streams"). The OpenTFRaw backend reads ``IsCentroidScan`` from
+        that filter, so for a scan opentfraw renders no filter for, both are
+        ``None``.
         """
         ...
 
@@ -370,32 +376,34 @@ SCAN_STAT_FIELDS = (
     "CycleNumber",
 )
 
-# SCAN_STAT_FIELDS the OpenTFRaw backend reports as None.
-#
-# The wavelength, channel and absorbance fields, IsUniformTime and Frequency
-# describe UV, PDA and analog detector data. ScanStats carries them for every
-# scan, and on MS scans, the only ones either backend reads, they are zero or
-# False. The rest are real per-scan values: opentfraw decodes the scan-index
-# words behind PacketCount, ScanEventNumber and SegmentNumber but does not pass
-# them to Python, and does not decode CycleNumber.
+# SCAN_STAT_FIELDS that describe UV, PDA and analog detector data, with the
+# values ScanStats holds for every MS scan. The MS scan index has no field for
+# them, and the MS controller is the only one either backend reads, so the
+# OpenTFRaw backend reports these same values.
+MS_SCAN_DETECTOR_STATS = {
+    "LongWavelength": 0.0,
+    "ShortWavelength": 0.0,
+    "NumberOfChannels": 0,
+    "IsUniformTime": False,
+    "AbsorbanceUnitScale": 0.0,
+    "WavelengthStep": 0.0,
+    "Frequency": 0.0,
+}
+
+# SCAN_STAT_FIELDS the OpenTFRaw backend reports as None. opentfraw decodes the
+# scan-index words behind PacketCount and SegmentNumber but does not pass them
+# to Python, and does not decode CycleNumber.
 OPENTFRAW_UNAVAILABLE_SCAN_STATS = (
-    "LongWavelength",
-    "ShortWavelength",
-    "NumberOfChannels",
-    "IsUniformTime",
-    "AbsorbanceUnitScale",
-    "WavelengthStep",
-    "Frequency",
     "PacketCount",
-    "ScanEventNumber",
     "SegmentNumber",
     "CycleNumber",
 )
 
-# Per-scan acquisition fields OpenTFRaw decodes (from its typed scan dict),
-# surfaced as a trailer-like table. The label strings are descriptive and
-# intentionally differ from Thermo's trailer labels, which OpenTFRaw does not
-# expose; the (key, label) pairs map an OpenTFRaw scan-dict key to a column.
+# Per-scan acquisition fields from OpenTFRaw's typed scan dict, surfaced as the
+# trailer-like table scan_acquisition_settings() returns. The labels are
+# descriptive and differ from Thermo's trailer labels; the (key, label) pairs
+# map an OpenTFRaw scan-dict key to a column. The instrument's own trailer,
+# Thermo's labels included, is scan_parameters(), which scan_trailer() reads.
 _OTF_TRAILER_FIELDS = (
     ("ion_injection_time_ms", "Ion Injection Time (ms)"),
     ("charge", "Charge State"),
@@ -1353,30 +1361,34 @@ class OpenTFRawBackend:
         ms_type: MsType | None = "Ms",
     ) -> dict:
         # Map the per-scan stats OpenTFRaw exposes onto Thermo's ScanStats field
-        # names; the ones it does not expose are None, not faked
-        # (OPENTFRAW_UNAVAILABLE_SCAN_STATS). StartTime is in minutes, matching
-        # Thermo's ScanStats.StartTime. ScanType is the scan filter, as it is in
-        # ScanStats, and IsCentroidScan reads the filter's scan data type.
-        # MsType mirrors Thermo's MSOrder.ToString() ("Ms" / "Ms2").
-        unavailable = dict.fromkeys(OPENTFRAW_UNAVAILABLE_SCAN_STATS)
+        # names. StartTime is in minutes, matching Thermo's ScanStats.StartTime.
+        # ScanType is the scan filter as opentfraw renders it, and IsCentroidScan
+        # reads that filter's scan data type. ScanEventNumber is the trailer's
+        # "Scan Event:", which counts from 1. The detector fields take the values
+        # ScanStats holds for MS scans (MS_SCAN_DETECTOR_STATS), and the fields
+        # opentfraw does not expose are None, not faked
+        # (OPENTFRAW_UNAVAILABLE_SCAN_STATS). MsType mirrors Thermo's
+        # MSOrder.ToString() ("Ms" / "Ms2").
         stats: dict[int, dict] = {}
         for s in self._selected(polarity, t_min, t_max, ms_type):
-            scan_filter = s["filter_string"] or ""
+            scan_number = int(s["scan_number"])
+            scan_filter = s["filter_string"] or None
             data_type = parse_scan_filter(scan_filter).data_type
-            row = {
-                **unavailable,
+            trailer = self._raw.scan_parameters(scan_number) or {}
+            scan_event = trailer.get("Scan Event:")
+            stats[scan_number] = {
+                **dict.fromkeys(SCAN_STAT_FIELDS),
+                **MS_SCAN_DETECTOR_STATS,
                 "TIC": float(s["total_ion_current"]),
                 "StartTime": float(s["retention_time"]),
                 "BasePeakMass": float(s["base_peak_mz"]),
                 "BasePeakIntensity": float(s["base_peak_intensity"]),
                 "LowMass": float(s["low_mz"]),
                 "HighMass": float(s["high_mz"]),
-                "ScanNumber": int(s["scan_number"]),
+                "ScanNumber": scan_number,
+                "ScanEventNumber": None if scan_event is None else int(scan_event) - 1,
                 "ScanType": scan_filter,
                 "IsCentroidScan": None if data_type is None else data_type == "c",
-            }
-            stats[int(s["scan_number"])] = {
-                **{name: row[name] for name in SCAN_STAT_FIELDS},
                 "MsType": "Ms"
                 if int(s["ms_level"]) == 1
                 else f"Ms{int(s['ms_level'])}",
