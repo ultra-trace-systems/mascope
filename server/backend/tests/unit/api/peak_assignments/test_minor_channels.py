@@ -200,6 +200,26 @@ class TestResolution:
         assert resolved.minor_channels == frozenset()
         assert resolved.unavailable_channels == ("+NH4+",)
 
+    def test_a_channel_the_mode_declares_itself_is_not_secondary(self):
+        # The mode is what the operator configured the chemistry as, so a
+        # channel it declares is the mode's own: searched once, never capped as
+        # a secondary one, never losing a tie as one.
+        resolved = with_secondary_channels(
+            resolve_profile(
+                PeakAssignmentConfig(),
+                UREA + ["+NH4+"],
+                instrument_type="orbi",
+                polarity="+",
+            ),
+            [100.0, 138.0986],
+            [1.0e6, 1.0e4],
+            ["+NH4+"],
+        )
+        assert resolved.minor_channels == frozenset()
+        assert resolved.snapshot()["secondary_channels"] == []
+        # What the spectrum showed is still recorded.
+        assert resolved.snapshot()["channel_evidence"][0]["present"] is True
+
     def test_a_profile_with_no_secondary_channels_is_untouched(self):
         resolved = resolve_profile(
             PeakAssignmentConfig(profile="none"), UREA, instrument_type="orbi"
@@ -252,48 +272,57 @@ def _mechanism(mechanism_id: str, notation: str) -> SimpleNamespace:
     return SimpleNamespace(
         ionization_mechanism_id=mechanism_id,
         ionization_mechanism=notation,
-        ionization_mechanism_polarity="-",
+        ionization_mechanism_polarity="+",
     )
 
 
 class TestTheChannelsASampleIsSearchedThrough:
-    NITRATE = _mechanism("im-no3", "+^NO3-")
-    DEPROTONATION = _mechanism("im-h", "-H+")
-    CARBONATE = _mechanism("im-co3", "+CO3-")
+    PROTON = _mechanism("im-h", "+H+")
+    UREA_ADDUCT = _mechanism("im-urea", "+(CH4N2O)H+")
+    AMMONIUM = _mechanism("im-nh4", "+NH4+")
+    #: The ammonium carrier beside a base line, so the urea profile opens +NH4+.
+    SHOWS_AMMONIUM = ([100.0, 138.0986], [1.0e6, 1.0e4])
 
-    @staticmethod
-    def _running(*notations):
-        return SimpleNamespace(minor_channels=frozenset(notations))
+    def _resolved(self, declared: list[str], spectrum=SHOWS_AMMONIUM):
+        return with_secondary_channels(
+            resolve_profile(
+                PeakAssignmentConfig(), declared, instrument_type="orbi", polarity="+"
+            ),
+            *spectrum,
+            ["+NH4+"],
+        )
 
     def test_a_secondary_channel_the_source_runs_is_added(self):
         searched = _searched_mechanisms(
-            [self.NITRATE, self.DEPROTONATION], [self.CARBONATE], self._running("+CO3-")
+            [self.PROTON, self.UREA_ADDUCT], [self.AMMONIUM], self._resolved(UREA)
         )
         assert [m.ionization_mechanism_id for m in searched] == [
-            "im-no3",
             "im-h",
-            "im-co3",
+            "im-urea",
+            "im-nh4",
         ]
 
     def test_one_the_mode_declares_itself_is_searched_once(self):
         # Searched twice, it proposes every neutral through it twice, and the
         # election keeps the twin as another reading of the row's own ion.
         searched = _searched_mechanisms(
-            [self.NITRATE, self.DEPROTONATION, self.CARBONATE],
-            [self.CARBONATE],
-            self._running("+CO3-"),
+            [self.PROTON, self.UREA_ADDUCT, self.AMMONIUM],
+            [self.AMMONIUM],
+            self._resolved(UREA + ["+NH4+"]),
         )
         assert [m.ionization_mechanism_id for m in searched] == [
-            "im-no3",
             "im-h",
-            "im-co3",
+            "im-urea",
+            "im-nh4",
         ]
 
     def test_one_the_source_does_not_run_is_left_out(self):
         searched = _searched_mechanisms(
-            [self.NITRATE], [self.CARBONATE], self._running()
+            [self.PROTON, self.UREA_ADDUCT],
+            [self.AMMONIUM],
+            self._resolved(UREA, spectrum=([100.0, 200.0], [1.0e6, 1.0e4])),
         )
-        assert [m.ionization_mechanism_id for m in searched] == ["im-no3"]
+        assert [m.ionization_mechanism_id for m in searched] == ["im-h", "im-urea"]
 
     def test_a_mode_that_declares_nothing_searches_nothing(self):
-        assert _searched_mechanisms([], [self.CARBONATE], self._running("+CO3-")) == []
+        assert _searched_mechanisms([], [self.AMMONIUM], self._resolved([])) == []
