@@ -18,10 +18,10 @@ on trust.
 
 A row under the top band names its band first (``evidence_band``, from the run's
 ``tier_bands``). The band is not a rule of this pass - it is the floor the rules
-lower from - and it is named because nothing else says why such a row stands
-where it does: without it, a row its evidence holds below assignability lists
-only what it stands on, a second channel or no close rival, and reads as a row
-with nothing against it.
+lower from, so it never ``caps`` - and it is named because nothing else says why
+such a row stands where it does: without it, a row its evidence holds below
+assignability lists only what it stands on, a second channel or no close rival,
+and reads as a row with nothing against it.
 
 The rules, and what each is worth on the 43-sample assignment gate
 -----------------------------------------------------------------
@@ -177,7 +177,9 @@ TIERING_RULES_VERSION = 6
 
 #: The row's evidence is under the band its tier would need. Not a rule of
 #: this pass: the band is the floor every rule here lowers from, and naming it
-#: first is what lets a row's reasons explain the tier it holds.
+#: first is what lets a row's reasons explain the tier it holds. So it never
+#: ``caps``: that flag marks a rule that would take the top tier, and a reader
+#: counting capped rows counts rules.
 REASON_EVIDENCE_BAND = "evidence_band"
 
 #: The row names a radical rather than a molecule.
@@ -467,7 +469,8 @@ def band_reason(row: dict, tier_bands: dict | None) -> dict | None:
     every rule of this pass only lowers it from there, so a row under the top
     band is where it is for this reason before any other. Named first on the
     row, because without it the reasons a row keeps say what it stands on and
-    not why it stands low.
+    not why it stands low. It does not ``cap``: no rule took anything, and the
+    band it names is carried beside the sentence.
 
     :param row: A committed monoisotopic row.
     :param tier_bands: The run's bands, ``assigned`` and ``candidate``, or None
@@ -501,7 +504,7 @@ def band_reason(row: dict, tier_bands: dict | None) -> dict | None:
             REASON_EVIDENCE_BAND,
             f"evidence {evidence:.{digits}%}{product} is under the {name} band of "
             f"{edge:.{digits}%}",
-            caps=True,
+            caps=False,
         ),
         "band": band,
     }
@@ -947,8 +950,8 @@ def apply_tiering(
         if not held_down:
             reasons.extend(standing_reasons(row))
         # The band leads, and it is not a rule: it is the floor the rules lower
-        # from, so it neither counts as a cap here nor hides what the row
-        # stands on - a row the band holds low still says what it has.
+        # from, so it is no cap and does not hide what the row stands on - a
+        # row the band holds low still says what it has.
         band = band_reason(row, tier_bands)
         if band:
             reasons.insert(0, band)
