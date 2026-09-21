@@ -6,6 +6,19 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 ### Added
 
+- **Files that need someone are kept as notifications until read.** When
+  auto-processing leaves a file failed, needing a chemistry, or unmatched
+  because its calibration failed, the people answerable for the instrument
+  are told even if none of them is signed in: the uploader (for a paired File
+  Agent, the person who sponsors its device) and the owners of the
+  instrument's acquisition workspace. They find it under **Needs attention**
+  in the notifications pane, counted on the home button's badge. One entry
+  per instrument and kind collects the files until it is marked read, names
+  the latest, and is marked resolved once none of its files is left in that
+  state. **Show files** opens them in Raw files. A server restart that
+  interrupts processing is reported the same way. `GET /api/notifications`
+  lists them and `POST /api/notifications/read` marks them read (#1910).
+
 - **Raw files shows how far processing got for each file.** Auto-processing
   records a status on every sample file it handles: converted, bound,
   calibrated, then done, needs a chemistry, calibration failed or failed. A
@@ -113,8 +126,7 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   now also goes to everyone viewing that instrument's raw files, and so do
   auto-processing's warnings. An error from a paired agent's upload goes to
   the person who sponsors the agent's device rather than to its machine
-  account; warnings stay with the uploading account. The notification is
-  still live only: whoever is not signed in at the time does not see it.
+  account; warnings stay with the uploading account.
 
 - **Orbitrap sample files record their instrument method again.** Since
   ingestion moved onto the open-source raw-file reader, every Orbitrap file

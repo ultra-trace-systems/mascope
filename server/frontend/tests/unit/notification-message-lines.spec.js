@@ -46,7 +46,8 @@ const mountPane = (message) => {
   mocks.app = reactive({
     ui: {
       help: { set: () => {}, directive: () => ({}) },
-      notification: { log: [logEntry(message)] }
+      notification: { log: [logEntry(message)] },
+      inbox: { items: [], sorted: [], unread: [] }
     }
   })
   // Attached on purpose: happy-dom resolves a computed style only for an

@@ -184,7 +184,11 @@ The agent prints its version when it starts, and uninstalling (Windows
   mode token (see [Import data files](../guides/import-files.md#prerequisites)).
   The error is shown as it happens to anyone viewing that instrument's raw
   files and, for a paired agent, to the person who approved its pairing.
-  Fix the cause, then re-process the file (see
+  It is also kept, until they mark it read, for that person and for the
+  owners of the instrument's acquisition workspace: they find it under
+  **Needs attention** in the notifications pane of the home menu, even when
+  they were not signed in at the time. The file's status in Raw files says
+  what went wrong. Fix the cause, then re-process the file (see
   [Import data files → Troubleshooting](../guides/import-files.md#troubleshooting)).
 - *"The server rejected the access token"* or *"This agent credential has
   expired"*: the machine's token has lapsed or its device was revoked.

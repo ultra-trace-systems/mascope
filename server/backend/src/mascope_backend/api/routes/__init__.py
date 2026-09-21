@@ -9,6 +9,7 @@ from mascope_backend.api.new.ionization.modes.routes import (
     ionization_mode_router,
 )
 from mascope_backend.api.new.match.records.routes import match_records_router
+from mascope_backend.api.new.notifications.routes import notifications_router
 from mascope_backend.api.new.params import params_router
 from mascope_backend.api.new.peak_assignments.batch_peaks_routes import (
     batch_peaks_router,
@@ -102,6 +103,7 @@ routers = [
     owner_router,
     roles_router,
     version_router,
+    notifications_router,
     workspaces_router,
     params_router,
     dataset_router,

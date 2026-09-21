@@ -19,7 +19,15 @@ from datetime import datetime, timezone
 
 from sqlalchemy import update
 
-from mascope_backend.api.models.sample.files.config import ProcessingStatus
+from mascope_backend.api.models.sample.files.config import (
+    IN_PROGRESS,
+    ProcessingStatus,
+)
+from mascope_backend.api.new.notifications.config import PROCESSING_NOTIFICATIONS
+from mascope_backend.api.new.notifications.service import (
+    notify_processing_outcome,
+    resolve_processing_notifications,
+)
 from mascope_backend.db import SampleFile, async_session
 from mascope_backend.runtime import runtime
 from mascope_backend.socket.records.service import emit_record_updated
@@ -107,6 +115,10 @@ async def record_processing_status(
     shows. The whole row is sent rather than the changed fields alone: a view
     that replaces rows would otherwise blank every column but these.
 
+    An outcome that needs someone is also kept as a notification for the
+    people answerable for the instrument, and any outcome may settle the
+    instrument's open ones (``api/new/notifications/service.py``).
+
     Best effort: a status is a report on the processing, and failing to write
     one must never be the reason the processing fails. An error is logged and
     swallowed.
@@ -153,3 +165,7 @@ async def record_processing_status(
         record=record,
         room=record["instrument"],
     )
+    if status in PROCESSING_NOTIFICATIONS:
+        await notify_processing_outcome(record, status, detail)
+    if status not in IN_PROGRESS:
+        await resolve_processing_notifications(record["instrument"])
