@@ -353,6 +353,10 @@ describe('neutralKey', () => {
   it('reads one neutral the same however it is written', () => {
     expect(neutralKey('C1H4N2O1')).toBe(neutralKey('CH4N2O'))
     expect(neutralKey('C3H7NO')).toBe(neutralKey('C3H7N1O1'))
+    // Hill order and alphabetical order, a condensed formula, an explicit zero.
+    expect(neutralKey('C2H3ClO')).toBe(neutralKey('C2ClH3O'))
+    expect(neutralKey('CH3COOH')).toBe(neutralKey('C2H4O2'))
+    expect(neutralKey('C3H7N0O')).toBe(neutralKey('C3H7O'))
   })
 
   it('tells different neutrals apart', () => {
@@ -362,6 +366,7 @@ describe('neutralKey', () => {
   it('keeps a labelled atom its own', () => {
     expect(neutralKey('C5H9[15N]O7')).not.toBe(neutralKey('C5H9NO7'))
     expect(neutralKey('H^NO3')).not.toBe(neutralKey('HNO3'))
+    expect(neutralKey('C5H9[15N]1O7')).toBe(neutralKey('C5H9[15N]O7'))
   })
 
   it('gives back a formula it cannot read as it was, and nothing for none', () => {
