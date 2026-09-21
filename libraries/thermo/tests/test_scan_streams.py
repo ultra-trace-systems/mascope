@@ -143,6 +143,25 @@ def test_data_dependent_scans_are_one_family_beside_their_survey_stream():
     assert pooled_ms1_streams(census) == {}
 
 
+def test_only_survey_streams_carry_a_parameter_summary():
+    """A targeted method has one fragmentation stream per precursor, and each
+    summary is a few kilobytes of a file that is read many times."""
+    survey = "FTMS + p NSI Full ms [100.0000-1000.0000]"
+    targeted = [
+        f"FTMS + p NSI Full ms2 {mz:.4f}@hcd30.00 [50.0000-{mz + 10:.4f}]"
+        for mz in (200.0, 300.0, 400.0)
+    ]
+    census = scan_streams(
+        _ScriptedReader(
+            [(survey, _trailer())] + [(text, _trailer(15000)) for text in targeted]
+        )
+    )
+
+    assert [stream["signature"]["ms_order"] for stream in census] == [1, 2, 2, 2]
+    assert census[0]["acquisition_params"]["scans_sampled"] == 1
+    assert [stream["acquisition_params"] for stream in census[1:]] == [{}, {}, {}]
+
+
 def test_a_lock_mass_found_or_not_is_neither_a_stream_nor_a_filter():
     """The Thermo library renders ``lock`` only on scans that found the lock
     mass, so one stream carries both renderings."""

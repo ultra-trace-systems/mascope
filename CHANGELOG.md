@@ -11,12 +11,12 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   polarity, data type, source, source fragmentation, FAIMS CV, scan mode, MS
   order, precursors and scan ranges) plus the FT resolution. It stores the
   groups in the file's `.props` as `scan_streams`, each with its scan count,
-  its time span, how its scans are laid out between the other streams, and
-  the acquisition parameters of its own scans. Nothing is processed per
-  stream yet: peak detection still pools every MS1 scan of a polarity into one
-  peak list. A file that pools more than one MS1 stream in a polarity, such as
-  a method that alternates two scan ranges, is now logged at INFO. On the
-  internal regression corpus that is one file in 182.
+  its time span, how its scans are laid out between the other streams, and,
+  for an MS1 stream, the acquisition parameters of its own scans. Nothing is
+  processed per stream yet: peak detection still pools every MS1 scan of a
+  polarity into one peak list. A file that pools more than one MS1 stream in
+  a polarity, such as a method that alternates two scan ranges, is now logged
+  at INFO. On the internal regression corpus that is one file in 182.
 
 ### Fixed
 

@@ -75,7 +75,7 @@ All methods returning time values convert internal units (minutes) to **seconds*
 
 ## Scan Streams
 
-`mascope_thermo.scan_filter` parses a scan filter (`FTMS - p NSI Full ms [40.0000-600.0000]`) into the signature that tells scan streams apart: analyzer, polarity, scan data type, source, source fragmentation, FAIMS CV, scan mode, MS order, the precursors of targeted MSn scans, and the scan ranges. `mascope_thermo.streams.scan_streams` groups a file's scans by that signature plus the trailer's FT resolution, and reports per stream its scan count, blocks, time span and its own acquisition parameters. The converter stores the result in `.props` as `scan_streams`.
+`mascope_thermo.scan_filter` parses a scan filter (`FTMS - p NSI Full ms [40.0000-600.0000]`) into the signature that tells scan streams apart: analyzer, polarity, scan data type, source, source fragmentation, FAIMS CV, scan mode, MS order, the precursors of targeted MSn scans, and the scan ranges. `mascope_thermo.streams.scan_streams` groups a file's scans by that signature plus the trailer's FT resolution, and reports per stream its scan count, blocks and time span, plus, for an MS1 stream, the acquisition parameters of its own scans. The converter stores the result in `.props` as `scan_streams`.
 
 The two backends render some filters differently. The Thermo library writes `lock` on each scan that found its lock mass, and OpenTFRaw never does; `lock` describes one scan's outcome, so it is left out of the signature. The Thermo library also renders the source fragmentation (`sid=`) of some scans that OpenTFRaw renders without it. On the internal regression corpus, the census agrees between the backends on 181 of 182 readable files, and that is the one difference.
 
