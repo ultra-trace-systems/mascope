@@ -8,6 +8,10 @@
  * formula the run reached through the formula search - a lead to check rather
  * than a match the run made. Either way a formula match names candidate
  * compounds, not an identification.
+ *
+ * Both carry at most as many names as a run keeps. How many records name the
+ * formula in all comes with the lookup (`known_compounds_total`), and a listing
+ * says so where it is more than the names it carries.
  */
 
 /**
@@ -16,12 +20,21 @@
  * @param {object|null} entry - a detail row, or one of its alternatives
  * @param {Array|null} [matched] - the identities the run matched, where they are
  *   recorded apart from the entry (a row's are in its provenance)
- * @returns {{matched: boolean, identities: Array<object>}|null}
+ * @returns {{matched: boolean, identities: Array<object>, total: number}|null}
  */
 export function listingOf(entry, matched = entry?.reference_identities) {
-  if (Array.isArray(matched) && matched.length) return { matched: true, identities: matched }
+  const counted = (identities) =>
+    Math.max(
+      identities.length,
+      Number.isInteger(entry?.known_compounds_total) ? entry.known_compounds_total : 0
+    )
+  if (Array.isArray(matched) && matched.length) {
+    return { matched: true, identities: matched, total: counted(matched) }
+  }
   const listed = entry?.known_compounds
-  if (Array.isArray(listed) && listed.length) return { matched: false, identities: listed }
+  if (Array.isArray(listed) && listed.length) {
+    return { matched: false, identities: listed, total: counted(listed) }
+  }
   return null
 }
 
@@ -29,15 +42,16 @@ const nameOf = (identity) =>
   typeof identity?.name === 'string' && identity.name ? identity.name : 'Unnamed compound'
 
 /**
- * The first name, and how many more compounds share the formula.
+ * The first name, and how many more records name the formula.
  *
  * @param {object|null} listing - from `listingOf`
  * @returns {string}
  */
 export function listingName(listing) {
   if (!listing) return ''
-  const [first, ...rest] = listing.identities
-  return rest.length ? `${nameOf(first)} +${rest.length}` : nameOf(first)
+  const first = nameOf(listing.identities[0])
+  const more = (listing.total ?? listing.identities.length) - 1
+  return more > 0 ? `${first} +${more}` : first
 }
 
 /**
@@ -62,11 +76,13 @@ export function listingTooltip(listing) {
   const names = listing.identities.map(
     (identity) => `${nameOf(identity)}${identity?.source ? ` (${identity.source})` : ''}`
   )
+  const unlisted = (listing.total ?? names.length) - names.length
   return [
     listing.matched
       ? 'The run matched this formula from a reference list.'
       : 'A reference list holds this formula. The run did not match it from the list, so the name is a lead to check.',
     ...names,
+    ...(unlisted > 0 ? [`and ${unlisted} more the lists hold for it`] : []),
     'A formula match names candidate compounds; it is not an identification.'
   ].join('\n')
 }

@@ -2422,7 +2422,7 @@ describe('PanePeakAssign ionization and reference lists', () => {
           {
             rule: 'evidence_band',
             detail: 'evidence 8% (fit 8% x plausibility 100%) is under the candidate band of 45%',
-            caps: true,
+            caps: false,
             band: 'below_assignability'
           },
           {
@@ -2444,5 +2444,59 @@ describe('PanePeakAssign ionization and reference lists', () => {
     expect(reasons[0].attributes('data-tooltip')).toBe(
       "Sets this row's tier: the reasons below can only lower it further"
     )
+  })
+})
+
+describe('PanePeakAssign the row read again', () => {
+  const ROW = {
+    ...assignment({ formula: 'C15H32O', tier: 'candidate' }),
+    ion_formula: 'C16H32O4-',
+    ionization_mechanism_id: 'm-co3'
+  }
+
+  beforeEach(() => {
+    focusedAssignment = ROW
+    mechanisms = [
+      { ionization_mechanism_id: 'm-co3', ionization_mechanism: '+CO3-' },
+      { ionization_mechanism_id: 'm-h', ionization_mechanism: '-H+' }
+    ]
+  })
+
+  it("leaves the row's own reading out of the same ion's readings, however it is spelled", async () => {
+    // A run that searched a channel twice stored the row's own reading as
+    // another reading of its ion; a spelling with explicit ones is still it.
+    detailRecord = {
+      alternatives: [
+        {
+          assigned_formula: 'C15H32O1',
+          ion_formula: 'C16H32O4-',
+          ionization_mechanism_id: 'm-co3',
+          same_ion: true
+        },
+        {
+          assigned_formula: 'C16H33O4',
+          ion_formula: 'C16H32O4-',
+          ionization_mechanism_id: 'm-h',
+          same_ion: true
+        }
+      ]
+    }
+    const wrapper = await mountPane()
+    const readings = wrapper.findAll('[data-testid="same-ion"] .reading-formula')
+
+    expect(readings.map((reading) => reading.text())).toEqual(['C16H33O4'])
+  })
+
+  it('names the count of a formula the lists hold past the names it carries', async () => {
+    detailRecord = {
+      provenance: {},
+      known_compounds: [{ name: 'Hexadecanol isomer', source: 'organics-list' }],
+      known_compounds_total: 12
+    }
+    const wrapper = await mountPane({ recordTooltips: true })
+    const listed = wrapper.find('[data-testid="listed-as"]')
+
+    expect(listed.find('.v').text()).toBe('Hexadecanol isomer +11')
+    expect(listed.attributes('data-tooltip')).toContain('and 11 more the lists hold for it')
   })
 })
