@@ -31,7 +31,7 @@ All implementations must satisfy the `ReaderBackend` protocol, which defines a c
 To ensure consistency across backends, the following field sets are enforced:
 
 - **`INSTRUMENT_FIELDS`**: Serialized instrument metadata including `Model`, `SerialNumber`, and `SoftwareVersion`.
-- **`SCAN_STAT_FIELDS`**: Per-scan statistics such as `BasePeakIntensity`, `TIC`, `Frequency`, and `IsCentroidScan`.
+- **`SCAN_STAT_FIELDS`**: Per-scan statistics such as `BasePeakIntensity`, `TIC`, `ScanType`, and `IsCentroidScan`, named as in Thermo's `ScanStats`. Both backends return every field for every scan; a field a backend cannot read is `None`. For OpenTFRaw those are `OPENTFRAW_UNAVAILABLE_SCAN_STATS`: the UV, PDA and analog detector fields (`Frequency`, the wavelength fields, `NumberOfChannels`, `IsUniformTime`, `AbsorbanceUnitScale`, `WavelengthStep`), which are zero on MS scans, and the per-scan `PacketCount`, `ScanEventNumber`, `SegmentNumber` and `CycleNumber`.
 - **`_OTF_TRAILER_FIELDS`**: Descriptive labels for acquisition data decoded by OpenTFRaw (Ion Injection Time, Precursor m/z).
 
 ## Public Methods
@@ -50,7 +50,7 @@ All methods returning time values convert internal units (minutes) to **seconds*
 - **`polarities()`**: Returns the ion polarity (+ or -) for each scan.
 - **`scan_times()`**: Returns the acquisition start time for each scan in seconds.
 - **`tic_per_scan()`**: Returns the Total Ion Current (TIC) for every scan.
-- **`scan_statistics(scan_number)`**: Retrieves per-scan metrics (e.g., BasePeakIntensity, Frequency) defined in `SCAN_STAT_FIELDS`.
+- **`scan_statistics(scan_number)`**: Retrieves per-scan metrics (e.g., BasePeakIntensity, ScanType) defined in `SCAN_STAT_FIELDS`, plus `MsType`, with the same keys from both backends.
 - **`scan_acquisition_settings(scan_number)`**: Returns detailed acquisition parameters.
 - **`scan_filters()`**: Returns every scan's number, start time in seconds and filter text, in acquisition order, with no scan left out.
 - **`scan_trailer(scan_number)`**: Returns one scan's trailer, the instrument's own `{label: value}` table. Values are text from the Thermo backend and typed scalars from OpenTFRaw.
@@ -77,7 +77,7 @@ All methods returning time values convert internal units (minutes) to **seconds*
 
 `mascope_thermo.scan_filter` parses a scan filter (`FTMS - p NSI Full ms [40.0000-600.0000]`) into the signature that tells scan streams apart: analyzer, polarity, scan data type, source, source fragmentation, FAIMS CV, scan mode, MS order, the precursors of targeted MSn scans, and the scan ranges. `mascope_thermo.streams.scan_streams` groups a file's scans by that signature plus the trailer's FT resolution, and reports per stream its scan count, blocks and time span, plus, for an MS1 stream, the acquisition parameters of its own scans. The converter stores the result in `.props` as `scan_streams`.
 
-The two backends render some filters differently. The Thermo library writes `lock` on each scan that found its lock mass, and OpenTFRaw never does; `lock` describes one scan's outcome, so it is left out of the signature. The Thermo library also renders the source fragmentation (`sid=`) of some scans that OpenTFRaw renders without it. On the internal regression corpus, the census agrees between the backends on 181 of 182 readable files, and that is the one difference.
+The two backends render some filters differently, because OpenTFRaw does not decode two flags of the scan event. The Thermo library writes `lock` on each scan that found its lock mass (its trailer's `Number of LM Found` is above zero), and OpenTFRaw never does; `lock` describes one scan's outcome, so it is left out of the signature. The Thermo library also writes the source fragmentation of a scan acquired with in-source CID (`sid=20.00`), which OpenTFRaw renders without it. On the internal regression corpus, the census agrees between the backends on 181 of the 182 files both read, and that is the one difference. Three more files, each a single scan, open only in the Thermo library: OpenTFRaw's search for the trailer's layout fails on some files of fewer than five scans.
 
 ## Underlying Algorithms
 

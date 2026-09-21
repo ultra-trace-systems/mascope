@@ -21,6 +21,7 @@ the whole m/z range and varied peak densities in a second or two per file.
 """
 
 import os
+import re
 
 import numpy as np
 import opentfraw
@@ -28,7 +29,7 @@ import pytest
 from thermo_test_support import TEST_FILES_DIR
 
 import mascope_thermo.thermo as m_thermo
-from mascope_thermo.backend import open_backend
+from mascope_thermo.backend import OPENTFRAW_UNAVAILABLE_SCAN_STATS, open_backend
 from mascope_thermo.lib import thermo_available
 
 
@@ -45,6 +46,11 @@ RAW_FILES = sorted(TEST_FILES_DIR.glob("*.raw"))
 # Cap on XIC targets per file (even spread across m/z). Override to widen
 # coverage (e.g. MASCOPE_PARITY_MAX_XIC_TARGETS=1000) at the cost of runtime.
 MAX_XIC_TARGETS = int(os.environ.get("MASCOPE_PARITY_MAX_XIC_TARGETS", "200"))
+
+# Filter tokens the Thermo library renders from scan-event flags that opentfraw
+# does not decode: lock (the scan found its lock mass) and sid= (source
+# fragmentation). Scan filters are compared without them.
+_UNDECODED_FILTER_TOKENS = re.compile(r" (?:lock|sid=-?[\d.]+)(?=\s|$)")
 
 
 def _run_under(monkeypatch, backend, fn, *args, **kwargs):
@@ -248,8 +254,8 @@ def test_ms2_events_match_thermo(monkeypatch, path):
 @pytest.mark.parametrize("path", RAW_FILES, ids=lambda p: p.name)
 def test_scan_statistics_match_thermo(monkeypatch, path):
     """OpenTFRaw's mapped scan statistics must match Thermo for the fields it
-    provides (the scan-statistics metadata remap). Uses only the base opentfraw
-    typed scan dict.
+    provides (the scan-statistics metadata remap), and be None for the rest.
+    Uses only the base opentfraw typed scan dict.
     """
     path = str(path)
 
@@ -270,6 +276,15 @@ def test_scan_statistics_match_thermo(monkeypatch, path):
         assert o["BasePeakIntensity"] == pytest.approx(
             t["BasePeakIntensity"], rel=1e-3, abs=1.0
         )
+        assert o["LowMass"] == pytest.approx(t["LowMass"], rel=1e-9)
+        assert o["HighMass"] == pytest.approx(t["HighMass"], rel=1e-9)
+        assert o["ScanNumber"] == t["ScanNumber"]
+        assert o["IsCentroidScan"] == t["IsCentroidScan"]
+        assert _UNDECODED_FILTER_TOKENS.sub("", o["ScanType"]) == (
+            _UNDECODED_FILTER_TOKENS.sub("", t["ScanType"])
+        )
+        for name in OPENTFRAW_UNAVAILABLE_SCAN_STATS:
+            assert o[name] is None, name
 
 
 def _hcd_tuple(value):
