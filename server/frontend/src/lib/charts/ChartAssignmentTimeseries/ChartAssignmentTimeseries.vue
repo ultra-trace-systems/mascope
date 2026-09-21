@@ -201,6 +201,10 @@ const layout = computed(() => ({
   showlegend: true,
   legend: { x: 1, y: 1 }
 }))
+
+// For a container that changes width while its height stays: a splitter
+// divider beside the chart, which the `height` watcher never sees.
+defineExpose({ resize: () => plot.value?.resize?.() })
 </script>
 
 <template>

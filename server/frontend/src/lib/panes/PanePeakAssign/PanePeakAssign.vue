@@ -1,5 +1,5 @@
 <script setup>
-import { computed, ref, useId, watch } from 'vue'
+import { computed, nextTick, ref, useId, watch } from 'vue'
 
 import Button from 'primevue/button'
 import InputText from 'primevue/inputtext'
@@ -24,9 +24,9 @@ import { useBatchPeakCuration } from './stores/batchPeakCuration.js'
 const app = useApp()
 const curation = useBatchPeakCuration()
 
-// Toggles the Sample view's bottom pane between the time series (default) and
-// the Re-search panel. Owned by the parent (PaneTabSample); the inspector only
-// flips it on.
+// Toggles the Sample view's pane under the spectrum between the time series
+// (default) and the Re-search panel. Owned by the parent (PaneTabSample); the
+// inspector only flips it on.
 const showSearch = defineModel('showSearch', { type: Boolean, default: false })
 
 // The committed assignment for the focused peak (from the latest run).
@@ -158,31 +158,70 @@ function startEdit() {
   editing.value = true
 }
 
-// The evidence level and the note belong to a confirmation, so Confirm asks for
-// them in a small dialog rather than the card carrying both for every peak. A
-// rejection or an "unsure" is recorded as it is clicked.
-const confirmDialog = ref(null)
+// Each verdict is recorded from a small dialog rather than the card carrying
+// its fields for every peak: any verdict takes a note, and a confirmation also
+// names the evidence level behind it.
+const verdictDialog = ref(null)
+const dialogVerdict = ref(null) // the verdict the open dialog records
 const dialogId = useId()
-// Where focus lands as the dialog opens: the level already picked, when the
-// verdict being changed carries one, else the strongest. The dialog focuses
-// nothing on its own (Popover only looks for an `[autofocus]` child).
+// The dialog's wording and submit button, matching the button that opened it.
+const VERDICT_DIALOGS = {
+  confirmed: {
+    verb: 'Confirm',
+    label: 'Confirm',
+    icon: 'pi ph ph-check-circle',
+    severity: 'success'
+  },
+  rejected: {
+    verb: 'Reject',
+    label: 'Reject',
+    icon: 'pi ph ph-x-circle',
+    severity: 'danger'
+  },
+  unsure: {
+    verb: 'Unsure about',
+    label: 'Unsure',
+    icon: 'pi ph ph-question',
+    severity: 'secondary'
+  }
+}
+const dialogMeta = computed(() => VERDICT_DIALOGS[dialogVerdict.value] ?? VERDICT_DIALOGS.confirmed)
+const confirming = computed(() => dialogVerdict.value === 'confirmed')
+// Where focus lands as the dialog opens: on a confirmation, the level already
+// picked when the verdict being changed carries one, else the strongest; on
+// the others, the note. The dialog focuses nothing on its own (Popover only
+// looks for an `[autofocus]` child).
 const autofocusLevel = computed(() => evidenceLevel.value ?? EVIDENCE_LEVELS[0].value)
 
-const openConfirm = (event) => confirmDialog.value?.show(event)
+function openVerdict(verdict, event) {
+  const dialog = verdictDialog.value
+  if (!dialog) return
+  const wasOpen = dialog.visible
+  dialogVerdict.value = verdict
+  dialog.show(event)
+  // Open already, for another verdict: it moves to the button just clicked, and
+  // focus to what this verdict asks for first.
+  if (wasOpen) {
+    nextTick(() => {
+      dialog.alignOverlay?.()
+      dialog.focus?.()
+    })
+  }
+}
 
 // Resolves whether the verdict was recorded.
 async function submitVerdict(verdict) {
-  const confirming = verdict === 'confirmed'
+  const confirm = verdict === 'confirmed'
   // Confirm requires an evidence level (also enforced server-side).
-  if (confirming && !evidenceLevel.value) return false
+  if (confirm && !evidenceLevel.value) return false
   submitting.value = true
   pendingVerdict.value = verdict
   try {
     await app.data.peakAssignment.verification.verify({
       peak_assignment_id: verifyTarget.value.peak_assignment_id,
       verdict,
-      evidence_level: confirming ? evidenceLevel.value : null,
-      note: confirming ? note.value?.trim() || null : null
+      evidence_level: confirm ? evidenceLevel.value : null,
+      note: note.value?.trim() || null
     })
     editing.value = false
     note.value = ''
@@ -197,13 +236,13 @@ async function submitVerdict(verdict) {
   }
 }
 
-// The dialog's own Confirm. It stays open on a failure, with what was entered,
-// so the confirmation can be sent again; a refusal closes it, since the button
-// it opened from gives way to the note that says editor access is required.
-async function submitConfirm() {
-  if (submitting.value) return
-  const recorded = await submitVerdict('confirmed')
-  if (recorded || denied.value) confirmDialog.value?.hide()
+// The dialog's own submit. It stays open on a failure, with what was entered,
+// so the verdict can be sent again; a refusal closes it, since the buttons it
+// opened from give way to the note that says editor access is required.
+async function submitDialog() {
+  if (submitting.value || !dialogVerdict.value) return
+  const recorded = await submitVerdict(dialogVerdict.value)
+  if (recorded || denied.value) verdictDialog.value?.hide()
 }
 
 // Fresh form per compound, not per peak: the form judges the family's M0, so
@@ -217,8 +256,8 @@ watch(
     editing.value = false
     evidenceLevel.value = null
     note.value = ''
-    // An open dialog confirms the compound it was opened on, and no other.
-    confirmDialog.value?.hide()
+    // An open dialog judges the compound it was opened on, and no other.
+    verdictDialog.value?.hide()
   }
 )
 watch(
@@ -1505,8 +1544,7 @@ const demotedCount = computed(() => {
             aria-haspopup="dialog"
             :disabled="submitting"
             :loading="submitting && pendingVerdict === 'confirmed'"
-            v-tooltip.top="'Pick the evidence behind the confirmation'"
-            @click="openConfirm"
+            @click="openVerdict('confirmed', $event)"
           />
           <Button
             label="Reject"
@@ -1514,9 +1552,10 @@ const demotedCount = computed(() => {
             size="small"
             severity="danger"
             class="verdict-button"
+            aria-haspopup="dialog"
             :disabled="submitting"
             :loading="submitting && pendingVerdict === 'rejected'"
-            @click="submitVerdict('rejected')"
+            @click="openVerdict('rejected', $event)"
           />
           <Button
             label="Unsure"
@@ -1524,9 +1563,10 @@ const demotedCount = computed(() => {
             size="small"
             severity="secondary"
             class="verdict-button"
+            aria-haspopup="dialog"
             :disabled="submitting"
             :loading="submitting && pendingVerdict === 'unsure'"
-            @click="submitVerdict('unsure')"
+            @click="openVerdict('unsure', $event)"
           />
           <Button
             v-if="editing"
@@ -1544,14 +1584,20 @@ const demotedCount = computed(() => {
         <!-- No help card in here: the card above covers it, and one inside a
              popover re-registers on every open. Radio buttons rather than a
              Select, which would swallow the Escape that closes the dialog. -->
-        <Popover ref="confirmDialog" aria-label="Confirm the assignment">
-          <div class="confirm-dialog" data-testid="confirm-dialog">
-            <div class="confirm-claim">
-              Confirm <span class="confirm-formula">{{ verifyTarget?.assigned_formula }}</span>
+        <Popover ref="verdictDialog" :aria-label="`${dialogMeta.verb} the assignment`">
+          <div class="verdict-dialog" data-testid="verdict-dialog">
+            <div class="dialog-claim">
+              {{ dialogMeta.verb }}
+              <span class="dialog-formula">{{ verifyTarget?.assigned_formula }}</span>
             </div>
-            <div class="confirm-levels" role="radiogroup" :aria-labelledby="`${dialogId}-levels`">
+            <div
+              v-if="confirming"
+              class="dialog-levels"
+              role="radiogroup"
+              :aria-labelledby="`${dialogId}-levels`"
+            >
               <span :id="`${dialogId}-levels`" class="alts-label">Evidence level</span>
-              <div v-for="level in EVIDENCE_LEVELS" :key="level.value" class="confirm-level">
+              <div v-for="level in EVIDENCE_LEVELS" :key="level.value" class="dialog-level">
                 <RadioButton
                   v-model="evidenceLevel"
                   :value="level.value"
@@ -1568,25 +1614,26 @@ const demotedCount = computed(() => {
               aria-label="Note"
               size="small"
               fluid
-              @keydown.enter="submitConfirm"
+              :autofocus="!confirming"
+              @keydown.enter="submitDialog"
             />
-            <div class="confirm-actions">
+            <div class="dialog-actions">
               <Button
                 label="Cancel"
                 size="small"
                 text
                 severity="secondary"
-                @click="confirmDialog?.hide()"
+                @click="verdictDialog?.hide()"
               />
               <Button
-                label="Confirm"
-                icon="pi ph ph-check-circle"
+                :label="dialogMeta.label"
+                :icon="dialogMeta.icon"
                 size="small"
-                severity="success"
-                data-testid="confirm-submit"
-                :disabled="submitting || !evidenceLevel"
+                :severity="dialogMeta.severity"
+                data-testid="verdict-submit"
+                :disabled="submitting || (confirming && !evidenceLevel)"
                 :loading="submitting"
-                @click="submitConfirm"
+                @click="submitDialog"
               />
             </div>
           </div>
@@ -1664,7 +1711,7 @@ const demotedCount = computed(() => {
           text
           :severity="showSearch ? 'primary' : 'secondary'"
           icon="pi ph ph-magnifying-glass"
-          v-tooltip.top="'Search compositions for this peak in the panel below'"
+          v-tooltip.top="'Search compositions for this peak in the pane under the spectrum'"
           @click="showSearch = !showSearch"
         />
       </div>
@@ -1897,37 +1944,38 @@ const demotedCount = computed(() => {
 .verify-buttons > .verdict-button {
   flex: 1;
 }
-/* Confirm's dialog: the claim, the evidence levels strongest first, a note. */
-.confirm-dialog {
+/* The verdict dialog: the claim, a confirmation's evidence levels strongest
+   first, a note. */
+.verdict-dialog {
   display: flex;
   flex-direction: column;
   gap: 0.6rem;
   width: 17rem;
   max-width: 85vw;
 }
-.confirm-claim {
+.dialog-claim {
   font-size: 0.85rem;
 }
-.confirm-formula {
+.dialog-formula {
   font-family: var(--font-mono, ui-monospace, monospace);
   font-weight: 700;
   overflow-wrap: anywhere;
 }
-.confirm-levels {
+.dialog-levels {
   display: flex;
   flex-direction: column;
   gap: 0.35rem;
 }
-.confirm-level {
+.dialog-level {
   display: flex;
   align-items: center;
   gap: 0.5rem;
   font-size: 0.85rem;
 }
-.confirm-level label {
+.dialog-level label {
   cursor: pointer;
 }
-.confirm-actions {
+.dialog-actions {
   display: flex;
   justify-content: flex-end;
   gap: 0.4rem;

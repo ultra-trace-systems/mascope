@@ -495,11 +495,11 @@ capture the *evidence* behind a judgment rather than echoing the model's own sco
 so the labelled record stays informative for recalibration.
 
 Verdicts are recorded from the peak inspector, or from the ledger's Verdict column. In the
-inspector, *Reject* and *Unsure* are recorded as they are clicked, and *Confirm* opens a
-small dialog for the evidence level and an optional note. In the ledger the cell is a
-button, as in the *Batch peaks* ledger, so an unverified row shows a faint seal that opens
-a verdict form in place. A verdict is about the compound, so it is recorded on the family's
-M0 whichever member the row is.
+inspector, each verdict opens a small dialog for an optional note, and *Confirm*'s also
+asks for the evidence level. In the ledger the cell is a button, as in the *Batch peaks*
+ledger, so an unverified row shows a faint seal that opens a verdict form in place. A
+verdict is about the compound, so it is recorded on the family's M0 whichever member the
+row is.
 
 ### Batch-level verdicts
 

@@ -127,8 +127,11 @@ vi.mock('@/lib/base', () => ({
   BaseVerdictBadge: { props: ['record', 'compact'], template: '<span class="verdict-badge" />' }
 }))
 
-// Confirm's dialog renders its content only while shown, as Popover does, so a
-// test reads what the card shows before Confirm is clicked and after.
+// The verdict dialog renders its content only while shown, as Popover does, so
+// a test reads what the card shows before a verdict is clicked and after. The
+// two calls that move an open dialog to another button are recorded.
+const alignOverlay = vi.fn()
+const focusDialog = vi.fn()
 const PopoverStub = {
   data: () => ({ visible: false }),
   methods: {
@@ -137,7 +140,9 @@ const PopoverStub = {
     },
     hide() {
       this.visible = false
-    }
+    },
+    alignOverlay,
+    focus: focusDialog
   },
   template: '<div v-if="visible" class="popover" role="dialog"><slot /></div>'
 }
@@ -321,16 +326,17 @@ describe('PanePeakAssign verification gating', () => {
   })
 })
 
-// A confirmation carries the evidence behind it, and may carry a note; a
-// rejection or an "unsure" is the verdict alone. So the card shows the three
-// verdicts, and Confirm asks for the rest in a small dialog of its own.
-describe('PanePeakAssign confirm dialog', () => {
+// Every verdict may carry a note, and a confirmation also names the evidence
+// behind it. So the card shows the three verdicts, and each asks for the rest
+// in a small dialog of its own.
+describe('PanePeakAssign verdict dialog', () => {
   const ROW = assignment({ formula: 'C10H12', tier: 'assigned' })
   const verdictButton = (wrapper, label) =>
     wrapper.findAll('.verify-buttons button').find((button) => button.text() === label)
-  const dialog = (wrapper) => wrapper.find('[data-testid="confirm-dialog"]')
-  const submit = (wrapper) => dialog(wrapper).find('[data-testid="confirm-submit"]')
+  const dialog = (wrapper) => wrapper.find('[data-testid="verdict-dialog"]')
+  const submit = (wrapper) => dialog(wrapper).find('[data-testid="verdict-submit"]')
   const level = (wrapper, value) => dialog(wrapper).find(`input[type="radio"][value="${value}"]`)
+  const noteField = (wrapper) => dialog(wrapper).find('input.input-text')
 
   beforeEach(() => {
     focusedAssignment = ROW
@@ -356,42 +362,68 @@ describe('PanePeakAssign confirm dialog', () => {
         .findAll('label')
         .map((label) => label.text())
     ).toEqual(EVIDENCE_LEVELS.map(({ label }) => label))
-    expect(dialog(wrapper).find('input.input-text').exists()).toBe(true)
+    expect(noteField(wrapper).exists()).toBe(true)
     expect(verify).not.toHaveBeenCalled()
   })
 
-  it('records a rejection as it is clicked, with no level and no note', async () => {
+  it('asks for a note on a rejection, and records it with no level', async () => {
     const wrapper = await mountPane()
-    // Entered in the dialog, which was then closed without confirming.
+    // Picked in a Confirm dialog that was then left without confirming.
     wrapper.vm.evidenceLevel = 'msms'
-    wrapper.vm.note = 'not this one'
 
     await verdictButton(wrapper, 'Reject').trigger('click')
+    expect(verify).not.toHaveBeenCalled()
+    expect(dialog(wrapper).text()).toContain('Reject C10H12')
+    expect(dialog(wrapper).find('input[type="radio"]').exists()).toBe(false)
+    expect(submit(wrapper).text()).toBe('Reject')
+    expect(submit(wrapper).attributes('disabled')).toBeUndefined()
+
+    await noteField(wrapper).setValue(' the adduct is wrong ')
+    await submit(wrapper).trigger('click')
     await flushPromises()
 
-    expect(dialog(wrapper).exists()).toBe(false)
     expect(verify.mock.calls).toEqual([
-      [{ peak_assignment_id: 'pa-1', verdict: 'rejected', evidence_level: null, note: null }]
+      [
+        {
+          peak_assignment_id: 'pa-1',
+          verdict: 'rejected',
+          evidence_level: null,
+          note: 'the adduct is wrong'
+        }
+      ]
     ])
+    expect(dialog(wrapper).exists()).toBe(false)
   })
 
-  it('records an unsure as it is clicked', async () => {
+  it('asks the same of an unsure, which may go without a note', async () => {
     const wrapper = await mountPane()
 
     await verdictButton(wrapper, 'Unsure').trigger('click')
+    expect(dialog(wrapper).text()).toContain('Unsure about C10H12')
+    await submit(wrapper).trigger('click')
     await flushPromises()
 
-    expect(verify.mock.calls[0][0]).toMatchObject({ verdict: 'unsure', evidence_level: null })
+    expect(verify.mock.calls).toEqual([
+      [{ peak_assignment_id: 'pa-1', verdict: 'unsure', evidence_level: null, note: null }]
+    ])
+  })
+
+  it('focuses the note where no level is asked for', async () => {
+    const wrapper = await mountPane()
+    await verdictButton(wrapper, 'Reject').trigger('click')
+
+    expect(noteField(wrapper).attributes('autofocus')).toBeDefined()
   })
 
   it('will not confirm until a level is picked, then records it with the note', async () => {
     const wrapper = await mountPane()
     await verdictButton(wrapper, 'Confirm').trigger('click')
 
+    expect(submit(wrapper).text()).toBe('Confirm')
     expect(submit(wrapper).attributes('disabled')).toBeDefined()
 
     await level(wrapper, 'pattern').trigger('change')
-    await dialog(wrapper).find('input.input-text').setValue('  both adducts line up  ')
+    await noteField(wrapper).setValue('  both adducts line up  ')
     expect(submit(wrapper).attributes('disabled')).toBeUndefined()
 
     await submit(wrapper).trigger('click')
@@ -410,38 +442,53 @@ describe('PanePeakAssign confirm dialog', () => {
     expect(dialog(wrapper).exists()).toBe(false)
   })
 
-  it('confirms from the note with Enter', async () => {
+  it('records from the note with Enter', async () => {
     const wrapper = await mountPane()
     await verdictButton(wrapper, 'Confirm').trigger('click')
     await level(wrapper, 'msms').trigger('change')
 
-    await dialog(wrapper).find('input.input-text').trigger('keydown', { key: 'Enter' })
+    await noteField(wrapper).trigger('keydown', { key: 'Enter' })
     await flushPromises()
 
     expect(verify.mock.calls[0][0]).toMatchObject({ verdict: 'confirmed', evidence_level: 'msms' })
     expect(dialog(wrapper).exists()).toBe(false)
   })
 
-  it('keeps the dialog and what was entered when the confirmation fails', async () => {
+  // One dialog serves the three buttons: clicked while it is open for another
+  // verdict, it asks what this one asks, beside the button just clicked.
+  it('turns to the verdict clicked while it is open for another', async () => {
+    const wrapper = await mountPane()
+    await verdictButton(wrapper, 'Confirm').trigger('click')
+    expect(alignOverlay).not.toHaveBeenCalled()
+
+    await verdictButton(wrapper, 'Reject').trigger('click')
+    await flushPromises()
+
+    expect(dialog(wrapper).text()).toContain('Reject C10H12')
+    expect(dialog(wrapper).find('input[type="radio"]').exists()).toBe(false)
+    expect(alignOverlay).toHaveBeenCalledTimes(1)
+    expect(focusDialog).toHaveBeenCalledTimes(1)
+  })
+
+  it('keeps the dialog and what was entered when the verdict fails', async () => {
     verify.mockRejectedValueOnce(new Error('network'))
     const wrapper = await mountPane()
     await verdictButton(wrapper, 'Confirm').trigger('click')
     await level(wrapper, 'msms').trigger('change')
-    await dialog(wrapper).find('input.input-text').setValue('matches the standard')
+    await noteField(wrapper).setValue('matches the standard')
 
     await submit(wrapper).trigger('click')
     await flushPromises()
 
     expect(dialog(wrapper).exists()).toBe(true)
     expect(level(wrapper, 'msms').element.checked).toBe(true)
-    expect(dialog(wrapper).find('input.input-text').element.value).toBe('matches the standard')
+    expect(noteField(wrapper).element.value).toBe('matches the standard')
   })
 
   it('closes on a refusal, where the card says editor access is required', async () => {
     verify.mockRejectedValueOnce({ response: { status: 403 } })
     const wrapper = await mountPane()
-    await verdictButton(wrapper, 'Confirm').trigger('click')
-    await level(wrapper, 'msms').trigger('change')
+    await verdictButton(wrapper, 'Reject').trigger('click')
 
     await submit(wrapper).trigger('click')
     await flushPromises()
@@ -456,6 +503,7 @@ describe('PanePeakAssign confirm dialog', () => {
 
     const focused = dialog(wrapper).findAll('input[data-autofocus]')
     expect(focused.map((input) => input.attributes('value'))).toEqual([EVIDENCE_LEVELS[0].value])
+    expect(noteField(wrapper).attributes('autofocus')).toBeUndefined()
   })
 
   it('opens on the verdict being changed, its level picked and focused', async () => {
@@ -471,7 +519,7 @@ describe('PanePeakAssign confirm dialog', () => {
         .findAll('input[data-autofocus]')
         .map((i) => i.attributes('value'))
     ).toEqual(['msms'])
-    expect(dialog(wrapper).find('input.input-text').element.value).toBe('matches the standard')
+    expect(noteField(wrapper).element.value).toBe('matches the standard')
   })
 
   it('offers a way back to the verdict as it was while changing it', async () => {
