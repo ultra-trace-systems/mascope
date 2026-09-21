@@ -92,7 +92,8 @@ class ResolvedProfile:
     :param unavailable_channels: Channels the spectrum showed but the
         deployment has no mechanism row for, so they could not be searched.
     :param mode_channels: The notations the sample's ionization mode declares
-        itself. A secondary channel the mode also declares is the mode's own.
+        itself. A secondary channel the mode also declares is searched once,
+        through the mode's mechanism, and stays secondary.
     """
 
     profile: ReagentProfile
@@ -110,25 +111,38 @@ class ResolvedProfile:
 
     @property
     def minor_channels(self) -> frozenset[str]:
-        """The secondary channels this run searches beside the mode's own.
+        """The secondary channels this run searches, held to what one is.
 
-        A channel reaches this set only if the sample's spectrum showed its
-        carrier *and* the deployment can express it as a mechanism; the two
-        conditions are recorded separately, so a run says which of the two an
-        absent channel failed.
+        A channel the profile opens reaches this set only if the sample's
+        spectrum showed its carrier *and* the deployment can express it as a
+        mechanism; the two conditions are recorded separately, so a run says
+        which of the two an absent channel failed.
 
-        A channel the mode declares itself is never in it. The mode is what an
-        operator configured the sample's chemistry as, so such a channel is
-        searched once, as the mode's own, and none of what a secondary channel
-        is held to reaches it: the minor-channel cap, the tie that goes to the
-        mode's channel, the snapshot's secondary channels.
+        A channel the mode declares reaches it whatever the spectrum said, where
+        the profile names it secondary. Declaring a channel lets the run search
+        and match through it; it does not make an opportunistic reagent the
+        mode's own. So an uncorroborated winner through it is still capped at
+        candidate, a tie still goes to the mode's other channels, and the
+        snapshot still lists it.
         """
-        unavailable = set(self.unavailable_channels) | set(self.mode_channels)
-        return frozenset(
+        unavailable = set(self.unavailable_channels)
+        opened = {
             notation
             for notation in present_notations(self.channel_evidence)
             if notation not in unavailable
-        )
+        }
+        named = {channel.notation for channel in secondary_channels(self.profile.name)}
+        return frozenset(opened | (named & set(self.mode_channels)))
+
+    @property
+    def added_channels(self) -> frozenset[str]:
+        """The secondary channels the run adds to the mode's own mechanisms.
+
+        The minor channels the mode does not declare. One it declares is
+        already searched through the mode's mechanism, and searched again it
+        would propose every neutral through it twice.
+        """
+        return self.minor_channels - set(self.mode_channels)
 
     def heuristics_config(self, *, use_senior: bool = True) -> HeuristicFilterConfig:
         """The heuristic filter this run's context implies.

@@ -330,6 +330,42 @@ async def test_the_search_runs_on_the_brightest_member_and_annotates_the_anchor(
     assert s1["p3"].candidate is None
 
 
+async def test_a_secondary_channel_the_mode_declares_is_searched_once(
+    folded_batch, stubbed_engine, monkeypatch
+):
+    # The urea profile names +NH4+ secondary. A mode that declares it already
+    # searches it, and searched again every neutral through it would come back
+    # as another reading of its own ion - on the batch path as on a run.
+    proton = SimpleNamespace(
+        ionization_mechanism="H+", ionization_mechanism_id="mech-h"
+    )
+    ammonium = SimpleNamespace(
+        ionization_mechanism="+NH4+", ionization_mechanism_id="mech-nh4"
+    )
+    searched = []
+
+    async def mechanisms(sample):
+        return ["mech-h", "mech-nh4"], [proton, ammonium]
+
+    async def secondary(notations, polarity):
+        return [ammonium] if "+NH4+" in notations else []
+
+    def notations(mechs):
+        searched.append([mechanism.ionization_mechanism_id for mechanism in mechs])
+        return ["H+"], {"H+": "mech-h"}
+
+    monkeypatch.setattr(batch_untargeted, "fetch_sample_mechanisms", mechanisms)
+    monkeypatch.setattr(batch_untargeted, "fetch_mechanisms_by_notation", secondary)
+    monkeypatch.setattr(batch_untargeted, "_untargeted_ionization_notations", notations)
+
+    await run_batch_untargeted_search(
+        folded_batch["batch_id"], PeakAssignmentConfig(profile="UR")
+    )
+
+    assert ["mech-h", "mech-nh4"] in searched
+    assert all(ids.count("mech-nh4") == 1 for ids in searched)
+
+
 async def test_the_other_sample_is_measured_and_takes_a_fit_of_its_own(
     async_session_factory, folded_batch, stubbed_engine
 ):
