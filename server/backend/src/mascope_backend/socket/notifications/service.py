@@ -3,9 +3,8 @@
 from copy import deepcopy
 from typing import Any
 
-from sqlalchemy import select
-
-from mascope_backend.db import AgentDevice, async_session
+from mascope_backend.db import async_session
+from mascope_backend.db.devices import device_sponsor_id
 from mascope_backend.runtime import runtime
 from mascope_backend.socket import sio
 from mascope_backend.socket.notifications.schemas import UserNotification
@@ -255,29 +254,6 @@ async def send_progress_user_notification(
         await emit_user_notification(notification_copy, user_id=user_id)
 
 
-async def device_sponsor_id(user_id: int) -> int | None:
-    """The sponsor of the device that authenticates as this account, if any.
-
-    Only a machine account (an instrument agent's credential) has a device, so
-    a person's id finds none. Neither does a machine whose device lost its
-    sponsor when the sponsor's account was removed.
-
-    :param user_id: The account to look up.
-    :type user_id: int
-    :return: The sponsor's user id, or ``None``.
-    :rtype: int | None
-    """
-    async with async_session() as session:
-        return await session.scalar(
-            select(AgentDevice.sponsor_user_id)
-            .where(
-                AgentDevice.machine_user_id == user_id,
-                AgentDevice.sponsor_user_id.is_not(None),
-            )
-            .limit(1)
-        )
-
-
 async def error_recipient(user_id: int | None) -> int | None:
     """The account that reads an error from a task this account started.
 
@@ -297,7 +273,8 @@ async def error_recipient(user_id: int | None) -> int | None:
     if user_id is None:
         return None
     try:
-        sponsor_id = await device_sponsor_id(user_id)
+        async with async_session() as session:
+            sponsor_id = await device_sponsor_id(session, user_id)
     except Exception:  # noqa: BLE001 - the error being routed matters more
         runtime.logger.opt(exception=True).warning(
             f"Could not look up a device sponsor for account {user_id}; "

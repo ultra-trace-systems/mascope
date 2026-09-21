@@ -16,7 +16,8 @@ Two routes now carry the error:
   failed run has no result to read the instrument from, so without it the
   error never reached the room of the people watching that instrument.
 
-The sponsor lookup itself (a real query) is covered by
+The sponsor lookup itself (``mascope_backend.db.devices.device_sponsor_id``,
+a real query) is covered by
 ``tests/integration/api/pairing/test_device_sponsor_lookup.py``; here it is
 scripted.
 """
@@ -48,7 +49,9 @@ def emit(monkeypatch) -> AsyncMock:
 @pytest.fixture
 def sponsors(monkeypatch) -> AsyncMock:
     """Script the device-sponsor lookup: the machine has a sponsor, nobody else."""
-    lookup = AsyncMock(side_effect=lambda user_id: {MACHINE: SPONSOR}.get(user_id))
+    lookup = AsyncMock(
+        side_effect=lambda _session, user_id: {MACHINE: SPONSOR}.get(user_id)
+    )
     monkeypatch.setattr(f"{_SVC}.device_sponsor_id", lookup)
     return lookup
 
