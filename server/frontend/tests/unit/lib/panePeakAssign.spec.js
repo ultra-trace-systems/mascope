@@ -653,6 +653,30 @@ describe('PanePeakAssign tier reasons', () => {
     expect(rows[1].find('.reason-detail').text()).toBe(RADICAL.detail)
   })
 
+  // The band caps nothing, yet it is why the M0 stands where it does, so it is
+  // marked on the isotopologue's card as on the M0's own.
+  it("marks the M0's evidence band as holding it down", async () => {
+    const band = {
+      rule: 'evidence_band',
+      detail: 'evidence 30% (fit 30% x plausibility 100%) is under the candidate band of 45%',
+      caps: false,
+      band: 'below_assignability'
+    }
+    const m0 = { ...M0, tier: 'below_assignability' }
+    focusedAssignment = isotopologue(m0)
+    familyRows = [m0, focusedAssignment]
+    detailRecord = { provenance: { tier_reasons: [follows(true)] } }
+    otherDetails.set(m0.peak_assignment_id, { provenance: { tier_reasons: [band, NO_RIVAL] } })
+    const wrapper = await mountPane()
+    const inherited = reasons(wrapper).filter((row) => row.classes().includes('inherited'))
+
+    expect(inherited.map((row) => row.find('.reason-rule').text())).toEqual([
+      'evidence band via M0',
+      'no close rival via M0'
+    ])
+    expect(inherited.map((row) => row.classes().includes('caps'))).toEqual([true, false])
+  })
+
   it("fetches the M0's detail for an isotopologue that follows it", async () => {
     focusedAssignment = isotopologue(M0)
     familyRows = [M0, focusedAssignment]
