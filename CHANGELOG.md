@@ -74,6 +74,21 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   exactly one mode. Otherwise the file gets no samples, and the error names the
   polarity and the modes that matched.
 
+- Log assertions in the backend test suite hold in a full run again. The
+  migration tests run Alembic in-process, and `alembic/env.py` applied
+  `alembic.ini`'s logging setup on every command: `logging.config.fileConfig`
+  replaced the root handlers - the runtime's bridge from stdlib logging into
+  loguru among them - raised the root level to WARNING, and disabled every
+  logger that already existed. For every test after them, records from a
+  library logging through `logging.getLogger` never reached a loguru sink, so
+  a test that a record arrives failed in the full suite while passing alone,
+  and a test that no WARNING arrives passed whatever the code logged. The
+  setup now applies only when Alembic runs from its own command line, and
+  there it leaves existing loggers enabled, so a warning a library logs
+  during a migration is shown rather than dropped. Nothing runs Alembic
+  inside the application: deployments migrate from the command line, in the
+  db-init container.
+
 ## [1.8.1] - 2026.09.16
 
 ### Added
