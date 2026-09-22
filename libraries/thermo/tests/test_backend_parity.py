@@ -391,11 +391,18 @@ def test_scan_acquisition_settings_match_thermo(monkeypatch, path):
     with open_backend(path) as backend:
         ot = backend.scan_acquisition_settings(ms_type=None)
 
-    assert ot["header_labels"] == th["header_labels"]
+    # OpenTFRaw reads the trailer as a dict (scan_parameters), so it cannot
+    # list a label the instrument repeats more than once.
+    labels = th["header_labels"]
+    assert len(set(labels)) == len(labels), (
+        f"the trailer repeats {sorted({x for x in labels if labels.count(x) > 1})}"
+        ", which OpenTFRaw reads as a dict and so reports once"
+    )
+    assert ot["header_labels"] == labels
     assert set(ot["settings"]) == set(th["settings"]), "scan set differs"
     for scan_number, theirs in th["settings"].items():
         ours = ot["settings"][scan_number]
-        for label, o, t in zip(th["header_labels"], ours, theirs, strict=True):
+        for label, o, t in zip(labels, ours, theirs, strict=True):
             assert _same_trailer_value(o, t), (
                 f"scan {scan_number}, {label!r}: OpenTFRaw {o!r} vs Thermo {t!r}"
             )

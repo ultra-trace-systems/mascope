@@ -37,10 +37,10 @@ To ensure consistency across backends, the following field sets are enforced:
   - The UV, PDA and analog detector fields (`Frequency`, the wavelength fields, `NumberOfChannels`, `IsUniformTime`, `AbsorbanceUnitScale`, `WavelengthStep`) hold the fixed values Thermo's `ScanStats` holds for every MS scan (`MS_SCAN_DETECTOR_STATS`).
   - A field a backend cannot read is `None`. For OpenTFRaw those are `PacketCount`, `SegmentNumber` and `CycleNumber` (`OPENTFRAW_UNAVAILABLE_SCAN_STATS`). It decodes the scan-index words behind the first two but does not pass them to Python ([Sigilweaver/OpenTFRaw#56](https://github.com/Sigilweaver/OpenTFRaw/pull/56)).
 - **The trailer** is the instrument's own table of per-scan acquisition settings (`FT Resolution:`, `AGC Target:`, `Ion Injection Time (ms):` and dozens more), so it is not a fixed field set: its labels depend on the instrument. Both backends report it whole, under the same labels in the same order (`scan_trailer`, `scan_acquisition_settings`). OpenTFRaw reads it with `scan_parameters()`. The values keep each backend's types:
-  - The Thermo library gives text: numbers in the machine's number format, rounded to the digits it displays (`0,11`); switches as `On`/`Off` or `Yes`/`No`; an empty string for a `=== ... ===` section heading.
+  - The Thermo library gives text: numbers in the machine's number format, rounded to the digits it displays (`0,11`); switches as `On`/`Off` or `Yes`/`No`; an empty string for a section heading such as `=== Mass Calibration: ===:`.
   - OpenTFRaw gives the stored values: numbers at full precision (`0.11146822731511463`), `True`/`False`, and `None` for a section heading.
 
-  On the internal regression corpus, the demo bundle and the committed sample files (345 Orbitrap files, all of their scans MS1), the backends report the same labels on every scan, and every value agrees within the digits the Thermo library displays.
+  On the internal regression corpus, the demo bundle and the committed sample files (345 Orbitrap files, all of their scans MS1), the backends report the same labels on every scan, and every value agrees within the digits the Thermo library displays. None of those trailers repeats a label. `scan_parameters()` returns a dict, so a label an instrument repeated would appear once in OpenTFRaw's table and each time it occurs in the Thermo library's; `test_scan_acquisition_settings_match_thermo` fails on such a file and names the label.
 
 ## Public Methods
 

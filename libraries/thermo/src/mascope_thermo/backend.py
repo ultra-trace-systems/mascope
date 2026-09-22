@@ -136,11 +136,12 @@ class ReaderBackend(Protocol):
         """Per-scan trailer table ``{"header_labels": [...], "settings": {...}}``.
 
         ``header_labels`` is the trailer's labels, the instrument's own
-        (``"FT Resolution:"``, ``"=== Mass Calibration: ==="``), one list for
+        (``"FT Resolution:"``, ``"=== Mass Calibration: ===:"``), one list for
         every selected scan. ``settings`` maps each scan's 1-based number to
-        its values in label order. Every backend reports the same labels;
-        values are verbatim, so their type depends on the backend (see
-        :meth:`scan_trailer`).
+        its values in label order. Every backend reports the same labels,
+        except that OpenTFRaw reads the trailer as a dict, so a label an
+        instrument repeats would appear there once. Values are verbatim, so
+        their type depends on the backend (see :meth:`scan_trailer`).
         """
         ...
 
@@ -1375,7 +1376,9 @@ class OpenTFRawBackend:
         # GetTrailerExtraInformation gives and in the same order. Values are
         # typed where Thermo gives text: numbers at full precision, where
         # Thermo rounds to the digits it displays, True/False for On/Off and
-        # Yes/No, and None for the "=== ... ===" section headings.
+        # Yes/No, and None for the "=== ... ===:" section headings. It is a
+        # dict, so a label the trailer repeats appears here once, where
+        # GetTrailerExtraInformation lists it each time.
         return self._raw.scan_parameters(scan_number) or {}
 
     def scan_statistics(
