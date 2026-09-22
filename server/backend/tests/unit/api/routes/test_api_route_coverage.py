@@ -15,7 +15,7 @@ the app registers, so a route added later is covered without anyone having to
 come back here.
 """
 
-from fastapi.routing import iter_route_contexts
+from fastapi.routing import APIRoute, iter_route_contexts
 
 from mascope_backend.api.lib.api_features import api_route
 from mascope_backend.app.fast import fast
@@ -65,7 +65,14 @@ def _api_route_code():
 
 
 def _routes() -> list[tuple[str, str, bool]]:
-    """(method, path, rendered through ``@api_route``) for every route."""
+    """
+    (method, path, rendered through ``@api_route``) for every API route.
+
+    FastAPI's own docs pages and live schema (``/docs``, ``/redoc``,
+    ``/openapi.json``) are plain Starlette routes, served in dev mode only,
+    and are left out: they are not the app's API, and whether they exist
+    depends on the mode the tests run in.
+    """
     wrapper_code = _api_route_code()
     return [
         (
@@ -74,6 +81,7 @@ def _routes() -> list[tuple[str, str, bool]]:
             getattr(context.endpoint, "__code__", None) is wrapper_code,
         )
         for context in iter_route_contexts(fast.routes)
+        if isinstance(context.route, APIRoute)
         for method in context.methods or ()
     ]
 
