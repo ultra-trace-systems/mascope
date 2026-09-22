@@ -389,3 +389,51 @@ The published artifact is a zip of `<BUNDLE>`. The sign-off report lives outside
    mascope demo fetch --force      # download + checksum-verify
    mascope demo                    # instant load from the published snapshot
    ```
+
+### E. Add an MS2 acquisition
+
+Every bundle so far is MS1-only (1.2.1: 161 Orbitrap acquisitions, no MS2
+scans), so nothing that runs against a demo stack reads MS2. On it
+`/api/samples/{id}/ms2/summary` reports `ms2_scan_count: 0` and
+`/ms2/centroids` answers 400. The SDK contract suite's `TestMs2Contract`
+(`libraries/sdk/tests/test_contract.py`) checks only the summary there and
+skips its centroid tests. Those tests pin the key shape the published SDK
+documents, so they are what would catch a server changing it. Adding an MS2
+acquisition is a MINOR bundle version (samples added):
+
+1. **Choose the file.** Pick one small MS2 acquisition whose owner agrees to
+   publish it under the bundle's data licence. A stepped-energy one exercises
+   both the default per-parent response and the `by_activation` split. MS2
+   scan headers carry more per-scan metadata than MS1 (precursor, activation,
+   isolation, energies), so read the de-identification report closely before
+   signing off. The build renames only files matching its acquisition-filename
+   pattern, and aliases only instruments listed in `INSTRUMENT_ALIASES`
+   (`build_bundle.py`). The report flags anything else as `NOT aliased!`.
+   Such a file would be published under its real label.
+2. **Put it where the tests look.** Ingest files each instrument into a system
+   workspace of its own (`Acquisitions <instrument>`, from the label the stored
+   filename starts with), with a dataset per acquisition year and a batch per
+   acquisition day and ionization mode. The contract suite binds to one
+   workspace. It probes the first sample of each batch for MS2 scans. So the
+   file needs the demo's instrument alias and an acquisition day the existing
+   files do not share. That way it gets a batch of its own, and the existing
+   batches that the other contract and e2e tests index into stay as they are.
+   A file that cannot meet this can be named to the suite with
+   `MASCOPE_SDK_TEST_MS2_SAMPLE` instead. Either way, the manifest's
+   `measurement` block describes a single instrument and date, so check that
+   it still reads true.
+3. **Seed.** If the file needs an ionization mode or instrument configuration
+   that `seed/` lacks, re-author the seed (A1-A2). Otherwise add the file to
+   `<RAW>` and re-run from A2 (see C).
+4. **Rebuild and capture** (A3-A4). The coverage check refuses to write goldens
+   until the new file is in the database. The goldens are MS1 found-isotope
+   peaks, so they grow by the new file's MS1 peaks; review that diff. Its MS2
+   output is not in the goldens. Asserting it would need its own export in
+   `export_goldens` and its own comparison.
+5. **Publish and register** (D) as the next MINOR version, then dispatch the
+   reproducibility workflow on the branch. Before merging, check on a demo
+   stack that the MS2 contract tests run rather than skip:
+
+   ```sh
+   MASCOPE_SDK_CONTRACT=1 uv run pytest libraries/sdk/tests/test_contract.py -k Ms2 -rs -v
+   ```
