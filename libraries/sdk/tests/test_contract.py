@@ -130,7 +130,14 @@ def ms2_sample_id(mascope):
     batch, not per sample, since an MS2 acquisition in the demo bundle goes in
     a batch of its own (docs/demo_dataset.md). The bundle is MS1-only today,
     so absence is an environment gap rather than a contract violation.
+
+    A probe the server cannot answer - a non-Orbitrap file, a raw missing from
+    the filestore - is passed over rather than failed on: it says nothing
+    about the sample the tests need. A broken summary route still fails
+    ``test_summary_reports_scan_counts``, which calls it unguarded.
     """
+    from mascope_sdk.exceptions import MascopeAPIError
+
     _skip_unless_attr(mascope.samples, "ms2")
     override = os.environ.get("MASCOPE_SDK_TEST_MS2_SAMPLE")
     if override:
@@ -144,7 +151,10 @@ def ms2_sample_id(mascope):
             if samples is None or samples.empty:
                 continue
             sample_id = samples.iloc[0]["sample_item_id"]
-            summary = mascope.samples.ms2(sample_id).get_summary()
+            try:
+                summary = mascope.samples.ms2(sample_id).get_summary()
+            except MascopeAPIError:
+                continue
             if summary and summary["ms2_scan_count"] > 0:
                 return sample_id
     pytest.skip("stack carries no sample with MS2 scans")
