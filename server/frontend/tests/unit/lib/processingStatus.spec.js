@@ -10,6 +10,7 @@ import {
 // server/backend/src/mascope_backend/api/models/sample/files/config.py).
 const BACKEND_STATUSES = [
   'converted',
+  'queued',
   'bound',
   'calibrated',
   'needs_chemistry',
@@ -81,5 +82,12 @@ describe('PROCESSING_STATUS_FILTERS', () => {
     const attention = PROCESSING_STATUS_FILTERS.find(({ label }) => label === 'Needs attention')
 
     expect(attention.value.sort()).toEqual(['calibration_failed', 'failed', 'needs_chemistry'])
+  })
+
+  it('puts every status of a run still under way under "In progress"', () => {
+    // IN_PROGRESS in the backend's config.py: what a restart marks failed.
+    const inProgress = PROCESSING_STATUS_FILTERS.find(({ label }) => label === 'In progress')
+
+    expect(inProgress.value.sort()).toEqual(['bound', 'calibrated', 'converted', 'queued'])
   })
 })

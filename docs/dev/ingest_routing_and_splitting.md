@@ -91,7 +91,7 @@ Related designs, and how this one relates to them (section 13):
 | Scans are selected by polarity, MS order and time only | `OpenTFRawBackend._selected`, `ScanSelector` | Two same-polarity streams with different scan ranges or scan modes are pooled into one averaged spectrum, one peak list, one time axis and one instrument fit. Averages divide by every selected scan, so an ion seen by only one range is diluted. |
 | An item's window is stored and then ignored | `compute_match_isotopes`, `extract_peaks`, peak-assignment peak loading, calibration, `create_sample_items` TIC | A windowed item is matched and assigned as if it were the whole polarity. |
 | Calibration and the instrument function are per file | `calibration_mz_fit` `_apply_sync`, `calibration_mz_apply` | Two items of one file share one m/z factor. Applying a new fit rescales every peak row in the file and removes the matches of every item in the file. #2153 contains the damage: every sample of a file is calibrated before any is matched, and a file with two calibrating modes is not calibrated at all. |
-| A TOF file with no fit is never matched | `create_sample_file`, the verified gate in `match_compute_sample` | Registration stores a TOF file's converter coefficients as a record marked `unfitted` and not verified, and the gate refuses it. A TOF file whose mode names no calibrant collection is therefore never matched: every run ends on the gate's warning to calibrate the file, though the pipeline has no calibrants to calibrate it against. Phase 0 item 8. |
+| A TOF file with no fit is never matched | `create_sample_file`, the verified gate in `match_compute_sample` | Registration stores a TOF file's converter coefficients as a record marked `unfitted` and not verified, and the gate refuses it. A TOF file whose mode names no calibrant collection is therefore never matched. Every run used to end on the gate's warning to calibrate the file, though the pipeline has no calibrants to calibrate it against; since phase 0 item 8 the pipeline holds the file back and records why. |
 | MS2-only acquisitions are refused; MS2 is reachable only through an item's polarity and window | `RawProcessor._get_sample_file_props`, `api/new/ms2` | #2068 |
 | The method identity was lost | `RawProcessor.method_file` returned `""` | Orbitrap files ingested from July 2026 carry no method name, and it is the routing key section 2.4 argues for. #2155 reads it again, and its `populate_orbitrap_method_file` script restores it on the files already ingested. |
 | Nothing recorded how far a file got | `sample_file` | The File Agent only learns that its bytes arrived. Phase 1 records a processing status on each file. |
@@ -576,7 +576,11 @@ it is new work.
     during conversion, and the converter registers the file only after it.
     `matched` needs matching to run as a stage of its own, while today each
     sample is matched and assigned in turn.
-  - A restart marks the runs it cut short (`converted`, `bound`,
+  - `queued` marks a file whose processing was asked for again - a
+    re-process, or `POST /{id}/process` - before anything of it is
+    replaced, so the row never keeps an earlier run's `done` over a file
+    being rebuilt.
+  - A restart marks the runs it cut short (`converted`, `queued`, `bound`,
     `calibrated`) as `failed`.
   - `sample_file_utc_created` records when the converter registered the file
     (#482). Unlike `processing_updated_utc`, no later stage overwrites it.
@@ -809,15 +813,15 @@ Effort is rough.
    top peaks. This is this design's census as a supported command. Shipped
    in #2161; `python -m mascope_thermo.streams <path>` prints the same report
    as JSON wherever the reader is installed.
-8. **Hold back files the match gate refuses** (section 1.2). Open; found in
-   #2170.
+8. **Hold back files the match gate refuses** (section 1.2). Found in
+   #2170, shipped in #2164.
    - The pipeline skips matching and assignment for a file whose record the
      gate would refuse, as it does for a fit below the quality bar, instead
-     of letting the run end on the gate's warning. Today the pipeline reads
-     the record only when a calibration ran or was skipped as shared, and
-     even then lets a TOF converter record through.
-   - With phase 1's status columns, such a file ends `calibration_failed`,
-     and the detail names the missing calibrant collection.
+     of letting the run end on the gate's warning. It used to read the
+     record only when a calibration ran or was skipped as shared, and even
+     then let a TOF converter record through.
+   - Such a file ends `calibration_failed`, and the detail names the missing
+     calibrant collection.
    - The gate stays as it is. It also serves the per-sample match route, and
      batch matching reads the same `verified` flag, so relaxing it would
      allow manual matching on an uncalibrated TOF axis that batch matching

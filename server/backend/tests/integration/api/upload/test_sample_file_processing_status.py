@@ -9,12 +9,12 @@ unit tests; here the columns, the writer, the list filter and the startup
 reset meet a real database.
 """
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock
 
 import pytest
 import pytest_asyncio
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, update
 
 from mascope_backend.api.controllers.sample.files import sample_files_controller
 from mascope_backend.api.controllers.sample.files.process import (
@@ -22,6 +22,7 @@ from mascope_backend.api.controllers.sample.files.process import (
 )
 from mascope_backend.api.controllers.sample.files.process import status
 from mascope_backend.api.models.sample.files.config import ProcessingStatus
+from mascope_backend.api.routes.sample.files import sample_files_routes
 from mascope_backend.db import SampleFile
 from mascope_backend.db.admin.sample_file.reset_interrupted_processing import (
     INTERRUPTED_DETAIL,
@@ -57,7 +58,10 @@ def no_post_create_work(monkeypatch):
 
 
 async def _add_file(
-    async_session_factory, name: str, processing_status: str | None = None
+    async_session_factory,
+    name: str,
+    processing_status: str | None = None,
+    acquired: datetime = datetime(2026, 9, 1, 12, 0, 0, tzinfo=timezone.utc),
 ) -> str:
     sample_file_id = gen_id()
     async with async_session_factory() as session:
@@ -67,8 +71,8 @@ async def _add_file(
                 filename=f"{INSTRUMENT}_{name}.raw",
                 instrument=INSTRUMENT,
                 instrument_type="orbi",
-                datetime=datetime(2026, 9, 1, 12, 0, 0),
-                datetime_utc=datetime(2026, 9, 1, 12, 0, 0, tzinfo=timezone.utc),
+                datetime=acquired.replace(tzinfo=None),
+                datetime_utc=acquired,
                 length=60.0,
                 range=[50.0, 500.0],
                 polarity="-",
@@ -77,6 +81,16 @@ async def _add_file(
         )
         await session.commit()
     return sample_file_id
+
+
+async def _set(async_session_factory, sample_file_id: str, **values) -> None:
+    async with async_session_factory() as session:
+        await session.execute(
+            update(SampleFile)
+            .where(SampleFile.sample_file_id == sample_file_id)
+            .values(**values)
+        )
+        await session.commit()
 
 
 async def _row(async_session_factory, sample_file_id: str) -> SampleFile:
@@ -265,12 +279,139 @@ async def test_the_file_list_sorts_by_registration_time(
 
 
 @pytest.mark.asyncio
+async def test_a_file_without_a_registration_time_sorts_last(
+    admin_client, async_session_factory
+):
+    """Newest first means the files registered before the column come last."""
+    legacy = await _add_file(async_session_factory, "legacy")
+    await _set(async_session_factory, legacy, sample_file_utc_created=None)
+    first = await _add_file(async_session_factory, "first")
+    second = await _add_file(async_session_factory, "second")
+
+    resp = await admin_client.get(
+        "/api/sample/files",
+        params={
+            "instrument": INSTRUMENT,
+            "sort": "sample_file_utc_created",
+            "order": "desc",
+        },
+    )
+
+    assert resp.status_code == 200, resp.text
+    ids = [row["sample_file_id"] for row in resp.json()["data"]]
+    assert ids == [second, first, legacy]
+
+
+@pytest.mark.asyncio
+async def test_files_that_tie_on_the_sort_column_keep_one_order(
+    admin_client, async_session_factory
+):
+    """Paging with OFFSET needs a total order, or pages repeat and skip rows."""
+    added = [
+        await _add_file(async_session_factory, f"tie{i}", "done") for i in range(4)
+    ]
+
+    pages = []
+    for page in range(2):
+        resp = await admin_client.get(
+            "/api/sample/files",
+            params={
+                "instrument": INSTRUMENT,
+                "sort": "processing_status",
+                "page": page,
+                "limit": 2,
+            },
+        )
+        assert resp.status_code == 200, resp.text
+        pages += [row["sample_file_id"] for row in resp.json()["data"]]
+
+    assert pages == sorted(added)
+
+
+@pytest.mark.asyncio
+async def test_recent_files_can_be_recent_by_their_processing(
+    admin_client, async_session_factory
+):
+    """A file acquired long ago that failed today is a recent failure."""
+    long_ago = datetime.now(timezone.utc) - timedelta(days=90)
+    backlog = await _add_file(async_session_factory, "backlog", "failed", long_ago)
+    await _set(
+        async_session_factory,
+        backlog,
+        processing_updated_utc=datetime.now(timezone.utc),
+    )
+    params = {"instrument": INSTRUMENT, "days": 1, "processing_status": "failed"}
+
+    by_acquisition = await admin_client.get("/api/sample/files/recent", params=params)
+    by_processing = await admin_client.get(
+        "/api/sample/files/recent", params={**params, "recent_by": "processing"}
+    )
+
+    assert by_acquisition.status_code == 200, by_acquisition.text
+    assert by_acquisition.json()["data"] == []
+    assert by_processing.status_code == 200, by_processing.text
+    assert [row["sample_file_id"] for row in by_processing.json()["data"]] == [backlog]
+
+
+@pytest.mark.asyncio
 async def test_an_unknown_status_is_refused(admin_client):
     resp = await admin_client.get(
         "/api/sample/files", params={"processing_status": "halfway"}
     )
 
     assert resp.status_code == 422, resp.text
+
+
+# ---------------------------------------------------------------------------
+# Processing asked for again
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_a_file_is_queued_before_re_processing_replaces_it(
+    async_session_factory, monkeypatch
+):
+    """Until the rebuild records its own stages, the old `done` would stand."""
+    sample_file_id = await _add_file(async_session_factory, "redo", "done")
+    seen = {}
+
+    async def clear(sample_file_id, independent_transaction):
+        row = await _row(async_session_factory, sample_file_id)
+        seen["status"] = row.processing_status
+        return set()
+
+    monkeypatch.setattr(status, "emit_record_updated", AsyncMock())
+    monkeypatch.setattr(process_service, "reset_mz_calibration", AsyncMock())
+    monkeypatch.setattr(
+        process_service, "resolve_ionization_modes_by_tokens", AsyncMock()
+    )
+    monkeypatch.setattr(process_service, "_clear_sample_items_for_reprocessing", clear)
+    monkeypatch.setattr(
+        process_service, "auto_process_sample_file", AsyncMock(return_value={})
+    )
+
+    await process_service.re_process_sample_files(sample_file_ids=[sample_file_id])
+
+    assert seen["status"] == "queued"
+    row = await _row(async_session_factory, sample_file_id)
+    assert row.processing_detail == "Queued for re-processing."
+
+
+@pytest.mark.asyncio
+async def test_processing_a_file_on_request_queues_it(
+    admin_client, async_session_factory, monkeypatch
+):
+    sample_file_id = await _add_file(async_session_factory, "again", "done")
+    spawn = AsyncMock()
+    monkeypatch.setattr(status, "emit_record_updated", AsyncMock())
+    monkeypatch.setattr(sample_files_routes, "spawn_auto_process_sample_file", spawn)
+
+    resp = await admin_client.post(f"/api/sample/files/{sample_file_id}/process")
+
+    assert resp.status_code == 202, resp.text
+    row = await _row(async_session_factory, sample_file_id)
+    assert row.processing_status == "queued"
+    spawn.assert_awaited_once()
 
 
 # ---------------------------------------------------------------------------
@@ -282,6 +423,7 @@ async def test_an_unknown_status_is_refused(admin_client):
 async def test_a_restart_fails_the_runs_it_cut_short(async_session_factory):
     interrupted = [
         await _add_file(async_session_factory, "converted", "converted"),
+        await _add_file(async_session_factory, "queued", "queued"),
         await _add_file(async_session_factory, "bound", "bound"),
         await _add_file(async_session_factory, "calibrated", "calibrated"),
     ]

@@ -11,6 +11,7 @@ must never fail the processing it reports on.
 from unittest.mock import AsyncMock, patch
 
 import pytest
+from test_utils import captured_logs
 
 from mascope_backend.api.controllers.sample.files.process import status
 from mascope_backend.api.models.sample.files.config import (
@@ -101,6 +102,14 @@ async def test_props_without_a_census_report_nothing():
         assert await status.read_pooled_streams_note("x.raw") is None
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("census", [["not a stream"], "not a list of streams"])
+async def test_a_census_of_the_wrong_shape_reports_nothing(census):
+    """Registration reads the note too, and must not fail on it."""
+    with patch.object(status, "read_props", return_value={"scan_streams": census}):
+        assert await status.read_pooled_streams_note("x.raw") is None
+
+
 # ---------------------------------------------------------------------------
 # The detail
 # ---------------------------------------------------------------------------
@@ -132,6 +141,7 @@ def test_in_progress_statuses_are_the_ones_a_run_passes_through():
     """Every other status ends a run; a restart must never reset those."""
     assert IN_PROGRESS == {
         ProcessingStatus.CONVERTED,
+        ProcessingStatus.QUEUED,
         ProcessingStatus.BOUND,
         ProcessingStatus.CALIBRATED,
     }
@@ -150,16 +160,22 @@ def test_statuses_fit_their_column():
 @pytest.mark.asyncio
 @pytest.mark.parametrize("failure", [RuntimeError("no engine"), OSError("gone")])
 async def test_a_status_that_cannot_be_written_is_logged_not_raised(failure):
+    """The file is named at INFO and the WARNING names none.
+
+    Error monitoring groups issues by the message, and an outage fails this
+    write for every file in flight: one issue, not one per file.
+    """
     emit = AsyncMock()
     with (
         patch.object(status, "async_session", side_effect=failure),
         patch.object(status, "emit_record_updated", emit),
-        patch.object(status.runtime.logger, "opt") as opt,
+        captured_logs() as records,
     ):
         await status.record_processing_status("sf-1", ProcessingStatus.DONE, "Done.")
 
     emit.assert_not_called()
-    warning = opt.return_value.warning
-    warning.assert_called_once()
-    assert "sf-1" in warning.call_args.args[0]
-    assert "'done'" in warning.call_args.args[0]
+    lines = [(r["level"].name, r["message"]) for r in records]
+    warnings = [message for level, message in lines if level == "WARNING"]
+    assert len(warnings) == 1 and "'done'" in warnings[0], lines
+    assert "sf-1" not in warnings[0], lines
+    assert any(level == "INFO" and "sf-1" in message for level, message in lines)

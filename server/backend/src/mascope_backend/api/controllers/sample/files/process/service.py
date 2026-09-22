@@ -5,6 +5,7 @@ Handles automated creation of ACQUISITION datasets, batches, and sample items, a
 """
 
 import asyncio
+from dataclasses import dataclass
 
 from sqlalchemy import delete, select
 from sqlalchemy.exc import InterfaceError, OperationalError, SQLAlchemyError
@@ -251,10 +252,61 @@ class ChemistryNotBoundError(ValueError):
 
 
 def _failure_detail(exc: BaseException) -> str:
-    """What a person is told about the error that stopped a pipeline."""
+    """What a person is told about the error that stopped a pipeline.
+
+    The detail is served to everyone who can list the file, so it carries an
+    error's own text only where the API already writes that text for its
+    user: an ApiException's user message, and a ValueError, the API's
+    client-class error. Any other error is a fault whose text can hold SQL
+    with its bound parameters, pool internals or file paths. For those the
+    detail names only the kind of failure, as ``process_exception`` does for
+    the notification, and the worker's log names the file and the error.
+    """
     if isinstance(exc, ApiException):
         return str(exc.user_message)
-    return str(exc) or type(exc).__name__
+    if isinstance(exc, SQLAlchemyTimeoutError):
+        return "The server was too busy to process the file. Process it again."
+    if isinstance(exc, SQLAlchemyError):
+        return "A database operation failed while the file was processed."
+    if isinstance(exc, ValueError):
+        return str(exc) or type(exc).__name__
+    return "Processing stopped on an unexpected error."
+
+
+#: How long a pipeline that gave up waits to record that it failed. A run that
+#: gave up on pool starvation writes on the same starved pool, and must not
+#: wait out the whole pool timeout for its report.
+_FAILED_STATUS_TIMEOUT_S = 10
+
+
+async def _record_failed(sample_file_id: str, error: Exception) -> None:
+    """Record that a pipeline stopped for good on ``error``.
+
+    Awaited inside the wrapper's ``except`` clause, where a cancellation would
+    bypass that try's ``except asyncio.CancelledError``, so it is reported
+    here, as the backoff wait reports its own. A write that does not finish in
+    time leaves the file in its last in-progress status, which the next
+    startup marks failed.
+
+    :param sample_file_id: File whose pipeline gave up.
+    :param error: What the last attempt raised.
+    """
+    try:
+        await asyncio.wait_for(
+            record_processing_status(
+                sample_file_id, ProcessingStatus.FAILED, _failure_detail(error)
+            ),
+            timeout=_FAILED_STATUS_TIMEOUT_S,
+        )
+    except asyncio.TimeoutError:
+        runtime.logger.info(
+            f"Could not record within {_FAILED_STATUS_TIMEOUT_S}s that "
+            f"auto-processing failed for sample file {sample_file_id}; it keeps "
+            "its last status until a restart marks it failed"
+        )
+    except asyncio.CancelledError:
+        _report_cancelled(sample_file_id, "while recording that it failed")
+        raise
 
 
 def _bound_detail(ionization_modes: list[IonizationMode]) -> str:
@@ -289,6 +341,42 @@ def _calibration_failure_detail(mz_calibration: dict | None) -> str:
     if record.get("status") == "poor" and issues:
         return f"The m/z calibration is below the quality bar: {' '.join(issues)}"
     return "The file's m/z calibration is not verified."
+
+
+def _is_verified_record(mz_calibration: dict | None) -> bool:
+    """Whether matching accepts a file's m/z calibration record.
+
+    The verified gate of ``match_compute_sample``, which refuses every other
+    record with a raised warning: no record means the acquisition axis, which
+    is accepted, and any record must say it was verified. A TOF file's
+    converter record never does (see ``is_unfitted_record``).
+    """
+    return mz_calibration is None or bool(mz_calibration.get("verified", False))
+
+
+@dataclass(frozen=True)
+class CalibrationOutcome:
+    """How a sample's automatic m/z calibration ended.
+
+    The reason travels with the outcome rather than being read back from the
+    file's record, which does not always hold it: a failure never overwrites
+    an applied fit or an earlier failure's record.
+    """
+
+    #: A fit was applied and verified.
+    verified: bool
+    #: Why the sample is not calibrated, as a sentence for the file's
+    #: processing detail; None when verified.
+    reason: str | None = None
+
+
+def _calibration_error_reason(error: ApiException) -> str:
+    """The reason a calibration attempt gave, without its final period."""
+    data = (
+        error.tech_message.get("data") if isinstance(error.tech_message, dict) else None
+    )
+    reason = (data or {}).get("warning") or (data or {}).get("error")
+    return str(reason or error.user_message).strip().rstrip(".")
 
 
 async def _delete_partial_acquisition_items(sample_file_id: str) -> None:
@@ -438,9 +526,7 @@ async def auto_process_sample_file(
                 # discoverable by counting rows afterwards.
                 _report_given_up(sample_file_id, attempts=attempt + 1, error=e)
                 if not isinstance(e, ChemistryNotBoundError):
-                    await record_processing_status(
-                        sample_file_id, ProcessingStatus.FAILED, _failure_detail(e)
-                    )
+                    await _record_failed(sample_file_id, e)
                 raise
             delay = _AUTO_PROCESS_RETRY_DELAYS_S[attempt]
             # INFO: a retry that usually succeeds, and the line names the file,
@@ -736,38 +822,22 @@ async def _auto_process_sample_file(
         and not is_blank_sample_file
     }
     shared_calibration = len(calibrating_sample_ids) > 1
-    mz_calibration = None
-    # For the file's final status: what became of its calibration when that
-    # is worth saying, and why nothing was matched when calibration stopped it.
-    calibration_note: str | None = None
+    # For the file's final status: why it was not calibrated, as a clause, and
+    # why samples went unmatched when calibration stopped them.
+    not_calibrated_reason: str | None = None
     unmatched_reason: str | None = None
     if shared_calibration:
-        # Fresh uploads and the re-process route start from the acquisition
-        # axis; re-running the pipeline without a reset keeps an earlier fit.
-        mz_calibration = (
-            await fetch_sample_file(sample_file_id=sample_file_id)
-        ).mz_calibration
-        axis = (
-            "the acquisition axis"
-            if mz_calibration is None or is_unfitted_record(mz_calibration)
-            else "the calibration already on the file"
+        not_calibrated_reason = (
+            f"{len(calibrating_sample_ids)} of its samples have a calibration "
+            "collection, and a file holds one m/z calibration for all of them"
         )
         # INFO: a data condition, fires for every such file
         runtime.logger.info(
             f"Skipping m/z calibration for '{sample_file.filename}': "
-            f"{len(calibrating_sample_ids)} of its samples have a calibration "
-            "collection, and the file holds one m/z calibration for all of "
-            f"them. Matching on {axis}."
-        )
-        calibration_note = (
-            f"Not m/z calibrated: {len(calibrating_sample_ids)} of its samples "
-            "have a calibration collection, and a file holds one m/z "
-            f"calibration for all of them. Matched on {axis}."
+            f"{not_calibrated_reason}."
         )
         calibrating_sample_ids.clear()
-    elif is_blank_sample_file:
-        calibration_note = "Blank measurement: no peaks to calibrate, match or assign."
-    elif not calibrating_sample_ids:
+    elif not calibrating_sample_ids and not is_blank_sample_file:
         uncalibrated_modes = sorted(
             {
                 f"'{mode.ionization_mode_name}'"
@@ -775,12 +845,12 @@ async def _auto_process_sample_file(
                 if mode is not None
             }
         )
-        calibration_note = (
-            f"Not m/z calibrated: ionization mode {', '.join(uncalibrated_modes)} "
-            "has no calibration collection."
+        not_calibrated_reason = (
+            f"ionization mode {', '.join(uncalibrated_modes)} has no "
+            "calibration collection"
             if len(uncalibrated_modes) == 1
-            else "Not m/z calibrated: ionization modes "
-            f"{', '.join(uncalibrated_modes)} have no calibration collection."
+            else f"ionization modes {', '.join(uncalibrated_modes)} have no "
+            "calibration collection"
         )
 
     matchable_sample_ids: set[str] = set()
@@ -790,13 +860,13 @@ async def _auto_process_sample_file(
 
         # Perform calibration only when collection is configured and file is not blank.
         if sample_item_id in calibrating_sample_ids:
-            calibrated = await calibrate_with_retry(
+            outcome = await calibrate_with_retry(
                 sample=sample,
                 sample_file_id=sample_file.sample_file_id,
                 user_id=user_id,
                 process_id=process_id,
             )
-            if not calibrated:
+            if not outcome.verified:
                 # The failed or below-bar record calibrate_with_retry leaves
                 # would trip the verified gate in match_compute_sample as a
                 # raised warning, failing the whole pipeline; skip matching
@@ -806,11 +876,7 @@ async def _auto_process_sample_file(
                     "Skipping matching and peak assignment for sample "
                     f"'{sample['sample_item_name']}': m/z calibration not verified."
                 )
-                unmatched_reason = _calibration_failure_detail(
-                    (
-                        await fetch_sample_file(sample_file_id=sample_file_id)
-                    ).mz_calibration
-                )
+                unmatched_reason = outcome.reason
                 continue
             await record_processing_status(
                 sample_file_id,
@@ -841,27 +907,45 @@ async def _auto_process_sample_file(
             )
         matchable_sample_ids.add(sample_item_id)
 
-    # A calibration that was not verified leaves the file record unverified
-    # unless an earlier fit survives it, and a skipped calibration leaves
-    # whatever an earlier run stored. The verified gate in match_compute_sample
-    # would then fail the pipeline for every sample of the file - so judge the
-    # record as calibration left it.
+    # --- Hold back what the match gate would refuse --- #
+    # match_compute_sample refuses a sample whose file record is not verified,
+    # with a raised warning that ends the whole run - so judge the record here,
+    # as calibration left it. A calibration that was not verified leaves the
+    # record unverified unless an earlier fit survives it; a skipped
+    # calibration leaves whatever an earlier run stored; and a TOF file that
+    # was never fitted keeps its converter's record, which matching refuses
+    # though the pipeline had no calibrants to fit it with.
+    mz_calibration = sample_file.mz_calibration
     if calibrating_sample_ids and matchable_sample_ids:
         mz_calibration = (
             await fetch_sample_file(sample_file_id=sample_file_id)
         ).mz_calibration
-    if (
-        mz_calibration is not None
-        and not is_unfitted_record(mz_calibration)
-        and not mz_calibration.get("verified", False)
-    ):
+    calibration_note: str | None = None
+    if matchable_sample_ids and not _is_verified_record(mz_calibration):
         runtime.logger.info(
             "Skipping matching and peak assignment for "
             f"{len(matchable_sample_ids)} sample(s) of '{sample_file.filename}': "
             "the file's m/z calibration is not verified."
         )
         matchable_sample_ids.clear()
-        unmatched_reason = _calibration_failure_detail(mz_calibration)
+        if unmatched_reason is None:
+            unmatched_reason = (
+                f"Not m/z calibrated: {not_calibrated_reason}. Matching needs a "
+                "verified m/z calibration."
+                if is_unfitted_record(mz_calibration) and not_calibrated_reason
+                else _calibration_failure_detail(mz_calibration)
+            )
+    elif is_blank_sample_file:
+        calibration_note = "Blank measurement: no peaks to calibrate, match or assign."
+    elif not_calibrated_reason:
+        axis = (
+            "the acquisition axis"
+            if mz_calibration is None
+            else "the calibration already on the file"
+        )
+        calibration_note = f"Not m/z calibrated: {not_calibrated_reason}."
+        if shared_calibration:
+            calibration_note += f" Matched on {axis}."
     elif mz_calibration is not None and mz_calibration.get("status") == "poor":
         # Verified under a gate that only warns, and matched on.
         calibration_note = _calibration_failure_detail(mz_calibration)
@@ -929,9 +1013,17 @@ async def _auto_process_sample_file(
     ).affected_samples
 
     # Recorded last, so that `done` means the run returned: a failure in
-    # anything above is recorded as `failed` by the wrapper instead.
-    if matchable_sample_ids:
-        matched = len(matchable_sample_ids)
+    # anything above is recorded as `failed` by the wrapper instead. `done`
+    # also means every sample was matched, or a blank had nothing to match.
+    matched = len(matchable_sample_ids)
+    unmatched = len(acquisition_sample_item_ids) - matched
+    if is_blank_sample_file:
+        await record_processing_status(
+            sample_file_id,
+            ProcessingStatus.DONE,
+            compose_detail(calibration_note, streams_note),
+        )
+    elif not unmatched:
         await record_processing_status(
             sample_file_id,
             ProcessingStatus.DONE,
@@ -941,22 +1033,17 @@ async def _auto_process_sample_file(
                 streams_note,
             ),
         )
-    elif is_blank_sample_file:
-        # Nothing was matched because there is nothing to match: finished.
-        await record_processing_status(
-            sample_file_id,
-            ProcessingStatus.DONE,
-            compose_detail(calibration_note, streams_note),
-        )
     else:
+        skipped = (
+            f"Matching and peak assignment were skipped for {unmatched} of its "
+            f"{len(acquisition_sample_item_ids)} samples."
+            if matched
+            else "Matching and peak assignment were skipped."
+        )
         await record_processing_status(
             sample_file_id,
             ProcessingStatus.CALIBRATION_FAILED,
-            compose_detail(
-                unmatched_reason,
-                "Matching and peak assignment were skipped.",
-                streams_note,
-            ),
+            compose_detail(unmatched_reason, skipped, streams_note),
         )
 
     return {
@@ -1125,6 +1212,15 @@ async def re_process_sample_files(
     # meant to repair.
     for sample_file in valid_sample_files:
         try:
+            # Before anything of the file is destroyed: until the rebuild
+            # records its own stages, the row would still say how the last run
+            # ended - `done` on a file with no samples, if a restart cut in -
+            # and an in-progress status is what a restart marks failed.
+            await record_processing_status(
+                sample_file.sample_file_id,
+                ProcessingStatus.QUEUED,
+                "Queued for re-processing.",
+            )
             # Orbitrap calibration is cumulative (the file's m/z axes are
             # rescaled in place), so without this a re-processed file silently
             # keeps its previous calibration. A failed reset keeps the old
@@ -1467,11 +1563,7 @@ async def _report_calibration_given_up(
         # Nobody to notify - a pipeline started without a user (tests,
         # background reprocessing). The failure is still logged and persisted.
         return
-    data = (
-        error.tech_message.get("data") if isinstance(error.tech_message, dict) else None
-    )
-    reason = (data or {}).get("warning") or (data or {}).get("error")
-    reason = str(reason or error.user_message).rstrip(".")
+    reason = _calibration_error_reason(error)
     attempted = f" after {attempts} attempts" if attempts > 1 else ""
     tolerance = (
         f" (m/z error tolerance widened to {mz_error_tolerance:g} ppm)"
@@ -1539,7 +1631,7 @@ async def calibrate_with_retry(
     sample_file_id: str | None = None,
     user_id: int | None = None,
     process_id: str | None = None,
-) -> bool:
+) -> CalibrationOutcome:
     """Calibrate sample with retry logic
 
     If no matching calibration peaks are found, the m/z error tolerance is doubled
@@ -1549,10 +1641,11 @@ async def calibrate_with_retry(
 
     When every attempt fails, the outcome is persisted on the sample file via
     :func:`_record_calibration_failure`, reported to the user once via
-    :func:`_report_calibration_given_up`, and ``False`` is returned so the
-    caller can skip steps that assume a calibrated m/z axis (matching,
-    assignment). A fit that is applied but misses the quality bar returns
-    ``False`` too, after its own report, without retrying.
+    :func:`_report_calibration_given_up`, and an unverified outcome is
+    returned so the caller can skip steps that assume a calibrated m/z axis
+    (matching, assignment). A fit that is applied but misses the quality bar
+    returns an unverified outcome too, after its own report, without
+    retrying. Either carries the reason, for the file's processing detail.
 
     :param sample: Sample dict to calibrate
     :type sample: dict
@@ -1562,8 +1655,8 @@ async def calibrate_with_retry(
     :type user_id: int | None, optional
     :param process_id: Process ID for tracking
     :type process_id: str | None, optional
-    :return: True when a verified fit was applied, False otherwise.
-    :rtype: bool
+    :return: Whether a verified fit was applied, and why not when it was not.
+    :rtype: CalibrationOutcome
     """
     mz_calibration_params = calibration_params_factory(sample["filename"])
     for i in range(1, CALIBRATION_ITERATIONS + 1):
@@ -1582,14 +1675,18 @@ async def calibrate_with_retry(
             )
             data = (result or {}).get("data") or {}
             if data.get("verified", True):
-                return True
+                return CalibrationOutcome(verified=True)
             # Applied, but below the quality bar: the record says so and the
             # verified gate keeps the sample out of matching. A wider
             # tolerance only admits worse calibrants, so no retry.
-            await _report_calibration_below_bar(
-                sample, data.get("quality_issues") or [], user_id=user_id
+            issues = data.get("quality_issues") or []
+            await _report_calibration_below_bar(sample, issues, user_id=user_id)
+            return CalibrationOutcome(
+                verified=False,
+                reason=_calibration_failure_detail(
+                    {"status": "poor", "quality_issues": issues}
+                ),
             )
-            return False
         except ApiException as e:
             if e.status_code not in RETRYABLE_CALIBRATION_STATUS:
                 # A fault rather than a data condition: a wider tolerance
@@ -1613,7 +1710,10 @@ async def calibrate_with_retry(
                     user_id=user_id,
                     status="error",
                 )
-                return False
+                return CalibrationOutcome(
+                    verified=False,
+                    reason=f"The m/z calibration failed: {_calibration_error_reason(e)}.",
+                )
             if i == CALIBRATION_ITERATIONS:
                 # INFO: an expected data condition (a spectrum too poor to
                 # yield calibration peaks), and this fires per sample of every
@@ -1639,7 +1739,10 @@ async def calibrate_with_retry(
                     user_id=user_id,
                     status="warning",
                 )
-                return False
+                return CalibrationOutcome(
+                    verified=False,
+                    reason=f"The m/z calibration failed: {_calibration_error_reason(e)}.",
+                )
             else:
                 # Double the m/z error tolerance, check refinement window limits, then retry
                 old_tolerance = mz_calibration_params.mz_error_tolerance
@@ -1661,4 +1764,4 @@ async def calibrate_with_retry(
                 )
     # Unreachable: the final iteration always returns above. Kept so the
     # signature honestly never yields None.
-    return False
+    return CalibrationOutcome(verified=False, reason="The m/z calibration failed.")

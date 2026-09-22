@@ -100,3 +100,123 @@ describe('acquisition store: processing status filter', () => {
     expect(store.processingStatus).toBe(null)
   })
 })
+
+describe('acquisition store: the look-back of a status filter', () => {
+  it('goes by when the status was recorded while a status is chosen', async () => {
+    const store = useAcquisition()
+
+    store.processingStatus = ['failed']
+    await nextTick()
+    expect(lastRequest()[1].params.recent_by).toBe('processing')
+
+    store.processingStatus = null
+    await nextTick()
+    expect(lastRequest()[1].params.recent_by).toBeUndefined()
+  })
+
+  it('sends one request when Clear filters changes the time and the status', async () => {
+    const store = useAcquisition()
+    store.processingStatus = ['failed']
+    store.time.mode = 'Last 7 days'
+    await nextTick()
+    api.http.get.mockClear()
+
+    store.resetFilters()
+    await nextTick()
+
+    expect(api.http.get).toHaveBeenCalledTimes(1)
+  })
+})
+
+const handler = (event) => api.socket.on.mock.calls.find(([name]) => name === event)[1]
+const row = (id, status) => ({
+  sample_file_id: id,
+  instrument: 'Orbi-1',
+  processing_status: status
+})
+const answer = (...rows) => ({ data: { data: rows, results: rows.length } })
+
+describe('acquisition store: loading and live updates', () => {
+  it('keeps the answer of the latest request when an earlier one lands last', async () => {
+    const store = useAcquisition()
+    let answerEarlier
+    api.http.get
+      .mockImplementationOnce(() => new Promise((resolve) => (answerEarlier = resolve)))
+      .mockResolvedValueOnce(answer(row('sf-new', 'done')))
+
+    const earlier = store.load()
+    await store.load()
+    answerEarlier(answer(row('sf-old', 'done')))
+    await earlier
+
+    expect(store.list.map((f) => f.sample_file_id)).toEqual(['sf-new'])
+  })
+
+  it('applies an update that arrived during a load on top of its answer', async () => {
+    const store = useAcquisition()
+    let answerLoad
+    api.http.get.mockImplementationOnce(() => new Promise((resolve) => (answerLoad = resolve)))
+
+    const loading = store.load()
+    handler('acquisition_updated')({
+      record_id: 'sf-1',
+      record: row('sf-1', 'needs_chemistry')
+    })
+    answerLoad(answer(row('sf-1', 'converted')))
+    await loading
+
+    expect(store.list[0].processing_status).toBe('needs_chemistry')
+  })
+
+  it('reloads when an update moves a listed file out of the status filter', async () => {
+    vi.useFakeTimers()
+    try {
+      const store = useAcquisition()
+      store.processingStatus = ['converted', 'queued', 'bound', 'calibrated']
+      await nextTick()
+      store.list = [row('sf-1', 'bound')]
+      api.http.get.mockClear()
+
+      handler('acquisition_updated')({ record_id: 'sf-1', record: row('sf-1', 'done') })
+      handler('acquisition_updated')({ record_id: 'sf-1', record: row('sf-1', 'done') })
+
+      expect(store.list[0].processing_status).toBe('bound')
+      vi.advanceTimersByTime(300)
+      expect(api.http.get).toHaveBeenCalledTimes(1)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('reloads when an update brings a file into the status filter', async () => {
+    vi.useFakeTimers()
+    try {
+      const store = useAcquisition()
+      store.processingStatus = ['failed']
+      await nextTick()
+      api.http.get.mockClear()
+
+      handler('acquisition_updated')({ record_id: 'sf-2', record: row('sf-2', 'failed') })
+      vi.advanceTimersByTime(300)
+
+      expect(api.http.get).toHaveBeenCalledTimes(1)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('leaves the list alone for a file it does not show when no status is chosen', async () => {
+    vi.useFakeTimers()
+    try {
+      useAcquisition()
+      api.http.get.mockClear()
+
+      handler('acquisition_updated')({ record_id: 'sf-3', record: row('sf-3', 'failed') })
+      vi.advanceTimersByTime(300)
+
+      expect(api.http.get).not.toHaveBeenCalled()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+})

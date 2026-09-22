@@ -13,15 +13,19 @@ class ProcessingStatus(StrEnum):
 
     #: The converter registered the file. Auto-processing starts next.
     CONVERTED = "converted"
+    #: Processing was asked for again, and waits for its turn. What an earlier
+    #: run left of the file is about to be replaced.
+    QUEUED = "queued"
     #: The file's samples exist, each under an ionization mode.
     BOUND = "bound"
     #: The m/z calibration was fitted and verified. Matching follows.
     CALIBRATED = "calibrated"
     #: No ionization mode could be bound to the file, so it has no samples.
     NEEDS_CHEMISTRY = "needs_chemistry"
-    #: The m/z calibration failed or is not verified, so nothing was matched.
+    #: An m/z calibration failed, fell below the quality bar, or could not be
+    #: made, so some or all of the file's samples were not matched.
     CALIBRATION_FAILED = "calibration_failed"
-    #: Every sample of the file was matched.
+    #: Every sample of the file was matched, or a blank had nothing to match.
     DONE = "done"
     #: Processing stopped on an error.
     FAILED = "failed"
@@ -30,5 +34,10 @@ class ProcessingStatus(StrEnum):
 #: The statuses of a run still under way. A row that holds one when the server
 #: starts belongs to a run the restart cut short.
 IN_PROGRESS = frozenset(
-    {ProcessingStatus.CONVERTED, ProcessingStatus.BOUND, ProcessingStatus.CALIBRATED}
+    {
+        ProcessingStatus.CONVERTED,
+        ProcessingStatus.QUEUED,
+        ProcessingStatus.BOUND,
+        ProcessingStatus.CALIBRATED,
+    }
 )
