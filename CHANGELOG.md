@@ -26,6 +26,18 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   copies it into the running backend container, reads it there and removes
   the copy.
 
+- **The MS2 centroid keys are under test end to end.** By default,
+  `GET /api/samples/{id}/ms2/centroids` keys its spectra by the bare parent
+  m/z, and the published SDK documents that shape. With `by_activation` it
+  keys each one `"<parent m/z>@<activation>"`. A backend test now checks both
+  shapes through the route itself. The SDK contract suite checks them with the
+  published SDK against a live stack, so the nightly compatibility run catches
+  a server that changes them. The demo bundle has no MS2 scans yet, so only
+  the MS2 summary is checked there and the centroid tests skip.
+  `MASCOPE_SDK_TEST_MS2_SAMPLE` points the suite at an MS2 sample on another
+  stack. `docs/demo_dataset.md` describes what adding an MS2 acquisition to the
+  bundle takes.
+
 ### Changed
 
 - **Both raw-file readers report every per-scan statistics field.** The
