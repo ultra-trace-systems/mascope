@@ -155,6 +155,11 @@ class TestRenderFailure:
         # and no INFO record taking it for a client error.
         assert [r["level"].name for r in records] == ["ERROR"]
         assert records[0]["exception"] is not None
+        # The render error's own text names the route's module and what the
+        # encoder refused. It belongs in the log and never in the response.
+        assert "could not be rendered" in records[0]["message"]
+        assert "could not be rendered" not in response.body.decode()
+        assert __name__ not in response.body.decode()
 
     @pytest.mark.asyncio
     async def test_a_value_error_from_the_handler_stays_a_client_error(self):
