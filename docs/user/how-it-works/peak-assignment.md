@@ -267,14 +267,11 @@ earns the top tier on the strength of the match. The band a row lands in is read
 same quantity that won it the peak in the first place, so the tier and the arbitration
 cannot disagree.
 
-**A tier chip names the tier alone.** A percentage beside it would read as the chance that
-the assignment is right, and the evidence is not that: it measures how well the formula
-explains the peak, and *P(correct)* is the calibrated probability. Hovering the chip gives
-the evidence, and the peak inspector shows it beside the fit score, which is unchanged —
-still recorded, still shown as the pure measurement — so the two stay visible apart. A
-*batch peak*'s chip names no evidence at all: its consensus tier is a weighted vote over
-what the batch's samples each concluded about the peak, not a threshold on any single
-number.
+The chip carries no percentage because the evidence is not a probability: *P(correct)* is
+the calibrated one. The fit score is unchanged — still recorded, still shown in the
+inspector as the pure measurement, beside the evidence — so the two stay visible apart. A
+*batch peak*'s consensus tier is a weighted vote over what the batch's samples each
+concluded about the peak, not a threshold on any single number.
 
 The long-term goal is to report a community-standard **identification level** ([Schymanski
 et al. 2014][sch14]; MSI reporting standards, [Sumner et al. 2007][sum07]) alongside the

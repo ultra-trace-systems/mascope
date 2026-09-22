@@ -1,54 +1,31 @@
-Each assignment lands in a confidence tier from its evidence &mdash; how well it
-fits the peak, weighted by how chemically plausible the formula is. A
-composition that matches the mass beautifully but describes an unlikely molecule
-does not reach the top tier on the strength of the match alone. The tier chip
-names the tier alone: the evidence measures how well the formula explains the
-peak, not the chance it is right, so it is not printed beside the tier as a
-percentage. Hovering the chip gives it, and the peak inspector shows it beside
-the fit score. A *batch peak*'s tier is a vote across the samples the peak
-appears in, not a threshold on one number, so its chip names no evidence.
+Each assignment lands in a confidence tier read off its evidence &mdash; how
+well the formula fits the peak, weighted by how chemically plausible it is
+&mdash; so a formula that matches the mass beautifully but describes an unlikely
+molecule does not reach the top tier on the match alone.
 
-- **assigned** &mdash; strong, corroborated evidence: this formula is the call for
-  the peak, and you can build on it. It is a *composition*, not a confirmed
-  compound &mdash; isomers share it, and telling them apart needs MS/MS or a
-  reference standard.
-- **candidate** &mdash; a plausible assignment with weaker support.
-- **below assignability** (shown as *below*) &mdash; a formula was found, but
-  the evidence is too weak to trust.
+- **assigned** &mdash; strong evidence: the formula is the call for the peak. It
+  is a *composition*, not a confirmed compound: isomers share it, and telling
+  them apart needs MS/MS or a reference standard.
+- **candidate** &mdash; a plausible formula with weaker support.
+- **below assignability** (*below*) &mdash; a formula was found, but the
+  evidence is too weak to trust.
 - **unassigned** &mdash; no composition explained the peak.
 
-The peak inspector says why a row holds its tier, under **Why this tier**. A row
-whose evidence falls short of a tier's band says so first, with the numbers.
-After that come what capped it at *candidate* &mdash; a radical neutral, a peak
-whose evidence left other formulas standing, an ion another molecule explains
-just as well through another channel, a line a neighbouring compound's isotope
-pattern already predicts &mdash; or what it kept its tier on. These rules only
-ever lower a tier, never raise one. A row assigned by hand, a run imported from another
-engine and a run made before Mascope recorded reasons show none.
+A tier chip names the tier alone; hovering it gives the evidence, which says how
+well the formula explains the peak, not the chance it is right. A *batch peak*'s
+tier is a vote across the samples it appears in, so its chip names no evidence.
 
-A run computed outside Mascope and imported can carry a second tier: the one the
-engine that produced it reached on its own terms. Such a run shows it in its own
-**engine tier** column beside Mascope's, which is always Mascope's own reading of
-the evidence. A row where the two differ is worth a look &mdash; a different
-engine can weigh things this one does not, such as how crowded the mass is or
-whether the isotope pattern was corroborated, so a disagreement is a peak to
-examine rather than an error. A dash in that column means the engine stated no
-tier for the peak, which is usual: an engine typically tiers only the peaks it
-committed a formula to. Only Mascope's own tier is used when peaks are rolled up
-across a batch.
+A run imported from another engine can also carry that engine's own tier, in an
+**engine tier** column beside Mascope's. Where the two differ, the peak is worth
+a look: the other engine weighs things Mascope's tier does not. A dash there is
+usual: an engine tiers only the peaks it committed a formula to. Only Mascope's
+tier is used when peaks are rolled up across a batch.
 
-Orthogonal to its tier, a peak can carry a role:
-
-- **reagent**: an ion the ionization source makes of itself.
-- **artifact**: a ringing side lobe of a very intense neighbouring peak.
-- **isotopologue**: a peak of another assignment's isotope pattern, counted with its
-  main peak.
-
-Reagent and artifact peaks are not the sample's compounds, so each shows a chip of its
-own in place of a tier. The counts above the ledger list them apart from the tiers, and
-the tier column sorts them after the tiers. The two kinds of count measure different
-things:
-
-- a tier count counts a compound once, with its isotopologues folded in, and each peak
-  nothing explained once;
-- a role count counts peaks, so a reagent ion's isotope lines are counted with it.
+Beside its tier, a peak can carry a role: **reagent** (an ion the ionization
+source makes of itself), **artifact** (a ringing side lobe of a very intense
+neighbouring peak) or **isotopologue** (a line of another assignment's isotope
+pattern). Reagent and artifact peaks are not the sample's compounds, so each has
+a chip of its own in place of a tier, is counted apart from the tiers above the
+ledger and sorts after them. A tier count counts a compound once, with its
+isotopologues folded in; a role count counts peaks, so a reagent ion's isotope
+lines count with it.

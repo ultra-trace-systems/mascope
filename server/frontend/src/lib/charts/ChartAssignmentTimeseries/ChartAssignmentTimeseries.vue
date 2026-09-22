@@ -199,7 +199,10 @@ const layout = computed(() => ({
   margin: { l: 60, r: 10, t: 45, b: 45 },
   dragmode: 'zoom',
   showlegend: true,
-  legend: { x: 1, y: 1 }
+  // Inside the plot, at its top right: outside it, the legend takes its width
+  // off the plot, and the time series no longer lines up with the spectrum
+  // above it, which has the same margins and no legend.
+  legend: { x: 1, xanchor: 'right', y: 1, yanchor: 'top' }
 }))
 
 // For a container that changes width while its height stays: a splitter
