@@ -170,18 +170,22 @@ re-processed long after it was acquired is listed too.
 |---|---|
 | Converted, Queued, Bound, Calibrated | Still being processed: the file was read (or processing was asked for again, and waits its turn), its samples exist, and its m/z axis was calibrated. |
 | Done | Every sample of the file was matched, or it is a blank measurement with nothing to match. The detail says when the file was not calibrated, and why. |
-| Needs a chemistry | The file's name binds it to no ionization mode - it carries no mode's token, or tokens of two modes of one polarity - so it has no samples yet. Choose its chemistry (below), or fix the tokens and re-process it. |
+| Needs a chemistry | The file's name binds it to no ionization mode - it carries no mode's token, tokens of two modes of one polarity, or, for a file of both polarities, a token for only one of them - so it has no samples yet. Choose its chemistry (below), or fix the tokens and re-process it. |
 | Calibration failed | An m/z calibration failed or is below the quality bar, so some or all of the samples were not matched. A TOF file is matched only on a verified m/z calibration, so one whose ionization mode has no calibration collection ends here too, and the detail names the missing collection. |
 | Failed | Processing stopped on an error, or was interrupted by a server restart. Re-process the file. |
 
-Files processed before Mascope recorded the status show none. When an Orbitrap
-method alternates scan ranges or scan modes within one polarity, the detail
-also says that peak detection pools those scan streams into one peak list.
+A file still shown in progress a day after its status was recorded has
+stopped - a server worker restarted under it, say - and its status says so:
+re-process the file, or choose its chemistry. Files processed before Mascope
+recorded the status show none. When an Orbitrap method alternates scan ranges
+or scan modes within one polarity, the detail also says that peak detection
+pools those scan streams into one peak list.
 
 ### Choose the chemistry of a file that needs one
 
-A file whose name binds it to no ionization mode - no mode's token, or tokens
-of two modes of one polarity - is still converted and stored, but it waits as
+A file whose name binds it to no ionization mode - no mode's token, tokens of
+two modes of one polarity, or a token for only one of a file's two
+polarities - is still converted and stored, but it waits as
 **Needs a chemistry** until someone says which chemistry it was acquired
 under. The people answerable for the instrument find it under **Needs
 attention** in the notifications pane.
@@ -193,14 +197,20 @@ attention** in the notifications pane.
 
 The files are processed under those modes as if their names carried the
 modes' tokens: calibrated, matched, and filed in the daily acquisition
-batches. Re-processing such a file later keeps the modes it was given. An
-editor of the instrument may do it.
+batches. An editor of the instrument may do it. Re-processing a file whose
+name carries no mode's token later keeps the modes it was given. Re-processing
+refuses a name with tokens of two modes of one polarity, or with a token for
+only one of its polarities: choose its chemistry again, or fix the tokens.
 
 The same action gives a chemistry to a file that failed before its samples
 were made, and corrects a wrong choice: a file that has samples already is
 rebuilt under the modes you pick. It is not offered while a file is being
-processed, and a file someone made a sample from in a batch of their own is
-refused, as re-processing refuses it.
+processed. Only the acquisition samples are replaced: a sample someone made
+from the file in a batch of their own stays, and the file keeps its m/z
+calibration rather than having it reset under that sample. If the mode you
+pick calibrates the file, the new calibration marks that batch for
+re-matching, as any new calibration of the file does. Re-processing still
+refuses such a file.
 
 !!! tip "Finding files after upload"
     The table shows one time window at a time (default: the last 24 hours). Use

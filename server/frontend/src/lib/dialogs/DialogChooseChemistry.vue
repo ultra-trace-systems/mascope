@@ -6,9 +6,10 @@
  * Raw files as "Needs a chemistry", with no samples. Choosing a mode for each
  * polarity the selected files hold processes them under those modes, as a
  * token would have had them processed (`POST /sample/files/bind`); a file
- * that has samples already, bound wrongly, is rebuilt under them. The server
- * refuses a file a person made a sample from, or one being processed, and
- * answers 207 when it refused some and processed the rest.
+ * that has samples already, bound wrongly, is rebuilt under them, and one a
+ * person made a sample from keeps its m/z calibration. The server refuses a
+ * file being processed, and answers 207 when it refused some and processed
+ * the rest.
  */
 import { computed, reactive, ref, watch } from 'vue'
 

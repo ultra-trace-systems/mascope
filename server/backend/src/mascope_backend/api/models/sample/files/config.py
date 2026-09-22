@@ -5,6 +5,7 @@ Auto-processing records on each ``sample_file`` how far it got (see
 ``api/controllers/sample/files/process/status.py``, which writes it).
 """
 
+from datetime import timedelta
 from enum import StrEnum
 
 
@@ -41,3 +42,11 @@ IN_PROGRESS = frozenset(
         ProcessingStatus.CALIBRATED,
     }
 )
+
+#: How long a run may go without recording a stage before its file counts as
+#: stalled, and processing asked for again may take the file over. A run
+#: records a stage within minutes of starting; the longest a file waits before
+#: its run starts is its turn behind the ingest gate in a burst of uploads,
+#: hours at most. A row in progress for longer has no run behind it - one
+#: whose worker was restarted, say, which only a full restart marks failed.
+STALLED_AFTER = timedelta(hours=24)

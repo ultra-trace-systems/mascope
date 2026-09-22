@@ -301,9 +301,14 @@ async def fetch_ionization_modes(
 def _pipeline_item():
     """Whether a sample item is one auto-processing made for its file.
 
-    An ACQUISITION item in a batch of an instrument's system workspace, which
-    only the pipeline writes to. The item type alone does not say it: a
-    person can create an ACQUISITION-typed item in a batch of their own.
+    An ACQUISITION item in an ACQUISITION batch of an ACQUISITION dataset in a
+    system workspace: an instrument's year-dataset, where the pipeline files
+    its samples (``get_acquisition_dataset``). No one of these says it alone.
+    A person can create an ACQUISITION-typed item in a batch of their own.
+    ``is_system`` also marks the "System Workspace" an older deployment's
+    datasets were moved into, and a dataset a person creates in an
+    instrument's workspace is in a system workspace too. Those datasets are
+    ANALYSIS datasets, and an ACQUISITION batch is refused in one.
     """
     return and_(
         SampleItem.sample_item_type == "ACQUISITION",
@@ -311,7 +316,11 @@ def _pipeline_item():
             select(SampleBatch.sample_batch_id)
             .join(Dataset, Dataset.dataset_id == SampleBatch.dataset_id)
             .join(Workspace, Workspace.workspace_id == Dataset.workspace_id)
-            .where(Workspace.is_system.is_(True))
+            .where(
+                SampleBatch.sample_batch_type == "ACQUISITION",
+                Dataset.dataset_type == "ACQUISITION",
+                Workspace.is_system.is_(True),
+            )
         ),
     )
 
@@ -1246,11 +1255,16 @@ async def bind_sample_files(
     Re-processing keeps the modes a file bound here has, since no token binds
     it again.
 
+    A sample a person made from the file is never touched: the pipeline
+    replaces only its own. Such a file - one processed by hand into someone's
+    batch, say - keeps its m/z calibration rather than having it reset under
+    that sample. If a chosen mode calibrates the file, the new fit marks that
+    batch for re-matching, as any new calibration of the file does.
+
     Each file is claimed - marked ``queued`` - before its pipeline starts, so
     a second choice for the same file is refused rather than starting a second
-    run. Refused, each with its reason while the others go ahead: a file with
-    a sample a person made from it, which re-processing refuses too; a file
-    being processed already; and a file the chosen modes do not fit.
+    run. Refused, each with its reason while the others go ahead: a file
+    being processed already, and a file the chosen modes do not fit.
 
     :param sample_file_ids: The files to bind.
     :type sample_file_ids: list[str]
@@ -1303,14 +1317,6 @@ async def bind_sample_files(
                 f"Sample file with ID '{sample_file_id}' not found",
             )
             continue
-        if sample_file_id in with_user_samples:
-            refuse(
-                sample_file_id,
-                sample_file.filename,
-                f"{sample_file.filename} has a sample someone made from it, which "
-                "rebuilding it would delete",
-            )
-            continue
         try:
             chosen = choose_ionization_modes(sample_file, ionization_modes)
         except ValueError as e:
@@ -1350,7 +1356,7 @@ async def bind_sample_files(
             user_id=user_id,
             instrument=sample_file.instrument,
             ionization_mode_ids=mode_ids,
-            reset_calibration=True,
+            reset_calibration=sample_file.sample_file_id not in with_user_samples,
         )
 
     files = f"{len(started)} file{'' if len(started) == 1 else 's'}"
