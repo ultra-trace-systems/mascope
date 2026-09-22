@@ -3,8 +3,8 @@ import { mount } from '@vue/test-utils'
 import { reactive } from 'vue'
 
 // The badge on the home button counts what there is to read: the live errors
-// and warnings since the pane was last opened, and the kept notifications not
-// yet marked read. Errors win the count and the colour.
+// and warnings since the pane was last opened, and the kept notifications
+// still pending: not marked read, and not resolved since. Errors win the count and the colour.
 
 const mocks = vi.hoisted(() => ({ app: null }))
 vi.mock('@/stores', () => ({ useApp: () => mocks.app }))
@@ -16,11 +16,11 @@ const OverlayBadge = {
   template: '<div class="badge" :data-value="value" :data-severity="severity"><slot /></div>'
 }
 
-const mountBadge = ({ recentErrors = 0, recentWarnings = 0, unread = [], unreadErrors = 0 }) => {
+const mountBadge = ({ recentErrors = 0, recentWarnings = 0, pending = [], pendingErrors = 0 }) => {
   mocks.app = reactive({
     ui: {
       notification: { recentErrors, recentWarnings },
-      inbox: { unread, unreadErrors }
+      inbox: { pending, pendingErrors }
     }
   })
   return mount(NotificationOverlay, {
@@ -40,7 +40,7 @@ describe('NotificationOverlay', () => {
   })
 
   it('counts a kept notification that is not read yet', () => {
-    const wrapper = mountBadge({ unread: [kept('warning')] })
+    const wrapper = mountBadge({ pending: [kept('warning')] })
 
     const badge = wrapper.get('.badge')
     expect(badge.attributes('data-value')).toBe('1')
@@ -51,8 +51,8 @@ describe('NotificationOverlay', () => {
     const wrapper = mountBadge({
       recentErrors: 2,
       recentWarnings: 5,
-      unread: [kept('error'), kept('warning')],
-      unreadErrors: 1
+      pending: [kept('error'), kept('warning')],
+      pendingErrors: 1
     })
 
     const badge = wrapper.get('.badge')
@@ -61,7 +61,7 @@ describe('NotificationOverlay', () => {
   })
 
   it('counts warnings when there are no errors', () => {
-    const wrapper = mountBadge({ recentWarnings: 2, unread: [kept('warning')] })
+    const wrapper = mountBadge({ recentWarnings: 2, pending: [kept('warning')] })
 
     expect(wrapper.get('.badge').attributes('data-value')).toBe('3')
   })

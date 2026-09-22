@@ -67,10 +67,17 @@ export const PROCESSING_STATUSES = {
   }
 }
 
-/** Server-side filter choices for the Raw files list. */
+/**
+ * Server-side filter choices for the Raw files list. Each status that asks for
+ * a person also has a choice of its own, which is what a kept notification's
+ * Show files sets.
+ */
 export const PROCESSING_STATUS_FILTERS = [
   { label: 'Any status', value: null },
   { label: 'Needs attention', value: ['needs_chemistry', 'calibration_failed', 'failed'] },
+  { label: 'Needs a chemistry', value: ['needs_chemistry'] },
+  { label: 'Calibration failed', value: ['calibration_failed'] },
+  { label: 'Failed', value: ['failed'] },
   { label: 'In progress', value: ['converted', 'queued', 'bound', 'calibrated'] },
   { label: 'Done', value: ['done'] }
 ]

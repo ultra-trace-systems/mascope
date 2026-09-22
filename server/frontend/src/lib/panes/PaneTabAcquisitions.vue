@@ -1,5 +1,6 @@
 <script setup>
 import { ref, reactive, computed, watch, onMounted, onUnmounted } from 'vue'
+import { storeToRefs } from 'pinia'
 
 import Button from 'primevue/button'
 import Select from 'primevue/select'
@@ -169,8 +170,8 @@ const contextMenuItems = ref([
 ])
 const contextMenuRow = ref(null)
 
-const search = ref('')
-const polarityDropdown = ref('')
+// Kept in the store, so opening files from elsewhere can clear them.
+const { search, polarity: polarityDropdown } = storeToRefs(app.data.acquisition)
 
 // Client-side filters narrow the current page. Cross-page search/polarity
 // requires server-side filter push-down - tracked as a follow-up to #1354.
@@ -200,11 +201,7 @@ const pageCount = computed(() => app.data.acquisition.list?.length ?? 0)
 // can carry over and produce range-select artifacts.
 const tableKey = computed(() => `${app.data.acquisition.first}-${app.data.acquisition.rows}`)
 
-const clearFilters = () => {
-  app.data.acquisition.resetFilters()
-  search.value = ''
-  polarityDropdown.value = ''
-}
+const clearFilters = () => app.data.acquisition.resetFilters()
 
 // Check if files with both "+" and "-" polarities are selected
 const hasBothPolarities = computed(() => {

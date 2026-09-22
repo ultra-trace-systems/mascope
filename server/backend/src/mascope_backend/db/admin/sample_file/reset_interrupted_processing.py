@@ -13,7 +13,10 @@ This marks those files ``failed`` at startup, mirroring
 Startup runs in the main process before any worker is spawned, so no pipeline
 can be running at that moment: every in-progress status is a leftover. The
 file keeps whatever its run committed; re-processing it from Raw files starts
-over.
+over. As for any file that fails, the people answerable for its instrument
+are told, in the same transaction: the files go into their digests, and a
+digest whose files have all moved on - a file that was being re-processed out
+of one, say - is resolved.
 
 Entry Points:
 - Async: `reset_interrupted_processing()` for use in async code
@@ -28,6 +31,11 @@ from sqlalchemy import update
 from mascope_backend.api.models.sample.files.config import (
     IN_PROGRESS,
     ProcessingStatus,
+)
+from mascope_backend.api.new.notifications.service import (
+    add_to_digests,
+    instrument_key,
+    resolve_digests,
 )
 from mascope_backend.db import SampleFile, async_session
 from mascope_backend.runtime import runtime
@@ -77,6 +85,23 @@ async def reset_interrupted_processing() -> dict:
                 )
             ]
             reset_count = len(files)
+            if files:
+                try:
+                    async with session.begin_nested():
+                        await add_to_digests(
+                            session,
+                            ProcessingStatus.FAILED,
+                            [(record, INTERRUPTED_DETAIL) for record in files],
+                        )
+                        await resolve_digests(
+                            session,
+                            {instrument_key(record["instrument"]) for record in files},
+                        )
+                except Exception:  # noqa: BLE001 - the reset matters more
+                    runtime.logger.opt(exception=True).warning(
+                        "Could not keep notifications of the sample files a "
+                        "restart interrupted"
+                    )
             await session.commit()
     except Exception as error:
         message = f"Could not reset interrupted sample file processing: {error}"

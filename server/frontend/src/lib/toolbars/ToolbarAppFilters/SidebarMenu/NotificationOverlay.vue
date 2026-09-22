@@ -8,11 +8,14 @@ import { useApp } from '@/stores'
 const app = useApp()
 
 // Errors and warnings to read: the live ones since the pane was last opened,
-// and the kept ones not yet marked read. A kept notification stays counted
-// until it is marked read, whether or not the pane has been opened.
-const errors = computed(() => app.ui.notification.recentErrors + app.ui.inbox.unreadErrors)
+// and the kept ones still pending - not marked read, and not resolved since.
+// A kept notification stays counted until then, whether or not the pane has
+// been opened. The live copies of the outcomes it keeps are not counted (see
+// the notification store), so one file is not counted twice.
+const errors = computed(() => app.ui.notification.recentErrors + app.ui.inbox.pendingErrors)
 const warnings = computed(
-  () => app.ui.notification.recentWarnings + app.ui.inbox.unread.length - app.ui.inbox.unreadErrors
+  () =>
+    app.ui.notification.recentWarnings + app.ui.inbox.pending.length - app.ui.inbox.pendingErrors
 )
 
 /**

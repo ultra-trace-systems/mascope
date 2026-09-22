@@ -73,6 +73,15 @@ export function clone(object) {
   return object ? JSON.parse(JSON.stringify(object)) : object
 }
 
+/**
+ * PrimeVue's severity for a notification status: its Message and Toast call
+ * a warning `warn`, and name the others as the server does.
+ *
+ * @param {string} status A notification status: success, info, warning or error.
+ * @returns {string} The severity to render it with.
+ */
+export const messageSeverity = (status) => ({ warning: 'warn' })[status] ?? status
+
 export function debounce(callback, timeout = 500) {
   let timeoutId = null
   return (...args) => {

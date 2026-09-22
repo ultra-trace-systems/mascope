@@ -61,6 +61,12 @@ export const useAcquisition = defineStore('app.data.acquisition', () => {
     }
   })
 
+  // --- page filters: narrow the loaded page on the client (filename search
+  // and polarity). Kept here rather than in the pane, so that opening files
+  // from elsewhere can clear them.
+  const search = ref('')
+  const polarity = ref('')
+
   // --- processing status filter: the statuses to keep, or null for any.
   // Server-side, so it spans every page. With a recent preset, "recent" is
   // then when a file's status was recorded rather than when it was acquired:
@@ -245,6 +251,29 @@ export const useAcquisition = defineStore('app.data.acquisition', () => {
     time.mode = initTime().mode
     time.range = initTime().range
     processingStatus.value = null
+    search.value = ''
+    polarity.value = ''
+  }
+
+  /**
+   * Show the files of an instrument that ended in one status, acquired since
+   * a time: what a kept notification names. The page filters are cleared, so
+   * none of them hides what was asked for.
+   *
+   * @param {object} files
+   * @param {string} files.instrument The instrument.
+   * @param {string|null} files.status The status, or null for any.
+   * @param {Date|null} files.since The earliest acquisition time, if any.
+   */
+  function showFiles({ instrument: name, status, since }) {
+    instrument.focus({ instrument: name })
+    search.value = ''
+    polarity.value = ''
+    processingStatus.value = status ? [status] : null
+    if (since) {
+      time.range.min = since
+      time.range.max = null
+    }
   }
 
   return {
@@ -257,6 +286,8 @@ export const useAcquisition = defineStore('app.data.acquisition', () => {
     ready,
     time,
     processingStatus,
+    search,
+    polarity,
     first,
     rows,
     total,
@@ -266,7 +297,8 @@ export const useAcquisition = defineStore('app.data.acquisition', () => {
     sortField,
     sortOrder,
     setSort,
-    resetFilters
+    resetFilters,
+    showFiles
   }
 })
 

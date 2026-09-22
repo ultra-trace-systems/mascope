@@ -58,8 +58,7 @@ const setup = (items) => {
       tab: { active: 'batch' }
     },
     data: {
-      instrument: { focus: vi.fn() },
-      acquisition: { processingStatus: null, time: { range: { min: null, max: null } } }
+      acquisition: { showFiles: vi.fn() }
     }
   })
   return mount(NotificationInbox, {
@@ -97,11 +96,12 @@ describe('NotificationInbox', () => {
     expect(mocks.app.ui.inbox.markRead).toHaveBeenCalledWith(['n1'])
   })
 
-  it('offers nothing to mark on a digest already read', () => {
-    const wrapper = setup([digest({ read_utc: '2026-09-21T11:00:00+00:00' })])
+  it('titles a digest by the status its files ended in', () => {
+    const wrapper = setup([
+      digest({ kind: 'processing_failed', payload: { status: 'failed', files: [] } })
+    ])
 
-    expect(button(wrapper, 'Mark read')).toBeUndefined()
-    expect(button(wrapper, 'Mark all read').attributes('disabled')).toBeDefined()
+    expect(wrapper.text()).toContain('Failed · Orbi-1')
   })
 
   it('says when a digest is resolved', () => {
@@ -118,11 +118,11 @@ describe('NotificationInbox', () => {
     await button(wrapper, 'Show files').trigger('click')
 
     const { app } = mocks
-    expect(app.data.instrument.focus).toHaveBeenCalledWith({ instrument: 'Orbi-1' })
-    expect(app.data.acquisition.processingStatus).toEqual(['needs_chemistry'])
+    const [{ instrument, status, since }] = app.data.acquisition.showFiles.mock.calls[0]
+    expect(instrument).toBe('Orbi-1')
+    expect(status).toBe('needs_chemistry')
     // A minute before the oldest file it names, by acquisition time.
-    expect(app.data.acquisition.time.range.min.toISOString()).toBe('2026-09-20T07:59:00.000Z')
-    expect(app.data.acquisition.time.range.max).toBe(null)
+    expect(since.toISOString()).toBe('2026-09-20T07:59:00.000Z')
     expect(app.ui.tab.active).toBe('raw files')
     expect(sidebarMenu.open).toBe(false)
     expect(app.ui.inbox.markRead).toHaveBeenCalledWith(['n1'])

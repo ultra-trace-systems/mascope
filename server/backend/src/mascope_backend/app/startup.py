@@ -17,8 +17,9 @@ import shutil
 from mascope_backend.api.controllers.dataset.acquisition.service import (
     create_acquisition_datasets,
 )
-from mascope_backend.api.models.sample.files.config import ProcessingStatus
-from mascope_backend.api.new.notifications.service import notify_processing_outcome
+from mascope_backend.api.new.notifications.service import (
+    purge_read_notifications,
+)
 from mascope_backend.db import configure_database_engine, dispose_engine
 from mascope_backend.db.admin.batch.reset_processing_status import (
     reset_stuck_processing_batches,
@@ -28,7 +29,6 @@ from mascope_backend.db.admin.peak_assignments.reset_running_runs import (
     reset_running_peak_assignment_runs,
 )
 from mascope_backend.db.admin.sample_file.reset_interrupted_processing import (
-    INTERRUPTED_DETAIL,
     reset_interrupted_processing,
 )
 from mascope_backend.runtime import runtime
@@ -46,6 +46,7 @@ async def init_main_process() -> None:
     - Reset any batches stuck in 'processing' from a previous run
     - Mark sample files whose processing a restart interrupted as failed, and
       keep a notification of it for the people answerable for each
+    - Purge notifications read long ago
     - Auto-create missing acquisition datasets for all instruments
     - Dispose the engine — each worker initialises its own independently
 
@@ -81,13 +82,10 @@ async def init_main_process() -> None:
         await reset_running_batch_peak_runs()
 
         runtime.logger.info("Main process: resetting interrupted file processing")
-        interrupted = await reset_interrupted_processing()
-        # Kept for the people answerable for each file's instrument. No
-        # browser is connected to this process, so nothing is emitted.
-        for record in interrupted["data"]["files"]:
-            await notify_processing_outcome(
-                record, ProcessingStatus.FAILED, INTERRUPTED_DETAIL, emit=False
-            )
+        await reset_interrupted_processing()
+
+        runtime.logger.info("Main process: purging notifications read long ago")
+        await purge_read_notifications()
 
         runtime.logger.info("Main process: initializing acquisition datasets")
         await create_acquisition_datasets()

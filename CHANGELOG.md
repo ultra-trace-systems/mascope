@@ -15,9 +15,13 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   in the notifications pane, counted on the home button's badge. One entry
   per instrument and kind collects the files until it is marked read, names
   the latest, and is marked resolved once none of its files is left in that
-  state. **Show files** opens them in Raw files. A server restart that
-  interrupts processing is reported the same way. `GET /api/notifications`
-  lists them and `POST /api/notifications/read` marks them read (#1910).
+  state; deleting them resolves it too. Marking an entry read dismisses it,
+  and one that took another file since it was shown stays. **Show files**
+  opens them in Raw files. A server restart that interrupts processing is
+  reported the same way. Entries read more than 90 days ago are deleted at
+  startup. `GET /api/notifications` lists them, and
+  `POST /api/notifications/read` marks them read, each as it was seen, or
+  all at once (#1910).
 
 - **Raw files shows how far processing got for each file.** Auto-processing
   records a status on every sample file it handles: converted, bound,

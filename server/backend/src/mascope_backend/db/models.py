@@ -429,9 +429,13 @@ class Notification(Base):
     way before the row is read: ``count`` and the files in ``payload`` grow,
     and the message follows. Reading it closes the digest, and the next such
     file starts a new row - the partial unique index keeps it to one open row
-    per (person, kind, instrument). ``resolved_utc`` is set once no file of the
-    instrument is left in the state the row reports, and cleared if one
-    arrives again before the row is read.
+    per (person, kind, instrument). The instrument is matched on
+    ``instrument_key``, its trimmed lower case, as its workspace is, so case
+    variants of one instrument share a digest. Every file a digest took is
+    linked in ``notification_file``; ``resolved_utc`` is set once none of them
+    is left in the state the row reports, and cleared if another arrives
+    before the row is read. ``version`` goes up with every change, so a client
+    can tell which of two copies of a row is newer.
     """
 
     __tablename__ = "notification"
@@ -444,8 +448,10 @@ class Notification(Base):
     kind: Mapped[str] = mapped_column(String(32), nullable=False)
     # How it reads: "info", "warning" or "error", as on a live notification.
     severity: Mapped[str] = mapped_column(String(16), nullable=False)
-    # The instrument whose files it is about, when it is about any.
+    # The instrument whose files it is about, when it is about any, as the
+    # first of them spelled it; instrument_key is what rows are matched on.
     instrument: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    instrument_key: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     message: Mapped[str] = mapped_column(Text, nullable=False)
     # How many events the row stands for.
     count: Mapped[int] = mapped_column(
@@ -469,6 +475,9 @@ class Notification(Base):
     resolved_utc: Mapped[Optional[dt]] = mapped_column(
         TIMESTAMP(timezone=True), nullable=True
     )
+    version: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=1, server_default=text("1")
+    )
 
     __table_args__ = (
         # One open digest per person, kind and instrument. NULLS NOT DISTINCT
@@ -477,11 +486,44 @@ class Notification(Base):
             "uq_notification_open",
             "user_id",
             "kind",
-            "instrument",
+            "instrument_key",
             unique=True,
             postgresql_where=text("read_utc IS NULL"),
             postgresql_nulls_not_distinct=True,
         ),
+        # The digests an instrument's outcome may settle, looked up after every
+        # file that finishes.
+        Index(
+            "ix_notification_unresolved",
+            "instrument_key",
+            "kind",
+            postgresql_where=text("resolved_utc IS NULL"),
+        ),
+    )
+
+
+class NotificationFile(Base):
+    """
+    A file a digest took (``Notification``).
+
+    The digest names only its latest files, for a person to read; this is
+    every one of them. It tells a file that ends the same way again from a
+    new one, and says when none of them is left in the state the digest
+    reports. A deleted file leaves its digests with it.
+    """
+
+    __tablename__ = "notification_file"
+
+    notification_id: Mapped[str] = mapped_column(
+        String(16),
+        ForeignKey("notification.notification_id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    sample_file_id: Mapped[str] = mapped_column(
+        String(16),
+        ForeignKey("sample_file.sample_file_id", ondelete="CASCADE"),
+        primary_key=True,
+        index=True,
     )
 
 
@@ -2564,6 +2606,7 @@ __all__ = [
     "AccessToken",
     "UserRecoveryCode",
     "Notification",
+    "NotificationFile",
     "AgentDevice",
     "Dataset",
     "SampleBatch",

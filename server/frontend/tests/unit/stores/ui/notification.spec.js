@@ -299,3 +299,19 @@ describe('notification store', () => {
     expect(cb).toHaveBeenCalledOnce()
   })
 })
+
+describe("notification store: auto-processing's own outcomes", () => {
+  it('leaves them off the badge, where the kept notification counts them', () => {
+    setActivePinia(createPinia())
+    const store = useNotification()
+
+    for (const type of ['auto_process_sample_file', 'mz_calibration']) {
+      store.push({ id: `${type}-e`, type, status: 'error', message: 'Failed.' })
+      store.push({ id: `${type}-w`, type, status: 'warning', message: 'Parked.' })
+    }
+
+    expect(store.recentErrors).toBe(0)
+    expect(store.recentWarnings).toBe(0)
+    expect(store.log).toHaveLength(4)
+  })
+})

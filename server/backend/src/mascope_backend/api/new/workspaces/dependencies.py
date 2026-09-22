@@ -148,11 +148,11 @@ async def _get_workspace_id_from_instrument(instrument: str) -> str | None:
     recorded spelling differs from the variant that happened to name it, and
     the callers read that miss as "no such workspace" and refuse.
     """
-    from mascope_backend.api.models.dataset.config import dataset_config
-
-    workspace_name = (
-        f"{dataset_config.ACQUISITION_NAME_PREFIX} {instrument.strip()}".lower()
+    from mascope_backend.api.models.dataset.config import (
+        acquisition_workspace_name,
     )
+
+    workspace_name = acquisition_workspace_name(instrument).lower()
     async with async_session() as session:
         result = await session.execute(
             select(Workspace.workspace_id).where(
