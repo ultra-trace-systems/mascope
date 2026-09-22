@@ -1,6 +1,7 @@
 # Automatic ingest: chemistry routing and acquisition splitting - design
 
-Status: **proposal, phase 0 under way** (2026-09-18). Written for issue #2098
+Status: **phase 1 shipped; phase 0 shipped bar its production backfill run**
+(2026-09-22). Written for issue #2098
 ("Split files into samples by scan attributes"), which carries the checklist
 of pull requests. The decisions in section 12 are open.
 
@@ -39,8 +40,8 @@ the table below and ticks its item on #2098.
 
 | Phase | Content | State |
 |---|---|---|
-| 0 | Stop losing information: method identity, stream census, token-rule and notification fixes | in progress; section 10 marks each item as it ships |
-| 1 | Per-file processing state, persistent notifications, "needs a chemistry" | in progress; section 10 marks each item as it ships |
+| 0 | Stop losing information: method identity, stream census, token-rule and notification fixes | shipped, bar the production `populate_orbitrap_method_file` run |
+| 1 | Per-file processing state, persistent notifications, "needs a chemistry" | shipped (#2164, #2166-#2169) |
 | 2 | Method bindings: routing without tokens | open |
 | 3 | The part contract: stream and window honoured by every consumer | open |
 | 4 | Per-stream state: calibration, instrument function, one item per stream, MS2 | open |
