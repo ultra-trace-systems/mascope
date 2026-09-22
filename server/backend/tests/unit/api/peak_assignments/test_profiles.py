@@ -271,7 +271,8 @@ class TestPreview:
 
     def test_it_carries_the_names_a_run_would_record(self):
         (preview,) = preview_resolutions(
-            PeakAssignmentConfig(), [SampleChemistry(tuple(BROMIDE), "-")]
+            PeakAssignmentConfig(),
+            [SampleChemistry(tuple(BROMIDE), "-", instrument_type="orbi")],
         )
         snapshot = resolve_profile(
             PeakAssignmentConfig(), BROMIDE, instrument_type="orbi", polarity="-"
@@ -284,8 +285,40 @@ class TestPreview:
             "context_label",
             "requested_context",
             "element_ranges",
+            "mz_precision_ppm",
         ):
             assert preview[key] == snapshot[key], key
+
+    def test_the_instrument_class_sets_the_window_and_parts_the_answer(self):
+        previews = preview_resolutions(
+            PeakAssignmentConfig(),
+            [
+                SampleChemistry(tuple(UREA), "+", samples=2, instrument_type="orbi"),
+                SampleChemistry(tuple(UREA), "+", samples=1, instrument_type="tof"),
+            ],
+        )
+        assert [
+            (p["profile"], p["mz_precision_ppm"], p["samples"]) for p in previews
+        ] == [
+            ("UR", presets.INSTRUMENT_MZ_PRECISION_PPM["orbi"], 2),
+            ("UR", presets.INSTRUMENT_MZ_PRECISION_PPM["tof"], 1),
+        ]
+
+    def test_a_class_it_cannot_read_gets_the_unknown_class_window(self):
+        (preview,) = preview_resolutions(
+            PeakAssignmentConfig(), [SampleChemistry(tuple(UREA), "+")]
+        )
+        assert preview["mz_precision_ppm"] == presets.DEFAULT_MZ_PRECISION_PPM
+
+    def test_a_window_the_config_names_is_every_class_window(self):
+        (preview,) = preview_resolutions(
+            PeakAssignmentConfig(mz_precision_ppm=5.0),
+            [
+                SampleChemistry(tuple(UREA), "+", samples=2, instrument_type="orbi"),
+                SampleChemistry(tuple(UREA), "+", samples=1, instrument_type="tof"),
+            ],
+        )
+        assert (preview["mz_precision_ppm"], preview["samples"]) == (5.0, 3)
 
     def test_a_named_profile_is_one_answer_per_polarity(self):
         # The polarity is kept apart, since a launcher warns where a profile's

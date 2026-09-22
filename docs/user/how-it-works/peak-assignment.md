@@ -126,8 +126,10 @@ matrix prior.
 
 **In the launchers.** *Assign peaks* and the batch's *Search untargeted* both offer the
 two presets. Each says what *Auto* resolves to: for the sample, or for each group of the
-batch's samples, since a batch can hold more than one ionization mode. With a single
-answer, the formula range field shows the grid the run would search.
+batch's samples, since a batch can hold more than one ionization mode. Where the samples
+share them, the formula range and m/z precision fields show the grid and the window the
+run would search at, and *Find more* - the composition search in the Sample tab - starts
+from the same two for the sample in view.
 
 A named profile applies to every sample it reaches. The launcher warns when that profile
 belongs to the other polarity from the samples. The choice is remembered with the other

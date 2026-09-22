@@ -340,11 +340,14 @@ class SampleChemistry:
         polarity, as :func:`resolve_profile` takes them.
     :param polarity: The samples' polarity.
     :param samples: How many samples carry this mode at this polarity.
+    :param instrument_type: The samples' instrument class (``"orbi"`` or
+        ``"tof"``), which decides the m/z window; None when it cannot be read.
     """
 
     mechanism_notations: tuple[str, ...]
     polarity: str | None
     samples: int = 1
+    instrument_type: str | None = None
 
 
 def preview_resolutions(
@@ -355,9 +358,9 @@ def preview_resolutions(
     A launcher names the chemistry before the run starts, and a batch can hold
     more than one ionization mode, so the answer is a list and samples that
     resolve alike are counted together. The preview says what the mechanisms
-    decide and nothing else: the m/z window also depends on the instrument
-    class, and the secondary channels on the spectrum, neither of which a
-    preview reads.
+    and the instrument class decide - the element grid and the m/z window -
+    and nothing else: the secondary channels depend on the spectrum, which a
+    preview does not read.
 
     :param config: The run configuration whose profile and context to resolve.
     :param chemistries: The samples, grouped by mode and polarity.
@@ -366,9 +369,17 @@ def preview_resolutions(
     previews: dict[tuple[str, str, str], dict] = {}
     for chemistry in chemistries:
         resolved = resolve_profile(
-            config, chemistry.mechanism_notations, polarity=chemistry.polarity
+            config,
+            chemistry.mechanism_notations,
+            instrument_type=chemistry.instrument_type,
+            polarity=chemistry.polarity,
         )
-        key = (resolved.profile.name, resolved.context.name, chemistry.polarity or "")
+        key = (
+            resolved.profile.name,
+            resolved.context.name,
+            chemistry.polarity or "",
+            resolved.mz_precision_ppm,
+        )
         preview = previews.get(key)
         if preview is None:
             preview = previews[key] = {
@@ -380,6 +391,7 @@ def preview_resolutions(
                 "context_label": resolved.context.label,
                 "requested_context": resolved.requested_context,
                 "element_ranges": resolved.element_ranges,
+                "mz_precision_ppm": resolved.mz_precision_ppm,
                 "polarity": chemistry.polarity,
                 "samples": 0,
             }

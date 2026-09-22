@@ -4,8 +4,8 @@ Integration tests for the chemistry profile preview.
 A launcher names what a run's ``auto`` profile and context will resolve to
 before the run starts. What these pin is the read the resolution depends on: a
 sample's ionization mode, only the mechanisms at the sample's own polarity, a
-sample with no mode resolving on its polarity alone, and a batch counting its
-samples per distinct answer.
+sample with no mode resolving on its polarity alone, the instrument class the
+m/z window follows, and a batch counting its samples per distinct answer.
 """
 
 from datetime import datetime, timezone
@@ -24,6 +24,7 @@ from mascope_backend.db import (
     Workspace,
 )
 from mascope_backend.db.id import gen_id
+from mascope_tools.composition.profiles import INSTRUMENT_MZ_PRECISION_PPM
 
 
 _NOW = datetime(2026, 9, 17, tzinfo=timezone.utc)
@@ -171,6 +172,8 @@ async def test_auto_names_the_profile_the_samples_mode_carries(
     assert preview["requested_context"] == "auto"
     assert preview["polarity"] == "+"
     assert preview["samples"] == 1
+    # The fixture's files are recorded as Orbitrap acquisitions.
+    assert preview["mz_precision_ppm"] == INSTRUMENT_MZ_PRECISION_PPM["orbi"]
 
 
 @pytest.mark.asyncio
@@ -208,6 +211,59 @@ async def test_a_batch_counts_its_samples_per_answer(guest_client, preview_batch
     assert [(row["profile"], row["samples"]) for row in body["data"]] == [
         ("ESI_POS", 2),
         ("UR", 2),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_a_batch_parts_an_answer_by_the_instrument_class(
+    guest_client, preview_batch, async_session_factory
+):
+    # A TOF sample on the urea mode: the same profile, searched in a TOF window.
+    async with async_session_factory() as session:
+        urea_mode = (
+            await session.get(SampleItem, preview_batch["urea"])
+        ).ionization_mode_id
+        file_id = gen_id()
+        item_id = gen_id()
+        session.add(
+            SampleFile(
+                sample_file_id=file_id,
+                filename=f"profile-preview-{file_id}.h5",
+                instrument="profile-preview-instrument",
+                instrument_type="tof",
+                datetime=datetime(2026, 9, 17, 12, 0, 0),
+                datetime_utc=_NOW,
+                length=60.0,
+                range=[50.0, 500.0],
+                polarity="+",
+            )
+        )
+        await session.flush()
+        session.add(
+            SampleItem(
+                sample_item_id=item_id,
+                sample_batch_id=preview_batch["batch"],
+                sample_file_id=file_id,
+                ionization_mode_id=urea_mode,
+                sample_item_name=f"Profile preview {item_id}",
+                sample_item_type="sample",
+                polarity="+",
+                sample_item_utc_created=_NOW,
+            )
+        )
+        await session.commit()
+
+    response = await guest_client.get(
+        f"/api/peak-assignments/batch/{preview_batch['batch']}/profile-preview"
+    )
+    assert response.status_code == 200
+    assert [
+        (row["profile"], row["mz_precision_ppm"], row["samples"])
+        for row in response.json()["data"]
+    ] == [
+        ("ESI_POS", INSTRUMENT_MZ_PRECISION_PPM["orbi"], 2),
+        ("UR", INSTRUMENT_MZ_PRECISION_PPM["orbi"], 2),
+        ("UR", INSTRUMENT_MZ_PRECISION_PPM["tof"], 1),
     ]
 
 
