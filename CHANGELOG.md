@@ -30,12 +30,13 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 - **The browser uploads a file whose name carries no ionization mode token.**
   The upload used to refuse such a file and offer to rename it. It now goes
-  through with a note that it will wait in Raw files for its chemistry to be
-  chosen. The browser does this only when the server announces that it keeps
-  such files: `GET /api/version` now reports the server's `capabilities`,
-  including `files_uploads_without_ionization_token`, and the File Agent's
-  pairing reads the same set. A name must still start with an instrument the
-  server can place.
+  through, with one note for the drop that such files may need their
+  chemistry chosen in Raw files. The browser does this only when the server
+  announces that it keeps such files: `GET /api/version` now reports the
+  server's `capabilities`, including `files_uploads_without_ionization_token`,
+  and the File Agent's pairing reads the same set. A server that cannot be
+  read is asked again rather than taken to lack them. A name must still start
+  with an instrument the server can place.
 
 - **Files that need someone are kept as notifications until read.** When
   auto-processing leaves a file failed, needing a chemistry, or unmatched

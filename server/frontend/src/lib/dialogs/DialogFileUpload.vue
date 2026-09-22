@@ -10,9 +10,10 @@ import Message from 'primevue/message'
 
 import DialogIonizationOp from './DialogIonizationOp.vue'
 
+import { hasIonizationToken } from '@/lib/ionizationModes'
 import { useApp } from '@/stores'
 import { useInstrument } from '@/stores/data/modules/instrument'
-import { TOKENLESS_UPLOADS, useServer } from '@/stores/server'
+import { TOKENLESS_UPLOADS } from '@/stores/server'
 
 const app = useApp()
 // The class of an instrument by name: recorded for its files where the
@@ -21,7 +22,7 @@ const app = useApp()
 const instrumentClass = useInstrument().typeOf
 // A server that keeps a file without a token, for someone to choose its
 // chemistry, needs no token added here.
-const server = useServer()
+const server = app.server
 
 const props = defineProps({
   files: {
@@ -77,7 +78,7 @@ const processed = computed(() => {
     let validIonization = true
     if (
       !server.can(TOKENLESS_UPLOADS) &&
-      !availableIonizationModes.value.some((mode) => file.name.includes(mode.token))
+      !hasIonizationToken(file.name, app.data.ionization.mode.list)
     ) {
       invalid.ionization.push(file)
       validIonization = false
@@ -201,6 +202,12 @@ const upload = () => {
     }
   })
 
+  // Files refused when they were dropped but fine now - the server's
+  // capabilities arrived after the drop, say - go through as they are.
+  processed.value.valid.forEach((file) => {
+    if (!allProcessedFiles.has(file.name)) allProcessedFiles.set(file.name, file)
+  })
+
   const renamedFiles = Array.from(allProcessedFiles.values())
 
   active.value = false
@@ -317,6 +324,16 @@ const cancel = () => {
           </i>
         </Message>
       </div>
+    </template>
+    <!-- FINE AS THEY ARE -->
+    <template v-if="processed.valid.length > 0">
+      <h3>Ready to upload</h3>
+      <p>These files can be uploaded as they are:</p>
+      <ul>
+        <li v-for="file in processed.valid" :key="file.name">
+          {{ file.name }}
+        </li>
+      </ul>
     </template>
     <!-- MISSING IONIZATION -->
     <template v-if="processed.invalid.ionization.length > 0">

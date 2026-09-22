@@ -63,10 +63,11 @@ to choose its chemistry. This applies to both upload paths. Name files as:
   it gets no samples until you
   [choose its chemistry](#choose-the-chemistry-of-a-file-that-needs-one).
 
-**Configured ionization modes.** Because the filename must contain a known
-ionization token, the ionization modes you use have to exist first. This is a
-prerequisite in its own right — see [Set up ionization modes](#set-up-ionization-modes)
-below.
+**Configured ionization modes.** A file is processed on its own only when its
+name carries the token of a configured ionization mode, so the modes you use
+should exist first: a file uploaded before its mode waits for someone to choose
+its chemistry. This is a prerequisite in its own right — see
+[Set up ionization modes](#set-up-ionization-modes) below.
 
 **A place to analyse in.** Your copies of the samples will live in a **batch**,
 which lives in a **dataset** inside a **workspace** of your own. If you do not
@@ -77,8 +78,9 @@ have them yet, create them first — see
 
 An **ionization mode** tells Mascope how a measurement was ionized, and it is
 what links a raw file to the right processing. Its filename token is what lets
-Mascope recognise and process an uploaded file, so the modes you acquire under
-must be configured before you import. See
+Mascope recognise and process an uploaded file on its own, so configure the
+modes you acquire under before you import; a file whose name carries no token
+still uploads, and waits for its chemistry to be chosen. See
 [Concepts → Ionization](../concepts/index.md#ionization-modes-and-mechanisms) for
 what a mode represents.
 
@@ -291,7 +293,9 @@ batch has samples, you can go straight to analysis:
   exact token exists in **Edit ionizations → Ionization Modes**, and that the
   token field is filled in (a mode with no token cannot match a filename).
   Processing a single file by hand does not depend on the token — pick the
-  ionization mode in the dialog instead — but upload and batch import do.
+  ionization mode in the dialog instead — and neither does uploading: a file
+  without a token waits in Raw files for its chemistry to be chosen. Batch
+  import into a batch of your own still reads the token.
 - **"Paste samples" doesn't appear in the menu.** Copy samples first, then make
   sure your own batch is open — the paste goes into the batch whose *Samples*
   pane you right-click.

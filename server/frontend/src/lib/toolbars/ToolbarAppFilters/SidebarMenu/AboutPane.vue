@@ -23,6 +23,7 @@ import {
   versionsDiffer
 } from '@/lib/about'
 import { copyText } from '@/lib/clipboard'
+import { useServer } from '@/stores/server'
 
 import { useSidebarMenu } from './state.js'
 
@@ -37,7 +38,9 @@ const sidebarMenu = useSidebarMenu()
 const open = computed(() => sidebarMenu.open && sidebarMenu.tab === 'about')
 
 const version = builtVersion()
-const serverVersion = ref(null)
+// Read through the server store, whose capabilities a re-read refreshes too.
+const server = useServer()
+const serverVersion = computed(() => server.version)
 const copyState = ref(null) // null | 'copied' | 'failed'
 const links = legalLinks()
 const pane = ref()
@@ -48,20 +51,6 @@ const pane = ref()
 // that cannot be read simply leaves the warning out.
 const drift = computed(() => versionsDiffer(version, serverVersion.value))
 
-const loadServerVersion = async () => {
-  serverVersion.value = null
-  try {
-    const data = await api.http.get('/version', {
-      use: 'read',
-      type: 'version',
-      errors: 'inline'
-    })
-    serverVersion.value = data?.version ?? null
-  } catch {
-    serverVersion.value = null
-  }
-}
-
 // Re-read each time the tab is shown: the server can be updated underneath an
 // open tab, which is exactly the mismatch the warning is there for.
 watch(
@@ -69,7 +58,7 @@ watch(
   (shown) => {
     if (!shown) return
     copyState.value = null
-    loadServerVersion()
+    server.load()
   },
   { immediate: true }
 )

@@ -6,7 +6,7 @@ import { createPinia, setActivePinia } from 'pinia'
 // token, unless the server announces that it keeps a file without one for
 // someone to choose its chemistry.
 
-const state = vi.hoisted(() => ({ tokenless: false, push: vi.fn() }))
+const state = vi.hoisted(() => ({ tokenless: false, pending: false, push: vi.fn() }))
 
 vi.mock('@/api', () => ({ api: { socket: { id: 'sid' } } }))
 vi.mock('@/lib/runtime.js', () => ({ runtime: { api_path: '' } }))
@@ -16,7 +16,7 @@ vi.mock('@/stores/data/modules/instrument', () => ({
   useInstrument: () => ({ typeOf: (name) => (name === 'Orbi-1' ? 'orbi' : null) })
 }))
 vi.mock('@/stores/data/modules/ionization', () => ({
-  useIonizationMode: () => ({ list: [{ ionization_mode_token: 'NO3' }] })
+  useIonizationMode: () => ({ list: [{ ionization_mode_token: 'NO3' }], pending: state.pending })
 }))
 vi.mock('@/stores/server', () => ({
   TOKENLESS_UPLOADS: 'files_uploads_without_ionization_token',
@@ -42,6 +42,7 @@ describe('upload store: which names go through', () => {
     setActivePinia(createPinia())
     vi.clearAllMocks()
     state.tokenless = false
+    state.pending = false
   })
 
   it('refuses a name without a token when the server cannot keep it', () => {
@@ -79,5 +80,50 @@ describe('upload store: which names go through', () => {
 
     expect(add(store, 'Nowhere_2026.09.21_NO3_001.raw')).toBe(false)
     expect(store.invalidFiles).toHaveLength(1)
+  })
+})
+
+describe('upload store: the note about names without a token', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    vi.clearAllMocks()
+    state.tokenless = true
+    state.pending = false
+  })
+
+  const files = (...names) =>
+    names.map((name) => ({ name, type: 'application/octet-stream', data: new Blob([name]) }))
+
+  it('notes a drop once, whatever its size', () => {
+    const store = useUppy()
+
+    store.get().addFiles(files('Orbi-1_a.raw', 'Orbi-1_b.raw', 'Orbi-1_c.raw', 'Orbi-1_NO3_d.raw'))
+
+    expect(state.push).toHaveBeenCalledTimes(1)
+    expect(state.push.mock.calls[0][0].message).toContain('3 files carry no ionization mode token')
+  })
+
+  it('says nothing about a file Uppy turns away', () => {
+    const store = useUppy()
+    store.get().addFiles(files('Orbi-1_a.raw'))
+
+    // The same file again is a duplicate Uppy refuses after this store has
+    // let it through.
+    try {
+      store.get().addFiles(files('Orbi-1_a.raw'))
+    } catch {
+      // Refused, as it should be.
+    }
+
+    expect(state.push).toHaveBeenCalledTimes(1)
+  })
+
+  it('says nothing while the ionization modes are still loading', () => {
+    state.pending = true
+    const store = useUppy()
+
+    store.get().addFiles(files('Orbi-1_a.raw'))
+
+    expect(state.push).not.toHaveBeenCalled()
   })
 })

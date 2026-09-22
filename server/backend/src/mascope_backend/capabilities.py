@@ -4,9 +4,11 @@ What this server does that an older one did not.
 A client can outlive the server it was built against: a File Agent installed
 on an instrument PC, a browser tab opened before an update, a frontend image
 run against another backend. Before it relies on one of these behaviours, it
-checks that the server announces it. The pairing start response carries the
-set to the agent, and ``GET /api/version`` to the web app. An older server
-announces nothing, which a client reads as "not supported".
+checks that the server announces it. ``GET /api/version`` carries the set to
+the web app, which reads it at sign-in; the pairing start response carries it
+to the File Agent, which sees only what the server announced when it was
+paired. An older server announces nothing, which a client reads as "not
+supported".
 
 A capability stays for as long as a client may meet a server without it.
 """

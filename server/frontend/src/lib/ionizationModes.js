@@ -17,10 +17,11 @@
  * @param {Array<object>} modes - Configured ionization modes.
  * @returns {boolean}
  */
+export const carriesToken = (filename, mode) =>
+  Boolean(mode.ionization_mode_token) && (filename ?? '').includes(mode.ionization_mode_token)
+
 export const hasIonizationToken = (filename, modes = []) =>
-  modes.some(
-    ({ ionization_mode_token: token }) => Boolean(token) && (filename ?? '').includes(token)
-  )
+  modes.some((mode) => carriesToken(filename, mode))
 
 //: Why no mode was preselected, indexed by the number of tokens that matched
 //: (two or more are all the same case). Only the count differs; the field ends
@@ -48,9 +49,7 @@ export function ionizationModeChoices({ modes = [], filename = '', polarity = nu
     ? modes.filter((mode) => mode.ionization_mode_polarity === polarity)
     : []
 
-  const matched = inPolarity.filter(
-    (mode) => mode.ionization_mode_token && (filename ?? '').includes(mode.ionization_mode_token)
-  )
+  const matched = inPolarity.filter((mode) => carriesToken(filename, mode))
 
   return {
     options: [...inPolarity]

@@ -11,33 +11,55 @@ import { useAuth } from '@/stores/auth'
 export const TOKENLESS_UPLOADS = 'files_uploads_without_ionization_token'
 
 /**
- * What the server this tab talks to announces it can do.
+ * The server this tab talks to: its build, and what it announces it can do.
  *
  * A capability (the backend's `mascope_backend/capabilities.py`) is a
  * behaviour a client may rely on only once the server announces it: this tab
  * may be talking to a server of another build, and an older server announces
- * nothing, which reads as "not supported". Read at sign-in from `GET /version`.
+ * nothing, which reads as "not supported". Read from `GET /version` at
+ * sign-in, and again whenever the About tab is shown.
+ *
+ * A server that could not be read is not one that lacks a capability: until
+ * it answers, `capabilities` stays null, every check says no, and each check
+ * asks the server again.
  */
 export const useServer = defineStore('app.server', () => {
-  const capabilities = ref({})
+  const version = ref(null)
+  const capabilities = ref(null)
+  let loading = null
 
-  async function load() {
-    try {
-      const data = await api.http.get('/version', {
-        use: 'read',
-        type: 'version',
-        errors: 'inline'
-      })
-      capabilities.value = data?.capabilities ?? {}
-    } catch {
-      capabilities.value = {}
-    }
+  function load() {
+    loading ??= (async () => {
+      version.value = null
+      try {
+        const data = await api.http.get('/version', {
+          use: 'read',
+          type: 'version',
+          errors: 'inline'
+        })
+        if (data) {
+          version.value = data.version ?? null
+          capabilities.value = data.capabilities ?? {}
+        }
+      } catch {
+        // Left as it was; the next check asks again.
+      } finally {
+        loading = null
+      }
+    })()
+    return loading
   }
 
   /** Whether the server announces the capability `name`. */
-  const can = (name) => capabilities.value[name] === true
+  function can(name) {
+    if (capabilities.value === null) {
+      load()
+      return false
+    }
+    return capabilities.value[name] === true
+  }
 
   useAuth().onLogin(load)
 
-  return { capabilities, can, load }
+  return { version, capabilities, can, load }
 })
