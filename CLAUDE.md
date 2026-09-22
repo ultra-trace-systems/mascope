@@ -145,8 +145,11 @@ It comes preloaded with the published demo dataset and login `demo@mascope.app` 
   install. The Python half reads the *installed* distributions, because
   `uv.lock` records no licence metadata at all - so it needs
   `uv sync --all-groups` first, and anything the lockfile names that is not
-  installed is reported rather than skipped. A nightly audit re-runs both
-  against develop and master, so a merge that skipped the gate still surfaces.
+  installed is reported rather than skipped. A nightly audit
+  (`licence-audit.yaml`) re-checks the npm lockfile of both develop and master,
+  but the Python half only on master: auditing it means installing the tree,
+  which runs its build backends, and the audit will not do that for another
+  branch. develop's Python tree is covered by the per-PR gate alone.
   If it fails on something you added, read the actual licence - widening the
   allowlist to get green is the one response that defeats the check.
 - CI (`.github/workflows/tests.yaml`) runs the "Lint and format" (ruff) job plus
