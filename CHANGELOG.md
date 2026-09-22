@@ -39,10 +39,11 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   one it has no record of. The agent asks only a server that announces
   `files_listed_by_source_filename`: `GET /api/sample/files` then finds an
   upload by the name the file had on the agent's machine
-  (`source_filename`) among the files registered in the last so many
-  seconds (`registered_within`), and `GET /api/version` answers a device
-  token. A paired agent also sees its instrument's files however their
-  instrument is spelled.
+  (`source_filename`) among the files the asking device uploaded
+  (`uploaded_by_me`) and the server registered in the last so many seconds
+  (`registered_within`), and `GET /api/version` answers a device token. A
+  paired agent also sees its instrument's files however their instrument is
+  spelled.
 
 - **The browser uploads a file whose name carries no ionization mode token.**
   The upload used to refuse such a file and offer to rename it. It now goes

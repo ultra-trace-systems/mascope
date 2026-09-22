@@ -162,6 +162,8 @@ def test_a_file_is_asked_for_by_its_name_here_among_the_latest(monkeypatch, foll
         "source_filename": "x.raw",
         # Since the upload, on the server's clock, with a margin for skew.
         "registered_within": status.POLL_DELAYS[0] + status.REGISTRATION_MARGIN,
+        # Not another agent's file of the same name.
+        "uploaded_by_me": "true",
         "sort": "sample_file_utc_created",
         "order": "desc",
         "page": 0,
@@ -264,6 +266,49 @@ def test_a_file_never_asked_about_is_not_taken_for_one_never_recorded(
     assert level == "warning"
     assert "could not be asked about it" in line
     assert "Converting it may have failed" not in line
+
+
+def test_a_server_lost_after_it_answered_is_not_taken_for_one_with_no_record(
+    monkeypatch, follower
+):
+    """The first answer comes before the file is registered; then an outage."""
+    serve(
+        monkeypatch,
+        CAN_FOLLOW,
+        rows(),
+        requests.exceptions.ConnectionError("down"),
+    )
+    follower.follow("x.raw")
+
+    tick(follower, status.POLL_DELAYS[0])
+    tick(follower, status.POLL_DELAYS[1])
+    tick(follower, status.FOLLOW_FOR)
+
+    ((level, line),) = said(follower, "info", "warning", "error")
+    assert level == "warning"
+    assert line == (
+        "x.raw: the server could not be asked about it for the last 3 hours; "
+        "before that, the server had no record of it. Look for it in Raw files "
+        "on the server."
+    )
+
+
+def test_a_server_lost_after_a_stage_says_the_stage_it_last_saw(monkeypatch, follower):
+    serve(
+        monkeypatch,
+        CAN_FOLLOW,
+        rows(row("bound")),
+        requests.exceptions.ConnectionError("down"),
+    )
+    follower.follow("x.raw")
+
+    tick(follower, status.POLL_DELAYS[0])
+    tick(follower, status.FOLLOW_FOR - status.POLL_DELAYS[0])
+
+    level, line = said(follower, "info", "warning", "error")[-1]
+    assert level == "warning"
+    assert "could not be asked about it for the last 3 hours" in line
+    assert "before that, it was bound to its ionization modes" in line
 
 
 @pytest.mark.parametrize(
@@ -454,6 +499,27 @@ def test_stopping_says_how_many_files_are_left_unfollowed(monkeypatch, follower)
             "info",
             "No longer following 2 uploaded files: the agent is stopping. What "
             "became of them shows in Raw files on the server.",
+        )
+    ]
+
+
+def test_an_upload_that_finishes_after_the_follower_stopped_says_so(
+    monkeypatch, follower
+):
+    """Stopping waits for the uploads in flight; the follower is gone by then."""
+    serve(monkeypatch, CAN_FOLLOW, rows())
+    stop = threading.Event()
+    stop.set()
+    follower.run(stop, tick=0)
+
+    follower.follow("late.raw")
+
+    assert follower.following() == []
+    assert follower.logger.lines == [
+        (
+            "info",
+            "late.raw: not followed, as the agent is stopping. What became of it "
+            "shows in Raw files on the server.",
         )
     ]
 
