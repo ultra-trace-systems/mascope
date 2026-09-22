@@ -529,11 +529,9 @@ def upload_sample_file(filepath: str) -> None:
     )
     runtime.logger.info(f"File upload of file {os.path.basename(filepath)} succeeded!")
     if _status_follower is not None:
-        _status_follower.follow(
-            upload_filename or os.path.basename(filepath),
-            _instrument,
-            os.path.basename(filepath),
-        )
+        # By the name it had here, which the server keeps as its
+        # source_filename whatever name it was uploaded under.
+        _status_follower.follow(os.path.basename(filepath))
 
 
 def mkdir(*args: tuple) -> str:

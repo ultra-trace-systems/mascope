@@ -162,20 +162,23 @@ The agent prints its version when it starts, and uninstalling (Windows
 ### What became of each file
 
 After each upload the agent asks the server, at a widening interval, how far
-processing got, and writes one line to its window and its log for each stage
-the file reaches:
+processing got, and writes a line to its window and its log for each stage it
+sees the file at - a stage the file passes through between two questions is
+not seen:
 
 ```
-Orbion_2026.09.03-10h12m01s_ambient.raw: converted
-Orbion_2026.09.03-10h12m01s_ambient.raw: bound to its ionization modes. Bound by file-name token to 'Bromide' (-).
-Orbion_2026.09.03-10h12m01s_ambient.raw: processed. Matched 1 sample.
+ambient_2026.09.03.raw: converted
+ambient_2026.09.03.raw: bound to its ionization modes. Bound by file-name token to 'Bromide' (-).
+ambient_2026.09.03.raw: processed. Matched 1 sample.
 ```
 
 A file that failed to process is an error line. A file that waits for a
 chemistry, or whose m/z calibration failed, is a warning line that says why.
 The agent follows each file for up to three hours, and says so if the server
-still has no record of it by then: converting it may have failed. A server
-too old to report processing is not asked again.
+still has no record of it by then: converting it may have failed. If the
+server could not be reached in that time, the line says that instead. A
+server too old to report processing is not asked, and stopping the agent says
+how many files it was still following; their outcome shows in Raw files.
 
 ### Troubleshooting uploads
 

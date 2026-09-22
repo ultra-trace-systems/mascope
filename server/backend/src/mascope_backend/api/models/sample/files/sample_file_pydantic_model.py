@@ -220,6 +220,21 @@ class GetSampleFilesQueryParams(QueryParamsModel):
     datetime_max: Optional[dt] = Field(None, description="Maximum datetime filter")
     instrument: Optional[str] = Field(None, description="Filter by instrument")
     filename: Optional[str] = Field(None, description="Filter by filename")
+    source_filename: Optional[str] = Field(
+        None,
+        description=(
+            "Filter by the name a file had on the machine that uploaded it, "
+            "before any prefix the upload added."
+        ),
+    )
+    registered_within: Optional[int] = Field(
+        None,
+        ge=1,
+        description=(
+            "Only files the server registered in the last this many seconds, "
+            "by its own clock."
+        ),
+    )
     processing_status: list[ProcessingStatus] | None = Field(
         None,
         description=(
