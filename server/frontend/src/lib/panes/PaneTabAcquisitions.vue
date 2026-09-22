@@ -32,7 +32,11 @@ import {
 import { InstrumentSelector } from '@/lib/toolbars'
 
 import { api } from '@/api'
-import { PROCESSING_STATUS_FILTERS, processingStatus } from '@/lib/processingStatus'
+import {
+  PROCESSING_STATUS_FILTERS,
+  canChooseChemistry,
+  processingStatus
+} from '@/lib/processingStatus'
 import { useApp } from '@/stores'
 
 const app = useApp()
@@ -77,11 +81,13 @@ const dialog = reactive({
   chemistry: false
 })
 
-// Files that bound to no ionization mode wait for someone to choose theirs.
-const allNeedChemistry = () =>
-  app.data.acquisition.selected.length > 0 &&
-  app.data.acquisition.selected.every(
-    ({ processing_status }) => processing_status === 'needs_chemistry'
+// The selected files as the list has them now: a status update replaces a
+// row in the list, not the copy the selection holds.
+const liveSelection = () =>
+  app.data.acquisition.selected.map(
+    (chosen) =>
+      app.data.acquisition.list.find((row) => row.sample_file_id === chosen.sample_file_id) ??
+      chosen
   )
 
 const contextMenuRef = ref(null)
@@ -89,7 +95,7 @@ const contextMenuItems = ref([
   {
     label: 'Choose chemistry',
     icon: 'pi ph ph-flask',
-    visible: allNeedChemistry,
+    visible: () => canChooseChemistry(liveSelection()),
     command: () => {
       dialog.chemistry = true
     }

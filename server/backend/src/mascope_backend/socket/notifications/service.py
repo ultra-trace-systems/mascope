@@ -255,12 +255,13 @@ async def send_progress_user_notification(
 
 
 async def error_recipient(user_id: int | None) -> int | None:
-    """The account that reads an error from a task this account started.
+    """The account that reads an error or a warning from a task this account started.
 
     Nobody signs in as a machine account, so its personal room never has a
-    browser in it: an error addressed there reaches no one. When a paired
-    agent's upload fails to process, the person who sponsors the agent's
-    device reads the error instead. Everyone else reads their own.
+    browser in it: a notice addressed there reaches no one. When a paired
+    agent's upload fails to process, or waits for a chemistry, the person who
+    sponsors the agent's device reads it instead. Everyone else reads their
+    own.
 
     The lookup must not cost the error it is routing: if it fails, the
     account itself stays the recipient.
@@ -300,11 +301,11 @@ async def handle_notifications(
         room_id: kwargs[key] → result[key] → result['data'][key] → result['_notification_data'][key]
         user_id: kwargs['user_id'] → result['_notification_data']['user_id']
 
-    An error is addressed to :func:`error_recipient` of that user: a task a
-    paired agent started reports its errors to the agent's sponsor, not to the
-    agent's machine account. Other notifications keep the user they ran for,
+    An error or a warning is addressed to :func:`error_recipient` of that
+    user: a task a paired agent started reports them to the agent's sponsor,
+    not to the agent's machine account. Successes keep the user they ran for,
     so an agent's routine successes do not follow its sponsor around the app.
-    So does a ``silent`` error, which only ends a progress bar in the browser
+    So does a ``silent`` notice, which only ends a progress bar in the browser
     that started the task.
 
     When neither resolves there is nobody to send to. For an ordinary
@@ -327,7 +328,7 @@ async def handle_notifications(
         if notification_data := result.get("_notification_data"):
             if isinstance(notification_data, dict):
                 user_id = notification_data.get("user_id")
-    if notification.status == "error" and not notification.silent:
+    if notification.status in ("error", "warning") and not notification.silent:
         user_id = await error_recipient(user_id)
 
     for room_key in rooms:

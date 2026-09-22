@@ -6,17 +6,22 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 ### Added
 
-- **A file that matches no ionization mode token waits for a chemistry
-  instead of failing.** It is converted and stored as before, and Raw files
-  shows it as *Needs a chemistry* with no samples. The upload is reported as a
-  warning rather than an error, and the file is kept under **Needs attention**
-  for the people answerable for the instrument. Select such files in Raw
-  files, right-click, and **Choose chemistry**: pick a mode for each polarity
-  they hold, and they are processed under those modes as if their names
-  carried the tokens. `POST /api/sample/files/bind` does the same for files
-  without samples, and needs editor access to the instrument. Re-processing a
-  file whose name matches no token now keeps the modes its samples have, so a
-  file given its chemistry by hand can be re-processed too.
+- **A file whose name binds it to no ionization mode waits for a chemistry
+  instead of failing.** That is a name with no mode's token, or with tokens
+  that match more than one mode of a polarity. It is converted and stored as
+  before, and Raw files shows it as *Needs a chemistry* with no samples. The
+  upload is reported as a warning rather than an error, to a paired File
+  Agent's sponsor too, and the file is kept under **Needs attention** for the
+  people answerable for the instrument. Select such files in Raw files,
+  right-click, and **Choose chemistry**: pick a mode for each polarity they
+  hold, and they are processed under those modes as if their names carried
+  the tokens. The same corrects a wrong choice, rebuilding a file under the
+  new modes, and gives a chemistry to a file that failed before its samples
+  were made. `POST /api/sample/files/bind` does the same and needs editor
+  access to the instrument; it refuses a file someone made a sample from, and
+  one being processed. Re-processing a file, or processing it again on
+  request, keeps the modes its samples have when its name matches no token,
+  so a file given its chemistry by hand can be processed again too.
 
 - **Files that need someone are kept as notifications until read.** When
   auto-processing leaves a file failed, needing a chemistry, or unmatched

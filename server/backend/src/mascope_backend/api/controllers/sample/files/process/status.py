@@ -17,9 +17,12 @@ than one scan stream, that peak detection pools them.
 import asyncio
 from datetime import datetime, timezone
 
-from sqlalchemy import update
+from sqlalchemy import or_, update
 
-from mascope_backend.api.models.sample.files.config import ProcessingStatus
+from mascope_backend.api.models.sample.files.config import (
+    IN_PROGRESS,
+    ProcessingStatus,
+)
 from mascope_backend.api.new.notifications.service import (
     emit_notification_changes,
     keep_processing_outcome,
@@ -96,6 +99,55 @@ async def read_pooled_streams_note(filename: str) -> str | None:
             f"No scan stream census readable for {filename}"
         )
         return None
+
+
+async def claim_for_processing(sample_file_ids: list[str], detail: str) -> list[str]:
+    """Mark files ``queued`` for a run, unless one has them already.
+
+    One conditional update, so of two requests for the same file only one
+    claims it; the other finds it in progress. A file whose run is still
+    queued, or going, is left alone.
+
+    Not best effort, unlike :func:`record_processing_status`: a run must not
+    start on a file it could not claim.
+
+    :param sample_file_ids: The files to claim.
+    :param detail: What the file is queued for, for a person to read.
+    :return: The ids of the files claimed.
+    """
+    if not sample_file_ids:
+        return []
+    async with async_session() as session:
+        rows = (
+            await session.scalars(
+                update(SampleFile)
+                .where(
+                    SampleFile.sample_file_id.in_(sample_file_ids),
+                    or_(
+                        SampleFile.processing_status.is_(None),
+                        SampleFile.processing_status.not_in(
+                            [status.value for status in IN_PROGRESS]
+                        ),
+                    ),
+                )
+                .values(
+                    processing_status=ProcessingStatus.QUEUED.value,
+                    processing_detail=_clip(detail),
+                    processing_updated_utc=datetime.now(timezone.utc),
+                )
+                .returning(SampleFile)
+            )
+        ).all()
+        records = [row.to_dict() for row in rows]
+        await session.commit()
+    for record in records:
+        await emit_record_updated(
+            record_type="acquisition",
+            record_id=record["sample_file_id"],
+            record=record,
+            room=record["instrument"],
+        )
+    return [record["sample_file_id"] for record in records]
 
 
 async def record_processing_status(

@@ -183,3 +183,51 @@ async def test_a_failed_auto_process_run_reaches_the_instrument_room_and_the_spo
     assert emit.await_args.kwargs == {"room_id": "Instr-A", "user_id": SPONSOR}
     assert notification.status == "error"
     assert "No ionization mode tokens found" in notification.message
+
+
+@pytest.mark.asyncio
+async def test_a_warning_from_a_machine_accounts_task_reaches_the_sponsor(
+    emit, sponsors
+):
+    """A file waiting for a chemistry needs a person as much as a failure does."""
+    await handle_notifications(
+        ["instrument"],
+        _notification("warning"),
+        {"user_id": MACHINE, "instrument": "Instr-A"},
+        None,
+    )
+
+    assert emit.await_args.kwargs == {"room_id": "Instr-A", "user_id": SPONSOR}
+
+
+@pytest.mark.asyncio
+async def test_a_parked_auto_process_run_reaches_the_instrument_room_and_the_sponsor(
+    emit, sponsors
+):
+    """The most common case the routing exists for: an agent's untokened file."""
+    from mascope_backend.api.controllers.sample.files.process.service import (
+        auto_process_sample_file,
+    )
+
+    parked = {
+        "status": "parked",
+        "message": "No ionization mode tokens found for file Instr-A_x. Or "
+        "choose its chemistry in Raw files.",
+        "_notification_data": {"instrument": "Instr-A"},
+    }
+    with (
+        patch(f"{_PROCESS}._delete_partial_acquisition_items", AsyncMock()),
+        patch(f"{_PROCESS}._auto_process_sample_file", AsyncMock(return_value=parked)),
+    ):
+        await auto_process_sample_file(
+            sample_file_id="sf-1",
+            independent_transaction=True,
+            user_id=MACHINE,
+            process_id="p-1",
+            instrument="Instr-A",
+        )
+
+    emit.assert_awaited_once()
+    notification = emit.await_args.args[0]
+    assert emit.await_args.kwargs == {"room_id": "Instr-A", "user_id": SPONSOR}
+    assert notification.status == "warning"
