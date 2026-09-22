@@ -60,6 +60,18 @@ class ClientFacingDetail:
     """
 
 
+class ResponseRenderError(RuntimeError):
+    """
+    A route's result could not be rendered as its JSON response.
+
+    The handler did its work and built a payload no client can be sent: a
+    fault in the route, never in the request. As a RuntimeError it takes
+    ``process_exception``'s 500 case and is logged at ERROR. The encoder's own
+    exception is usually a ValueError, which that function would answer as a
+    400 bad request and log at INFO, below the level error monitoring receives.
+    """
+
+
 #: Context prefixes added by the wrapping layers (api_controller,
 #: api_controller_background_task, api_route). Used to detect messages that
 #: already carry an operation context so nesting does not stack prefixes.
@@ -309,8 +321,9 @@ class ApiErrorBody(BaseModel):
 
     Declared for the OpenAPI document (``app/fast.py``): every handler that
     answers an error - validation, HTTP, ``ApiException`` or unhandled - goes
-    through ``handle_exception`` or ``api_e_response_json``, so no route answers
-    an error in another shape.
+    through ``handle_exception`` or ``api_e_response_json``, or, in
+    ``@api_route``, renders ``api_error_body``, so no route answers an error in
+    another shape.
     """
 
     error: str = Field(description="What went wrong, written for a person.")
@@ -321,11 +334,20 @@ class ApiErrorBody(BaseModel):
     )
 
 
+def api_error_body(e: ApiException) -> dict:
+    """
+    The body of the error response an ApiException is answered with.
+
+    :param e: The exception to answer.
+    :type e: ApiException
+    :return: The response body, as ``ApiErrorBody`` describes it.
+    :rtype: dict
+    """
+    return {"error": e.user_message, "detail": e.tech_message}
+
+
 def api_e_response_json(e: ApiException):
-    return JSONResponse(
-        status_code=e.status_code,
-        content={"error": e.user_message, "detail": e.tech_message},
-    )
+    return JSONResponse(status_code=e.status_code, content=api_error_body(e))
 
 
 def handle_exception(
