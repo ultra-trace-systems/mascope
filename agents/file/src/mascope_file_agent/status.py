@@ -5,11 +5,12 @@ What became of each file the agent uploaded.
 could not tell a file the server processed from one it could not. A server
 that announces ``files_listed_by_source_filename`` records each file's
 processing status, and finds a file by the name it had on this machine among
-the files it registered lately. After each upload the agent asks about the
-file at a widening interval, and logs a line for each stage it sees the file
-at: an error when processing failed, a warning when the file waits for a
-chemistry or its calibration failed. A stage the file passes through between
-two questions is not seen. A server that does not announce it is not asked.
+the files this agent uploaded and it registered lately. After each upload the
+agent asks about the file at a widening interval, and logs a line for each
+stage it sees the file at: an error when processing failed, a warning when
+the file waits for a chemistry or its calibration failed. A stage the file
+passes through between two questions is not seen. A server that does not
+announce it is not asked.
 """
 
 import threading
@@ -73,8 +74,10 @@ class _Followed:
     due: float
     polls: int = 0
     status: str | None = None
-    #: Whether the server has answered a question about it at all.
-    answered: bool = False
+    #: When the server last answered a question about it; None if never.
+    answered_at: float | None = None
+    #: Whether the latest question about it was answered.
+    latest_answered: bool = False
 
 
 class StatusFollower:
@@ -110,13 +113,17 @@ class StatusFollower:
         #: None until the server says whether it can be asked; then whether
         #: it can.
         self.enabled: bool | None = None
+        #: Set once :meth:`run` has returned: nothing asks about files then.
+        self._stopped = False
 
     def follow(self, name: str) -> None:
         """Start following a file that was just uploaded.
 
         A file uploaded again under the same name before the server settled
         the earlier upload is followed as the new upload: the server's answer
-        for the name cannot tell the two apart.
+        for the name cannot tell the two apart. A file whose upload finishes
+        after the agent stopped following files - an upload in flight when it
+        was told to stop - is not followed, and the line says so.
 
         :param name: The file's name on this machine.
         """
@@ -124,10 +131,18 @@ class StatusFollower:
             return
         now = self._clock()
         with self._lock:
-            earlier = self._followed.get(name)
-            self._followed[name] = _Followed(
-                name=name, uploaded=now, due=now + POLL_DELAYS[0]
+            stopped = self._stopped
+            earlier = None if stopped else self._followed.get(name)
+            if not stopped:
+                self._followed[name] = _Followed(
+                    name=name, uploaded=now, due=now + POLL_DELAYS[0]
+                )
+        if stopped:
+            self._logger.info(
+                f"{name}: not followed, as the agent is stopping. What became of "
+                "it shows in Raw files on the server."
             )
+            return
         if earlier is not None:
             self._logger.info(
                 f"{name}: uploaded again before the server settled the earlier "
@@ -179,7 +194,9 @@ class StatusFollower:
                 # A daemon thread's traceback goes to an excepthook nobody
                 # reads, and this thread is the only one following files.
                 self._logger.exception("Error following uploaded files; continuing")
-        left = len(self.following())
+        with self._lock:
+            self._stopped = True
+            left = len(self._followed)
         if left:
             self._logger.info(
                 f"No longer following {left} uploaded file{'' if left == 1 else 's'}: "
@@ -231,7 +248,9 @@ class StatusFollower:
         :return: Whether the server answered.
         """
         answered, row = self._ask(followed)
-        followed.answered = followed.answered or answered
+        followed.latest_answered = answered
+        if answered:
+            followed.answered_at = self._clock()
         if row is not None:
             self._report(followed, row)
             if row.get("processing_status") in SETTLED:
@@ -263,6 +282,8 @@ class StatusFollower:
                 params={
                     "source_filename": followed.name,
                     "registered_within": registered_within,
+                    # Not another agent's upload of a file of the same name.
+                    "uploaded_by_me": "true",
                     "sort": "sample_file_utc_created",
                     "order": "desc",
                     "page": 0,
@@ -305,12 +326,29 @@ class StatusFollower:
         )
 
     def _give_up(self, followed: _Followed) -> None:
+        """Say what the agent last knew of the file, and stop following it.
+
+        Worded from the latest answer: an answer that has not come for a while
+        says nothing of how the file is now.
+        """
         hours = FOLLOW_FOR // 3600
-        if not followed.answered:
+        if followed.answered_at is None:
             self._logger.warning(
                 f"{followed.name}: the server could not be asked about it in the "
                 f"{hours} hours after the upload; look for it in Raw files on the "
                 "server."
+            )
+        elif not followed.latest_answered:
+            silent = _duration(self._clock() - followed.answered_at)
+            last = (
+                "the server had no record of it"
+                if followed.status is None
+                else f"it was {STAGES.get(followed.status, (followed.status,))[0]}"
+            )
+            self._logger.warning(
+                f"{followed.name}: the server could not be asked about it for the "
+                f"last {silent}; before that, {last}. Look for it in Raw files on "
+                "the server."
             )
         elif followed.status is None:
             self._logger.warning(
@@ -330,3 +368,11 @@ class StatusFollower:
         with self._lock:
             if self._followed.get(followed.name) is followed:
                 del self._followed[followed.name]
+
+
+def _duration(seconds: float) -> str:
+    """A stretch of time as a person reads it: minutes, or whole hours."""
+    minutes = round(seconds / 60)
+    if minutes < 120:
+        return f"{minutes} minute{'' if minutes == 1 else 's'}"
+    return f"{round(minutes / 60)} hours"

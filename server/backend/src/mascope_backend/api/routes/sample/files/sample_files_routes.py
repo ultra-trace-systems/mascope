@@ -86,6 +86,7 @@ sample_files_router = APIRouter(prefix="/api/sample/files", tags=["Sample Files"
 @sample_files_router.get("")
 @api_route(token_access=True)
 async def get_sample_files_route(
+    request: Request,
     query_params: GetSampleFilesQueryParams = Query(),
     user=Depends(current_active_user),
 ):
@@ -95,13 +96,15 @@ async def get_sample_files_route(
     the user is a member of, plus files linked to sample items in any workspace
     the user has access to.  Superusers see all files.
 
+    :param request: The request, for the device behind its token.
     :param query_params: Query parameters for filtering, sorting, and pagination.
     :param user: Authenticated user.
     :return: A dictionary with total count and list of sample files.
     """
     allowed = await accessible_acquisition_instruments(user)
     return await get_sample_files(
-        **query_params.model_dump(),
+        **query_params.model_dump(exclude={"uploaded_by_me"}),
+        **_uploaded_by(request, user, query_params.uploaded_by_me),
         allowed_instruments=allowed,
         user_id=None if allowed is None else user.id,
     )
@@ -110,6 +113,7 @@ async def get_sample_files_route(
 @sample_files_router.get("/recent")
 @api_route()
 async def get_recent_sample_files_route(
+    request: Request,
     query_params: GetRecentSampleFilesQueryParams = Query(),
     user=Depends(current_active_user),
 ):
@@ -119,15 +123,19 @@ async def get_recent_sample_files_route(
     last recorded (``recent_by``): a file uploaded or re-processed long after
     it was acquired is recent by the second.
 
+    :param request: The request, for the device behind its token.
     :param query_params: Query parameters including date range in days.
     :param user: Authenticated user.
     :return: A dictionary with recent sample files matching criteria.
     """
     since = datetime.now(timezone.utc) - timedelta(days=query_params.days)
-    query_params_dict = query_params.model_dump(exclude={"days", "recent_by"})
+    query_params_dict = query_params.model_dump(
+        exclude={"days", "recent_by", "uploaded_by_me"}
+    )
     allowed = await accessible_acquisition_instruments(user)
     query_params_dict.update(
         {
+            **_uploaded_by(request, user, query_params.uploaded_by_me),
             (
                 "processing_updated_min"
                 if query_params.recent_by == "processing"
@@ -493,6 +501,26 @@ def _request_device_id(request: Request) -> int | None:
     :rtype: int | None
     """
     return getattr(request.state, "token_device_id", None)
+
+
+def _uploaded_by(request: Request, user, mine: bool) -> dict:
+    """The file-list filter ``uploaded_by_me`` asks for, as its keywords.
+
+    The paired device behind the request's token when it has one: an agent
+    is told about its own uploads, not about another agent's file of the same
+    name. A request with no device is answered by its account.
+
+    :param request: The request.
+    :param user: The account it authenticated as.
+    :param mine: Whether the asker wants only its own uploads.
+    :return: ``get_sample_files`` keywords, none when ``mine`` is false.
+    """
+    if not mine:
+        return {}
+    device_id = _request_device_id(request)
+    if device_id is not None:
+        return {"uploaded_by_device_id": device_id}
+    return {"uploaded_by_user_id": user.id}
 
 
 async def check_instrument_taken_from_a_file_name(instrument: str) -> None:

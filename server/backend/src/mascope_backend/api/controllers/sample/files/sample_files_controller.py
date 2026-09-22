@@ -284,6 +284,8 @@ async def get_sample_files(
     filename: str | None = None,
     source_filename: str | None = None,
     registered_within: int | None = None,
+    uploaded_by_device_id: int | None = None,
+    uploaded_by_user_id: int | None = None,
     processing_status: list[str] | None = None,
     processing_updated_min: datetime | None = None,
     sort: str = "datetime_utc",
@@ -305,6 +307,9 @@ async def get_sample_files(
         it, optional.
     :param registered_within: Only files registered in the last this many
         seconds, by the server's clock, optional.
+    :param uploaded_by_device_id: Only files uploaded through this paired
+        device, optional.
+    :param uploaded_by_user_id: Only files uploaded by this account, optional.
     :param processing_status: Processing statuses to keep, optional; a file
         matches when its status is any of them.
     :param processing_updated_min: Earliest time a file's processing status
@@ -378,6 +383,10 @@ async def get_sample_files(
                 SampleFile.sample_file_utc_created
                 >= func.now() - timedelta(seconds=registered_within)
             )
+        if uploaded_by_device_id is not None:
+            stmt = stmt.where(SampleFile.uploaded_by_device_id == uploaded_by_device_id)
+        if uploaded_by_user_id is not None:
+            stmt = stmt.where(SampleFile.uploaded_by_user_id == uploaded_by_user_id)
         if processing_status:
             stmt = stmt.where(
                 SampleFile.processing_status.in_(

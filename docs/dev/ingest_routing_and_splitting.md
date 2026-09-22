@@ -885,8 +885,9 @@ Steps 6 and 7 of the setup-simplification proposal:
 - the agent status poller, in the next agent release. Shipped in
   #2169: after each upload the agent reads its file's row from
   `GET /api/sample/files`, by the name the file had on its machine
-  (`source_filename`) among the files registered since the upload
-  (`registered_within`, on the server's clock), at a widening interval for
+  (`source_filename`) among the files its device uploaded (`uploaded_by_me`)
+  and the server registered since the upload (`registered_within`, on the
+  server's clock), at a widening interval for
   up to three hours, and logs a line for each status it sees. It asks only a
   server that announces `files_listed_by_source_filename`, which it reads
   from `GET /api/version` with its device token.

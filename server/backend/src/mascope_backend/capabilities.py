@@ -21,9 +21,9 @@ SERVER_CAPABILITIES: dict[str, bool] = {
     # waits in Raw files for someone to choose its chemistry.
     "files_uploads_without_ionization_token": True,
     # The file list finds an upload by the name it had on the uploading
-    # machine (source_filename) among the files registered lately
-    # (registered_within), and says how far its processing got - what a File
-    # Agent asks about each file it uploaded. An older server ignores both
-    # filters and answers with other files.
+    # machine (source_filename) among the files the asker uploaded
+    # (uploaded_by_me) lately (registered_within), and says how far its
+    # processing got - what a File Agent asks about each file it uploaded. An
+    # older server ignores the filters and answers with other files.
     "files_listed_by_source_filename": True,
 }

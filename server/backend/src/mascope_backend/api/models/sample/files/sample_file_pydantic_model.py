@@ -235,6 +235,13 @@ class GetSampleFilesQueryParams(QueryParamsModel):
             "by its own clock."
         ),
     )
+    uploaded_by_me: bool = Field(
+        False,
+        description=(
+            "Only files the asker uploaded: through the paired device behind "
+            "its token, or by its account when it has none."
+        ),
+    )
     processing_status: list[ProcessingStatus] | None = Field(
         None,
         description=(

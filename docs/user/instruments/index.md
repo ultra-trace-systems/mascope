@@ -176,9 +176,12 @@ A file that failed to process is an error line. A file that waits for a
 chemistry, or whose m/z calibration failed, is a warning line that says why.
 The agent follows each file for up to three hours, and says so if the server
 still has no record of it by then: converting it may have failed. If the
-server could not be reached in that time, the line says that instead. A
-server too old to report processing is not asked, and stopping the agent says
-how many files it was still following; their outcome shows in Raw files.
+server has not answered for a while by then, the line says for how long, and
+what the server said of the file before that. The agent asks only about its
+own uploads, so another agent's file of the same name is not taken for one
+of them. A server too old to report processing is not asked. Stopping the
+agent says how many files it was still following, and names a file whose
+upload finished as it stopped; their outcome shows in Raw files.
 
 ### Troubleshooting uploads
 
