@@ -1235,12 +1235,18 @@ async def re_process_sample_files(
                     "previous calibration remains in effect."
                 )
 
-            affected_sample_batch_ids.update(
-                await _clear_sample_items_for_reprocessing(
+            try:
+                cleared_batch_ids = await _clear_sample_items_for_reprocessing(
                     sample_file_id=sample_file.sample_file_id,
                     independent_transaction=independent_transaction,
                 )
-            )
+            except Exception as e:
+                # No pipeline runs for the file after this, and the pipeline
+                # is what records how a run ended: without this the file
+                # would read queued, with no run behind it, until a restart.
+                await _record_failed(sample_file.sample_file_id, e)
+                raise
+            affected_sample_batch_ids.update(cleared_batch_ids)
 
             result = await auto_process_sample_file(
                 sample_file_id=sample_file.sample_file_id,

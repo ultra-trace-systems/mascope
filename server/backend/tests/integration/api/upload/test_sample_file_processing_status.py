@@ -15,12 +15,14 @@ from unittest.mock import AsyncMock
 import pytest
 import pytest_asyncio
 from sqlalchemy import delete, select, update
+from sqlalchemy.exc import OperationalError
 
 from mascope_backend.api.controllers.sample.files import sample_files_controller
 from mascope_backend.api.controllers.sample.files.process import (
     service as process_service,
 )
 from mascope_backend.api.controllers.sample.files.process import status
+from mascope_backend.api.lib.exceptions.api_exceptions import ApiException
 from mascope_backend.api.models.sample.files.config import ProcessingStatus
 from mascope_backend.api.routes.sample.files import sample_files_routes
 from mascope_backend.db import SampleFile
@@ -395,6 +397,36 @@ async def test_a_file_is_queued_before_re_processing_replaces_it(
     assert seen["status"] == "queued"
     row = await _row(async_session_factory, sample_file_id)
     assert row.processing_detail == "Queued for re-processing."
+
+
+@pytest.mark.asyncio
+async def test_a_re_process_that_stops_before_the_pipeline_fails_the_file(
+    async_session_factory, monkeypatch
+):
+    """No pipeline runs to say how it ended, so `queued` would stand."""
+    sample_file_id = await _add_file(async_session_factory, "unclear", "done")
+    pipeline = AsyncMock(return_value={})
+    monkeypatch.setattr(status, "emit_record_updated", AsyncMock())
+    monkeypatch.setattr(process_service, "reset_mz_calibration", AsyncMock())
+    monkeypatch.setattr(
+        process_service, "resolve_ionization_modes_by_tokens", AsyncMock()
+    )
+    monkeypatch.setattr(
+        process_service,
+        "_clear_sample_items_for_reprocessing",
+        AsyncMock(side_effect=OperationalError("DELETE", {}, Exception("gone"))),
+    )
+    monkeypatch.setattr(process_service, "auto_process_sample_file", pipeline)
+
+    with pytest.raises(ApiException):
+        await process_service.re_process_sample_files(sample_file_ids=[sample_file_id])
+
+    pipeline.assert_not_awaited()
+    row = await _row(async_session_factory, sample_file_id)
+    assert row.processing_status == "failed"
+    assert row.processing_detail == (
+        "A database operation failed while the file was processed."
+    )
 
 
 @pytest.mark.asyncio
