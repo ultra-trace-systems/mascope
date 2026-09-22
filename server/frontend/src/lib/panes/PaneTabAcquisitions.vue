@@ -502,18 +502,7 @@ const currentPageReportTemplate =
         :polarity="derivedPolarity"
         @submit="app.data.acquisition.unfocus()"
       />
-      <DialogFileUpload
-        :files="app.uppy.invalidFiles"
-        @upload="
-          $event.map((file) => {
-            try {
-              uppy.addFile(file)
-            } catch (error) {
-              uppy.info(error, 'error')
-            }
-          })
-        "
-      />
+      <DialogFileUpload :files="app.uppy.invalidFiles" @upload="app.uppy.addFromDialog($event)" />
       <DialogIonizationOp v-model:visible="dialog.mechanism" />
       <DialogChooseChemistry
         v-model:visible="dialog.chemistry"

@@ -202,5 +202,20 @@ export const useUppy = defineStore('app.uppy', () => {
     invalidFiles.value = []
   }
 
-  return { get, clearInvalid, invalidFiles }
+  /**
+   * Add the files the upload dialog hands back, in one call, so the note on
+   * names without a token speaks for them once, as it does for a drop. Uppy
+   * reports the files it refuses itself.
+   *
+   * @param {object[]} files - the files, as Uppy's `addFiles` takes them
+   */
+  function addFromDialog(files) {
+    try {
+      uppy.addFiles(files)
+    } catch {
+      // An error other than a refusal adds none of them, and Uppy said so.
+    }
+  }
+
+  return { get, clearInvalid, addFromDialog, invalidFiles }
 })

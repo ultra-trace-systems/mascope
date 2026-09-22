@@ -118,6 +118,24 @@ describe('upload store: the note about names without a token', () => {
     expect(state.push).toHaveBeenCalledTimes(1)
   })
 
+  it('notes the files the upload dialog hands back once, too', () => {
+    const store = useUppy()
+
+    store.addFromDialog(files('Orbi-1_a.raw', 'Orbi-1_b.raw', 'Orbi-1_c.raw'))
+
+    expect(state.push).toHaveBeenCalledTimes(1)
+    expect(state.push.mock.calls[0][0].message).toContain('3 files carry no ionization mode token')
+    expect(store.get().getFiles()).toHaveLength(3)
+  })
+
+  it('leaves it to Uppy to report a file it refuses from the dialog', () => {
+    const store = useUppy()
+    store.addFromDialog(files('Orbi-1_a.raw'))
+
+    expect(() => store.addFromDialog(files('Orbi-1_a.raw', 'Orbi-1_b.raw'))).not.toThrow()
+    expect(store.get().getFiles()).toHaveLength(2)
+  })
+
   it('says nothing while the ionization modes are still loading', () => {
     state.pending = true
     const store = useUppy()
