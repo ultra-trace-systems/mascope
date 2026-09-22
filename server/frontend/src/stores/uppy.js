@@ -50,8 +50,6 @@ function validateIonization(file) {
 
 export const useUppy = defineStore('app.uppy', () => {
   const ui = useUi()
-  // Created with this store, so it reads the capabilities at sign-in.
-  useServer()
 
   const invalidFiles = ref([])
 
@@ -68,15 +66,6 @@ export const useUppy = defineStore('app.uppy', () => {
       if (!isValid) {
         invalidFiles.value = [...invalidFiles.value, currentFile]
         return false
-      }
-      if (!hasIonizationToken(currentFile.name, useIonizationMode().list)) {
-        ui.notification.push({
-          type: 'sample_file_upload',
-          status: 'info',
-          message:
-            `${currentFile.name} carries no ionization mode token. Once uploaded it ` +
-            'waits in Raw files for its chemistry to be chosen.'
-        })
       }
     }
   }).use(Tus, {
@@ -107,6 +96,25 @@ export const useUppy = defineStore('app.uppy', () => {
       req.setHeader('X-SID', api.socket.id)
     }
   })
+  // One note for a drop, about the files Uppy admitted - after its own checks
+  // for duplicates, types and sizes - and only once the modes are known.
+  uppy.on('files-added', (files) => {
+    const modes = useIonizationMode()
+    if (modes.pending) return
+    const untokened = files.filter((file) => !hasIonizationToken(file.name, modes.list))
+    if (!untokened.length) return
+    ui.notification.push({
+      type: 'sample_file_upload',
+      status: 'info',
+      message:
+        untokened.length === 1
+          ? `${untokened[0].name} carries no ionization mode token: check Raw ` +
+            'files after processing, where it may need its chemistry chosen.'
+          : `${untokened.length} files carry no ionization mode token: check Raw ` +
+            'files after processing, where they may need their chemistry chosen.'
+    })
+  })
+
   // Register event handlers to track upload progress
   let process_id
 

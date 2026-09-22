@@ -2,7 +2,8 @@ import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { createPinia, setActivePinia } from 'pinia'
 
 // The capabilities of the server a tab talks to are read at sign-in. An older
-// server announces none, which must read as "not supported" rather than fail.
+// server announces none, which must read as "not supported" rather than fail;
+// a server that could not be read is not one that lacks them.
 
 const loginCallbacks = []
 
@@ -48,12 +49,51 @@ describe('server store', () => {
     expect(server.can('files_uploads_without_ionization_token')).toBe(false)
   })
 
-  it('takes a server it cannot ask for one that can do nothing', async () => {
+  it('says no while the server cannot be asked, and asks again at each check', async () => {
     api.http.get.mockRejectedValue(new Error('502'))
     const server = useServer()
+    await server.load()
+
+    expect(server.capabilities).toBe(null)
+    expect(server.can('files_uploads_without_ionization_token')).toBe(false)
+    expect(api.http.get).toHaveBeenCalledTimes(2)
+  })
+
+  it('knows the capabilities once a later check reaches the server', async () => {
+    api.http.get
+      .mockRejectedValueOnce(new Error('502'))
+      .mockResolvedValue({ capabilities: { files_uploads_without_ionization_token: true } })
+    const server = useServer()
+    await server.load()
+
+    server.can('files_uploads_without_ionization_token')
+    await vi.waitFor(() => expect(server.can('files_uploads_without_ionization_token')).toBe(true))
+  })
+
+  it('keeps what it knows when a later read fails, but not the version', async () => {
+    api.http.get
+      .mockResolvedValueOnce({ version: 'v2.0.0', capabilities: { a: true } })
+      .mockRejectedValue(new Error('502'))
+    const server = useServer()
+    await server.load()
 
     await server.load()
 
-    expect(server.can('files_uploads_without_ionization_token')).toBe(false)
+    expect(server.can('a')).toBe(true)
+    expect(server.version).toBe(null)
+  })
+
+  it('reads the server once for checks made while it is being read', async () => {
+    let answer
+    api.http.get.mockImplementationOnce(() => new Promise((resolve) => (answer = resolve)))
+    const server = useServer()
+
+    const loading = server.load()
+    server.can('a')
+    server.can('b')
+    answer({ capabilities: {} })
+    await loading
+
+    expect(api.http.get).toHaveBeenCalledTimes(1)
   })
 })

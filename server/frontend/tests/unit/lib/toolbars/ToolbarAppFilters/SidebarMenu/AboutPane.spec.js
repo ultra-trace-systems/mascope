@@ -10,6 +10,9 @@ import { createPinia, setActivePinia } from 'pinia'
 // missing must not hide the others.
 
 vi.mock('@/api', () => ({ api: { http: { get: vi.fn() } } }))
+// The server's version is read through the server store, which reads it at
+// sign-in too.
+vi.mock('@/stores/auth', () => ({ useAuth: () => ({ onLogin: () => {} }) }))
 vi.mock('@/lib/runtime', () => ({ runtime: { meta: {}, version: 'v1.7.3' } }))
 
 import { api } from '@/api'
