@@ -27,7 +27,7 @@ def third_party_notices_path() -> Path:
 
 
 @version_router.get("")
-@api_route()
+@api_route(token_access=True)
 async def get_version_route(user=Depends(guest_user)):
     """
     Report the version of the running deployment, and what it can do.
@@ -58,7 +58,9 @@ async def get_version_route(user=Depends(guest_user)):
     The capabilities (``mascope_backend.capabilities``) are the behaviours a
     client may rely on only once the server announces them. The web app reads
     them to decide, for instance, whether to accept a file whose name carries
-    no ionization mode token.
+    no ionization mode token, and a paired File Agent - with its device token,
+    hence ``token_access`` - whether it can follow what becomes of its
+    uploads.
 
     :param user: The currently authenticated user.
     :type user: User

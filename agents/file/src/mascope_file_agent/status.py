@@ -3,12 +3,13 @@ What became of each file the agent uploaded.
 
 "Upload succeeded" used to be the last the agent said about a file, so it
 could not tell a file the server processed from one it could not. A server
-that records each file's processing status - ``processing_status`` on the
-file list, which a device token may read - is asked after each upload, at a
-widening interval, and the agent logs one line for each stage the file
-reaches: an error when processing failed, a warning when the file waits for
-a chemistry or its calibration failed. An older server reports no status, and
-the agent stops asking.
+that announces ``files_listed_by_source_filename`` records each file's
+processing status, and finds a file by the name it had on this machine among
+the files it registered lately. After each upload the agent asks about the
+file at a widening interval, and logs a line for each stage it sees the file
+at: an error when processing failed, a warning when the file waits for a
+chemistry or its calibration failed. A stage the file passes through between
+two questions is not seen. A server that does not announce it is not asked.
 """
 
 import threading
@@ -21,9 +22,13 @@ import requests
 from mascope_sdk import agent_headers
 
 
-#: Seconds from an upload to each question about it, the last repeated until
-#: the file settles. Conversion takes seconds to minutes, calibration and
-#: matching a little longer.
+#: What a server announces when it can say what became of an upload.
+CAPABILITY = "files_listed_by_source_filename"
+
+#: Seconds before each question about a file: the first after the upload, the
+#: next after each answer, the last repeated until the file settles.
+#: Conversion takes seconds to minutes, calibration and matching a little
+#: longer.
 POLL_DELAYS = (20, 40, 60, 120, 240, 480, 900)
 
 #: How long a file is followed before the agent stops asking about it.
@@ -32,14 +37,23 @@ FOLLOW_FOR = 3 * 60 * 60
 #: Seconds to wait for each answer.
 REQUEST_TIMEOUT = 30
 
+#: How far before the upload finished a registration of the file counts. The
+#: look-back is counted on the server's clock, which need not agree with this
+#: machine's; the margin only has to cover the time the question takes.
+REGISTRATION_MARGIN = 120
+
 #: What each status reads as in the log, and at which level.
 STAGES = {
     "converted": ("converted", "info"),
+    "queued": ("queued for processing", "info"),
     "bound": ("bound to its ionization modes", "info"),
     "calibrated": ("m/z calibrated", "info"),
     "done": ("processed", "info"),
     "needs_chemistry": ("needs a chemistry", "warning"),
-    "calibration_failed": ("m/z calibration failed, so it was not matched", "warning"),
+    "calibration_failed": (
+        "m/z calibration failed, so not all of it was matched",
+        "warning",
+    ),
     "failed": ("processing failed", "error"),
 }
 
@@ -47,33 +61,20 @@ STAGES = {
 SETTLED = frozenset({"done", "needs_chemistry", "calibration_failed", "failed"})
 
 
-def stored_name(upload_name: str, instrument: str | None) -> str:
-    """The name the server stores an upload under.
-
-    The server files an upload under the instrument the agent reports with
-    it, and puts ``<instrument>_`` in front of the name unless the name
-    already starts with that instrument (``file_upload_name`` on the server).
-    Without a reported instrument the name is stored as it was uploaded.
-
-    :param upload_name: The name the file was uploaded as.
-    :param instrument: The instrument reported with it, if any.
-    :return: The name to look the file up by.
-    """
-    if not instrument or upload_name.split("_", 1)[0] == instrument:
-        return upload_name
-    return f"{instrument}_{upload_name}"
-
-
 @dataclass
 class _Followed:
     """A file the agent is waiting to hear the outcome of."""
 
-    name: str  # the server's name for it
-    shown: str  # the name the operator knows it by
-    started: float
+    #: The file's name on this machine, which the server keeps as its
+    #: ``source_filename``.
+    name: str
+    #: When the upload finished, by this agent's clock.
+    uploaded: float
     due: float
     polls: int = 0
     status: str | None = None
+    #: Whether the server has answered a question about it at all.
+    answered: bool = False
 
 
 class StatusFollower:
@@ -81,7 +82,8 @@ class StatusFollower:
 
     Upload workers hand each uploaded file to :meth:`follow`; :meth:`run`, on
     a thread of its own, asks about the files whose turn has come. Nothing
-    here may stop an upload: a question that fails is asked again later.
+    here may stop an upload: a question that fails is asked again later, and
+    an error with one file does not keep the others waiting.
 
     :param url: The server's base URL.
     :param access_token: Returns the live access token; renewal rotates it.
@@ -98,48 +100,71 @@ class StatusFollower:
         verify: bool = True,
         clock: Callable[[], float] = time.monotonic,
     ):
-        self._url = f"{url}/api/sample/files"
+        self._url = url
         self._access_token = access_token
         self._logger = logger
         self._verify = verify
         self._clock = clock
         self._lock = threading.Lock()
         self._followed: dict[str, _Followed] = {}
-        #: Cleared for good once the server shows it reports no status.
-        self.enabled = True
+        #: None until the server says whether it can be asked; then whether
+        #: it can.
+        self.enabled: bool | None = None
 
-    def follow(self, upload_name: str, instrument: str | None, shown: str) -> None:
+    def follow(self, name: str) -> None:
         """Start following a file that was just uploaded.
 
-        :param upload_name: The name it was uploaded as.
-        :param instrument: The instrument reported with it, if any.
-        :param shown: The name to log it by.
+        A file uploaded again under the same name before the server settled
+        the earlier upload is followed as the new upload: the server's answer
+        for the name cannot tell the two apart.
+
+        :param name: The file's name on this machine.
         """
-        if not self.enabled:
+        if self.enabled is False:
             return
         now = self._clock()
-        name = stored_name(upload_name, instrument)
         with self._lock:
+            earlier = self._followed.get(name)
             self._followed[name] = _Followed(
-                name=name, shown=shown, started=now, due=now + POLL_DELAYS[0]
+                name=name, uploaded=now, due=now + POLL_DELAYS[0]
+            )
+        if earlier is not None:
+            self._logger.info(
+                f"{name}: uploaded again before the server settled the earlier "
+                "upload; following the new one."
             )
 
     def following(self) -> list[str]:
-        """The server names of the files being followed."""
+        """The names of the files being followed."""
         with self._lock:
             return list(self._followed)
 
     def poll_due(self) -> None:
-        """Ask about every followed file whose turn has come."""
-        now = self._clock()
+        """Ask about every followed file whose turn has come.
+
+        Stops at the first question the server does not answer: the rest wait
+        for the next pass rather than time out one after another.
+        """
+        if self.enabled is None and not self._ask_server():
+            return
+        if not self.enabled:
+            return
         with self._lock:
+            now = self._clock()
             due = [
                 followed for followed in self._followed.values() if followed.due <= now
             ]
         for followed in due:
-            if not self.enabled:
+            try:
+                answered = self._poll(followed)
+            except Exception:
+                self._logger.exception(
+                    f"Error following {followed.name}; asking again later"
+                )
+                self._schedule(followed)
+                continue
+            if not answered:
                 return
-            self._poll(followed, now)
 
     def run(self, stop_event, tick: float = 5) -> None:
         """Ask about due files every ``tick`` seconds until shutdown.
@@ -154,57 +179,118 @@ class StatusFollower:
                 # A daemon thread's traceback goes to an excepthook nobody
                 # reads, and this thread is the only one following files.
                 self._logger.exception("Error following uploaded files; continuing")
+        left = len(self.following())
+        if left:
+            self._logger.info(
+                f"No longer following {left} uploaded file{'' if left == 1 else 's'}: "
+                "the agent is stopping. What became of them shows in Raw files on "
+                "the server."
+            )
 
-    def _poll(self, followed: _Followed, now: float) -> None:
-        row = self._ask(followed)
-        if row is not None:
-            if "processing_status" not in row:
-                # An older server records no processing status.
-                self._logger.info(
-                    "The server does not report what becomes of uploaded files, "
-                    "so the agent will not follow them."
-                )
-                self.enabled = False
-                with self._lock:
-                    self._followed.clear()
-                return
-            self._report(followed, row)
-            if row.get("processing_status") in SETTLED:
-                self._forget(followed)
-                return
-        if now - followed.started >= FOLLOW_FOR:
-            self._give_up(followed)
-            return
-        followed.polls += 1
-        followed.due = now + POLL_DELAYS[min(followed.polls, len(POLL_DELAYS) - 1)]
+    def _ask_server(self) -> bool:
+        """Ask the server whether it can say what became of an upload.
 
-    def _ask(self, followed: _Followed) -> dict | None:
-        """The server's row for the file, or None when there is none yet.
-
-        A question that fails is logged quietly and answered with None: the
-        file is asked about again at its next turn.
+        :return: Whether it answered; :attr:`enabled` then says what.
         """
         try:
             resp = requests.get(
-                self._url,
-                params={"filename": followed.name, "page": 0, "limit": 1},
+                f"{self._url}/api/version",
                 headers=agent_headers(self._access_token()),
                 verify=self._verify,
                 timeout=REQUEST_TIMEOUT,
             )
         except requests.exceptions.RequestException as e:
-            self._logger.debug(f"Could not ask about {followed.shown}: {e}")
-            return None
+            self._logger.debug(f"Could not ask the server what it can do: {e}")
+            return False
+        if resp.status_code >= 500:
+            self._logger.debug(
+                f"Could not ask the server what it can do: HTTP {resp.status_code}"
+            )
+            return False
+        capabilities = {}
+        if resp.status_code == 200:
+            try:
+                capabilities = (resp.json().get("data") or {}).get("capabilities") or {}
+            except (ValueError, AttributeError):
+                capabilities = {}
+        # A server that refuses the question predates it: it cannot be asked
+        # with a device token, and cannot answer the questions either.
+        self.enabled = capabilities.get(CAPABILITY) is True
+        if not self.enabled:
+            self._logger.info(
+                "The server does not report what becomes of uploaded files, so the "
+                "agent will not follow them."
+            )
+            with self._lock:
+                self._followed.clear()
+        return True
+
+    def _poll(self, followed: _Followed) -> bool:
+        """Ask about one file, and schedule its next question.
+
+        :return: Whether the server answered.
+        """
+        answered, row = self._ask(followed)
+        followed.answered = followed.answered or answered
+        if row is not None:
+            self._report(followed, row)
+            if row.get("processing_status") in SETTLED:
+                self._forget(followed)
+                return answered
+        if self._clock() - followed.uploaded >= FOLLOW_FOR:
+            self._give_up(followed)
+            return answered
+        self._schedule(followed)
+        return answered
+
+    def _schedule(self, followed: _Followed) -> None:
+        """Set the file's next question, counted from now."""
+        followed.polls += 1
+        delay = POLL_DELAYS[min(followed.polls, len(POLL_DELAYS) - 1)]
+        followed.due = self._clock() + delay
+
+    def _ask(self, followed: _Followed) -> tuple[bool, dict | None]:
+        """The server's newest row for the file registered since its upload.
+
+        :return: Whether the server answered, and the row, or None when it
+            has none yet. A question that fails is logged quietly and is not
+            an answer: the file is asked about again at its next turn.
+        """
+        registered_within = int(self._clock() - followed.uploaded) + REGISTRATION_MARGIN
+        try:
+            resp = requests.get(
+                f"{self._url}/api/sample/files",
+                params={
+                    "source_filename": followed.name,
+                    "registered_within": registered_within,
+                    "sort": "sample_file_utc_created",
+                    "order": "desc",
+                    "page": 0,
+                    "limit": 1,
+                },
+                headers=agent_headers(self._access_token()),
+                verify=self._verify,
+                timeout=REQUEST_TIMEOUT,
+            )
+        except requests.exceptions.RequestException as e:
+            self._logger.debug(f"Could not ask about {followed.name}: {e}")
+            return False, None
         if resp.status_code != 200:
             self._logger.debug(
-                f"Could not ask about {followed.shown}: HTTP {resp.status_code}"
+                f"Could not ask about {followed.name}: HTTP {resp.status_code}"
             )
-            return None
+            return False, None
         try:
-            rows = resp.json().get("data") or []
+            rows = resp.json().get("data")
         except (ValueError, AttributeError):
-            return None
-        return rows[0] if rows else None
+            rows = None
+        if not isinstance(rows, list):
+            self._logger.debug(
+                f"Could not ask about {followed.name}: unexpected answer"
+            )
+            return False, None
+        row = rows[0] if rows else None
+        return True, row if isinstance(row, dict) else None
 
     def _report(self, followed: _Followed, row: dict) -> None:
         """Log the file's status if it moved on since it was last seen."""
@@ -215,24 +301,32 @@ class StatusFollower:
         label, level = STAGES.get(status, (status, "info"))
         detail = (row.get("processing_detail") or "").strip()
         getattr(self._logger, level)(
-            f"{followed.shown}: {label}" + (f". {detail}" if detail else "")
+            f"{followed.name}: {label}" + (f". {detail}" if detail else "")
         )
 
     def _give_up(self, followed: _Followed) -> None:
         hours = FOLLOW_FOR // 3600
-        if followed.status is None:
+        if not followed.answered:
             self._logger.warning(
-                f"{followed.shown}: the server has no record of it {hours} hours "
-                "after the upload. Converting it may have failed; look for it "
-                "in Raw files on the server."
+                f"{followed.name}: the server could not be asked about it in the "
+                f"{hours} hours after the upload; look for it in Raw files on the "
+                "server."
+            )
+        elif followed.status is None:
+            self._logger.warning(
+                f"{followed.name}: the server has no record of it {hours} hours "
+                "after the upload. Converting it may have failed; look for it in "
+                "Raw files on the server."
             )
         else:
             self._logger.warning(
-                f"{followed.shown}: still {STAGES.get(followed.status, (followed.status,))[0]} "
+                f"{followed.name}: still {STAGES.get(followed.status, (followed.status,))[0]} "
                 f"{hours} hours after the upload; no longer following it."
             )
         self._forget(followed)
 
     def _forget(self, followed: _Followed) -> None:
+        """Stop following the file - unless it was uploaded again meanwhile."""
         with self._lock:
-            self._followed.pop(followed.name, None)
+            if self._followed.get(followed.name) is followed:
+                del self._followed[followed.name]

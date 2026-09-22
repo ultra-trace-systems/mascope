@@ -884,9 +884,12 @@ Steps 6 and 7 of the setup-simplification proposal:
   through when `files_uploads_without_ionization_token` is announced;
 - the agent status poller, in the next agent release. Shipped in
   #2169: after each upload the agent reads its file's row from
-  `GET /api/sample/files` (by the name the server stores it under), at a
-  widening interval for up to three hours, and logs one line per status it
-  reaches. It stops asking a server whose rows carry no `processing_status`.
+  `GET /api/sample/files`, by the name the file had on its machine
+  (`source_filename`) among the files registered since the upload
+  (`registered_within`, on the server's clock), at a widening interval for
+  up to three hours, and logs a line for each status it sees. It asks only a
+  server that announces `files_listed_by_source_filename`, which it reads
+  from `GET /api/version` with its device token.
 
 Needed before any rung can be provisional or park.
 

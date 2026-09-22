@@ -2,7 +2,7 @@ import asyncio
 import math
 import os
 import shutil
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
 from fastapi import BackgroundTasks, HTTPException, UploadFile
@@ -282,6 +282,8 @@ async def get_sample_files(
     datetime_max: datetime | None = None,
     instrument: str | None = None,
     filename: str | None = None,
+    source_filename: str | None = None,
+    registered_within: int | None = None,
     processing_status: list[str] | None = None,
     processing_updated_min: datetime | None = None,
     sort: str = "datetime_utc",
@@ -299,6 +301,10 @@ async def get_sample_files(
     :param datetime_max: Maximum date and time for filtering sample files, optional.
     :param instrument: Instrument name for filtering sample files, optional.
     :param filename: Filename for filtering sample files, optional.
+    :param source_filename: The name a file had on the machine that uploaded
+        it, optional.
+    :param registered_within: Only files registered in the last this many
+        seconds, by the server's clock, optional.
     :param processing_status: Processing statuses to keep, optional; a file
         matches when its status is any of them.
     :param processing_updated_min: Earliest time a file's processing status
@@ -319,9 +325,13 @@ async def get_sample_files(
 
         # --- Apply access filters
         if allowed_instruments is not None:
-            # Build OR: instrument in allowed set, or file linked to user's workspaces
+            # Build OR: instrument in allowed set, or file linked to user's workspaces.
+            # Matched as the workspace is, on the trimmed lower case: a file
+            # recorded as "orbihel" belongs to "Acquisitions OrbiHel" too.
             instrument_filter = (
-                SampleFile.instrument.in_(allowed_instruments)
+                func.lower(func.trim(SampleFile.instrument)).in_(
+                    {name.strip().lower() for name in allowed_instruments}
+                )
                 if allowed_instruments
                 else None
             )
@@ -361,6 +371,13 @@ async def get_sample_files(
             stmt = stmt.where(SampleFile.instrument == instrument)
         if filename:
             stmt = stmt.where(SampleFile.filename == filename)
+        if source_filename:
+            stmt = stmt.where(SampleFile.source_filename == source_filename)
+        if registered_within:
+            stmt = stmt.where(
+                SampleFile.sample_file_utc_created
+                >= func.now() - timedelta(seconds=registered_within)
+            )
         if processing_status:
             stmt = stmt.where(
                 SampleFile.processing_status.in_(
