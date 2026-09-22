@@ -249,6 +249,13 @@ class GetRecentSampleFilesQueryParams(GetSampleFilesQueryParams):
     days: int = Field(
         1, description="Number of days to look back from current datetime"
     )
+    recent_by: Literal["acquisition", "processing"] = Field(
+        "acquisition",
+        description=(
+            "What the look-back applies to: when a file was acquired, or when "
+            "its processing status was last recorded."
+        ),
+    )
 
 
 class GetSampleFilePeaksQueryParams(QueryParamsModel):

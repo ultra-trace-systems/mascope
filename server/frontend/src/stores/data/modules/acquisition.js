@@ -4,6 +4,7 @@ import { defineStore } from 'pinia'
 import { api } from '@/api'
 import { makeLogger } from '@/lib/logging'
 import { runtime } from '@/lib/runtime'
+import { debounce } from '@/lib/utils'
 
 import { useInstrument } from './instrument'
 
@@ -59,18 +60,20 @@ export const useAcquisition = defineStore('app.data.acquisition', () => {
       time.mode = 'Last 24 hours'
     }
   })
-  // Single watcher: reset paginator + selection, then reload. Ordering
-  // matters - the reload must see first=0 to fetch page 0.
-  watch(time, async () => {
-    unfocus()
-    first.value = 0
-    await load()
-  })
 
   // --- processing status filter: the statuses to keep, or null for any.
-  // Server-side, so it spans every page; a change reloads from page 0.
+  // Server-side, so it spans every page. With a recent preset, "recent" is
+  // then when a file's status was recorded rather than when it was acquired:
+  // a file uploaded or re-processed long after acquisition is still found.
   const processingStatus = ref(null)
-  watch(processingStatus, async () => {
+  const keepsStatus = (record) =>
+    !processingStatus.value || processingStatus.value.includes(record.processing_status)
+
+  // Single watcher for both filters: reset paginator + selection, then
+  // reload, once however many of them changed in the same tick (Clear
+  // filters changes both). Ordering matters - the reload must see first=0 to
+  // fetch page 0.
+  watch([time, processingStatus], async () => {
     unfocus()
     first.value = 0
     await load()
@@ -93,12 +96,28 @@ export const useAcquisition = defineStore('app.data.acquisition', () => {
     }
   )
 
+  // --- loading: only the latest request's answer is kept, and a row update
+  // that arrives while a load is in flight is applied again on top of its
+  // answer, which may predate it.
+  let latestLoad = 0
+  let updatesDuringLoad = null
+
   async function load() {
+    const loadId = ++latestLoad
+    updatesDuringLoad ??= new Map()
+    let answer = null
     if (time.mode.startsWith('Last')) {
-      await loadRecent(days.value)
+      answer = await loadRecent(days.value)
     } else if (time.mode == 'range') {
-      await loadRange(time.range)
+      answer = await loadRange(time.range)
     }
+    if (loadId !== latestLoad) return
+    const updates = updatesDuringLoad
+    updatesDuringLoad = null
+    if (!answer) return
+    list.value = answer.items
+    total.value = answer.results
+    for (const [recordId, record] of updates) applyUpdate(recordId, record)
   }
 
   // Raw axios call (no `use: read` handler) so we can read both `data` and
@@ -111,6 +130,7 @@ export const useAcquisition = defineStore('app.data.acquisition', () => {
           sort: SORT_FIELD_MAP[sortField.value] ?? sortField.value,
           order: sortOrder.value === 1 ? 'asc' : 'desc',
           days: daysCount,
+          recent_by: processingStatus.value ? 'processing' : undefined,
           processing_status: processingStatus.value ?? undefined,
           page: Math.floor(first.value / rows.value),
           limit: rows.value
@@ -121,10 +141,10 @@ export const useAcquisition = defineStore('app.data.acquisition', () => {
         type: 'load_recent_sample_files'
       })
       const { data: items = [], results = 0 } = response.data ?? {}
-      list.value = items
-      total.value = results
+      return { items, results }
     } catch (err) {
       logger.error(`failed to load recent sample files: ${err}`)
+      return null
     }
   }
 
@@ -145,10 +165,10 @@ export const useAcquisition = defineStore('app.data.acquisition', () => {
         type: 'load_sample_file_range'
       })
       const { data: items = [], results = 0 } = response.data ?? {}
-      list.value = items
-      total.value = results
+      return { items, results }
     } catch (err) {
       logger.error(`failed to load sample file range: ${err}`)
+      return null
     }
   }
 
@@ -182,13 +202,33 @@ export const useAcquisition = defineStore('app.data.acquisition', () => {
     }
   })
 
+  // A status change can move a file into or out of a status filter, which
+  // only a reload can place on the right page. Debounced: every file writes
+  // several statuses in quick succession.
+  const reloadForStatus = debounce(() => load(), 300)
+
+  function applyUpdate(recordId, record) {
+    const index = list.value.findIndex((f) => f.sample_file_id === recordId)
+    if (index >= 0) {
+      if (keepsStatus(record)) {
+        list.value[index] = record
+        logger.log(`updated ${record.filename}`)
+      } else {
+        reloadForStatus()
+      }
+    } else if (
+      processingStatus.value &&
+      keepsStatus(record) &&
+      record.instrument === instrument.focused?.instrument
+    ) {
+      reloadForStatus()
+    }
+  }
+
   api.socket.on('acquisition_updated', (payload) => {
     const { record_id, record } = payload
-    const index = list.value.findIndex((f) => f.sample_file_id === record_id)
-    if (index >= 0) {
-      list.value[index] = record
-      logger.log(`updated ${record.filename}`)
-    }
+    updatesDuringLoad?.set(record_id, record)
+    applyUpdate(record_id, record)
   })
 
   api.socket.on('acquisition_deleted', (payload) => {

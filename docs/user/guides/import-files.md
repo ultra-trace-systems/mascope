@@ -162,14 +162,16 @@ next step.
 
 The **Status** column says how far processing got. Hover a status to read what
 it means for that file, and use the status filter at the top of the tab to list
-the files that need attention across every page.
+the files that need attention across every page. With a status chosen, the time
+window goes by when each file's status was recorded, so a file uploaded or
+re-processed long after it was acquired is listed too.
 
 | Status | Meaning |
 |---|---|
-| Converted, Bound, Calibrated | Still being processed: the file was read, its samples exist, and its m/z axis was calibrated. |
-| Done | Every sample of the file was matched. The detail says when the file was not calibrated, and why. |
+| Converted, Queued, Bound, Calibrated | Still being processed: the file was read (or processing was asked for again, and waits its turn), its samples exist, and its m/z axis was calibrated. |
+| Done | Every sample of the file was matched, or it is a blank measurement with nothing to match. The detail says when the file was not calibrated, and why. |
 | Needs a chemistry | No ionization mode token matched the file's name, so it has no samples. Set a token its name contains, then re-process it. |
-| Calibration failed | The m/z calibration failed or is below the quality bar, so the samples were not matched. |
+| Calibration failed | An m/z calibration failed or is below the quality bar, so some or all of the samples were not matched. A TOF file is matched only on a verified m/z calibration, so one whose ionization mode has no calibration collection ends here too, and the detail names the missing collection. |
 | Failed | Processing stopped on an error, or was interrupted by a server restart. Re-process the file. |
 
 Files processed before Mascope recorded the status show none. When an Orbitrap

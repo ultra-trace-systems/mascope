@@ -11,13 +11,18 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   calibrated, then done, needs a chemistry, calibration failed or failed. A
   file that ended with no samples, or with samples that were never matched,
   now says why, and hovering the status shows the detail. The Raw files table
-  has a Status column and a server-side status filter, and
-  `GET /api/sample/files` takes `processing_status` (repeat it for several),
-  so a File Agent can read back what became of its upload. When a method
-  alternates scan ranges or scan modes within a polarity, the detail also says
-  that peak detection pools those scan streams. A server restart marks the
-  files whose processing it interrupted as failed. Files processed before this
-  change carry no status. Each file also records when it was registered
+  has a Status column and a server-side status filter, whose time window
+  goes by when each file's status was recorded, and `GET /api/sample/files`
+  takes `processing_status` (repeat it for several), so a File Agent can read
+  back what became of its upload. When a method alternates scan ranges or scan
+  modes within a polarity, the detail also says that peak detection pools
+  those scan streams. A server restart marks the files whose processing it
+  interrupted as failed, and a file processed again is marked queued before
+  anything of it is replaced. A TOF file whose ionization mode has no
+  calibration collection is no longer sent to matching, which refuses an
+  uncalibrated TOF axis and used to end the run on a warning: it ends
+  calibration failed, naming the missing collection. Files processed before
+  this change carry no status. Each file also records when it was registered
   (`sample_file_utc_created`, which the file list sorts by), for listing
   recently added files (#482); files registered before this change have no
   registration time.

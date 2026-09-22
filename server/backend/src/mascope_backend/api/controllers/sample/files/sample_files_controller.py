@@ -280,6 +280,7 @@ async def get_sample_files(
     instrument: str | None = None,
     filename: str | None = None,
     processing_status: list[str] | None = None,
+    processing_updated_min: datetime | None = None,
     sort: str = "datetime_utc",
     order: str = "asc",
     page: int | None = None,
@@ -297,6 +298,8 @@ async def get_sample_files(
     :param filename: Filename for filtering sample files, optional.
     :param processing_status: Processing statuses to keep, optional; a file
         matches when its status is any of them.
+    :param processing_updated_min: Earliest time a file's processing status
+        was recorded, optional.
     :param sort: Column to sort by, defaults to "datetime_utc".
     :param order: Sorting order, "asc" for ascending or "desc" for descending.
     :param page: Page number for pagination, defaults to None (no pagination).
@@ -361,10 +364,19 @@ async def get_sample_files(
                     [str(status) for status in processing_status]
                 )
             )
+        if processing_updated_min:
+            stmt = stmt.where(
+                SampleFile.processing_updated_utc >= processing_updated_min
+            )
 
         # --- Apply sorting
+        # Rows without a value last in either direction, so the newest come
+        # first on a descending sort of a column older rows leave NULL; and
+        # the id breaks ties, so pages of rows that share a value neither
+        # repeat nor skip any.
         stmt = stmt.order_by(
-            order_by_column(SampleFile, sort, order, SampleFileSortColumn)
+            order_by_column(SampleFile, sort, order, SampleFileSortColumn).nulls_last(),
+            SampleFile.sample_file_id,
         )
 
         # --- Apply pagination

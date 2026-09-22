@@ -19,6 +19,12 @@ export const PROCESSING_STATUSES = {
     icon: 'ph ph-hourglass-medium',
     description: `The converter registered the file. ${IN_PROGRESS}`
   },
+  queued: {
+    label: 'Queued',
+    severity: 'secondary',
+    icon: 'ph ph-hourglass-medium',
+    description: 'Processing was asked for again and waits for its turn.'
+  },
   bound: {
     label: 'Bound',
     severity: 'secondary',
@@ -43,13 +49,15 @@ export const PROCESSING_STATUSES = {
     label: 'Calibration failed',
     severity: 'warn',
     icon: 'ph ph-scales',
-    description: 'The m/z calibration failed or is not verified, so the samples were not matched.'
+    description:
+      'An m/z calibration failed, fell below the quality bar or could not be made, ' +
+      'so some or all of the samples were not matched.'
   },
   done: {
     label: 'Done',
     severity: 'success',
     icon: 'ph ph-check',
-    description: 'Every sample of the file was matched.'
+    description: 'Every sample of the file was matched, or a blank had nothing to match.'
   },
   failed: {
     label: 'Failed',
@@ -63,7 +71,7 @@ export const PROCESSING_STATUSES = {
 export const PROCESSING_STATUS_FILTERS = [
   { label: 'Any status', value: null },
   { label: 'Needs attention', value: ['needs_chemistry', 'calibration_failed', 'failed'] },
-  { label: 'In progress', value: ['converted', 'bound', 'calibrated'] },
+  { label: 'In progress', value: ['converted', 'queued', 'bound', 'calibrated'] },
   { label: 'Done', value: ['done'] }
 ]
 

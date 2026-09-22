@@ -86,12 +86,12 @@ async def read_pooled_streams_note(filename: str) -> str | None:
     """
     try:
         props = await asyncio.to_thread(read_props, filename)
+        return pooled_streams_note(props.get("scan_streams") or [])
     except Exception:  # noqa: BLE001 - a missing census is not a processing error
         runtime.logger.opt(exception=True).debug(
             f"No scan stream census readable for {filename}"
         )
         return None
-    return pooled_streams_note(props.get("scan_streams") or [])
 
 
 async def record_processing_status(
@@ -133,9 +133,14 @@ async def record_processing_status(
             record = sample_file.to_dict() if sample_file is not None else None
             await session.commit()
     except Exception:  # noqa: BLE001 - the processing matters more than its report
-        runtime.logger.opt(exception=True).warning(
+        # The WARNING names no file: error monitoring groups issues by the
+        # message, and an outage fails this write for every file in flight.
+        runtime.logger.info(
             f"Could not record processing status '{status.value}' for sample "
             f"file {sample_file_id}"
+        )
+        runtime.logger.opt(exception=True).warning(
+            f"Could not record a sample file's processing status '{status.value}'"
         )
         return
 

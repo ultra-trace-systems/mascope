@@ -24,6 +24,9 @@ from mascope_backend.api.controllers.sample.files.process.service import (
     re_process_sample_files,
     spawn_auto_process_sample_file,
 )
+from mascope_backend.api.controllers.sample.files.process.status import (
+    record_processing_status,
+)
 from mascope_backend.api.controllers.sample.files.sample_files_controller import (
     compute_sample_file_peaks,
     create_sample_file,
@@ -43,6 +46,7 @@ from mascope_backend.api.controllers.sample.files.sample_files_controller import
     upload_sample_files,
 )
 from mascope_backend.api.lib.api_features import api_route
+from mascope_backend.api.models.sample.files.config import ProcessingStatus
 from mascope_backend.api.models.sample.files.sample_file_pydantic_model import (
     DeleteSampleFilesBody,
     GetRecentSampleFilesQueryParams,
@@ -109,16 +113,24 @@ async def get_recent_sample_files_route(
 ):
     """Retrieve recent sample files within a specified date range.
 
+    Recent by acquisition time, or by when each file's processing status was
+    last recorded (``recent_by``): a file uploaded or re-processed long after
+    it was acquired is recent by the second.
+
     :param query_params: Query parameters including date range in days.
     :param user: Authenticated user.
     :return: A dictionary with recent sample files matching criteria.
     """
-    datetime_min = datetime.now(timezone.utc) - timedelta(days=query_params.days)
-    query_params_dict = query_params.model_dump(exclude={"days"})
+    since = datetime.now(timezone.utc) - timedelta(days=query_params.days)
+    query_params_dict = query_params.model_dump(exclude={"days", "recent_by"})
     allowed = await accessible_acquisition_instruments(user)
     query_params_dict.update(
         {
-            "datetime_min": datetime_min,
+            (
+                "processing_updated_min"
+                if query_params.recent_by == "processing"
+                else "datetime_min"
+            ): since,
             "allowed_instruments": allowed,
             "user_id": None if allowed is None else user.id,
         }
@@ -381,6 +393,11 @@ async def process_sample_item_route(
     # Get data for notifications
     process_id = gen_id(8)
 
+    # The run starts by clearing what an earlier run left, and until it
+    # records its own stages the row would still say how that run ended.
+    await record_processing_status(
+        sample_file_id, ProcessingStatus.QUEUED, "Queued for processing."
+    )
     background_tasks.add_task(
         spawn_auto_process_sample_file,
         sample_file_id=sample_file_id,
