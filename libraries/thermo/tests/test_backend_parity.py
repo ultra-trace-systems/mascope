@@ -325,6 +325,104 @@ def test_scan_statistics_match_thermo(monkeypatch, path):
             assert o[name] == t[name] and type(o[name]) is type(t[name]), name
 
 
+# A trailer value as the Thermo library renders a number: digits, the machine's
+# decimal separator ("." or ","), an optional exponent.
+_TRAILER_NUMBER = re.compile(r"[+-]?(\d*)(?:[.,](\d*))?(?:[eE]([+-]?\d+))?")
+
+# The Thermo library's text for a switch OpenTFRaw reads as a bool.
+_TRAILER_SWITCH = {True: {"On", "Yes", "True"}, False: {"Off", "No", "False"}}
+
+
+def _trailer_number(value) -> tuple[float, float] | None:
+    """``(number, half a unit in its last digit)`` for a trailer value that
+    reads as a number, else None.
+
+    The Thermo library's text holds only the digits it displays, so the stored
+    number may lie up to half a unit in the last of them away. A value that is
+    already a number is exact.
+    """
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return float(value), 0.0
+    text = str(value).strip()
+    match = _TRAILER_NUMBER.fullmatch(text)
+    if not match or not (match.group(1) or match.group(2)):
+        return None
+    last_digit = int(match.group(3) or 0) - len(match.group(2) or "")
+    return float(text.replace(",", ".")), 0.5 * 10.0**last_digit
+
+
+def _same_trailer_value(ours, theirs) -> bool:
+    """OpenTFRaw's trailer value says what the Thermo library's text says."""
+    ours_number, theirs_number = _trailer_number(ours), _trailer_number(theirs)
+    if ours_number is not None and theirs_number is not None:
+        (o, o_half), (t, t_half) = ours_number, theirs_number
+        # The last term absorbs float64 rounding, which is far below a digit.
+        return abs(o - t) <= o_half + t_half + 1e-14 * abs(t)
+    if ours is None:
+        return theirs == ""
+    if isinstance(ours, bool):
+        return theirs in _TRAILER_SWITCH[ours]
+    return ours == theirs
+
+
+@pytest.mark.skipif(not RAW_FILES, reason="no .raw files in test_files/")
+@pytest.mark.parametrize("path", RAW_FILES, ids=lambda p: p.name)
+def test_scan_acquisition_settings_match_thermo(monkeypatch, path):
+    """OpenTFRaw's trailer table must be the Thermo library's: the same labels
+    in the same order, and the same value under each label, on the scans of
+    every MS order.
+
+    The backends type the values differently (``scan_trailer``). The Thermo
+    library gives text in the machine's number format, rounded to the digits
+    it displays, where OpenTFRaw gives the stored number, so a value both read
+    as a number must agree to half a unit in the last digit displayed. A
+    switch the Thermo library writes On/Off or Yes/No is True/False in
+    OpenTFRaw, a section heading's empty text is None, and any other text must
+    be identical.
+    """
+    path = str(path)
+
+    monkeypatch.setenv("MASCOPE_THERMO_BACKEND", "thermo")
+    with open_backend(path) as backend:
+        th = backend.scan_acquisition_settings(ms_type=None)
+    monkeypatch.setenv("MASCOPE_THERMO_BACKEND", "opentfraw")
+    with open_backend(path) as backend:
+        ot = backend.scan_acquisition_settings(ms_type=None)
+
+    assert ot["header_labels"] == th["header_labels"]
+    assert set(ot["settings"]) == set(th["settings"]), "scan set differs"
+    for scan_number, theirs in th["settings"].items():
+        ours = ot["settings"][scan_number]
+        for label, o, t in zip(th["header_labels"], ours, theirs, strict=True):
+            assert _same_trailer_value(o, t), (
+                f"scan {scan_number}, {label!r}: OpenTFRaw {o!r} vs Thermo {t!r}"
+            )
+
+
+def _stats_per_scan(path):
+    return m_thermo.RawFileMetadataLegacy(path).to_dict()["stats_per_scan"]
+
+
+@pytest.mark.skipif(not RAW_FILES, reason="no .raw files in test_files/")
+@pytest.mark.parametrize("path", RAW_FILES, ids=lambda p: p.name)
+def test_stats_per_scan_keys_match_thermo(monkeypatch, path):
+    """The metadata route's ``stats_per_scan`` must give every scan the same
+    keys, in the same order, under both backends: the statistics fields and
+    the trailer labels. A scan looked up by one, ``"FT Resolution:"`` say,
+    is then found whichever backend read the file.
+    """
+    path = str(path)
+
+    th = _run_under(monkeypatch, "thermo", _stats_per_scan, path)
+    ot = _run_under(monkeypatch, "opentfraw", _stats_per_scan, path)
+
+    assert set(ot) == set(th), "scan set differs"
+    for scan_number, row in th.items():
+        assert list(ot[scan_number]) == list(row), f"scan {scan_number}"
+
+
 def _hcd_tuple(value):
     return tuple(
         round(float(part.replace(",", ".")), 2)

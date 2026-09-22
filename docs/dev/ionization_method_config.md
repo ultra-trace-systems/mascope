@@ -431,7 +431,9 @@ Multi Inject Info:     'IT=250;250'
 
 Mascope reads **five** keys off `scan()` (`backend.py:287-293
 _OTF_TRAILER_FIELDS`) and four labels via `scan_parameters()` at `:1446`/`:1725`.
-Everything else is discarded.
+Everything else is discarded. (Since superseded: `scan_acquisition_settings()`
+now returns the whole `scan_parameters()` trailer, and `_OTF_TRAILER_FIELDS` is
+gone.)
 
 For an acquisition-method redesign this is better than the method text: it is
 already structured and typed, it needs no bump, no upstream PR, and no OLE2
@@ -554,7 +556,10 @@ Independently valuable, ships before any of the redesign lands.
    parameters now reach `.props` per sample file via
    `ReaderBackend.acquisition_parameters()`. Implemented as a new protocol
    member rather than by widening `_OTF_TRAILER_FIELDS`, whose shape
-   `scan_acquisition_settings()` pins and which has a live consumer.
+   `scan_acquisition_settings()` pinned and which had a live consumer.
+   `scan_acquisition_settings()` has since moved onto `scan_parameters()` too:
+   it returns the whole trailer under Thermo's labels, and
+   `_OTF_TRAILER_FIELDS` is gone.
 
 2. ~~**Bump opentfraw**~~ - **ALREADY DONE on develop**, but not deliberately:
    it arrived as a routine dependency-group bump, so `opentfraw~=1.3` / 1.3.7 is

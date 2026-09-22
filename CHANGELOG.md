@@ -52,6 +52,24 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   - `PacketCount`, `SegmentNumber` and `CycleNumber` are empty (`null`)
     rather than missing, since OpenTFRaw does not expose them (#1527).
 
+- **Both raw-file readers report each scan's whole trailer.** The trailer is
+  the instrument's own table of per-scan acquisition settings, such as
+  `FT Resolution:`, `AGC Target:` and `Ion Injection Time (ms):`. The Thermo
+  library reported all of it (`scan_acquisition_settings`). OpenTFRaw, the
+  default reader, reported five fields under labels of Mascope's own. So in
+  `GET /api/sample/files/{id}/metadata`, each scan of `stats_per_scan` had 26
+  keys on a committed sample file where the Thermo library gave 99, and
+  looking a scan up by `"FT Resolution:"` raised a `KeyError`. OpenTFRaw now
+  reports the whole trailer, under the Thermo library's labels and in its
+  order. Values keep each reader's types: text from the Thermo library,
+  rounded to the digits it displays; numbers, `true`/`false` and `null` from
+  OpenTFRaw. The five labels of Mascope's own (`Ion Injection Time (ms)`,
+  `Charge State`, `Precursor m/z`, `Isolation Width (m/z)`,
+  `Collision Energy`) are gone. The trailer has its own
+  `Ion Injection Time (ms):`, `Charge State:` and `MS2 Isolation Width:`, and
+  an MS2 scan's precursor and collision energy are in its filter
+  (`ScanType`).
+
 ### Fixed
 
 - **A NaN in an API response no longer fails the request as a bad one.** One

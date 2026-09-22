@@ -212,8 +212,8 @@ def test_acquisition_parameters_are_written_to_props_unchanged(acquisition_param
 
 
 def test_acquisition_parameters_capture_the_method_settings(acquisition_params):
-    """The point of the capture: the trailer carries acquisition-method
-    settings well beyond the five fields _OTF_TRAILER_FIELDS surfaces.
+    """The point of the capture: the trailer carries dozens of
+    acquisition-method settings.
 
     Labels are the instrument's own trailer labels, so both backends agree on
     them. Values are compared as text because their *type* is backend-dependent

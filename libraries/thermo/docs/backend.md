@@ -36,7 +36,11 @@ To ensure consistency across backends, the following field sets are enforced:
   - `ScanEventNumber` is the trailer's `Scan Event:` minus one.
   - The UV, PDA and analog detector fields (`Frequency`, the wavelength fields, `NumberOfChannels`, `IsUniformTime`, `AbsorbanceUnitScale`, `WavelengthStep`) hold the fixed values Thermo's `ScanStats` holds for every MS scan (`MS_SCAN_DETECTOR_STATS`).
   - A field a backend cannot read is `None`. For OpenTFRaw those are `PacketCount`, `SegmentNumber` and `CycleNumber` (`OPENTFRAW_UNAVAILABLE_SCAN_STATS`). It decodes the scan-index words behind the first two but does not pass them to Python ([Sigilweaver/OpenTFRaw#56](https://github.com/Sigilweaver/OpenTFRaw/pull/56)).
-- **`_OTF_TRAILER_FIELDS`**: Descriptive labels for acquisition data decoded by OpenTFRaw (Ion Injection Time, Precursor m/z).
+- **The trailer** is the instrument's own table of per-scan acquisition settings (`FT Resolution:`, `AGC Target:`, `Ion Injection Time (ms):` and dozens more), so it is not a fixed field set: its labels depend on the instrument. Both backends report it whole, under the same labels in the same order (`scan_trailer`, `scan_acquisition_settings`). OpenTFRaw reads it with `scan_parameters()`. The values keep each backend's types:
+  - The Thermo library gives text: numbers in the machine's number format, rounded to the digits it displays (`0,11`); switches as `On`/`Off` or `Yes`/`No`; an empty string for a `=== ... ===` section heading.
+  - OpenTFRaw gives the stored values: numbers at full precision (`0.11146822731511463`), `True`/`False`, and `None` for a section heading.
+
+  On the internal regression corpus, the demo bundle and the committed sample files (345 Orbitrap files, all of their scans MS1), the backends report the same labels on every scan, and every value agrees within the digits the Thermo library displays.
 
 ## Public Methods
 
@@ -55,7 +59,7 @@ All methods returning time values convert internal units (minutes) to **seconds*
 - **`scan_times(polarity, t_min, t_max, ms_type)`**: Returns the start time in seconds of each selected scan.
 - **`tic_per_scan(polarity, t_min, t_max, ms_type)`**: Returns the start times and Total Ion Current (TIC) of the selected scans.
 - **`scan_statistics(polarity, t_min, t_max, ms_type)`**: Returns the selected scans' metrics (e.g., BasePeakIntensity, ScanType) defined in `SCAN_STAT_FIELDS`, plus `MsType`, with the same keys from both backends.
-- **`scan_acquisition_settings(polarity, t_min, t_max, ms_type)`**: Returns a per-scan table of acquisition settings for the selected scans: the full trailer from the Thermo backend, the `_OTF_TRAILER_FIELDS` subset from OpenTFRaw.
+- **`scan_acquisition_settings(polarity, t_min, t_max, ms_type)`**: Returns the selected scans' trailers as one table: `header_labels`, the trailer's labels, and `settings`, each scan's values in label order. A file defines its trailer's labels once for all of its scans. OpenTFRaw fills each row by label, so a scan whose trailer lacks a label, or that has no trailer record, gets `None` there and the table keeps a single label list.
 - **`scan_filters()`**: Returns every scan's number, start time in seconds and filter text, in acquisition order, with no scan left out.
 - **`scan_trailer(scan_number)`**: Returns one scan's trailer, the instrument's own `{label: value}` table. Values are text from the Thermo backend and typed scalars from OpenTFRaw.
 - **`acquisition_parameters(max_scans, scan_numbers)`**: Summarises the trailers of up to `max_scans` scans, sampled evenly from `scan_numbers` (every MS1 scan by default), into the values constant across them and the names of those that vary.
