@@ -34,3 +34,6 @@ DIGEST_FILES = 20
 #: The default and the largest page of notifications a person can ask for.
 DEFAULT_LIMIT = 50
 MAX_LIMIT = 200
+
+#: How long a notification is kept once it has been read.
+READ_RETENTION_DAYS = 90

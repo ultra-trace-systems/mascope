@@ -84,6 +84,16 @@ describe('PROCESSING_STATUS_FILTERS', () => {
     expect(attention.value.sort()).toEqual(['calibration_failed', 'failed', 'needs_chemistry'])
   })
 
+  it('offers each status that asks for a person on its own', () => {
+    // What a kept notification's Show files sets, so the dropdown can show it.
+    for (const state of ['needs_chemistry', 'calibration_failed', 'failed']) {
+      const choice = PROCESSING_STATUS_FILTERS.find(
+        ({ value }) => value?.length === 1 && value[0] === state
+      )
+      expect(choice?.label).toBe(PROCESSING_STATUSES[state].label)
+    }
+  })
+
   it('puts every status of a run still under way under "In progress"', () => {
     // IN_PROGRESS in the backend's config.py: what a restart marks failed.
     const inProgress = PROCESSING_STATUS_FILTERS.find(({ label }) => label === 'In progress')

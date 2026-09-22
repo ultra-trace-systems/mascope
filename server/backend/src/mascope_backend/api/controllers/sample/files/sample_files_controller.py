@@ -42,6 +42,9 @@ from mascope_backend.api.models.sample.files.sample_file_pydantic_model import (
     SampleFileUpdate,
 )
 from mascope_backend.api.new.instruments import get_instruments
+from mascope_backend.api.new.notifications.service import (
+    resolve_processing_notifications,
+)
 from mascope_backend.db import (
     AgentDevice,
     Dataset,
@@ -611,6 +614,9 @@ async def delete_sample_file_db_record(sample_file_id: str) -> dict[str, str]:
         record_id=sample_file_id,
         room=sample_file.instrument,
     )
+    # The file left its digests with it, and may have been the last one in
+    # their state.
+    await resolve_processing_notifications(sample_file.instrument)
 
     return {
         "status": "success",

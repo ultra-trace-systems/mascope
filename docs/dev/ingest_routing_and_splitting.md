@@ -595,8 +595,17 @@ it is new work.
       the one unread row per person, kind and instrument, which counts its
       files and names the latest.
     - A read row takes no more files; the next one opens a new row.
-    - A row is marked resolved once no file of its instrument is left in its
-      state.
+    - Every file a row took is linked to it (`notification_file`), and the
+      row is marked resolved once none of them is left in its state; a
+      deleted file leaves its rows with it. The instrument is matched on its
+      trimmed lower case, as its workspace is.
+    - Adding to and resolving an instrument's rows take one lock on the
+      instrument, in the transaction that writes the file's status, so a
+      row is never resolved while a file joins it and the status never
+      stands without its row.
+    - Marking a row read takes the `updated_utc` the reader saw: a row that
+      took another file since stays unread. `version` orders the copies of
+      a row a browser receives.
     - The uploader is addressed too: for a person's upload the person, for
       an agent's the device sponsor.
 - **The file list endpoint** already accepts a device token and returns every

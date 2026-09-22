@@ -40,10 +40,13 @@ async def mark_notifications_read_route(
 ):
     """Mark the signed-in person's notifications read.
 
-    :param body: The notifications to mark, or ``all``.
+    :param body: The notifications to mark, each as it was seen, or ``all``.
     :param user: The signed-in person; only their own notifications change.
-    :return: How many were marked read.
+    :return: How many were marked read, and which.
     """
-    return await mark_notifications_read(
-        user.id, None if body.all else body.notification_ids
+    seen = (
+        None
+        if body.all
+        else {row.notification_id: row.updated_utc for row in body.notifications}
     )
+    return await mark_notifications_read(user.id, seen)

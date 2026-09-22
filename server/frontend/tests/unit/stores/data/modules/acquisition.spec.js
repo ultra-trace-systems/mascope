@@ -17,8 +17,9 @@ vi.mock('@/api', () => ({
 
 vi.mock('@/lib/runtime', () => ({ runtime: { config: {} } }))
 
+const focus = vi.fn()
 vi.mock('@/stores/data/modules/instrument', () => ({
-  useInstrument: () => ({ focused: { instrument: 'Orbi-1' } })
+  useInstrument: () => ({ focused: { instrument: 'Orbi-1' }, focus })
 }))
 
 let api
@@ -218,5 +219,41 @@ describe('acquisition store: loading and live updates', () => {
     } finally {
       vi.useRealTimers()
     }
+  })
+})
+
+describe('acquisition store: opening the files a notification names', () => {
+  it('shows one status of one instrument since a time, with the page filters cleared', async () => {
+    const store = useAcquisition()
+    store.search = 'blank'
+    store.polarity = '+'
+
+    store.showFiles({
+      instrument: 'Orbi-1',
+      status: 'failed',
+      since: new Date('2026-09-20T07:59:00Z')
+    })
+    await nextTick()
+
+    expect(focus).toHaveBeenCalledWith({ instrument: 'Orbi-1' })
+    expect(store.search).toBe('')
+    expect(store.polarity).toBe('')
+    expect(store.processingStatus).toEqual(['failed'])
+    expect(store.time.mode).toBe('range')
+    const [url, config] = lastRequest()
+    expect(url).toBe('/sample/files')
+    expect(config.params.processing_status).toEqual(['failed'])
+    expect(config.params.datetime_min).toBe('2026-09-20T07:59:00.000Z')
+  })
+
+  it('clears the page filters with the others', () => {
+    const store = useAcquisition()
+    store.search = 'blank'
+    store.polarity = '-'
+
+    store.resetFilters()
+
+    expect(store.search).toBe('')
+    expect(store.polarity).toBe('')
   })
 })

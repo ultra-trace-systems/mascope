@@ -11,7 +11,8 @@ routes and the hook in the status writer meet a real database; nothing is
 sent to a browser.
 """
 
-from datetime import datetime, timezone
+import asyncio
+from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock
 
 import pytest
@@ -19,6 +20,7 @@ import pytest_asyncio
 from sqlalchemy import delete, func, select, update
 
 from mascope_backend.accounts import ACCOUNT_TYPE_MACHINE
+from mascope_backend.api.controllers.sample.files import sample_files_controller
 from mascope_backend.api.controllers.sample.files.process import status
 from mascope_backend.api.models.sample.files.config import ProcessingStatus
 from mascope_backend.api.new.notifications import service
@@ -47,10 +49,10 @@ async def clean_state(async_session_factory):
     yield
     async with async_session_factory() as session:
         await session.execute(
-            delete(Notification).where(Notification.instrument == INSTRUMENT)
+            delete(Notification).where(Notification.instrument_key == INSTRUMENT)
         )
         await session.execute(
-            delete(SampleFile).where(SampleFile.instrument == INSTRUMENT)
+            delete(SampleFile).where(func.lower(SampleFile.instrument) == INSTRUMENT)
         )
         await session.execute(
             delete(Workspace).where(Workspace.workspace_name == WORKSPACE)
@@ -75,6 +77,7 @@ def emitted(monkeypatch) -> dict[str, AsyncMock]:
     monkeypatch.setattr(service, "emit_record_created", created)
     monkeypatch.setattr(service, "emit_record_updated", updated)
     monkeypatch.setattr(status, "emit_record_updated", AsyncMock())
+    monkeypatch.setattr(sample_files_controller, "emit_record_deleted", AsyncMock())
     return {"created": created, "updated": updated}
 
 
@@ -119,12 +122,13 @@ async def _file(
     name: str,
     uploaded_by: int | None = None,
     processing_status: str | None = None,
+    instrument: str = INSTRUMENT,
 ) -> dict:
     async with async_session_factory() as session:
         row = SampleFile(
             sample_file_id=gen_id(),
-            filename=f"{INSTRUMENT}_{name}.raw",
-            instrument=INSTRUMENT,
+            filename=f"{instrument}_{name}.raw",
+            instrument=instrument,
             instrument_type="orbi",
             datetime=datetime(2026, 9, 1, 12, 0, 0),
             datetime_utc=datetime(2026, 9, 1, 12, 0, 0, tzinfo=timezone.utc),
@@ -149,9 +153,17 @@ async def _set_status(async_session_factory, record: dict, value: str) -> None:
         await session.commit()
 
 
+def _seen(row: Notification) -> dict:
+    """A notification as a reader saw it, for marking it read."""
+    return {
+        "notification_id": row.notification_id,
+        "updated_utc": row.updated_utc.isoformat(),
+    }
+
+
 async def _digests(async_session_factory, user_id: int | None = None) -> list:
     async with async_session_factory() as session:
-        stmt = select(Notification).where(Notification.instrument == INSTRUMENT)
+        stmt = select(Notification).where(Notification.instrument_key == INSTRUMENT)
         if user_id is not None:
             stmt = stmt.where(Notification.user_id == user_id)
         return (await session.scalars(stmt.order_by(Notification.created_utc))).all()
@@ -465,18 +477,35 @@ async def test_a_restart_keeps_what_it_interrupted(
     await _workspace(async_session_factory, [owner])
     await _file(async_session_factory, "cut-short", processing_status="bound")
 
-    reset = await reset_interrupted_processing()
-    # Only this suite's instrument: the reset takes every leftover in the
-    # database, and other suites' files are not this test's to notify about.
-    for record in reset["data"]["files"]:
-        if record["instrument"] == INSTRUMENT:
-            await service.notify_processing_outcome(
-                record, ProcessingStatus.FAILED, INTERRUPTED_DETAIL, emit=False
-            )
+    await reset_interrupted_processing()
 
     (row,) = await _digests(async_session_factory, owner)
+    assert row.kind == "processing_failed"
     assert row.payload["files"][0]["detail"] == INTERRUPTED_DETAIL
+    # No browser is connected to the process that starts the server.
     emitted["created"].assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_a_restart_resolves_what_its_files_left(
+    async_session_factory, test_users
+):
+    """A file re-processed out of a digest when the restart hit has moved on."""
+    owner = test_users["owner"].id
+    await _workspace(async_session_factory, [owner])
+    record = await _file(
+        async_session_factory, "redo", processing_status="needs_chemistry"
+    )
+    await service.notify_processing_outcome(
+        record, ProcessingStatus.NEEDS_CHEMISTRY, None
+    )
+    await _set_status(async_session_factory, record, "queued")
+
+    await reset_interrupted_processing()
+
+    rows = {row.kind: row for row in await _digests(async_session_factory, owner)}
+    assert rows["needs_chemistry"].resolved_utc is not None
+    assert rows["processing_failed"].resolved_utc is None
 
 
 # ---------------------------------------------------------------------------
@@ -514,10 +543,13 @@ async def test_read_notifications_are_listed_only_when_asked_for(
     (row,) = await _digests(async_session_factory, owner)
 
     resp = await owner_client.post(
-        "/api/notifications/read", json={"notification_ids": [row.notification_id]}
+        "/api/notifications/read", json={"notifications": [_seen(row)]}
     )
     assert resp.status_code == 200, resp.text
-    assert resp.json()["data"] == {"read": 1}
+    assert resp.json()["data"] == {
+        "read": 1,
+        "notification_ids": [row.notification_id],
+    }
 
     unread = (await owner_client.get("/api/notifications")).json()["data"]
     everything = (
@@ -539,11 +571,11 @@ async def test_nobody_marks_another_persons_notifications_read(
     (row,) = await _digests(async_session_factory, owner)
 
     resp = await editor_client.post(
-        "/api/notifications/read", json={"notification_ids": [row.notification_id]}
+        "/api/notifications/read", json={"notifications": [_seen(row)]}
     )
 
     assert resp.status_code == 200, resp.text
-    assert resp.json()["data"] == {"read": 0}
+    assert resp.json()["data"] == {"read": 0, "notification_ids": []}
     (row,) = await _digests(async_session_factory, owner)
     assert row.read_utc is None
 
@@ -574,9 +606,221 @@ async def test_all_of_a_persons_notifications_are_marked_read_at_once(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "body", [{}, {"all": True, "notification_ids": ["x"]}, {"all": False}]
+    ("body", "message"),
+    [
+        ({}, "Give the notifications to mark read, or all"),
+        ({"all": False}, "Give the notifications to mark read, or all"),
+        (
+            {
+                "all": True,
+                "notifications": [
+                    {"notification_id": "x", "updated_utc": "2026-09-21T10:00:00Z"}
+                ],
+            },
+            "Give notifications or all, not both",
+        ),
+    ],
 )
-async def test_marking_read_needs_exactly_one_selection(owner_client, body):
+async def test_marking_read_needs_exactly_one_selection(owner_client, body, message):
     resp = await owner_client.post("/api/notifications/read", json=body)
 
     assert resp.status_code == 422, resp.text
+    assert message in resp.text
+
+
+# ---------------------------------------------------------------------------
+# Review round: identity, resolution, ordering
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_a_digest_resolves_on_its_own_files_not_the_instruments(
+    async_session_factory, test_users
+):
+    """An old file nobody re-processes does not hold a later digest open."""
+    owner = test_users["owner"].id
+    await _workspace(async_session_factory, [owner])
+    old = await _file(async_session_factory, "old", processing_status="failed")
+    await service.notify_processing_outcome(old, ProcessingStatus.FAILED, None)
+    await service.mark_notifications_read(owner, None)
+    new = await _file(async_session_factory, "new", processing_status="failed")
+    await service.notify_processing_outcome(new, ProcessingStatus.FAILED, None)
+
+    await _set_status(async_session_factory, new, "done")
+    await service.resolve_processing_notifications(INSTRUMENT)
+
+    earlier, later = await _digests(async_session_factory, owner)
+    assert later.resolved_utc is not None
+    assert earlier.resolved_utc is None
+
+
+@pytest.mark.asyncio
+async def test_a_file_again_is_not_counted_twice_once_it_is_off_the_list(
+    async_session_factory, test_users
+):
+    """The digest names its latest files only, but knows every one it took."""
+    owner = test_users["owner"].id
+    await _workspace(async_session_factory, [owner])
+    first = await _file(async_session_factory, "first")
+    await service.notify_processing_outcome(first, ProcessingStatus.FAILED, None)
+    for index in range(service.DIGEST_FILES):
+        record = await _file(async_session_factory, f"later{index:02d}")
+        await service.notify_processing_outcome(record, ProcessingStatus.FAILED, None)
+
+    await service.notify_processing_outcome(first, ProcessingStatus.FAILED, "Again.")
+
+    (row,) = await _digests(async_session_factory, owner)
+    assert row.count == service.DIGEST_FILES + 1
+    assert row.payload["files"][0]["detail"] == "Again."
+
+
+@pytest.mark.asyncio
+async def test_deleting_a_digests_files_resolves_it(async_session_factory, test_users):
+    owner = test_users["owner"].id
+    await _workspace(async_session_factory, [owner])
+    record = await _file(async_session_factory, "gone", processing_status="failed")
+    await service.notify_processing_outcome(record, ProcessingStatus.FAILED, None)
+
+    await sample_files_controller.delete_sample_file_db_record(record["sample_file_id"])
+
+    (row,) = await _digests(async_session_factory, owner)
+    assert row.resolved_utc is not None
+
+
+@pytest.mark.asyncio
+async def test_case_variants_of_an_instrument_share_a_digest(
+    async_session_factory, test_users
+):
+    owner = test_users["owner"].id
+    await _workspace(async_session_factory, [owner])
+    lower = await _file(async_session_factory, "lower")
+    upper = await _file(async_session_factory, "upper", instrument=INSTRUMENT.upper())
+
+    for record in (lower, upper):
+        await service.notify_processing_outcome(record, ProcessingStatus.FAILED, None)
+
+    (row,) = await _digests(async_session_factory, owner)
+    assert row.count == 2
+    assert row.instrument == INSTRUMENT
+
+
+@pytest.mark.asyncio
+async def test_a_digest_that_took_a_file_since_it_was_seen_stays_unread(
+    async_session_factory, test_users, owner_client
+):
+    """Marking read acknowledges what the reader saw, not what came after."""
+    owner = test_users["owner"].id
+    await _workspace(async_session_factory, [owner])
+    first = await _file(async_session_factory, "seen")
+    await service.notify_processing_outcome(first, ProcessingStatus.FAILED, None)
+    (seen,) = await _digests(async_session_factory, owner)
+    second = await _file(async_session_factory, "unseen")
+    await service.notify_processing_outcome(second, ProcessingStatus.FAILED, None)
+
+    stale = await owner_client.post(
+        "/api/notifications/read", json={"notifications": [_seen(seen)]}
+    )
+    (current,) = await _digests(async_session_factory, owner)
+    fresh = await owner_client.post(
+        "/api/notifications/read", json={"notifications": [_seen(current)]}
+    )
+
+    assert stale.json()["data"] == {"read": 0, "notification_ids": []}
+    assert fresh.json()["data"]["notification_ids"] == [current.notification_id]
+
+
+@pytest.mark.asyncio
+async def test_every_change_to_a_digest_raises_its_version(
+    async_session_factory, test_users
+):
+    """So a browser can tell which of two copies of a row is newer."""
+    owner = test_users["owner"].id
+    await _workspace(async_session_factory, [owner])
+    record = await _file(async_session_factory, "versioned", processing_status="failed")
+
+    versions = []
+    await service.notify_processing_outcome(record, ProcessingStatus.FAILED, None)
+    versions.append((await _digests(async_session_factory, owner))[0].version)
+    await service.notify_processing_outcome(record, ProcessingStatus.FAILED, "Again.")
+    versions.append((await _digests(async_session_factory, owner))[0].version)
+    await _set_status(async_session_factory, record, "done")
+    await service.resolve_processing_notifications(INSTRUMENT)
+    versions.append((await _digests(async_session_factory, owner))[0].version)
+    await service.mark_notifications_read(owner, None)
+    versions.append((await _digests(async_session_factory, owner))[0].version)
+
+    assert versions == [1, 2, 3, 4]
+
+
+@pytest.mark.asyncio
+async def test_the_status_stands_when_its_digest_cannot_be_kept(
+    async_session_factory, test_users, monkeypatch
+):
+    """The digest is written under a savepoint of the status's transaction.
+
+    A database error aborts the transaction it happens in; without the
+    savepoint, a digest addressed to nobody real would cost the status too.
+    """
+    await _workspace(async_session_factory, [test_users["owner"].id])
+    record = await _file(async_session_factory, "savepoint")
+    monkeypatch.setattr(
+        service, "processing_audience", AsyncMock(return_value={2_000_000_000})
+    )
+
+    await status.record_processing_status(
+        record["sample_file_id"], ProcessingStatus.FAILED, "Boom."
+    )
+
+    async with async_session_factory() as session:
+        stored = await session.get(SampleFile, record["sample_file_id"])
+    assert stored.processing_status == "failed"
+    assert await _digests(async_session_factory) == []
+
+
+@pytest.mark.asyncio
+async def test_concurrent_outcomes_of_an_instrument_share_one_digest(
+    async_session_factory, test_users
+):
+    """Two workers opening the same digest at once wait for each other."""
+    owner = test_users["owner"].id
+    await _workspace(async_session_factory, [owner])
+    records = [await _file(async_session_factory, f"race{i}") for i in range(4)]
+
+    await asyncio.gather(
+        *(
+            service.notify_processing_outcome(record, ProcessingStatus.FAILED, None)
+            for record in records
+        )
+    )
+
+    (row,) = await _digests(async_session_factory, owner)
+    assert row.count == len(records)
+
+
+@pytest.mark.asyncio
+async def test_notifications_read_long_ago_are_purged(
+    async_session_factory, test_users
+):
+    owner = test_users["owner"].id
+    await _workspace(async_session_factory, [owner])
+    for name, read_days_ago in (("old", 100), ("recent", 1)):
+        record = await _file(async_session_factory, name)
+        await service.notify_processing_outcome(record, ProcessingStatus.FAILED, None)
+        async with async_session_factory() as session:
+            await session.execute(
+                update(Notification)
+                .where(
+                    Notification.user_id == owner,
+                    Notification.instrument_key == INSTRUMENT,
+                    Notification.read_utc.is_(None),
+                )
+                .values(
+                    read_utc=datetime.now(timezone.utc) - timedelta(days=read_days_ago)
+                )
+            )
+            await session.commit()
+
+    await service.purge_read_notifications()
+
+    (row,) = await _digests(async_session_factory, owner)
+    assert row.payload["files"][0]["filename"].endswith("_recent.raw")

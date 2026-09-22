@@ -19,14 +19,10 @@ from datetime import datetime, timezone
 
 from sqlalchemy import update
 
-from mascope_backend.api.models.sample.files.config import (
-    IN_PROGRESS,
-    ProcessingStatus,
-)
-from mascope_backend.api.new.notifications.config import PROCESSING_NOTIFICATIONS
+from mascope_backend.api.models.sample.files.config import ProcessingStatus
 from mascope_backend.api.new.notifications.service import (
-    notify_processing_outcome,
-    resolve_processing_notifications,
+    emit_notification_changes,
+    keep_processing_outcome,
 )
 from mascope_backend.db import SampleFile, async_session
 from mascope_backend.runtime import runtime
@@ -117,7 +113,8 @@ async def record_processing_status(
 
     An outcome that needs someone is also kept as a notification for the
     people answerable for the instrument, and any outcome may settle the
-    instrument's open ones (``api/new/notifications/service.py``).
+    instrument's open ones (``api/new/notifications/service.py``). Both are
+    written in the status's transaction, so neither stands without the other.
 
     Best effort: a status is a report on the processing, and failing to write
     one must never be the reason the processing fails. An error is logged and
@@ -143,6 +140,11 @@ async def record_processing_status(
                 )
             ).scalar_one_or_none()
             record = sample_file.to_dict() if sample_file is not None else None
+            changes = (
+                await keep_processing_outcome(session, record, status, detail)
+                if record is not None
+                else []
+            )
             await session.commit()
     except Exception:  # noqa: BLE001 - the processing matters more than its report
         # The WARNING names no file: error monitoring groups issues by the
@@ -165,7 +167,4 @@ async def record_processing_status(
         record=record,
         room=record["instrument"],
     )
-    if status in PROCESSING_NOTIFICATIONS:
-        await notify_processing_outcome(record, status, detail)
-    if status not in IN_PROGRESS:
-        await resolve_processing_notifications(record["instrument"])
+    await emit_notification_changes(changes)

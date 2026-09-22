@@ -3,6 +3,10 @@ import { defineStore } from 'pinia'
 import { api } from '@/api'
 import { genId } from '@/lib/utils'
 
+// The live notification types of auto-processing's own outcomes: the pipeline
+// run and its calibration summary. The inbox store keeps and counts them.
+const KEPT_ELSEWHERE = new Set(['auto_process_sample_file', 'mz_calibration'])
+
 export const useNotification = defineStore('app.ui.notification', () => {
   const retentionLimit = 250
   const state = reactive({
@@ -43,11 +47,16 @@ export const useNotification = defineStore('app.ui.notification', () => {
       return
     }
 
-    // Increments recentWarnings or recentErrors counters based on notification status.
-    if (notification.status === 'warning') {
-      state.recentWarnings++
-    } else if (notification.status === 'error') {
-      state.recentErrors++
+    // Increments recentWarnings or recentErrors counters based on notification
+    // status. Auto-processing's own outcomes are kept for the people answerable
+    // for the instrument and counted by the inbox store instead: counted here as
+    // well, one file would count twice.
+    if (!KEPT_ELSEWHERE.has(notification.type)) {
+      if (notification.status === 'warning') {
+        state.recentWarnings++
+      } else if (notification.status === 'error') {
+        state.recentErrors++
+      }
     }
 
     if (notification.process_id) {
