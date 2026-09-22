@@ -172,7 +172,7 @@ class TestRawFileMetadataLegacy:
     def test_to_dict_keeps_what_the_reader_reports(self):
         # Every value the reader reported arrives unchanged, type included. A
         # value it reports as None (OpenTFRaw's for a trailer section heading,
-        # "=== Mass Calibration: ===") stays None instead of turning into NaN.
+        # "=== Mass Calibration: ===:") stays None instead of turning into NaN.
         td = self.leg.to_dict()
         stats = self.leg.scan_statistics
         acq = self.leg.scan_acquisition_settings

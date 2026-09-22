@@ -68,7 +68,7 @@ def _table(trailers: list[dict | None]) -> dict:
 _TRAILER = {
     "Scan Event:": 1,
     "FT Resolution:": 120000,
-    "=== Mass Calibration: ===": None,
+    "=== Mass Calibration: ===:": None,
 }
 
 
