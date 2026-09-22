@@ -14,6 +14,15 @@ const IN_PROGRESS = 'Auto-processing is still running.'
 /** The statuses of a run still under way (IN_PROGRESS in the backend). */
 export const IN_PROGRESS_STATUSES = ['converted', 'queued', 'bound', 'calibrated']
 
+/**
+ * How long a run may go without recording a stage before its file counts as
+ * stalled (STALLED_AFTER in the backend), which lets processing asked for
+ * again take the file over.
+ */
+export const STALLED_AFTER_MS = 24 * 60 * 60 * 1000
+
+const STALLED = 'Nothing was recorded for over a day: the run has stopped. Re-process the file.'
+
 /** One entry per status the backend writes, in pipeline order. */
 export const PROCESSING_STATUSES = {
   converted: {
@@ -47,8 +56,8 @@ export const PROCESSING_STATUSES = {
     description: 'No ionization mode could be bound to the file, so it has no samples yet.',
     // Shown under the file's own reason too, which the detail carries.
     action:
-      'Right-click it and choose its chemistry, or set an ionization mode token ' +
-      'its name contains and re-process it.'
+      'Right-click it and choose its chemistry, or fix the ionization mode tokens ' +
+      'its name should match and re-process it.'
   },
   calibration_failed: {
     label: 'Calibration failed',
@@ -94,18 +103,31 @@ const formatTime = (iso) => {
 }
 
 /**
- * Whether files can be given a chemistry: none of them is being processed.
+ * Whether a file's run stopped without saying so: it is in progress, and has
+ * recorded nothing for longer than any run takes to record its next stage.
  *
- * A file that needs one, a file that failed before its samples were made, and
- * a file bound wrongly all can; the server refuses one a person made a sample
- * from, with the reason.
+ * @param {object} file - a `sample_file` row
+ * @param {number} [now] - the time to judge by, in ms since the epoch
+ * @returns {boolean}
+ */
+export function isStalled(file, now = Date.now()) {
+  if (!IN_PROGRESS_STATUSES.includes(file?.processing_status)) return false
+  const updated = Date.parse(file.processing_updated_utc)
+  return !Number.isNaN(updated) && now - updated > STALLED_AFTER_MS
+}
+
+/**
+ * Whether files can be given a chemistry: no run is working on any of them.
+ *
+ * A file that needs one, a file that failed before its samples were made, a
+ * file bound wrongly and a file whose run stalled all can.
  *
  * @param {object[]} files - `sample_file` rows, as the list holds them now
  * @returns {boolean}
  */
 export const canChooseChemistry = (files) =>
   files.length > 0 &&
-  files.every(({ processing_status }) => !IN_PROGRESS_STATUSES.includes(processing_status))
+  files.every((file) => !IN_PROGRESS_STATUSES.includes(file.processing_status) || isStalled(file))
 
 /**
  * Derive the status tag for a raw file row.
@@ -130,6 +152,7 @@ export function processingStatus(file) {
   const tooltip = [
     file.processing_detail || meta.description,
     meta.action,
+    isStalled(file) ? STALLED : null,
     updated ? `Recorded ${updated}` : null
   ]
     .filter(Boolean)

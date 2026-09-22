@@ -3,7 +3,9 @@ import { describe, it, expect } from 'vitest'
 import {
   PROCESSING_STATUSES,
   PROCESSING_STATUS_FILTERS,
+  STALLED_AFTER_MS,
   canChooseChemistry,
+  isStalled,
   processingStatus
 } from '@/lib/processingStatus'
 
@@ -132,5 +134,44 @@ describe('canChooseChemistry', () => {
       expect(canChooseChemistry([row('needs_chemistry'), row(state)])).toBe(false)
     }
     expect(canChooseChemistry([])).toBe(false)
+  })
+
+  it('offers a file whose run stalled', () => {
+    const stalled = {
+      ...row('bound'),
+      processing_updated_utc: new Date(Date.now() - STALLED_AFTER_MS - 60_000).toISOString()
+    }
+
+    expect(canChooseChemistry([row('needs_chemistry'), stalled])).toBe(true)
+  })
+})
+
+describe('isStalled', () => {
+  const now = Date.parse('2026-09-22T12:00:00Z')
+  const file = (processing_status, hoursAgo) => ({
+    processing_status,
+    processing_updated_utc: new Date(now - hoursAgo * 3_600_000).toISOString()
+  })
+
+  it('tells a run that recorded nothing for over a day', () => {
+    expect(isStalled(file('queued', 25), now)).toBe(true)
+    expect(isStalled(file('queued', 23), now)).toBe(false)
+  })
+
+  it('only judges a run still under way', () => {
+    expect(isStalled(file('failed', 48), now)).toBe(false)
+    expect(isStalled({ processing_status: 'converted' }, now)).toBe(false)
+  })
+
+  it('says so under the status', () => {
+    const recorded = (hoursAgo) => ({
+      processing_status: 'converted',
+      processing_updated_utc: new Date(Date.now() - hoursAgo * 3_600_000).toISOString()
+    })
+
+    expect(processingStatus(recorded(48)).tooltip).toContain(
+      'the run has stopped. Re-process the file.'
+    )
+    expect(processingStatus(recorded(1)).tooltip).not.toContain('stopped')
   })
 })

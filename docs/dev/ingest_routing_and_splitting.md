@@ -871,6 +871,13 @@ Steps 6 and 7 of the setup-simplification proposal:
   - a bind claims each file (`queued`) before its run starts, so a second
     choice for the same file cannot start a second run; a file that has
     samples already is rebuilt under the chosen modes;
+  - a claim takes over a file whose run has recorded no stage for
+    `STALLED_AFTER` (a day): a worker restart leaves such rows, and only a
+    full restart marks them failed;
+  - a rebuild replaces only the pipeline's own samples, the ACQUISITION
+    items of ACQUISITION batches in ACQUISITION datasets of system
+    workspaces. A file with a person's sample keeps its calibration when it
+    is bound, and re-processing still refuses it;
 - the upload capability flag;
 - the agent status poller, in the next agent release.
 

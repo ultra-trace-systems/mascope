@@ -5,17 +5,18 @@ A file whose name carries no token of a configured mode is parked with the
 status ``needs_chemistry`` and no samples. ``POST /api/sample/files/bind``
 processes such files under the ionization modes a person chose: each file is
 bound to the chosen mode of each polarity it holds, and claimed first, so a
-second choice cannot start a second run. A file that has samples already is
-rebuilt under the chosen modes; one with a sample a person made from it is
-refused, as is one the chosen modes do not fit. Re-processing, and
-processing a file on request, keep the modes a file was bound to that way,
-since no token binds it again.
+second choice cannot start a second run - unless the run holding it stalled.
+A file that has samples already is rebuilt under the chosen modes; one with a
+sample a person made from it keeps its calibration, and one the chosen modes
+do not fit is refused. Re-processing, and processing a file on request, keep
+the modes a file was bound to that way, since no token binds it again. Only
+the pipeline's own samples are replaced, wherever a person's sample is.
 
 The pipeline itself is stubbed: what is pinned is which files start, under
 which modes, and what is refused.
 """
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock
 
 import pytest
@@ -26,6 +27,7 @@ from mascope_backend.api.controllers.sample.files.process import (
     service as process_service,
 )
 from mascope_backend.api.controllers.sample.files.process import status
+from mascope_backend.api.models.sample.files.config import STALLED_AFTER
 from mascope_backend.api.routes.sample.files import sample_files_routes
 from mascope_backend.db import (
     Dataset,
@@ -116,7 +118,10 @@ async def setup(async_session_factory, test_users):
             delete(Workspace).where(Workspace.workspace_id == ids["workspace"])
         )
         await session.execute(
-            delete(Workspace).where(Workspace.workspace_name.like("Bind analysis %"))
+            delete(Workspace).where(
+                Workspace.workspace_name.like("Bind analysis %")
+                | Workspace.workspace_name.like("Bind system %")
+            )
         )
         await session.execute(
             delete(IonizationMode).where(
@@ -142,28 +147,47 @@ def spawn(monkeypatch) -> AsyncMock:
     return stub
 
 
-async def _user_sample(async_session_factory, test_users, sample_file_id: str) -> str:
+#: Where a person's batch can be: a workspace of their own; a system workspace
+#: like the "System Workspace" an older deployment moved its datasets into;
+#: and a dataset they made in the instrument's own workspace.
+PLACES = ("own workspace", "legacy system workspace", "instrument workspace")
+
+
+async def _user_sample(
+    async_session_factory,
+    test_users,
+    sample_file_id: str,
+    place: str = "own workspace",
+    instrument_workspace: str | None = None,
+) -> str:
     """A sample a person made from the file, in a batch of their own.
 
     Typed ACQUISITION, as the create dialog lets a person type it, so only
-    where it lives tells it from the pipeline's own.
+    where it lives tells it from the pipeline's own. ``place`` is one of
+    ``PLACES``; the instrument's workspace is ``instrument_workspace``.
     """
     ids = {"workspace": gen_id(16), "dataset": gen_id(16), "batch": gen_id(16)}
     async with async_session_factory() as session:
-        session.add(
-            Workspace(
-                workspace_id=ids["workspace"],
-                workspace_name=f"Bind analysis {ids['workspace']}",
-                workspace_status="active",
-                is_system=False,
+        if place == "instrument workspace":
+            ids["workspace"] = instrument_workspace
+        else:
+            legacy = place == "legacy system workspace"
+            session.add(
+                Workspace(
+                    workspace_id=ids["workspace"],
+                    workspace_name=(
+                        f"Bind {'system' if legacy else 'analysis'} {ids['workspace']}"
+                    ),
+                    workspace_status="active",
+                    is_system=legacy,
+                )
             )
-        )
-        await session.flush()
+            await session.flush()
         session.add(
             Dataset(
                 dataset_id=ids["dataset"],
                 workspace_id=ids["workspace"],
-                dataset_name="Mine",
+                dataset_name=f"Mine {ids['dataset']}",
                 dataset_type="ANALYSIS",
                 dataset_utc_created=_NOW,
             )
@@ -204,11 +228,21 @@ async def _status(async_session_factory, sample_file_id: str) -> str | None:
         )
 
 
-async def _set_status(async_session_factory, sample_file_id: str, value: str) -> None:
+async def _set_status(
+    async_session_factory,
+    sample_file_id: str,
+    value: str,
+    recorded_ago: timedelta = timedelta(0),
+) -> None:
     async with async_session_factory() as session:
         row = await session.get(SampleFile, sample_file_id)
         row.processing_status = value
+        row.processing_updated_utc = datetime.now(timezone.utc) - recorded_ago
         await session.commit()
+
+
+#: Longer than any run goes without recording a stage: its run has stopped.
+_STALLED = STALLED_AFTER + timedelta(hours=1)
 
 
 async def _file(
@@ -341,13 +375,20 @@ async def test_a_file_with_samples_is_rebuilt_under_the_chosen_modes(
 
 
 @pytest.mark.asyncio
-async def test_a_file_someone_made_a_sample_from_is_refused_and_the_rest_go_ahead(
-    async_session_factory, setup, spawn, editor_client, test_users
+@pytest.mark.parametrize("place", PLACES)
+async def test_a_file_someone_made_a_sample_from_keeps_its_calibration(
+    async_session_factory, setup, spawn, editor_client, test_users, place
 ):
-    """Partly done: a warning names the refused file, and the others start."""
+    """Processed by hand into a person's batch: bound, not reset under them."""
     parked = await _file(async_session_factory, "parked", "-")
     used = await _file(async_session_factory, "used", "-")
-    await _user_sample(async_session_factory, test_users, used)
+    await _user_sample(
+        async_session_factory,
+        test_users,
+        used,
+        place=place,
+        instrument_workspace=setup["workspace"],
+    )
 
     resp = await editor_client.post(
         "/api/sample/files/bind",
@@ -357,15 +398,13 @@ async def test_a_file_someone_made_a_sample_from_is_refused_and_the_rest_go_ahea
         },
     )
 
-    assert resp.status_code == 207, resp.text
-    body = resp.json()
-    assert body["detail"]["started"] == [parked]
-    (refusal,) = body["detail"]["refused"]
-    assert refusal["sample_file_id"] == used
-    assert "sample someone made from it" in refusal["message"]
-    assert "1 could not be bound" in body["error"]
-    assert _started(spawn) == {parked: [setup["negative"]]}
-    assert await _status(async_session_factory, used) == "needs_chemistry"
+    assert resp.status_code == 202, resp.text
+    assert resp.json()["data"] == {"started": [parked, used], "refused": []}
+    reset = {
+        call.kwargs["sample_file_id"]: call.kwargs["reset_calibration"]
+        for call in spawn.await_args_list
+    }
+    assert reset == {parked: True, used: False}
 
 
 @pytest.mark.asyncio
@@ -401,6 +440,24 @@ async def test_a_file_whose_own_run_is_under_way_is_left_to_it(
 
     assert resp.status_code == 422, resp.text
     spawn.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_a_file_whose_run_stalled_can_be_given_a_chemistry(
+    async_session_factory, setup, spawn, editor_client
+):
+    """A worker restart left it bound, with no run behind it and no restart."""
+    stalled = await _file(async_session_factory, "stalled", "-")
+    await _set_status(async_session_factory, stalled, "bound", recorded_ago=_STALLED)
+
+    resp = await editor_client.post(
+        "/api/sample/files/bind",
+        json={"sample_file_ids": [stalled], "ionization_mode_ids": [setup["negative"]]},
+    )
+
+    assert resp.status_code == 202, resp.text
+    assert _started(spawn) == {stalled: [setup["negative"]]}
+    assert await _status(async_session_factory, stalled) == "queued"
 
 
 @pytest.mark.asyncio
@@ -607,17 +664,43 @@ async def test_reprocessing_leaves_a_file_being_processed_to_its_run(
 
 
 @pytest.mark.asyncio
-async def test_reprocessing_refuses_a_file_someone_made_a_sample_from(
-    async_session_factory, setup, pipeline, test_users
+async def test_reprocessing_takes_over_a_stalled_run(
+    async_session_factory, setup, pipeline
 ):
-    """Whatever the sample's type: re-processing would delete it."""
+    bound = await _file(
+        async_session_factory,
+        "stalled",
+        "-",
+        sample_under=(setup["batch"], setup["negative"]),
+    )
+    await _set_status(async_session_factory, bound, "queued", recorded_ago=_STALLED)
+
+    result = await process_service.re_process_sample_files(sample_file_ids=[bound])
+
+    assert "Successfully re-processed 1" in result["message"]
+    pipeline.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("place", PLACES)
+async def test_reprocessing_refuses_a_file_someone_made_a_sample_from(
+    async_session_factory, setup, pipeline, test_users, place
+):
+    """Whatever the sample's type, and wherever it is: re-processing would
+    delete it."""
     bound = await _file(
         async_session_factory,
         "used",
         "-",
         sample_under=(setup["batch"], setup["negative"]),
     )
-    await _user_sample(async_session_factory, test_users, bound)
+    await _user_sample(
+        async_session_factory,
+        test_users,
+        bound,
+        place=place,
+        instrument_workspace=setup["workspace"],
+    )
 
     with pytest.raises(Exception, match="user-created"):
         await process_service.re_process_sample_files(sample_file_ids=[bound])
@@ -665,17 +748,39 @@ async def test_processing_a_file_being_processed_on_request_is_refused(
 
 
 @pytest.mark.asyncio
-async def test_a_rerun_clears_only_the_pipelines_own_samples(
-    async_session_factory, setup, test_users
+async def test_processing_a_stalled_file_on_request_takes_it_over(
+    async_session_factory, setup, admin_client, monkeypatch
 ):
-    """A person's sample from the file stays, whatever its type."""
+    stalled = await _file(async_session_factory, "stalled", "-")
+    await _set_status(async_session_factory, stalled, "calibrated", _STALLED)
+    spawn = AsyncMock()
+    monkeypatch.setattr(sample_files_routes, "spawn_auto_process_sample_file", spawn)
+
+    resp = await admin_client.post(f"/api/sample/files/{stalled}/process")
+
+    assert resp.status_code == 202, resp.text
+    spawn.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("place", PLACES)
+async def test_a_rerun_clears_only_the_pipelines_own_samples(
+    async_session_factory, setup, test_users, place
+):
+    """A person's sample from the file stays, whatever its type and place."""
     bound = await _file(
         async_session_factory,
         "cleared",
         "-",
         sample_under=(setup["batch"], setup["negative"]),
     )
-    mine = await _user_sample(async_session_factory, test_users, bound)
+    mine = await _user_sample(
+        async_session_factory,
+        test_users,
+        bound,
+        place=place,
+        instrument_workspace=setup["workspace"],
+    )
 
     await process_service._delete_partial_acquisition_items(bound)
 

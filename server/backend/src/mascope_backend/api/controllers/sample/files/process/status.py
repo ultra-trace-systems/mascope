@@ -21,6 +21,7 @@ from sqlalchemy import or_, update
 
 from mascope_backend.api.models.sample.files.config import (
     IN_PROGRESS,
+    STALLED_AFTER,
     ProcessingStatus,
 )
 from mascope_backend.api.new.notifications.service import (
@@ -106,7 +107,9 @@ async def claim_for_processing(sample_file_ids: list[str], detail: str) -> list[
 
     One conditional update, so of two requests for the same file only one
     claims it; the other finds it in progress. A file whose run is still
-    queued, or going, is left alone.
+    queued, or going, is left alone - unless the run has recorded nothing for
+    ``STALLED_AFTER``. Such a row has no run behind it, and would otherwise
+    hold the file until a full restart marked it failed.
 
     Not best effort, unlike :func:`record_processing_status`: a run must not
     start on a file it could not claim.
@@ -117,6 +120,7 @@ async def claim_for_processing(sample_file_ids: list[str], detail: str) -> list[
     """
     if not sample_file_ids:
         return []
+    now = datetime.now(timezone.utc)
     async with async_session() as session:
         rows = (
             await session.scalars(
@@ -128,12 +132,13 @@ async def claim_for_processing(sample_file_ids: list[str], detail: str) -> list[
                         SampleFile.processing_status.not_in(
                             [status.value for status in IN_PROGRESS]
                         ),
+                        SampleFile.processing_updated_utc < now - STALLED_AFTER,
                     ),
                 )
                 .values(
                     processing_status=ProcessingStatus.QUEUED.value,
                     processing_detail=_clip(detail),
-                    processing_updated_utc=datetime.now(timezone.utc),
+                    processing_updated_utc=now,
                 )
                 .returning(SampleFile)
             )

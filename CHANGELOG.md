@@ -7,21 +7,26 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 ### Added
 
 - **A file whose name binds it to no ionization mode waits for a chemistry
-  instead of failing.** That is a name with no mode's token, or with tokens
-  that match more than one mode of a polarity. It is converted and stored as
-  before, and Raw files shows it as *Needs a chemistry* with no samples. The
-  upload is reported as a warning rather than an error, to a paired File
+  instead of failing.** That is a name with no mode's token, with tokens
+  that match more than one mode of a polarity, or, for a file of both
+  polarities, with a token for only one of them. It is converted and stored
+  as before, and Raw files shows it as *Needs a chemistry* with no samples.
+  The upload is reported as a warning rather than an error, to a paired File
   Agent's sponsor too, and the file is kept under **Needs attention** for the
   people answerable for the instrument. Select such files in Raw files,
   right-click, and **Choose chemistry**: pick a mode for each polarity they
   hold, and they are processed under those modes as if their names carried
   the tokens. The same corrects a wrong choice, rebuilding a file under the
   new modes, and gives a chemistry to a file that failed before its samples
-  were made. `POST /api/sample/files/bind` does the same and needs editor
-  access to the instrument; it refuses a file someone made a sample from, and
-  one being processed. Re-processing a file, or processing it again on
-  request, keeps the modes its samples have when its name matches no token,
-  so a file given its chemistry by hand can be processed again too.
+  were made. Only the pipeline's own samples are replaced, and a file
+  someone made a sample from keeps its m/z calibration.
+  `POST /api/sample/files/bind` does the same and needs editor access to the
+  instrument; it refuses a file being processed. A run that has recorded no
+  stage for a day has stopped: Raw files says so, and processing the file
+  again, or choosing its chemistry, takes it over. Re-processing a file, or
+  processing it again on request, keeps the modes its samples have when its
+  name matches no token, so a file given its chemistry by hand can be
+  processed again too.
 
 - **Files that need someone are kept as notifications until read.** When
   auto-processing leaves a file failed, needing a chemistry, or unmatched
