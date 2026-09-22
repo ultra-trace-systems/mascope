@@ -1577,12 +1577,15 @@ async def get_sample_file_peak_timeseries(
             },
         }
 
+    # A peak's heights are NaN placeholders until its timeseries is computed,
+    # which this route does not do. get_peaks drops such peaks only for files
+    # without a source data file, so the nearest peak can be one of them.
     return {
         "message": f"Successfully retrieved timeseries for peak m/z {peak_mz} in '{filename}'.",
         "results": len(peak_timeseries.time.values),
         "data": {
             "mz": peak_mz_data,
-            "height": peak_timeseries.values.tolist(),
+            "height": finite_or_none(peak_timeseries.values.tolist()),
             "time": peak_timeseries.time.values.tolist(),
         },
     }

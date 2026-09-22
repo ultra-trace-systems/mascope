@@ -1,10 +1,10 @@
 """Socket.IO server initialization and configuration."""
 
 import json as _json
-import math
 
 import socketio
 
+from mascope_backend.json_safe import non_finite_to_none
 from mascope_backend.origins import (
     is_allowed_dev_origin,
     is_trusted_write_origin,
@@ -27,18 +27,8 @@ class _NanSafeJson:
     """
 
     @staticmethod
-    def _sanitize(obj):
-        if isinstance(obj, float):
-            return obj if math.isfinite(obj) else None
-        if isinstance(obj, dict):
-            return {key: _NanSafeJson._sanitize(value) for key, value in obj.items()}
-        if isinstance(obj, (list, tuple)):
-            return [_NanSafeJson._sanitize(value) for value in obj]
-        return obj
-
-    @staticmethod
     def dumps(obj, **kwargs):
-        return _json.dumps(_NanSafeJson._sanitize(obj), **kwargs)
+        return _json.dumps(non_finite_to_none(obj), **kwargs)
 
     @staticmethod
     def loads(*args, **kwargs):

@@ -54,6 +54,18 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 ### Fixed
 
+- **A NaN in an API response no longer fails the request as a bad one.** One
+  NaN or infinite number anywhere in a response failed the whole request with
+  400 Bad Request, which told the client its request was at fault, and the
+  failure was logged below the level that reaches error monitoring, so nobody
+  heard of it. Such numbers are now sent as `null`, and a warning names the
+  route so that it can be fixed. The data a warning carries, such as a
+  calibration fit's, is sent the same way. A response that cannot be sent as
+  JSON for any other reason is answered 500 and logged as an error. The legacy
+  `POST /api/sample/files/{id}/peaks/timeseries` failed like this for every
+  peak whose timeseries had not been computed yet, in a file that keeps its
+  raw data; it returns those heights as `null`.
+
 - **A File Agent upload that fails to process now tells someone.** When
   auto-processing an uploaded file failed, for example because no ionization
   mode token matched its name, the error went only to the uploading account.
