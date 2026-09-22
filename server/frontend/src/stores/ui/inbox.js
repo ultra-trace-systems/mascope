@@ -55,8 +55,12 @@ export const useInbox = defineStore('app.ui.inbox', () => {
   let latestLoad = 0
   let updatesDuringLoad = null
   const userId = () => (auth.user && typeof auth.user === 'object' ? auth.user.id : null)
+  // A row addressed to the account signed in now. An update kept for a load
+  // may be the previous account's, if the load spans a sign-out and a sign-in.
+  const ours = (record) => record.user_id === userId()
 
   const upsert = (record) => {
+    if (!ours(record)) return
     updatesDuringLoad?.push(record)
     items.value = apply(items.value, record)
   }
@@ -80,7 +84,7 @@ export const useInbox = defineStore('app.ui.inbox', () => {
     updatesDuringLoad = null
     // Another account signed in meanwhile: this answer is not theirs.
     if (rows === null || forUser !== userId()) return
-    items.value = updates.reduce(
+    items.value = updates.filter(ours).reduce(
       apply,
       rows.filter((row) => !row.read_utc)
     )
