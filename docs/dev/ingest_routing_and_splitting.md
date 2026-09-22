@@ -864,9 +864,13 @@ Steps 6 and 7 of the setup-simplification proposal:
   - a file no token binds is parked instead of failed;
   - Raw files filters to it, and **Choose chemistry** binds the selected
     files to one mode per polarity through `POST /api/sample/files/bind`;
-  - re-processing keeps a file's modes when no token binds it. This is the
-    explicit rung of section 5.2, kept on the file's samples until phase 2
-    gives bindings a table;
+  - re-processing, and processing a file on request, keep a file's modes
+    when no token occurs in its name. This is the explicit rung of section
+    5.2, kept on the file's samples until phase 2 gives bindings a table;
+    until then a token added later outranks a choice made by hand;
+  - a bind claims each file (`queued`) before its run starts, so a second
+    choice for the same file cannot start a second run; a file that has
+    samples already is rebuilt under the chosen modes;
 - the upload capability flag;
 - the agent status poller, in the next agent release.
 

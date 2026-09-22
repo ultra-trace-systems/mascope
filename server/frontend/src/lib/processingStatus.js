@@ -11,6 +11,9 @@
 
 const IN_PROGRESS = 'Auto-processing is still running.'
 
+/** The statuses of a run still under way (IN_PROGRESS in the backend). */
+export const IN_PROGRESS_STATUSES = ['converted', 'queued', 'bound', 'calibrated']
+
 /** One entry per status the backend writes, in pipeline order. */
 export const PROCESSING_STATUSES = {
   converted: {
@@ -41,8 +44,9 @@ export const PROCESSING_STATUSES = {
     label: 'Needs a chemistry',
     severity: 'warn',
     icon: 'ph ph-flask',
-    description:
-      'No ionization mode could be bound to the file, so it has no samples yet. ' +
+    description: 'No ionization mode could be bound to the file, so it has no samples yet.',
+    // Shown under the file's own reason too, which the detail carries.
+    action:
       'Right-click it and choose its chemistry, or set an ionization mode token ' +
       'its name contains and re-process it.'
   },
@@ -79,7 +83,7 @@ export const PROCESSING_STATUS_FILTERS = [
   { label: 'Needs a chemistry', value: ['needs_chemistry'] },
   { label: 'Calibration failed', value: ['calibration_failed'] },
   { label: 'Failed', value: ['failed'] },
-  { label: 'In progress', value: ['converted', 'queued', 'bound', 'calibrated'] },
+  { label: 'In progress', value: IN_PROGRESS_STATUSES },
   { label: 'Done', value: ['done'] }
 ]
 
@@ -88,6 +92,20 @@ const formatTime = (iso) => {
   const date = new Date(iso)
   return Number.isNaN(date.getTime()) ? null : date.toLocaleString()
 }
+
+/**
+ * Whether files can be given a chemistry: none of them is being processed.
+ *
+ * A file that needs one, a file that failed before its samples were made, and
+ * a file bound wrongly all can; the server refuses one a person made a sample
+ * from, with the reason.
+ *
+ * @param {object[]} files - `sample_file` rows, as the list holds them now
+ * @returns {boolean}
+ */
+export const canChooseChemistry = (files) =>
+  files.length > 0 &&
+  files.every(({ processing_status }) => !IN_PROGRESS_STATUSES.includes(processing_status))
 
 /**
  * Derive the status tag for a raw file row.
@@ -111,6 +129,7 @@ export function processingStatus(file) {
   const updated = formatTime(file.processing_updated_utc)
   const tooltip = [
     file.processing_detail || meta.description,
+    meta.action,
     updated ? `Recorded ${updated}` : null
   ]
     .filter(Boolean)

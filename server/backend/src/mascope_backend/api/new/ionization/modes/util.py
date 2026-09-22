@@ -12,6 +12,47 @@ from mascope_backend.runtime import runtime
 COLLECTION_ID_FIELDS = ("calibration_collection_id", "diagnostic_collection_id")
 
 
+class NoTokenMatchError(ValueError):
+    """No configured ionization mode token occurs in a file's name.
+
+    Told apart from tokens that match but not one mode per polarity: a file
+    no token matches may have been bound another way, its chemistry chosen by
+    hand, while an ambiguous name is a configuration to fix.
+    """
+
+
+def _mode_name(mode: IonizationMode) -> str:
+    token = mode.ionization_mode_token
+    return f"'{mode.ionization_mode_name}'" + (f" (token '{token}')" if token else "")
+
+
+def one_mode_per_polarity(
+    sample_file: SampleFile, modes: list[IonizationMode]
+) -> tuple[list[IonizationMode], list[str]]:
+    """Pick the one mode of each polarity a file holds.
+
+    The rule every way of binding a file shares - by its name's tokens, or by
+    modes a person chose: each polarity of the file takes exactly one mode.
+
+    :param sample_file: The file to bind.
+    :param modes: The candidates: the modes its tokens match, or the ones
+        chosen for it.
+    :return: The mode of each polarity, in the file's polarity order, and a
+        phrase for each polarity that has none or more than one.
+    """
+    chosen, problems = [], []
+    for polarity in sample_file.polarity:
+        matching = [mode for mode in modes if mode.ionization_mode_polarity == polarity]
+        if len(matching) == 1:
+            chosen.append(matching[0])
+        elif not matching:
+            problems.append(f"no mode matches polarity {polarity}")
+        else:
+            names = ", ".join(_mode_name(mode) for mode in matching)
+            problems.append(f"{len(matching)} modes match polarity {polarity}: {names}")
+    return chosen, problems
+
+
 async def fetch_mode_collection_ids(ionization_mode_id: str) -> dict[str, str | None]:
     """Fetch the calibration and diagnostic collection ids a mode is bound to.
 
@@ -153,10 +194,10 @@ async def resolve_ionization_modes_by_tokens(
 
     :param sample_file: The sample file to resolve ionization modes for.
     :type sample_file: SampleFile
-    :raises ValueError: If no mode matches, or if a polarity of the file
-        matches no mode or more than one.
-    :return: One mode per polarity of the file, in the order the modes are
-        fetched.
+    :raises NoTokenMatchError: If no mode's token occurs in the name.
+    :raises ValueError: If a polarity of the file matches no mode or more
+        than one.
+    :return: One mode per polarity of the file, in the file's polarity order.
     :rtype: list[IonizationMode]
     """
     runtime.logger.debug(
@@ -181,26 +222,12 @@ async def resolve_ionization_modes_by_tokens(
             matched_ionization_modes.append(ionization_mode)
 
     if not matched_ionization_modes:
-        raise ValueError(
+        raise NoTokenMatchError(
             f"No ionization mode tokens found for file {sample_file.filename}. "
             "Configure tokens in ionization settings"
         )
 
-    problems = []
-    for polarity in sample_file.polarity:
-        modes = [
-            mode
-            for mode in matched_ionization_modes
-            if mode.ionization_mode_polarity == polarity
-        ]
-        if not modes:
-            problems.append(f"no mode matches polarity {polarity}")
-        elif len(modes) > 1:
-            names = ", ".join(
-                f"'{mode.ionization_mode_name}' (token '{mode.ionization_mode_token}')"
-                for mode in modes
-            )
-            problems.append(f"{len(modes)} modes match polarity {polarity}: {names}")
+    chosen, problems = one_mode_per_polarity(sample_file, matched_ionization_modes)
     if problems:
         raise ValueError(
             f"Ionization mode tokens must match exactly one mode per polarity in "
@@ -208,7 +235,7 @@ async def resolve_ionization_modes_by_tokens(
             "Configure tokens in ionization settings"
         )
 
-    return matched_ionization_modes
+    return chosen
 
 
 async def token_is_unique(token: str, ignore_id: str | None = None) -> bool:

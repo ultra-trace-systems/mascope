@@ -170,7 +170,7 @@ re-processed long after it was acquired is listed too.
 |---|---|
 | Converted, Queued, Bound, Calibrated | Still being processed: the file was read (or processing was asked for again, and waits its turn), its samples exist, and its m/z axis was calibrated. |
 | Done | Every sample of the file was matched, or it is a blank measurement with nothing to match. The detail says when the file was not calibrated, and why. |
-| Needs a chemistry | No ionization mode token matched the file's name, so it has no samples yet. Choose its chemistry (below), or set a token its name contains and re-process it. |
+| Needs a chemistry | The file's name binds it to no ionization mode - it carries no mode's token, or tokens of two modes of one polarity - so it has no samples yet. Choose its chemistry (below), or fix the tokens and re-process it. |
 | Calibration failed | An m/z calibration failed or is below the quality bar, so some or all of the samples were not matched. A TOF file is matched only on a verified m/z calibration, so one whose ionization mode has no calibration collection ends here too, and the detail names the missing collection. |
 | Failed | Processing stopped on an error, or was interrupted by a server restart. Re-process the file. |
 
@@ -180,10 +180,11 @@ also says that peak detection pools those scan streams into one peak list.
 
 ### Choose the chemistry of a file that needs one
 
-A file whose name carries no ionization mode token is still converted and
-stored, but it waits as **Needs a chemistry** until someone says which
-chemistry it was acquired under. The people answerable for the instrument find
-it under **Needs attention** in the notifications pane.
+A file whose name binds it to no ionization mode - no mode's token, or tokens
+of two modes of one polarity - is still converted and stored, but it waits as
+**Needs a chemistry** until someone says which chemistry it was acquired
+under. The people answerable for the instrument find it under **Needs
+attention** in the notifications pane.
 
 1. In the **Raw files** tab, set the status filter to **Needs a chemistry**.
 2. Select the files that share a chemistry, right-click them and choose
@@ -192,9 +193,14 @@ it under **Needs attention** in the notifications pane.
 
 The files are processed under those modes as if their names carried the
 modes' tokens: calibrated, matched, and filed in the daily acquisition
-batches. Re-processing such a file later keeps the modes it was given. Only
-files without samples can be given a chemistry this way; an editor of the
-instrument may do it.
+batches. Re-processing such a file later keeps the modes it was given. An
+editor of the instrument may do it.
+
+The same action gives a chemistry to a file that failed before its samples
+were made, and corrects a wrong choice: a file that has samples already is
+rebuilt under the modes you pick. It is not offered while a file is being
+processed, and a file someone made a sample from in a batch of their own is
+refused, as re-processing refuses it.
 
 !!! tip "Finding files after upload"
     The table shows one time window at a time (default: the last 24 hours). Use

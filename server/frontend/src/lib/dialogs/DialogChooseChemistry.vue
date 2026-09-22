@@ -1,13 +1,14 @@
 <script setup>
 /**
- * Choose the chemistry of raw files that need one.
+ * Choose the chemistry of raw files.
  *
  * A file whose name carries no token of a configured ionization mode waits in
  * Raw files as "Needs a chemistry", with no samples. Choosing a mode for each
  * polarity the selected files hold processes them under those modes, as a
- * token would have had them processed (`POST /sample/files/bind`). The server
- * refuses a file that has samples already - re-processing rebuilds those - and
- * processes the rest.
+ * token would have had them processed (`POST /sample/files/bind`); a file
+ * that has samples already, bound wrongly, is rebuilt under them. The server
+ * refuses a file a person made a sample from, or one being processed, and
+ * answers 207 when it refused some and processed the rest.
  */
 import { computed, reactive, ref, watch } from 'vue'
 
@@ -78,11 +79,13 @@ async function submit() {
       },
       { type: 'bind_sample_files' }
     )
-    const { message, data } = response.data ?? {}
+    // 207: some were refused, and the body is the warning naming them.
+    const partly = response.status === 207
+    const { message, error } = response.data ?? {}
     app.ui.notification.push({
       type: 'bind_sample_files',
-      status: data?.refused?.length ? 'warning' : 'success',
-      message
+      status: partly ? 'warning' : 'success',
+      message: partly ? error : message
     })
     visible.value = false
     emit('submit')
@@ -98,7 +101,8 @@ async function submit() {
   <Dialog v-model:visible="visible" modal header="Choose chemistry" style="width: 30rem">
     <p>
       {{ files.length }} {{ files.length === 1 ? 'file is' : 'files are' }} processed under the
-      ionization modes you choose, as if their names carried the modes' tokens.
+      ionization modes you choose, as if their names carried the modes' tokens. A file that has
+      samples already is rebuilt under them.
     </p>
     <div class="col" style="gap: 1.5rem; margin: 1.5rem 0 0.5rem">
       <FloatLabel v-for="polarity in polarities" :key="polarity" variant="on">

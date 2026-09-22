@@ -3,6 +3,7 @@ import { describe, it, expect } from 'vitest'
 import {
   PROCESSING_STATUSES,
   PROCESSING_STATUS_FILTERS,
+  canChooseChemistry,
   processingStatus
 } from '@/lib/processingStatus'
 
@@ -32,7 +33,8 @@ describe('processingStatus', () => {
       const tag = processingStatus({ processing_status: state })
       expect(tag.state).toBe(state)
       expect(tag.label).toBeTruthy()
-      expect(tag.tooltip).toBe(PROCESSING_STATUSES[state].description)
+      // What the status means, and for one that asks for a person, what to do.
+      expect(tag.tooltip.split('\n')[0]).toBe(PROCESSING_STATUSES[state].description)
     }
   })
 
@@ -43,7 +45,7 @@ describe('processingStatus', () => {
     })
 
     expect(tag.severity).toBe('warn')
-    expect(tag.tooltip).toBe('No ionization mode tokens found for file x.raw.')
+    expect(tag.tooltip.split('\n')[0]).toBe('No ionization mode tokens found for file x.raw.')
   })
 
   it('says when the status was recorded', () => {
@@ -99,5 +101,36 @@ describe('PROCESSING_STATUS_FILTERS', () => {
     const inProgress = PROCESSING_STATUS_FILTERS.find(({ label }) => label === 'In progress')
 
     expect(inProgress.value.sort()).toEqual(['bound', 'calibrated', 'converted', 'queued'])
+  })
+})
+
+describe('what a file that needs a chemistry says', () => {
+  it("gives the file's own reason, then what to do about it", () => {
+    const tag = processingStatus({
+      processing_status: 'needs_chemistry',
+      processing_detail: 'No ionization mode tokens found for file x.raw.'
+    })
+
+    expect(tag.tooltip.split('\n')).toEqual([
+      'No ionization mode tokens found for file x.raw.',
+      PROCESSING_STATUSES.needs_chemistry.action
+    ])
+  })
+})
+
+describe('canChooseChemistry', () => {
+  const row = (processing_status) => ({ sample_file_id: processing_status, processing_status })
+
+  it('offers files no run is working on', () => {
+    for (const state of ['needs_chemistry', 'failed', 'done', 'calibration_failed', null]) {
+      expect(canChooseChemistry([row(state)])).toBe(true)
+    }
+  })
+
+  it('leaves a selection alone while any of it is being processed', () => {
+    for (const state of ['converted', 'queued', 'bound', 'calibrated']) {
+      expect(canChooseChemistry([row('needs_chemistry'), row(state)])).toBe(false)
+    }
+    expect(canChooseChemistry([])).toBe(false)
   })
 })

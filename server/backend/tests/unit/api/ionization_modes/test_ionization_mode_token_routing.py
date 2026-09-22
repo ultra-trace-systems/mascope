@@ -15,6 +15,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from mascope_backend.api.new.ionization.modes.util import (
+    NoTokenMatchError,
     resolve_ionization_modes_by_tokens,
 )
 
@@ -57,10 +58,11 @@ async def test_single_polarity_file_routes_to_its_one_mode():
 
 
 @pytest.mark.asyncio
-async def test_dual_polarity_file_routes_one_mode_per_polarity_in_fetch_order():
-    modes = [AMMONIUM, BROMIDE, NITRATE]
-    resolved = await _resolve(_file("inst_2026.09.18_BR_NH4", "+-"), modes)
-    assert resolved == [AMMONIUM, BROMIDE]
+async def test_dual_polarity_file_routes_one_mode_per_polarity_in_its_order():
+    """The file's polarity order, as for modes chosen by hand."""
+    for modes in ([AMMONIUM, BROMIDE, NITRATE], [BROMIDE, NITRATE, AMMONIUM]):
+        resolved = await _resolve(_file("inst_2026.09.18_BR_NH4", "+-"), modes)
+        assert resolved == [AMMONIUM, BROMIDE]
 
 
 @pytest.mark.asyncio
@@ -107,5 +109,13 @@ async def test_dual_polarity_file_with_one_polarity_unmatched_is_refused():
 @pytest.mark.asyncio
 async def test_no_token_at_all_keeps_the_plain_message():
     modes = [BROMIDE, AMMONIUM, UNTOKENED]
-    with pytest.raises(ValueError, match="No ionization mode tokens found"):
+    with pytest.raises(NoTokenMatchError, match="No ionization mode tokens found"):
         await _resolve(_file("inst_2026.09.18_ambient", "+-"), modes)
+
+
+@pytest.mark.asyncio
+async def test_an_ambiguous_name_is_not_taken_for_one_with_no_token():
+    """Re-processing stands a file's earlier binding in only for the latter."""
+    with pytest.raises(ValueError) as excinfo:
+        await _resolve(_file("inst_2026.09.18_BR_NO3", "-"), [BROMIDE, NITRATE])
+    assert not isinstance(excinfo.value, NoTokenMatchError)

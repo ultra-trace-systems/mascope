@@ -22,11 +22,12 @@ from mascope_backend.api.controllers.dataset.acquisition.service import (
 )
 from mascope_backend.api.controllers.sample.files.process.service import (
     bind_sample_files,
+    modes_to_rebind,
     re_process_sample_files,
     spawn_auto_process_sample_file,
 )
 from mascope_backend.api.controllers.sample.files.process.status import (
-    record_processing_status,
+    claim_for_processing,
 )
 from mascope_backend.api.controllers.sample.files.sample_files_controller import (
     compute_sample_file_peaks,
@@ -47,7 +48,6 @@ from mascope_backend.api.controllers.sample.files.sample_files_controller import
     upload_sample_files,
 )
 from mascope_backend.api.lib.api_features import api_route
-from mascope_backend.api.models.sample.files.config import ProcessingStatus
 from mascope_backend.api.models.sample.files.sample_file_pydantic_model import (
     BindSampleFilesBody,
     DeleteSampleFilesBody,
@@ -395,11 +395,16 @@ async def process_sample_item_route(
     # Get data for notifications
     process_id = gen_id(8)
 
+    # A file whose chemistry was chosen by hand keeps it: no token binds it.
+    ionization_mode_ids = await modes_to_rebind(sample_file_id)
     # The run starts by clearing what an earlier run left, and until it
-    # records its own stages the row would still say how that run ended.
-    await record_processing_status(
-        sample_file_id, ProcessingStatus.QUEUED, "Queued for processing."
-    )
+    # records its own stages the row would still say how that run ended. A
+    # file another run has claimed is left to it.
+    if not await claim_for_processing([sample_file_id], "Queued for processing."):
+        raise HTTPException(
+            status_code=409,
+            detail=f"'{sample_file.get('filename')}' is being processed already",
+        )
     background_tasks.add_task(
         spawn_auto_process_sample_file,
         sample_file_id=sample_file_id,
@@ -407,6 +412,7 @@ async def process_sample_item_route(
         user_id=user.id,
         process_id=process_id,
         instrument=sample_file.get("instrument"),
+        ionization_mode_ids=ionization_mode_ids,
     )
 
     return {

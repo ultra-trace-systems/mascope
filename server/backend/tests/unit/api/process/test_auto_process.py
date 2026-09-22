@@ -1255,8 +1255,8 @@ async def test_a_file_that_binds_to_nothing_waits_for_a_chemistry(status):
     with patch(f"{_FEATURES}.handle_notifications", new_callable=AsyncMock) as notify:
         result = await _run_pipeline()
 
-    parked = f"{message}. Or choose its chemistry in Raw files."
-    assert _recorded(status) == [("needs_chemistry", parked)]
+    # The detail is the file's reason; the live notice says what to do.
+    assert _recorded(status) == [("needs_chemistry", f"{message}.")]
     mocks["create_batches"].assert_not_called()
     mocks["calibrate"].assert_not_called()
     mocks["match"].assert_not_called()
@@ -1265,7 +1265,7 @@ async def test_a_file_that_binds_to_nothing_waits_for_a_chemistry(status):
     (call,) = notify.call_args_list
     assert call.args[0] == ["instrument"]
     assert call.args[1].status == "warning"
-    assert call.args[1].message == parked
+    assert call.args[1].message == f"{message}. Or choose its chemistry in Raw files."
     assert result["_notification_data"]["instrument"] == "Orbion"
 
 
@@ -1609,8 +1609,8 @@ async def test_modes_chosen_for_a_file_bind_it_without_its_tokens(status):
 
 
 @pytest.mark.asyncio
-async def test_chosen_modes_that_do_not_fit_the_file_fail_it(status):
-    """A file of both polarities needs a mode for each."""
+async def test_chosen_modes_that_no_longer_fit_park_the_file(status):
+    """A mode chosen for it changed while it waited: it can be given another."""
     mocks, sample_file = _start_single()
     sample_file.polarity = "+-"
 
@@ -1619,13 +1619,14 @@ async def test_chosen_modes_that_do_not_fit_the_file_fail_it(status):
         new_callable=AsyncMock,
         return_value=[_make_ionization_mode()],
     ):
-        await _run_pipeline(ionization_mode_ids=["im-001"])
+        result = await _run_pipeline(ionization_mode_ids=["im-001"])
 
     mocks["create_batches"].assert_not_called()
+    assert result["status"] == "parked"
     ((state, detail),) = _recorded(status)
-    assert state == "failed"
+    assert state == "needs_chemistry"
     assert "must include one per polarity" in detail
-    assert "none has polarity +" in detail
+    assert "no mode matches polarity +" in detail
 
 
 def _mode_of(polarity: str, name: str):
@@ -1657,8 +1658,8 @@ def test_each_polarity_of_a_file_takes_the_chosen_mode_of_its_polarity():
 @pytest.mark.parametrize(
     ("modes", "problem"),
     [
-        ([], "none has polarity -"),
-        ([("-", "a"), ("-", "b")], "2 have polarity -"),
+        ([], "no mode matches polarity -"),
+        ([("-", "a"), ("-", "b")], "2 modes match polarity -"),
     ],
 )
 def test_a_polarity_without_exactly_one_chosen_mode_is_refused(modes, problem):
@@ -1727,3 +1728,30 @@ async def test_a_failure_that_cannot_be_recorded_in_time_is_logged(status):
         and "sf-slow" in message
         for level, message in _lines(records)
     ), _lines(records)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("asked", "resets"), [(True, 1), (False, 0)])
+async def test_a_rebuild_resets_the_calibration_once_before_it_starts(asked, resets):
+    """As re-processing does, and not again on a retry."""
+    from mascope_backend.api.controllers.sample.files.process import service
+    from mascope_backend.api.lib.exceptions.api_exceptions import ApiException
+
+    reset = AsyncMock()
+    body = AsyncMock(side_effect=[ApiException("busy", {}, 503), {"message": "ok"}])
+    with (
+        patch(f"{_SVC}._reset_calibration", reset),
+        patch(f"{_SVC}._auto_process_sample_file", body),
+        patch(f"{_SVC}._delete_partial_acquisition_items", AsyncMock()),
+        patch.object(service, "_AUTO_PROCESS_RETRY_DELAYS_S", (0, 0, 0)),
+        patch(f"{_FEATURES}.handle_notifications", new_callable=AsyncMock),
+        patch(f"{_FEATURES}.handle_reloads", new_callable=AsyncMock),
+    ):
+        await service.auto_process_sample_file(
+            sample_file_id="sf-rebind",
+            independent_transaction=True,
+            reset_calibration=asked,
+        )
+
+    assert body.await_count == 2
+    assert reset.await_count == resets

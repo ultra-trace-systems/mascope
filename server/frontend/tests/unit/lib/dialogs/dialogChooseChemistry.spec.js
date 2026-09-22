@@ -126,7 +126,11 @@ describe('DialogChooseChemistry', () => {
 
   it('warns when the server refused some of the files', async () => {
     mocks.post.mockResolvedValue({
-      data: { message: 'Processing 1 file...', data: { refused: [{ sample_file_id: 'b' }] } }
+      status: 207,
+      data: {
+        error: 'Partially succeeded: 1 could not be bound.',
+        detail: { refused: [{ sample_file_id: 'b' }] }
+      }
     })
     const wrapper = mountDialog([file('a', '-'), file('b', '-')])
     await selects(wrapper)[0].vm.$emit('update:modelValue', 'br')
@@ -134,7 +138,12 @@ describe('DialogChooseChemistry', () => {
     await processButton(wrapper).vm.$emit('click')
     await flushPromises()
 
-    expect(mocks.push).toHaveBeenCalledWith(expect.objectContaining({ status: 'warning' }))
+    expect(mocks.push).toHaveBeenCalledWith(
+      expect.objectContaining({
+        status: 'warning',
+        message: 'Partially succeeded: 1 could not be bound.'
+      })
+    )
   })
 
   it('stays open when the request fails', async () => {
