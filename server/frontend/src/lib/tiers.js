@@ -19,30 +19,35 @@
 // how a histogram stops summing to the number of rows.
 export const FALLBACK_TIER = 'unassigned'
 
+// `description` is the tier's meaning in one line, as its chip says it on hover.
 const TIER_DEFINITIONS = [
   {
     key: 'assigned',
     label: 'assigned',
+    description: 'Assigned: strong evidence for this formula',
     severity: 'success',
     icon: 'ph ph-seal-check'
   },
   {
     key: 'candidate',
     label: 'candidate',
+    description: 'Candidate: a plausible formula with weaker support',
     severity: 'warn',
     icon: 'ph ph-circle-half'
   },
   {
-    // Labelled short because it sits in a chip beside a percentage; the full
-    // value is what the tooltip and the filter menu say.
+    // Labelled short to keep the chip small; the full name is what the
+    // tooltip and the filter menu say.
     key: 'below_assignability',
     label: 'below',
+    description: 'Below assignability: a formula was found, but the evidence is too weak to trust',
     severity: 'secondary',
     icon: 'ph ph-minus-circle'
   },
   {
     key: FALLBACK_TIER,
     label: 'unassigned',
+    description: 'Unassigned: no composition explained the peak',
     severity: 'secondary',
     icon: 'ph ph-circle-dashed'
   }

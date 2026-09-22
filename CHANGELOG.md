@@ -267,6 +267,16 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 - **The peak inspector is more compact and has a column of its own, and the
   tier chip names the tier alone.**
+  - **Find more**, the composition search, starts from the focused sample's
+    chemistry profile: left empty, its m/z precision and formula range are
+    the window and the grid a run of the sample would search at, and the
+    fields show them.
+  - **The time series** draws its legend inside the plot, so it lines up
+    with the spectrum above it.
+  - **Hover text:** every key of the evidence grid, the line under the
+    formula, the isotopologue columns, the verdict buttons and *use this*
+    say what they are, and the tier chip says what its tier means. The
+    help cards are shorter, and *Why this tier* has one of its own.
   - **The Sample tab** puts the inspector in a column of its own, the tab's
     full height, beside the spectrum over the time series (or the
     composition search). The column's width is remembered, and the

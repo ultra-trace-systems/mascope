@@ -54,6 +54,7 @@ vi.mock('@/lib/charts/BaseChartPlotly.vue', () => ({
 
 const { default: ChartAssignmentTimeseries } =
   await import('@/lib/charts/ChartAssignmentTimeseries/ChartAssignmentTimeseries.vue')
+const { default: Plot } = await import('@/lib/charts/BaseChartPlotly.vue')
 
 /** One family row, as the ledger serves it. */
 function row(id, mz, isotopeFormula, { role = 'iso_child', ionFormula = 'C9H16O7^N-' } = {}) {
@@ -132,5 +133,26 @@ describe('ChartAssignmentTimeseries resize', () => {
     wrapper.vm.resize()
 
     expect(plotResize).toHaveBeenCalledTimes(1)
+  })
+})
+
+// Outside the plot the legend takes its width off it, and the time series no
+// longer lines up with the spectrum above it, which has the same margins and no
+// legend.
+describe('ChartAssignmentTimeseries legend', () => {
+  it('sits inside the plot, at its top right', async () => {
+    familyRows = [row('m0', 251.0903, '[15N]C9H16O7-', { role: 'M0' })]
+    peaks = [{ peak_id: 'p-m0', mz: 251.0903 }]
+    const wrapper = mount(ChartAssignmentTimeseries, {
+      global: { stubs: { ToggleSwitch: true }, directives: { help: {} } }
+    })
+    await flushPromises()
+
+    expect(wrapper.findComponent(Plot).props('layout').legend).toEqual({
+      x: 1,
+      xanchor: 'right',
+      y: 1,
+      yanchor: 'top'
+    })
   })
 })

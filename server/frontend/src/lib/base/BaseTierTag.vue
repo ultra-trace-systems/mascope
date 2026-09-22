@@ -57,12 +57,12 @@ const ROLE_CHIPS = Object.freeze({
   reagent: {
     label: 'reagent',
     icon: 'ph ph-flask',
-    line: "Reagent: an ion the ionization source makes of itself, not one of the sample's compounds"
+    line: 'Reagent: an ion the ionization source makes of itself'
   },
   artifact: {
     label: 'artifact',
     icon: 'ph ph-wave-sine',
-    line: 'Artifact: a ringing side lobe of a very intense neighbouring peak, not a species'
+    line: 'Artifact: a ringing side lobe of a very intense neighbouring peak'
   }
 })
 const roleChip = computed(() =>
@@ -109,6 +109,13 @@ const isManual = computed(() => props.source === 'manual')
 // the raw prop, so the mark can never contradict the label beside it.
 const isDemoted = computed(() => isManual.value && meta.value.key === FALLBACK_TIER)
 
+// How a stage's source reads on hover. A source this list does not name - a
+// reagent or an artifact row, which its role chip already names - says nothing.
+const SOURCE_LINES = Object.freeze({
+  database: 'Matched from a target or reference list',
+  untargeted: 'Found by the formula search'
+})
+
 // The hover line for the row's source. A demoted row gets a sentence and a mark
 // of its own rather than neither: what happened to it is the least guessable
 // thing about it, and left unmarked it is indistinguishable from a peak the
@@ -116,15 +123,14 @@ const isDemoted = computed(() => isManual.value && meta.value.key === FALLBACK_T
 // hunting for where their assignment went.
 const sourceLine = computed(() => {
   if (isDemoted.value) {
-    return (
-      'Unassigned by hand: this row was unassigned when its M0 was reassigned by hand, ' +
-      'superseded by the next assignment run'
-    )
+    return 'Unassigned by hand, with its M0; the next assignment run supersedes this'
   }
   if (isManual.value) {
-    return 'Assigned by hand: a person chose this formula, superseded by the next assignment run'
+    return 'Assigned by hand; the next assignment run supersedes this'
   }
-  return props.source ? `Source: ${props.source}` : null
+  return Object.prototype.hasOwnProperty.call(SOURCE_LINES, props.source)
+    ? SOURCE_LINES[props.source]
+    : null
 })
 
 const autoTooltip = computed(() => {
@@ -135,12 +141,12 @@ const autoTooltip = computed(() => {
       .join('\n')
   }
   return [
-    `Tier: ${props.tier}`,
+    meta.value.description,
     props.evidence != null && !Number.isNaN(props.evidence)
-      ? `Evidence: ${percentFormatter.format(props.evidence)} (fit x plausibility)`
+      ? `Evidence ${percentFormatter.format(props.evidence)} (fit × plausibility)`
       : null,
     sourceLine.value,
-    props.role ? `Role: ${props.role}` : null
+    props.role === 'iso_child' ? 'An isotopologue: it holds the tier of its M0' : null
   ]
     .filter(Boolean)
     .join('\n')

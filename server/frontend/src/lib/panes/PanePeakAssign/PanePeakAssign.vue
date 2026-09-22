@@ -25,8 +25,8 @@ const app = useApp()
 const curation = useBatchPeakCuration()
 
 // Toggles the Sample view's pane under the spectrum between the time series
-// (default) and the Re-search panel. Owned by the parent (PaneTabSample); the
-// inspector only flips it on.
+// (default) and the composition search. Owned by the parent (PaneTabSample);
+// the inspector only flips it on.
 const showSearch = defineModel('showSearch', { type: Boolean, default: false })
 
 // The committed assignment for the focused peak (from the latest run).
@@ -42,12 +42,11 @@ const engineTierTooltip = computed(() => {
   if (!tier) return null
   const agrees = tier === focusedAssignment.value?.tier
   return (
-    `The producing engine's own tier: ${tier}\n` +
+    `Engine tier: ${tier}, as the engine that made this run rated it\n` +
     (agrees
-      ? 'It agrees with this server’s banding of the evidence.'
-      : 'It differs from this server’s banding of the evidence — the engine ' +
-        'reached this on its own terms (arbitration, corroboration, degeneracy), ' +
-        'which the tier beside it does not account for.')
+      ? "It agrees with Mascope's tier."
+      : "It differs from Mascope's tier, which reads the evidence alone; the engine also " +
+        'weighs arbitration, corroboration and degeneracy.')
   )
 })
 
@@ -449,19 +448,18 @@ const corroborationTooltip = computed(() => {
   if (!c) return ''
   if (c.inherited) {
     return (
-      `The M0 of this isotopologue family was seen through ${c.n} channels. ` +
-      'Independent corroborating evidence for the formula, ' +
+      `This isotopologue's M0 was seen through ${c.n} ionization channels: ` +
+      'independent evidence for the formula. ' +
       (c.scored
-        ? "folded into the M0's P(correct) - not into this isotopologue's, which is " +
-          'calibrated on its own.'
-        : 'not included in the P(correct) beside it.')
+        ? "It is in the M0's P(correct), not in this isotopologue's."
+        : 'It is not in P(correct).')
     )
   }
   const channels = (c.names ?? []).join(', ')
   return (
-    `Seen through ${c.n} channels${channels ? ` (${channels})` : ''}. ` +
-    'Independent corroborating evidence, ' +
-    (c.scored ? 'already folded into P(correct).' : 'not included in the P(correct) beside it.')
+    `Seen through ${c.n} ionization channels${channels ? ` (${channels})` : ''}: ` +
+    'independent evidence for the formula. ' +
+    (c.scored ? 'It is in P(correct).' : 'It is not in P(correct).')
   )
 })
 
@@ -727,6 +725,39 @@ const massZFar = computed(() => {
   const cap = massCalibration.value?.cap_z
   return massZ.value != null && typeof cap === 'number' && Math.abs(massZ.value) > cap
 })
+// What each key of the evidence grid says on hover. mass z builds its own,
+// from what the run measured.
+const EVIDENCE_TOOLTIPS = Object.freeze({
+  fit: "How well the peak and its isotope lines match the formula's predicted pattern",
+  mzError: 'Measured minus predicted m/z of the peak, in ppm',
+  abundanceError: 'How far the measured isotope abundances are from the predicted ones',
+  plausibility: 'How chemically plausible the formula is (Seven Golden Rules)',
+  evidence: 'Fit × plausibility: the number the tier is read off',
+  confidence: "This formula's share of the evidence among all candidates for the peak"
+})
+
+// What the line under the formula says on hover, part by part.
+const SOURCE_TOOLTIPS = Object.freeze({
+  database: 'Matched from a target or reference list',
+  untargeted: 'Found by the formula search',
+  manual: 'Assigned by hand',
+  reagent: "The ionization source's own ion",
+  artifact: 'A side lobe of an intense neighbouring peak'
+})
+const sourceTooltip = (source) =>
+  Object.prototype.hasOwnProperty.call(SOURCE_TOOLTIPS, source) ? SOURCE_TOOLTIPS[source] : null
+
+// An isotopologue row's hover text: its full isotope formula, how it matched,
+// and what a click does.
+const isoRowTooltip = (iso) =>
+  [
+    iso.isotope_formula || iso.isotope_label,
+    isPoorMatch(iso) ? 'Poor match to the prediction (abundance or m/z off)' : null,
+    'Click to focus this peak'
+  ]
+    .filter(Boolean)
+    .join('\n')
+
 const zFormat = new Intl.NumberFormat('en-US', {
   minimumFractionDigits: 1,
   maximumFractionDigits: 1,
@@ -734,10 +765,7 @@ const zFormat = new Intl.NumberFormat('en-US', {
 })
 const massZTooltip = computed(() => {
   if (massZ.value == null) return ''
-  const lines = [
-    "How far this row's mass error sits from the run's own mass calibration at " +
-      "its m/z, counted in the calibration's widths."
-  ]
+  const lines = ["The m/z error in widths of the run's own mass calibration at this m/z."]
   const calibration = massCalibration.value
   const width = calibration?.gate_sigma_ppm ?? calibration?.sigma_ppm
   if (typeof width === 'number') {
@@ -753,8 +781,8 @@ const massZTooltip = computed(() => {
   const floor = calibration?.floor_z
   if (typeof cap === 'number') {
     lines.push(
-      `Beyond ${cap} widths a row nothing corroborates is held at candidate` +
-        (typeof floor === 'number' ? `, beyond ${floor} below assignability.` : '.')
+      `Beyond ${cap} widths an uncorroborated row stays at candidate` +
+        (typeof floor === 'number' ? `; beyond ${floor}, below assignability.` : '.')
     )
   }
   return lines.join('\n')
@@ -788,9 +816,8 @@ const sameIonReadings = computed(() => {
   )
 })
 const SAME_ION_TOOLTIP =
-  'The same ion read as another neutral through another adduct. Its mass and isotope ' +
-  "pattern are this row's own, so the spectrum cannot choose between the two readings; " +
-  'a second channel of the run can.'
+  'The same ion read as another neutral with another adduct. The two readings share their ' +
+  'mass and isotope pattern, so only a second ionization channel can tell them apart.'
 
 // --- How the ion was made, and what a list calls it ----------------------------
 // The mechanism is half of an assignment: the neutral and the ion formula imply
@@ -799,11 +826,9 @@ const ionization = computed(() => channelOf(focusedAssignment.value))
 const ionizationTooltip = computed(() => {
   const row = focusedAssignment.value
   if (!ionization.value) return ''
-  const reaction =
-    row?.assigned_formula && row?.ion_formula
-      ? `\n${row.assigned_formula} ${ionization.value} gives ${row.ion_formula}`
-      : ''
-  return `The ionization mechanism: how the neutral became the ion seen at this peak.${reaction}`
+  return row?.assigned_formula && row?.ion_formula
+    ? `Ionization mechanism: ${row.assigned_formula} ${ionization.value} → ${row.ion_formula}`
+    : 'Ionization mechanism'
 })
 // What a reference list calls the committed formula: the identities the run
 // matched (in the row's provenance), else the compounds a list holds for it.
@@ -828,9 +853,9 @@ const ALTERNATIVE_KINDS = [
     key: 'displaced_by_rival',
     label: 'list compound',
     tooltip:
-      "The loaded list's compound for this peak, which a formula from the search took: " +
-      "its evidence was more than twice the list's and it explains the compound's " +
-      'isotope lines. Using it puts the list compound back.'
+      "A loaded list's compound for this peak, taken by a formula from the search with more " +
+      'than twice its evidence that also explains its isotope lines. Using it puts the list ' +
+      'compound back.'
   }
 ]
 const alternativeKind = (alt) => ALTERNATIVE_KINDS.find(({ key }) => alt?.[key] === true) ?? null
@@ -860,15 +885,13 @@ const promoteBlocked = (alt) => Boolean(alt?.assigned_formula) && !canPromote(al
 // Said on the row as well as on the control, because a disabled button
 // dispatches no mouse events and its own tooltip would seldom be read.
 //
-// Re-search is the way past every one of these states: it searches the peak's
-// composition against the sample's adducts from scratch rather than measuring
-// the formulas this shortlist happens to name, so it can find one this list
-// never held.
-const RESEARCH_HINT = 'Re-search the peak to look wider than this shortlist.'
-const NO_ADDUCT_HINT =
-  'Not assignable to this peak. A formula needs an adduct to go with it, and this ' +
-  `one has none. ${RESEARCH_HINT}`
-const SCORING_HINT = 'Measuring this formula against the peak. One moment.'
+// Find more - the composition search - is the way past every one of these
+// states: it searches the peak's composition against the sample's adducts from
+// scratch rather than measuring the formulas this shortlist happens to name, so
+// it can find one this list never held.
+const RESEARCH_HINT = 'Find more searches wider than this shortlist.'
+const NO_ADDUCT_HINT = `Not assignable to this peak: the formula names no adduct. ${RESEARCH_HINT}`
+const SCORING_HINT = 'Measuring this formula against the peak...'
 
 // One blocked entry is not a candidate the finder listed: the winner an
 // override displaced, which the server archives and pushes back to the head of
@@ -878,14 +901,13 @@ const SCORING_HINT = 'Measuring this formula against the peak. One moment.'
 // trivially, since an imported row may only ever have carried a formula - and
 // then the undo is refused by the same 422.
 //
-// Re-search is worth naming, but not as if it were the undo: it writes a NEW
-// assignment, and the isotopologues this override unassigned are put back by
-// compound AND adduct, so they stay unassigned.
+// The composition search is worth naming, but not as if it were the undo: it
+// writes a NEW assignment, and the isotopologues this override unassigned are
+// put back by compound AND adduct, so they stay unassigned.
 const NO_ADDUCT_UNDO_HINT =
-  'Cannot be undone here. The assignment this replaced named no adduct, and one is ' +
-  'required to put it back. Re-searching the peak assigns the formula again under a ' +
-  'real adduct, but that is a new assignment: the isotopologues this override cleared ' +
-  'stay cleared.'
+  'Cannot be undone here: the assignment this replaced named no adduct. Find more can ' +
+  'assign the formula again under an adduct, but as a new assignment, and the ' +
+  'isotopologues this override cleared stay cleared.'
 
 // Whether an entry is that archived winner - the one "use this" would undo.
 // Position and formula together: the head is where the server puts it, and the
@@ -1075,13 +1097,13 @@ const demotedCount = computed(() => {
       message: `
         <h1>Peak Inspector</h1>
         <p>
-        The committed assignment for the selected peak: its fitted composition,
-        confidence tier, evidence, isotopologue family and close alternatives.
+        The selected peak's assignment: its formula and ionization, confidence
+        tier and why, evidence, isotope pattern, verification and close
+        alternatives.
         </p>
         <p>
-        Select peaks by clicking them in the spectrum chart, or via the
-        <b>Assignments</b> ledger. Use <b>Re-search</b> to search compositions
-        for the peak on demand.
+        Select a peak in the spectrum or the <b>Assignments</b> ledger.
+        <b>Find more</b> searches other compositions for it.
         </p>`,
       doc: app.ui.help.docUrl('how-it-works/peak-assignment/')
     }"
@@ -1092,7 +1114,11 @@ const demotedCount = computed(() => {
              is half of the assignment, and the ion formula under it only
              implies it. -->
         <div class="insp-title">
-          <span class="insp-formula">{{ focusedAssignment.assigned_formula || 'Unassigned' }}</span>
+          <span
+            class="insp-formula"
+            v-tooltip.top="focusedAssignment.assigned_formula ? 'Neutral formula' : null"
+            >{{ focusedAssignment.assigned_formula || 'Unassigned' }}</span
+          >
           <span
             v-if="ionization"
             class="insp-ionization"
@@ -1144,9 +1170,20 @@ const demotedCount = computed(() => {
           focusedAssignment.ion_formula || evidenceRow.isotope_label || focusedAssignment.source
         "
       >
-        <span v-if="focusedAssignment.ion_formula">{{ focusedAssignment.ion_formula }}</span>
-        <span v-if="evidenceRow.isotope_label"> &middot; {{ evidenceRow.isotope_label }}</span>
-        <span v-if="focusedAssignment.source" class="src">
+        <span v-if="focusedAssignment.ion_formula" v-tooltip.top="'Ion formula'">{{
+          focusedAssignment.ion_formula
+        }}</span>
+        <span
+          v-if="evidenceRow.isotope_label"
+          v-tooltip.top="'The isotope line of the ion this peak is; M0 is the monoisotopic line'"
+        >
+          &middot; {{ evidenceRow.isotope_label }}</span
+        >
+        <span
+          v-if="focusedAssignment.source"
+          class="src"
+          v-tooltip.top="sourceTooltip(focusedAssignment.source)"
+        >
           &middot; {{ focusedAssignment.source }}</span
         >
       </div>
@@ -1179,7 +1216,7 @@ const demotedCount = computed(() => {
         }"
       >
         <div class="ev">
-          <span class="k">fit</span>
+          <span class="k" v-tooltip.top="EVIDENCE_TOOLTIPS.fit">fit</span>
           <span class="v">{{ formatFit(focusedAssignment.fit_score) }}</span>
         </div>
         <!-- A derived row's numbers arrive a moment after the row: the family
@@ -1200,7 +1237,7 @@ const demotedCount = computed(() => {
           <span class="v">{{ measured.main_peak_note }}</span>
         </div>
         <div class="ev" v-if="evidenceRow.mz_error_ppm != null">
-          <span class="k">m/z error</span>
+          <span class="k" v-tooltip.top="EVIDENCE_TOOLTIPS.mzError">m/z error</span>
           <span class="v">{{ num.mzError.format(evidenceRow.mz_error_ppm) }} ppm</span>
         </div>
         <div class="ev" v-if="massZ != null" data-testid="mass-z">
@@ -1208,15 +1245,13 @@ const demotedCount = computed(() => {
           <span class="v" :class="{ far: massZFar }">{{ zFormat.format(massZ) }}</span>
         </div>
         <div class="ev" v-if="evidenceRow.abundance_error != null">
-          <span class="k">abund. error</span>
+          <span class="k" v-tooltip.top="EVIDENCE_TOOLTIPS.abundanceError">abund. error</span>
           <span class="v">{{
             num.relativeAbundanceError.format(evidenceRow.abundance_error)
           }}</span>
         </div>
         <div class="ev" v-if="plausibility != null">
-          <span class="k" v-tooltip.top="'Chemical plausibility (Seven Golden Rules)'"
-            >plausibility</span
-          >
+          <span class="k" v-tooltip.top="EVIDENCE_TOOLTIPS.plausibility">plausibility</span>
           <span class="v">{{ formatFit(plausibility) }}</span>
         </div>
         <!-- The product of the two above, and the number this row's tier was
@@ -1224,11 +1259,7 @@ const demotedCount = computed(() => {
              chip: when a tier looks surprising, "fit 95%, plausibility 40%" is
              the answer, and the inspector is where a reader goes to find it. -->
         <div class="ev" v-if="evidenceRow.evidence != null">
-          <span
-            class="k"
-            v-tooltip.top="'Evidence (fit x plausibility) - what the tier is banded on'"
-            >evidence</span
-          >
+          <span class="k" v-tooltip.top="EVIDENCE_TOOLTIPS.evidence">evidence</span>
           <span class="v">{{ formatFit(evidenceRow.evidence) }}</span>
         </div>
         <!-- Arbitration confidence and P(correct) are a run's numbers. A row
@@ -1237,17 +1268,13 @@ const demotedCount = computed(() => {
              the sample was folded in, or a dash saying why there is none, and a
              dash for the confidence, which the ledger has no contest to compute. -->
         <div class="ev" v-if="provenance?.confidence != null || ledgerServed">
-          <span
-            class="k"
-            v-tooltip.top="'Arbitration confidence: winner share of fit x plausibility'"
-            >confidence</span
-          >
+          <span class="k" v-tooltip.top="EVIDENCE_TOOLTIPS.confidence">confidence</span>
           <span class="v" v-if="provenance?.confidence != null"
             >{{ formatFit(provenance.confidence)
             }}<span
               v-if="provenance.is_tie"
               class="tie-flag"
-              v-tooltip.top="'Runner-up too close to call'"
+              v-tooltip.top="'The runner-up is too close to call'"
               >&nbsp;tie</span
             ></span
           >
@@ -1264,7 +1291,7 @@ const demotedCount = computed(() => {
             }}<span
               v-if="provenance?.calibration?.provisional"
               class="prov-flag"
-              v-tooltip.top="'Provisional calibration curve - directionally right, not hardened'"
+              v-tooltip.top="'Provisional calibration: directionally right, not yet hardened'"
               >&nbsp;prov.</span
             ></span
           >
@@ -1274,7 +1301,7 @@ const demotedCount = computed(() => {
             v-tooltip.top="uncalibratedReason(focusedAssignment, { fromLedger: true })"
             >&mdash;</span
           >
-          <span class="v uncal" v-else v-tooltip.top="'No calibration curve for this instrument'"
+          <span class="v uncal" v-else v-tooltip.top="uncalibratedReason(focusedAssignment)"
             >uncalibrated</span
           >
         </div>
@@ -1297,7 +1324,7 @@ const demotedCount = computed(() => {
         class="tier-reasons"
         v-help.right="{
           title: 'Why this tier',
-          helpKey: 'assignment-tiers',
+          helpKey: 'assignment-tier-reasons',
           doc: app.ui.help.docUrl('how-it-works/peak-assignment/#why-a-row-holds-its-tier')
         }"
       >
@@ -1337,8 +1364,8 @@ const demotedCount = computed(() => {
         class="same-ion"
         data-testid="same-ion"
         v-help.right="{
-          title: 'Why this tier',
-          helpKey: 'assignment-tiers',
+          title: 'Same ion, read another way',
+          helpKey: 'assignment-tier-reasons',
           doc: app.ui.help.docUrl('how-it-works/peak-assignment/#why-a-row-holds-its-tier')
         }"
       >
@@ -1375,27 +1402,27 @@ const demotedCount = computed(() => {
           message: `
               <h1>Isotopologues</h1>
               <p>
-              The isotope pattern behind this assignment: the main peak (M0)
-              and its isotopologues (M+1, M+2 ...), each with its m/z error and its
-              estimated relative abundance (<b>abu.</b>, as a fraction of the most
-              abundant isotopologue). Labels count from the monoisotopic peak, so
-              a bromine- or chlorine-rich ion reads M0, M+2, M+4 with M0 the
-              lightest peak rather than the tallest.
+              The isotope pattern behind the assignment: the monoisotopic line
+              (M0) and its isotopologues, each named by its heavy isotopes
+              (<b>[13C]</b>, <b>[81Br]2</b>), with its measured m/z, m/z error and
+              predicted relative abundance (<b>abu.</b>, a fraction of the most
+              abundant line). For a bromine- or chlorine-rich ion M0 is the
+              lightest line, not the tallest.
               </p>
               <p>
-              Click a row to focus that peak. Greyed rows with a warning icon are
-              isotopologues whose abundance or m/z fit the prediction poorly.
+              Click a row to focus its peak. A warning icon marks a line whose
+              abundance or m/z fits the prediction poorly.
               </p>`,
           doc: app.ui.help.docUrl('how-it-works/peak-assignment/#the-fit-score-a-pure-measurement')
         }"
       >
         <div class="alts-label">Isotopologues</div>
         <div class="iso-head">
-          <span>iso</span><span>m/z</span><span>ppm</span
+          <span v-tooltip.top="'Isotope line, named by its heavy isotopes'">iso</span
+          ><span v-tooltip.top="'Measured m/z of the peak'">m/z</span
+          ><span v-tooltip.top="'m/z error, in ppm'">ppm</span
           ><span
-            v-tooltip.top="
-              'Estimated relative abundance (fraction of the most abundant isotopologue)'
-            "
+            v-tooltip.top="'Predicted relative abundance, a fraction of the most abundant line'"
             >abu.</span
           >
         </div>
@@ -1408,14 +1435,10 @@ const demotedCount = computed(() => {
               current: iso.sample_peak_id === focusedAssignment.sample_peak_id,
               poor: isPoorMatch(iso)
             }"
-            v-tooltip.left="
-              isPoorMatch(iso)
-                ? 'Poorly matched isotopologue (abundance / m/z off) - click to focus'
-                : 'Focus this isotopologue peak'
-            "
+            v-tooltip.left="isoRowTooltip(iso)"
             @click="focusIsotopePeak(iso)"
           >
-            <span class="iso-label" v-tooltip.left="iso.isotope_formula || iso.isotope_label"
+            <span class="iso-label"
               ><span v-if="isPoorMatch(iso)" class="pi ph ph-warning poor-icon" />{{
                 isoLabel(iso)
               }}</span
@@ -1470,7 +1493,7 @@ const demotedCount = computed(() => {
                 }}
                 unassigned with it {{ demotedCount === 1 ? 'stays' : 'stay' }} unassigned</template
               >
-              - re-search this peak to assign it again under a real adduct</template
+              - use Find more to assign it again under a real adduct</template
             ></template
           >. The next assignment run for this sample recomputes the ledger and supersedes the
           change; record a verification to keep the judgement.
@@ -1544,6 +1567,7 @@ const demotedCount = computed(() => {
             aria-haspopup="dialog"
             :disabled="submitting"
             :loading="submitting && pendingVerdict === 'confirmed'"
+            v-tooltip.top="'The assignment is right'"
             @click="openVerdict('confirmed', $event)"
           />
           <Button
@@ -1555,6 +1579,7 @@ const demotedCount = computed(() => {
             aria-haspopup="dialog"
             :disabled="submitting"
             :loading="submitting && pendingVerdict === 'rejected'"
+            v-tooltip.top="'The assignment is wrong'"
             @click="openVerdict('rejected', $event)"
           />
           <Button
@@ -1566,6 +1591,7 @@ const demotedCount = computed(() => {
             aria-haspopup="dialog"
             :disabled="submitting"
             :loading="submitting && pendingVerdict === 'unsure'"
+            v-tooltip.top="'The evidence at hand cannot tell'"
             @click="openVerdict('unsure', $event)"
           />
           <Button
@@ -1691,7 +1717,13 @@ const demotedCount = computed(() => {
               icon="pi ph ph-hand-pointing"
               :disabled="curating !== null || promoteBlocked(alt)"
               :loading="curating === i"
-              v-tooltip.top="promoteBlocked(alt) ? noAdductHint(alt, i) : ''"
+              v-tooltip.top="
+                promoteBlocked(alt)
+                  ? noAdductHint(alt, i)
+                  : derivedRun
+                    ? 'Pin this identity on the batch peak'
+                    : 'Assign this formula to the peak by hand'
+              "
               @click="promoteAlternative(alt, i)"
             />
           </div>
@@ -1711,7 +1743,7 @@ const demotedCount = computed(() => {
           text
           :severity="showSearch ? 'primary' : 'secondary'"
           icon="pi ph ph-magnifying-glass"
-          v-tooltip.top="'Search compositions for this peak in the pane under the spectrum'"
+          v-tooltip.top="'Search other compositions for this peak'"
           @click="showSearch = !showSearch"
         />
       </div>
@@ -1813,6 +1845,10 @@ const demotedCount = computed(() => {
 .ev .v {
   font-size: 0.98rem;
   font-variant-numeric: tabular-nums;
+}
+/* Every key of the grid explains itself on hover; the cursor says so. */
+.evidence .ev:not(.measuring) .k {
+  cursor: help;
 }
 .alts {
   display: flex;

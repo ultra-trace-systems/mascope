@@ -173,11 +173,14 @@ const { default: PanePeakAssign } = await import('@/lib/panes/PanePeakAssign/Pan
 
 // `recordTooltips` swaps the inert tooltip directive for one that writes its
 // text onto the element, for the tests that read what a value says on hover.
-async function mountPane({ recordTooltips = false } = {}) {
+async function mountPane({ recordTooltips = false, recordHelp = false } = {}) {
   const record = (el, binding) => el.setAttribute('data-tooltip', binding.value ?? '')
   const tooltip = recordTooltips ? { mounted: record, updated: record } : {}
+  // `recordHelp` writes the help card's key onto the element it is bound to.
+  const recordCard = (el, binding) => el.setAttribute('data-help', binding.value?.helpKey ?? '')
+  const help = recordHelp ? { mounted: recordCard, updated: recordCard } : {}
   const wrapper = mount(PanePeakAssign, {
-    global: { stubs: GLOBAL_STUBS, directives: { tooltip, help: {} } }
+    global: { stubs: GLOBAL_STUBS, directives: { tooltip, help } }
   })
   await wrapper.vm.$nextTick()
   return wrapper
@@ -613,9 +616,8 @@ describe('PanePeakAssign adduct corroboration', () => {
     const wrapper = await mountPane()
 
     expect(wrapper.vm.corroborationTooltip).toBe(
-      'The M0 of this isotopologue family was seen through 3 channels. ' +
-        "Independent corroborating evidence for the formula, folded into the M0's " +
-        "P(correct) - not into this isotopologue's, which is calibrated on its own."
+      "This isotopologue's M0 was seen through 3 ionization channels: independent evidence " +
+        "for the formula. It is in the M0's P(correct), not in this isotopologue's."
     )
   })
 
@@ -669,7 +671,9 @@ describe('PanePeakAssign adduct corroboration', () => {
 
     expect(badge(wrapper).text()).toContain('Supported by 2 channels')
     expect(badge(wrapper).classes()).not.toContain('inherited')
-    expect(wrapper.vm.corroborationTooltip).toContain('Seen through 2 channels (+H+, +Na+)')
+    expect(wrapper.vm.corroborationTooltip).toContain(
+      'Seen through 2 ionization channels (+H+, +Na+)'
+    )
   })
 
   // The count is flattened onto every ledger row, so the M0's own badge is there
@@ -681,7 +685,7 @@ describe('PanePeakAssign adduct corroboration', () => {
     expect(badge(wrapper).text()).toContain('Supported by 2 channels')
     expect(badge(wrapper).classes()).not.toContain('inherited')
     // No adduct names to give yet, so the tooltip promises none.
-    expect(wrapper.vm.corroborationTooltip).toContain('Seen through 2 channels.')
+    expect(wrapper.vm.corroborationTooltip).toContain('Seen through 2 ionization channels:')
   })
 
   // The ledger-measured channel count is what reaches an untargeted row: the
@@ -703,9 +707,11 @@ describe('PanePeakAssign adduct corroboration', () => {
     detailRecord = { provenance: { cross_channel: { channels: ['+H+', '+NH4+'] } } }
     const wrapper = await mountPane()
 
-    expect(wrapper.vm.corroborationTooltip).toContain('Seen through 2 channels (+H+, +NH4+)')
-    expect(wrapper.vm.corroborationTooltip).toContain('not included in the P(correct)')
-    expect(wrapper.vm.corroborationTooltip).not.toContain('already folded')
+    expect(wrapper.vm.corroborationTooltip).toContain(
+      'Seen through 2 ionization channels (+H+, +NH4+)'
+    )
+    expect(wrapper.vm.corroborationTooltip).toContain('It is not in P(correct).')
+    expect(wrapper.vm.corroborationTooltip).not.toContain('It is in P(correct).')
   })
 
   // Where a curated row carries both, the channel count is the superset - the
@@ -726,7 +732,7 @@ describe('PanePeakAssign adduct corroboration', () => {
 
     expect(badge(wrapper).text()).toContain('Supported by 3 channels via M0')
     expect(badge(wrapper).classes()).toContain('inherited')
-    expect(wrapper.vm.corroborationTooltip).toContain('not included in the P(correct)')
+    expect(wrapper.vm.corroborationTooltip).toContain('It is not in P(correct).')
   })
 
   // The badge is gated on more than one, and a capped `ambiguous_nitrogen` row
@@ -1228,7 +1234,7 @@ describe('PanePeakAssign manual curation', () => {
     // alone would seldom be reachable.
     const reason = wrapper.vm.altTooltip(ALTERNATIVES[3])
     expect(reason).toContain('Not assignable to this peak')
-    expect(reason).toContain('Re-search the peak')
+    expect(reason).toContain('Find more searches wider')
     expect(wrapper.vm.altTooltip(ALTERNATIVES[0])).not.toContain('Not assignable')
   })
 
@@ -1615,16 +1621,16 @@ describe('PanePeakAssign an override whose previous winner named no adduct', () 
     expect(curate).not.toHaveBeenCalled()
   })
 
-  // The undo entry is not a candidate the finder listed, and re-searching does
-  // not put its family back - so it says what it cannot do and what re-search
-  // gives instead, rather than wearing the ordinary shortlist wording.
-  it('says why the undo cannot be done here, and what re-search gives instead', async () => {
+  // The undo entry is not a candidate the finder listed, and searching again
+  // does not put its family back - so it says what it cannot do and what the
+  // search gives instead, rather than wearing the ordinary shortlist wording.
+  it('says why the undo cannot be done here, and what the search gives instead', async () => {
     const wrapper = await mountPane()
     const reason = wrapper.vm.altTooltip(PREVIOUS, 0)
 
     expect(reason).toContain('Cannot be undone here')
-    expect(reason).toContain('The assignment this replaced named no adduct')
-    expect(reason).toContain('that is a new assignment')
+    expect(reason).toContain('the assignment this replaced named no adduct')
+    expect(reason).toContain('as a new assignment')
     expect(reason).toContain('stay cleared')
     expect(reason).not.toContain('Not assignable to this peak')
   })
@@ -1634,7 +1640,7 @@ describe('PanePeakAssign an override whose previous winner named no adduct', () 
     const reason = wrapper.vm.altTooltip(SHORTLIST, 1)
 
     expect(reason).toContain('Not assignable to this peak')
-    expect(reason).toContain('Re-search the peak to look wider than this shortlist')
+    expect(reason).toContain('Find more searches wider than this shortlist')
     expect(reason).not.toContain('Cannot be undone here')
   })
 
@@ -1855,7 +1861,9 @@ describe('PanePeakAssign scoring the formula-only shortlist', () => {
     expect(wrapper.vm.altTooltip(wrapper.vm.alternatives[1], 1)).toContain('measuring')
     // The control is still disabled, but for a reason that will pass.
     expect(blockedButtons(wrapper)).toHaveLength(2)
-    expect(wrapper.vm.noAdductHint(wrapper.vm.alternatives[1], 1)).toContain('One moment')
+    expect(wrapper.vm.noAdductHint(wrapper.vm.alternatives[1], 1)).toContain(
+      'Measuring this formula against the peak'
+    )
   })
 
   // A measured entry names both halves of an assignment, so the control the
@@ -1925,7 +1933,7 @@ describe('PanePeakAssign scoring the formula-only shortlist', () => {
     const reason = wrapper.vm.noAdductHint(wrapper.vm.alternatives[1], 1)
 
     expect(reason).toContain('None of this sample')
-    expect(reason).toContain('Re-search the peak to look wider than this shortlist')
+    expect(reason).toContain('Find more searches wider than this shortlist')
     expect(blockedButtons(wrapper)).toHaveLength(2)
   })
 
@@ -2426,10 +2434,9 @@ describe('PanePeakAssign mass z', () => {
     expect(keys.indexOf('mass z')).toBe(keys.indexOf('m/z error') + 1)
     expect(massZ(wrapper).find('.k').attributes('data-tooltip')).toBe(
       [
-        "How far this row's mass error sits from the run's own mass calibration at its " +
-          "m/z, counted in the calibration's widths.",
+        "The m/z error in widths of the run's own mass calibration at this m/z.",
         'The run measured a centre of 0.12 ppm and a width of 0.30 ppm.',
-        'Beyond 3 widths a row nothing corroborates is held at candidate, beyond 6 below ' +
+        'Beyond 3 widths an uncorroborated row stays at candidate; beyond 6, below ' +
           'assignability.'
       ].join('\n')
     )
@@ -2463,8 +2470,7 @@ describe('PanePeakAssign mass z', () => {
     // No cap to be past: nothing on the run says where it is.
     expect(massZ(wrapper).find('.v').classes()).not.toContain('far')
     expect(massZ(wrapper).find('.k').attributes('data-tooltip')).toBe(
-      "How far this row's mass error sits from the run's own mass calibration at its " +
-        "m/z, counted in the calibration's widths."
+      "The m/z error in widths of the run's own mass calibration at this m/z."
     )
   })
 
@@ -2522,7 +2528,7 @@ describe('PanePeakAssign the same ion read another way', () => {
     expect(readings(wrapper)[0].find('.reading-formula').text()).toBe('C3H4O')
     expect(readings(wrapper)[0].find('.reading-channel').text()).toBe('through +NH4+')
     expect(readings(wrapper)[0].attributes('data-tooltip')).toContain(
-      'The same ion read as another neutral through another adduct.'
+      'The same ion read as another neutral with another adduct.'
     )
     const order = blocks(wrapper)
     expect(order.indexOf('same-ion')).toBe(order.indexOf('tier-reasons') + 1)
@@ -2571,7 +2577,7 @@ describe('PanePeakAssign the same ion read another way', () => {
     const firstLines = rows.map((row) => row.attributes('data-tooltip').split('\n')[0])
     expect(firstLines[0]).toContain('The same ion read as another neutral')
     expect(firstLines[1]).toContain("before a neighbour's isotope line claimed it")
-    expect(firstLines[2]).toContain("The loaded list's compound for this peak")
+    expect(firstLines[2]).toContain("A loaded list's compound for this peak")
     expect(firstLines[3]).toBe('fit: 40%')
   })
 })
@@ -2603,8 +2609,8 @@ describe('PanePeakAssign ionization and reference lists', () => {
 
     expect(title.map((node) => node.textContent)).toEqual(['C3H7NO', '+H+'])
     expect(title[1].dataset.testid).toBe('ionization')
-    expect(field(wrapper, 'ionization').attributes('data-tooltip')).toContain(
-      'C3H7NO +H+ gives C3H8NO+'
+    expect(field(wrapper, 'ionization').attributes('data-tooltip')).toBe(
+      'Ionization mechanism: C3H7NO +H+ → C3H8NO+'
     )
   })
 
@@ -2841,5 +2847,140 @@ describe('PanePeakAssign the row read again', () => {
 
     expect(listed.find('.v').text()).toBe('Hexadecanol isomer +11')
     expect(listed.attributes('data-tooltip')).toContain('and 11 more the lists hold for it')
+  })
+})
+
+// Every part of the card a reader can wonder about says what it is on hover,
+// in the fewest words that say it.
+describe('PanePeakAssign hover text', () => {
+  const ROW = {
+    ...assignment({ formula: 'C10H16O6', tier: 'candidate' }),
+    ion_formula: 'C10H16NO9-',
+    isotope_label: 'M0',
+    source: 'untargeted',
+    mz_error_ppm: 0.31,
+    abundance_error: 0.04
+  }
+  const tip = (element) => element.attributes('data-tooltip')
+  const key = (wrapper, name) =>
+    wrapper.findAll('.evidence .ev .k').find((element) => element.text() === name)
+
+  beforeEach(() => {
+    focusedAssignment = ROW
+  })
+
+  it('names the neutral, the ion, its isotope line and how it was found', async () => {
+    const wrapper = await mountPane({ recordTooltips: true })
+    const parts = wrapper.findAll('.insp-sub span')
+
+    expect(tip(wrapper.find('.insp-formula'))).toBe('Neutral formula')
+    expect(parts.map(tip)).toEqual([
+      'Ion formula',
+      'The isotope line of the ion this peak is; M0 is the monoisotopic line',
+      'Found by the formula search'
+    ])
+  })
+
+  it('says what fit, m/z error and abundance error measure', async () => {
+    const wrapper = await mountPane({ recordTooltips: true })
+
+    expect(tip(key(wrapper, 'fit'))).toBe(
+      "How well the peak and its isotope lines match the formula's predicted pattern"
+    )
+    expect(tip(key(wrapper, 'm/z error'))).toBe('Measured minus predicted m/z of the peak, in ppm')
+    expect(tip(key(wrapper, 'abund. error'))).toBe(
+      'How far the measured isotope abundances are from the predicted ones'
+    )
+  })
+
+  // An untargeted row has no calibrated probability because nothing calibrates
+  // the formula search, not because the instrument lacks a curve.
+  it("gives an uncalibrated row the reason it has none, not the instrument's", async () => {
+    detailRecord = { provenance: { calibrated: false, p_correct: null } }
+    const wrapper = await mountPane({ recordTooltips: true })
+    const cell = wrapper
+      .findAll('.evidence .ev')
+      .find((element) => element.find('.k').text() === 'P(correct)')
+
+    expect(cell.find('.v').text()).toBe('uncalibrated')
+    expect(tip(cell.find('.v'))).toBe('Untargeted assignment - no calibrated probability')
+  })
+
+  it("names the isotopologue table's columns", async () => {
+    const wrapper = await mountPane({ recordTooltips: true })
+
+    expect(wrapper.findAll('.iso-head span').map(tip)).toEqual([
+      'Isotope line, named by its heavy isotopes',
+      'Measured m/z of the peak',
+      'm/z error, in ppm',
+      'Predicted relative abundance, a fraction of the most abundant line'
+    ])
+  })
+
+  // One tooltip per row: the label inside it no longer carries a second one.
+  it('gives an isotopologue row its formula, its match and what a click does', async () => {
+    const poor = {
+      ...ROW,
+      peak_assignment_id: 'pa-2',
+      sample_peak_id: 'p-2',
+      role: 'iso_child',
+      isotope_label: 'M+1',
+      isotope_formula: '[13C]C9H16NO9-',
+      abundance_error: 0.9,
+      mz_error_ppm: 40
+    }
+    familyRows = [ROW, poor]
+    const wrapper = await mountPane({ recordTooltips: true })
+    const rows = wrapper.findAll('.iso-row')
+
+    expect(tip(rows[1])).toBe(
+      [
+        '[13C]C9H16NO9-',
+        'Poor match to the prediction (abundance or m/z off)',
+        'Click to focus this peak'
+      ].join('\n')
+    )
+    expect(rows[1].find('.iso-label').attributes('data-tooltip')).toBeUndefined()
+  })
+
+  it('says what each verdict records', async () => {
+    const wrapper = await mountPane({ recordTooltips: true })
+
+    expect(wrapper.findAll('.verify-buttons .verdict-button').map(tip)).toEqual([
+      'The assignment is right',
+      'The assignment is wrong',
+      'The evidence at hand cannot tell'
+    ])
+  })
+
+  it('says what use this does on an alternative it can commit', async () => {
+    detailRecord = {
+      alternatives: [
+        { assigned_formula: 'C9H12N2O5', fit_score: 0.41, ionization_mechanism_id: 'm-no3' }
+      ]
+    }
+    const wrapper = await mountPane({ recordTooltips: true })
+
+    expect(tip(wrapper.find('.alt-use'))).toBe('Assign this formula to the peak by hand')
+  })
+
+  it('opens its own card on the reasons and on the same ion readings', async () => {
+    detailRecord = {
+      provenance: { tier_reasons: [{ rule: 'no_close_rival', detail: 'none', caps: false }] },
+      alternatives: [
+        {
+          assigned_formula: 'C9H14O7',
+          ion_formula: 'C10H16NO9-',
+          ionization_mechanism_id: 'm-other',
+          same_ion: true
+        }
+      ]
+    }
+    const wrapper = await mountPane({ recordHelp: true })
+
+    expect(wrapper.find('.tier-reasons').attributes('data-help')).toBe('assignment-tier-reasons')
+    expect(wrapper.find('[data-testid="same-ion"]').attributes('data-help')).toBe(
+      'assignment-tier-reasons'
+    )
   })
 })
