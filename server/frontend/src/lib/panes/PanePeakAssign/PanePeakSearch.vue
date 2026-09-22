@@ -17,7 +17,7 @@ import { BaseTierTag, BaseMatchTag } from '@/lib/base'
 import { PopoverTargetCompoundAdd } from '@/lib/dialogs'
 import { num } from '@/lib/formatters'
 import { peakAssignmentEnabled } from '@/lib/features'
-import { isFormulaRange, usePeakAssignParams } from '@/lib/peakAssignParams'
+import { fetchProfilePreview, isFormulaRange, usePeakAssignParams } from '@/lib/peakAssignParams'
 
 import { usePreview } from './preview.js'
 import { canCurateHit, curationBodyForHit, hitKey } from './searchHit.js'
@@ -148,11 +148,44 @@ const isFormulaRangeValid = computed(
 
 onMounted(() => store.ensureLoaded())
 
+// Emptied, the field goes back to the chemistry profile's grid.
 const updateFormulaRange = () => {
-  if (isFormulaRangeValid.value && formulaRangeModel.value) {
-    params.formula_ranges = formulaRangeModel.value.trim()
-  }
+  if (!isFormulaRangeValid.value) return
+  params.formula_ranges = formulaRangeModel.value?.trim() || null
 }
+
+// What an empty field searches with: the focused sample's chemistry profile,
+// its element grid and its instrument's m/z window - what a run of the sample
+// would use - asked of the server as the launcher asks it, and asked again
+// when the sample or the chosen profile or context changes. A value typed in
+// overrides it here as it would in the run.
+const resolved = ref(null)
+let resolveRequest = 0
+watch(
+  () => [app.data.sample.focusedId, params.profile, params.context],
+  async ([sampleItemId, profile, context]) => {
+    const request = ++resolveRequest
+    resolved.value = null
+    if (!sampleItemId) return
+    try {
+      const [record] = await fetchProfilePreview({ sampleItemId }, { profile, context })
+      if (request === resolveRequest) resolved.value = record ?? null
+    } catch {
+      // The fields then say where a value would come from, and the search
+      // waits for one typed in.
+    }
+  },
+  { immediate: true }
+)
+const mzPrecision = computed(
+  () => params.mz_precision_ppm ?? resolved.value?.mz_precision_ppm ?? null
+)
+const formulaRange = computed(() => params.formula_ranges ?? resolved.value?.element_ranges ?? null)
+const FROM_PROFILE = 'From the chemistry profile'
+const mzPrecisionPlaceholder = computed(() =>
+  resolved.value?.mz_precision_ppm != null ? String(resolved.value.mz_precision_ppm) : FROM_PROFILE
+)
+const formulaRangePlaceholder = computed(() => resolved.value?.element_ranges ?? FROM_PROFILE)
 
 // The reset control clears exactly the two fields this pane shows. The record
 // is shared, so resetting everything from here would silently discard a peak
@@ -194,15 +227,14 @@ app.ui.notification.on('match_compositions_by_mz', (payload) => {
   }
 })
 
-// Follow the store into the text box. This is no longer only the defaults
-// landing: the launcher dialog binds the same field and so does the reset
-// button, so the committed range can change while this pane is mounted.
+// Follow the store into the text box: the launcher dialog binds the same field
+// and so does the reset button, so the committed range can change while this
+// pane is mounted. A range put back to the profile's empties the box.
 watch(
   () => params.formula_ranges,
   (newValue) => {
-    if (newValue != null && formulaRangeModel.value !== newValue) {
-      formulaRangeModel.value = newValue
-    }
+    const shown = newValue ?? ''
+    if (formulaRangeModel.value !== shown) formulaRangeModel.value = shown
   }
 )
 
@@ -228,8 +260,8 @@ watchDebounced(
     return {
       peakFocused: app.data.peak.focused ? app.data.peak.focused.mz : null,
       sampleId: app.data.sample.focusedId,
-      mzPrecision: params.mz_precision_ppm,
-      formulaRange: params.formula_ranges,
+      mzPrecision: mzPrecision.value,
+      formulaRange: formulaRange.value,
       ionMechanismIds: ionMechs.value.map((m) => m.ionization_mechanism_id).join(',')
     }
   },
@@ -290,8 +322,7 @@ function getIsotopeRows(data) {
     0
   return data.children.map((record) => ({
     ...record,
-    close:
-      (Math.abs(record.mz - app.data.peak.focused?.mz) * 1e6) / record.mz < params.mz_precision_ppm,
+    close: (Math.abs(record.mz - app.data.peak.focused?.mz) * 1e6) / record.mz < mzPrecision.value,
     abundance_reference: mainIsotopeAbundance,
     intensity_reference: mainIsotopeIntensity
   }))
@@ -437,6 +468,8 @@ watch(
             The mass tolerance of the search, in ppm: a candidate is kept when a
             theoretical isotope of its ion lands within this window of the peak's
             m/z. Widening it finds more candidates, but more ambiguous ones.
+            Left empty, it is the window a run of this sample would use, set by
+            its chemistry profile and instrument.
             </p>
           `)
         "
@@ -446,6 +479,7 @@ watch(
           inputId="mzPrecision"
           :min="1"
           :max="store.limits.max_mz_precision_ppm"
+          :placeholder="mzPrecisionPlaceholder"
           fluid
         />
         <label for="mzPrecision">m/z precision</label>
@@ -459,7 +493,8 @@ watch(
             Allowed element counts for candidate formulas, as space-separated
             ranges &mdash; e.g. <code>C0-80 H0-160 [15N]0-1</code>, isotopes in
             brackets. Narrowing the ranges makes the search faster and keeps
-            chemically irrelevant candidates out.
+            chemically irrelevant candidates out. Left empty, it is the grid of
+            the sample's chemistry profile.
             </p>
           `)
         "
@@ -469,6 +504,7 @@ watch(
           id="formulaRange"
           fluid
           :invalid="!isFormulaRangeValid"
+          :placeholder="formulaRangePlaceholder"
           @blur="updateFormulaRange"
           @keydown.enter="updateFormulaRange"
           v-tooltip.bottom="{

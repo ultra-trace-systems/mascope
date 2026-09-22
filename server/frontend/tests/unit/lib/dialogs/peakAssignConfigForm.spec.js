@@ -88,9 +88,9 @@ const stubs = {
     template: '<input type="checkbox" class="toggle" :checked="modelValue" />'
   },
   InputNumber: {
-    props: ['modelValue'],
+    props: ['modelValue', 'inputId', 'placeholder'],
     emits: ['update:modelValue'],
-    template: '<input type="number" :value="modelValue" />'
+    template: '<input type="number" :id="inputId" :placeholder="placeholder" :value="modelValue" />'
   },
   InputText: {
     props: ['modelValue', 'invalid', 'placeholder'],
@@ -352,6 +352,7 @@ describe('PeakAssignConfigForm chemistry', () => {
         profile_label: 'Negative ESI / APCI',
         context: 'none',
         context_label: 'None',
+        element_ranges: 'C0-40 H0-80 N0-5 O0-20',
         samples: 1
       })
     ]
@@ -369,6 +370,37 @@ describe('PeakAssignConfigForm chemistry', () => {
     expect(resolvedText(wrapper).text()).toContain("Read off each sample's ionization mechanisms.")
     // No one grid to show when the samples search different ones.
     expect(wrapper.find('input.text').attributes('placeholder')).toBe(
+      "From each sample's chemistry profile"
+    )
+  })
+
+  it('shows the window the run would search at where the m/z precision is left empty', async () => {
+    previewAnswer = [resolution({ mz_precision_ppm: 3 })]
+    const wrapper = await mountForm({ sampleItemId: 'si-1' })
+
+    expect(wrapper.find('input#mz_precision_ppm').attributes('placeholder')).toBe('3')
+  })
+
+  // One profile over two instrument classes: one grid, searched in two windows.
+  it("names each answer's window where a batch's samples search at two", async () => {
+    previewAnswer = [
+      resolution({ samples: 4, mz_precision_ppm: 3 }),
+      resolution({ samples: 1, mz_precision_ppm: 10 })
+    ]
+    const wrapper = await mountForm({ sampleBatchId: 'sb-1' })
+
+    const items = resolvedText(wrapper)
+      .findAll('li')
+      .map((item) => item.text().replace(/\s+/g, ' '))
+    expect(items).toEqual([
+      'Bromide CIMS · Ambient air · 3 ppm · 4 samples',
+      'Bromide CIMS · Ambient air · 10 ppm · 1 sample'
+    ])
+    expect(optionTexts(wrapper, 'assign_profile')[0]).toBe('Auto (Bromide CIMS)')
+    expect(wrapper.find('input.text').attributes('placeholder')).toBe(
+      'C1-40 H0-80 N0-3 O0-18 S0-1 Cl0-2 Br0-2'
+    )
+    expect(wrapper.find('input#mz_precision_ppm').attributes('placeholder')).toBe(
       "From each sample's chemistry profile"
     )
   })

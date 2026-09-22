@@ -4,9 +4,9 @@ A run resolves its chemistry when it starts (``profiles.resolve_profile``) and
 records the answer on itself. A launcher that offers ``auto`` has to say what
 ``auto`` will mean before anything starts, and a batch launcher has to say it
 for every sample the search may reach. The resolution reads a sample's
-ionization mode and polarity and nothing else, so the preview asks for those
-alone: three queries whatever the number of samples, since samples sharing a
-mode and a polarity resolve alike.
+ionization mode, polarity and instrument class and nothing else, so the preview
+asks for those alone: three queries whatever the number of samples, since
+samples sharing all three resolve alike.
 """
 
 from __future__ import annotations
@@ -23,6 +23,7 @@ from mascope_backend.db import (
     IonizationMechanism,
     IonizationMode,
     SampleBatch,
+    SampleFile,
     SampleItem,
     async_session,
 )
@@ -39,7 +40,9 @@ async def preview_profiles(
     The mechanisms are read the way a run reads them
     (``service.fetch_sample_mechanisms``): the mode's own, at the sample's
     polarity. A sample with no mode resolves on its polarity alone, as the
-    fingerprint does when nothing is diagnostic.
+    fingerprint does when nothing is diagnostic. The instrument class is the
+    one the reader recorded when it converted the sample's file, which is the
+    class a run reads off that file.
 
     :param config: The run configuration to resolve.
     :param sample_item_id: The sample to resolve for.
@@ -64,10 +67,18 @@ async def preview_profiles(
                 select(
                     SampleItem.ionization_mode_id,
                     SampleItem.polarity,
+                    SampleFile.instrument_type,
                     func.count(),
                 )
+                .join(
+                    SampleFile, SampleFile.sample_file_id == SampleItem.sample_file_id
+                )
                 .where(scope)
-                .group_by(SampleItem.ionization_mode_id, SampleItem.polarity)
+                .group_by(
+                    SampleItem.ionization_mode_id,
+                    SampleItem.polarity,
+                    SampleFile.instrument_type,
+                )
             )
         ).all()
         if not groups:
@@ -78,7 +89,7 @@ async def preview_profiles(
                     f"Sample batch with ID '{sample_batch_id}' not found"
                 )
             return []
-        mode_ids = {mode_id for mode_id, _, _ in groups if mode_id is not None}
+        mode_ids = {mode_id for mode_id, *_ in groups if mode_id is not None}
         modes = (
             {
                 mode.ionization_mode_id: list(mode.ionization_mechanism_ids or [])
@@ -129,7 +140,8 @@ async def preview_profiles(
                 ),
                 polarity=polarity,
                 samples=int(count),
+                instrument_type=instrument_type,
             )
-            for mode_id, polarity, count in groups
+            for mode_id, polarity, instrument_type, count in groups
         ],
     )

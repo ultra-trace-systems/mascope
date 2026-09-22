@@ -522,8 +522,9 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
     the chemistry profile (how the sample was ionized) and the chemistry
     context (what was sampled), both on *Auto* by default.
   - **What Auto means:** each launcher says what *Auto* resolves to for the
-    sample, or for each group of the batch's samples. With a single answer,
-    the formula range field shows the grid the run would search.
+    sample, or for each group of the batch's samples. Where the samples share
+    them, the formula range and m/z precision fields show the grid and the
+    window the run would search at.
   - **A warning:** a named profile of the other polarity from the samples is
     flagged.
   - **Remembered:** the choice is kept with the other launch settings, and
@@ -534,7 +535,9 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   - **API:** `GET /api/params` lists the profiles and contexts a run may name.
     `GET /api/peak-assignments/sample/{sample_item_id}/profile-preview` and
     `GET /api/peak-assignments/batch/{sample_batch_id}/profile-preview`
-    resolve them without starting a run.
+    resolve them without starting a run, with each answer's element grid
+    (`element_ranges`) and m/z window (`mz_precision_ppm`, from the samples'
+    instrument class).
 
 - **The peak inspector shows where an assignment's mass error sits, and the
   other readings of its ion.**

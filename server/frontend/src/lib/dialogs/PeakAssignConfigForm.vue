@@ -160,6 +160,9 @@ const forBatch = computed(() => !props.sampleItemId && Boolean(props.sampleBatch
 // whose samples all resolve alike.
 const single = computed(() => (preview.value?.length === 1 ? preview.value[0] : null))
 const distinct = (key) => new Set((preview.value ?? []).map((record) => record[key])).size
+// One field's answer, where every sample the launch reaches shares it - a batch
+// of two instrument classes searches one grid in two windows.
+const shared = (key) => (preview.value?.length && distinct(key) === 1 ? preview.value[0] : null)
 
 // `auto` names its answer in the option itself, so the closed selector reads as
 // what the run will do rather than as a mode.
@@ -171,7 +174,7 @@ const profileOptions = computed(() => [
   {
     value: AUTO_PRESET,
     label: autoLabel(
-      profileIsAuto.value && single.value ? profileName(single.value) : null,
+      profileIsAuto.value && shared('profile') ? profileName(shared('profile')) : null,
       profileIsAuto.value && distinct('profile') > 1 ? 'per sample' : null
     )
   },
@@ -184,7 +187,7 @@ const contextOptions = computed(() => [
   {
     value: AUTO_PRESET,
     label: autoLabel(
-      contextIsAuto.value && single.value ? contextName(single.value) : null,
+      contextIsAuto.value && shared('context') ? contextName(shared('context')) : null,
       contextIsAuto.value && distinct('context') > 1 ? "each profile's own" : null
     )
   },
@@ -226,13 +229,17 @@ const mismatchText = computed(() => {
   return `${profile} is a ${own}-mode profile, and ${samplesText(count)} of this batch ${verb} ${theirs}.`
 })
 
-// The grid the untargeted stage would search, where the launch has one answer:
-// what leaving the formula range empty means, shown where it is left empty.
-const formulaRangePlaceholder = computed(() => {
-  if (single.value?.element_ranges) return single.value.element_ranges
-  return preview.value?.length > 1
-    ? "From each sample's chemistry profile"
-    : 'From the chemistry profile'
+// The grid and the window the untargeted stage would search at, where every
+// sample shares them: what leaving either field empty means, shown where it is
+// left empty.
+const fromProfile = () =>
+  preview.value?.length > 1 ? "From each sample's chemistry profile" : 'From the chemistry profile'
+const formulaRangePlaceholder = computed(
+  () => shared('element_ranges')?.element_ranges ?? fromProfile()
+)
+const mzPrecisionPlaceholder = computed(() => {
+  const ppm = shared('mz_precision_ppm')?.mz_precision_ppm
+  return ppm != null ? String(ppm) : fromProfile()
 })
 
 const chemistryDoc = app.ui.help.docUrl(
@@ -325,9 +332,13 @@ const chemistryDoc = app.ui.help.docUrl(
         <ul>
           <li
             v-for="record in preview"
-            :key="`${record.profile}|${record.context}|${record.polarity}`"
+            :key="`${record.profile}|${record.context}|${record.polarity}|${record.mz_precision_ppm}`"
           >
-            <b>{{ chemistryLabel(record) }}</b> &middot; {{ samplesText(record.samples) }}
+            <b>{{ chemistryLabel(record) }}</b>
+            <template v-if="distinct('mz_precision_ppm') > 1">
+              &middot; {{ record.mz_precision_ppm }} ppm</template
+            >
+            &middot; {{ samplesText(record.samples) }}
           </li>
         </ul>
         <small v-if="resolvedFrom">{{ resolvedFrom }}</small>
@@ -390,7 +401,7 @@ const chemistryDoc = app.ui.help.docUrl(
         :min="1"
         :max="store.limits.max_mz_precision_ppm"
         :disabled="!params.run_untargeted"
-        placeholder="From the chemistry profile"
+        :placeholder="mzPrecisionPlaceholder"
         fluid
       />
       <label for="mz_precision_ppm">m/z precision (ppm)</label>

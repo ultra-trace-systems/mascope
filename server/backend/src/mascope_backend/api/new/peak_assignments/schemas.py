@@ -434,6 +434,9 @@ class ProfilePreviewRecord(BaseModel):
     requested_context: str
     #: The neutral grid the profile and context give the untargeted stage.
     element_ranges: str
+    #: The untargeted stage's m/z window, in ppm, for the samples' instrument
+    #: class (or as the run config sets it).
+    mz_precision_ppm: float
     #: The polarity of the samples this record counts.
     polarity: str | None = None
     samples: int
