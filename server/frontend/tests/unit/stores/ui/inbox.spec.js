@@ -124,6 +124,24 @@ describe('inbox store: loading', () => {
     expect(inbox.items).toEqual([])
   })
 
+  it("keeps an update of the account before out of the next one's load", async () => {
+    const inbox = useInbox()
+    const answerFor7 = pendingLoad()
+    const loadingFor7 = inbox.load()
+    handlers.notification_updated({ record: digest('for-7', { version: 2 }) })
+
+    auth.user = { id: 8 }
+    await nextTick()
+    const answerFor8 = pendingLoad()
+    const loadingFor8 = inbox.load()
+    answerFor7([digest('for-7')])
+    await loadingFor7
+    answerFor8([digest('for-8', { user_id: 8 })])
+    await loadingFor8
+
+    expect(ids(inbox.items)).toEqual(['for-8'])
+  })
+
   it('applies an update that arrived during a load on top of its answer', async () => {
     const inbox = useInbox()
     const answer = pendingLoad()
@@ -147,6 +165,14 @@ describe('inbox store: updates', () => {
 
     expect(inbox.items).toHaveLength(2)
     expect(inbox.items.find(({ notification_id }) => notification_id === 'n1').count).toBe(3)
+  })
+
+  it('leaves out a row addressed to another account', () => {
+    const inbox = useInbox()
+
+    handlers.notification_created({ record: digest('theirs', { user_id: 8 }) })
+
+    expect(inbox.items).toEqual([])
   })
 
   it('keeps the newer copy of a row whichever arrives last', () => {
