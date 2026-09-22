@@ -133,7 +133,15 @@ class ReaderBackend(Protocol):
         t_max: float | None = None,
         ms_type: MsType | None = "Ms",
     ) -> dict:
-        """Per-scan trailer table ``{"header_labels": [...], "settings": {...}}``."""
+        """Per-scan trailer table ``{"header_labels": [...], "settings": {...}}``.
+
+        ``header_labels`` is the trailer's labels, the instrument's own
+        (``"FT Resolution:"``, ``"=== Mass Calibration: ==="``), one list for
+        every selected scan. ``settings`` maps each scan's 1-based number to
+        its values in label order. Every backend reports the same labels;
+        values are verbatim, so their type depends on the backend (see
+        :meth:`scan_trailer`).
+        """
         ...
 
     def acquisition_parameters(
@@ -399,19 +407,6 @@ OPENTFRAW_UNAVAILABLE_SCAN_STATS = (
     "CycleNumber",
 )
 
-# Per-scan acquisition fields from OpenTFRaw's typed scan dict, surfaced as the
-# trailer-like table scan_acquisition_settings() returns. The labels are
-# descriptive and differ from Thermo's trailer labels; the (key, label) pairs
-# map an OpenTFRaw scan-dict key to a column. The instrument's own trailer,
-# Thermo's labels included, is scan_parameters(), which scan_trailer() reads.
-_OTF_TRAILER_FIELDS = (
-    ("ion_injection_time_ms", "Ion Injection Time (ms)"),
-    ("charge", "Charge State"),
-    ("precursor_mz", "Precursor m/z"),
-    ("isolation_width", "Isolation Width (m/z)"),
-    ("collision_energy", "Collision Energy"),
-)
-
 # Default number of scans sampled by acquisition_parameters(). The trailer is
 # read per scan, so this is a cost/confidence trade: enough spread to catch a
 # value that drifts over the run, few enough to stay negligible against peak
@@ -499,6 +494,32 @@ def _summarize_acquisition_parameters(source: str, per_scan: list[dict]) -> dict
         "constant": constant,
         "varying": sorted(varying),
     }
+
+
+def _trailer_table(trailers: dict[int, dict]) -> dict:
+    """Per-scan trailers as one table, in the shape ``scan_acquisition_settings``
+    returns.
+
+    A raw file lays out its trailer once for all of its scans, so every scan's
+    trailer normally carries the same labels in the same order, and
+    ``header_labels`` is those labels. Rows are filled by label rather than by
+    position: a scan whose trailer lacks a label gets None there, and a scan
+    with no trailer at all gets a row of None. The table keeps one label list
+    and every scan keeps every label. A label only some scans carry is kept,
+    in the order first met.
+
+    :param trailers: ``{scan_number: {label: value}}``, in scan order.
+    :return: ``{"header_labels": [...], "settings": {scan_number: [...]}}``
+    :rtype: dict
+    """
+    header_labels = list(
+        dict.fromkeys(label for trailer in trailers.values() for label in trailer)
+    )
+    settings = {
+        scan: [trailer.get(label) for label in header_labels]
+        for scan, trailer in trailers.items()
+    }
+    return {"header_labels": header_labels, "settings": settings}
 
 
 # Output grid resolution (constant ppm) for average_profile. Fine enough to
@@ -735,6 +756,9 @@ class ThermoBackend:
         t_max: float | None = None,
         ms_type: MsType | None = "Ms",
     ) -> dict:
+        # The file defines its trailer's labels once for all of its scans
+        # (GetTrailerExtraHeaderInformation), so each scan's values line up
+        # with the first scan's labels by position.
         selector = self._selector(polarity, t_min, t_max, ms_type)
         settings: dict[int, list] = {}
         header_labels = None
@@ -1311,17 +1335,16 @@ class OpenTFRawBackend:
         t_max: float | None = None,
         ms_type: MsType | None = "Ms",
     ) -> dict:
-        # OpenTFRaw exposes typed per-scan params rather than Thermo's
-        # trailer-label table, so surface the subset OpenTFRaw decodes under
-        # descriptive labels. Shape matches ThermoBackend (header_labels +
-        # settings rows aligned 1:1); the label *names* differ from Thermo's.
-        selected = self._selected(polarity, t_min, t_max, ms_type)
-        header_labels = [label for _, label in _OTF_TRAILER_FIELDS]
-        settings = {
-            int(s["scan_number"]): [s.get(key) for key, _ in _OTF_TRAILER_FIELDS]
-            for s in selected
-        }
-        return {"header_labels": header_labels, "settings": settings}
+        # The trailer scan_trailer() reads, so the labels and their order are
+        # the ones the Thermo backend reports. Rows are aligned by label
+        # (_trailer_table): opentfraw gives a scan with no trailer record no
+        # entries at all.
+        return _trailer_table(
+            {
+                int(s["scan_number"]): self.scan_trailer(int(s["scan_number"]))
+                for s in self._selected(polarity, t_min, t_max, ms_type)
+            }
+        )
 
     def acquisition_parameters(
         self,
@@ -1346,11 +1369,13 @@ class OpenTFRawBackend:
         ]
 
     def scan_trailer(self, scan_number: int) -> dict:
-        # scan_parameters() is the instrument's own trailer-extra table -- far
-        # richer than the typed subset _OTF_TRAILER_FIELDS surfaces (tens of
-        # entries: application mode, FT resolution, AGC target, S-Lens RF, FAIMS
-        # state, source CID). Read it directly rather than widening
-        # _OTF_TRAILER_FIELDS, whose shape scan_acquisition_settings() pins.
+        # scan_parameters() is the instrument's own trailer-extra table (tens
+        # of entries: application mode, FT resolution, AGC target, S-Lens RF,
+        # FAIMS state, source CID), under the labels Thermo's
+        # GetTrailerExtraInformation gives and in the same order. Values are
+        # typed where Thermo gives text: numbers at full precision, where
+        # Thermo rounds to the digits it displays, True/False for On/Off and
+        # Yes/No, and None for the "=== ... ===" section headings.
         return self._raw.scan_parameters(scan_number) or {}
 
     def scan_statistics(

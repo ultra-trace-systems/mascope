@@ -171,8 +171,8 @@ class TestRawFileMetadataLegacy:
 
     def test_to_dict_keeps_what_the_reader_reports(self):
         # Every value the reader reported arrives unchanged, type included. A
-        # value it left unset (OpenTFRaw's charge state and precursor m/z on an
-        # MS1 scan) stays None instead of turning into NaN.
+        # value it reports as None (OpenTFRaw's for a trailer section heading,
+        # "=== Mass Calibration: ===") stays None instead of turning into NaN.
         td = self.leg.to_dict()
         stats = self.leg.scan_statistics
         acq = self.leg.scan_acquisition_settings
@@ -204,7 +204,11 @@ class TestRawFileMetadataLegacy:
             # Scan 1's trailer holds only numbers and gaps, the case pandas
             # infers as float; scan 2's holds text, which pandas keeps as is.
             scan_acquisition_settings = {
-                "header_labels": ["Charge State", "Precursor m/z", "Scan Description"],
+                "header_labels": [
+                    "Charge State:",
+                    "Monoisotopic M/Z:",
+                    "Scan Description:",
+                ],
                 "settings": {1: [1, None, None], 2: [None, 101.5, "NaN"]},
             }
             instrument_details = {"Model": "X", "SerialNumber": None, "IsValid": True}
@@ -228,20 +232,20 @@ class TestRawFileMetadataLegacy:
                 "TIC": None,
                 "StartTime": 0.5,
                 "MsType": "Ms",
-                "Charge State": 1,
-                "Precursor m/z": None,
-                "Scan Description": None,
+                "Charge State:": 1,
+                "Monoisotopic M/Z:": None,
+                "Scan Description:": None,
             },
             2: {
                 "TIC": 10.0,
                 "StartTime": None,
                 "MsType": "Ms",
-                "Charge State": None,
-                "Precursor m/z": 101.5,
-                "Scan Description": "NaN",
+                "Charge State:": None,
+                "Monoisotopic M/Z:": 101.5,
+                "Scan Description:": "NaN",
             },
         }
-        assert type(td["stats_per_scan"][1]["Charge State"]) is int
+        assert type(td["stats_per_scan"][1]["Charge State:"]) is int
         assert td["stats_per_file"] == {
             "Value": {"Model": "X", "SerialNumber": None, "IsValid": True}
         }
