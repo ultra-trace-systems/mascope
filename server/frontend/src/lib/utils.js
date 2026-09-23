@@ -82,11 +82,38 @@ export function clone(object) {
  */
 export const messageSeverity = (status) => ({ warning: 'warn' })[status] ?? status
 
-export function debounce(callback, timeout = 500) {
+/**
+ * Call `callback` once the calls stop coming, with an optional ceiling on how
+ * long they may hold it off.
+ *
+ * Every call restarts the wait, so a caller that never goes quiet for
+ * `timeout` starves the callback indefinitely. `maxWait` is the longest the
+ * first call of a run may be held: once it passes, the callback runs on the
+ * next call and the run starts over. Leave it out for the plain behaviour.
+ *
+ * @param {Function} callback What to call.
+ * @param {number} timeout Quiet period before the call, in ms.
+ * @param {{maxWait?: number}} [options] `maxWait`: the longest a run of calls
+ *   may hold the callback off, in ms.
+ * @returns {Function} The debounced function.
+ */
+export function debounce(callback, timeout = 500, { maxWait } = {}) {
   let timeoutId = null
+  let runStarted = null
   return (...args) => {
+    const now = Date.now()
+    runStarted ??= now
+    if (maxWait !== undefined && now - runStarted >= maxWait) {
+      clearTimeout(timeoutId)
+      timeoutId = null
+      runStarted = null
+      callback(...args)
+      return
+    }
     clearTimeout(timeoutId)
     timeoutId = setTimeout(() => {
+      timeoutId = null
+      runStarted = null
       callback(...args)
     }, timeout)
   }

@@ -98,17 +98,30 @@ export const useAcquisition = defineStore('app.data.acquisition', () => {
     () => unfocus()
   )
 
+  // --- whether anyone is looking. Raw files is one tab of one route, and the
+  // store outlives it, so a tab parked on another tab used to follow its
+  // instrument's room for nothing. With every instrument listed that cost is
+  // multiplied by the instruments, so the rooms are held only while the pane
+  // says it is showing them, and the list is reloaded when it comes back.
+  const watching = ref(false)
+  const setWatching = (on) => {
+    if (watching.value === on) return
+    watching.value = on
+    if (on) load()
+  }
+
   // --- socket rooms. An acquisition event is emitted into its instrument's
   // own room, so listing every instrument means holding every one of those
   // rooms - one focused instrument is not a special case of that, it is one
   // room instead of all of them. Reconciled rather than toggled, because the
   // instrument list loads after the store and grows as files arrive.
   let subscribed = new Set()
-  const rooms = computed(() =>
-    instrument.focused
+  const rooms = computed(() => {
+    if (!watching.value) return []
+    return instrument.focused
       ? [instrument.focused.instrument]
       : (instrument.list ?? []).map((known) => known.instrument)
-  )
+  })
   watch(
     () => rooms.value.join(','),
     () => {
@@ -226,17 +239,42 @@ export const useAcquisition = defineStore('app.data.acquisition', () => {
 
   // --- socket events: refetch current page on create/delete to keep page
   // contents and total count consistent; update in place on update.
+  // Debounced, with a ceiling: every reload refetches the page, and several
+  // instruments ingesting at once produce a steady stream of events between
+  // them. Without `maxWait` a stream whose gaps stay under the wait would
+  // hold the reload off for as long as it lasted, leaving the list stale
+  // exactly while it is busiest.
+  const RELOAD_WAIT_MS = 300
+  const RELOAD_AT_THE_LATEST_MS = 2000
+  const reload = debounce(() => load(), RELOAD_WAIT_MS, {
+    maxWait: RELOAD_AT_THE_LATEST_MS
+  })
+
+  // A file of an instrument Mascope has never seen announces itself before
+  // its instrument does: the server emits `acquisition_created` into the new
+  // instrument's room, and only afterwards creates the instrument and
+  // announces that. The file's own event therefore goes to a room nobody has
+  // joined, and joining it once the instrument appears is already too late to
+  // hear it - so the instrument appearing is itself the signal to reload.
+  // Only while showing all of them: with one focused, a new instrument
+  // changes nothing on screen.
+  watch(
+    () => (instrument.list ?? []).length,
+    (now, before) => {
+      if (watching.value && !instrument.focused && now > before) reload()
+    }
+  )
+
   api.socket.on('acquisition_created', (payload) => {
     const { record } = payload
     if (listsInstrument(record.instrument)) {
-      load()
+      reload()
     }
   })
 
   // A status change can move a file into or out of a status filter, which
-  // only a reload can place on the right page. Debounced: every file writes
-  // several statuses in quick succession.
-  const reloadForStatus = debounce(() => load(), 300)
+  // only a reload can place on the right page.
+  const reloadForStatus = reload
 
   function applyUpdate(recordId, record) {
     const index = list.value.findIndex((f) => f.sample_file_id === recordId)
@@ -318,6 +356,8 @@ export const useAcquisition = defineStore('app.data.acquisition', () => {
     total,
     // actions
     load,
+    watching,
+    setWatching,
     setPage,
     sortField,
     sortOrder,

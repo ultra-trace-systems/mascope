@@ -68,11 +68,17 @@ onUnmounted(() => {
   uppy.removePlugin(uppy.getPlugin('DropTarget'))
 })
 
-defineProps({
+const props = defineProps({
   active: {
     type: Boolean
   }
 })
+
+// Tell the store when its list is on screen: it holds an event room per
+// instrument shown, which is worth nothing to a tab parked elsewhere, and
+// reloads when it comes back.
+watch(() => props.active, (on) => app.data.acquisition.setWatching(on), { immediate: true })
+onUnmounted(() => app.data.acquisition.setWatching(false))
 
 const dialog = reactive({
   sample: null,
@@ -80,6 +86,20 @@ const dialog = reactive({
   mechanism: null,
   chemistry: false
 })
+
+// The selected files as the list has them now: a status update replaces a
+// row in the list, not the copy the selection holds.
+const liveSelection = () =>
+  app.data.acquisition.selected.map(
+    (chosen) =>
+      app.data.acquisition.list.find((row) => row.sample_file_id === chosen.sample_file_id) ??
+      chosen
+  )
+
+// What the dialog asks about: the rows as the list has them now, not the
+// copies taken when they were selected. A status can change while the dialog
+// is open, and it stands open across the ionization settings.
+const chemistryFiles = computed(() => liveSelection())
 
 // --- Choose chemistry -> ionization settings -> Choose chemistry.
 // Files whose chemistry has to be chosen by hand are often the ones no
@@ -97,19 +117,12 @@ watch(
   (open) => {
     if (open || !resumeChemistry.value) return
     resumeChemistry.value = false
-    // Nothing to choose a chemistry for if the files went away meanwhile.
-    if (app.data.acquisition.selected.length) dialog.chemistry = true
+    // The files can be deleted, taken over, or given a chemistry by someone
+    // else while the settings are open - the same question the context menu
+    // asks before offering the dialog at all.
+    if (canChooseChemistry(liveSelection())) dialog.chemistry = true
   }
 )
-
-// The selected files as the list has them now: a status update replaces a
-// row in the list, not the copy the selection holds.
-const liveSelection = () =>
-  app.data.acquisition.selected.map(
-    (chosen) =>
-      app.data.acquisition.list.find((row) => row.sample_file_id === chosen.sample_file_id) ??
-      chosen
-  )
 
 const contextMenuRef = ref(null)
 const contextMenuItems = ref([
@@ -538,7 +551,7 @@ const currentPageReportTemplate =
       <DialogIonizationOp v-model:visible="dialog.mechanism" />
       <DialogChooseChemistry
         v-model:visible="dialog.chemistry"
-        :files="app.data.acquisition.selected"
+        :files="chemistryFiles"
         @configure="configureChemistry"
         @submit="app.data.acquisition.unfocus()"
       />

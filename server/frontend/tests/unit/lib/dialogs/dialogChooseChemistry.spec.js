@@ -190,4 +190,45 @@ describe('DialogChooseChemistry', () => {
     // The owner closes it, having somewhere to bring it back to.
     expect(wrapper.emitted('update:visible')).toBeUndefined()
   })
+
+  // Going to the settings is not giving up on the dialog: the whole point is
+  // to come back and use what was set up. A mode picked for the other
+  // polarity has to still be there.
+  describe('coming back from the ionization settings', () => {
+    const reopen = async (wrapper) => {
+      await wrapper.setProps({ visible: false })
+      await wrapper.setProps({ visible: true })
+    }
+
+    it('keeps the modes already chosen', async () => {
+      const wrapper = mountDialog([file('a', '+-')])
+      await selects(wrapper)[0].vm.$emit('update:modelValue', 'no3')
+
+      await setupButton(wrapper).vm.$emit('click')
+      await reopen(wrapper)
+
+      expect(selects(wrapper)[0].props('modelValue')).toBe('no3')
+    })
+
+    it('drops a mode that is gone by the time it comes back', async () => {
+      const wrapper = mountDialog([file('a', '-')])
+      await selects(wrapper)[0].vm.$emit('update:modelValue', 'no3')
+      await setupButton(wrapper).vm.$emit('click')
+
+      // Deleted or renamed while the settings were open.
+      mocks.modes.splice(0, mocks.modes.length, mode('br', 'Bromide', 'Br', '-'))
+      await reopen(wrapper)
+
+      expect(selects(wrapper)[0].props('modelValue')).toBe(null)
+    })
+
+    it('still opens clean when it was simply closed and opened again', async () => {
+      const wrapper = mountDialog([file('a', '-')])
+      await selects(wrapper)[0].vm.$emit('update:modelValue', 'no3')
+
+      await reopen(wrapper)
+
+      expect(selects(wrapper)[0].props('modelValue')).toBe(null)
+    })
+  })
 })

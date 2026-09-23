@@ -13,9 +13,16 @@ import { useApp } from '@/stores'
 
 const app = useApp()
 
+const ALL_LABEL = 'All instruments'
 const ALL = { instrument: null, all: true }
 
 const options = computed(() => [ALL, ...(app.data.instrument.list ?? [])])
+
+// A getter rather than the `instrument` field: the sentinel has no instrument
+// name, and PrimeVue takes the option's aria-label and its type-ahead
+// matching from this - a null label leaves the entry unnamed to a screen
+// reader and unreachable by typing.
+const labelOf = (option) => option?.instrument ?? ALL_LABEL
 
 const chosen = computed({
   get: () => app.data.instrument.focused ?? ALL,
@@ -31,7 +38,7 @@ const chosen = computed({
     v-model="chosen"
     :options="options"
     dataKey="instrument"
-    optionLabel="instrument"
+    :optionLabel="labelOf"
     optionDisabled="disabled"
     v-tooltip.left="'Instrument'"
     :pt="
@@ -50,11 +57,11 @@ const chosen = computed({
       <span v-if="value?.instrument">
         {{ value.instrument }}
       </span>
-      <i v-else> All instruments </i>
+      <i v-else> {{ ALL_LABEL }} </i>
     </template>
     <template #option="{ option }">
       <span v-if="option.instrument">{{ option.instrument }}</span>
-      <i v-else>All instruments</i>
+      <i v-else>{{ ALL_LABEL }}</i>
     </template>
     <template #dropdownicon>
       <svg

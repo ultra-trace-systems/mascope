@@ -46,14 +46,6 @@ const polarities = computed(() =>
   )
 )
 
-const chosen = reactive({ '-': null, '+': null })
-watch(visible, (open) => {
-  if (open) {
-    chosen['-'] = null
-    chosen['+'] = null
-  }
-})
-
 const options = (polarity) =>
   (app.data.ionization.mode.list ?? [])
     .filter((mode) => mode.ionization_mode_polarity === polarity)
@@ -64,6 +56,34 @@ const options = (polarity) =>
         : mode.ionization_mode_name,
       value: mode.ionization_mode_id
     }))
+
+const chosen = reactive({ '-': null, '+': null })
+
+// The dialog gives way to the ionization settings and is reopened afterwards,
+// which is an open like any other - but the point of going there was to come
+// back and use what was set up, so a mode already picked for the other
+// polarity has to survive it. Anything else opens on a clean pair.
+const resuming = ref(false)
+watch(visible, (open) => {
+  if (!open) return
+  if (resuming.value) {
+    resuming.value = false
+    // A mode can be renamed or deleted while the settings are open, so keep
+    // only what the options still offer rather than a dangling id.
+    for (const polarity of ['-', '+']) {
+      const offered = options(polarity).some(({ value }) => value === chosen[polarity])
+      if (!offered) chosen[polarity] = null
+    }
+    return
+  }
+  chosen['-'] = null
+  chosen['+'] = null
+})
+
+const configure = () => {
+  resuming.value = true
+  emit('configure')
+}
 
 const missing = computed(() =>
   polarities.value.filter((polarity) => options(polarity).length === 0)
@@ -137,7 +157,7 @@ async function submit() {
         icon="pi pi-sliders-h"
         link
         size="small"
-        @click="emit('configure')"
+        @click="configure"
       />
     </p>
     <template #footer>
