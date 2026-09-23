@@ -85,6 +85,85 @@ describe('misc helpers', () => {
     vi.useRealTimers()
   })
 
+  // Every call restarts the wait, so a caller that never goes quiet for that
+  // long holds the callback off indefinitely - the Raw files list reloading
+  // on socket events is one, and several instruments ingesting at once keep
+  // the gaps short for as long as they last.
+  it('debounce with a maxWait fires under a stream that never pauses', () => {
+    vi.useFakeTimers()
+    const callback = vi.fn()
+    const debounced = debounce(callback, 200, { maxWait: 500 })
+
+    for (let elapsed = 0; elapsed < 1000; elapsed += 100) {
+      debounced()
+      vi.advanceTimersByTime(100)
+    }
+
+    expect(callback).toHaveBeenCalled()
+    vi.useRealTimers()
+  })
+
+  it('debounce with a maxWait still waits out a short burst', () => {
+    vi.useFakeTimers()
+    const callback = vi.fn()
+    const debounced = debounce(callback, 200, { maxWait: 500 })
+
+    debounced('first')
+    vi.advanceTimersByTime(100)
+    debounced('second')
+    expect(callback).not.toHaveBeenCalled()
+
+    vi.advanceTimersByTime(200)
+    expect(callback).toHaveBeenCalledOnce()
+    expect(callback).toHaveBeenCalledWith('second')
+    vi.useRealTimers()
+  })
+
+  // The ceiling is per run. If firing on it did not start a new run, every
+  // later call would find the ceiling long past and fire at once - the
+  // debounce would be gone, not merely bounded.
+  it('debounce with a maxWait debounces again once the ceiling has fired', () => {
+    vi.useFakeTimers()
+    const callback = vi.fn()
+    const debounced = debounce(callback, 200, { maxWait: 500 })
+
+    // A stream long enough to reach the ceiling.
+    for (let elapsed = 0; elapsed < 600; elapsed += 100) {
+      debounced()
+      vi.advanceTimersByTime(100)
+    }
+    expect(callback).toHaveBeenCalledOnce()
+
+    debounced()
+    expect(callback).toHaveBeenCalledOnce()
+    vi.advanceTimersByTime(100)
+    debounced()
+    expect(callback).toHaveBeenCalledOnce()
+
+    vi.advanceTimersByTime(200)
+    expect(callback).toHaveBeenCalledTimes(2)
+    vi.useRealTimers()
+  })
+
+  // The ceiling applies per run: once it has fired, the next call starts a
+  // fresh wait rather than firing immediately because an old run was long.
+  it('debounce with a maxWait starts a new run after firing', () => {
+    vi.useFakeTimers()
+    const callback = vi.fn()
+    const debounced = debounce(callback, 200, { maxWait: 500 })
+
+    debounced()
+    vi.advanceTimersByTime(200)
+    expect(callback).toHaveBeenCalledOnce()
+
+    vi.advanceTimersByTime(10_000)
+    debounced()
+    expect(callback).toHaveBeenCalledOnce()
+    vi.advanceTimersByTime(200)
+    expect(callback).toHaveBeenCalledTimes(2)
+    vi.useRealTimers()
+  })
+
   it('instrumentType classifies instruments by name', () => {
     expect(instrumentType('KORBI2')).toBe('orbi')
     expect(instrumentType('KLTOF1')).toBe('tof')

@@ -84,4 +84,20 @@ describe('InstrumentSelector', () => {
     expect(wrapper.text()).toContain('All instruments')
     expect(select(wrapper).props('modelValue').instrument).toBe(null)
   })
+
+  // PrimeVue reads an option's aria-label and its type-ahead matching from
+  // optionLabel. The sentinel has no instrument name, so naming the field
+  // would leave that entry unlabelled to a screen reader and unreachable by
+  // typing - it needs a getter.
+  it('labels every option, the sentinel included', () => {
+    const wrapper = mountSelector()
+    const label = select(wrapper).props('optionLabel')
+
+    expect(typeof label).toBe('function')
+    expect(select(wrapper).props('options').map(label)).toEqual([
+      'All instruments',
+      'Orbi-1',
+      'Tof-2'
+    ])
+  })
 })

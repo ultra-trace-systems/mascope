@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { createPinia, setActivePinia } from 'pinia'
 import { nextTick, reactive } from 'vue'
 import axios from 'axios'
@@ -274,25 +274,49 @@ describe('acquisition store: opening the files a notification names', () => {
 // and the socket rooms are every instrument's rather than one - acquisition
 // events are emitted into the room named after the file's own instrument, so
 // a list spanning them all has to hold them all or it never hears of a new
-// file.
+// file. The rooms are held only while the list is on screen.
 describe('acquisition store: all instruments', () => {
   const rooms = () => new Set(api.socket.addSubscription.mock.calls.map(([room]) => room))
   const dropped = () => new Set(api.socket.removeSubscription.mock.calls.map(([room]) => room))
   const handler = (event) => api.socket.on.mock.calls.find(([name]) => name === event)?.[1]
 
+  // The reloads these events cause are debounced, so the clock is ours.
+  beforeEach(() => vi.useFakeTimers())
+  afterEach(() => vi.useRealTimers())
+
+  // Watching is what the Raw files pane reports; nothing is subscribed until
+  // it does, and the initial load is not what these tests are counting.
+  const watching = async (store) => {
+    store.setWatching(true)
+    await nextTick()
+    api.http.get.mockClear()
+    return store
+  }
+
+  // Unfocusing reloads by itself - the list is a different list now. Clearing
+  // here keeps that load from standing in for the one a test is looking for.
   const showAll = async () => {
     instrumentStore.state.focused = null
     await nextTick()
+    api.http.get.mockClear()
   }
 
-  it('holds only the focused instrument room while one is focused', () => {
+  it('subscribes to nothing until the list is on screen', () => {
     useAcquisition()
+
+    expect(rooms()).toEqual(new Set())
+  })
+
+  it('holds only the focused instrument room while one is focused', async () => {
+    const store = useAcquisition()
+    store.setWatching(true)
+    await nextTick()
 
     expect(rooms()).toEqual(new Set(['Orbi-1']))
   })
 
   it('holds every instrument room with none focused', async () => {
-    useAcquisition()
+    await watching(useAcquisition())
     await showAll()
 
     expect(rooms()).toEqual(new Set(['Orbi-1', 'Tof-2']))
@@ -301,7 +325,7 @@ describe('acquisition store: all instruments', () => {
   })
 
   it('takes a room for an instrument that appears later', async () => {
-    useAcquisition()
+    await watching(useAcquisition())
     await showAll()
 
     instrumentStore.state.list = [...INSTRUMENTS, { instrument: 'Api-3' }]
@@ -311,7 +335,7 @@ describe('acquisition store: all instruments', () => {
   })
 
   it('gives the other rooms back when an instrument is focused again', async () => {
-    useAcquisition()
+    await watching(useAcquisition())
     await showAll()
 
     instrumentStore.state.focused = { instrument: 'Tof-2' }
@@ -320,30 +344,94 @@ describe('acquisition store: all instruments', () => {
     expect(dropped()).toEqual(new Set(['Orbi-1']))
   })
 
+  it('gives every room back when the list leaves the screen', async () => {
+    const store = await watching(useAcquisition())
+    await showAll()
+
+    store.setWatching(false)
+    await nextTick()
+
+    expect(dropped()).toEqual(new Set(['Orbi-1', 'Tof-2']))
+  })
+
+  it('reloads when the list comes back, having heard nothing while away', async () => {
+    const store = await watching(useAcquisition())
+    store.setWatching(false)
+    await nextTick()
+    api.http.get.mockClear()
+
+    store.setWatching(true)
+    await nextTick()
+
+    expect(api.http.get).toHaveBeenCalled()
+  })
+
   it('asks the server for no instrument in particular', async () => {
-    const store = useAcquisition()
+    const store = await watching(useAcquisition())
     await showAll()
     await store.load()
 
     expect(lastRequest()[1].params.instrument).toBeUndefined()
   })
 
-  it('reloads for a file created on any instrument', async () => {
-    useAcquisition()
-    await showAll()
-    api.http.get.mockClear()
+  it('ignores a file created on an instrument the list is not showing', async () => {
+    await watching(useAcquisition())
 
     handler('acquisition_created')({ record: { instrument: 'Tof-2' } })
+    vi.advanceTimersByTime(5000)
+
+    expect(api.http.get).not.toHaveBeenCalled()
+  })
+
+  // The server announces a brand new instrument's first file into that
+  // instrument's room - before the instrument itself exists, so before anyone
+  // could have joined it. The event is lost, and the instrument turning up in
+  // the list is the only remaining sign that there is something to fetch.
+  it('reloads when an instrument it has never seen appears', async () => {
+    await watching(useAcquisition())
+    await showAll()
+
+    instrumentStore.state.list = [...INSTRUMENTS, { instrument: 'Api-3' }]
+    await nextTick()
+    vi.advanceTimersByTime(400)
 
     expect(api.http.get).toHaveBeenCalled()
   })
 
-  it('ignores a file created on an instrument the list is not showing', () => {
-    useAcquisition()
-    api.http.get.mockClear()
+  it('leaves a new instrument alone while one is focused', async () => {
+    await watching(useAcquisition())
 
-    handler('acquisition_created')({ record: { instrument: 'Tof-2' } })
+    instrumentStore.state.list = [...INSTRUMENTS, { instrument: 'Api-3' }]
+    await nextTick()
+    vi.advanceTimersByTime(5000)
 
     expect(api.http.get).not.toHaveBeenCalled()
+  })
+
+  it('reloads once for a burst of files from several instruments', async () => {
+    await watching(useAcquisition())
+    await showAll()
+
+    for (const instrument of ['Orbi-1', 'Tof-2', 'Orbi-1']) {
+      handler('acquisition_created')({ record: { instrument } })
+    }
+    vi.advanceTimersByTime(400)
+
+    expect(api.http.get).toHaveBeenCalledTimes(1)
+  })
+
+  // Several instruments ingesting at once never go quiet for the debounce's
+  // wait, and a plain debounce would then hold the reload off for as long as
+  // the traffic lasted - leaving the list stale exactly while it is busiest.
+  it('still reloads under a stream of events that never pauses', async () => {
+    await watching(useAcquisition())
+    await showAll()
+
+    for (let elapsed = 0; elapsed < 3000; elapsed += 200) {
+      handler('acquisition_created')({ record: { instrument: 'Orbi-1' } })
+      vi.advanceTimersByTime(200)
+    }
+
+    expect(api.http.get).toHaveBeenCalled()
   })
 })

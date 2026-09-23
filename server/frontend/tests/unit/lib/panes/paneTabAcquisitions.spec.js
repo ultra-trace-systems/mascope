@@ -123,7 +123,8 @@ function makeApp() {
         setSort: vi.fn(),
         setPage: vi.fn(),
         resetFilters: vi.fn(),
-        unfocus: vi.fn()
+        unfocus: vi.fn(),
+        setWatching: vi.fn()
       },
       batch: { focused: { sample_batch_id: 'sb-1' } },
       instrument: { focused: null, list: [] }
@@ -137,7 +138,8 @@ function makeApp() {
   })
 }
 
-const mountPane = () => mount(PaneTabAcquisitions, { props: { active: true }, global: { stubs } })
+const mountPane = (active = true) =>
+  mount(PaneTabAcquisitions, { props: { active }, global: { stubs } })
 
 const columns = (wrapper) => wrapper.findAllComponents({ name: 'Column' })
 const chemistryDialog = (wrapper) => wrapper.findComponent({ name: 'DialogChooseChemistry' })
@@ -222,6 +224,74 @@ describe('PaneTabAcquisitions', () => {
       await chemistryDialog(wrapper).vm.$emit('configure')
 
       mocks.app.data.acquisition.selected = []
+      await ionizationDialog(wrapper).vm.$emit('update:visible', false)
+
+      expect(chemistryDialog(wrapper).props('visible')).toBe(false)
+    })
+  })
+
+  // The store holds a socket room per instrument shown and reloads on their
+  // events. Raw files is one tab among several and the store outlives it, so
+  // a tab parked elsewhere should pay none of that.
+  describe('telling the store whether anyone is looking', () => {
+    it('reports the tab it is on from the start', () => {
+      mountPane(true)
+      expect(mocks.app.data.acquisition.setWatching).toHaveBeenCalledWith(true)
+
+      vi.clearAllMocks()
+      mountPane(false)
+      expect(mocks.app.data.acquisition.setWatching).toHaveBeenCalledWith(false)
+    })
+
+    it('reports leaving and returning', async () => {
+      const wrapper = mountPane(true)
+
+      await wrapper.setProps({ active: false })
+      expect(mocks.app.data.acquisition.setWatching).toHaveBeenLastCalledWith(false)
+
+      await wrapper.setProps({ active: true })
+      expect(mocks.app.data.acquisition.setWatching).toHaveBeenLastCalledWith(true)
+    })
+
+    it('reports going away for good', () => {
+      mountPane(true).unmount()
+
+      expect(mocks.app.data.acquisition.setWatching).toHaveBeenLastCalledWith(false)
+    })
+  })
+
+  describe('what Choose chemistry is asked about', () => {
+    // A row is replaced in the list when its status changes; the selection
+    // holds the copy taken when it was picked, which the dialog would
+    // otherwise judge a stale status by.
+    it('hands it the rows as the list has them now', () => {
+      const chosen = file('a', 'Orbi-1', 'needs_chemistry')
+      mocks.app.data.acquisition.selected = [chosen]
+      mocks.app.data.acquisition.list = [{ ...chosen, processing_status: 'done' }]
+
+      const wrapper = mountPane()
+
+      expect(chemistryDialog(wrapper).props('files')[0].processing_status).toBe('done')
+    })
+
+    // Nothing stops the files being processed, or given a chemistry by
+    // someone else, while the ionization settings are open.
+    it('does not come back for files the server would now refuse', async () => {
+      const chosen = file('a', 'Orbi-1', 'needs_chemistry')
+      mocks.app.data.acquisition.selected = [chosen]
+      mocks.app.data.acquisition.list = [chosen]
+      const wrapper = mountPane()
+      await chemistryDialog(wrapper).vm.$emit('update:visible', true)
+      await chemistryDialog(wrapper).vm.$emit('configure')
+
+      // Picked up for processing while the settings were open.
+      mocks.app.data.acquisition.list = [
+        {
+          ...chosen,
+          processing_status: 'converted',
+          processing_updated_utc: new Date().toISOString()
+        }
+      ]
       await ionizationDialog(wrapper).vm.$emit('update:visible', false)
 
       expect(chemistryDialog(wrapper).props('visible')).toBe(false)

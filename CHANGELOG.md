@@ -41,7 +41,11 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   its place now that a file's name need not begin with its instrument: an
   upload reports the instrument it came from, and the file keeps its own
   name. Files appearing and changing on any of those instruments reach the
-  list as they always did for one.
+  list as they always did for one, including the first file of an instrument
+  Mascope has never seen - which announces itself before its instrument
+  exists, so before anything could be listening for it. The list follows
+  those instruments only while it is on screen, rather than from every open
+  tab.
 
 - **The File Agent says what became of each file it uploaded.** "Upload
   succeeded" used to be its last word on a file, so it could not tell a
