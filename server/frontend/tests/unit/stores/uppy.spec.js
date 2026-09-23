@@ -28,9 +28,9 @@ vi.mock('@/stores/ui', () => ({ useUi: () => ({ notification: { push: state.push
 
 import { useUppy } from '@/stores/uppy'
 
-const add = (store, name) => {
+const add = (store, name, meta) => {
   try {
-    store.get().addFile({ name, type: 'application/octet-stream', data: new Blob(['x']) })
+    store.get().addFile({ name, type: 'application/octet-stream', data: new Blob(['x']), meta })
     return true
   } catch {
     return false
@@ -79,6 +79,26 @@ describe('upload store: which names go through', () => {
     const store = useUppy()
 
     expect(add(store, 'Nowhere_2026.09.21_NO3_001.raw')).toBe(false)
+    expect(store.invalidFiles).toHaveLength(1)
+  })
+
+  it('lets a file through when the dialog reports the instrument with it', () => {
+    state.tokenless = true
+    const store = useUppy()
+
+    // The name places no instrument, and says nothing of its class either.
+    // The server files a reported instrument under any valid name.
+    expect(add(store, 'Nowhere_2026.09.21_NO3_001.raw', { instrument: 'Lab-2' })).toBe(true)
+    expect(store.invalidFiles).toEqual([])
+  })
+
+  it('refuses a reported instrument the server would not accept', () => {
+    state.tokenless = true
+    const store = useUppy()
+
+    // An underscore separates the instrument from the rest of a name, so it
+    // cannot be part of the instrument.
+    expect(add(store, 'Nowhere_2026.09.21_NO3_001.raw', { instrument: 'Lab_2' })).toBe(false)
     expect(store.invalidFiles).toHaveLength(1)
   })
 })
