@@ -77,7 +77,11 @@ const props = defineProps({
 // Tell the store when its list is on screen: it holds an event room per
 // instrument shown, which is worth nothing to a tab parked elsewhere, and
 // reloads when it comes back.
-watch(() => props.active, (on) => app.data.acquisition.setWatching(on), { immediate: true })
+watch(
+  () => props.active,
+  (on) => app.data.acquisition.setWatching(on),
+  { immediate: true }
+)
 onUnmounted(() => app.data.acquisition.setWatching(false))
 
 const dialog = reactive({
@@ -107,6 +111,11 @@ const chemistryFiles = computed(() => liveSelection())
 // The two are modal, so Choose chemistry gives way and is brought back with
 // the same files still selected, and the mode just added among its options.
 const resumeChemistry = ref(false)
+// Whether the open now on screen is the return from the settings. The dialog
+// is told rather than left to remember: a visit does not always end in coming
+// back, and a flag it raised for itself would then still be up at the next
+// open, for whatever files were selected by then.
+const chemistryResumed = ref(false)
 const configureChemistry = () => {
   resumeChemistry.value = true
   dialog.chemistry = false
@@ -120,7 +129,17 @@ watch(
     // The files can be deleted, taken over, or given a chemistry by someone
     // else while the settings are open - the same question the context menu
     // asks before offering the dialog at all.
-    if (canChooseChemistry(liveSelection())) dialog.chemistry = true
+    if (!canChooseChemistry(liveSelection())) return
+    chemistryResumed.value = true
+    dialog.chemistry = true
+  }
+)
+// The flag lives only as long as the dialog it was raised for, however that
+// dialog ends: processed, cancelled, or sent to the settings again.
+watch(
+  () => dialog.chemistry,
+  (open) => {
+    if (!open) chemistryResumed.value = false
   }
 )
 
@@ -552,6 +571,7 @@ const currentPageReportTemplate =
       <DialogChooseChemistry
         v-model:visible="dialog.chemistry"
         :files="chemistryFiles"
+        :resume="chemistryResumed"
         @configure="configureChemistry"
         @submit="app.data.acquisition.unfocus()"
       />
