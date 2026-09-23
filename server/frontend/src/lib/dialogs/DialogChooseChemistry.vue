@@ -10,6 +10,10 @@
  * person made a sample from keeps its m/z calibration. The server refuses a
  * file being processed, and answers 207 when it refused some and processed
  * the rest.
+ *
+ * A file waits here precisely because its name named no mode, so often enough
+ * no configured mode is the right one either. `configure` asks the owner to
+ * open the ionization settings; it brings the dialog back afterwards.
  */
 import { computed, reactive, ref, watch } from 'vue'
 
@@ -31,7 +35,7 @@ const props = defineProps({
     default: () => []
   }
 })
-const emit = defineEmits(['submit'])
+const emit = defineEmits(['submit', 'configure'])
 
 const POLARITY_NAMES = { '-': 'Negative', '+': 'Positive' }
 
@@ -124,11 +128,35 @@ async function submit() {
     </div>
     <Message v-if="missing.length" severity="warn" :closable="false">
       No {{ missing.map((polarity) => POLARITY_NAMES[polarity].toLowerCase()).join(' or ') }}
-      ionization mode is configured yet. Add one under Edit ionizations.
+      ionization mode is configured yet.
     </Message>
+    <p class="chemistry-setup">
+      Missing the mode these files were run under?
+      <Button
+        label="Set up ionization modes"
+        icon="pi pi-sliders-h"
+        link
+        size="small"
+        @click="emit('configure')"
+      />
+    </p>
     <template #footer>
       <Button label="Cancel" severity="secondary" text @click="visible = false" />
       <Button label="Process" :disabled="!ready" :loading="busy" @click="submit" />
     </template>
   </Dialog>
 </template>
+
+<style scoped>
+/* The offer sits below the fields as a quieter aside, on one line with its
+   button, so that it reads as a way out rather than a second question. */
+.chemistry-setup {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+  margin-top: 1rem;
+  font-size: 0.875rem;
+  color: var(--p-text-muted-color);
+}
+</style>

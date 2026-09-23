@@ -3,8 +3,10 @@ import { mount } from '@vue/test-utils'
 import { reactive, toRefs } from 'vue'
 
 // Raw files lists the sample files of the instrument chosen in the toolbar, or
-// of every instrument the user can see when none is, and a row says which
-// instrument its file was filed under.
+// of every instrument the user can see when none is. Two things are under test
+// here: that a row says which instrument its file was filed under, and the
+// handover between Choose chemistry and the ionization settings, which are
+// both modal and so cannot be open at once.
 
 const mocks = vi.hoisted(() => ({
   app: null,
@@ -138,6 +140,8 @@ function makeApp() {
 const mountPane = () => mount(PaneTabAcquisitions, { props: { active: true }, global: { stubs } })
 
 const columns = (wrapper) => wrapper.findAllComponents({ name: 'Column' })
+const chemistryDialog = (wrapper) => wrapper.findComponent({ name: 'DialogChooseChemistry' })
+const ionizationDialog = (wrapper) => wrapper.findComponent({ name: 'DialogIonizationOp' })
 
 describe('PaneTabAcquisitions', () => {
   beforeEach(() => {
@@ -166,6 +170,52 @@ describe('PaneTabAcquisitions', () => {
 
       const instrument = columns(wrapper).find((c) => c.props('field') === 'instrument')
       expect(instrument.props('sortable')).toBe(true)
+    })
+  })
+
+  describe('setting up a chemistry from Choose chemistry', () => {
+    const openChemistry = async (wrapper) => {
+      mocks.app.data.acquisition.selected = [file('a', 'Orbi-Lab1')]
+      await chemistryDialog(wrapper).vm.$emit('update:visible', true)
+      return wrapper
+    }
+
+    it('gives way to the ionization settings and comes back with them closed', async () => {
+      const wrapper = await openChemistry(mountPane())
+
+      await chemistryDialog(wrapper).vm.$emit('configure')
+      expect(chemistryDialog(wrapper).props('visible')).toBe(false)
+      expect(ionizationDialog(wrapper).props('visible')).toBe(true)
+
+      await ionizationDialog(wrapper).vm.$emit('update:visible', false)
+      expect(chemistryDialog(wrapper).props('visible')).toBe(true)
+      // The same files, so the mode just added can be chosen for them.
+      expect(chemistryDialog(wrapper).props('files')).toHaveLength(1)
+    })
+
+    // The toolbar opens the same settings, and closing them there must not
+    // raise a dialog the user never asked for. Files are selected, so that
+    // only having been asked can be what holds the dialog back.
+    it('does not open it after the ionization settings were opened from the toolbar', async () => {
+      const wrapper = mountPane()
+      mocks.app.data.acquisition.selected = [file('a', 'Orbi-Lab1')]
+
+      await ionizationDialog(wrapper).vm.$emit('update:visible', true)
+      await ionizationDialog(wrapper).vm.$emit('update:visible', false)
+
+      expect(chemistryDialog(wrapper).props('visible')).toBe(false)
+    })
+
+    // Between the two dialogs the files can be deleted, or the instrument
+    // switched, either of which clears the selection.
+    it('does not come back with nothing left to choose a chemistry for', async () => {
+      const wrapper = await openChemistry(mountPane())
+      await chemistryDialog(wrapper).vm.$emit('configure')
+
+      mocks.app.data.acquisition.selected = []
+      await ionizationDialog(wrapper).vm.$emit('update:visible', false)
+
+      expect(chemistryDialog(wrapper).props('visible')).toBe(false)
     })
   })
 })

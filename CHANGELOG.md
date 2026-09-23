@@ -16,10 +16,13 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   people answerable for the instrument. Select such files in Raw files,
   right-click, and **Choose chemistry**: pick a mode for each polarity they
   hold, and they are processed under those modes as if their names carried
-  the tokens. The same corrects a wrong choice, rebuilding a file under the
-  new modes, and gives a chemistry to a file that failed before its samples
-  were made. Only the pipeline's own samples are replaced, and a file
-  someone made a sample from keeps its m/z calibration.
+  the tokens. Such a file often waits for a mode nobody has configured, so
+  the dialog offers the ionization settings as well, and comes back with the
+  same files selected and the mode just added among its options. The same
+  corrects a wrong choice, rebuilding a file under the new modes, and gives
+  a chemistry to a file that failed before its samples were made. Only the
+  pipeline's own samples are replaced, and a file someone made a sample from
+  keeps its m/z calibration.
   `POST /api/sample/files/bind` does the same and needs editor access to the
   instrument; it refuses a file being processed. A run that has recorded no
   stage for a day has stopped: Raw files says so, and processing the file
