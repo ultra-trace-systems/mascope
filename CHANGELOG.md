@@ -173,6 +173,15 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 ### Fixed
 
+- **The File Agent's configuration file no longer says its instrument name
+  may be left empty.** The comment written at the top of every
+  `config.toml` offered that as a way "to keep the server reading the
+  instrument from the file name alone", but the agent refuses to start
+  without a name - the server files this machine's uploads under it - so
+  following the file's own guidance left the agent unable to run. The
+  guided setup, the documentation and the agent itself all treated the name
+  as required; only this comment did not.
+
 - **A NaN in an API response no longer fails the request as a bad one.** One
   NaN or infinite number anywhere in a response failed the whole request with
   400 Bad Request, which told the client its request was at fault, and the
