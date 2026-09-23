@@ -154,12 +154,21 @@ describe('PaneTabAcquisitions', () => {
     // instrument the user can see, and the file name need not begin with the
     // one it was filed under - an upload reports its instrument, and the
     // stored name keeps whatever the file was called.
-    it('says which instrument each file was filed under', () => {
+    it('says which instrument each file was filed under, and leads with it', () => {
       const wrapper = mountPane()
 
-      const instrument = columns(wrapper).find((c) => c.props('field') === 'instrument')
-      expect(instrument).toBeDefined()
-      expect(instrument.props('header')).toBe('Instrument')
+      const [first] = columns(wrapper)
+      expect(first.props('field')).toBe('instrument')
+      expect(first.props('header')).toBe('Instrument')
+      // Ahead of the file name: with every instrument listed at once it is
+      // what the rows group by, and the name no longer begins with it.
+      expect(columns(wrapper).map((c) => c.props('field'))).toEqual([
+        'instrument',
+        'filename',
+        'processing_status',
+        'polarity',
+        'datetime'
+      ])
     })
 
     // The list is paginated server-side, so sorting has to be one the API

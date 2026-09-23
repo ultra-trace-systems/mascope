@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { createPinia, setActivePinia } from 'pinia'
-import { nextTick } from 'vue'
+import { nextTick, reactive } from 'vue'
 import axios from 'axios'
 
 // The Raw files list filters by processing status on the server, so the
@@ -17,10 +17,16 @@ vi.mock('@/api', () => ({
 
 vi.mock('@/lib/runtime', () => ({ runtime: { config: {} } }))
 
+// Reactive, because the store watches the focused instrument: the rooms it
+// holds and the events it acts on both follow it, and "no instrument" is a
+// state of its own rather than the absence of one.
 const focus = vi.fn()
+const instrumentStore = vi.hoisted(() => ({ state: null }))
 vi.mock('@/stores/data/modules/instrument', () => ({
-  useInstrument: () => ({ focused: { instrument: 'Orbi-1' }, focus })
+  useInstrument: () => instrumentStore.state
 }))
+
+const INSTRUMENTS = [{ instrument: 'Orbi-1' }, { instrument: 'Tof-2' }]
 
 let api
 let useAcquisition
@@ -29,6 +35,11 @@ beforeEach(async () => {
   setActivePinia(createPinia())
   vi.clearAllMocks()
   vi.resetModules()
+  instrumentStore.state = reactive({
+    focused: { instrument: 'Orbi-1' },
+    list: [...INSTRUMENTS],
+    focus
+  })
   ;({ api } = await import('@/api'))
   api.http.get.mockResolvedValue({ data: { data: [], results: 0 } })
   ;({ useAcquisition } = await import('@/stores/data/modules/acquisition'))
@@ -255,5 +266,84 @@ describe('acquisition store: opening the files a notification names', () => {
 
     expect(store.search).toBe('')
     expect(store.polarity).toBe('')
+  })
+})
+
+// Listing every instrument at once is the store's unfocused state, not a
+// filter value. Two things follow from it: the request carries no instrument,
+// and the socket rooms are every instrument's rather than one - acquisition
+// events are emitted into the room named after the file's own instrument, so
+// a list spanning them all has to hold them all or it never hears of a new
+// file.
+describe('acquisition store: all instruments', () => {
+  const rooms = () => new Set(api.socket.addSubscription.mock.calls.map(([room]) => room))
+  const dropped = () => new Set(api.socket.removeSubscription.mock.calls.map(([room]) => room))
+  const handler = (event) => api.socket.on.mock.calls.find(([name]) => name === event)?.[1]
+
+  const showAll = async () => {
+    instrumentStore.state.focused = null
+    await nextTick()
+  }
+
+  it('holds only the focused instrument room while one is focused', () => {
+    useAcquisition()
+
+    expect(rooms()).toEqual(new Set(['Orbi-1']))
+  })
+
+  it('holds every instrument room with none focused', async () => {
+    useAcquisition()
+    await showAll()
+
+    expect(rooms()).toEqual(new Set(['Orbi-1', 'Tof-2']))
+    // Orbi-1 is still listed, so it is not dropped and resubscribed.
+    expect(dropped()).toEqual(new Set())
+  })
+
+  it('takes a room for an instrument that appears later', async () => {
+    useAcquisition()
+    await showAll()
+
+    instrumentStore.state.list = [...INSTRUMENTS, { instrument: 'Api-3' }]
+    await nextTick()
+
+    expect(rooms()).toContain('Api-3')
+  })
+
+  it('gives the other rooms back when an instrument is focused again', async () => {
+    useAcquisition()
+    await showAll()
+
+    instrumentStore.state.focused = { instrument: 'Tof-2' }
+    await nextTick()
+
+    expect(dropped()).toEqual(new Set(['Orbi-1']))
+  })
+
+  it('asks the server for no instrument in particular', async () => {
+    const store = useAcquisition()
+    await showAll()
+    await store.load()
+
+    expect(lastRequest()[1].params.instrument).toBeUndefined()
+  })
+
+  it('reloads for a file created on any instrument', async () => {
+    useAcquisition()
+    await showAll()
+    api.http.get.mockClear()
+
+    handler('acquisition_created')({ record: { instrument: 'Tof-2' } })
+
+    expect(api.http.get).toHaveBeenCalled()
+  })
+
+  it('ignores a file created on an instrument the list is not showing', () => {
+    useAcquisition()
+    api.http.get.mockClear()
+
+    handler('acquisition_created')({ record: { instrument: 'Tof-2' } })
+
+    expect(api.http.get).not.toHaveBeenCalled()
   })
 })

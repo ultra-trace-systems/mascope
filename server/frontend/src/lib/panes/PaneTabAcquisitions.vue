@@ -440,17 +440,6 @@ const currentPageReportTemplate =
               "
             >
               <Column
-                header="Filename"
-                field="filename"
-                sortable
-                style="width: 60%"
-                bodyClass="ellipsis-cell"
-              >
-                <template #body="{ data }">
-                  <span :title="data.filename">{{ data.filename }}</span>
-                </template>
-              </Column>
-              <Column
                 header="Instrument"
                 field="instrument"
                 sortable
@@ -459,6 +448,17 @@ const currentPageReportTemplate =
               >
                 <template #body="{ data }">
                   <span :title="data.instrument">{{ data.instrument }}</span>
+                </template>
+              </Column>
+              <Column
+                header="Filename"
+                field="filename"
+                sortable
+                style="width: 60%"
+                bodyClass="ellipsis-cell"
+              >
+                <template #body="{ data }">
+                  <span :title="data.filename">{{ data.filename }}</span>
                 </template>
               </Column>
               <Column
