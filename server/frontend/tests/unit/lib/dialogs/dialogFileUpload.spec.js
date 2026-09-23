@@ -29,9 +29,16 @@ const passthrough = (name) => ({
   template: '<div><slot /><slot name="footer" /></div>'
 })
 const stubs = Object.fromEntries(
-  ['Dialog', 'Button', 'Select', 'MultiSelect', 'FloatLabel', 'Message', 'DialogIonizationOp'].map(
-    (name) => [name, passthrough(name)]
-  )
+  [
+    'Dialog',
+    'Button',
+    'Checkbox',
+    'Select',
+    'MultiSelect',
+    'FloatLabel',
+    'Message',
+    'DialogIonizationOp'
+  ].map((name) => [name, passthrough(name)])
 )
 
 const file = (name) => ({ id: name, name, type: 'application/octet-stream', data: {} })
@@ -80,5 +87,59 @@ describe('DialogFileUpload', () => {
     const [[uploaded]] = wrapper.emitted('upload')
     expect(uploaded.map(({ name }) => name)).toEqual(['Orbi-1_a.raw'])
     expect(mocks.app.uppy.clearInvalid).toHaveBeenCalled()
+  })
+
+  describe('a file whose name places no instrument', () => {
+    // The chosen instrument is reported with the upload rather than written
+    // into the file name, so the name need not say which instrument - or
+    // which class - the file belongs to.
+    beforeEach(() => {
+      mocks.server.tokenless = true
+    })
+
+    const chooseInstrument = async (wrapper, name) => {
+      await wrapper.findComponent({ name: 'Select' }).vm.$emit('update:modelValue', name)
+      await nextTick()
+    }
+
+    it('reports the chosen instrument and leaves the name alone', async () => {
+      const wrapper = mountDialog([file('ambient_a.raw')])
+      await chooseInstrument(wrapper, 'Orbi-1')
+
+      expect(button(wrapper, 'Save').props('disabled')).toBe(false)
+      await button(wrapper, 'Save').vm.$emit('click')
+
+      const [[uploaded]] = wrapper.emitted('upload')
+      expect(uploaded).toHaveLength(1)
+      expect(uploaded[0].name).toBe('ambient_a.raw')
+      expect(uploaded[0].meta.instrument).toBe('Orbi-1')
+    })
+
+    it('has a name the server does not know confirmed first', async () => {
+      const wrapper = mountDialog([file('ambient_a.raw')])
+      await chooseInstrument(wrapper, 'Lab-2')
+
+      expect(wrapper.text()).toContain('Lab-2')
+      expect(wrapper.text()).toContain('creates it')
+      expect(button(wrapper, 'Save').props('disabled')).toBe(true)
+
+      await wrapper.findComponent({ name: 'Checkbox' }).vm.$emit('update:modelValue', true)
+      await nextTick()
+      expect(button(wrapper, 'Save').props('disabled')).toBe(false)
+    })
+
+    it('asks nothing more for an instrument the server already has', async () => {
+      const wrapper = mountDialog([file('ambient_a.raw')])
+      await chooseInstrument(wrapper, 'Orbi-1')
+
+      expect(wrapper.findComponent({ name: 'Checkbox' }).exists()).toBe(false)
+    })
+
+    it('refuses a name the server would reject', async () => {
+      const wrapper = mountDialog([file('ambient_a.raw')])
+      await chooseInstrument(wrapper, 'Lab_2')
+
+      expect(button(wrapper, 'Save').props('disabled')).toBe(true)
+    })
   })
 })

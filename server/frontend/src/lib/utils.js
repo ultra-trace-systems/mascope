@@ -104,6 +104,19 @@ export function sampleInstrumentType(sample) {
   return sample?.instrument_type ?? instrumentType(sample?.instrument)
 }
 
+/**
+ * Whether the server would accept this as an instrument name: letters, digits
+ * and hyphens, up to 64 of them. The underscore is the separator between an
+ * instrument and the rest of a file name, so it cannot be part of one.
+ * Mirrors `INSTRUMENT_NAME_RE` in the backend.
+ *
+ * @param {string|null|undefined} instrument An instrument name
+ * @returns {boolean}
+ */
+export function isValidInstrumentName(instrument) {
+  return typeof instrument === 'string' && /^[A-Za-z0-9-]{1,64}$/.test(instrument)
+}
+
 export function instrumentType(instrument) {
   if (!instrument) {
     return null

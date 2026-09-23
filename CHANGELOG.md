@@ -127,6 +127,20 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 ### Changed
 
+- **A browser upload can name the instrument it came from, including one
+  Mascope has never seen.** A file whose name starts with no instrument the
+  server can place used to be accepted only under a name that said its own
+  class - one containing `orbi`, `tof` or `api` - because the name was the
+  only thing the browser sent. The upload dialog now reports the instrument
+  you pick with the upload, the way a paired File Agent reports the one it
+  watches, so it takes any name the server accepts: 1 to 64 letters, digits
+  and hyphens. What the file is, an Orbitrap or a TOF acquisition, is
+  decided by the file itself when it is converted. The files keep their own
+  names - the dialog no longer rewrites them - and the server stores them
+  under the same `<instrument>_<name>` as before. A name the server has no
+  files for creates an instrument and its acquisitions workspace, so the
+  dialog names it and asks you to confirm before it does.
+
 - **Both raw-file readers report every per-scan statistics field.** The
   per-scan statistics a raw-file reader reports (`scan_statistics`, the
   twenty fields named after Thermo's `ScanStats`) held all twenty from the

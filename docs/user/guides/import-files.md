@@ -47,10 +47,11 @@ to choose its chemistry. This applies to both upload paths. Name files as:
   paired **File Agent** that names its instrument in its configuration files
   every upload under that name, and its file names need not carry the
   instrument at all: the server puts `<instrument>_` in front of the stored
-  name. For files uploaded from the browser the name is the only source, so
-  there it still has to start with the instrument - either one Mascope
-  already holds files for, or a name that says its own class (containing
-  `orbi`, `tof` or `api`) for an instrument it has never seen.
+  name. A browser upload whose name starts with no instrument Mascope can
+  place is not refused either: it asks which instrument the files came from,
+  offering the ones it knows and taking the name of a new one, and reports
+  that with the upload the way an agent does. A name it has never seen is
+  a new instrument, so it asks you to confirm before creating it.
 - **Timestamp** — an acquisition date/time somewhere in the name, in one of the
   recognised forms (for example `20240115_1430`, `20240115143000`, or
   `2024.01.15-14h30m00s`). Mascope uses it to place and order the file.

@@ -14,7 +14,7 @@ import { api } from '@/api'
 import { maxUploadBytes } from '@/lib/features'
 import { hasIonizationToken } from '@/lib/ionizationModes'
 import { runtime } from '@/lib/runtime.js'
-import { genId } from '@/lib/utils'
+import { genId, isValidInstrumentName } from '@/lib/utils'
 
 // TODO_configuration Default sample file upload params
 const FILE_UPLOAD_EXTENSIONS = ['.h5', '.raw']
@@ -26,6 +26,10 @@ function validateFile(file) {
 }
 
 function validateInstrument(file) {
+  // A file the upload dialog assigned to an instrument reports it with the
+  // upload, and the server files a reported instrument under any valid name.
+  // Such a file's name is not asked to name the instrument, or its class.
+  if (file.meta?.instrument) return isValidInstrumentName(file.meta.instrument)
   // parse filename. The prefix names the instrument, and the instrument's
   // class is the one recorded for its files - a name need not say it, so a
   // name the server does not know is what makes a file invalid here.
