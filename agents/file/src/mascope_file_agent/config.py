@@ -77,8 +77,10 @@ USER_CONFIG_HEADER = """\
 #                  Windows names a group of zones rather than a city
 #   instrument   - name of the instrument this machine watches, e.g.
 #                  "Orbi-Lab2" (letters, digits and hyphens). Reported when
-#                  pairing and with each upload. Leave empty to keep the
-#                  server reading the instrument from the file name alone
+#                  pairing and with each upload, and the server files this
+#                  machine's data under it. Required: the agent refuses to
+#                  start without one rather than upload into whatever the
+#                  file names spell
 #   filename_prefix / filename_suffix
 #                - optional text added to each file name on upload; the
 #                  guided setup offers a prefix when the file names do not
