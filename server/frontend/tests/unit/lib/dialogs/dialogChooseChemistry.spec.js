@@ -192,20 +192,22 @@ describe('DialogChooseChemistry', () => {
   })
 
   // Going to the settings is not giving up on the dialog: the whole point is
-  // to come back and use what was set up. A mode picked for the other
-  // polarity has to still be there.
+  // to come back and use what was set up, so a mode picked for the other
+  // polarity has to still be there. Whether an open is that return is the
+  // owner's to say - the dialog remembering it for itself would leave the
+  // memory standing when the owner decided not to come back.
   describe('coming back from the ionization settings', () => {
-    const reopen = async (wrapper) => {
+    const reopen = async (wrapper, { resume = false } = {}) => {
       await wrapper.setProps({ visible: false })
-      await wrapper.setProps({ visible: true })
+      await wrapper.setProps({ visible: true, resume })
     }
 
-    it('keeps the modes already chosen', async () => {
+    it('keeps the modes already chosen when told this is the return', async () => {
       const wrapper = mountDialog([file('a', '+-')])
       await selects(wrapper)[0].vm.$emit('update:modelValue', 'no3')
 
       await setupButton(wrapper).vm.$emit('click')
-      await reopen(wrapper)
+      await reopen(wrapper, { resume: true })
 
       expect(selects(wrapper)[0].props('modelValue')).toBe('no3')
     })
@@ -217,7 +219,7 @@ describe('DialogChooseChemistry', () => {
 
       // Deleted or renamed while the settings were open.
       mocks.modes.splice(0, mocks.modes.length, mode('br', 'Bromide', 'Br', '-'))
-      await reopen(wrapper)
+      await reopen(wrapper, { resume: true })
 
       expect(selects(wrapper)[0].props('modelValue')).toBe(null)
     })
@@ -226,6 +228,20 @@ describe('DialogChooseChemistry', () => {
       const wrapper = mountDialog([file('a', '-')])
       await selects(wrapper)[0].vm.$emit('update:modelValue', 'no3')
 
+      await reopen(wrapper)
+
+      expect(selects(wrapper)[0].props('modelValue')).toBe(null)
+    })
+
+    // The visit can end without a return - the files may be gone or taken
+    // over by then. Having asked for the settings must not colour the next
+    // open, which is for whatever is selected by then.
+    it('does not remember having asked, once the return does not come', async () => {
+      const wrapper = mountDialog([file('a', '-')])
+      await selects(wrapper)[0].vm.$emit('update:modelValue', 'no3')
+      await setupButton(wrapper).vm.$emit('click')
+
+      // No return: the owner reopens it later for a different selection.
       await reopen(wrapper)
 
       expect(selects(wrapper)[0].props('modelValue')).toBe(null)

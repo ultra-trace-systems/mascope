@@ -66,7 +66,8 @@ const passthrough = (name) => ({
     options: null,
     disabled: null,
     value: null,
-    files: null
+    files: null,
+    resume: { type: Boolean, default: false }
   },
   emits: ['update:modelValue', 'update:visible', 'update:action', 'click', 'configure', 'submit'],
   template: '<div><slot /><slot name="footer" /></div>'
@@ -295,6 +296,53 @@ describe('PaneTabAcquisitions', () => {
       await ionizationDialog(wrapper).vm.$emit('update:visible', false)
 
       expect(chemistryDialog(wrapper).props('visible')).toBe(false)
+    })
+
+    // Whether an open is the return from the settings is the pane's to say.
+    // A visit that ends without one must leave nothing behind: the next open
+    // is for whatever is selected by then, and starts empty.
+    it('says an open is a resume only when it is the one it reopened', async () => {
+      const chosen = file('a', 'Orbi-Lab1', 'needs_chemistry')
+      mocks.app.data.acquisition.selected = [chosen]
+      mocks.app.data.acquisition.list = [chosen]
+      const wrapper = mountPane()
+      await chemistryDialog(wrapper).vm.$emit('update:visible', true)
+      expect(chemistryDialog(wrapper).props('resume')).toBe(false)
+
+      await chemistryDialog(wrapper).vm.$emit('configure')
+      await ionizationDialog(wrapper).vm.$emit('update:visible', false)
+      expect(chemistryDialog(wrapper).props('resume')).toBe(true)
+
+      // Processed, or cancelled - either way that dialog is done with.
+      await chemistryDialog(wrapper).vm.$emit('update:visible', false)
+      await chemistryDialog(wrapper).vm.$emit('update:visible', true)
+      expect(chemistryDialog(wrapper).props('resume')).toBe(false)
+    })
+
+    it('says nothing about a resume when it decided not to come back', async () => {
+      const chosen = file('a', 'Orbi-Lab1', 'needs_chemistry')
+      mocks.app.data.acquisition.selected = [chosen]
+      mocks.app.data.acquisition.list = [chosen]
+      const wrapper = mountPane()
+      await chemistryDialog(wrapper).vm.$emit('update:visible', true)
+      await chemistryDialog(wrapper).vm.$emit('configure')
+
+      // Taken up for processing while the settings were open, so no return.
+      mocks.app.data.acquisition.list = [
+        {
+          ...chosen,
+          processing_status: 'converted',
+          processing_updated_utc: new Date().toISOString()
+        }
+      ]
+      await ionizationDialog(wrapper).vm.$emit('update:visible', false)
+      expect(chemistryDialog(wrapper).props('visible')).toBe(false)
+
+      // Later, for different files that can be bound.
+      mocks.app.data.acquisition.list = [chosen]
+      await chemistryDialog(wrapper).vm.$emit('update:visible', true)
+
+      expect(chemistryDialog(wrapper).props('resume')).toBe(false)
     })
   })
 })

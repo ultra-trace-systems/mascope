@@ -33,6 +33,13 @@ const props = defineProps({
   files: {
     type: Array,
     default: () => []
+  },
+  // Whether this open is the return from the ionization settings. The owner
+  // decides: it is the one that sent the dialog there, and the one that knows
+  // whether the visit ended in coming back at all.
+  resume: {
+    type: Boolean,
+    default: false
   }
 })
 const emit = defineEmits(['submit', 'configure'])
@@ -63,11 +70,9 @@ const chosen = reactive({ '-': null, '+': null })
 // which is an open like any other - but the point of going there was to come
 // back and use what was set up, so a mode already picked for the other
 // polarity has to survive it. Anything else opens on a clean pair.
-const resuming = ref(false)
 watch(visible, (open) => {
   if (!open) return
-  if (resuming.value) {
-    resuming.value = false
+  if (props.resume) {
     // A mode can be renamed or deleted while the settings are open, so keep
     // only what the options still offer rather than a dangling id.
     for (const polarity of ['-', '+']) {
@@ -79,11 +84,6 @@ watch(visible, (open) => {
   chosen['-'] = null
   chosen['+'] = null
 })
-
-const configure = () => {
-  resuming.value = true
-  emit('configure')
-}
 
 const missing = computed(() =>
   polarities.value.filter((polarity) => options(polarity).length === 0)
@@ -157,7 +157,7 @@ async function submit() {
         icon="pi pi-sliders-h"
         link
         size="small"
-        @click="configure"
+        @click="emit('configure')"
       />
     </p>
     <template #footer>
