@@ -105,7 +105,9 @@ async function submit() {
       ionization modes you choose, as if their names carried the modes' tokens. A file that has
       samples already is rebuilt under them.
     </p>
-    <div class="col" style="gap: 1.5rem; margin: 1.5rem 0 0.5rem">
+    <!-- stretch: .col centers its children, which leaves each field as wide as
+         its own content - and an empty Select has none, so it collapses. -->
+    <div class="col" style="align-items: stretch; gap: 1.5rem; margin: 1.5rem 0 0.5rem">
       <FloatLabel v-for="polarity in polarities" :key="polarity" variant="on">
         <Select
           :inputId="`chemistry-${polarity === '-' ? 'negative' : 'positive'}`"
