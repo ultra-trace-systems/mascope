@@ -173,6 +173,14 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 ### Fixed
 
+- **The File Agent installer's documentation no longer says it is unsigned.**
+  The installer has been code-signed since 1.8.0, but the instructions still
+  told people to expect an unrecognized app and click through. They now name
+  the publisher Windows shows, **Ultra Trace Systems Oy**, and ask the reader
+  to check it before running the installer - which is what the signature is
+  worth. SmartScreen can still prompt on a fresh release, because reputation
+  accrues per file over weeks of downloads, so the way past it stays.
+
 - **The File Agent's configuration file no longer says its instrument name
   may be left empty.** The comment written at the top of every
   `config.toml` offered that as a way "to keep the server reading the

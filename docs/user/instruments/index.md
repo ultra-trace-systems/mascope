@@ -21,8 +21,12 @@ uploads them to your Mascope server automatically.
    **Start the File Agent automatically when you sign in to Windows**
    checkbox — leave it enabled so the agent survives reboots.
 
-   > The installer is not yet code-signed, so Windows SmartScreen may warn
-   > about an unrecognized app. Click **More info** → **Run anyway**.
+   > The installer is code-signed, and Windows shows the publisher as
+   > **Ultra Trace Systems Oy** — check that name before you run it.
+   > Signing does not silence Windows SmartScreen on day one: a release
+   > earns its reputation over weeks of downloads, so a fresh one may still
+   > be called an unrecognized app. With the publisher name right, click
+   > **More info** → **Run anyway**.
 
 3. When the agent first starts, a guided setup runs in the console window.
    It asks for the **Mascope server address** (for example
