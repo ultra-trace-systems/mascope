@@ -430,6 +430,17 @@ const currentPageReportTemplate =
                 </template>
               </Column>
               <Column
+                header="Instrument"
+                field="instrument"
+                sortable
+                style="width: 160px"
+                bodyClass="ellipsis-cell"
+              >
+                <template #body="{ data }">
+                  <span :title="data.instrument">{{ data.instrument }}</span>
+                </template>
+              </Column>
+              <Column
                 header="Status"
                 field="processing_status"
                 sortable
