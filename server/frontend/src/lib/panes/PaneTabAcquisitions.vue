@@ -81,6 +81,27 @@ const dialog = reactive({
   chemistry: false
 })
 
+// --- Choose chemistry -> ionization settings -> Choose chemistry.
+// Files whose chemistry has to be chosen by hand are often the ones no
+// configured mode describes, so the dialog offers the ionization settings.
+// The two are modal, so Choose chemistry gives way and is brought back with
+// the same files still selected, and the mode just added among its options.
+const resumeChemistry = ref(false)
+const configureChemistry = () => {
+  resumeChemistry.value = true
+  dialog.chemistry = false
+  dialog.mechanism = true
+}
+watch(
+  () => dialog.mechanism,
+  (open) => {
+    if (open || !resumeChemistry.value) return
+    resumeChemistry.value = false
+    // Nothing to choose a chemistry for if the files went away meanwhile.
+    if (app.data.acquisition.selected.length) dialog.chemistry = true
+  }
+)
+
 // The selected files as the list has them now: a status update replaces a
 // row in the list, not the copy the selection holds.
 const liveSelection = () =>
@@ -518,6 +539,7 @@ const currentPageReportTemplate =
       <DialogChooseChemistry
         v-model:visible="dialog.chemistry"
         :files="app.data.acquisition.selected"
+        @configure="configureChemistry"
         @submit="app.data.acquisition.unfocus()"
       />
       <ContextMenu :model="contextMenuItems" ref="contextMenuRef" />

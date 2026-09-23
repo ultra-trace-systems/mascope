@@ -53,8 +53,10 @@ const mountDialog = (files) =>
   })
 
 const selects = (wrapper) => wrapper.findAllComponents({ name: 'Select' })
-const processButton = (wrapper) =>
-  wrapper.findAllComponents({ name: 'Button' }).find((b) => b.props('label') === 'Process')
+const button = (wrapper, label) =>
+  wrapper.findAllComponents({ name: 'Button' }).find((b) => b.props('label') === label)
+const processButton = (wrapper) => button(wrapper, 'Process')
+const setupButton = (wrapper) => button(wrapper, 'Set up ionization modes')
 
 describe('DialogChooseChemistry', () => {
   beforeEach(() => {
@@ -165,5 +167,27 @@ describe('DialogChooseChemistry', () => {
     const message = wrapper.findComponent({ name: 'Message' })
     expect(message.exists()).toBe(true)
     expect(message.text()).toContain('No positive ionization mode is configured yet.')
+  })
+
+  // A file is here because its name named no mode, so the mode it was run
+  // under is often one nobody has configured - and the options say nothing
+  // about adding it. The way there is offered whatever the options hold: a
+  // list that is merely missing the right mode looks no different from a
+  // full one.
+  it('offers the ionization settings, with modes configured or without', () => {
+    expect(setupButton(mountDialog([file('a', '-')])).exists()).toBe(true)
+
+    mocks.modes.splice(0, mocks.modes.length)
+    expect(setupButton(mountDialog([file('a', '-')])).exists()).toBe(true)
+  })
+
+  it('asks its owner for the ionization settings, and stays open', async () => {
+    const wrapper = mountDialog([file('a', '-')])
+
+    await setupButton(wrapper).vm.$emit('click')
+
+    expect(wrapper.emitted('configure')).toHaveLength(1)
+    // The owner closes it, having somewhere to bring it back to.
+    expect(wrapper.emitted('update:visible')).toBeUndefined()
   })
 })
