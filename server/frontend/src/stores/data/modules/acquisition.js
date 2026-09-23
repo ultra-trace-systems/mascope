@@ -95,12 +95,37 @@ export const useAcquisition = defineStore('app.data.acquisition', () => {
   )
   watch(
     () => instrument.focused,
-    (next, prev) => {
-      unfocus()
-      if (prev) api.socket.removeSubscription(prev.instrument)
-      if (next) api.socket.addSubscription(next.instrument)
-    }
+    () => unfocus()
   )
+
+  // --- socket rooms. An acquisition event is emitted into its instrument's
+  // own room, so listing every instrument means holding every one of those
+  // rooms - one focused instrument is not a special case of that, it is one
+  // room instead of all of them. Reconciled rather than toggled, because the
+  // instrument list loads after the store and grows as files arrive.
+  let subscribed = new Set()
+  const rooms = computed(() =>
+    instrument.focused
+      ? [instrument.focused.instrument]
+      : (instrument.list ?? []).map((known) => known.instrument)
+  )
+  watch(
+    () => rooms.value.join(','),
+    () => {
+      const wanted = new Set(rooms.value)
+      for (const room of subscribed) {
+        if (!wanted.has(room)) api.socket.removeSubscription(room)
+      }
+      for (const room of wanted) {
+        if (!subscribed.has(room)) api.socket.addSubscription(room)
+      }
+      subscribed = wanted
+    },
+    { immediate: true }
+  )
+
+  /** Whether the list is showing an instrument's files at all. */
+  const listsInstrument = (name) => !instrument.focused || instrument.focused.instrument === name
 
   // --- loading: only the latest request's answer is kept, and a row update
   // that arrives while a load is in flight is applied again on top of its
@@ -203,7 +228,7 @@ export const useAcquisition = defineStore('app.data.acquisition', () => {
   // contents and total count consistent; update in place on update.
   api.socket.on('acquisition_created', (payload) => {
     const { record } = payload
-    if (record.instrument === instrument.focused?.instrument) {
+    if (listsInstrument(record.instrument)) {
       load()
     }
   })
@@ -225,7 +250,7 @@ export const useAcquisition = defineStore('app.data.acquisition', () => {
     } else if (
       processingStatus.value &&
       keepsStatus(record) &&
-      record.instrument === instrument.focused?.instrument
+      listsInstrument(record.instrument)
     ) {
       reloadForStatus()
     }

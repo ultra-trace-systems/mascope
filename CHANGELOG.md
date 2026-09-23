@@ -31,12 +31,17 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   name matches no token, so a file given its chemistry by hand can be
   processed again too.
 
-- **Raw files says which instrument each file was filed under.** The table
-  has an Instrument column, sortable like the others. It earns its place now
-  that a file's name need not begin with its instrument: an upload reports
-  the instrument it came from, and the file keeps its own name. With no
-  instrument chosen in the toolbar the list spans every instrument you can
-  see, and the column is what tells them apart.
+- **Raw files lists every instrument at once, and says which one each file
+  came from.** The instrument selector has an **All instruments** entry.
+  Listing them all was always the state the app started in, but nothing
+  offered it and the list reassigned the first instrument after every load,
+  so the first instrument picked was final. Choose it and the list spans
+  every instrument you can see; the new **Instrument** column, first in the
+  table and sortable like the others, says which is which. The column earns
+  its place now that a file's name need not begin with its instrument: an
+  upload reports the instrument it came from, and the file keeps its own
+  name. Files appearing and changing on any of those instruments reach the
+  list as they always did for one.
 
 - **The File Agent says what became of each file it uploaded.** "Upload
   succeeded" used to be its last word on a file, so it could not tell a
