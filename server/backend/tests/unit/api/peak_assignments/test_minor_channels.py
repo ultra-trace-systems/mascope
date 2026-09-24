@@ -298,6 +298,41 @@ class TestThePartnerGate:
         )
         assert row["provenance"]["minor_channel"]["capped"] is True
 
+    def test_a_partner_a_swap_uncovers_is_seen(self):
+        # The C10 acid that partners the C11 pseudo-acid was itself elected as
+        # a C9 formate adduct; its own gate turns it back to the acid, and only
+        # then is it a partner. One reading of the ledger misses that.
+        peaks = _peaks(("p1", 263.1136, 1.0e6), ("p2", 217.1081, 6.0e5))
+        rows = self._assign(
+            [
+                {
+                    **_match(263.1136, "C10H18O5", "C11H19O7-", "+HCOO-", 0.99),
+                    "same_ion_alternatives": self._family(
+                        ("C11H20O7", "C11H19O7-", "-H+")
+                    ),
+                },
+                {
+                    **_match(217.1081, "C9H16O3", "C10H17O5-", "+HCOO-", 0.99),
+                    "same_ion_alternatives": self._family(
+                        ("C10H18O5", "C10H17O5-", "-H+")
+                    ),
+                },
+            ],
+            peaks,
+            self.IDS,
+            minor={"+HCOO-"},
+            gated={"+HCOO-"},
+        )
+        by_peak = {r["sample_peak_id"]: r for r in rows}
+        # C9H16O3 has no partner, so p2 is the C10 acid through -H+ ...
+        assert by_peak["p2"]["assigned_formula"] == "C10H18O5"
+        assert by_peak["p2"]["ionization_mechanism_id"] == "im-deprot"
+        # ... which is exactly the partner p1's formate reading needed.
+        assert by_peak["p1"]["assigned_formula"] == "C10H18O5"
+        assert by_peak["p1"]["ionization_mechanism_id"] == "im-formate"
+        assert by_peak["p1"]["provenance"]["partner_gate"]["partner"] is True
+        assert by_peak["p1"]["tier"] == TIER_ASSIGNED
+
     def test_a_reference_list_row_is_the_partner_and_lifts_the_cap(self):
         # The C10 product is a Stage A match, not a search row: the policy
         # capped the formate reading for want of a partner among the search's
