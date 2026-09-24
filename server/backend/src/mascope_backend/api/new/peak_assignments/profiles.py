@@ -119,11 +119,15 @@ class ResolvedProfile:
         which of the two an absent channel failed.
 
         A channel the mode declares reaches it whatever the spectrum said, where
-        the profile names it secondary. Declaring a channel lets the run search
-        and match through it; it does not make an opportunistic reagent the
-        mode's own. So an uncorroborated winner through it is still capped at
-        candidate, a tie still goes to the mode's other channels, and the
-        snapshot still lists it.
+        the profile names it secondary and says so holds for a declared one
+        (``SecondaryChannel.declared_stays_secondary``). Declaring carbonate
+        lets the run search and match through it; it does not make an
+        opportunistic reagent the mode's own. So an uncorroborated winner
+        through it is still capped at candidate, a tie still goes to the mode's
+        other channels, and the snapshot still lists it. Where the profile says
+        otherwise - proton transfer declared beside the bare sign of a
+        charge-transfer source - the declared channel is the mode's own and
+        stays out of this set, whatever the spectrum said.
         """
         unavailable = set(self.unavailable_channels)
         opened = {
@@ -131,8 +135,11 @@ class ResolvedProfile:
             for notation in present_notations(self.channel_evidence)
             if notation not in unavailable
         }
-        named = {channel.notation for channel in secondary_channels(self.profile.name)}
-        return frozenset(opened | (named & set(self.mode_channels)))
+        declared = set(self.mode_channels)
+        channels = secondary_channels(self.profile.name)
+        held = {c.notation for c in channels if c.declared_stays_secondary}
+        own = {c.notation for c in channels if not c.declared_stays_secondary}
+        return frozenset((opened | (held & declared)) - (own & declared))
 
     @property
     def added_channels(self) -> frozenset[str]:
@@ -285,9 +292,10 @@ def resolve_profile(
         explicit-isotope form - the fingerprint is written in the stored
         notation.
     :param instrument_type: ``"orbi"`` or ``"tof"``, deciding the default m/z
-        window.
-    :param polarity: The sample's polarity, consulted only when no mechanism
-        is diagnostic.
+        window and whether a bare-sign mode is read as the charge-transfer
+        source, which is Orbitrap hardware.
+    :param polarity: The sample's polarity: a profile it contradicts is never
+        chosen, and it decides alone when no mechanism is diagnostic.
     :raises KeyError: The config names a profile or context that does not exist.
     :return: The resolution, ready to configure the search and be snapshotted.
     """
@@ -295,7 +303,9 @@ def resolve_profile(
     requested_context = (config.context or AUTO).strip()
 
     if requested_profile.lower() == AUTO:
-        profile = detect_reagent_profile(mechanism_notations, polarity)
+        profile = detect_reagent_profile(
+            mechanism_notations, polarity, instrument_type=instrument_type
+        )
     else:
         profile = get_reagent_profile(requested_profile)
 

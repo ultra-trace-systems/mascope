@@ -495,7 +495,6 @@ PROVISIONAL_ORBITRAP_CORROBORATION = {
     "+(CH4N2O)H+": 0.70,
     "+H+": 0.0,
     "-H+": 0.0,
-    "-H-": 0.0,
 }
 
 PROVISIONAL_ORBITRAP = Calibration(

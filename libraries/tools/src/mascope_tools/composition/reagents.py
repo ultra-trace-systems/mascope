@@ -153,6 +153,16 @@ class SecondaryChannel:
         acquisitions start above can say :data:`UNOBSERVABLE_ON` instead, and
         then it is the acquisition rather than the source that failed to
         answer.
+    :param declared_stays_secondary: Whether a mode that declares this channel
+        itself still has it held to an opportunistic channel's rules - an
+        uncorroborated winner capped at candidate, a tie lost to the mode's
+        other channels. True by default, and the plan owner's ruling for
+        carbonate: an opportunistic side channel is capped without
+        corroboration whoever declares it. False where declaring the channel
+        is the operator saying the source runs it as its own - proton transfer
+        or deprotonation beside the bare sign of a charge-transfer source - so
+        the declared channel is searched as the mode's own and only the ones
+        the profile adds are opportunistic.
     :param note: Why these probes are the right evidence, for the reader who
         wonders why a channel stayed off.
     """
@@ -161,6 +171,7 @@ class SecondaryChannel:
     label: str
     probes: tuple[ProbeIon, ...] = ()
     when_unobservable: str = UNOBSERVABLE_OFF
+    declared_stays_secondary: bool = True
     note: str = ""
 
 
@@ -259,12 +270,15 @@ _FLUORANTHENE_CATION_PROBES = (
     ProbeIon("C16H9", 1, "[C16H10-H]+"),
 )
 
-#: Evidence that a charge-transfer source has protons to give: its own reagent
-#: protonated, and the hydronium series a wet source makes. The dry source
-#: shows the first and none of the second, which is why fluoranthene is listed
-#: and not water alone.
+#: Evidence that a charge-transfer source has protons to give: hydronium and
+#: its first hydrate, the two water ions a dry source still shows (on the
+#: reference engine's low-mass acquisition of this source both are present
+#: while the larger hydrates are exactly zero, which is why the series stops
+#: at two). Protonated fluoranthene is deliberately not a probe: it sits 22 ppm
+#: above the beam's own 13C line, inside the probe window, so a spectrum
+#: reading two ppm high would switch the channel on with no protonated
+#: reagent in it at all.
 _PROTON_TRANSFER_PROBES = (
-    ProbeIon("C16H11", 1, "[C16H10+H]+"),
     ProbeIon("H3O", 1, "[H3O]+"),
     ProbeIon("H5O2", 1, "[H3O+H2O]+"),
 )
@@ -381,6 +395,7 @@ SECONDARY_CHANNELS: dict[str, tuple[SecondaryChannel, ...]] = {
             label="Hydride abstraction",
             probes=_FLUORANTHENE_CATION_PROBES,
             when_unobservable=UNOBSERVABLE_ON,
+            declared_stays_secondary=False,
             note=_CHARGE_TRANSFER_NOTE,
         ),
         SecondaryChannel(
@@ -388,9 +403,11 @@ SECONDARY_CHANNELS: dict[str, tuple[SecondaryChannel, ...]] = {
             label="Proton transfer",
             probes=_PROTON_TRANSFER_PROBES,
             when_unobservable=UNOBSERVABLE_ON,
+            declared_stays_secondary=False,
             note=(
-                "protonated fluoranthene or hydronium: the source has protons "
-                "to give; " + _CHARGE_TRANSFER_NOTE
+                "hydronium: the source has protons to give; the acquisitions "
+                "this source is used for start above it, and its silence there "
+                "is the window's"
             ),
         ),
     ),
@@ -400,6 +417,7 @@ SECONDARY_CHANNELS: dict[str, tuple[SecondaryChannel, ...]] = {
             label="Deprotonation",
             probes=_DEPROTONATED_ACID_PROBES,
             when_unobservable=UNOBSERVABLE_ON,
+            declared_stays_secondary=False,
             note=(
                 "the source's anions deprotonate the acids of air; where "
                 "bicarbonate, nitrate, formate or nitrite is in the spectrum "

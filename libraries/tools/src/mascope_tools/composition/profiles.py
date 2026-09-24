@@ -575,11 +575,21 @@ ESI_NEG = ReagentProfile(
 #: abstracts a hydride from an alcohol or an alkane (``[M-H]+``, ethanol's only
 #: channel, and the tropylium ion of toluene) and protonates where a proton is
 #: to be had (``[M+H]+``, protonated acetone). In negative mode the anions the
-#: discharge makes deprotonate acids (``[M-H]-``). A mode declares only the bare
-#: sign, so those channels are searched as secondary ones - switched on by the
-#: source's own fingerprint and capped at candidate without corroboration -
-#: and a same-ion family that reads one peak both as a radical through the bare
-#: sign and as a closed-shell molecule through one of them elects the molecule.
+#: discharge makes deprotonate acids (``[M-H]-``). A mode that declares only
+#: the bare sign has those channels searched as secondary ones - switched on
+#: by the source's own fingerprint and capped at candidate without
+#: corroboration - and a same-ion family that reads one peak both as a radical
+#: through the bare sign and as a closed-shell molecule through one of them
+#: elects the molecule. A mode that declares proton transfer or deprotonation
+#: beside the bare sign has said the source runs it: that channel is the
+#: mode's own and is searched as one (``reagents.SECONDARY_CHANNELS``).
+#:
+#: The bare sign alone is not enough to name this source. An ambient-ion
+#: mode on an APi-TOF - the air's own ions, no reagent - is declared the same
+#: way, and the fleet holds such streams. The EASY-IC source is an Orbitrap's,
+#: so the fingerprint is read only on that instrument class
+#: (:data:`CHARGE_TRANSFER_INSTRUMENTS`); a bare-sign mode anywhere else keeps
+#: the path it had, the ESI preset of its polarity.
 EASYIC_POS = ReagentProfile(
     name="EASYIC_POS",
     label="Charge transfer (EASY-IC), positive",
@@ -637,6 +647,17 @@ REAGENT_PROFILES: dict[str, ReagentProfile] = {
     )
 }
 
+#: The instrument classes on which a bare-sign mode is read as the
+#: charge-transfer source, keyed by ``mascope_file.name.get_instrument_type``
+#: values. The EASY-IC source is Orbitrap hardware; an ambient-ion mode on a
+#: TOF declares the same bare sign and is not this source.
+CHARGE_TRANSFER_INSTRUMENTS: frozenset[str] = frozenset({"orbi"})
+
+#: The profiles that fingerprint is read for.
+_CHARGE_TRANSFER_PROFILES: frozenset[str] = frozenset(
+    {EASYIC_POS.name, EASYIC_NEG.name}
+)
+
 _PROFILE_ALIASES: dict[str, str] = {
     alias: profile.name
     for profile in REAGENT_PROFILES.values()
@@ -660,8 +681,9 @@ _DETECTION_ORDER: tuple[ReagentProfile, ...] = (
 )
 
 #: The generic profile per polarity, used when no mechanism is diagnostic and
-#: the mode declares no bare sign either - protonation or deprotonation alone,
-#: which is how an electrospray or APCI mode is written.
+#: the mode declares no bare sign an Orbitrap could read as charge transfer -
+#: protonation or deprotonation alone, which is how an electrospray or APCI
+#: mode is written, or the bare sign on any other instrument.
 #: Keyed by the single-character form the sample row carries, with the spelled-out
 #: words accepted too - the same polarity is written both ways across the codebase
 #: (a sample is "+", a batch "pos"), and a fallback that silently missed on the
@@ -673,6 +695,11 @@ _ESI_BY_POLARITY: dict[str, ReagentProfile] = {
     "-": ESI_NEG,
     "negative": ESI_NEG,
     "neg": ESI_NEG,
+}
+
+#: The polarity sign each accepted spelling stands for.
+_POLARITY_SIGN: dict[str, str] = {
+    key: profile.polarity for key, profile in _ESI_BY_POLARITY.items()
 }
 
 
@@ -710,29 +737,46 @@ def get_chemistry_context(name: str) -> ChemistryContext:
 def detect_reagent_profile(
     mechanism_notations: list[str] | tuple[str, ...],
     polarity: str | None = None,
+    instrument_type: str | None = None,
 ) -> ReagentProfile:
     """The profile a sample's ionization mechanisms identify.
 
     The mechanism panel is the fingerprint the deployment already maintains:
     a mode carrying ``+(CH4N2O)H+`` is a urea source whatever it is named, and
-    one carrying ``+Br-`` is a bromide source. A mode with no reagent whose
-    panel carries the bare sign - electron transfer, which is how a
-    charge-transfer source such as an Orbitrap's EASY-IC is declared - is
-    that source. Only when nothing at all is diagnostic does the polarity
+    one carrying ``+Br-`` is a bromide source. On an Orbitrap, a mode with no
+    reagent whose panel carries the bare sign - electron transfer, which is
+    how that instrument's EASY-IC charge-transfer source is declared - is that
+    source; on any other instrument the bare sign names an ambient-ion mode as
+    readily, and is not read. Only when nothing is diagnostic does the polarity
     decide, and then the answer is the generic ESI preset - a broad grid and
     no matrix prior, because nothing was learned.
 
+    A profile of the opposite polarity to the sample's is never the answer: a
+    row stored under the wrong polarity, or a caller that did not filter the
+    panel, must not turn a negative sample into a positive source.
+
     :param mechanism_notations: The mode's mechanism notations, in the form the
         mechanism table stores (``"+Br-"``, ``"+(CH4N2O)H+"``).
-    :param polarity: The sample's polarity, ``"+"`` or ``"-"``. Only consulted
-        when no mechanism is diagnostic.
+    :param polarity: The sample's polarity, ``"+"`` or ``"-"`` (the spelled-out
+        forms are read too). A profile it contradicts is skipped, and it
+        decides alone when no mechanism is diagnostic.
+    :param instrument_type: The sample's instrument class (``"orbi"``,
+        ``"tof"``), deciding whether the bare sign is read as charge transfer.
     :return: The resolved profile; :data:`NO_PROFILE` when neither the
         mechanisms nor the polarity say anything, so an unrecognisable sample
         keeps the engine's historical behaviour rather than acquiring a grid
         nothing justifies.
     """
     seen = {notation.strip() for notation in mechanism_notations or ()}
+    sign = _POLARITY_SIGN.get((polarity or "").strip().lower())
+    charge_transfer = (
+        instrument_type or ""
+    ).strip().lower() in CHARGE_TRANSFER_INSTRUMENTS
     for profile in _DETECTION_ORDER:
+        if sign is not None and profile.polarity and profile.polarity != sign:
+            continue
+        if profile.name in _CHARGE_TRANSFER_PROFILES and not charge_transfer:
+            continue
         if seen.intersection(profile.detection):
             return profile
     return _ESI_BY_POLARITY.get((polarity or "").strip().lower(), NO_PROFILE)

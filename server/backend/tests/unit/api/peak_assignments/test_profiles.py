@@ -20,6 +20,7 @@ from mascope_backend.api.new.peak_assignments.profiles import (
     SampleChemistry,
     preview_resolutions,
     resolve_profile,
+    with_secondary_channels,
 )
 from mascope_backend.api.new.peak_assignments.schemas import ProfilePreviewQueryParams
 from mascope_tools.composition import profiles as presets
@@ -98,17 +99,53 @@ class TestResolution:
         assert negative.profile is presets.EASYIC_NEG
         assert negative.context is presets.AMBIENT_AIR
 
-    def test_a_declared_charge_transfer_channel_stays_secondary(self):
-        # A mode that declares proton transfer beside the bare sign searches
-        # it as its own, and the profile still names it secondary: an
-        # uncorroborated winner through it is capped like any opportunistic
-        # channel's.
+    def test_a_declared_charge_transfer_channel_is_the_modes_own(self):
+        # A mode that declares proton transfer beside the bare sign has said
+        # the source runs it: the channel is searched as the mode's own, not
+        # capped as an opportunistic one, and only the profile's other channel
+        # is opportunistic. APCI and APPI modes declare both signs routinely.
         resolved = resolve_profile(
             PeakAssignmentConfig(), ["+", "+H+"], instrument_type="orbi", polarity="+"
         )
         assert resolved.profile is presets.EASYIC_POS
-        assert resolved.minor_channels == frozenset({"+H+"})
+        assert resolved.minor_channels == frozenset()
         assert resolved.added_channels == frozenset()
+        negative = resolve_profile(
+            PeakAssignmentConfig(), ["-", "-H+"], instrument_type="orbi", polarity="-"
+        )
+        assert negative.profile is presets.EASYIC_NEG
+        assert negative.minor_channels == frozenset()
+
+    def test_a_declared_charge_transfer_channel_the_spectrum_also_shows_stays_own(
+        self,
+    ):
+        # The fingerprint opening the channel does not demote a declared one.
+        resolved = with_secondary_channels(
+            resolve_profile(
+                PeakAssignmentConfig(),
+                ["+", "+H+"],
+                instrument_type="orbi",
+                polarity="+",
+            ),
+            [19.0178, 200.0],
+            [1.0e4, 1.0e6],
+            ["+H+", "-H-"],
+        )
+        assert [e.notation for e in resolved.channel_evidence if e.present] == [
+            "-H-",
+            "+H+",
+        ]
+        assert resolved.minor_channels == frozenset({"-H-"})
+        assert resolved.added_channels == frozenset({"-H-"})
+
+    def test_the_bare_sign_on_a_tof_keeps_the_esi_profile(self):
+        # An ambient-ion mode on an APi-TOF is declared the same way and is
+        # not a fluoranthene beam.
+        resolved = resolve_profile(
+            PeakAssignmentConfig(), ["-"], instrument_type="tof", polarity="-"
+        )
+        assert resolved.profile is presets.ESI_NEG
+        assert resolved.context is presets.NO_CONTEXT
 
 
 class TestOverrides:
