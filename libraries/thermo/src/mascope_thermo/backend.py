@@ -2096,12 +2096,12 @@ class OpenTFRawBackend:
         for mz, intensity, _, _ in scans:
             order = np.argsort(mz, kind="stable")
             mz_sorted, int_sorted = mz[order], intensity[order]
-            target_integral += float(np.trapz(int_sorted, mz_sorted))
+            target_integral += float(np.trapezoid(int_sorted, mz_sorted))
             a = int(np.searchsorted(grid, mz_sorted[0], side="left"))
             b = int(np.searchsorted(grid, mz_sorted[-1], side="right"))
             if b > a:
                 summed[a:b] += np.interp(grid[a:b], mz_sorted, int_sorted)
-        grid_integral = float(np.trapz(summed, grid))
+        grid_integral = float(np.trapezoid(summed, grid))
         if grid_integral > 0:
             summed *= target_integral / grid_integral
         return grid, summed
