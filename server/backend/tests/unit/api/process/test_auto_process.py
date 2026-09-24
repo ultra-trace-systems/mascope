@@ -170,15 +170,21 @@ def status():
     """The processing-status writer, recorded instead of written.
 
     Also stubs the scan stream census, which would read the file's props
-    from the filestore. Request the fixture by name to read what was
-    recorded: ``[(status, detail), ...]`` in order via :func:`_recorded`.
+    from the filestore, and the method-binding learner, which would write to
+    the database. Request the fixture by name to read what was recorded:
+    ``[(status, detail), ...]`` in order via :func:`_recorded`.
     """
     with (
         patch(f"{_SVC}.record_processing_status", new_callable=AsyncMock) as record,
-        patch(f"{_SVC}.read_pooled_streams_note", new_callable=AsyncMock) as note,
+        patch(f"{_SVC}.read_scan_streams", new_callable=AsyncMock) as census,
+        patch(f"{_SVC}.pooled_streams_note") as note,
+        patch(f"{_SVC}.learn_method_bindings", new_callable=AsyncMock) as learn,
     ):
+        census.return_value = []
         note.return_value = None
         record.note = note
+        record.census = census
+        record.learn = learn
         yield record
 
 
@@ -1409,6 +1415,37 @@ async def test_an_unverified_record_holds_back_the_whole_file(status):
         "calibration_failed",
         "The m/z calibration failed. Matching and peak assignment were skipped.",
     )
+
+
+@pytest.mark.asyncio
+async def test_a_routed_file_teaches_its_method_binding(status):
+    """What the file bound to is recorded against its acquisition method."""
+    census = [{"key": "FTMS - p NSI Full ms", "signature": {"polarity": "-"}}]
+    status.census.return_value = census
+    _start_single()
+
+    await _run_pipeline()
+
+    status.learn.assert_awaited_once()
+    call = status.learn.await_args
+    assert call.kwargs["source"] == "token"
+    assert call.kwargs["streams"] == census
+
+
+@pytest.mark.asyncio
+async def test_a_file_a_person_routed_teaches_its_method_binding(status):
+    """A chosen mode is evidence about the method too, on a stronger rung."""
+    _start_single()
+    chosen = _make_ionization_mode(ionization_mode_name="Nitrate")
+
+    with patch(
+        f"{_SVC}.fetch_ionization_modes",
+        new_callable=AsyncMock,
+        return_value=[chosen],
+    ):
+        await _run_pipeline(ionization_mode_ids=["im-001"])
+
+    assert status.learn.await_args.kwargs["source"] == "explicit"
 
 
 @pytest.mark.asyncio

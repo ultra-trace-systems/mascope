@@ -439,6 +439,16 @@ class BackendConfig(ModuleConfig):
     # restart and applies to calibrations from then on; stored records keep
     # the verdict they were given.
     calibration_quality_gate: Literal["warn", "enforce"] = "warn"
+    # Method bindings: what an acquisition method, seen running a chemistry
+    # once, does for the files that follow it. "shadow" (the default) learns
+    # a binding from every file that routes on a stronger rung - a person's
+    # choice or its filename token - and routes nothing on what it learned;
+    # "off" records nothing. Routing on the bindings is a third value, which
+    # arrives once the agreement between them and the token has been measured
+    # on real traffic, per site. Learning is inert either way: no file's
+    # processing depends on it, and nothing reads the rows back yet. See
+    # docs/dev/ingest_routing_and_splitting.md section 5.3.
+    method_binding: Literal["off", "shadow"] = "shadow"
     # Allowlist of per-record reference licences the peak-assignment database
     # stage (Stage A) may match against. The reference mirror carries a
     # licence per record from ingest through to results, and some sources

@@ -110,6 +110,22 @@ async def test_a_census_of_the_wrong_shape_reports_nothing(census):
         assert await status.read_pooled_streams_note("x.raw") is None
 
 
+@pytest.mark.asyncio
+async def test_the_census_read_drops_what_is_not_a_stream():
+    """Every caller walks the census without guarding each field."""
+    good = {"key": "FTMS - p NSI Full ms", "signature": {"ms_order": 1}}
+    with patch.object(
+        status, "read_props", return_value={"scan_streams": [good, "junk", None]}
+    ):
+        assert await status.read_scan_streams("x.raw") == [good]
+
+
+@pytest.mark.asyncio
+async def test_the_census_read_reports_nothing_when_the_props_cannot_be_read():
+    with patch.object(status, "read_props", side_effect=OSError("gone")):
+        assert await status.read_scan_streams("x.raw") == []
+
+
 # ---------------------------------------------------------------------------
 # The detail
 # ---------------------------------------------------------------------------

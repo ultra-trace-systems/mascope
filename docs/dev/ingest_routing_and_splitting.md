@@ -42,7 +42,7 @@ the table below and ticks its item on #2098.
 |---|---|---|
 | 0 | Stop losing information: method identity, stream census, token-rule and notification fixes | shipped, bar the production `populate_orbitrap_method_file` run |
 | 1 | Per-file processing state, persistent notifications, "needs a chemistry" | shipped (#2164, #2166-#2169) |
-| 2 | Method bindings: routing without tokens | started; the seeded system-owned modes have shipped, section 10 marks each item as it ships |
+| 2 | Method bindings: routing without tokens | started; the seeded modes and the learning have shipped, nothing routes on a binding yet, section 10 marks each item as it ships |
 | 3 | The part contract: stream and window honoured by every consumer | open |
 | 4 | Per-stream state: calibration, instrument function, one item per stream, MS2 | open |
 | 5 | Chemistry detection: audit first, then provisional binding | open |
@@ -953,7 +953,15 @@ Needed before any rung can be provisional or park.
 
 - **Schema:** `method_binding`, the ladder with rungs 1-4 and parking,
   learning from tokens, conflicts as review items, and the backfill from
-  history.
+  history. The table and the learning have shipped: every file that binds on
+  a declaration, a person's choice or its token records what its method was
+  seen running, keyed on (instrument, method key, signature class) as section
+  5.3 defines them, with both riders in force - unanimity to route, and a
+  constant configuration name treated as no method name. `backend.method_binding`
+  is `"shadow"`, so nothing reads the rows back; the backfill is
+  `mascope db script run backfill_method_bindings`. What remains is the rung
+  that consults them, behind the value that switches it on per site, and the
+  conflicts as review items.
 - **Defaults:** the instrument-default rung (#1463), and the seeded
   system-owned modes. The modes have shipped: eleven chemistries, drawn from
   what the fleet actually runs, each with a `system_key` that reads the same
