@@ -2548,6 +2548,15 @@ def untargeted_matches_to_peak_assignments(
 PARTNER_GATE_UNMET = "unmet"
 
 
+#: How many rounds the gate walks before it stops looking for partners a
+#: swap uncovered. A reading's partner is often itself a row the gate swaps
+#: to the mode's own reading in the same pass - the C10 acid that partners the
+#: C11 pseudo-acid was elected as a C9 formate adduct until its own gate
+#: turned it back - so one reading of the ledger misses a third of them.
+#: Four rounds settled every sample measured; the cap is a guard, not a budget.
+MAX_PARTNER_GATE_ROUNDS = 6
+
+
 def apply_partner_gates(
     assignments: list[dict],
     *,
@@ -2572,7 +2581,9 @@ def apply_partner_gates(
     Runs over the judged ledger, both stages' rows together, because the
     partner is as often a reference list's row as the search's: on the
     chamber dataset most C10 products are Stage A matches, and a gate that
-    read the search's rows alone left 142 of 240 pseudo-acids standing.
+    read the search's rows alone left 142 of 240 pseudo-acids standing. And it
+    walks the ledger to a fixed point, because a partner is often a row the
+    gate itself turns back to the mode's own reading in the same pass.
 
     For a monoisotopic row whose reading is through a partner-gated channel:
 
@@ -2587,22 +2598,33 @@ def apply_partner_gates(
       show; failing that, the row stays as it is and the minor-channel policy's
       cap holds.
 
-    For every monoisotopic row, a same-ion reading through a gated channel
-    whose neutral has no partner is marked :data:`PARTNER_GATE_UNMET`: a
-    reference list's acid is not doubted for a formate reading nothing bore
-    out. The displaced reading of a swapped row is marked the same way, kept
-    on the row for the reader, and the cross-channel pass counts neither as a
-    rival. An isotopologue follows its owner's reading, as it does everywhere.
+    A row swapped to the mode's reading whose set-aside reading a later round
+    bears out swaps back. For every monoisotopic row, a same-ion reading
+    through a gated channel whose neutral has no partner is marked
+    :data:`PARTNER_GATE_UNMET`: a reference list's acid is not doubted for a
+    formate reading nothing bore out. The displaced reading of a swapped row is
+    marked the same way, kept on the row for the reader, and the cross-channel
+    pass counts neither as a rival. An isotopologue follows its owner's
+    reading, as it does everywhere.
 
     :param assignments: Both stages' rows, modified in place.
     :param notation_by_id: The run's mechanisms, by the id the rows carry.
     :param minor_channels: The notations that are secondary in this run.
     :param partner_gated_channels: The secondary channels held to a partner.
     :param tier_bands: The run's evidence bands, for a swapped reading's tier.
-    :return: A JSON-serializable summary: rows kept on a partner, swapped,
-        left to the cap, and readings set aside.
+    :return: A JSON-serializable summary: rows kept on a partner, uncapped,
+        swapped, swapped back, left to the cap, readings set aside, and the
+        rounds it took.
     """
-    summary = {"partnered": 0, "uncapped": 0, "swapped": 0, "kept": 0, "set_aside": 0}
+    summary = {
+        "partnered": 0,
+        "uncapped": 0,
+        "swapped": 0,
+        "swapped_back": 0,
+        "kept": 0,
+        "set_aside": 0,
+        "rounds": 0,
+    }
     if not partner_gated_channels:
         return summary
     minor_ids = {mid for mid, n in notation_by_id.items() if n in minor_channels}
@@ -2624,14 +2646,16 @@ def apply_partner_gates(
             assigned_threshold=assigned_threshold,
         )
 
-    partnered = {
-        row["assigned_formula"]
-        for row in assignments
-        if row.get("role") == ROLE_M0
-        and row.get("ionization_mechanism_id") not in minor_ids
-        and row.get("assigned_formula")
-        and row.get("tier") in (TIER_ASSIGNED, TIER_CANDIDATE)
-    }
+    def partners() -> set[str]:
+        return {
+            row["assigned_formula"]
+            for row in assignments
+            if row.get("role") == ROLE_M0
+            and row.get("ionization_mechanism_id") not in minor_ids
+            and row.get("assigned_formula")
+            and row.get("tier") in (TIER_ASSIGNED, TIER_CANDIDATE)
+        }
+
     children: dict[str, list[dict]] = {}
     for row in assignments:
         if row.get("role") == ROLE_ISO_CHILD and row.get("owner_peak_assignment_id"):
@@ -2646,58 +2670,8 @@ def apply_partner_gates(
             and neutral_is_closed_shell(str(formula))
         )
 
-    for row in assignments:
-        if row.get("role") != ROLE_M0:
-            continue
-        # Same-ion readings through a gated channel that nothing bore out are
-        # set aside on every row, a reference list's included.
-        for alternative in row.get("alternatives") or []:
-            if (
-                alternative.get("same_ion")
-                and alternative.get("ionization_mechanism_id") in gated_ids
-                and alternative.get("assigned_formula") not in partnered
-                and alternative.get("partner_gate") != PARTNER_GATE_UNMET
-            ):
-                alternative["partner_gate"] = PARTNER_GATE_UNMET
-                summary["set_aside"] += 1
-        if row.get("ionization_mechanism_id") not in gated_ids:
-            continue
-        own = notation_by_id.get(row["ionization_mechanism_id"])
-        provenance = row.setdefault("provenance", {})
-        if row.get("assigned_formula") in partnered:
-            provenance["partner_gate"] = {"channel": own, "partner": True}
-            summary["partnered"] += 1
-            verdict = provenance.get("minor_channel") or {}
-            if verdict.get("capped"):
-                # The policy saw the search's rows alone; the partner is here.
-                verdict["corroborated_by"] = "second_channel"
-                verdict["capped"] = False
-                restored = tier_of(float(provenance.get("evidence") or 0.0))
-                if restored is not None:
-                    row["tier"] = restored
-                summary["uncapped"] += 1
-            continue
-        family = [alt for alt in row.get("alternatives") or [] if molecule(alt)]
-        chosen = next(
-            (alt for alt in family if alt["ionization_mechanism_id"] not in minor_ids),
-            None,
-        ) or next(
-            (
-                alt
-                for alt in family
-                if alt["ionization_mechanism_id"] in minor_ids
-                and alt["assigned_formula"] in partnered
-            ),
-            None,
-        )
-        if chosen is None:
-            provenance["partner_gate"] = {
-                "channel": own,
-                "partner": False,
-                "kept": "no other reading of the ion",
-            }
-            summary["kept"] += 1
-            continue
+    def swap(row: dict, chosen: dict, provenance: dict, gate: dict) -> None:
+        """Make ``chosen`` the row's reading and set the current one aside."""
         displaced = {
             "assigned_formula": row["assigned_formula"],
             "ion_formula": row.get("ion_formula"),
@@ -2735,19 +2709,131 @@ def apply_partner_gates(
         else:
             # The mode's own reading, so the policy's verdict is moot.
             provenance.pop("minor_channel", None)
-        provenance["partner_gate"] = {
-            "channel": own,
-            "partner": False,
-            "displaced": displaced["assigned_formula"],
-            "through": notation_by_id.get(chosen["ionization_mechanism_id"]),
-        }
+        provenance["partner_gate"] = gate
         row["alternatives"] = [displaced] + [
             alt for alt in row.get("alternatives") or [] if alt is not chosen
         ]
-        summary["swapped"] += 1
         for child in children.get(str(row.get("peak_assignment_id")), ()):
             child["assigned_formula"] = row["assigned_formula"]
             child["ionization_mechanism_id"] = row["ionization_mechanism_id"]
+
+    for _round in range(MAX_PARTNER_GATE_ROUNDS):
+        summary["rounds"] += 1
+        partnered = partners()
+        changed = False
+        for row in assignments:
+            if row.get("role") != ROLE_M0:
+                continue
+            provenance = row.setdefault("provenance", {})
+            gate = provenance.get("partner_gate") or {}
+            # A row an earlier round swapped, whose set-aside reading the
+            # ledger now bears out: swap back.
+            if gate.get("displaced") and gate["displaced"] in partnered:
+                back = next(
+                    (
+                        alt
+                        for alt in row.get("alternatives") or []
+                        if alt.get("partner_gate") == PARTNER_GATE_UNMET
+                        and alt.get("assigned_formula") == gate["displaced"]
+                        and alt.get("ionization_mechanism_id") in gated_ids
+                    ),
+                    None,
+                )
+                if back is not None:
+                    back = dict(back)
+                    back.pop("partner_gate", None)
+                    own = notation_by_id.get(back["ionization_mechanism_id"])
+                    swap(row, back, provenance, {"channel": own, "partner": True})
+                    row["alternatives"] = [
+                        alt
+                        for alt in row["alternatives"]
+                        if not (
+                            alt.get("partner_gate") == PARTNER_GATE_UNMET
+                            and alt.get("assigned_formula") == back["assigned_formula"]
+                        )
+                    ]
+                    summary["swapped_back"] += 1
+                    summary["swapped"] -= 1
+                    changed = True
+                    continue
+            if row.get("ionization_mechanism_id") not in gated_ids:
+                continue
+            if gate.get("partner") is True or gate.get("kept"):
+                continue
+            own = notation_by_id.get(row["ionization_mechanism_id"])
+            if row.get("assigned_formula") in partnered:
+                # A row swapped to this reading earlier keeps the record of it.
+                provenance["partner_gate"] = {**gate, "channel": own, "partner": True}
+                summary["partnered"] += 1
+                verdict = provenance.get("minor_channel") or {}
+                if verdict.get("capped"):
+                    # The policy saw the search's rows alone; the partner is here.
+                    verdict["corroborated_by"] = "second_channel"
+                    verdict["capped"] = False
+                    restored = tier_of(float(provenance.get("evidence") or 0.0))
+                    if restored is not None:
+                        row["tier"] = restored
+                    summary["uncapped"] += 1
+                changed = True
+                continue
+            family = [alt for alt in row.get("alternatives") or [] if molecule(alt)]
+            chosen = next(
+                (
+                    alt
+                    for alt in family
+                    if alt["ionization_mechanism_id"] not in minor_ids
+                ),
+                None,
+            ) or next(
+                (
+                    alt
+                    for alt in family
+                    if alt["ionization_mechanism_id"] in minor_ids
+                    and alt["assigned_formula"] in partnered
+                ),
+                None,
+            )
+            if chosen is None:
+                provenance["partner_gate"] = {
+                    "channel": own,
+                    "partner": False,
+                    "kept": "no other reading of the ion",
+                }
+                summary["kept"] += 1
+                changed = True
+                continue
+            swap(
+                row,
+                chosen,
+                provenance,
+                {
+                    "channel": own,
+                    "partner": False,
+                    "displaced": row["assigned_formula"],
+                    "through": notation_by_id.get(chosen["ionization_mechanism_id"]),
+                },
+            )
+            summary["swapped"] += 1
+            changed = True
+        if not changed:
+            break
+
+    # Same-ion readings through a gated channel that nothing bore out are set
+    # aside on every row, a reference list's included - read last, against
+    # the partners the fixed point settled on.
+    partnered = partners()
+    for row in assignments:
+        if row.get("role") != ROLE_M0:
+            continue
+        for alternative in row.get("alternatives") or []:
+            if (
+                alternative.get("same_ion")
+                and alternative.get("ionization_mechanism_id") in gated_ids
+                and alternative.get("partner_gate") != PARTNER_GATE_UNMET
+                and alternative.get("assigned_formula") not in partnered
+            ):
+                alternative["partner_gate"] = PARTNER_GATE_UNMET
+                summary["set_aside"] += 1
     return summary
 
 
