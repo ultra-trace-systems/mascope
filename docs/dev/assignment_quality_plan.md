@@ -46,6 +46,7 @@ dataset's sets G to J, the chemist's reading of 2026-09-24 (decision 21).
 | 3.1 - a profile for the charge-transfer source | - | planned |
 | 3.2 - formate as an opportunistic channel | - | planned |
 | 3.3 - name the source ions | - | planned |
+| 3.3b - the standard adduct notation | - | planned (decision 23); before 2.0, as its own change |
 | 3.4 - an opportunistic channel needs a second channel | - | planned |
 | 3.5 - calibrants below the brightest lines, an offset term, and the low-mass bend (calibration node) | - | planned |
 | 3.6 - priors and the dataset's context | - | planned |
@@ -1553,6 +1554,52 @@ bump.
   no analyte row claimed (the stage-1 guard).
 - **Size.** S. The union of two reagent libraries on a mixed-reagent mode is
   not in this step (decision 22).
+
+### 3.3b The standard adduct notation
+
+- **What.** The ionization mechanism is written the way chemists and every
+  other tool write it: `[M-H]-`, `[M+Br]-`, `[M+NH4]+`, `[M]+.`, `[M-H]+`,
+  `[M-CH3]+`, `[M+CH4N2O+H]+`, with the ion's own charge at the end and a
+  labelled moiety kept as it is (`[M+^NO3]-`). Three moves, the first two in
+  this step and the third at 2.0 (decision 23):
+  1. *Accept and show.* `parse_ionization`, the mechanism validator and
+     `_mechanism_parts` read both forms; new rows are stored in the standard
+     form; the catalogue, the profiles' fingerprints and secondary-channel
+     tables, the `tooling/score_eval` panels and the docs are spelled in it;
+     the mode editor, the inspector's chips, the ledger exports and the SDK
+     show it. The old form still parses on input.
+  2. *Migrate.* A data migration rewrites every stored row by the mapping
+     `+X-` to `[M+X]-`, `+X+` to `[M+X]+`, `-X+` to `[M-X]-`, `-X-` to
+     `[M-X]+`, `+` to `[M]+.`, `-` to `[M]-.`, a parenthesised moiety
+     expanded to its terms, with the downgrade applying it backwards. The
+     mapping is total and reversible, so the migration is one function and
+     its inverse, and a row it cannot read is left as it is and logged.
+  3. *Retire the old form* at 2.0, the release that turns assignment on: the
+     validator refuses it on input and the parser's second grammar goes.
+- **Why.** The `<operation><moiety><moiety charge>` form is read wrong by
+  everyone who meets it. Shipped UI text had it wrong until July (the
+  ionization method design note, section 2.1); the composition library
+  special-cased `-H-` as deprotonation while the validator stored the same
+  string as a cation, so two parsers disagreed for a year (step 3.1); and the
+  reference engine spells every subtraction the inverse way on both
+  polarities, because its authors read the trailing sign as the ion's, which
+  is what the standard form makes it. The step 3.1 review cost a round on
+  exactly this. The standard form has no such reading: the sign at the end is
+  the ion's charge, `[M-H]-` is deprotonation and `[M-H]+` hydride
+  abstraction, and the reference engine's adapter becomes an identity.
+- **Where.** `mascope_tools.composition.utils.parse_ionization` and
+  `combine_formula_and_ionization`; the mechanism pydantic validator and
+  `target_ions_compute._mechanism_parts`; `ionization_catalogue`;
+  `profiles.py` and `reagents.py`; an alembic data migration; the frontend's
+  mode editor and inspector; the SDK's mechanism helpers; the ionization
+  method design note's section 4.4, whose structured `Adduct` row is the
+  fuller answer and can follow this step rather than precede it.
+- **Verify.** Every stored row on every fleet server round-trips old to new
+  to old (the fleet corpus's mechanism table, 24 spellings); the gate's
+  ledgers on sets A to J are identical before and after, since no mass
+  changes; the reference engine reads a run's mechanisms without its adapter.
+- **Size.** M, in two PRs (accept and show; migrate). Not a stage-3 gate
+  item: it moves no metric, and it lands whenever it is ready before 2.0.
 
 ### 3.4 An opportunistic channel needs a second channel
 
@@ -4466,6 +4513,16 @@ is within 0.4 ppm interquartile wherever the calibration is good.
     multi-chemistry acquisition into sample items of one chemistry each,
     after which each item resolves to its own profile. Set J is measured at
     every gate and not gated until then.
+23. **The mechanism notation moves to the standard adduct form before 2.0**
+    (taken 2026-09-24 by the plan owner). `[M-H]-` rather than `-H+`: the
+    sign at the end is the ion's charge, which is how everyone reads it and
+    how the reference engine already keys its tables. Sooner rather than
+    later, as its own change (step 3.3b) rather than inside a stage-3 step:
+    the old form is accepted and the new one shown first, stored rows are
+    migrated by a reversible mapping, and the old form is refused at 2.0,
+    the release that turns assignment on and makes the notation user-facing
+    in the inspector and in the reference engine's publish path. The
+    structured adduct row of the ionization method design can follow.
 
 ## Risks
 
