@@ -2,7 +2,7 @@
 
 Notable changes to Mascope are documented here. Versions follow the date-based scheme `YYYY.MM.DD-<hash>` produced by the release workflow, and releases are pinned with a semantic version tag `vX.Y.Z`.
 
-## [Unreleased]
+## [1.9.0] - 2026.09.24
 
 ### Added
 
