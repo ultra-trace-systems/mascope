@@ -146,6 +146,17 @@ tropylium ion read adds it under Ionization mechanisms once; until then the run'
 lists the channel as unavailable. The context is the one the profile is normally used
 with.
 
+**Formate.** Every negative reagent profile (nitrate, 15N-nitrate, bromide, iodide) can
+open a formate adduct channel, `+HCOO-`, the way it opens carbonate: where the spectrum
+shows formate, its dimer with formic acid, or its cluster with the reagent's acid. On a
+nitrate source the channel also stays on where the acquisition starts above every
+formate carrier the source makes, since that silence is the window's, not the
+chemistry's; a halide profile claims only what it can show. A peak that reads both as a
+deprotonated acid and as the formate adduct of a molecule 46 Da lighter is one ion read
+two ways: the run elects the formate reading, keeps the acid as the row's other reading,
+and holds the row at candidate until the lighter molecule is seen through one of the
+mode's own channels.
+
 **No profile and No context.** *No profile* switches the layer off: the run searches
 the engine's original wide grid at a fixed 10 ppm window. *No context* applies no
 matrix prior.
@@ -403,7 +414,8 @@ What caps a row at candidate:
   a different number of nitrogen atoms on the compound - an ammonium, urea or nitrate
   adduct against a plain channel, or two such adducts against each other; *ambiguous
   adduct* is the rest, such as a bromide cluster against the deprotonated molecule that
-  holds the hydrogen bromide. The row keeps its formula. A radical reading is no rival,
+  holds the hydrogen bromide, or a formate adduct against the deprotonated acid that holds
+  the formic acid. The row keeps its formula. A radical reading is no rival,
   since the run never holds a radical at *assigned*, and a compound of your own target
   library is exempt, since your curation chose the reading. A formula from a loaded
   reference list is asked too: the run gives it the other readings of its ion that the

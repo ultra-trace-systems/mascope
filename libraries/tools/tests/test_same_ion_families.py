@@ -44,6 +44,37 @@ def _candidate(formula, mechanism, ion, error_ppm=0.0):
     }
 
 
+class TestTheFormateAdductAndTheAcid:
+    """One ion, C11H19O7-: a C11 acid deprotonated, or a C10 product with formate.
+
+    Both neutrals are molecules, so the election falls to the mechanism that
+    carries the mass, and the formate adduct is that reading. The acid stays on
+    the row as the reading it displaced; which of the two the sample supports
+    is the cross-channel pass's question, not the finder's.
+    """
+
+    def test_the_formate_reading_is_elected_and_the_acid_kept(self):
+        acid = _candidate("C11H20O7", "-H+", "C11H19O7-")
+        adduct = _candidate("C10H18O5", "+HCOO-", "C11H19O7-")
+        assert neutral_is_closed_shell("C11H20O7")
+        assert neutral_is_closed_shell("C10H18O5")
+        assert mechanism_mass_contribution("+HCOO-") > mechanism_mass_contribution(
+            "-H+"
+        )
+        for order in ((acid, adduct), (adduct, acid)):
+            [winner] = elect_same_ion_families(list(order))
+            assert winner["formula"] == "C10H18O5"
+            assert winner["ionization_mechanism"] == "+HCOO-"
+            assert [a["formula"] for a in winner[SAME_ION_ALTERNATIVES]] == ["C11H20O7"]
+
+    def test_the_two_readings_are_one_ion_to_the_finder(self):
+        # 263.1136: what the chamber batch's strongest assigned peak reads as.
+        target = calculate_mass(formula="C10H18O5") + parse_ionization("+HCOO-").mass
+        acid = calculate_mass(formula="C11H20O7") - parse_ionization("-H+").mass
+        assert target == pytest.approx(acid, abs=1e-9)
+        assert target == pytest.approx(263.1136, abs=5e-4)
+
+
 class TestTheNeutralIsAMolecule:
     """The first key: between two readings of one ion, prefer the molecule."""
 

@@ -36,6 +36,7 @@ MECHANISM_POLARITIES: dict[str, str] = {
     "+^NO3-": "-",
     "+Br-": "-",
     "+I-": "-",
+    "+HCOO-": "-",
     "+NH4+": "+",
     "+^NH4+": "+",
     "+(CH4N2O)H+": "+",

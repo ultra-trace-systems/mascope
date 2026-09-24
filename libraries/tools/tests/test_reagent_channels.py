@@ -27,6 +27,9 @@ CARBONATE = 59.9853  # [CO3]-
 DIBROMIDE = 157.8372  # [Br2]-
 FLUORANTHENE_CATION = 202.0777  # [C16H10]+
 FLUORANTHENE_13C = 203.0811  # [13C]C15H10+, 17% of the beam
+FORMATE = 44.9982  # [HCOO]-
+FORMATE_DIMER = 91.0037  # [HCOO+HCOOH]-
+FORMATE_NITRIC = 107.9938  # [HCOO+HNO3]-
 HYDRONIUM = 19.0178  # [H3O]+
 BICARBONATE = 60.9931  # [HCO3]-
 
@@ -95,6 +98,38 @@ class TestTheProbes:
         }
         assert negative["[HCO3]-"].mz == pytest.approx(BICARBONATE, abs=5e-4)
 
+    def test_the_formate_probes_follow_the_reagent_and_its_label(self):
+        # The acid cluster is built from the profile's own reagent, so the
+        # labelled profile probes it 0.997 Da above the unlabelled one - where
+        # the chamber dataset shows it, read by the engine (lacking the
+        # channel) as formic acid through the nitrate adduct: the same ion.
+        light = {
+            probe.label: probe
+            for channel in R.secondary_channels("NO3")
+            if channel.notation == "+HCOO-"
+            for probe in channel.probes
+        }
+        heavy = {
+            probe.label: probe
+            for channel in R.secondary_channels("NO3_15N")
+            if channel.notation == "+HCOO-"
+            for probe in channel.probes
+        }
+        assert light["[HCOO]-"].mz == pytest.approx(FORMATE, abs=5e-4)
+        assert light["[HCOO+HCOOH]-"].mz == pytest.approx(FORMATE_DIMER, abs=5e-4)
+        assert light["[HCOO+HNO3]-"].mz == pytest.approx(FORMATE_NITRIC, abs=5e-4)
+        assert heavy["[HCOO+H^NO3]-"].mz - light["[HCOO+HNO3]-"].mz == pytest.approx(
+            0.997, abs=1e-3
+        )
+        # A halide profile keeps the evidence it can show: the bare ions only.
+        bromide = [
+            probe.label
+            for channel in R.secondary_channels("BR")
+            if channel.notation == "+HCOO-"
+            for probe in channel.probes
+        ]
+        assert bromide == ["[HCOO]-", "[HCOO+HCOOH]-"]
+
     def test_a_channel_with_no_probes_can_never_switch_on(self):
         channel = R.SecondaryChannel(notation="+Xx+", label="Unprovable")
         mz, intensity = _spectrum((150.0, 1.0))
@@ -131,7 +166,7 @@ class TestDetection:
         mz, intensity = _spectrum((CARBONATE, 0.01))
         evidence = R.detect_channels(R.secondary_channels("BR"), mz, intensity, ppm=5.0)
         assert R.present_notations(evidence) == ["+CO3-"]
-        assert [item.notation for item in evidence] == ["+CO3-", "+Br2-"]
+        assert [item.notation for item in evidence] == ["+CO3-", "+Br2-", "+HCOO-"]
 
     def test_the_brightest_qualifying_probe_is_the_one_recorded(self):
         mz, intensity = _spectrum((CARBONATE, 0.01), (60.9931, 0.2))
@@ -210,6 +245,44 @@ class TestDetection:
         )
         assert R.present_notations(evidence) == []
 
+    def test_formate_switches_its_channel_on_where_the_window_shows_it(self):
+        mz, intensity = _spectrum((FORMATE, 0.2), (300.0, 0.01))
+        evidence = R.detect_channels(R.secondary_channels("BR"), mz, intensity, ppm=5.0)
+        assert R.present_notations(evidence) == ["+HCOO-"]
+        assert evidence[-1].probe == "[HCOO]-"
+
+    def test_a_nitrate_window_starting_above_formate_leaves_the_channel_on(self):
+        # The batch that carries the C11 pseudo-acids is acquired from m/z 130,
+        # above every formate carrier the source makes; the sister batch
+        # acquired from 42 shows the carrier at up to 40% of the base peak. So
+        # the window's silence is a fact about the window, as it is for
+        # carbonate on the same source.
+        # Built by hand: the helper's base peak at m/z 100 would put the
+        # reagent-acid probes inside the window.
+        mz, intensity = np.array([150.0, 600.0]), np.array([1.0e6, 1.0e4])
+        evidence = R.detect_channels(
+            R.secondary_channels("NO3_15N"), mz, intensity, ppm=5.0
+        )
+        assert R.present_notations(evidence) == ["+CO3-", "+HCOO-"]
+        formate = [item for item in evidence if item.notation == "+HCOO-"][0]
+        assert formate.status == R.STATUS_UNOBSERVABLE
+
+    def test_a_halide_window_starting_above_formate_leaves_the_channel_off(self):
+        # Silence is not evidence, but the halide profiles claim only what
+        # they can show.
+        mz, intensity = np.array([150.0, 600.0]), np.array([1.0e6, 1.0e4])
+        evidence = R.detect_channels(R.secondary_channels("BR"), mz, intensity, ppm=5.0)
+        assert "+HCOO-" not in R.present_notations(evidence)
+
+    def test_a_wide_nitrate_window_without_formate_switches_it_off(self):
+        mz, intensity = _spectrum((42.0, 0.01), (600.0, 0.01))
+        evidence = R.detect_channels(
+            R.secondary_channels("NO3"), mz, intensity, ppm=5.0
+        )
+        formate = [item for item in evidence if item.notation == "+HCOO-"][0]
+        assert formate.present is False
+        assert formate.status == R.STATUS_NOT_FOUND
+
     def test_the_source_acids_switch_deprotonation_on(self):
         mz, intensity = _spectrum((BICARBONATE, 0.02), (300.0, 0.01))
         evidence = R.detect_channels(
@@ -232,6 +305,7 @@ class TestTheRecord:
         assert records == [
             {"channel": "+CO3-", "present": False, "status": "not_found"},
             {"channel": "+Br2-", "present": False, "status": "not_found"},
+            {"channel": "+HCOO-", "present": False, "status": "not_found"},
         ]
 
     def test_a_present_channel_records_what_it_was_found_on(self):

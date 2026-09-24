@@ -35,6 +35,21 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   atmosphere makes on 357 of the negative batch's 373 assigned neutrals
   (assignment quality plan, step 3.1).
 
+- **Peak assignment can read a formate adduct on a negative reagent source.**
+  The nitrate, 15N-nitrate, bromide and iodide profiles open a formate channel,
+  `+HCOO-`, the way they open carbonate: where the spectrum shows formate, its
+  dimer with formic acid or its cluster with the reagent's acid, and on a
+  nitrate source also where the acquisition starts above every carrier the
+  source makes. A peak that reads both as a deprotonated acid and as the
+  formate adduct of a molecule 46 Da lighter is one ion read two ways: the run
+  elects the formate reading, keeps the acid as the row's other reading, and
+  holds the row at candidate until the lighter molecule is seen through one of
+  the mode's own channels. On a chamber dataset the engine had committed a
+  series of C11 acids at the top tier, a quarter of one batch's assigned
+  intensity, every one of them a C10 oxidation product plus formic acid
+  (assignment quality plan, step 3.2). The channel is searched only where the
+  deployment holds the `+HCOO-` mechanism.
+
 - **Mascope now ships curated atmospheric CIMS reference lists, and
   `mascope reference seed` loads them.** The lists:
   - a monoterpene HOM list (Kang 2021), split into its closed-shell molecules

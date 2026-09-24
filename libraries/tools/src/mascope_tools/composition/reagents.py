@@ -274,6 +274,59 @@ _DIBROMIDE_PROBES = (ProbeIon("Br2", -1, "[Br2]-"),)
 _DIIODIDE_PROBES = (ProbeIon("I2", -1, "[I2]-"),)
 
 
+def _formate_probes(reagent_formula: str | None) -> tuple[ProbeIon, ...]:
+    """Formate's own ions, and its cluster with the reagent's acid.
+
+    The bare anion at m/z 45 and its dimer with formic acid at 91 are the
+    carrier showing itself: on the chamber dataset that measured this channel
+    they sit at 14-40% and 11-65% of the base peak of every spectrum acquired
+    from m/z 42. The cluster with the reagent's acid carries the same evidence
+    63 Da higher, and it is built from the profile's own reagent so a labelled
+    reagent's label follows into it: the 15N-nitrate profile probes
+    ``[HCOO+H(15N)O3]-`` at 108.99, where that dataset shows it at 0.1-0.6% of
+    the base peak - and where the engine, lacking the channel, read it as
+    formic acid through the nitrate adduct, which is the same ion.
+
+    :param reagent_formula: The reagent ion's composition, or None.
+    :return: The probe ions, the cluster omitted when there is no reagent.
+    """
+    probes = [
+        ProbeIon("CHO2", -1, "[HCOO]-"),
+        ProbeIon("C2H3O4", -1, "[HCOO+HCOOH]-"),
+    ]
+    if reagent_formula:
+        acid = f"H{reagent_formula}"
+        probes.append(ProbeIon(f"CHO2{acid}", -1, f"[HCOO+{acid}]-"))
+    return tuple(probes)
+
+
+#: Why the nitrate profiles default their formate channel ON where a spectrum
+#: could not have shown it, as they do carbonate. The batch that carries the
+#: C11 pseudo-acids is acquired from m/z 130, above every formate carrier the
+#: source makes: on the same source's wide-window batch the anion, the dimer
+#: and the reagent-acid cluster are bright, the hydrate of that cluster sits at
+#: 127, and above 130 there is nothing - no cluster with two acids at 173, the
+#: cluster with two formic acids at 137 at 0.01-0.05% of the base peak, the
+#: height of an analyte rather than a carrier. So a window starting at 130
+#: cannot show this channel however loud the source runs it, and reading its
+#: silence as absence would read a fact about the window as a fact about the
+#: chemistry. What the channel may then do is bounded as carbonate's is: it
+#: takes no peak from a declared mechanism, its reading of an ion the mode's own
+#: channel also reads is capped at candidate until the neutral it proposes is
+#: seen through that channel, and it commits as assigned only with
+#: corroboration.
+_NITRATE_FORMATE_NOTE = (
+    "formate, its dimer and its cluster with the reagent's acid; the source "
+    "makes no formate carrier above m/z 127, so a window starting higher "
+    "cannot show the channel and its silence is not evidence"
+)
+
+#: The halide profiles keep the evidence they can show, as they do for
+#: carbonate: the bare formate ions only, and a window that cannot show them
+#: leaves the channel off.
+_HALIDE_FORMATE_NOTE = "formate and its dimer with formic acid"
+
+
 #: The fluoranthene ion of a charge-transfer (EASY-IC) source, in the polarity
 #: the source runs. Its presence is the statement that the fluoranthene beam is
 #: what ionizes this sample, which is what the source's abstraction channel
@@ -373,6 +426,12 @@ SECONDARY_CHANNELS: dict[str, tuple[SecondaryChannel, ...]] = {
             probes=_DIBROMIDE_PROBES,
             note="the reagent's own second cluster rung",
         ),
+        SecondaryChannel(
+            notation="+HCOO-",
+            label="Formate adduct",
+            probes=_formate_probes(None),
+            note=_HALIDE_FORMATE_NOTE,
+        ),
     ),
     "NO3": (
         SecondaryChannel(
@@ -381,6 +440,13 @@ SECONDARY_CHANNELS: dict[str, tuple[SecondaryChannel, ...]] = {
             probes=_carbonate_probes("NO3"),
             when_unobservable=UNOBSERVABLE_ON,
             note=_NITRATE_CARBONATE_NOTE,
+        ),
+        SecondaryChannel(
+            notation="+HCOO-",
+            label="Formate adduct",
+            probes=_formate_probes("NO3"),
+            when_unobservable=UNOBSERVABLE_ON,
+            note=_NITRATE_FORMATE_NOTE,
         ),
     ),
     "NO3_15N": (
@@ -394,6 +460,13 @@ SECONDARY_CHANNELS: dict[str, tuple[SecondaryChannel, ...]] = {
             when_unobservable=UNOBSERVABLE_ON,
             note=_NITRATE_CARBONATE_NOTE,
         ),
+        SecondaryChannel(
+            notation="+HCOO-",
+            label="Formate adduct",
+            probes=_formate_probes("^NO3"),
+            when_unobservable=UNOBSERVABLE_ON,
+            note=_NITRATE_FORMATE_NOTE,
+        ),
     ),
     "IODIDE": (
         SecondaryChannel(
@@ -401,6 +474,12 @@ SECONDARY_CHANNELS: dict[str, tuple[SecondaryChannel, ...]] = {
             label="Diiodide cluster",
             probes=_DIIODIDE_PROBES,
             note="the reagent's own second cluster rung",
+        ),
+        SecondaryChannel(
+            notation="+HCOO-",
+            label="Formate adduct",
+            probes=_formate_probes(None),
+            note=_HALIDE_FORMATE_NOTE,
         ),
     ),
     "EASYIC_POS": (
