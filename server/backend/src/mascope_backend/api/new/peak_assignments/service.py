@@ -90,6 +90,7 @@ from mascope_backend.api.new.peak_assignments.engine import (
     TIERING_KEY,
     ReagentOffset,
     SampleMassAccuracy,
+    apply_partner_gates,
     build_unassigned_assignments,
     calibration_meta,
     drop_ions_claimed_elsewhere,
@@ -1241,6 +1242,7 @@ def _read_other_readings(
     searched_mechanisms: list[SimpleNamespace],
     resolved_profile: ResolvedProfile,
     max_alternatives: int,
+    tier_bands: dict[str, float] | None = None,
 ) -> tuple[int, dict]:
     """Give each reference mirror row its ion's family, then read every channel.
 
@@ -1257,6 +1259,7 @@ def _read_other_readings(
     :param searched_mechanisms: :func:`_searched_mechanisms`.
     :param resolved_profile: The sample's resolved chemistry.
     :param max_alternatives: Cap on stored alternatives per row.
+    :param tier_bands: The run's evidence bands, for the partner gate.
     :return: How many mirror rows carry same-ion readings, and the cross-channel
         pass's summary.
     """
@@ -1266,10 +1269,16 @@ def _read_other_readings(
         resolved_profile=resolved_profile,
         max_alternatives=max_alternatives,
     )
-    cross_channel = apply_cross_channel(
-        stage_a_assignments + stage_b_assignments,
-        notation_by_id=_notation_by_id(searched_mechanisms),
+    notation_by_id = _notation_by_id(searched_mechanisms)
+    rows = stage_a_assignments + stage_b_assignments
+    apply_partner_gates(
+        rows,
+        notation_by_id=notation_by_id,
+        minor_channels=resolved_profile.minor_channels,
+        partner_gated_channels=resolved_profile.partner_gated_channels,
+        tier_bands=tier_bands,
     )
+    cross_channel = apply_cross_channel(rows, notation_by_id=notation_by_id)
     return mirror_families, cross_channel
 
 
@@ -1343,9 +1352,11 @@ def judge_commits(
     max_alternatives: int,
     lines: SpectrumLines | None = None,
     tier_bands: dict[str, float] | None = None,
+    minor_channels: frozenset[str] = frozenset(),
+    partner_gated_channels: frozenset[str] = frozenset(),
 ) -> JudgedCommits:
-    """Run the mass gate, the cross-channel pass and the tiering pass, and read
-    the lines they find in doubt as their neighbours'.
+    """Run the partner gate, the mass gate, the cross-channel pass and the
+    tiering pass, and read the lines they find in doubt as their neighbours'.
 
     The three passes read the finished ledger, and a claim changes it: a
     monoisotopic row becomes an isotopologue, so it no longer anchors the run's
@@ -1365,6 +1376,10 @@ def judge_commits(
     :param lines: The sample's peaks, read for how well each places its line.
     :param tier_bands: The run's evidence bands, which a row under the top one
         names first among its reasons.
+    :param minor_channels: The run's opportunistic channels.
+    :param partner_gated_channels: Those of them held to a partner
+        (``engine.apply_partner_gates``), read over both stages' rows before
+        any pass demotes.
     :return: The judged rows and each pass's summary.
     """
     claims: dict[str, EnvelopeClaim] = {}
@@ -1373,6 +1388,13 @@ def judge_commits(
         claim_round += 1
         judged = apply_claims(
             copy.deepcopy(rows), claims.values(), max_alternatives=max_alternatives
+        )
+        apply_partner_gates(
+            judged,
+            notation_by_id=notation_by_id,
+            minor_channels=minor_channels,
+            partner_gated_channels=partner_gated_channels,
+            tier_bands=tier_bands,
         )
         mass_calibration = apply_mass_gate(
             judged,
@@ -2795,7 +2817,6 @@ async def _run_sample_assignment(
                     formula_formatter=to_custom_element_format,
                     max_alternatives=config.max_alternatives,
                     minor_channels=resolved_profile.minor_channels,
-                    partner_gated_channels=resolved_profile.partner_gated_channels,
                     excluded_peak_ids=assigned_peak_ids - election.released,
                     fit_by_seed=fit_by_seed,
                 )
@@ -2846,6 +2867,8 @@ async def _run_sample_assignment(
             max_alternatives=config.max_alternatives,
             lines=lines,
             tier_bands=config.tier_bands(),
+            minor_channels=resolved_profile.minor_channels,
+            partner_gated_channels=resolved_profile.partner_gated_channels,
         )
         mass_calibration = judged.mass_calibration
         cross_channel = judged.cross_channel
@@ -3225,6 +3248,7 @@ async def _fold_sample_peaks_without_run(
         ),
         resolved_profile=resolved_profile,
         max_alternatives=config.max_alternatives,
+        tier_bands=config.tier_bands(),
     )
     assigned = claimed_peak_ids | {row["sample_peak_id"] for row in stage_a}
     unassigned = build_unassigned_assignments(
