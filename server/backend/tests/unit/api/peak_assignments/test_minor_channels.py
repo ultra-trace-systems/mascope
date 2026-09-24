@@ -14,6 +14,7 @@ import pytest
 
 from mascope_backend.api.new.peak_assignments.config import PeakAssignmentConfig
 from mascope_backend.api.new.peak_assignments.engine import (
+    apply_partner_gates,
     untargeted_matches_to_peak_assignments,
 )
 from mascope_backend.api.new.peak_assignments.profiles import (
@@ -182,8 +183,20 @@ class TestThePartnerGate:
     IDS = {"+NO3-": "im-no3", "-H+": "im-deprot", "+HCOO-": "im-formate"}
     CT_IDS = {"+": "im-ct", "+H+": "im-h", "-H-": "im-hydride"}
 
-    def _assign(self, matches, peaks, ids, minor, gated):
-        return untargeted_matches_to_peak_assignments(
+    BANDS = {TIER_ASSIGNED: 0.75, TIER_CANDIDATE: 0.45}
+
+    def _gate(self, rows, ids, minor, gated):
+        apply_partner_gates(
+            rows,
+            notation_by_id={mid: n for n, mid in ids.items()},
+            minor_channels=frozenset(minor),
+            partner_gated_channels=frozenset(gated),
+            tier_bands=self.BANDS,
+        )
+        return rows
+
+    def _assign(self, matches, peaks, ids, minor, gated, stage_a=()):
+        rows = untargeted_matches_to_peak_assignments(
             pd.DataFrame(matches),
             peaks_df=peaks,
             sample_item_id="si-1",
@@ -193,8 +206,8 @@ class TestThePartnerGate:
             mechanism_id_by_notation=ids,
             max_alternatives=5,
             minor_channels=frozenset(minor),
-            partner_gated_channels=frozenset(gated),
         )
+        return self._gate(list(stage_a) + rows, ids, minor, gated)
 
     @staticmethod
     def _family(*readings):
@@ -284,6 +297,73 @@ class TestThePartnerGate:
             row["provenance"]["partner_gate"]["kept"] == "no other reading of the ion"
         )
         assert row["provenance"]["minor_channel"]["capped"] is True
+
+    def test_a_reference_list_row_is_the_partner_and_lifts_the_cap(self):
+        # The C10 product is a Stage A match, not a search row: the policy
+        # capped the formate reading for want of a partner among the search's
+        # rows, and the gate, reading both stages, lifts it.
+        peaks = _peaks(("p1", 263.1136, 1.0e6))
+        stage_a = [
+            {
+                "peak_assignment_id": "a1",
+                "role": "M0",
+                "assigned_formula": "C10H18O5",
+                "ion_formula": "C10H18NO8-",
+                "ionization_mechanism_id": "im-no3",
+                "tier": TIER_ASSIGNED,
+                "source": "database",
+                "alternatives": [],
+                "provenance": {},
+            }
+        ]
+        rows = self._assign(
+            [
+                {
+                    **_match(263.1136, "C10H18O5", "C11H19O7-", "+HCOO-", 0.99),
+                    "same_ion_alternatives": self._family(
+                        ("C11H20O7", "C11H19O7-", "-H+")
+                    ),
+                }
+            ],
+            peaks,
+            self.IDS,
+            minor={"+HCOO-"},
+            gated={"+HCOO-"},
+            stage_a=stage_a,
+        )
+        formate = [r for r in rows if r.get("ionization_mechanism_id") == "im-formate"]
+        assert formate[0]["assigned_formula"] == "C10H18O5"
+        assert formate[0]["tier"] == TIER_ASSIGNED
+        assert formate[0]["provenance"]["partner_gate"]["partner"] is True
+        assert formate[0]["provenance"]["minor_channel"] == {
+            "corroborated_by": "second_channel",
+            "capped": False,
+        }
+
+    def test_a_reference_list_acid_is_not_doubted_for_an_unmet_formate_reading(self):
+        # A mirror row carries the readings the search would have held; the
+        # formate one is set aside where nothing shows its neutral, so the
+        # cross-channel pass has no rival to cap the acid on.
+        mirror = {
+            "peak_assignment_id": "a1",
+            "role": "M0",
+            "assigned_formula": "C11H20O7",
+            "ion_formula": "C11H19O7-",
+            "ionization_mechanism_id": "im-deprot",
+            "tier": TIER_ASSIGNED,
+            "source": "database",
+            "alternatives": [
+                {
+                    "assigned_formula": "C10H18O5",
+                    "ionization_mechanism_id": "im-formate",
+                    "same_ion": True,
+                }
+            ],
+            "provenance": {},
+        }
+        [row] = self._gate([mirror], self.IDS, minor={"+HCOO-"}, gated={"+HCOO-"})
+        assert row["alternatives"][0]["partner_gate"] == "unmet"
+        assert row["tier"] == TIER_ASSIGNED
 
     def test_tropylium_is_toluene_less_a_hydride_where_toluene_is_seen(self):
         # C7H7+ reads as protonated C7H6 or as toluene less a hydride; the
