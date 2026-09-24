@@ -265,6 +265,15 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 ### Changed
 
+- **Peak assignment still ships off, and the assignment work in these notes
+  stays dark until a deployment opts in.** The engine at 0.5.0 with tiering
+  rule set 6, the chemistry profiles, the reference seed lists and the
+  inspector are all behind `peak_assignment`, which has been `false` since
+  1.8.0: with it off the assignment views stay hidden, the write routes answer
+  403 and nothing is assigned on ingest, so an upgrade changes nothing here by
+  itself. Targeted matching is unchanged either way. A deployment that wants
+  the feature sets `peak_assignment = true` under `[meta]` in its env config;
+  the shipped reference lists load only when `reference seed` is run.
 - **The peak inspector is more compact and has a column of its own, and the
   tier chip names the tier alone.**
   - **Find more**, the composition search, starts from the focused sample's
