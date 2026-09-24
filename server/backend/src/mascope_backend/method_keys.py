@@ -28,9 +28,24 @@ the scan-stream census. A method that alternates two ranges within a polarity
 has both in its class, because today's peak detection pools them into one
 peak list. Precursors are deliberately absent: the census keys a
 data-dependent MSn family as one stream, and only MS1 streams are read here
-anyway. A file with no census - every Tofwerk h5, and any file converted
-before the census existed - falls back to its own polarity and mass range,
-which is the same thing at the resolution such a file records it.
+anyway.
+
+**A file with no census keys on its polarity, or on nothing at all.** Which
+of the two depends on the instrument. A reader that never takes a census -
+TofDaq h5 is one acquisition on one mass axis, with no per-scan filter to
+tell scans apart - says everything it has to say with the polarity, so that
+is the class. A reader that normally does take one, on a file converted
+before the census existed, is a different case: the class is *unknown*, and
+:func:`signature_class` answers ``None`` so the caller learns nothing from
+that file. Guessing would be worse, because the guess and the census would
+key the same method two ways and split its history between them - one half
+holding the disagreements, the other doing the routing.
+
+*What must not be used is the file's own mass range.* It is an outcome, not
+an instruction: a TofDaq file records the ends of its mass axis, which move
+with each file's mass calibration, so on one production instrument 2,095
+files of one method carry 1,331 distinct ranges. Keying on it gives nearly
+every file a binding of its own, and unanimity is never tested at all.
 
 **The chemistry key** is what unanimity is judged on. Two modes built on the
 same ionization mechanisms are the same chemistry however each is named, so a
@@ -43,7 +58,6 @@ from __future__ import annotations
 
 import hashlib
 import ntpath
-import posixpath
 
 
 #: Method names an instrument reports for every acquisition, so that they
@@ -59,17 +73,26 @@ import posixpath
 #: bindings a new deployment needs most.
 CONSTANT_METHOD_NAMES: frozenset[str] = frozenset({"currentacquisition.ini"})
 
-#: Bound on a stored method key, matching the ``method_binding`` column.
-_METHOD_KEY_LIMIT = 256
+#: Instrument types whose reader records a scan-stream census. A file of one
+#: of these that carries none was converted before the census existed, so its
+#: signature class is unknown rather than absent - see :func:`signature_class`.
+CENSUS_BEARING_INSTRUMENT_TYPES: frozenset[str] = frozenset({"orbi"})
 
-#: Bound on a stored signature class, matching the ``method_binding`` column.
-#: A polarity that pools many streams is clipped rather than refused: the
-#: clipped value is still stable for the method, which is all the key needs.
-_SIGNATURE_LIMIT = 512
+#: Width of the ``method_binding.method_key`` column.
+METHOD_KEY_COLUMN = 256
+
+#: Width of the ``method_binding.signature_class`` column. A polarity that
+#: pools many streams is clipped for storage rather than refused; the digest
+#: is taken from the full value, so two methods that differ only past this
+#: length still key apart.
+SIGNATURE_CLASS_COLUMN = 512
 
 
 def method_key(method_file: str | None) -> str:
     """The method key for an acquisition's recorded method name.
+
+    Not clipped: the caller clips for storage with :func:`clipped`, and the
+    digest is taken from the whole value.
 
     :param method_file: ``sample_file.method_file``, as the instrument
         reported it: a path, a bare name, empty, or absent.
@@ -81,69 +104,75 @@ def method_key(method_file: str | None) -> str:
     """
     if not method_file:
         return ""
-    # Both separators, whatever host reads the file: an Orbitrap reports a
-    # Windows path, and Mascope runs on Linux, where ntpath.basename is the
-    # only one of the two that splits it.
-    name = posixpath.basename(ntpath.basename(str(method_file).strip()))
-    key = name.strip().casefold()
+    # ntpath, on any host: it splits on "/" as well as "\\", so it handles
+    # both the Windows path an Orbitrap reports and a posix one, while
+    # posixpath would leave a Windows path whole on Linux.
+    key = ntpath.basename(str(method_file).strip()).strip().casefold()
     if not key or key in CONSTANT_METHOD_NAMES:
         return ""
-    return key[:_METHOD_KEY_LIMIT]
+    return key
 
 
 def signature_class(
     streams: list[dict] | None,
     polarity: str,
-    mz_range: list | tuple | None = None,
-) -> str:
+    instrument_type: str | None = None,
+) -> str | None:
     """What the instrument was told to measure, for one polarity.
 
     The MS1 stream keys of that polarity, de-duplicated and sorted so that a
     method whose streams interleave in a different order still reads as one
-    class, joined with ``" + "``.
+    class, joined with ``" + "``. Not clipped: the caller clips for storage
+    with :func:`clipped`, and the digest is taken from the whole value.
+
+    With no census the answer depends on the instrument. One whose reader
+    never records a census has nothing further to say, and its polarity is
+    the class. One whose reader normally does - a file converted before the
+    census existed - has an *unknown* class, and this answers ``None`` so
+    that nothing is learned from it: a stand-in would key the same method
+    apart from the census that later files carry, and split its history.
 
     :param streams: The file's scan-stream census
-        (``SampleFileProps.scan_streams``), or ``None``/``[]`` when it took
-        none.
+        (``SampleFileProps.scan_streams``), or ``None``/``[]`` when it has
+        none. Entries must be dicts with a dict ``signature``, which
+        ``process.status.read_scan_streams`` guarantees.
     :param polarity: The polarity to describe, ``"+"`` or ``"-"``.
-    :param mz_range: The file's own mass range, used only when there is no
-        census.
-    :return: The signature class. ``""`` when neither a census nor a range
-        says anything, which keys the binding on the instrument alone.
-    :rtype: str
+    :param instrument_type: ``sample_file.instrument_type``, read only when
+        there is no census.
+    :return: The signature class, or ``None`` when it cannot be known.
+    :rtype: str | None
     """
     keys = sorted(
         {
-            str(stream.get("key"))
+            str(stream["key"])
             for stream in streams or []
-            if (stream.get("signature") or {}).get("ms_order") == 1
-            and (stream.get("signature") or {}).get("polarity") == polarity
+            if stream.get("signature", {}).get("ms_order") == 1
+            and stream.get("signature", {}).get("polarity") == polarity
             and stream.get("key")
         }
     )
     if keys:
-        return " + ".join(keys)[:_SIGNATURE_LIMIT]
+        return " + ".join(keys)
 
-    # No census: the polarity and mass range the file itself records. That is
-    # the whole of what a Tofwerk acquisition varies, so for those files this
-    # is the signature class rather than a degraded stand-in for one.
-    bounds = _range_text(mz_range)
-    return f"{polarity} {bounds}".strip() if bounds else polarity.strip()
+    if instrument_type in CENSUS_BEARING_INSTRUMENT_TYPES:
+        return None
+    return polarity.strip()
 
 
-def _range_text(mz_range: list | tuple | None) -> str:
-    """``[40.0000-600.0000]`` for a file's mass range, or ``""``.
+def clipped(value: str, limit: int) -> str:
+    """A key as its column stores it.
 
-    Rendered to four decimals like the census's own scan ranges, so the two
-    sources of a signature class read alike.
+    Only for storage. Everything that decides identity - the digest, and so
+    which files share a binding - reads the unclipped value, or two methods
+    differing only past the column width would share one row.
+
+    :param value: The full key.
+    :param limit: The column width, :data:`METHOD_KEY_COLUMN` or
+        :data:`SIGNATURE_CLASS_COLUMN`.
+    :return: The value, clipped.
+    :rtype: str
     """
-    if not mz_range or len(mz_range) < 2:
-        return ""
-    try:
-        low, high = float(mz_range[0]), float(mz_range[1])
-    except (TypeError, ValueError):
-        return ""
-    return f"[{low:.4f}-{high:.4f}]"
+    return value[:limit]
 
 
 def binding_digest(instrument: str, key: str, signature: str) -> str:
@@ -170,14 +199,19 @@ def binding_digest(instrument: str, key: str, signature: str) -> str:
 def chemistry_key(mechanism_ids: list[str] | None) -> str:
     """The chemistry a mode stands for, as one comparable string.
 
-    Its ionization mechanisms, sorted and joined: the same string for two
-    modes a deployment happens to have named differently, and a different one
-    the moment the reagents differ. A mode with no mechanisms keys on ``""``,
-    so any two such modes read as one chemistry - they describe no reagent to
-    tell apart, and nothing creates one.
+    Its ionization mechanisms as a set, sorted and joined: the same string for
+    two modes a deployment happens to have named differently, and a different
+    one the moment the reagents differ. A mode with no mechanisms keys on
+    ``""``, so any two such modes read as one chemistry - they describe no
+    reagent to tell apart, and nothing creates one.
+
+    A repeated mechanism id counts once, as it does everywhere else: the
+    modes API compares mechanism lists as sets (``_mechanism_set``) and its
+    create schema accepts a repeat, so a mode stored with one would otherwise
+    read as a second chemistry and record a disagreement that did not happen.
 
     :param mechanism_ids: ``ionization_mode.ionization_mechanism_ids``.
     :return: The chemistry key.
     :rtype: str
     """
-    return ",".join(sorted(str(mid) for mid in (mechanism_ids or []) if mid))
+    return ",".join(sorted({str(mid) for mid in (mechanism_ids or []) if mid}))

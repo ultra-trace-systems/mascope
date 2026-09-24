@@ -39,6 +39,8 @@ def upgrade() -> None:
         sa.Column("last_seen", sa.TIMESTAMP(timezone=True), nullable=False),
         sa.Column("n_streams", sa.Integer(), nullable=False),
         sa.Column("n_disagreements", sa.Integer(), nullable=False),
+        sa.Column("last_sample_file_id", sa.String(length=16), nullable=True),
+        sa.Column("last_chemistry_key", sa.String(length=512), nullable=True),
         sa.ForeignKeyConstraint(
             ["ionization_mode_id"],
             ["ionization_mode.ionization_mode_id"],

@@ -9,12 +9,21 @@ read two identically-built modes as one chemistry.
 """
 
 from mascope_backend.method_keys import (
+    CENSUS_BEARING_INSTRUMENT_TYPES,
     CONSTANT_METHOD_NAMES,
+    METHOD_KEY_COLUMN,
+    SIGNATURE_CLASS_COLUMN,
     binding_digest,
     chemistry_key,
+    clipped,
     method_key,
     signature_class,
 )
+
+
+#: An instrument type whose reader records a census, and one whose does not.
+CENSUS_BEARING = "orbi"
+CENSUS_LESS = "tof"
 
 
 def _stream(key, polarity, ms_order=1):
@@ -95,25 +104,38 @@ class TestSignatureClass:
         at_240k = _stream("FTMS - p NSI Full ms [40.0000-600.0000] R=240000", "-")
         assert signature_class([at_120k], "-") != signature_class([at_240k], "-")
 
-    def test_without_a_census_the_file_describes_itself(self):
-        # Every Tofwerk h5, and anything converted before the census existed.
-        assert signature_class(None, "-", [10.0, 500.0]) == "- [10.0000-500.0000]"
-        assert signature_class([], "-", [10.0, 500.0]) == "- [10.0000-500.0000]"
+    def test_a_reader_that_takes_no_census_keys_on_polarity(self):
+        # A TofDaq h5 is one acquisition on one mass axis: the polarity is
+        # the whole of what it varies, so it is the class.
+        assert signature_class(None, "-", CENSUS_LESS) == "-"
+        assert signature_class([], "+", CENSUS_LESS) == "+"
 
-    def test_without_a_census_or_a_range_the_polarity_is_all_there_is(self):
+    def test_a_missing_census_where_one_was_expected_is_unknown(self):
+        # An Orbitrap file converted before the census existed. Keying it on
+        # anything else would split this method's history between the guess
+        # and the census that later files of it carry.
+        assert signature_class(None, "-", CENSUS_BEARING) is None
+        assert signature_class([], "-", CENSUS_BEARING) is None
+
+    def test_the_census_bearing_types_are_the_ones_checked(self):
+        assert CENSUS_BEARING in CENSUS_BEARING_INSTRUMENT_TYPES
+        assert CENSUS_LESS not in CENSUS_BEARING_INSTRUMENT_TYPES
+
+    def test_an_unknown_instrument_type_keys_on_polarity(self):
+        # Not knowing the type is not the same as knowing a census was due.
         assert signature_class([], "-", None) == "-"
-        assert signature_class([], "-", []) == "-"
 
-    def test_an_unreadable_range_does_not_raise(self):
-        assert signature_class([], "-", ["low", "high"]) == "-"
+    def test_the_file_s_own_mass_range_is_not_part_of_the_class(self):
+        # It is an outcome, not an instruction: a TofDaq file records the ends
+        # of its mass axis, which move with each file's mass calibration, so
+        # keying on it gave nearly every file a binding of its own.
+        assert signature_class([], "-", CENSUS_LESS) == "-"
+        assert "[" not in signature_class([], "-", CENSUS_LESS)
 
-    def test_a_range_renders_to_four_decimals_however_it_is_stored(self):
-        # The census writes its scan ranges to four decimals, so a range read
-        # off the file row must not key apart for being stored as integers.
-        assert signature_class([], "-", [40, 600]) == signature_class(
-            [], "-", [40.0, 600.0]
-        )
-        assert signature_class([], "-", [40, 600]) == "- [40.0000-600.0000]"
+    def test_the_class_is_not_clipped(self):
+        # The digest is taken from the whole value; only the column is clipped.
+        long_key = "F" * (SIGNATURE_CLASS_COLUMN + 50)
+        assert len(signature_class([_stream(long_key, "-")], "-")) == len(long_key)
 
 
 class TestChemistryKey:
@@ -130,6 +152,13 @@ class TestChemistryKey:
         assert chemistry_key(None) == ""
         assert chemistry_key([]) == ""
 
+    def test_a_repeated_mechanism_counts_once(self):
+        # The modes API compares mechanism lists as sets and its create schema
+        # accepts a repeat, so a mode stored with one must not read as a
+        # second chemistry and record a disagreement that did not happen.
+        assert chemistry_key(["a", "a"]) == chemistry_key(["a"])
+        assert chemistry_key(["a", "b", "a"]) == chemistry_key(["b", "a"])
+
 
 class TestBindingDigest:
     def test_the_same_identity_digests_alike(self):
@@ -145,3 +174,20 @@ class TestBindingDigest:
 
     def test_it_fits_the_column(self):
         assert len(binding_digest("X", "m.meth", "sig")) == 64
+
+    def test_identities_that_differ_only_past_the_column_still_key_apart(self):
+        # Clipping before digesting would give two multi-window SIM methods
+        # one binding between them.
+        long_a = "m" * METHOD_KEY_COLUMN + "a.meth"
+        long_b = "m" * METHOD_KEY_COLUMN + "b.meth"
+        assert binding_digest("X", long_a, "s") != binding_digest("X", long_b, "s")
+        assert clipped(long_a, METHOD_KEY_COLUMN) == clipped(long_b, METHOD_KEY_COLUMN)
+
+
+class TestMethodKeyLength:
+    def test_the_key_is_not_clipped(self):
+        long_name = "m" * (METHOD_KEY_COLUMN + 50) + ".meth"
+        assert method_key(long_name) == long_name
+
+    def test_the_column_clip_is_the_caller_s(self):
+        assert len(clipped("m" * 900, METHOD_KEY_COLUMN)) == METHOD_KEY_COLUMN

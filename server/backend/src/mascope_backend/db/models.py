@@ -1324,9 +1324,28 @@ class MethodBinding(Base):
     source: Mapped[str] = mapped_column(String(16))
     first_seen: Mapped[dt] = mapped_column(TIMESTAMP(timezone=True))
     last_seen: Mapped[dt] = mapped_column(TIMESTAMP(timezone=True))
-    #: Observations that taught this binding. One per (file, polarity) today;
-    #: one per stream once streams are bound individually.
+    #: Observations that taught this binding, one per (file, polarity). NOT a
+    #: count of distinct files: a file re-processed weeks later, or re-bound
+    #: by a person, is counted again. A file repeating what it already said -
+    #: which is what the pipeline's retries do - is not, via the two columns
+    #: below. A rung that wants distinct files must count them from the
+    #: ACQUISITION sample items, as the backfill script does.
     n_streams: Mapped[int] = mapped_column(Integer, default=0)
+    #: The file, and the chemistry, of the last observation folded in. A
+    #: repeat of both is a retry and is ignored; the same file with another
+    #: chemistry is a person re-binding it, and counts.
+    #:
+    #: Deliberately NOT a foreign key. It is a marker, not a reference:
+    #: nothing joins it, and a value left behind by a deleted file answers
+    #: the only question asked of it - "did this file already say this?" -
+    #: exactly as a NULL would. A foreign key would also make every
+    #: observation take a lock on a sample_file row, on the ingest path.
+    last_sample_file_id: Mapped[Optional[str]] = mapped_column(
+        String(16), nullable=True
+    )
+    last_chemistry_key: Mapped[Optional[str]] = mapped_column(
+        String(512), nullable=True
+    )
     #: Times an observation contradicted the chemistry this row holds. The
     #: row is never repointed by one: it goes ambiguous instead, and a key
     #: that keeps disagreeing is a method run with more than one reagent.
