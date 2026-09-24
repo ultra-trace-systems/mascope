@@ -46,6 +46,7 @@ dataset's sets G to J, the chemist's reading of 2026-09-24 (decision 21).
 | 3.1 - a profile for the charge-transfer source | #2197 | built: `EASYIC_POS` and `EASYIC_NEG` resolve from the bare sign on an Orbitrap after every reagent (a reagent mode that also declares electron transfer keeps its reagent; a mode with only protonation or deprotonation stays ESI; a bare-sign mode on a TOF, an ambient-ion stream, keeps the ESI path it had; a declared proton transfer or deprotonation beside the bare sign is the mode's own channel, not an opportunistic one), both under the ambient context; the fluoranthene beam is the reagent ladder (the air-plasma cations wait for 3.3); hydride abstraction `-H-` and proton transfer (positive) and deprotonation (negative) are secondary channels switched on by the beam, hydronium, and the source's own deprotonated acids, and left on where a narrow window cannot show them; their reading of an ion the bare sign also reads stands only where the sample commits the neutral through a mode channel (the partner gate, `engine.apply_partner_gates`, read over both stages' rows; carbonate is not gated until re-measured), so tropylium is toluene less a hydride rather than protonated C7H6; `parse_ionization` now reads `-H-` as the grammar and the validator do (a hydride removed, a cation) instead of as deprotonation - a breaking change for library callers: peaky rewrites `-H+` to `-H-` on the way in (a workaround from before `-H+` parsed as an anion, itself unreleased until the same library release), so peaky drops both rewrites and requires that release. The `-H-` mechanism row is an operator step, since seeding never creates mechanisms. Measured on the testbed (six representatives per set, `-H-` and `+HCOO-` rows added): set I- assigned rows per sample 66 -> 3 and assigned intensity 22.9 -> 1.7%, the 16 survivors all C2 nitrogen-rich formulas through the bare sign below the ratio windows' carbon floor (3.6's prior), so G9 reads 100% of a set 23 times smaller; set I+ assigned per sample 42 -> 43 with the bare sign 243 -> 111 rows and proton transfer 83 and hydride abstraction 37 opened (65 of the proton-transfer commits corroborated by the same neutral on the bare sign), tropylium read as toluene less a hydride at assigned in 5 of 6 samples, G9 51 -> 31% (71 of 231, all C2 or smaller); G10 stays 0 on both, the beam sits above both windows and the air-plasma cations are 3.3's. Sets C and C2 unchanged in tiers |
 | 3.2 - formate as an opportunistic channel | #2198, stacked on #2197 | built: `+HCOO-` is a secondary channel of the nitrate, 15N-nitrate, bromide and iodide profiles, probed on formate, its dimer with formic acid and (nitrate) its cluster with the reagent's acid, built from the reagent so the labelled profile probes `[HCOO+H^NO3]-`; the nitrate profiles keep it on where the window cannot show a probe, as they do carbonate, because the batch carrying the C11 pseudo-acids is acquired from m/z 130 and the source makes no formate carrier above 127 (the two-acid cluster absent, the two-formic-acid cluster at 0.01-0.05% of base on the wide-window sister batch); the halide profiles claim only what they show. The election alone is not enough: measured with the channel open, it read every deprotonated acid as the molecule 46 Da lighter with formate (1,239 acid rows of six no-reagent-ion samples moved to formate and were capped; set C's same-formula agreement with the reference fell from 89.6% to 62.6%), so formate takes the partner gate of step 3.1 (`engine.apply_partner_gates`): the formate reading is the row's only where the lighter neutral is committed through a mode channel, otherwise the acid stands and the formate reading is set aside. Measured on the testbed with the partner gate judging every row against the ledger as it stands: set G without reagent ion G11 24.4 -> 5.6% of assigned-plus-candidate intensity (assigned-only 32.9 -> 7.1%), the deprotonated C11 rows 195 -> 79 (51 assigned), 104 of them now their C10 formate reading at assigned, each corroborated by the C10 neutral through a mode channel, 51 standing because no reading of the C10 neutral exists through a mode channel, 28 held at candidate; assigned rows per sample 486 -> 440, assigned intensity 58.4 -> 56.5%, of which 272 list-matched acids drop to candidate because their formate rival's lighter neutral is itself committed (O4 to O8 products; a real ambiguity for the small acids, and for a list's C11 the C10 reading is right). Set G with reagent ion G11 1.2 -> 0.5%. Set C tiers within two rows of before (assigned 615 -> 613), same-formula agreement with the reference 89.6 -> 88.0% where a partnered formate reading replaces an acid the reference reads as an acid; set C2 unchanged (probe absent, channel off). The target of under 1% is met with reagent ion and not without: the remaining 5.6% is C11 acids whose C10 partner is seen through no mode channel, which the rule leaves standing |
 | 3.3 - name the source ions | - | planned |
+| 3.3b - the standard adduct notation | - | planned (decision 23); before 2.0, as its own change |
 | 3.4 - an opportunistic channel needs a second channel | - | planned |
 | 3.5 - calibrants below the brightest lines, an offset term, and the low-mass bend (calibration node) | - | planned |
 | 3.6 - priors and the dataset's context | - | planned |
@@ -1553,6 +1554,52 @@ bump.
   no analyte row claimed (the stage-1 guard).
 - **Size.** S. The union of two reagent libraries on a mixed-reagent mode is
   not in this step (decision 22).
+
+### 3.3b The standard adduct notation
+
+- **What.** The ionization mechanism is written the way chemists and every
+  other tool write it: `[M-H]-`, `[M+Br]-`, `[M+NH4]+`, `[M]+.`, `[M-H]+`,
+  `[M-CH3]+`, `[M+CH4N2O+H]+`, with the ion's own charge at the end and a
+  labelled moiety kept as it is (`[M+^NO3]-`). Three moves, the first two in
+  this step and the third at 2.0 (decision 23):
+  1. *Accept and show.* `parse_ionization`, the mechanism validator and
+     `_mechanism_parts` read both forms; new rows are stored in the standard
+     form; the catalogue, the profiles' fingerprints and secondary-channel
+     tables, the `tooling/score_eval` panels and the docs are spelled in it;
+     the mode editor, the inspector's chips, the ledger exports and the SDK
+     show it. The old form still parses on input.
+  2. *Migrate.* A data migration rewrites every stored row by the mapping
+     `+X-` to `[M+X]-`, `+X+` to `[M+X]+`, `-X+` to `[M-X]-`, `-X-` to
+     `[M-X]+`, `+` to `[M]+.`, `-` to `[M]-.`, a parenthesised moiety
+     expanded to its terms, with the downgrade applying it backwards. The
+     mapping is total and reversible, so the migration is one function and
+     its inverse, and a row it cannot read is left as it is and logged.
+  3. *Retire the old form* at 2.0, the release that turns assignment on: the
+     validator refuses it on input and the parser's second grammar goes.
+- **Why.** The `<operation><moiety><moiety charge>` form is read wrong by
+  everyone who meets it. Shipped UI text had it wrong until July (the
+  ionization method design note, section 2.1); the composition library
+  special-cased `-H-` as deprotonation while the validator stored the same
+  string as a cation, so two parsers disagreed for a year (step 3.1); and the
+  reference engine spells every subtraction the inverse way on both
+  polarities, because its authors read the trailing sign as the ion's, which
+  is what the standard form makes it. The step 3.1 review cost a round on
+  exactly this. The standard form has no such reading: the sign at the end is
+  the ion's charge, `[M-H]-` is deprotonation and `[M-H]+` hydride
+  abstraction, and the reference engine's adapter becomes an identity.
+- **Where.** `mascope_tools.composition.utils.parse_ionization` and
+  `combine_formula_and_ionization`; the mechanism pydantic validator and
+  `target_ions_compute._mechanism_parts`; `ionization_catalogue`;
+  `profiles.py` and `reagents.py`; an alembic data migration; the frontend's
+  mode editor and inspector; the SDK's mechanism helpers; the ionization
+  method design note's section 4.4, whose structured `Adduct` row is the
+  fuller answer and can follow this step rather than precede it.
+- **Verify.** Every stored row on every fleet server round-trips old to new
+  to old (the fleet corpus's mechanism table, 24 spellings); the gate's
+  ledgers on sets A to J are identical before and after, since no mass
+  changes; the reference engine reads a run's mechanisms without its adapter.
+- **Size.** M, in two PRs (accept and show; migrate). Not a stage-3 gate
+  item: it moves no metric, and it lands whenever it is ready before 2.0.
 
 ### 3.4 An opportunistic channel needs a second channel
 
@@ -4466,6 +4513,16 @@ is within 0.4 ppm interquartile wherever the calibration is good.
     multi-chemistry acquisition into sample items of one chemistry each,
     after which each item resolves to its own profile. Set J is measured at
     every gate and not gated until then.
+23. **The mechanism notation moves to the standard adduct form before 2.0**
+    (taken 2026-09-24 by the plan owner). `[M-H]-` rather than `-H+`: the
+    sign at the end is the ion's charge, which is how everyone reads it and
+    how the reference engine already keys its tables. Sooner rather than
+    later, as its own change (step 3.3b) rather than inside a stage-3 step:
+    the old form is accepted and the new one shown first, stored rows are
+    migrated by a reversible mapping, and the old form is refused at 2.0,
+    the release that turns assignment on and makes the notation user-facing
+    in the inspector and in the reference engine's publish path. The
+    structured adduct row of the ionization method design can follow.
 
 ## Risks
 
