@@ -1771,7 +1771,7 @@ provides-extras = ["logs", "sentry"]
 
 [[package]]
 name = "mascope-sdk"
-version = "2026.9.15"
+version = "2026.9.24"
 source = { editable = "libraries/sdk" }
 dependencies = [
     { name = "loguru" },
@@ -1886,7 +1886,7 @@ requires-dist = [
 
 [[package]]
 name = "mascope-tools"
-version = "2026.9.15"
+version = "2026.9.24"
 source = { editable = "libraries/tools" }
 dependencies = [
     { name = "isospecpy" },
