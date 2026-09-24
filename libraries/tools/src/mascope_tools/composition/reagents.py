@@ -163,6 +163,19 @@ class SecondaryChannel:
         or deprotonation beside the bare sign of a charge-transfer source - so
         the declared channel is searched as the mode's own and only the ones
         the profile adds are opportunistic.
+    :param needs_partner: Whether a reading through this channel stands only
+        where the sample commits the neutral it proposes through one of the
+        mode's own channels. An ion the mode's channel also reads as a
+        molecule is one measurement split two ways, and the finder's election
+        prefers the heavier mechanism, which is this channel's every time: the
+        C10 product with formate over the C11 acid, protonated C7H6 over
+        toluene less a hydride. Where nothing else in the sample shows the
+        neutral, that preference is a prior and the mode's own reading is the
+        row's; where the sample does show it, the channel's reading stands
+        and is corroborated by the same fact. False for carbonate, whose
+        readings are measured under the earlier policy (a declared or opened
+        channel's reading wins the family and is capped without corroboration)
+        and stay there until re-measured.
     :param note: Why these probes are the right evidence, for the reader who
         wonders why a channel stayed off.
     """
@@ -172,6 +185,7 @@ class SecondaryChannel:
     probes: tuple[ProbeIon, ...] = ()
     when_unobservable: str = UNOBSERVABLE_OFF
     declared_stays_secondary: bool = True
+    needs_partner: bool = False
     note: str = ""
 
 
@@ -396,6 +410,7 @@ SECONDARY_CHANNELS: dict[str, tuple[SecondaryChannel, ...]] = {
             probes=_FLUORANTHENE_CATION_PROBES,
             when_unobservable=UNOBSERVABLE_ON,
             declared_stays_secondary=False,
+            needs_partner=True,
             note=_CHARGE_TRANSFER_NOTE,
         ),
         SecondaryChannel(
@@ -404,6 +419,7 @@ SECONDARY_CHANNELS: dict[str, tuple[SecondaryChannel, ...]] = {
             probes=_PROTON_TRANSFER_PROBES,
             when_unobservable=UNOBSERVABLE_ON,
             declared_stays_secondary=False,
+            needs_partner=True,
             note=(
                 "hydronium: the source has protons to give; the acquisitions "
                 "this source is used for start above it, and its silence there "
@@ -418,6 +434,7 @@ SECONDARY_CHANNELS: dict[str, tuple[SecondaryChannel, ...]] = {
             probes=_DEPROTONATED_ACID_PROBES,
             when_unobservable=UNOBSERVABLE_ON,
             declared_stays_secondary=False,
+            needs_partner=True,
             note=(
                 "the source's anions deprotonate the acids of air; where "
                 "bicarbonate, nitrate, formate or nitrite is in the spectrum "

@@ -142,6 +142,21 @@ class ResolvedProfile:
         return frozenset((opened | (held & declared)) - (own & declared))
 
     @property
+    def partner_gated_channels(self) -> frozenset[str]:
+        """The minor channels whose readings stand only with a partner.
+
+        A subset of :attr:`minor_channels`: a channel the profile marks
+        ``needs_partner`` that this run searches. The engine reads it after
+        the untargeted stage (``engine._apply_partner_gates``).
+        """
+        gated = {
+            channel.notation
+            for channel in secondary_channels(self.profile.name)
+            if channel.needs_partner
+        }
+        return frozenset(gated & self.minor_channels)
+
+    @property
     def added_channels(self) -> frozenset[str]:
         """The secondary channels the run adds to the mode's own mechanisms.
 
@@ -224,6 +239,7 @@ class ResolvedProfile:
                 for key, window in self.context.ratio_windows().items()
             },
             "secondary_channels": sorted(self.minor_channels),
+            "partner_gated_channels": sorted(self.partner_gated_channels),
             "channel_evidence": evidence_records(self.channel_evidence),
             "unavailable_channels": list(self.unavailable_channels),
         }

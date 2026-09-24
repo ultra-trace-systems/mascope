@@ -16,7 +16,14 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   channels where the spectrum shows the source runs them, or where the
   acquisition could not have shown it, and capped at candidate without
   corroboration. A channel the mode declares itself, proton transfer beside the
-  bare sign, is the mode's own and is not capped. A bare-sign mode on any other
+  bare sign, is the mode's own and is not capped. Such a channel's reading of an
+  ion the bare sign also reads stands only where the sample commits its
+  molecule through one of the mode's own channels, and between two such
+  readings the one whose molecule the sample shows wins: tropylium reads as
+  toluene less a hydride because toluene is seen through the bare sign, not as
+  protonated C7H6, which the heavier mechanism would otherwise make it. The
+  reading set aside stays on the row, marked as not borne out, and is no
+  rival to the one that was. A bare-sign mode on any other
   instrument, an ambient-ion stream, keeps the ESI profile, as does a mode with
   only protonation or deprotonation. A secondary channel is searched only where
   the deployment holds its mechanism: no deployment has `-H-` by default, so an

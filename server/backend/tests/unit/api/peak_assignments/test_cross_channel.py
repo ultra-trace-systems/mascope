@@ -18,6 +18,9 @@ from mascope_backend.api.new.peak_assignments.cross_channel import (
     nitrogen_donating_channels,
     partner_tier,
 )
+from mascope_backend.api.new.peak_assignments.cross_channel import (
+    same_ion_question as _same_ion_question,
+)
 
 
 PROTON = "prot"
@@ -40,6 +43,28 @@ NEGATIVE = {
     CARBONATE: "+CO3-",
 }
 SODIUM = "sod"
+
+
+def test_a_reading_the_partner_gate_displaced_is_no_rival():
+    """The sample was asked to bear the formate reading out and did not, so it
+    is no doubt about the acid reading it did bear out."""
+    notation_by_id = {"im-deprot": "-H+", "im-formate": "+HCOO-"}
+    committed = {
+        "assigned_formula": "C11H20O7",
+        "ionization_mechanism_id": "im-deprot",
+        "alternatives": [
+            {
+                "assigned_formula": "C10H18O5",
+                "ionization_mechanism_id": "im-formate",
+                "same_ion": True,
+                "partner_gate": "unmet",
+            }
+        ],
+    }
+    assert _same_ion_question(committed, notation_by_id, corroborated=False) is None
+    committed["alternatives"][0].pop("partner_gate")
+    reason, found = _same_ion_question(committed, notation_by_id, corroborated=False)
+    assert reason == "ambiguous_adduct" and found["alternative"] == "C10H18O5"
 
 
 def row(

@@ -127,7 +127,15 @@ hydride abstraction (`-H-`) and proton transfer in positive mode and deprotonati
 negative, are opened as secondary ones where the spectrum shows the source runs them (or
 where the acquisition could not have shown it), and capped at candidate without
 corroboration. A channel the mode declares itself, proton transfer beside the bare sign,
-is the mode's own and is not capped. On any other instrument the bare sign names an
+is the mode's own and is not capped. An ion such a channel reads is often one the bare
+sign reads too, as a different molecule: the tropylium ion is protonated C7H6 or toluene
+less a hydride, and the search's own preference for the heavier mechanism would take the
+proton. So an opportunistic reading stands only where the sample commits its molecule
+through one of the mode's own channels; otherwise the mode's reading is the row's, and
+between two opportunistic readings the one whose molecule the sample shows wins. Toluene
+is seen through the bare sign, so tropylium reads as toluene. The reading set aside stays
+on the row, marked as not borne out, and does not count against the one that was. On any
+other instrument the bare sign names an
 ambient-ion mode as readily, and such a mode keeps the ESI profile of its polarity; so does
 a mode with only protonation or deprotonation and no reagent. A secondary channel is
 searched only where the deployment holds its mechanism: hydride abstraction needs a `-H-`
