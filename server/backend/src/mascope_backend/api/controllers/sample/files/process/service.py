@@ -29,10 +29,14 @@ from mascope_backend.api.controllers.match.match_controller import (
 from mascope_backend.api.controllers.sample.batches.sample_batches_controller import (
     get_or_create_acquisition_batch,
 )
+from mascope_backend.api.controllers.sample.files.process.bindings import (
+    learn_method_bindings,
+)
 from mascope_backend.api.controllers.sample.files.process.status import (
     claim_for_processing,
     compose_detail,
-    read_pooled_streams_note,
+    pooled_streams_note,
+    read_scan_streams,
     record_processing_status,
 )
 from mascope_backend.api.controllers.sample.items.sample_items_controller import (
@@ -904,7 +908,8 @@ async def _auto_process_sample_file(
     sample_file = await fetch_sample_file(sample_file_id=sample_file_id)
     # Describes the file rather than a stage, so every status this run
     # records carries it.
-    streams_note = await read_pooled_streams_note(sample_file.filename)
+    scan_streams = await read_scan_streams(sample_file.filename)
+    streams_note = pooled_streams_note(scan_streams)
 
     # --- Get ACQUISITION dataset for the instrument --- #
     # The year-dataset and the daily batch inside it must be dated off the SAME
@@ -942,6 +947,16 @@ async def _auto_process_sample_file(
             # A chosen mode was deleted, or changed, while the file waited:
             # it needs a chemistry again, and can be given one.
             return await _park_needing_chemistry(sample_file, str(e), streams_note)
+
+    # What this file's method has now been seen running. Recorded, not read:
+    # nothing routes on a method binding yet, and this must never cost the
+    # file its processing - learn_method_bindings reports its own failures.
+    await learn_method_bindings(
+        sample_file,
+        bound_modes,
+        source="token" if by_token else "explicit",
+        streams=scan_streams,
+    )
 
     # --- Create ACQUISITION batches and sample items for each ionization mode --- #
     (

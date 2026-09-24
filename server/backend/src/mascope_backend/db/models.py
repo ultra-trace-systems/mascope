@@ -1271,6 +1271,71 @@ class IonizationMode(Base):
     )
 
 
+class MethodBinding(Base):
+    """What chemistry an acquisition method has been seen to run.
+
+    One row per (instrument, method key, signature class): the identity
+    ``mascope_backend.method_keys`` builds, digested into ``binding_key`` so
+    that the uniqueness is a single short index rather than one over three
+    wide columns. The readable columns beside it are what a person reads.
+
+    The row is learned from files that routed on a stronger rung - a
+    declaration, a person's choice, or the filename token - and is what lets a
+    later file of the same method route without a token
+    (``docs/dev/ingest_routing_and_splitting.md``, section 5.3).
+
+    ``chemistry_keys`` is the history the routing decision rests on: the
+    distinct chemistries this key has been seen with. A key routes only while
+    that list holds exactly one, so a method used with two reagent bottles
+    stops routing rather than picking whichever was seen last.
+    """
+
+    __tablename__ = "method_binding"
+    __table_args__ = (UniqueConstraint("binding_key", name="uq_method_binding_key"),)
+
+    method_binding_id: Mapped[str] = mapped_column(String(16), primary_key=True)
+    # Digest of the three columns below; see method_keys.binding_digest.
+    binding_key: Mapped[str] = mapped_column(String(64))
+    instrument: Mapped[str] = mapped_column(String(64))
+    # "" when the instrument reported no method name, or one that never
+    # varies. Such a binding keys on the signature class alone and yields to
+    # the filename token.
+    method_key: Mapped[str] = mapped_column(String(256))
+    signature_class: Mapped[str] = mapped_column(String(512))
+    # The mode a file of this method binds to. SET NULL rather than CASCADE:
+    # the history in chemistry_keys is still worth keeping when a mode is
+    # deleted, and a row with no mode routes nothing.
+    ionization_mode_id: Mapped[Optional[str]] = mapped_column(
+        String(16),
+        ForeignKey("ionization_mode.ionization_mode_id", ondelete="SET NULL"),
+        index=True,
+    )
+    #: Distinct chemistry keys seen, in the order first seen. More than one
+    #: means the key separates nothing and rung 2 is skipped for it.
+    chemistry_keys: Mapped[list[str]] = mapped_column(JSON, default=list)
+    #: "learned" while the key has been seen with one chemistry, "ambiguous"
+    #: once it has been seen with a second. A person confirming a binding
+    #: adds a third value, with the column that records who; neither exists
+    #: until there is a way to confirm one.
+    state: Mapped[str] = mapped_column(String(16))
+    #: The rung that last taught this binding - "declared", "explicit" or
+    #: "token" - or "history" for a row the backfill script read out of
+    #: already-routed files, where the rung each of them took is not recorded.
+    source: Mapped[str] = mapped_column(String(16))
+    first_seen: Mapped[dt] = mapped_column(TIMESTAMP(timezone=True))
+    last_seen: Mapped[dt] = mapped_column(TIMESTAMP(timezone=True))
+    #: Observations that taught this binding. One per (file, polarity) today;
+    #: one per stream once streams are bound individually.
+    n_streams: Mapped[int] = mapped_column(Integer, default=0)
+    #: Times an observation contradicted the chemistry this row holds. The
+    #: row is never repointed by one: it goes ambiguous instead, and a key
+    #: that keeps disagreeing is a method run with more than one reagent.
+    n_disagreements: Mapped[int] = mapped_column(Integer, default=0)
+
+    # Relationships
+    ionization_mode = relationship("IonizationMode")
+
+
 class TargetIsotope(Base):
     """Target isotope table."""
 
@@ -2649,6 +2714,7 @@ __all__ = [
     "TargetIsotope",
     "IonizationMechanism",
     "IonizationMode",
+    "MethodBinding",
     "MatchSample",
     "MatchCollection",
     "MatchCompound",

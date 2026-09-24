@@ -341,6 +341,33 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   made are untouched,
   keep their names, and are still listed, edited and deleted as before.
 
+- **Mascope now learns which chemistry each acquisition method runs.** Every
+  file that routes - by its filename token, or because someone chose its mode -
+  says one true thing about the method it was measured under, and that is now
+  recorded against the method rather than thrown away. The aim is a file that
+  routes on its method alone, so that a site can stop naming its files to say
+  what the reagent was.
+
+  **Nothing routes on this yet.** The records are written and not read: what
+  they would have decided has to be compared with what the tokens decided, on
+  real traffic, before anything is switched over. The setting
+  `backend.method_binding` is `"shadow"` by default, which is that; `"off"`
+  records nothing.
+
+  Two rules decide what can ever be trusted to route, and both are already in
+  force. A method is only a routing key while everything it has been seen with
+  agrees on one chemistry - seen with a second, it stops being a candidate and
+  the token keeps deciding, which on the production fleet holds back about one
+  Orbitrap method in forty. And a configuration name an instrument reports for
+  every acquisition it takes, whatever the reagent, is treated as no method
+  name at all, because a binding learned from one would outrank the token the
+  day the reagent changed.
+
+  A server that has been running for years already holds the evidence. Run
+  `mascope prod db script run backfill_method_bindings` (`DRY_RUN=1` first) to
+  read it out of the files already routed, instead of waiting for the next few
+  weeks of uploads.
+
 ### Changed
 
 - **Peak assignment still ships off, and the assignment work in these notes

@@ -82,24 +82,39 @@ def pooled_streams_note(streams: list[dict]) -> str | None:
     return " ".join(notes) or None
 
 
-async def read_pooled_streams_note(filename: str) -> str | None:
-    """:func:`pooled_streams_note` for a stored file, read from its ``.props``.
+async def read_scan_streams(filename: str) -> list[dict]:
+    """A stored file's scan-stream census, from its ``.props``.
 
     A file converted before the census existed, or by a reader that takes
-    none, has no streams to report. Nothing here may cost the file its
-    processing, so a props file that cannot be read reports nothing either.
+    none, has no streams to report. Nothing that reads this may cost the file
+    its processing - registration reads it too - so a props file that cannot
+    be read, or one whose census is not a list of streams, reports no streams
+    rather than raising. The shape is checked here so that every caller gets
+    a census it can walk without guarding each field.
 
     :param filename: The sample file's stored name.
-    :return: The note, or None.
+    :return: The census, or ``[]``.
     """
     try:
         props = await asyncio.to_thread(read_props, filename)
-        return pooled_streams_note(props.get("scan_streams") or [])
+        streams = props.get("scan_streams")
+        if not isinstance(streams, list):
+            return []
+        return [stream for stream in streams if isinstance(stream, dict)]
     except Exception:  # noqa: BLE001 - a missing census is not a processing error
         runtime.logger.opt(exception=True).debug(
             f"No scan stream census readable for {filename}"
         )
-        return None
+        return []
+
+
+async def read_pooled_streams_note(filename: str) -> str | None:
+    """:func:`pooled_streams_note` for a stored file, read from its ``.props``.
+
+    :param filename: The sample file's stored name.
+    :return: The note, or None.
+    """
+    return pooled_streams_note(await read_scan_streams(filename))
 
 
 async def claim_for_processing(sample_file_ids: list[str], detail: str) -> list[str]:
