@@ -26,6 +26,7 @@ UREA_SODIUM = 83.0216  # [(CH4N2O)+Na]+
 CARBONATE = 59.9853  # [CO3]-
 DIBROMIDE = 157.8372  # [Br2]-
 FLUORANTHENE_CATION = 202.0777  # [C16H10]+
+FLUORANTHENE_13C = 203.0811  # [13C]C15H10+, 17% of the beam
 HYDRONIUM = 19.0178  # [H3O]+
 BICARBONATE = 60.9931  # [HCO3]-
 
@@ -78,6 +79,7 @@ class TestTheProbes:
         }
         assert by_label["[C16H10]+"].mz == pytest.approx(FLUORANTHENE_CATION, abs=5e-4)
         assert by_label["[H3O]+"].mz == pytest.approx(HYDRONIUM, abs=5e-4)
+        assert "[C16H10+H]+" not in by_label
         negative = {
             probe.label: probe
             for channel in R.secondary_channels("EASYIC_NEG")
@@ -137,29 +139,64 @@ class TestDetection:
     def test_the_fluoranthene_ion_switches_hydride_abstraction_on(self):
         # The reagent cation is the hydride acceptor: where the beam is, the
         # abstraction channel is. Proton transfer needs its own evidence.
-        mz, intensity = _spectrum((FLUORANTHENE_CATION, 0.3), (300.0, 0.01))
+        # A window from 15 shows hydronium's absence, so only the beam's own
+        # channel comes on.
+        mz = np.array([15.0, FLUORANTHENE_CATION, 300.0])
+        intensity = np.array([1.0e6, 3.0e5, 1.0e4])
         evidence = R.detect_channels(
             R.secondary_channels("EASYIC_POS"), mz, intensity, ppm=5.0
         )
         assert R.present_notations(evidence) == ["-H-"]
         assert evidence[0].probe == "[C16H10]+"
 
+    def test_the_beams_own_13c_line_does_not_switch_proton_transfer_on(self):
+        # Protonated fluoranthene sits 22 ppm above the beam's 13C line, inside
+        # the probe window, so a spectrum reading two ppm high would have
+        # switched the channel on with no protonated reagent in it. The probe
+        # is not there to be fooled: proton transfer is read off hydronium.
+        high = 1 + 2.1e-6
+        mz = np.array(
+            [15.0, FLUORANTHENE_CATION * high, FLUORANTHENE_13C * high, 300.0]
+        )
+        intensity = np.array([1.0e4, 1.0e6, 1.7e5, 1.0e4])
+        evidence = R.detect_channels(
+            R.secondary_channels("EASYIC_POS"), mz, intensity, ppm=20.0
+        )
+        assert R.present_notations(evidence) == ["-H-"]
+        proton = [item for item in evidence if item.notation == "+H+"][0]
+        assert proton.status == R.STATUS_NOT_FOUND
+
     def test_a_narrow_window_leaves_the_charge_transfer_channels_on(self):
         # The chamber batches this profile was measured on were acquired at
         # m/z 42 to 160, below every probe. The source ran all the same, so
         # the window's silence is a fact about the window - the nitrate
         # carbonate ruling, applied to a source whose reagent sits at 202.
-        mz, intensity = _spectrum((50.0, 0.01), (150.0, 0.01))
+        mz, intensity = np.array([42.0, 160.0]), np.array([1.0e6, 1.0e4])
         evidence = R.detect_channels(
             R.secondary_channels("EASYIC_POS"), mz, intensity, ppm=5.0
         )
         assert R.present_notations(evidence) == ["-H-", "+H+"]
         assert {item.status for item in evidence} == {R.STATUS_UNOBSERVABLE}
 
+    def test_a_dry_source_still_shows_its_hydronium(self):
+        # A window starting below the first hydrate: the dry source shows
+        # hydronium and its first hydrate and nothing larger, so those two are
+        # the probes and a larger hydrate's absence is not asked about.
+        mz, intensity = (
+            np.array([30.0, 37.0284, 160.0]),
+            np.array([1.0e6, 2.0e3, 1.0e4]),
+        )
+        evidence = R.detect_channels(
+            R.secondary_channels("EASYIC_POS"), mz, intensity, ppm=5.0
+        )
+        proton = [item for item in evidence if item.notation == "+H+"][0]
+        assert proton.present is True
+        assert proton.probe == "[H3O+H2O]+"
+
     def test_a_wide_window_without_the_beam_switches_them_off(self):
         # Every probe inside the acquisition and none matched: the source is
         # not running charge transfer, whatever the mode is called.
-        mz, intensity = _spectrum((50.0, 0.01), (450.0, 0.01))
+        mz, intensity = np.array([15.0, 450.0]), np.array([1.0e6, 1.0e4])
         evidence = R.detect_channels(
             R.secondary_channels("EASYIC_POS"), mz, intensity, ppm=5.0
         )

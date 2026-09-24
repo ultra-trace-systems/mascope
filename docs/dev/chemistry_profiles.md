@@ -364,7 +364,7 @@ their campaign provenance):
 | `NO3` | − | `[M+NO3]-`, `[M-H]-` | `C0-40 H0-60 N0-3 O0-25 S0-2` | provisional in peaky — ship marked provisional |
 | `NO3_15N` | − | `[M+^NO3]-`, `[M-H]-` | as NO3 | `^N` purity 0.98 as data |
 | `IODIDE` | − | `[M+I]-`, `[M-H]-`, `[M+I2]-`, `[M-H+I2]-` | `C0-40 H0-80 N0-3 O0-20 S0-2 Cl0-1` | I deliberately off the neutral grid |
-| `EASYIC_POS` / `EASYIC_NEG` | ± | `[M]+.` with `[M-H]+` (`-H-`) and `[M+H]+` secondary; `[M]-.` with `[M-H]-` secondary | `C0-40 H0-80 N0-5 O0-15 S0-2` (negative O0-20) | the charge-transfer (EASY-IC) source, recognised by the bare sign; ambient context; the fluoranthene beam as its reagent ladder (assignment plan step 3.1) |
+| `EASYIC_POS` / `EASYIC_NEG` | ± | `[M]+.` with `[M-H]+` (`-H-`) and `[M+H]+` secondary; `[M]-.` with `[M-H]-` secondary | `C0-40 H0-80 N0-5 O0-15 S0-2` (negative O0-20) | the charge-transfer (EASY-IC) source, recognised by the bare sign on an Orbitrap; ambient context; the fluoranthene beam as its reagent ladder (assignment plan step 3.1) |
 | `ESI_POS` / `ESI_NEG` | ± | the generic panels from [ionization_method_config.md](ionization_method_config.md) Phase 0 item 6 | wide default | no reagent grammar; gives non-CIMS users seeded modes |
 
 Context presets: the nine peaky contexts with their windows/caps/families

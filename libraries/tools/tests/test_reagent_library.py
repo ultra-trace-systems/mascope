@@ -101,6 +101,7 @@ class TestWhatTheLibraryRefusesToClaim:
         """An electrospray makes no one carrier whose clusters could be listed."""
         assert reagent_library("ESI_POS") == ()
         assert reagent_library("ESI_NEG") == ()
+        assert reagent_library("none") == ()
 
     def test_the_charge_transfer_library_is_the_reagent_beam_alone(self):
         """Every atom is fluoranthene's. The air-plasma cations the discharge
@@ -113,7 +114,6 @@ class TestWhatTheLibraryRefusesToClaim:
         anchors = [c.label for c in reagent_library("EASYIC_POS") if c.anchor]
         assert anchors == ["[C16H10]+"]
         assert [c.label for c in reagent_library("EASYIC_NEG")] == ["[C16H10]-"]
-        assert reagent_library("none") == ()
 
     def test_the_urea_monomer_ammonium_is_a_probe_but_not_a_claim(self):
         """``[(CH4N2O)+NH4]+`` is ``[NH3+(CH4N2O)H]+``: ambient ammonia.

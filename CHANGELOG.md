@@ -6,19 +6,25 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 ### Added
 
-- **Peak assignment reads a charge-transfer source.** A mode with no reagent
-  whose mechanisms include the bare `+` or `-`, the way an Orbitrap's EASY-IC
-  source is declared, resolves to a charge-transfer profile of its polarity
-  instead of the generic ESI one: a hydrocarbon-sized grid under the ambient-air
-  prior, the fluoranthene beam claimed by the reagent pass, and the channels
-  such a source also runs - hydride abstraction (`-H-`) and proton transfer in
-  positive mode, deprotonation in negative - opened as secondary channels where
-  the spectrum shows the source runs them, or where the acquisition could not
-  have shown it, and capped at candidate without corroboration. A mode with only
-  protonation or deprotonation still gets the ESI profile. Read on a chamber
-  dataset measured on that source, where the ESI grid with no prior had
-  committed formulas no atmosphere makes on 357 of the negative batch's 373
-  assigned neutrals (assignment quality plan, step 3.1).
+- **Peak assignment reads a charge-transfer source.** On an Orbitrap, a mode
+  with no reagent whose mechanisms include the bare `+` or `-`, the way that
+  instrument's EASY-IC source is declared, resolves to a charge-transfer profile
+  of its polarity instead of the generic ESI one: a hydrocarbon-sized grid under
+  the ambient-air prior, the fluoranthene beam claimed by the reagent pass, and
+  the channels such a source also runs - hydride abstraction (`-H-`) and proton
+  transfer in positive mode, deprotonation in negative - opened as secondary
+  channels where the spectrum shows the source runs them, or where the
+  acquisition could not have shown it, and capped at candidate without
+  corroboration. A channel the mode declares itself, proton transfer beside the
+  bare sign, is the mode's own and is not capped. A bare-sign mode on any other
+  instrument, an ambient-ion stream, keeps the ESI profile, as does a mode with
+  only protonation or deprotonation. A secondary channel is searched only where
+  the deployment holds its mechanism: no deployment has `-H-` by default, so an
+  operator adds it once under Ionization mechanisms, and until then the run's
+  snapshot lists the channel as unavailable. Read on a chamber dataset measured
+  on that source, where the ESI grid with no prior had committed formulas no
+  atmosphere makes on 357 of the negative batch's 373 assigned neutrals
+  (assignment quality plan, step 3.1).
 
 - **Mascope now ships curated atmospheric CIMS reference lists, and
   `mascope reference seed` loads them.** The lists:
@@ -717,8 +723,13 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   leaves a cation. It now follows the grammar like every other mechanism, so
   `-H-` is the `[M-H]+` of a charge-transfer source and deprotonation is
   `-H+`, as the notation help has said since July. No deployment stored a
-  `-H-` row, so no assignment changes; the evaluation scripts under
+  `-H-` row, so no assignment on a server changes; the evaluation scripts under
   `tooling/score_eval` that spelled deprotonation the old way now write `-H+`.
+  **Breaking for callers of `mascope_tools.composition.utils.parse_ionization`**
+  that spelled deprotonation `-H-` themselves: peaky did, as a workaround from
+  the time `-H+` was read as a cation, and that fix and this change reach it
+  in the same `mascope-tools` release, so peaky drops the workaround and
+  requires that release.
 
 - **A target library entry keeps its own line however its formula is
   written.** Stage A compared candidates' formulas as text, and a loaded

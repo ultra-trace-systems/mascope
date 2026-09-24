@@ -109,8 +109,8 @@ profile has no single reagent and sets none aside. Then:
 | Nitrate CIMS | negative | `+NO3-` | Ambient air |
 | 15N-nitrate CIMS | negative | `+^NO3-` | Ambient air |
 | Iodide CIMS | negative | `+I-` | Ambient air |
-| Charge transfer (EASY-IC), positive | positive | a bare `+` and no reagent | Ambient air |
-| Charge transfer (EASY-IC), negative | negative | a bare `-` and no reagent | Ambient air |
+| Charge transfer (EASY-IC), positive | positive | a bare `+` and no reagent, on an Orbitrap | Ambient air |
+| Charge transfer (EASY-IC), negative | negative | a bare `-` and no reagent, on an Orbitrap | Ambient air |
 | Positive ESI / APCI | positive | no diagnostic mechanism | none |
 | Negative ESI / APCI | negative | no diagnostic mechanism | none |
 
@@ -119,15 +119,22 @@ food and beverage, and uronium. Each describes itself where it is chosen.
 
 **Auto.** Both presets default to **Auto**. The profile is read off the sample's
 ionization mechanisms: a mode carrying the bromide mechanism is a bromide source, whatever
-the mode is called. A mode with no reagent whose mechanisms include the bare `+` or `-`,
-electron transfer, is a charge-transfer source, the way an Orbitrap's EASY-IC source is
-declared: it searches a hydrocarbon-sized grid under the ambient prior, its reagent pass
-claims the fluoranthene beam, and the channels such a source also runs, hydride
-abstraction (`-H-`) and proton transfer in positive mode and deprotonation in negative,
-are opened as secondary ones where the spectrum shows the source runs them (or where the
-acquisition could not have shown it), and capped at candidate without corroboration. A
-mode with only protonation or deprotonation, and no reagent, gets the ESI profile of the
-sample's polarity. The context is the one the profile is normally used with.
+the mode is called. On an Orbitrap, a mode with no reagent whose mechanisms include the
+bare `+` or `-`, electron transfer, is a charge-transfer source, the way that instrument's
+EASY-IC source is declared: it searches a hydrocarbon-sized grid under the ambient prior,
+its reagent pass claims the fluoranthene beam, and the channels such a source also runs,
+hydride abstraction (`-H-`) and proton transfer in positive mode and deprotonation in
+negative, are opened as secondary ones where the spectrum shows the source runs them (or
+where the acquisition could not have shown it), and capped at candidate without
+corroboration. A channel the mode declares itself, proton transfer beside the bare sign,
+is the mode's own and is not capped. On any other instrument the bare sign names an
+ambient-ion mode as readily, and such a mode keeps the ESI profile of its polarity; so does
+a mode with only protonation or deprotonation and no reagent. A secondary channel is
+searched only where the deployment holds its mechanism: hydride abstraction needs a `-H-`
+mechanism, which no deployment has by default, so an operator who wants toluene's
+tropylium ion read adds it under Ionization mechanisms once; until then the run's snapshot
+lists the channel as unavailable. The context is the one the profile is normally used
+with.
 
 **No profile and No context.** *No profile* switches the layer off: the run searches
 the engine's original wide grid at a fixed 10 ppm window. *No context* applies no
