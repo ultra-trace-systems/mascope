@@ -2,315 +2,7 @@
 
 Notable changes to Mascope are documented here. Versions follow the date-based scheme `YYYY.MM.DD-<hash>` produced by the release workflow, and releases are pinned with a semantic version tag `vX.Y.Z`.
 
-## [1.9.0] - 2026.09.24
-
-### Added
-
-- **A file whose name binds it to no ionization mode waits for a chemistry
-  instead of failing.** That is a name with no mode's token, with tokens
-  that match more than one mode of a polarity, or, for a file of both
-  polarities, with a token for only one of them. It is converted and stored
-  as before, and Raw files shows it as *Needs a chemistry* with no samples.
-  The upload is reported as a warning rather than an error, to a paired File
-  Agent's sponsor too, and the file is kept under **Needs attention** for the
-  people answerable for the instrument. Select such files in Raw files,
-  right-click, and **Choose chemistry**: pick a mode for each polarity they
-  hold, and they are processed under those modes as if their names carried
-  the tokens. Such a file often waits for a mode nobody has configured, so
-  the dialog offers the ionization settings as well, and comes back with the
-  same files selected and the mode just added among its options. The same
-  corrects a wrong choice, rebuilding a file under the new modes, and gives
-  a chemistry to a file that failed before its samples were made. Only the
-  pipeline's own samples are replaced, and a file someone made a sample from
-  keeps its m/z calibration.
-  `POST /api/sample/files/bind` does the same and needs editor access to the
-  instrument; it refuses a file being processed. A run that has recorded no
-  stage for a day has stopped: Raw files says so, and processing the file
-  again, or choosing its chemistry, takes it over. Re-processing a file, or
-  processing it again on request, keeps the modes its samples have when its
-  name matches no token, so a file given its chemistry by hand can be
-  processed again too.
-
-- **Raw files lists every instrument at once, and says which one each file
-  came from.** The instrument selector has an **All instruments** entry.
-  Listing them all was always the state the app started in, but nothing
-  offered it and the list reassigned the first instrument after every load,
-  so the first instrument picked was final. Choose it and the list spans
-  every instrument you can see; the new **Instrument** column, first in the
-  table and sortable like the others, says which is which. The column earns
-  its place now that a file's name need not begin with its instrument: an
-  upload reports the instrument it came from, and the file keeps its own
-  name. Files appearing and changing on any of those instruments reach the
-  list as they always did for one, including the first file of an instrument
-  Mascope has never seen - which announces itself before its instrument
-  exists, so before anything could be listening for it. The list follows
-  those instruments only while it is on screen, rather than from every open
-  tab.
-
-- **The File Agent says what became of each file it uploaded.** "Upload
-  succeeded" used to be its last word on a file, so it could not tell a
-  processed file from one the server could not process. After each upload it
-  now asks the server at a widening interval, for up to three hours, and logs
-  a line for each stage it sees the file at: converted, bound, calibrated,
-  and then processed, needs a chemistry, calibration failed or processing
-  failed, each with the server's reason. The failures are warning or error
-  lines, and a file the server could not be asked about is told apart from
-  one it has no record of. The agent asks only a server that announces
-  `files_listed_by_source_filename`: `GET /api/sample/files` then finds an
-  upload by the name the file had on the agent's machine
-  (`source_filename`) among the files the asking device uploaded
-  (`uploaded_by_me`) and the server registered in the last so many seconds
-  (`registered_within`), and `GET /api/version` answers a device token. A
-  paired agent also sees its instrument's files however their instrument is
-  spelled.
-
-- **The browser uploads a file whose name carries no ionization mode token.**
-  The upload used to refuse such a file and offer to rename it. It now goes
-  through, with one note for the drop that such files may need their
-  chemistry chosen in Raw files. The browser does this only when the server
-  announces that it keeps such files: `GET /api/version` now reports the
-  server's `capabilities`, including `files_uploads_without_ionization_token`,
-  and the File Agent's pairing reads the same set. A server that cannot be
-  read is asked again rather than taken to lack them. A name must still start
-  with an instrument the server can place.
-
-- **Files that need someone are kept as notifications until read.** When
-  auto-processing leaves a file failed, needing a chemistry, or unmatched
-  because its calibration failed, the people answerable for the instrument
-  are told even if none of them is signed in: the uploader (for a paired File
-  Agent, the person who sponsors its device) and the owners of the
-  instrument's acquisition workspace. They find it under **Needs attention**
-  in the notifications pane, counted on the home button's badge. One entry
-  per instrument and kind collects the files until it is marked read, names
-  the latest, and is marked resolved once none of its files is left in that
-  state; deleting them resolves it too. Marking an entry read dismisses it,
-  and one that took another file since it was shown stays. **Show files**
-  opens them in Raw files. A server restart that interrupts processing is
-  reported the same way. Entries read more than 90 days ago are deleted at
-  startup. `GET /api/notifications` lists them, and
-  `POST /api/notifications/read` marks them read, each as it was seen, or
-  all at once (#1910).
-
-- **Raw files shows how far processing got for each file.** Auto-processing
-  records a status on every sample file it handles: converted, bound,
-  calibrated, then done, needs a chemistry, calibration failed or failed. A
-  file that ended with no samples, or with samples that were never matched,
-  now says why, and hovering the status shows the detail. The Raw files table
-  has a Status column and a server-side status filter, whose time window
-  goes by when each file's status was recorded, and `GET /api/sample/files`
-  takes `processing_status` (repeat it for several), so a File Agent can read
-  back what became of its upload. When a method alternates scan ranges or scan
-  modes within a polarity, the detail also says that peak detection pools
-  those scan streams. A server restart marks the files whose processing it
-  interrupted as failed, and a file processed again is marked queued before
-  anything of it is replaced. A TOF file whose ionization mode has no
-  calibration collection is no longer sent to matching, which refuses an
-  uncalibrated TOF axis and used to end the run on a warning: it ends
-  calibration failed, naming the missing collection. Files processed before
-  this change carry no status. Each file also records when it was registered
-  (`sample_file_utc_created`, which the file list sorts by), for listing
-  recently added files (#482); files registered before this change have no
-  registration time.
-
-- **Each Orbitrap file's scan streams are recorded.** The converter groups a
-  file's scans by what they measured: the fields of the scan filter (analyzer,
-  polarity, data type, source, source fragmentation, FAIMS CV, scan mode, MS
-  order, precursors and scan ranges) plus the FT resolution. It stores the
-  groups in the file's `.props` as `scan_streams`, each with its scan count,
-  its time span, how its scans are laid out between the other streams, and,
-  for an MS1 stream, the acquisition parameters of its own scans. Nothing is
-  processed per stream yet: peak detection still pools every MS1 scan of a
-  polarity into one peak list. A file that pools more than one MS1 stream in
-  a polarity, such as a method that alternates two scan ranges, is now logged
-  at INFO. On the internal regression corpus that is one file in 182.
-
-- **`mascope file scans <file.raw>` shows what a raw file measured.** It lists
-  the file's scan streams, each with its scan count, blocks, time span and
-  strongest peaks, and says when a polarity has more than one MS1 stream.
-  `--json` prints the full census, parsed signatures and acquisition
-  parameters included. A checkout reads the file itself; the operator CLI
-  copies it into the running backend container, reads it there and removes
-  the copy.
-
-- **The MS2 centroid keys are under test end to end.** By default,
-  `GET /api/samples/{id}/ms2/centroids` keys its spectra by the bare parent
-  m/z, and the published SDK documents that shape. With `by_activation` it
-  keys each one `"<parent m/z>@<activation>"`. A backend test now checks both
-  shapes through the route itself. The SDK contract suite checks them with the
-  published SDK against a live stack, so the nightly compatibility run catches
-  a server that changes them. The demo bundle has no MS2 scans yet, so only
-  the MS2 summary is checked there and the centroid tests skip.
-  `MASCOPE_SDK_TEST_MS2_SAMPLE` points the suite at an MS2 sample on another
-  stack. `docs/demo_dataset.md` describes what adding an MS2 acquisition to the
-  bundle takes.
-
-### Changed
-
-- **A browser upload can name the instrument it came from, including one
-  Mascope has never seen.** A file whose name starts with no instrument the
-  server can place used to be accepted only under a name that said its own
-  class - one containing `orbi`, `tof` or `api` - because the name was the
-  only thing the browser sent. The upload dialog now reports the instrument
-  you pick with the upload, the way a paired File Agent reports the one it
-  watches, so it takes any name the server accepts: 1 to 64 letters, digits
-  and hyphens. What the file is, an Orbitrap or a TOF acquisition, is
-  decided by the file itself when it is converted. The files keep their own
-  names - the dialog no longer rewrites them - and the server stores them
-  under the same `<instrument>_<name>` as before. A name the server has no
-  files for creates an instrument and its acquisitions workspace, so the
-  dialog names it and asks you to confirm before it does.
-
-- **Both raw-file readers report every per-scan statistics field.** The
-  per-scan statistics a raw-file reader reports (`scan_statistics`, the
-  twenty fields named after Thermo's `ScanStats`) held all twenty from the
-  Thermo library and seven from OpenTFRaw, the default reader. OpenTFRaw now
-  reports all twenty:
-  - it also fills `ScanType`, the scan filter as OpenTFRaw renders it,
-    `IsCentroidScan` and `ScanEventNumber`;
-  - the UV, PDA and analog detector fields get the fixed values the Thermo
-    library reports for mass spectra;
-  - `PacketCount`, `SegmentNumber` and `CycleNumber` are empty (`null`)
-    rather than missing, since OpenTFRaw does not expose them (#1527).
-
-- **Both raw-file readers report each scan's whole trailer.** The trailer is
-  the instrument's own table of per-scan acquisition settings, such as
-  `FT Resolution:`, `AGC Target:` and `Ion Injection Time (ms):`. The Thermo
-  library reported all of it (`scan_acquisition_settings`). OpenTFRaw, the
-  default reader, reported five fields under labels of Mascope's own. So in
-  `GET /api/sample/files/{id}/metadata`, each scan of `stats_per_scan` had 26
-  keys on a committed sample file where the Thermo library gave 99, and
-  looking a scan up by `"FT Resolution:"` raised a `KeyError`. OpenTFRaw now
-  reports the whole trailer, under the Thermo library's labels and in its
-  order. Values keep each reader's types: text from the Thermo library,
-  rounded to the digits it displays; numbers, `true`/`false` and `null` from
-  OpenTFRaw. The five labels of Mascope's own (`Ion Injection Time (ms)`,
-  `Charge State`, `Precursor m/z`, `Isolation Width (m/z)`,
-  `Collision Energy`) are gone. The trailer has its own
-  `Ion Injection Time (ms):`, `Charge State:` and `MS2 Isolation Width:`, and
-  an MS2 scan's precursor and collision energy are in its filter
-  (`ScanType`).
-
-### Fixed
-
-- **The File Agent installer's documentation no longer says it is unsigned.**
-  The installer has been code-signed since 1.8.0, but the instructions still
-  told people to expect an unrecognized app and click through. They now name
-  the publisher Windows shows, **Ultra Trace Systems Oy**, and ask the reader
-  to check it before running the installer - which is what the signature is
-  worth. SmartScreen can still prompt on a fresh release, because reputation
-  accrues per file over weeks of downloads, so the way past it stays.
-
-- **The File Agent's configuration file no longer says its instrument name
-  may be left empty.** The comment written at the top of every
-  `config.toml` offered that as a way "to keep the server reading the
-  instrument from the file name alone", but the agent refuses to start
-  without a name - the server files this machine's uploads under it - so
-  following the file's own guidance left the agent unable to run. The
-  guided setup, the documentation and the agent itself all treated the name
-  as required; only this comment did not.
-
-- **A NaN in an API response no longer fails the request as a bad one.** One
-  NaN or infinite number anywhere in a response failed the whole request with
-  400 Bad Request, which told the client its request was at fault, and the
-  failure was logged below the level that reaches error monitoring, so nobody
-  heard of it. Such numbers are now sent as `null`, and a warning names the
-  route so that it can be fixed. The data a warning carries, such as a
-  calibration fit's, is sent the same way. A response that cannot be sent as
-  JSON for any other reason is answered 500 and logged as an error. The legacy
-  `POST /api/sample/files/{id}/peaks/timeseries` failed like this for every
-  peak whose timeseries had not been computed yet, in a file that keeps its
-  raw data; it returns those heights as `null`.
-
-- **A File Agent upload that fails to process now tells someone.** When
-  auto-processing an uploaded file failed, for example because no ionization
-  mode token matched its name, the error went only to the uploading account.
-  A paired File Agent uploads as a machine account that nobody signs in as,
-  so nobody saw the error and the file just had no samples (#1910). The error
-  now also goes to everyone viewing that instrument's raw files, and so do
-  auto-processing's warnings. An error from a paired agent's upload goes to
-  the person who sponsors the agent's device rather than to its machine
-  account; warnings stay with the uploading account.
-
-- **Orbitrap sample files record their instrument method again.** Since
-  ingestion moved onto the open-source raw-file reader, every Orbitrap file
-  was stored with an empty method file, although the name is in the raw file
-  itself. Both readers now report it, and it is stored on the sample file and
-  on the instrument config fitted for it, as before. Files ingested in the
-  meantime are repaired by `mascope prod db script run
-  populate_orbitrap_method_file`, which reads only the raw file header and
-  takes `DRY_RUN=1` to preview.
-
-- **Reading an Orbitrap sample file's metadata no longer fails.**
-  `GET /api/sample/files/{id}/metadata` answered 400 Bad Request for files
-  read by OpenTFRaw, the default raw-file reader, with "Out of range float
-  values are not JSON compliant: nan". OpenTFRaw leaves the charge state,
-  precursor m/z and collision energy empty on most MS1 scans, and building
-  the per-scan statistics (`stats_per_scan`) turned those gaps into NaN,
-  which JSON cannot represent. They are now `null`, as is any other missing
-  value in the metadata and any value that is not a finite number. An
-  integer the reader reports, such as a charge state, also stays an integer
-  instead of arriving as `1.0`.
-
-- **Deleting an instrument config deletes only that config.** Every sample
-  file gets an instrument config of its own, but the delete also removed
-  every other config with the same instrument and method file, and unlinked
-  all of their sample files. For Orbitrap files converted while the method
-  name was not being read, that meant every config on the instrument.
-  `DELETE /api/instrument_configs/{id}` now removes the named config, and only
-  the sample file that pointed at it loses its link.
-
-- **Dual-polarity files keep the matches of both polarities.** Auto-processing
-  a `+-` file creates one sample per polarity and used to calibrate, match and
-  assign them one after the other. The m/z calibration belongs to the file, so
-  calibrating one polarity removed the matches just computed for the other.
-  Every sample of a file is now calibrated before any of them is matched.
-  A file with a calibrant collection on both polarities is no longer
-  calibrated: the second fit replaced the first, so the polarity processed
-  last set the mass axis for both. Both are matched on the acquisition axis
-  until each polarity can carry its own calibration.
-
-- **A file name must match one ionization mode per polarity.** Auto-processing
-  accepted the ionization mode tokens in a file name as soon as the number of
-  matches equalled the number of polarities in the file. A `+-` file whose name
-  matched two positive modes and no negative one was therefore processed twice
-  as positive and never as negative. Every polarity of the file must now match
-  exactly one mode. Otherwise the file gets no samples, and the error names the
-  polarity and the modes that matched.
-
-- **Auto-processing no longer opens an error-monitoring issue per file.** Since
-  1.8.0 a file whose auto-processing stopped early was logged as an error
-  naming the file and the reason, so error monitoring opened a separate issue,
-  with its own alert, for every such file: over three hundred in three days on
-  one production server. None were faults. Most were blank files: a blank has
-  no peaks, so matching refused it with a warning that ended the run and
-  reached everyone viewing the instrument's raw files. Blank files now skip
-  matching and peak assignment as they already skipped calibration, and finish
-  like any other file. A run that a routine outcome ends, such as an m/z
-  calibration the match gate does not accept, is logged at INFO, and the user
-  is told as before. So is each retry after a transient error, which was a
-  warning per file and attempt. A run that a fault ends is reported once,
-  under a message that names no file, and the file and the reason are logged
-  at INFO beside it.
-
-- **Log checks in the backend tests hold in the full suite.** The migration
-  tests run Alembic in-process, and `alembic/env.py` applied `alembic.ini`'s
-  logging setup on every command, which cut stdlib loggers off from the
-  runtime's loguru sinks for every test after them. A test that a record
-  arrives failed in the full suite while passing alone, and a test that no
-  WARNING arrives passed whatever the code logged. The setup now applies only
-  when Alembic runs from its own command line, where it also keeps existing
-  loggers enabled, so a warning a library logs during a migration is shown
-  rather than dropped. Deployments are otherwise unaffected: they migrate from
-  the command line, in the db-init container.
-
-- **Test selections spanning several directories collect in any order.**
-  Fifteen backend and library tests imported shared helpers with
-  `from conftest import ...`. pytest registers every conftest.py under the one
-  module name `conftest`, so the import reached whichever conftest had loaded
-  last, and a hand-picked selection failed to collect unless the right
-  directory happened to come last. The helpers now live in plain modules
-  beside the tests that use them. Full runs, CI's included, were never
-  affected.
+## [Unreleased]
 
 ### Added
 
@@ -1097,6 +789,316 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   adduct mass; the label is now kept, and a labelled isotope the finder cannot
   mass is refused instead of silently unlabelled. Both affect the peak
   assignment engine's untargeted stage and the on-demand composition search.
+
+## [1.9.0] - 2026.09.24
+
+### Added
+
+- **A file whose name binds it to no ionization mode waits for a chemistry
+  instead of failing.** That is a name with no mode's token, with tokens
+  that match more than one mode of a polarity, or, for a file of both
+  polarities, with a token for only one of them. It is converted and stored
+  as before, and Raw files shows it as *Needs a chemistry* with no samples.
+  The upload is reported as a warning rather than an error, to a paired File
+  Agent's sponsor too, and the file is kept under **Needs attention** for the
+  people answerable for the instrument. Select such files in Raw files,
+  right-click, and **Choose chemistry**: pick a mode for each polarity they
+  hold, and they are processed under those modes as if their names carried
+  the tokens. Such a file often waits for a mode nobody has configured, so
+  the dialog offers the ionization settings as well, and comes back with the
+  same files selected and the mode just added among its options. The same
+  corrects a wrong choice, rebuilding a file under the new modes, and gives
+  a chemistry to a file that failed before its samples were made. Only the
+  pipeline's own samples are replaced, and a file someone made a sample from
+  keeps its m/z calibration.
+  `POST /api/sample/files/bind` does the same and needs editor access to the
+  instrument; it refuses a file being processed. A run that has recorded no
+  stage for a day has stopped: Raw files says so, and processing the file
+  again, or choosing its chemistry, takes it over. Re-processing a file, or
+  processing it again on request, keeps the modes its samples have when its
+  name matches no token, so a file given its chemistry by hand can be
+  processed again too.
+
+- **Raw files lists every instrument at once, and says which one each file
+  came from.** The instrument selector has an **All instruments** entry.
+  Listing them all was always the state the app started in, but nothing
+  offered it and the list reassigned the first instrument after every load,
+  so the first instrument picked was final. Choose it and the list spans
+  every instrument you can see; the new **Instrument** column, first in the
+  table and sortable like the others, says which is which. The column earns
+  its place now that a file's name need not begin with its instrument: an
+  upload reports the instrument it came from, and the file keeps its own
+  name. Files appearing and changing on any of those instruments reach the
+  list as they always did for one, including the first file of an instrument
+  Mascope has never seen - which announces itself before its instrument
+  exists, so before anything could be listening for it. The list follows
+  those instruments only while it is on screen, rather than from every open
+  tab.
+
+- **The File Agent says what became of each file it uploaded.** "Upload
+  succeeded" used to be its last word on a file, so it could not tell a
+  processed file from one the server could not process. After each upload it
+  now asks the server at a widening interval, for up to three hours, and logs
+  a line for each stage it sees the file at: converted, bound, calibrated,
+  and then processed, needs a chemistry, calibration failed or processing
+  failed, each with the server's reason. The failures are warning or error
+  lines, and a file the server could not be asked about is told apart from
+  one it has no record of. The agent asks only a server that announces
+  `files_listed_by_source_filename`: `GET /api/sample/files` then finds an
+  upload by the name the file had on the agent's machine
+  (`source_filename`) among the files the asking device uploaded
+  (`uploaded_by_me`) and the server registered in the last so many seconds
+  (`registered_within`), and `GET /api/version` answers a device token. A
+  paired agent also sees its instrument's files however their instrument is
+  spelled.
+
+- **The browser uploads a file whose name carries no ionization mode token.**
+  The upload used to refuse such a file and offer to rename it. It now goes
+  through, with one note for the drop that such files may need their
+  chemistry chosen in Raw files. The browser does this only when the server
+  announces that it keeps such files: `GET /api/version` now reports the
+  server's `capabilities`, including `files_uploads_without_ionization_token`,
+  and the File Agent's pairing reads the same set. A server that cannot be
+  read is asked again rather than taken to lack them. A name must still start
+  with an instrument the server can place.
+
+- **Files that need someone are kept as notifications until read.** When
+  auto-processing leaves a file failed, needing a chemistry, or unmatched
+  because its calibration failed, the people answerable for the instrument
+  are told even if none of them is signed in: the uploader (for a paired File
+  Agent, the person who sponsors its device) and the owners of the
+  instrument's acquisition workspace. They find it under **Needs attention**
+  in the notifications pane, counted on the home button's badge. One entry
+  per instrument and kind collects the files until it is marked read, names
+  the latest, and is marked resolved once none of its files is left in that
+  state; deleting them resolves it too. Marking an entry read dismisses it,
+  and one that took another file since it was shown stays. **Show files**
+  opens them in Raw files. A server restart that interrupts processing is
+  reported the same way. Entries read more than 90 days ago are deleted at
+  startup. `GET /api/notifications` lists them, and
+  `POST /api/notifications/read` marks them read, each as it was seen, or
+  all at once (#1910).
+
+- **Raw files shows how far processing got for each file.** Auto-processing
+  records a status on every sample file it handles: converted, bound,
+  calibrated, then done, needs a chemistry, calibration failed or failed. A
+  file that ended with no samples, or with samples that were never matched,
+  now says why, and hovering the status shows the detail. The Raw files table
+  has a Status column and a server-side status filter, whose time window
+  goes by when each file's status was recorded, and `GET /api/sample/files`
+  takes `processing_status` (repeat it for several), so a File Agent can read
+  back what became of its upload. When a method alternates scan ranges or scan
+  modes within a polarity, the detail also says that peak detection pools
+  those scan streams. A server restart marks the files whose processing it
+  interrupted as failed, and a file processed again is marked queued before
+  anything of it is replaced. A TOF file whose ionization mode has no
+  calibration collection is no longer sent to matching, which refuses an
+  uncalibrated TOF axis and used to end the run on a warning: it ends
+  calibration failed, naming the missing collection. Files processed before
+  this change carry no status. Each file also records when it was registered
+  (`sample_file_utc_created`, which the file list sorts by), for listing
+  recently added files (#482); files registered before this change have no
+  registration time.
+
+- **Each Orbitrap file's scan streams are recorded.** The converter groups a
+  file's scans by what they measured: the fields of the scan filter (analyzer,
+  polarity, data type, source, source fragmentation, FAIMS CV, scan mode, MS
+  order, precursors and scan ranges) plus the FT resolution. It stores the
+  groups in the file's `.props` as `scan_streams`, each with its scan count,
+  its time span, how its scans are laid out between the other streams, and,
+  for an MS1 stream, the acquisition parameters of its own scans. Nothing is
+  processed per stream yet: peak detection still pools every MS1 scan of a
+  polarity into one peak list. A file that pools more than one MS1 stream in
+  a polarity, such as a method that alternates two scan ranges, is now logged
+  at INFO. On the internal regression corpus that is one file in 182.
+
+- **`mascope file scans <file.raw>` shows what a raw file measured.** It lists
+  the file's scan streams, each with its scan count, blocks, time span and
+  strongest peaks, and says when a polarity has more than one MS1 stream.
+  `--json` prints the full census, parsed signatures and acquisition
+  parameters included. A checkout reads the file itself; the operator CLI
+  copies it into the running backend container, reads it there and removes
+  the copy.
+
+- **The MS2 centroid keys are under test end to end.** By default,
+  `GET /api/samples/{id}/ms2/centroids` keys its spectra by the bare parent
+  m/z, and the published SDK documents that shape. With `by_activation` it
+  keys each one `"<parent m/z>@<activation>"`. A backend test now checks both
+  shapes through the route itself. The SDK contract suite checks them with the
+  published SDK against a live stack, so the nightly compatibility run catches
+  a server that changes them. The demo bundle has no MS2 scans yet, so only
+  the MS2 summary is checked there and the centroid tests skip.
+  `MASCOPE_SDK_TEST_MS2_SAMPLE` points the suite at an MS2 sample on another
+  stack. `docs/demo_dataset.md` describes what adding an MS2 acquisition to the
+  bundle takes.
+
+### Changed
+
+- **A browser upload can name the instrument it came from, including one
+  Mascope has never seen.** A file whose name starts with no instrument the
+  server can place used to be accepted only under a name that said its own
+  class - one containing `orbi`, `tof` or `api` - because the name was the
+  only thing the browser sent. The upload dialog now reports the instrument
+  you pick with the upload, the way a paired File Agent reports the one it
+  watches, so it takes any name the server accepts: 1 to 64 letters, digits
+  and hyphens. What the file is, an Orbitrap or a TOF acquisition, is
+  decided by the file itself when it is converted. The files keep their own
+  names - the dialog no longer rewrites them - and the server stores them
+  under the same `<instrument>_<name>` as before. A name the server has no
+  files for creates an instrument and its acquisitions workspace, so the
+  dialog names it and asks you to confirm before it does.
+
+- **Both raw-file readers report every per-scan statistics field.** The
+  per-scan statistics a raw-file reader reports (`scan_statistics`, the
+  twenty fields named after Thermo's `ScanStats`) held all twenty from the
+  Thermo library and seven from OpenTFRaw, the default reader. OpenTFRaw now
+  reports all twenty:
+  - it also fills `ScanType`, the scan filter as OpenTFRaw renders it,
+    `IsCentroidScan` and `ScanEventNumber`;
+  - the UV, PDA and analog detector fields get the fixed values the Thermo
+    library reports for mass spectra;
+  - `PacketCount`, `SegmentNumber` and `CycleNumber` are empty (`null`)
+    rather than missing, since OpenTFRaw does not expose them (#1527).
+
+- **Both raw-file readers report each scan's whole trailer.** The trailer is
+  the instrument's own table of per-scan acquisition settings, such as
+  `FT Resolution:`, `AGC Target:` and `Ion Injection Time (ms):`. The Thermo
+  library reported all of it (`scan_acquisition_settings`). OpenTFRaw, the
+  default reader, reported five fields under labels of Mascope's own. So in
+  `GET /api/sample/files/{id}/metadata`, each scan of `stats_per_scan` had 26
+  keys on a committed sample file where the Thermo library gave 99, and
+  looking a scan up by `"FT Resolution:"` raised a `KeyError`. OpenTFRaw now
+  reports the whole trailer, under the Thermo library's labels and in its
+  order. Values keep each reader's types: text from the Thermo library,
+  rounded to the digits it displays; numbers, `true`/`false` and `null` from
+  OpenTFRaw. The five labels of Mascope's own (`Ion Injection Time (ms)`,
+  `Charge State`, `Precursor m/z`, `Isolation Width (m/z)`,
+  `Collision Energy`) are gone. The trailer has its own
+  `Ion Injection Time (ms):`, `Charge State:` and `MS2 Isolation Width:`, and
+  an MS2 scan's precursor and collision energy are in its filter
+  (`ScanType`).
+
+### Fixed
+
+- **The File Agent installer's documentation no longer says it is unsigned.**
+  The installer has been code-signed since 1.8.0, but the instructions still
+  told people to expect an unrecognized app and click through. They now name
+  the publisher Windows shows, **Ultra Trace Systems Oy**, and ask the reader
+  to check it before running the installer - which is what the signature is
+  worth. SmartScreen can still prompt on a fresh release, because reputation
+  accrues per file over weeks of downloads, so the way past it stays.
+
+- **The File Agent's configuration file no longer says its instrument name
+  may be left empty.** The comment written at the top of every
+  `config.toml` offered that as a way "to keep the server reading the
+  instrument from the file name alone", but the agent refuses to start
+  without a name - the server files this machine's uploads under it - so
+  following the file's own guidance left the agent unable to run. The
+  guided setup, the documentation and the agent itself all treated the name
+  as required; only this comment did not.
+
+- **A NaN in an API response no longer fails the request as a bad one.** One
+  NaN or infinite number anywhere in a response failed the whole request with
+  400 Bad Request, which told the client its request was at fault, and the
+  failure was logged below the level that reaches error monitoring, so nobody
+  heard of it. Such numbers are now sent as `null`, and a warning names the
+  route so that it can be fixed. The data a warning carries, such as a
+  calibration fit's, is sent the same way. A response that cannot be sent as
+  JSON for any other reason is answered 500 and logged as an error. The legacy
+  `POST /api/sample/files/{id}/peaks/timeseries` failed like this for every
+  peak whose timeseries had not been computed yet, in a file that keeps its
+  raw data; it returns those heights as `null`.
+
+- **A File Agent upload that fails to process now tells someone.** When
+  auto-processing an uploaded file failed, for example because no ionization
+  mode token matched its name, the error went only to the uploading account.
+  A paired File Agent uploads as a machine account that nobody signs in as,
+  so nobody saw the error and the file just had no samples (#1910). The error
+  now also goes to everyone viewing that instrument's raw files, and so do
+  auto-processing's warnings. An error from a paired agent's upload goes to
+  the person who sponsors the agent's device rather than to its machine
+  account; warnings stay with the uploading account.
+
+- **Orbitrap sample files record their instrument method again.** Since
+  ingestion moved onto the open-source raw-file reader, every Orbitrap file
+  was stored with an empty method file, although the name is in the raw file
+  itself. Both readers now report it, and it is stored on the sample file and
+  on the instrument config fitted for it, as before. Files ingested in the
+  meantime are repaired by `mascope prod db script run
+  populate_orbitrap_method_file`, which reads only the raw file header and
+  takes `DRY_RUN=1` to preview.
+
+- **Reading an Orbitrap sample file's metadata no longer fails.**
+  `GET /api/sample/files/{id}/metadata` answered 400 Bad Request for files
+  read by OpenTFRaw, the default raw-file reader, with "Out of range float
+  values are not JSON compliant: nan". OpenTFRaw leaves the charge state,
+  precursor m/z and collision energy empty on most MS1 scans, and building
+  the per-scan statistics (`stats_per_scan`) turned those gaps into NaN,
+  which JSON cannot represent. They are now `null`, as is any other missing
+  value in the metadata and any value that is not a finite number. An
+  integer the reader reports, such as a charge state, also stays an integer
+  instead of arriving as `1.0`.
+
+- **Deleting an instrument config deletes only that config.** Every sample
+  file gets an instrument config of its own, but the delete also removed
+  every other config with the same instrument and method file, and unlinked
+  all of their sample files. For Orbitrap files converted while the method
+  name was not being read, that meant every config on the instrument.
+  `DELETE /api/instrument_configs/{id}` now removes the named config, and only
+  the sample file that pointed at it loses its link.
+
+- **Dual-polarity files keep the matches of both polarities.** Auto-processing
+  a `+-` file creates one sample per polarity and used to calibrate, match and
+  assign them one after the other. The m/z calibration belongs to the file, so
+  calibrating one polarity removed the matches just computed for the other.
+  Every sample of a file is now calibrated before any of them is matched.
+  A file with a calibrant collection on both polarities is no longer
+  calibrated: the second fit replaced the first, so the polarity processed
+  last set the mass axis for both. Both are matched on the acquisition axis
+  until each polarity can carry its own calibration.
+
+- **A file name must match one ionization mode per polarity.** Auto-processing
+  accepted the ionization mode tokens in a file name as soon as the number of
+  matches equalled the number of polarities in the file. A `+-` file whose name
+  matched two positive modes and no negative one was therefore processed twice
+  as positive and never as negative. Every polarity of the file must now match
+  exactly one mode. Otherwise the file gets no samples, and the error names the
+  polarity and the modes that matched.
+
+- **Auto-processing no longer opens an error-monitoring issue per file.** Since
+  1.8.0 a file whose auto-processing stopped early was logged as an error
+  naming the file and the reason, so error monitoring opened a separate issue,
+  with its own alert, for every such file: over three hundred in three days on
+  one production server. None were faults. Most were blank files: a blank has
+  no peaks, so matching refused it with a warning that ended the run and
+  reached everyone viewing the instrument's raw files. Blank files now skip
+  matching and peak assignment as they already skipped calibration, and finish
+  like any other file. A run that a routine outcome ends, such as an m/z
+  calibration the match gate does not accept, is logged at INFO, and the user
+  is told as before. So is each retry after a transient error, which was a
+  warning per file and attempt. A run that a fault ends is reported once,
+  under a message that names no file, and the file and the reason are logged
+  at INFO beside it.
+
+- **Log checks in the backend tests hold in the full suite.** The migration
+  tests run Alembic in-process, and `alembic/env.py` applied `alembic.ini`'s
+  logging setup on every command, which cut stdlib loggers off from the
+  runtime's loguru sinks for every test after them. A test that a record
+  arrives failed in the full suite while passing alone, and a test that no
+  WARNING arrives passed whatever the code logged. The setup now applies only
+  when Alembic runs from its own command line, where it also keeps existing
+  loggers enabled, so a warning a library logs during a migration is shown
+  rather than dropped. Deployments are otherwise unaffected: they migrate from
+  the command line, in the db-init container.
+
+- **Test selections spanning several directories collect in any order.**
+  Fifteen backend and library tests imported shared helpers with
+  `from conftest import ...`. pytest registers every conftest.py under the one
+  module name `conftest`, so the import reached whichever conftest had loaded
+  last, and a hand-picked selection failed to collect unless the right
+  directory happened to come last. The helpers now live in plain modules
+  beside the tests that use them. Full runs, CI's included, were never
+  affected.
 
 ## [1.8.1] - 2026.09.16
 
