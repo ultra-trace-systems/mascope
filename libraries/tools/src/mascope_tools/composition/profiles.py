@@ -454,7 +454,8 @@ BR = ReagentProfile(
     # Carbonate and the dibromide cluster: channels a bromide source produces
     # that a mode is seldom configured with. 145 of the reference engine's main
     # peaks on the nitrate gate set are read through the carbonate channel.
-    secondary_adducts=("+CO3-", "+Br2-"),
+    # Formate: see the nitrate profile.
+    secondary_adducts=("+CO3-", "+Br2-", "+HCOO-"),
     default_context=AMBIENT_AIR.name,
     aliases=("br", "bromide", "br-cims"),
 )
@@ -490,7 +491,19 @@ NO3 = ReagentProfile(
     # reads 145 and 212 main peaks through it on those sets, and the mode does
     # not offer it, so every one of them can only be read here as some heavier
     # neutral through another channel.
-    secondary_adducts=("+CO3-",),
+    #
+    # Formate, the channel a chamber dataset showed the engine lacked: with no
+    # way to write a formate adduct, a series of alpha-pinene products read as
+    # C11 acids at the top tier - C11H20O7 the batch's strongest assigned peak,
+    # C11H20O5, C11H18O6, C11H18O7, C11H20O8 and C11H20O9 behind it, 24% of the
+    # assigned-plus-candidate intensity - when nothing in that oxidation adds a
+    # carbon and every one of them is, atom for atom, a C10 product the engine
+    # assigns 46 Da lower plus formic acid. Mass and co-occurrence cannot part
+    # the two readings, so the chemistry decides: the same-ion election reads
+    # the formate adduct, the deprotonated acid stays on the row as its other
+    # reading, and the row is capped at candidate until the C10 neutral is
+    # seen through one of the mode's own channels.
+    secondary_adducts=("+CO3-", "+HCOO-"),
     default_context=AMBIENT_AIR.name,
     aliases=("no3", "nitrate", "nitrate-cims"),
 )
@@ -503,8 +516,8 @@ NO3_15N = ReagentProfile(
     reagent_formula="^NO3",
     detection=("+^NO3-",),
     # Carbonate carries no reagent nitrogen, so it is the same channel here as
-    # on the unlabelled profile.
-    secondary_adducts=("+CO3-",),
+    # on the unlabelled profile; formate likewise.
+    secondary_adducts=("+CO3-", "+HCOO-"),
     default_context=AMBIENT_AIR.name,
     label_isotope="^N",
     label_purity=0.98,
@@ -521,7 +534,8 @@ IODIDE = ReagentProfile(
     element_ranges="C0-40 H0-80 N0-3 O0-20 S0-2 Cl0-1",
     reagent_formula="I",
     detection=("+I-",),
-    secondary_adducts=("+I2-",),
+    # Formate: see the nitrate profile.
+    secondary_adducts=("+I2-", "+HCOO-"),
     default_context=AMBIENT_AIR.name,
     aliases=("i", "iodide", "iodide-cims"),
 )

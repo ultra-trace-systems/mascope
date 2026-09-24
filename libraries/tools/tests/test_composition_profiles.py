@@ -131,6 +131,16 @@ class TestFingerprint:
             assert ranges["S"] == (0, 1)
             assert ranges["C"][1] == 40
 
+    def test_formate_is_a_channel_of_every_negative_reagent(self):
+        # The chamber lesson: with no way to write a formate adduct, C10
+        # products read as C11 acids at the top tier. Formate is an anion of
+        # any air sample, so every negative reagent profile may see it; no
+        # positive profile and no electrospray does.
+        for profile in (P.NO3, P.NO3_15N, P.BR, P.IODIDE):
+            assert "+HCOO-" in profile.secondary_adducts, profile.name
+        for profile in (P.UR, P.ESI_POS, P.ESI_NEG, P.EASYIC_POS, P.EASYIC_NEG):
+            assert "+HCOO-" not in profile.secondary_adducts, profile.name
+
     def test_the_charge_transfer_channels_are_secondary_not_declared(self):
         assert P.EASYIC_POS.secondary_adducts == ("-H-", "+H+")
         assert P.EASYIC_NEG.secondary_adducts == ("-H+",)
