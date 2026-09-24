@@ -8,7 +8,11 @@ Two things went wrong here before and both are pinned:
   two electron masses light;
 - a bracketed labelled isotope in a mechanism (``+[15N]O3-``, the explicit
   form of ``+^NO3-``) used to lose its label and be massed as the unlabelled
-  element, 0.997 Da light for the 15N-nitrate reagent.
+  element, 0.997 Da light for the 15N-nitrate reagent;
+- ``-H-`` was special-cased as deprotonation, one electron mass off the anion
+  and the opposite polarity from the row the backend's validator stores it
+  under. It now reads as the grammar says: a hydride removed, leaving the
+  cation a charge-transfer source makes from an alcohol or an alkane.
 """
 
 import numpy as np
@@ -49,6 +53,8 @@ NO3_15N = calculate_mass(formula="N[15]O3")
         ("+(CH4N2O)H+", True, 1, calculate_mass(formula="CH5N2O") - ELECTRON_MASS),
         ("+", False, 1, ELECTRON_MASS),
         ("-", True, -1, ELECTRON_MASS),
+        ("-H-", False, 1, H + ELECTRON_MASS),
+        ("-CH3-", False, 1, calculate_mass(formula="CH3") + ELECTRON_MASS),
     ],
 )
 def test_ion_charge_follows_the_moiety_and_the_direction(
@@ -105,6 +111,19 @@ def test_labelled_nitrate_keeps_its_label(notation):
 def test_unknown_bracketed_isotope_is_refused_not_unlabelled():
     with pytest.raises(CompositionFinderException):
         parse_ionization("+[13C]O3-")
+
+
+def test_hydride_abstraction_leaves_the_cation_mass():
+    """Tropylium is toluene less a hydride: M - H - m_e, a cation."""
+    mechanism = parse_ionization("-H-")
+    toluene = calculate_mass(formula="C7H8")
+    tropylium = toluene - H - ELECTRON_MASS
+    assert mechanism.charge == 1
+    assert toluene - mechanism.mass == pytest.approx(tropylium, abs=1e-9)
+    ion_formula = combine_formula_and_ionization("C7H8", mechanism)
+    assert ion_formula == "C7H7+"
+    predicted_mz = predict_isotopes(ion_formula[:-1], mechanism.charge)[0][0]
+    assert predicted_mz == pytest.approx(91.05423, abs=2e-5)
 
 
 def test_protonation_is_unchanged():

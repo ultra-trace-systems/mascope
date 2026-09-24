@@ -330,7 +330,8 @@ def to_hill_order(elements: Mapping[str, int]) -> str:
     # For empty formula, return '()'
     if not elements:
         return "()"
-    # Filter out zero and negative counts (can be if -H- is the ionization mechanism)
+    # Filter out zero and negative counts (a subtractive mechanism such as -H+
+    # can leave one)
     elements = {k: v for k, v in elements.items() if v > 0}
 
     normalized_elements: dict[str, int] = {}
@@ -473,7 +474,17 @@ def _caret_labelled(moiety: str) -> str:
 
 
 def parse_ionization(ionization_string: str) -> IonizationMechanism:
-    """Parse ionization mechanism string from Mascope format into an IonizationMechanism object.
+    """Parse an ionization mechanism from Mascope notation.
+
+    The grammar is ``<operation><moiety><moiety charge>``: the leading sign
+    says whether the moiety is added or removed, the trailing sign is the
+    charge of the moiety itself, and the ion's charge follows from the two.
+    ``+H+`` protonates, ``-H+`` deprotonates and leaves an anion, ``+Br-``
+    attaches bromide, and ``-H-`` removes a hydride and leaves a cation - the
+    ``[M-H]+`` of a charge-transfer source. A bare ``+`` or ``-`` is electron
+    transfer. The same reading the backend's mechanism validator makes; the
+    library used to special-case ``-H-`` as deprotonation, one electron mass
+    off the anion and the opposite polarity from the row it was stored under.
 
     :param ionization_string: String representing the ionization mechanism.
     :type ionization_string: str
@@ -492,12 +503,6 @@ def parse_ionization(ionization_string: str) -> IonizationMechanism:
         # Abstract electron being added
         addition = True
         charge = -1
-    elif ionization_string == "-H-":
-        # Deprotonation
-        addition = False
-        formula = "H"
-        charge = -1
-        mass = calculate_mass(formula="H")
     else:
         # Regex pattern: start charge, base, end charge
         pattern = r"^([+-])?(.*?)([+-])?$"

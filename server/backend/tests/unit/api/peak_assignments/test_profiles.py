@@ -78,6 +78,38 @@ class TestResolution:
         )
         assert resolved.profile is presets.ESI_POS
 
+    def test_a_bare_sign_resolves_to_the_charge_transfer_source(self):
+        # The way an Orbitrap's EASY-IC source is declared: electron transfer
+        # and nothing else. It takes the ambient prior, never the ESI preset's
+        # absence of one, and its own channels are opened as secondary ones.
+        positive = resolve_profile(
+            PeakAssignmentConfig(), ["+"], instrument_type="orbi", polarity="+"
+        )
+        assert positive.profile is presets.EASYIC_POS
+        assert positive.context is presets.AMBIENT_AIR
+        assert positive.heuristics_config().context_ratio_windows == (
+            presets.AMBIENT_AIR.ratio_windows()
+        )
+        assert positive.mode_channels == ("+",)
+        assert positive.minor_channels == frozenset()
+        negative = resolve_profile(
+            PeakAssignmentConfig(), ["-"], instrument_type="orbi", polarity="-"
+        )
+        assert negative.profile is presets.EASYIC_NEG
+        assert negative.context is presets.AMBIENT_AIR
+
+    def test_a_declared_charge_transfer_channel_stays_secondary(self):
+        # A mode that declares proton transfer beside the bare sign searches
+        # it as its own, and the profile still names it secondary: an
+        # uncorroborated winner through it is capped like any opportunistic
+        # channel's.
+        resolved = resolve_profile(
+            PeakAssignmentConfig(), ["+", "+H+"], instrument_type="orbi", polarity="+"
+        )
+        assert resolved.profile is presets.EASYIC_POS
+        assert resolved.minor_channels == frozenset({"+H+"})
+        assert resolved.added_channels == frozenset()
+
 
 class TestOverrides:
     def test_the_grid_comes_from_the_profile_when_the_run_names_none(self):

@@ -425,7 +425,7 @@ class TestInvertMatches:
             mz=183.1027,
             relative_abundance=1.0,
             sample_peak_id="p1",
-            ionization="-H-",
+            ionization="-H+",
         )
         df = pd.DataFrame(
             [
@@ -453,7 +453,7 @@ class TestInvertMatches:
                     relative_abundance=1.0,
                     sample_peak_id="p1",
                     match_score=0.60,
-                    ionization="-H-",
+                    ionization="-H+",
                 ),
             ]
         )
@@ -480,7 +480,7 @@ class TestInvertMatches:
             mz=183.1027,
             relative_abundance=1.0,
             sample_peak_id="p1",
-            ionization="-H-",
+            ionization="-H+",
         )
         df = pd.DataFrame(
             [
@@ -526,7 +526,7 @@ class TestInvertMatches:
                     relative_abundance=1.0,
                     sample_peak_id="p1",
                     match_score=0.95,
-                    ionization="-H-",
+                    ionization="-H+",
                 ),
                 _isotope_row(
                     target_isotope_id="iso2",
@@ -561,7 +561,7 @@ class TestInvertMatches:
             mz=183.1027,
             relative_abundance=1.0,
             sample_peak_id="p1",
-            ionization="-H-",
+            ionization="-H+",
         )
         df = pd.DataFrame(
             [
@@ -2107,7 +2107,7 @@ class TestReferenceStageAInversion:
                     relative_abundance=1.0,
                     sample_peak_id="p1",
                     match_score=0.95,
-                    ionization="-H-",
+                    ionization="-H+",
                 )
             ]
         )
@@ -2141,7 +2141,7 @@ class TestReferenceStageAInversion:
                     relative_abundance=1.0,
                     sample_peak_id="p1",
                     match_score=0.9,
-                    ionization="-H-",
+                    ionization="-H+",
                 )
             ]
         )
@@ -2168,7 +2168,7 @@ class TestReferenceStageAInversion:
                     relative_abundance=1.0,
                     sample_peak_id="p1",
                     match_score=0.95,
-                    ionization="-H-",
+                    ionization="-H+",
                     ionization_mechanism_id="mech-deprot",
                 ),
                 _isotope_row(
@@ -2181,7 +2181,7 @@ class TestReferenceStageAInversion:
                     relative_abundance=1.0,
                     sample_peak_id="p1",
                     match_score=0.60,
-                    ionization="-H-",
+                    ionization="-H+",
                     ionization_mechanism_id="mech-deprot",
                 ),
             ]
@@ -2202,7 +2202,7 @@ class TestReferenceStageAInversion:
         assert alt["assigned_formula"] == "C9H12N2O2"
         assert alt["target_ion_id"] == "ion2"
         # Both candidates were scored deprotonated, and the alternative says so:
-        # the id comes off the mechanism column, not the "-H-" notation beside it.
+        # the id comes off the mechanism column, not the "-H+" notation beside it.
         assert alt["ionization_mechanism_id"] == "mech-deprot"
         # Each is its ion's only isotope, so the runner-up is a main peak too.
         assert alt["isotope_label"] == "M0"
@@ -2223,7 +2223,7 @@ class TestReferenceStageAInversion:
                     relative_abundance=1.0,
                     sample_peak_id="p1",
                     match_score=0.95,
-                    ionization="-H-",
+                    ionization="-H+",
                 ),
                 _reference_row(
                     target_isotope_id="refiso1",
@@ -2234,7 +2234,7 @@ class TestReferenceStageAInversion:
                     relative_abundance=1.0,
                     sample_peak_id="p1",
                     match_score=0.80,
-                    ionization="-H-",
+                    ionization="-H+",
                 ),
             ]
         )

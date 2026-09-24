@@ -45,9 +45,9 @@ from mascope_tools.composition import utils
 # peak_assignment table (verified against the ionization_mechanism library), not the guessed
 # panel in make_candidates. Only 5 mechanisms are ever assigned: +H+, +NH4+, +(CH4N2O)H+ (pos)
 # and -H+, +Br- (neg). Defined-but-unused here: +Br2-, +Br3-, +NO3-, +CO3-, bare +/-. The
-# deprotonation mass is taken via "-H-" (correct [M-H]- mass; the library id is "-H+").
+# deprotonation is "-H+", the notation the mechanism library stores it under.
 CHANNELS = {
-    "neg": {"primary": "-H-", "adducts": ["-H-", "+Br-"]},
+    "neg": {"primary": "-H+", "adducts": ["-H+", "+Br-"]},
     "pos": {"primary": "+H+", "adducts": ["+H+", "+NH4+", "+(CH4N2O)H+"]},
 }
 # Random decoy offsets are drawn in this |Da| range (comparable to real adduct differences,

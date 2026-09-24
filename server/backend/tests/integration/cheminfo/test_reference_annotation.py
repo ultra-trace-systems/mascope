@@ -35,7 +35,7 @@ from mascope_tools.composition.utils import (
 
 
 _NOW = datetime(2026, 1, 1, tzinfo=timezone.utc)
-_MECH = "-H-"  # deprotonation
+_MECH = "-H+"  # deprotonation
 _ASPIRIN = "C9H8O4"
 _CAFFEINE = "C8H10N4O2"
 

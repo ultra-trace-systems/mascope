@@ -72,8 +72,51 @@ class TestFingerprint:
         assert forwards is backwards
 
     def test_nothing_diagnostic_falls_back_to_the_polarity(self):
+        # Protonation or deprotonation alone is how an electrospray or APCI
+        # mode is written: no reagent, no bare sign.
         assert P.detect_reagent_profile(["+H+"], "+") is P.ESI_POS
         assert P.detect_reagent_profile(["-H+"], "-") is P.ESI_NEG
+
+    def test_the_bare_sign_is_the_charge_transfer_source(self):
+        # An Orbitrap's EASY-IC source is declared as electron transfer and
+        # nothing else. Before the profile existed such a mode fell to the ESI
+        # preset - a C60 grid with no matrix prior - and committed formulas no
+        # atmosphere makes.
+        assert P.detect_reagent_profile(["+"], "+") is P.EASYIC_POS
+        assert P.detect_reagent_profile(["-"], "-") is P.EASYIC_NEG
+
+    def test_a_declared_secondary_channel_does_not_unmake_the_source(self):
+        # A charge-transfer mode that also declares proton transfer or
+        # deprotonation is still the charge-transfer source: the bare sign is
+        # what says so, and the declared channel is searched as the mode's own.
+        assert P.detect_reagent_profile(["+", "+H+"], "+") is P.EASYIC_POS
+        assert P.detect_reagent_profile(["-", "-H+"], "-") is P.EASYIC_NEG
+
+    def test_a_reagent_wins_over_the_bare_sign(self):
+        # A reagent mode that also declares electron transfer is that reagent's
+        # source; the bare sign only decides where no reagent does.
+        assert P.detect_reagent_profile(["+NO3-", "-", "-H+"], "-") is P.NO3
+        assert P.detect_reagent_profile(["+", "+(CH4N2O)H+"], "+") is P.UR
+        assert P.detect_reagent_profile(["+Br-", "-"], "-") is P.BR
+
+    def test_the_charge_transfer_profiles_take_the_ambient_prior(self):
+        # Never the ESI profiles' absence of a context: the ambient windows are
+        # what reject the nitrogen-rich, hydrogen-poor formulas the bare grid
+        # committed.
+        for profile in (P.EASYIC_POS, P.EASYIC_NEG):
+            assert P.get_chemistry_context(profile.default_context) is P.AMBIENT_AIR
+            ranges = P.parse_element_ranges(
+                P.resolve_element_ranges(profile, P.AMBIENT_AIR)
+            )
+            assert ranges["N"] == (0, 3)
+            assert ranges["S"] == (0, 1)
+            assert ranges["C"][1] == 40
+
+    def test_the_charge_transfer_channels_are_secondary_not_declared(self):
+        assert P.EASYIC_POS.secondary_adducts == ("-H-", "+H+")
+        assert P.EASYIC_NEG.secondary_adducts == ("-H+",)
+        assert P.get_reagent_profile("charge-transfer") is P.EASYIC_POS
+        assert P.get_reagent_profile("ct-") is P.EASYIC_NEG
 
     def test_the_polarity_is_read_however_it_is_spelled(self):
         # A sample row carries "+"; other rows and callers spell it out. A
@@ -115,7 +158,7 @@ class TestElementRanges:
         assert "Cl" not in ranges and "Br" not in ranges
 
     def test_an_organic_grid_floors_carbon_at_one(self):
-        for name in ("BR", "UR", "NO3", "IODIDE", "ESI_POS"):
+        for name in ("BR", "UR", "NO3", "IODIDE", "EASYIC_POS", "ESI_POS"):
             profile = P.get_reagent_profile(name)
             ranges = P.parse_element_ranges(
                 P.resolve_element_ranges(profile, P.NO_CONTEXT)
