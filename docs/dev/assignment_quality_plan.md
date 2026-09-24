@@ -4,8 +4,12 @@
 
 ## Status
 
-Epic branch `epic/assignment-quality`, draft PR #2077 into `develop`;
-step PRs land on the epic and are named here as they merge.
+Stages 1 and 2 are on `develop`: PR #2077 merged on 2026-09-24 as a
+fast-forward of 304 commits, the epic branch `epic/assignment-quality` is
+gone, and the feature stays behind `peak_assignment = false` until it is
+switched on. Stage 3 steps land as PRs straight into `develop`, one per
+step, and are named here as they merge; their baseline is the last stage 2
+round (step 2.8, engine 0.5.0, tiering rule set 6).
 
 | step | PR | state |
 |---|---|---|
@@ -107,11 +111,15 @@ justify.
 
 ## How the work runs
 
-- **Branch and PRs.** Epic branch `epic/assignment-quality` off `develop`,
-  one PR per step, self-merged by rebase when CI is green; the epic is
-  reviewed into `develop` per stage. Each stage ends with an engine version
-  bump (`PEAK_ASSIGNMENT_ENGINE_VERSION` 0.4.0, 0.5.0, 0.6.0) because each
-  changes results; steps inside a stage do not bump.
+- **Branch and PRs.** Stages 1 and 2 ran on the epic branch
+  `epic/assignment-quality` off `develop`, one PR per step, self-merged by
+  rebase when CI was green, and the epic was reviewed into `develop` as one
+  PR (#2077, merged 2026-09-24). Stage 3 runs the same way without the
+  epic: one PR per step straight into `develop`, reviewed the same way,
+  the feature dark behind `peak_assignment = false` until it is switched
+  on, so a step that lands ships nothing by itself. Each stage ends with
+  an engine version bump (`PEAK_ASSIGNMENT_ENGINE_VERSION` 0.4.0, 0.5.0,
+  0.6.0) because each changes results; steps inside a stage do not bump.
   The reference engine's own changes live on peaky's `epic/v2-fit-reference`,
   which pins `mascope-tools` to a Mascope revision by git source so that
   nothing on peaky's main depends on unreleased code; step 2.7 says when
