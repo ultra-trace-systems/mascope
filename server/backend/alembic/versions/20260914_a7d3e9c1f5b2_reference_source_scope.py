@@ -19,7 +19,7 @@ seed``, which brings an already-active list's row up to date, and a list file, a
 custom CSV or an explicit flag by ``reference sync``.
 
 Revision ID: a7d3e9c1f5b2
-Revises: c2d9f4a71b3e
+Revises: 8d2f6a1c4e93
 Create Date: 2026-09-14 16:00:00.000000
 
 """
@@ -32,7 +32,7 @@ from alembic import op
 
 # revision identifiers, used by Alembic.
 revision: str = "a7d3e9c1f5b2"
-down_revision: Union[str, Sequence[str], None] = "c2d9f4a71b3e"
+down_revision: Union[str, Sequence[str], None] = "8d2f6a1c4e93"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
