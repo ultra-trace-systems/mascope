@@ -324,6 +324,13 @@ _NITRATE_FORMATE_NOTE = (
 #: The halide profiles keep the evidence they can show, as they do for
 #: carbonate: the bare formate ions only, and a window that cannot show them
 #: leaves the channel off.
+#:
+#: Every formate channel needs a partner (``SecondaryChannel.needs_partner``):
+#: every deprotonated acid also reads as the molecule 46 Da lighter with
+#: formate, and measured on the chamber dataset the election alone took that
+#: reading for 1,239 acids of six samples and capped them all. Only where the
+#: lighter molecule is itself seen through a mode channel is the formate
+#: reading the row's; 193 of the 240 C11 pseudo-acid rows have such a partner.
 _HALIDE_FORMATE_NOTE = "formate and its dimer with formic acid"
 
 
@@ -429,6 +436,7 @@ SECONDARY_CHANNELS: dict[str, tuple[SecondaryChannel, ...]] = {
         SecondaryChannel(
             notation="+HCOO-",
             label="Formate adduct",
+            needs_partner=True,
             probes=_formate_probes(None),
             note=_HALIDE_FORMATE_NOTE,
         ),
@@ -444,6 +452,7 @@ SECONDARY_CHANNELS: dict[str, tuple[SecondaryChannel, ...]] = {
         SecondaryChannel(
             notation="+HCOO-",
             label="Formate adduct",
+            needs_partner=True,
             probes=_formate_probes("NO3"),
             when_unobservable=UNOBSERVABLE_ON,
             note=_NITRATE_FORMATE_NOTE,
@@ -463,6 +472,7 @@ SECONDARY_CHANNELS: dict[str, tuple[SecondaryChannel, ...]] = {
         SecondaryChannel(
             notation="+HCOO-",
             label="Formate adduct",
+            needs_partner=True,
             probes=_formate_probes("^NO3"),
             when_unobservable=UNOBSERVABLE_ON,
             note=_NITRATE_FORMATE_NOTE,
@@ -478,6 +488,7 @@ SECONDARY_CHANNELS: dict[str, tuple[SecondaryChannel, ...]] = {
         SecondaryChannel(
             notation="+HCOO-",
             label="Formate adduct",
+            needs_partner=True,
             probes=_formate_probes(None),
             note=_HALIDE_FORMATE_NOTE,
         ),
