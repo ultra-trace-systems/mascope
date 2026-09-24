@@ -32,8 +32,11 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from mascope_backend.db import IonizationMode, MethodBinding, SampleFile, async_session
 from mascope_backend.db.id import gen_id
 from mascope_backend.method_keys import (
+    METHOD_KEY_COLUMN,
+    SIGNATURE_CLASS_COLUMN,
     binding_digest,
     chemistry_key,
+    clipped,
     method_key,
     signature_class,
 )
@@ -43,6 +46,17 @@ from mascope_backend.runtime import runtime
 #: Rungs that may teach a binding, strongest first. Rung 2 is the binding
 #: itself and rungs below it are weaker than what they would teach.
 LEARNING_SOURCES = ("declared", "explicit", "token")
+
+#: The counts a run that learned nothing returns. ``repeated`` is an
+#: observation a file had already made; ``no_signature`` a file whose reader
+#: normally records a census but took none, so what it measured is unknown.
+_NOTHING_LEARNED = {
+    "created": 0,
+    "refreshed": 0,
+    "ambiguous": 0,
+    "repeated": 0,
+    "no_signature": 0,
+}
 
 
 def method_binding_mode() -> str:
@@ -81,7 +95,7 @@ async def learn_method_bindings(
     :return: Counts of the rows created, refreshed and marked ambiguous.
     :rtype: dict[str, int]
     """
-    counts = {"created": 0, "refreshed": 0, "ambiguous": 0}
+    counts = dict(_NOTHING_LEARNED)
     if method_binding_mode() == "off":
         return counts
     if source not in LEARNING_SOURCES:
@@ -97,8 +111,15 @@ async def learn_method_bindings(
         observations = []
         for mode in bound_modes:
             signature = signature_class(
-                streams, mode.ionization_mode_polarity, sample_file.range
+                streams, mode.ionization_mode_polarity, sample_file.instrument_type
             )
+            if signature is None:
+                # A reader that normally records a census took none for this
+                # file, so what it measured is not known. Keying it on
+                # anything else would split this method's history between the
+                # guess and the census later files carry.
+                counts["no_signature"] += 1
+                continue
             digest = binding_digest(sample_file.instrument, key, signature)
             observations.append((digest, signature, mode))
         # Locked in digest order, not the file's polarity order. A
@@ -119,6 +140,7 @@ async def learn_method_bindings(
                     mode=mode,
                     source=source,
                     seen_at=seen_at,
+                    sample_file_id=sample_file.sample_file_id,
                 )
                 counts[outcome] = counts.get(outcome, 0) + 1
             await session.commit()
@@ -126,7 +148,7 @@ async def learn_method_bindings(
         runtime.logger.opt(exception=True).warning(
             f"Could not record a method binding for {sample_file.filename}: {e}"
         )
-        return {"created": 0, "refreshed": 0, "ambiguous": 0}
+        return dict(_NOTHING_LEARNED)
 
     return counts
 
@@ -140,6 +162,7 @@ async def _observe(
     mode: IonizationMode,
     source: str,
     seen_at: datetime,
+    sample_file_id: str,
 ) -> str:
     """Fold one observation into its binding, creating the row if needed.
 
@@ -149,7 +172,16 @@ async def _observe(
     means another worker created it first - so the observation is folded into
     that row instead, and is counted exactly once either way.
 
-    :return: ``"created"``, ``"refreshed"`` or ``"ambiguous"``.
+    **A file repeating what it already said is not a second observation.**
+    The pipeline retries a recoverable failure up to four times, each attempt
+    re-binding the file before it reaches the stage that failed, so without
+    this one file's one acquisition would count four times. A repeat is the
+    same file AND the same chemistry as this row last learned; a file coming
+    back with a *different* chemistry is new information - a person re-bound
+    it - and is recorded, ambiguity and all.
+
+    :return: ``"created"``, ``"refreshed"``, ``"ambiguous"`` or
+        ``"repeated"``.
     :rtype: str
     """
     chemistry = chemistry_key(mode.ionization_mechanism_ids)
@@ -163,8 +195,8 @@ async def _observe(
                     method_binding_id=gen_id(),
                     binding_key=digest,
                     instrument=instrument,
-                    method_key=key,
-                    signature_class=signature,
+                    method_key=clipped(key, METHOD_KEY_COLUMN),
+                    signature_class=clipped(signature, SIGNATURE_CLASS_COLUMN),
                     ionization_mode_id=mode.ionization_mode_id,
                     chemistry_keys=[chemistry],
                     state="learned",
@@ -173,6 +205,8 @@ async def _observe(
                     last_seen=seen_at,
                     n_streams=1,
                     n_disagreements=0,
+                    last_sample_file_id=sample_file_id,
+                    last_chemistry_key=chemistry,
                 )
                 .on_conflict_do_nothing(constraint="uq_method_binding_key")
                 .returning(MethodBinding.method_binding_id)
@@ -191,10 +225,21 @@ async def _observe(
             )
             return "refreshed"
 
+    if (
+        row.last_sample_file_id == sample_file_id
+        and row.last_chemistry_key == chemistry
+    ):
+        # A retry, or a re-run that changed nothing. Nothing to add, and
+        # counting it would make n_streams a count of pipeline attempts.
+        row.last_seen = seen_at
+        return "repeated"
+
     known = list(row.chemistry_keys or [])
     row.last_seen = seen_at
     row.n_streams = (row.n_streams or 0) + 1
     row.source = source
+    row.last_sample_file_id = sample_file_id
+    row.last_chemistry_key = chemistry
 
     if chemistry in known:
         # The same chemistry as before. The row keeps pointing where it

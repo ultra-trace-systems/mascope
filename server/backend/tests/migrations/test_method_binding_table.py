@@ -32,10 +32,11 @@ def _insert(conn, binding_id: str, key: str, mode_id: str | None = _MODE_ID) -> 
             "INSERT INTO method_binding ("
             "  method_binding_id, binding_key, instrument, method_key,"
             "  signature_class, ionization_mode_id, chemistry_keys, state,"
-            "  source, first_seen, last_seen, n_streams, n_disagreements"
+            "  source, first_seen, last_seen, n_streams, n_disagreements,"
+            "  last_chemistry_key"
             ") VALUES (:id, :key, 'instrument-A', 'nitrate.meth',"
             "          'FTMS - p NSI Full ms', :mode, CAST(:chem AS json),"
-            "          'learned', 'token', now(), now(), 1, 0)"
+            "          'learned', 'token', now(), now(), 1, 0, 'mech-a')"
         ),
         {"id": binding_id, "key": key, "mode": mode_id, "chem": '["mech-a"]'},
     )
@@ -128,7 +129,7 @@ def test_a_pooled_method_fits_its_signature_class(upgraded: Engine):
                 "  source, first_seen, last_seen, n_streams, n_disagreements"
                 ") VALUES ('mbwidesig0000001', 'digest-wide', 'instrument-A',"
                 "          'nitrate.meth', :signature, NULL,"
-                "          CAST('[]' AS json), 'learned', 'token', now(),"
+                "          CAST('[]' AS json), 'learned', 'history', now(),"
                 "          now(), 1, 0)"
             ),
             {"signature": signature},
@@ -140,6 +141,33 @@ def test_a_pooled_method_fits_its_signature_class(upgraded: Engine):
             )
         ).scalar_one()
     assert stored == signature
+    with upgraded.begin() as conn:
+        conn.execute(text("DELETE FROM method_binding"))
+
+
+def test_the_last_observation_marker_outlives_its_file(upgraded: Engine):
+    """It is a marker, not a reference.
+
+    No foreign key, on purpose: nothing joins it, a value a deleted file left
+    behind answers the only question asked of it - "did this file already say
+    this?" - exactly as a NULL would, and a foreign key would make every
+    observation take a lock on a sample_file row, on the ingest path.
+    """
+    with upgraded.begin() as conn:
+        _insert(conn, "mblastfile000001", "digest-file")
+        conn.execute(
+            text(
+                "UPDATE method_binding SET last_sample_file_id = 'nosuchfile00001'"
+                " WHERE binding_key = 'digest-file'"
+            )
+        )
+        row = conn.execute(
+            text(
+                "SELECT last_sample_file_id, last_chemistry_key, n_streams"
+                "  FROM method_binding WHERE binding_key = 'digest-file'"
+            )
+        ).one()
+    assert row == ("nosuchfile00001", "mech-a", 1)
     with upgraded.begin() as conn:
         conn.execute(text("DELETE FROM method_binding"))
 
