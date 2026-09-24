@@ -1,6 +1,6 @@
 [project]
 name = "mascope_cli"
-version = "2026.9.16"
+version = "2026.9.24"
 description = "Mascope's operations CLI: install, launch and back up a Mascope deployment."
 classifiers = [
     "Topic :: Scientific/Engineering :: Atmospheric Science",
