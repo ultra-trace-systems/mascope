@@ -24,6 +24,9 @@ from mascope_backend.db import configure_database_engine, dispose_engine
 from mascope_backend.db.admin.batch.reset_processing_status import (
     reset_stuck_processing_batches,
 )
+from mascope_backend.db.admin.ionization.ensure_system_modes import (
+    ensure_system_ionization_modes,
+)
 from mascope_backend.db.admin.peak_assignments.reset_running_runs import (
     reset_running_batch_peak_runs,
     reset_running_peak_assignment_runs,
@@ -89,6 +92,18 @@ async def init_main_process() -> None:
 
         runtime.logger.info("Main process: initializing acquisition datasets")
         await create_acquisition_datasets()
+
+        # Logged and carried, not raised: these rows are inert until a
+        # deployment adopts one, so nothing about a start depends on them.
+        # The steps above are different - a reset left undone would leave
+        # work looking like it is still running.
+        runtime.logger.info("Main process: seeding system ionization modes")
+        try:
+            await ensure_system_ionization_modes()
+        except Exception as e:
+            runtime.logger.error(
+                f"Main process: could not seed the system ionization modes: {e}"
+            )
     finally:
         # Dispose engine regardless of task outcome; catch disposal errors
         # so they never mask the original startup exception
