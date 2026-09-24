@@ -41,10 +41,12 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   dimer with formic acid or its cluster with the reagent's acid, and on a
   nitrate source also where the acquisition starts above every carrier the
   source makes. A peak that reads both as a deprotonated acid and as the
-  formate adduct of a molecule 46 Da lighter is one ion read two ways: the run
-  elects the formate reading, keeps the acid as the row's other reading, and
-  holds the row at candidate until the lighter molecule is seen through one of
-  the mode's own channels. On a chamber dataset the engine had committed a
+  formate adduct of a molecule 46 Da lighter is one ion read two ways, and
+  every acid reads that way: the formate reading is the row's only where the
+  lighter molecule is itself committed through one of the mode's own channels,
+  which also corroborates it, and otherwise the acid reading stands with the
+  formate reading kept on the row as one the sample did not bear out. On a
+  chamber dataset the engine had committed a
   series of C11 acids at the top tier, a quarter of one batch's assigned
   intensity, every one of them a C10 oxidation product plus formic acid
   (assignment quality plan, step 3.2). The channel is searched only where the

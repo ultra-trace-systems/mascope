@@ -171,55 +171,6 @@ class TestTheCorroborationCap:
         assert rows[0]["provenance"]["minor_channel"]["capped"] is False
 
 
-class TestTheFormateChannel:
-    """The chamber case: a C10 product read through formate, and the C11 acid it
-    displaced. Nothing here is formate-specific in the engine; what is pinned
-    is that the generic rules reach it as the plan says they should."""
-
-    IDS = {"+NO3-": "im-no3", "-H+": "im-deprot", "+HCOO-": "im-formate"}
-
-    def _assign(self, matches, peaks):
-        return untargeted_matches_to_peak_assignments(
-            pd.DataFrame(matches),
-            peaks_df=peaks,
-            sample_item_id="si-1",
-            peak_assignment_run_id="run-1",
-            candidate_threshold=0.45,
-            assigned_threshold=0.75,
-            mechanism_id_by_notation=self.IDS,
-            max_alternatives=5,
-            minor_channels=frozenset({"+HCOO-"}),
-        )
-
-    def test_a_formate_winner_alone_is_capped(self):
-        peaks = _peaks(("p1", 263.1136, 1.0e6))
-        rows = self._assign(
-            [_match(263.1136, "C10H18O5", "C11H19O7-", "+HCOO-", 0.99)], peaks
-        )
-        assert rows[0]["assigned_formula"] == "C10H18O5"
-        assert rows[0]["tier"] == TIER_CANDIDATE
-        assert rows[0]["provenance"]["minor_channel"]["capped"] is True
-
-    def test_the_c10_partner_on_the_reagent_channel_lifts_the_cap(self):
-        # The same neutral won its nitrate adduct 46 Da away less formic acid:
-        # one neutral explains both peaks, and the formate reading is
-        # corroborated the way any opportunistic channel's is.
-        peaks = _peaks(("p1", 263.1136, 1.0e6), ("p2", 280.1032, 8.0e5))
-        rows = self._assign(
-            [
-                _match(263.1136, "C10H18O5", "C11H19O7-", "+HCOO-", 0.99),
-                _match(280.1032, "C10H18O5", "C10H18NO8-", "+NO3-", 0.99),
-            ],
-            peaks,
-        )
-        formate = [r for r in rows if r["ionization_mechanism_id"] == "im-formate"][0]
-        assert formate["tier"] == TIER_ASSIGNED
-        assert (
-            formate["provenance"]["minor_channel"]["corroborated_by"]
-            == "second_channel"
-        )
-
-
 class TestThePartnerGate:
     """An opportunistic reading of an ion the mode's own channel also reads
     stands only where the sample commits its neutral through a mode channel.
@@ -829,7 +780,7 @@ class TestResolution:
         ]
 
 
-@pytest.mark.parametrize("profile,expected", [("BR", 2), ("NO3", 1), ("UR", 1)])
+@pytest.mark.parametrize("profile,expected", [("BR", 3), ("NO3", 2), ("UR", 1)])
 def test_the_gate_sets_profiles_declare_their_channels(profile, expected):
     from mascope_tools.composition.reagents import secondary_channels
 

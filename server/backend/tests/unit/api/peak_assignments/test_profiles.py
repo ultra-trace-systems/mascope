@@ -138,6 +138,23 @@ class TestResolution:
         assert resolved.minor_channels == frozenset({"-H-"})
         assert resolved.added_channels == frozenset({"-H-"})
 
+    def test_formate_is_partner_gated_and_carbonate_is_not(self):
+        # A nitrate acquisition starting at m/z 130: both channels stay on
+        # unobservable, and only formate is held to a partner.
+        resolved = with_secondary_channels(
+            resolve_profile(
+                PeakAssignmentConfig(),
+                ["+^NO3-", "-H+"],
+                instrument_type="orbi",
+                polarity="-",
+            ),
+            [130.0, 700.0],
+            [1.0e6, 1.0e4],
+            ["+CO3-", "+HCOO-"],
+        )
+        assert resolved.minor_channels == frozenset({"+CO3-", "+HCOO-"})
+        assert resolved.partner_gated_channels == frozenset({"+HCOO-"})
+
     def test_the_charge_transfer_channels_are_partner_gated(self):
         resolved = with_secondary_channels(
             resolve_profile(

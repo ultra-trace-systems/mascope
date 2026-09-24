@@ -153,9 +153,10 @@ nitrate source the channel also stays on where the acquisition starts above ever
 formate carrier the source makes, since that silence is the window's, not the
 chemistry's; a halide profile claims only what it can show. A peak that reads both as a
 deprotonated acid and as the formate adduct of a molecule 46 Da lighter is one ion read
-two ways: the run elects the formate reading, keeps the acid as the row's other reading,
-and holds the row at candidate until the lighter molecule is seen through one of the
-mode's own channels.
+two ways, and every acid reads that way. The formate reading is the row's only where the
+lighter molecule is itself committed through one of the mode's own channels, which also
+corroborates it; otherwise the acid reading stands, and the formate reading stays on the
+row as one the sample did not bear out.
 
 **No profile and No context.** *No profile* switches the layer off: the run searches
 the engine's original wide grid at a fixed 10 ppm window. *No context* applies no

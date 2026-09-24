@@ -79,6 +79,12 @@ class TestTheProbes:
             for channel in R.secondary_channels(name):
                 assert channel.needs_partner, channel.notation
                 assert not channel.declared_stays_secondary, channel.notation
+        for name in ("NO3", "NO3_15N", "BR", "IODIDE"):
+            formate = [c for c in R.secondary_channels(name) if c.notation == "+HCOO-"][
+                0
+            ]
+            assert formate.needs_partner, name
+            assert formate.declared_stays_secondary, name
         carbonate = [c for c in R.secondary_channels("NO3") if c.notation == "+CO3-"][0]
         assert not carbonate.needs_partner and carbonate.declared_stays_secondary
 
