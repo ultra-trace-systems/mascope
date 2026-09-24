@@ -208,6 +208,11 @@ def same_ion_readings(row: dict, notation_by_id: dict[str, str]) -> list[dict]:
     for alternative in row.get("alternatives") or []:
         if not alternative.get(SAME_ION):
             continue
+        # An opportunistic reading the partner gate displaced: the sample was
+        # asked to bear it out and did not, so it is no doubt about the reading
+        # it did bear out (``engine._apply_partner_gates``).
+        if alternative.get("partner_gate") == "unmet":
+            continue
         notation = notation_by_id.get(str(alternative.get("ionization_mechanism_id")))
         if notation:
             readings.append({**alternative, "channel": notation})

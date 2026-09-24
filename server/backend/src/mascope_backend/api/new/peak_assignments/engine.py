@@ -58,6 +58,7 @@ from mascope_tools.composition.heuristic_filter import (
     SCORE_VERSION,
     element_counts,
     formula_plausibility,
+    neutral_is_closed_shell,
     propose_same_ion_readings,
 )
 from mascope_tools.composition.mass_accuracy import (
@@ -71,6 +72,7 @@ from mascope_tools.composition.models import (
     PatternScoring,
 )
 from mascope_tools.composition.utils import (
+    calculate_mass,
     parse_composition,
     parse_formula_tokens,
     to_hill_order,
@@ -2148,6 +2150,7 @@ def untargeted_matches_to_peak_assignments(
     minor_channels: frozenset[str] | None = None,
     excluded_peak_ids: set[str] | None = None,
     fit_by_seed: dict[tuple[str, str], float | None] | None = None,
+    partner_gated_channels: frozenset[str] | None = None,
 ) -> list[dict]:
     """Map untargeted composition results onto peak assignments (Stage B).
 
@@ -2214,6 +2217,9 @@ def untargeted_matches_to_peak_assignments(
         search back to IonizationMechanism ids.
     :param formula_formatter: Optional callable applied to formulas (e.g.
         explicit-isotope to custom element notation conversion).
+    :param partner_gated_channels: The minor channels whose reading of an ion
+        stands only where the sample commits the neutral it proposes through
+        one of the mode's own channels (see :func:`_apply_partner_gates`).
     :param minor_channels: Notations of the opportunistic secondary channels
         this run switched on. They are searched beside the mode's own
         mechanisms but are not equal to them: they only take peaks no primary
@@ -2532,12 +2538,182 @@ def untargeted_matches_to_peak_assignments(
             f"monoisotopic peak were not written; their peaks stay unassigned."
         )
 
+    if partner_gated_channels:
+        _apply_partner_gates(
+            assignments,
+            mechanism_id_by_notation,
+            minor_channels,
+            partner_gated_channels,
+            candidate_threshold=candidate_threshold,
+            assigned_threshold=assigned_threshold,
+        )
     if minor_channels:
         _apply_minor_channel_policy(
             assignments, mechanism_id_by_notation, minor_channels
         )
 
     return assignments
+
+
+#: The key an alternative carries when it is an opportunistic reading of the
+#: row's ion that the sample did not bear out: displaced by the partner gate,
+#: kept on the row for the reader, and no rival in the cross-channel pass.
+PARTNER_GATE_UNMET = "unmet"
+
+
+def _apply_partner_gates(
+    assignments: list[dict],
+    mechanism_id_by_notation: dict[str, str],
+    minor_channels: frozenset[str],
+    partner_gated_channels: frozenset[str],
+    *,
+    candidate_threshold: float,
+    assigned_threshold: float,
+) -> None:
+    """Let an opportunistic reading stand only where the sample shows its neutral.
+
+    One ion, read two ways, is one measurement split differently between the
+    analyte and the mechanism, and the finder elects the reading whose
+    mechanism carries the most mass. Through an opportunistic channel that
+    prior is wrong as often as it is right: every deprotonated acid also reads
+    as the molecule 46 Da lighter with formate, and the C11 acid the chamber
+    dataset does not contain and the C10 acid it does are told apart by one
+    fact only - whether the C10 product is seen through one of the mode's own
+    channels. Tropylium is the same case in positive mode: protonated C7H6
+    outweighs toluene less a hydride in the election, and toluene is what the
+    sample shows through the bare sign.
+
+    So for a row whose reading is through a partner-gated channel:
+
+    - the reading stands where the sample commits its neutral through a mode
+      channel at candidate or better, and the minor-channel policy then
+      corroborates it by that very fact;
+    - otherwise the mode's own reading of the ion, where the family holds one
+      whose neutral is a molecule, becomes the row's, keeping the fit and mass
+      error that are the ion's, with its tier read off its own plausibility;
+      failing that, another opportunistic reading whose neutral the sample does
+      show; failing that, the row stays as it is and the minor-channel policy
+      caps it.
+
+    The displaced reading stays on the row as a same-ion alternative marked
+    :data:`PARTNER_GATE_UNMET`, so a reader sees it and the cross-channel pass
+    does not count it as a rival: a reading the sample was asked to bear out
+    and did not is no doubt about the one it did. An isotopologue follows its
+    owner's reading, as it does everywhere.
+
+    :param assignments: The rows built for this sample, modified in place.
+    :param mechanism_id_by_notation: Notation to mechanism id.
+    :param minor_channels: The notations that are secondary in this run.
+    :param partner_gated_channels: The secondary channels held to a partner.
+    :param candidate_threshold: The candidate band, for the swapped reading's tier.
+    :param assigned_threshold: The assigned band, likewise.
+    """
+    minor_ids = {
+        mechanism_id_by_notation[notation]
+        for notation in (minor_channels or frozenset())
+        if mechanism_id_by_notation.get(notation)
+    }
+    gated_ids = {
+        mechanism_id_by_notation[notation]
+        for notation in partner_gated_channels
+        if mechanism_id_by_notation.get(notation)
+    }
+    if not gated_ids:
+        return
+    notation_by_id = {
+        mid: notation for notation, mid in mechanism_id_by_notation.items()
+    }
+    partnered = {
+        row["assigned_formula"]
+        for row in assignments
+        if row["role"] == ROLE_M0
+        and row["ionization_mechanism_id"] not in minor_ids
+        and row["assigned_formula"]
+        and row["tier"] in (TIER_ASSIGNED, TIER_CANDIDATE)
+    }
+    children: dict[str, list[dict]] = {}
+    for row in assignments:
+        if row["role"] == ROLE_ISO_CHILD and row["owner_peak_assignment_id"]:
+            children.setdefault(row["owner_peak_assignment_id"], []).append(row)
+
+    def molecule(alternative: dict) -> bool:
+        formula = alternative.get("assigned_formula")
+        return bool(
+            alternative.get("same_ion")
+            and formula
+            and alternative.get("ionization_mechanism_id")
+            and neutral_is_closed_shell(str(formula))
+        )
+
+    for row in assignments:
+        if row["role"] != ROLE_M0 or row["ionization_mechanism_id"] not in gated_ids:
+            continue
+        own = notation_by_id.get(row["ionization_mechanism_id"])
+        provenance = row.setdefault("provenance", {})
+        if row["assigned_formula"] in partnered:
+            provenance["partner_gate"] = {"channel": own, "partner": True}
+            continue
+        family = [alt for alt in row.get("alternatives") or [] if molecule(alt)]
+        chosen = next(
+            (alt for alt in family if alt["ionization_mechanism_id"] not in minor_ids),
+            None,
+        ) or next(
+            (
+                alt
+                for alt in family
+                if alt["ionization_mechanism_id"] in minor_ids
+                and alt["assigned_formula"] in partnered
+            ),
+            None,
+        )
+        if chosen is None:
+            provenance["partner_gate"] = {
+                "channel": own,
+                "partner": False,
+                "kept": "no other reading of the ion",
+            }
+            continue
+        displaced = {
+            "assigned_formula": row["assigned_formula"],
+            "ion_formula": row["ion_formula"],
+            "ionization_mechanism_id": row["ionization_mechanism_id"],
+            "isotope_label": row["isotope_label"],
+            "fit_score": row["fit_score"],
+            "mz_error_ppm": row["mz_error_ppm"],
+            "plausibility": provenance.get("plausibility"),
+            "same_ion": True,
+            "source": SOURCE_UNTARGETED,
+            "partner_gate": PARTNER_GATE_UNMET,
+        }
+        plausibility = float(chosen.get("plausibility") or 0.0)
+        fit = float(row["fit_score"] or 0.0)
+        evidence = round(fit * plausibility, 4)
+        row["assigned_formula"] = chosen["assigned_formula"]
+        row["ionization_mechanism_id"] = chosen["ionization_mechanism_id"]
+        row["tier"] = tier_for_evidence(
+            evidence,
+            candidate_threshold=candidate_threshold,
+            assigned_threshold=assigned_threshold,
+        )
+        provenance["plausibility"] = plausibility
+        provenance["evidence"] = evidence
+        if "neutral_mass" in provenance:
+            provenance["neutral_mass"] = float(
+                calculate_mass(formula=str(chosen["assigned_formula"]))
+            )
+        provenance.pop("unsaturation", None)
+        provenance["partner_gate"] = {
+            "channel": own,
+            "partner": False,
+            "displaced": displaced["assigned_formula"],
+            "through": notation_by_id.get(chosen["ionization_mechanism_id"]),
+        }
+        row["alternatives"] = [displaced] + [
+            alt for alt in row.get("alternatives") or [] if alt is not chosen
+        ]
+        for child in children.get(row["peak_assignment_id"], ()):
+            child["assigned_formula"] = row["assigned_formula"]
+            child["ionization_mechanism_id"] = row["ionization_mechanism_id"]
 
 
 def _apply_minor_channel_policy(

@@ -71,6 +71,14 @@ class TestTheProbes:
         assert evidence[0].probe == probe.label
         assert evidence[0].mz_error_ppm == pytest.approx(7.0, abs=0.1)
 
+    def test_the_charge_transfer_channels_need_a_partner_and_carbonate_does_not(self):
+        for name in ("EASYIC_POS", "EASYIC_NEG"):
+            for channel in R.secondary_channels(name):
+                assert channel.needs_partner, channel.notation
+                assert not channel.declared_stays_secondary, channel.notation
+        carbonate = [c for c in R.secondary_channels("NO3") if c.notation == "+CO3-"][0]
+        assert not carbonate.needs_partner and carbonate.declared_stays_secondary
+
     def test_the_charge_transfer_probes_land_on_the_fluoranthene_beam(self):
         by_label = {
             probe.label: probe

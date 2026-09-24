@@ -355,6 +355,7 @@ async def _search_sample(
         formula_formatter=to_custom_element_format,
         max_alternatives=config.max_alternatives,
         minor_channels=resolved_profile.minor_channels,
+        partner_gated_channels=resolved_profile.partner_gated_channels,
         fit_by_seed=fit_by_seed,
     ), unsearched
 

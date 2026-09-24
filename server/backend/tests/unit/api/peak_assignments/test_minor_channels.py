@@ -169,6 +169,174 @@ class TestTheCorroborationCap:
         assert rows[0]["provenance"]["minor_channel"]["capped"] is False
 
 
+class TestThePartnerGate:
+    """An opportunistic reading of an ion the mode's own channel also reads
+    stands only where the sample commits its neutral through a mode channel.
+
+    The finder's election prefers the heavier mechanism, which is the
+    opportunistic channel's every time; what tells the C11 acid the chamber
+    does not contain from the C10 product it does, and protonated C7H6 from
+    toluene less a hydride, is whether the sample shows the neutral elsewhere.
+    """
+
+    IDS = {"+NO3-": "im-no3", "-H+": "im-deprot", "+HCOO-": "im-formate"}
+    CT_IDS = {"+": "im-ct", "+H+": "im-h", "-H-": "im-hydride"}
+
+    def _assign(self, matches, peaks, ids, minor, gated):
+        return untargeted_matches_to_peak_assignments(
+            pd.DataFrame(matches),
+            peaks_df=peaks,
+            sample_item_id="si-1",
+            peak_assignment_run_id="run-1",
+            candidate_threshold=0.45,
+            assigned_threshold=0.75,
+            mechanism_id_by_notation=ids,
+            max_alternatives=5,
+            minor_channels=frozenset(minor),
+            partner_gated_channels=frozenset(gated),
+        )
+
+    @staticmethod
+    def _family(*readings):
+        return [
+            {
+                "formula": formula,
+                "ion": ion,
+                "ionization_mechanism": mechanism,
+                "neutral_mass": 0.0,
+                "unsaturation": None,
+            }
+            for formula, ion, mechanism in readings
+        ]
+
+    def test_without_a_partner_the_modes_own_reading_is_the_rows(self):
+        # 263.1136 reads as C10H18O5 with formate or as C11H20O7 deprotonated;
+        # nothing else in the sample shows C10H18O5, so the acid stands, the
+        # formate reading stays on the row as displaced, and no cap applies.
+        peaks = _peaks(("p1", 263.1136, 1.0e6))
+        rows = self._assign(
+            [
+                {
+                    **_match(263.1136, "C10H18O5", "C11H19O7-", "+HCOO-", 0.99),
+                    "same_ion_alternatives": self._family(
+                        ("C11H20O7", "C11H19O7-", "-H+")
+                    ),
+                }
+            ],
+            peaks,
+            self.IDS,
+            minor={"+HCOO-"},
+            gated={"+HCOO-"},
+        )
+        [row] = rows
+        assert row["assigned_formula"] == "C11H20O7"
+        assert row["ionization_mechanism_id"] == "im-deprot"
+        assert row["tier"] == TIER_ASSIGNED
+        assert "minor_channel" not in row["provenance"]
+        gate = row["provenance"]["partner_gate"]
+        assert gate["partner"] is False
+        assert gate["displaced"] == "C10H18O5" and gate["through"] == "-H+"
+        first = row["alternatives"][0]
+        assert first["assigned_formula"] == "C10H18O5"
+        assert first["same_ion"] is True and first["partner_gate"] == "unmet"
+
+    def test_with_a_partner_the_formate_reading_stands_and_is_corroborated(self):
+        peaks = _peaks(("p1", 263.1136, 1.0e6), ("p2", 280.1032, 8.0e5))
+        rows = self._assign(
+            [
+                {
+                    **_match(263.1136, "C10H18O5", "C11H19O7-", "+HCOO-", 0.99),
+                    "same_ion_alternatives": self._family(
+                        ("C11H20O7", "C11H19O7-", "-H+")
+                    ),
+                },
+                _match(280.1032, "C10H18O5", "C10H18NO8-", "+NO3-", 0.99),
+            ],
+            peaks,
+            self.IDS,
+            minor={"+HCOO-"},
+            gated={"+HCOO-"},
+        )
+        formate = [r for r in rows if r["ionization_mechanism_id"] == "im-formate"][0]
+        assert formate["assigned_formula"] == "C10H18O5"
+        assert formate["tier"] == TIER_ASSIGNED
+        assert formate["provenance"]["partner_gate"] == {
+            "channel": "+HCOO-",
+            "partner": True,
+        }
+        assert (
+            formate["provenance"]["minor_channel"]["corroborated_by"]
+            == "second_channel"
+        )
+
+    def test_a_reading_with_no_other_reading_is_left_to_the_cap(self):
+        peaks = _peaks(("p1", 263.1136, 1.0e6))
+        [row] = self._assign(
+            [_match(263.1136, "C10H18O5", "C11H19O7-", "+HCOO-", 0.99)],
+            peaks,
+            self.IDS,
+            minor={"+HCOO-"},
+            gated={"+HCOO-"},
+        )
+        assert row["assigned_formula"] == "C10H18O5"
+        assert row["tier"] == TIER_CANDIDATE
+        assert (
+            row["provenance"]["partner_gate"]["kept"] == "no other reading of the ion"
+        )
+        assert row["provenance"]["minor_channel"]["capped"] is True
+
+    def test_tropylium_is_toluene_less_a_hydride_where_toluene_is_seen(self):
+        # C7H7+ reads as protonated C7H6 or as toluene less a hydride; the
+        # election takes the proton, the sample shows toluene through the bare
+        # sign, and only the hydride reading has that partner.
+        peaks = _peaks(("p1", 91.0542, 1.0e6), ("p2", 92.0621, 3.0e6))
+        rows = self._assign(
+            [
+                {
+                    **_match(91.0542, "C7H6", "C7H7+", "+H+", 0.99),
+                    "same_ion_alternatives": self._family(
+                        ("C7H8", "C7H7+", "-H-"), ("C7H7", "C7H7+", "+")
+                    ),
+                },
+                _match(92.0621, "C7H8", "C7H8+", "+", 0.99),
+            ],
+            peaks,
+            self.CT_IDS,
+            minor={"+H+", "-H-"},
+            gated={"+H+", "-H-"},
+        )
+        tropylium = [r for r in rows if r["sample_peak_id"] == "p1"][0]
+        assert tropylium["assigned_formula"] == "C7H8"
+        assert tropylium["ionization_mechanism_id"] == "im-hydride"
+        assert tropylium["tier"] == TIER_ASSIGNED
+        assert tropylium["provenance"]["partner_gate"]["through"] == "-H-"
+        assert (
+            tropylium["provenance"]["minor_channel"]["corroborated_by"]
+            == "second_channel"
+        )
+
+    def test_an_isotopologue_follows_its_owners_reading(self):
+        peaks = _peaks(("p1", 263.1136, 1.0e6), ("p2", 264.1170, 1.1e5))
+        rows = self._assign(
+            [
+                {
+                    **_match(263.1136, "C10H18O5", "C11H19O7-", "+HCOO-", 0.99),
+                    "same_ion_alternatives": self._family(
+                        ("C11H20O7", "C11H19O7-", "-H+")
+                    ),
+                },
+                _match(264.1170, "C10H18O5", "C11H19O7-", "+HCOO-", 0.99, "13C"),
+            ],
+            peaks,
+            self.IDS,
+            minor={"+HCOO-"},
+            gated={"+HCOO-"},
+        )
+        child = [r for r in rows if r["role"] == "iso_child"][0]
+        assert child["assigned_formula"] == "C11H20O7"
+        assert child["ionization_mechanism_id"] == "im-deprot"
+
+
 class TestResolution:
     def _resolved(self) -> ResolvedProfile:
         return resolve_profile(

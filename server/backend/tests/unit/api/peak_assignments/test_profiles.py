@@ -138,6 +138,19 @@ class TestResolution:
         assert resolved.minor_channels == frozenset({"-H-"})
         assert resolved.added_channels == frozenset({"-H-"})
 
+    def test_the_charge_transfer_channels_are_partner_gated(self):
+        resolved = with_secondary_channels(
+            resolve_profile(
+                PeakAssignmentConfig(), ["+"], instrument_type="orbi", polarity="+"
+            ),
+            [42.0, 160.0],
+            [1.0e6, 1.0e4],
+            ["+H+", "-H-"],
+        )
+        assert resolved.minor_channels == frozenset({"+H+", "-H-"})
+        assert resolved.partner_gated_channels == frozenset({"+H+", "-H-"})
+        assert resolved.snapshot()["partner_gated_channels"] == ["+H+", "-H-"]
+
     def test_the_bare_sign_on_a_tof_keeps_the_esi_profile(self):
         # An ambient-ion mode on an APi-TOF is declared the same way and is
         # not a fluoranthene beam.

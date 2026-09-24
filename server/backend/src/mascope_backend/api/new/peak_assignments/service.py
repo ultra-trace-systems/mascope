@@ -2795,6 +2795,7 @@ async def _run_sample_assignment(
                     formula_formatter=to_custom_element_format,
                     max_alternatives=config.max_alternatives,
                     minor_channels=resolved_profile.minor_channels,
+                    partner_gated_channels=resolved_profile.partner_gated_channels,
                     excluded_peak_ids=assigned_peak_ids - election.released,
                     fit_by_seed=fit_by_seed,
                 )
