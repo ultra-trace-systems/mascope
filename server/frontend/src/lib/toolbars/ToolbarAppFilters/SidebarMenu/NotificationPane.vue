@@ -1,5 +1,5 @@
 <script setup>
-import { reactive, computed, watchEffect } from 'vue'
+import { reactive, computed, watch, watchEffect } from 'vue'
 
 import Button from 'primevue/button'
 import ScrollPanel from 'primevue/scrollpanel'
@@ -9,9 +9,10 @@ import InputIcon from 'primevue/inputicon'
 import InputText from 'primevue/inputtext'
 
 import { useApp } from '@/stores'
-import { beautifySnakeCase } from '@/lib/utils'
+import { beautifySnakeCase, messageSeverity } from '@/lib/utils'
 
 import { useSidebarMenu } from './state.js'
+import NotificationInbox from './NotificationInbox.vue'
 
 const app = useApp()
 const sidebarMenu = useSidebarMenu()
@@ -35,6 +36,12 @@ watchEffect(() => {
 })
 
 const vHelpLayer = app.ui.help.directive(layer)
+
+// Read again whenever the pane opens: what was kept while this tab was away
+// or its sign-in load failed shows up then.
+watch(open, (isOpen) => {
+  if (isOpen) app.ui.inbox.load()
+})
 </script>
 
 <template>
@@ -46,7 +53,16 @@ const vHelpLayer = app.ui.help.directive(layer)
         Notifications are shown as toasts in the bottom right corner in real time.
         Here you can view a log of past notifications.
       </p>
-      <p>Clearing empties this list and the unread badge; nothing is deleted on the server.</p>
+      <p>
+        Under <b>Needs attention</b> are the files of your instruments that failed, need a
+        chemistry or could not be calibrated. They are kept until you mark them read, even
+        when you were not signed in, and <b>Show files</b> opens them in Raw files.
+      </p>
+      <p>
+        Clearing empties the log below and its count on the badge; the files under
+        <b>Needs attention</b> stay counted until you mark them read or they are resolved.
+        Nothing is deleted on the server.
+      </p>
       `
     "
     style="min-height: calc(100vh - 300px)"
@@ -64,6 +80,7 @@ const vHelpLayer = app.ui.help.directive(layer)
         @click="app.ui.notification.clearLog()"
       />
     </div>
+    <NotificationInbox />
     <IconField style="width: 100%">
       <InputIcon>
         <i class="pi pi-search" />
@@ -77,11 +94,7 @@ const vHelpLayer = app.ui.help.directive(layer)
             `${beautifySnakeCase(type)} ${status} ${message}`.includes(log.query)
         )"
         :key="id"
-        :severity="
-          {
-            warning: 'warn'
-          }[status] ?? status
-        "
+        :severity="messageSeverity(status)"
         :closable="false"
       >
         <div class="col" style="gap: 0.5rem">

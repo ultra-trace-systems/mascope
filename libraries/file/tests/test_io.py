@@ -13,7 +13,7 @@ import numpy as np
 import pytest
 import xarray as xr
 import zarr
-from conftest import TEST_FILENAME, TEST_MZ_SIZE, TEST_TIME_SIZE
+from file_test_support import TEST_FILENAME, TEST_MZ_SIZE, TEST_TIME_SIZE
 
 import mascope_file.io as m_io
 import mascope_file.name as m_name

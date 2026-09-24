@@ -21,8 +21,12 @@ uploads them to your Mascope server automatically.
    **Start the File Agent automatically when you sign in to Windows**
    checkbox — leave it enabled so the agent survives reboots.
 
-   > The installer is not yet code-signed, so Windows SmartScreen may warn
-   > about an unrecognized app. Click **More info** → **Run anyway**.
+   > The installer is code-signed, and Windows shows the publisher as
+   > **Ultra Trace Systems Oy** — check that name before you run it.
+   > Signing does not silence Windows SmartScreen on day one: a release
+   > earns its reputation over weeks of downloads, so a fresh one may still
+   > be called an unrecognized app. With the publisher name right, click
+   > **More info** → **Run anyway**.
 
 3. When the agent first starts, a guided setup runs in the console window.
    It asks for the **Mascope server address** (for example
@@ -159,6 +163,30 @@ place and your settings are kept. Installs made with older agent versions
 The agent prints its version when it starts, and uninstalling (Windows
 **Settings → Apps**) never removes your configuration.
 
+### What became of each file
+
+After each upload the agent asks the server, at a widening interval, how far
+processing got, and writes a line to its window and its log for each stage it
+sees the file at - a stage the file passes through between two questions is
+not seen:
+
+```
+ambient_2026.09.03.raw: converted
+ambient_2026.09.03.raw: bound to its ionization modes. Bound by file-name token to 'Bromide' (-).
+ambient_2026.09.03.raw: processed. Matched 1 sample.
+```
+
+A file that failed to process is an error line. A file that waits for a
+chemistry, or whose m/z calibration failed, is a warning line that says why.
+The agent follows each file for up to three hours, and says so if the server
+still has no record of it by then: converting it may have failed. If the
+server has not answered for a while by then, the line says for how long, and
+what the server said of the file before that. The agent asks only about its
+own uploads, so another agent's file of the same name is not taken for one
+of them. A server too old to report processing is not asked. Stopping the
+agent says how many files it was still following, and names a file whose
+upload finished as it stopped; their outcome shows in Raw files.
+
 ### Troubleshooting uploads
 
 - Logs are written to `%APPDATA%\Mascope\FileAgent\logs\prod\`.
@@ -179,6 +207,20 @@ The agent prints its version when it starts, and uninstalling (Windows
   (`filename_prefix = 'Orbion_'`), which the guided setup offers to do for
   you. The agent does not retry these: the server has understood the name
   and refused it, so the file is set aside in `failed_uploads` immediately.
+- *The upload succeeded but the file has no samples*: the file arrived, but
+  it could not be processed; the agent's own line about it says why. Most often its name matches no ionization mode
+  token (see [Import data files](../guides/import-files.md#prerequisites)),
+  and it waits in Raw files as *Needs a chemistry* until someone
+  [chooses its chemistry](../guides/import-files.md#choose-the-chemistry-of-a-file-that-needs-one).
+  Otherwise processing failed, and the file's status in Raw files says why.
+  Either way it is shown as it happens to anyone viewing that instrument's
+  raw files and, for a paired agent, to the person who approved its pairing.
+  It is also kept, until they mark it read, for that person and for the
+  owners of the instrument's acquisition workspace: they find it under
+  **Needs attention** in the notifications pane of the home menu, even when
+  they were not signed in at the time. Fix the cause, then re-process the
+  file (see
+  [Import data files → Troubleshooting](../guides/import-files.md#troubleshooting)).
 - *"The server rejected the access token"* or *"This agent credential has
   expired"*: the machine's token has lapsed or its device was revoked.
   Answer the prompt the agent shows in its window, or close it and start

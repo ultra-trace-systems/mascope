@@ -4,6 +4,7 @@ import { defineStore } from 'pinia'
 import { api } from '@/api'
 import { makeLogger } from '@/lib/logging'
 import { runtime } from '@/lib/runtime'
+import { debounce } from '@/lib/utils'
 
 import { useInstrument } from './instrument'
 
@@ -59,9 +60,26 @@ export const useAcquisition = defineStore('app.data.acquisition', () => {
       time.mode = 'Last 24 hours'
     }
   })
-  // Single watcher: reset paginator + selection, then reload. Ordering
-  // matters - the reload must see first=0 to fetch page 0.
-  watch(time, async () => {
+
+  // --- page filters: narrow the loaded page on the client (filename search
+  // and polarity). Kept here rather than in the pane, so that opening files
+  // from elsewhere can clear them.
+  const search = ref('')
+  const polarity = ref('')
+
+  // --- processing status filter: the statuses to keep, or null for any.
+  // Server-side, so it spans every page. With a recent preset, "recent" is
+  // then when a file's status was recorded rather than when it was acquired:
+  // a file uploaded or re-processed long after acquisition is still found.
+  const processingStatus = ref(null)
+  const keepsStatus = (record) =>
+    !processingStatus.value || processingStatus.value.includes(record.processing_status)
+
+  // Single watcher for both filters: reset paginator + selection, then
+  // reload, once however many of them changed in the same tick (Clear
+  // filters changes both). Ordering matters - the reload must see first=0 to
+  // fetch page 0.
+  watch([time, processingStatus], async () => {
     unfocus()
     first.value = 0
     await load()
@@ -77,19 +95,73 @@ export const useAcquisition = defineStore('app.data.acquisition', () => {
   )
   watch(
     () => instrument.focused,
-    (next, prev) => {
-      unfocus()
-      if (prev) api.socket.removeSubscription(prev.instrument)
-      if (next) api.socket.addSubscription(next.instrument)
-    }
+    () => unfocus()
   )
 
+  // --- whether anyone is looking. Raw files is one tab of one route, and the
+  // store outlives it, so a tab parked on another tab used to follow its
+  // instrument's room for nothing. With every instrument listed that cost is
+  // multiplied by the instruments, so the rooms are held only while the pane
+  // says it is showing them, and the list is reloaded when it comes back.
+  const watching = ref(false)
+  const setWatching = (on) => {
+    if (watching.value === on) return
+    watching.value = on
+    if (on) load()
+  }
+
+  // --- socket rooms. An acquisition event is emitted into its instrument's
+  // own room, so listing every instrument means holding every one of those
+  // rooms - one focused instrument is not a special case of that, it is one
+  // room instead of all of them. Reconciled rather than toggled, because the
+  // instrument list loads after the store and grows as files arrive.
+  let subscribed = new Set()
+  const rooms = computed(() => {
+    if (!watching.value) return []
+    return instrument.focused
+      ? [instrument.focused.instrument]
+      : (instrument.list ?? []).map((known) => known.instrument)
+  })
+  watch(
+    () => rooms.value.join(','),
+    () => {
+      const wanted = new Set(rooms.value)
+      for (const room of subscribed) {
+        if (!wanted.has(room)) api.socket.removeSubscription(room)
+      }
+      for (const room of wanted) {
+        if (!subscribed.has(room)) api.socket.addSubscription(room)
+      }
+      subscribed = wanted
+    },
+    { immediate: true }
+  )
+
+  /** Whether the list is showing an instrument's files at all. */
+  const listsInstrument = (name) => !instrument.focused || instrument.focused.instrument === name
+
+  // --- loading: only the latest request's answer is kept, and a row update
+  // that arrives while a load is in flight is applied again on top of its
+  // answer, which may predate it.
+  let latestLoad = 0
+  let updatesDuringLoad = null
+
   async function load() {
+    const loadId = ++latestLoad
+    updatesDuringLoad ??= new Map()
+    let answer = null
     if (time.mode.startsWith('Last')) {
-      await loadRecent(days.value)
+      answer = await loadRecent(days.value)
     } else if (time.mode == 'range') {
-      await loadRange(time.range)
+      answer = await loadRange(time.range)
     }
+    if (loadId !== latestLoad) return
+    const updates = updatesDuringLoad
+    updatesDuringLoad = null
+    if (!answer) return
+    list.value = answer.items
+    total.value = answer.results
+    for (const [recordId, record] of updates) applyUpdate(recordId, record)
   }
 
   // Raw axios call (no `use: read` handler) so we can read both `data` and
@@ -102,16 +174,21 @@ export const useAcquisition = defineStore('app.data.acquisition', () => {
           sort: SORT_FIELD_MAP[sortField.value] ?? sortField.value,
           order: sortOrder.value === 1 ? 'asc' : 'desc',
           days: daysCount,
+          recent_by: processingStatus.value ? 'processing' : undefined,
+          processing_status: processingStatus.value ?? undefined,
           page: Math.floor(first.value / rows.value),
           limit: rows.value
         },
+        // Repeat the key for each status (`a=1&a=2`), the form the API reads
+        // a list from.
+        paramsSerializer: { indexes: null },
         type: 'load_recent_sample_files'
       })
       const { data: items = [], results = 0 } = response.data ?? {}
-      list.value = items
-      total.value = results
+      return { items, results }
     } catch (err) {
       logger.error(`failed to load recent sample files: ${err}`)
+      return null
     }
   }
 
@@ -124,16 +201,18 @@ export const useAcquisition = defineStore('app.data.acquisition', () => {
           instrument: instrument.focused?.instrument,
           sort: SORT_FIELD_MAP[sortField.value] ?? sortField.value,
           order: sortOrder.value === 1 ? 'asc' : 'desc',
+          processing_status: processingStatus.value ?? undefined,
           page: Math.floor(first.value / rows.value),
           limit: rows.value
         },
+        paramsSerializer: { indexes: null },
         type: 'load_sample_file_range'
       })
       const { data: items = [], results = 0 } = response.data ?? {}
-      list.value = items
-      total.value = results
+      return { items, results }
     } catch (err) {
       logger.error(`failed to load sample file range: ${err}`)
+      return null
     }
   }
 
@@ -160,20 +239,65 @@ export const useAcquisition = defineStore('app.data.acquisition', () => {
 
   // --- socket events: refetch current page on create/delete to keep page
   // contents and total count consistent; update in place on update.
+  // Debounced, with a ceiling: every reload refetches the page, and several
+  // instruments ingesting at once produce a steady stream of events between
+  // them. Without `maxWait` a stream whose gaps stay under the wait would
+  // hold the reload off for as long as it lasted, leaving the list stale
+  // exactly while it is busiest.
+  const RELOAD_WAIT_MS = 300
+  const RELOAD_AT_THE_LATEST_MS = 2000
+  const reload = debounce(() => load(), RELOAD_WAIT_MS, {
+    maxWait: RELOAD_AT_THE_LATEST_MS
+  })
+
+  // A file of an instrument Mascope has never seen announces itself before
+  // its instrument does: the server emits `acquisition_created` into the new
+  // instrument's room, and only afterwards creates the instrument and
+  // announces that. The file's own event therefore goes to a room nobody has
+  // joined, and joining it once the instrument appears is already too late to
+  // hear it - so the instrument appearing is itself the signal to reload.
+  // Only while showing all of them: with one focused, a new instrument
+  // changes nothing on screen.
+  watch(
+    () => (instrument.list ?? []).length,
+    (now, before) => {
+      if (watching.value && !instrument.focused && now > before) reload()
+    }
+  )
+
   api.socket.on('acquisition_created', (payload) => {
     const { record } = payload
-    if (record.instrument === instrument.focused?.instrument) {
-      load()
+    if (listsInstrument(record.instrument)) {
+      reload()
     }
   })
 
+  // A status change can move a file into or out of a status filter, which
+  // only a reload can place on the right page.
+  const reloadForStatus = reload
+
+  function applyUpdate(recordId, record) {
+    const index = list.value.findIndex((f) => f.sample_file_id === recordId)
+    if (index >= 0) {
+      if (keepsStatus(record)) {
+        list.value[index] = record
+        logger.log(`updated ${record.filename}`)
+      } else {
+        reloadForStatus()
+      }
+    } else if (
+      processingStatus.value &&
+      keepsStatus(record) &&
+      listsInstrument(record.instrument)
+    ) {
+      reloadForStatus()
+    }
+  }
+
   api.socket.on('acquisition_updated', (payload) => {
     const { record_id, record } = payload
-    const index = list.value.findIndex((f) => f.sample_file_id === record_id)
-    if (index >= 0) {
-      list.value[index] = record
-      logger.log(`updated ${record.filename}`)
-    }
+    updatesDuringLoad?.set(record_id, record)
+    applyUpdate(record_id, record)
   })
 
   api.socket.on('acquisition_deleted', (payload) => {
@@ -189,6 +313,30 @@ export const useAcquisition = defineStore('app.data.acquisition', () => {
     first.value = 0
     time.mode = initTime().mode
     time.range = initTime().range
+    processingStatus.value = null
+    search.value = ''
+    polarity.value = ''
+  }
+
+  /**
+   * Show the files of an instrument that ended in one status, acquired since
+   * a time: what a kept notification names. The page filters are cleared, so
+   * none of them hides what was asked for.
+   *
+   * @param {object} files
+   * @param {string} files.instrument The instrument.
+   * @param {string|null} files.status The status, or null for any.
+   * @param {Date|null} files.since The earliest acquisition time, if any.
+   */
+  function showFiles({ instrument: name, status, since }) {
+    instrument.focus({ instrument: name })
+    search.value = ''
+    polarity.value = ''
+    processingStatus.value = status ? [status] : null
+    if (since) {
+      time.range.min = since
+      time.range.max = null
+    }
   }
 
   return {
@@ -200,16 +348,22 @@ export const useAcquisition = defineStore('app.data.acquisition', () => {
     unfocus,
     ready,
     time,
+    processingStatus,
+    search,
+    polarity,
     first,
     rows,
     total,
     // actions
     load,
+    watching,
+    setWatching,
     setPage,
     sortField,
     sortOrder,
     setSort,
-    resetFilters
+    resetFilters,
+    showFiles
   }
 })
 

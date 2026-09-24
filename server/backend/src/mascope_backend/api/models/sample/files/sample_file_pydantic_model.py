@@ -11,6 +11,7 @@ from mascope_backend.api.models.base_pydantic_model import (
     QueryParamsModel,
     RequestBodyModel,
 )
+from mascope_backend.api.models.sample.files.config import ProcessingStatus
 from mascope_file.name import resolve_instrument_type
 
 
@@ -208,6 +209,9 @@ SampleFileSortColumn = Literal[
     "utc_offset_source",
     "instrument_type",
     "source_filename",
+    "processing_status",
+    "processing_updated_utc",
+    "sample_file_utc_created",
 ]
 
 
@@ -216,6 +220,35 @@ class GetSampleFilesQueryParams(QueryParamsModel):
     datetime_max: Optional[dt] = Field(None, description="Maximum datetime filter")
     instrument: Optional[str] = Field(None, description="Filter by instrument")
     filename: Optional[str] = Field(None, description="Filter by filename")
+    source_filename: Optional[str] = Field(
+        None,
+        description=(
+            "Filter by the name a file had on the machine that uploaded it, "
+            "before any prefix the upload added."
+        ),
+    )
+    registered_within: Optional[int] = Field(
+        None,
+        ge=1,
+        description=(
+            "Only files the server registered in the last this many seconds, "
+            "by its own clock."
+        ),
+    )
+    uploaded_by_me: bool = Field(
+        False,
+        description=(
+            "Only files the asker uploaded: through the paired device behind "
+            "its token, or by its account when it has none."
+        ),
+    )
+    processing_status: list[ProcessingStatus] | None = Field(
+        None,
+        description=(
+            "Filter by processing status: the stages auto-processing reached. "
+            "Repeat the parameter for several."
+        ),
+    )
     sort: SampleFileSortColumn | None = Field(
         "datetime_utc",
         description="The column name by which you want to sort the results.",
@@ -237,6 +270,13 @@ class GetSampleFilesQueryParams(QueryParamsModel):
 class GetRecentSampleFilesQueryParams(GetSampleFilesQueryParams):
     days: int = Field(
         1, description="Number of days to look back from current datetime"
+    )
+    recent_by: Literal["acquisition", "processing"] = Field(
+        "acquisition",
+        description=(
+            "What the look-back applies to: when a file was acquired, or when "
+            "its processing status was last recorded."
+        ),
     )
 
 
@@ -368,6 +408,32 @@ class DeleteSampleFilesBody(RequestBodyModel):
             raise ValueError("Cannot provide both sample_file_ids and filenames")
 
         return self
+
+
+class BindSampleFilesBody(RequestBodyModel):
+    sample_file_ids: list[str] = Field(
+        ...,
+        description="The files to bind, ones without samples",
+        min_length=1,
+        max_length=1000,
+    )
+    ionization_mode_ids: list[str] = Field(
+        ...,
+        description=(
+            "The ionization modes chosen for them, at most one per polarity. "
+            "Each file is bound to the one of each polarity it holds."
+        ),
+        min_length=1,
+        max_length=2,
+    )
+
+    @field_validator("sample_file_ids", "ionization_mode_ids")
+    @classmethod
+    def validate_unique_ids(cls, v: list[str]) -> list[str]:
+        """Validate that the IDs are unique."""
+        if len(set(v)) != len(v):
+            raise ValueError("IDs must be unique")
+        return v
 
 
 class ReprocessSampleFilesBody(RequestBodyModel):

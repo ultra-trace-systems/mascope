@@ -12,6 +12,7 @@ All external dependencies are mocked - no DB, file I/O, or Socket.IO required.
 from unittest.mock import AsyncMock, patch
 
 import pytest
+from test_utils import captured_logs
 
 from mascope_backend.api.controllers.sample.files.process.service import (
     CALIBRATION_ITERATIONS,
@@ -38,10 +39,6 @@ async def _run(side_effect, user_id: int | None = 1) -> tuple[AsyncMock, list]:
     are exposed as attributes on the returned calibrate mock (``recorder`` /
     ``notifier`` / ``result``) for outcome assertions.
     """
-    records = []
-    sink_id = runtime.logger.add(
-        lambda message: records.append(message.record), level="TRACE"
-    )
     # Without a side effect, a calibration that applied a verified fit.
     calibrate = AsyncMock(
         side_effect=side_effect,
@@ -49,17 +46,15 @@ async def _run(side_effect, user_id: int | None = 1) -> tuple[AsyncMock, list]:
     )
     recorder = AsyncMock()
     notifier = AsyncMock()
-    try:
-        with (
-            patch(f"{_SVC}.calibration_mz_calibrate_sample", calibrate),
-            patch(f"{_SVC}._record_calibration_failure", recorder),
-            patch(f"{_SVC}.emit_user_notification", notifier),
-        ):
-            result = await calibrate_with_retry(
-                sample=_SAMPLE, sample_file_id="sf-001", user_id=user_id
-            )
-    finally:
-        runtime.logger.remove(sink_id)
+    with (
+        captured_logs() as records,
+        patch(f"{_SVC}.calibration_mz_calibrate_sample", calibrate),
+        patch(f"{_SVC}._record_calibration_failure", recorder),
+        patch(f"{_SVC}.emit_user_notification", notifier),
+    ):
+        result = await calibrate_with_retry(
+            sample=_SAMPLE, sample_file_id="sf-001", user_id=user_id
+        )
     calibrate.recorder = recorder
     calibrate.notifier = notifier
     calibrate.result = result
@@ -138,19 +133,20 @@ async def test_tolerance_doubles_between_attempts():
 
 
 @pytest.mark.asyncio
-async def test_success_returns_true_and_records_nothing():
+async def test_success_is_verified_and_records_nothing():
     calibrate, _ = await _run(None)
 
-    assert calibrate.result is True
+    assert calibrate.result.verified is True
+    assert calibrate.result.reason is None
     calibrate.recorder.assert_not_awaited()
 
 
 @pytest.mark.asyncio
-async def test_give_up_records_failure_and_returns_false():
+async def test_give_up_records_failure_and_is_not_verified():
     """The persisted marker is what makes the failure visible in the UI."""
     calibrate, _ = await _run(ApiException("m/z fitting warning: few peaks", {}, 200))
 
-    assert calibrate.result is False
+    assert calibrate.result.verified is False
     calibrate.recorder.assert_awaited_once()
     kwargs = calibrate.recorder.await_args.kwargs
     assert calibrate.recorder.await_args.args[0] == "sf-001"
@@ -158,10 +154,11 @@ async def test_give_up_records_failure_and_returns_false():
 
 
 @pytest.mark.asyncio
-async def test_fault_records_failure_and_returns_false():
+async def test_fault_records_failure_and_is_not_verified():
     calibrate, _ = await _run(ApiException("Database failed", {}, 500))
 
-    assert calibrate.result is False
+    assert calibrate.result.verified is False
+    assert calibrate.result.reason == "The m/z calibration failed: Database failed."
     calibrate.recorder.assert_awaited_once()
     assert calibrate.recorder.await_args.kwargs["attempts"] == 1
 
@@ -221,7 +218,7 @@ async def test_summary_skipped_without_a_user():
         ApiException("m/z fitting warning: few peaks", {}, 200), user_id=None
     )
 
-    assert calibrate.result is False
+    assert calibrate.result.verified is False
     calibrate.notifier.assert_not_awaited()
 
 
@@ -245,19 +242,22 @@ def _applied(verified: bool):
 
 
 @pytest.mark.asyncio
-async def test_a_verified_fit_returns_true():
+async def test_a_verified_fit_is_verified():
     calibrate, _ = await _run(_applied(True))
 
-    assert calibrate.result is True
+    assert calibrate.result.verified is True
     calibrate.notifier.assert_not_awaited()
 
 
 @pytest.mark.asyncio
-async def test_a_fit_below_the_bar_returns_false_without_retrying():
+async def test_a_fit_below_the_bar_is_not_verified_and_not_retried():
     """A wider tolerance only admits worse calibrants, so it is not tried."""
     calibrate, records = await _run(_applied(False))
 
-    assert calibrate.result is False
+    assert calibrate.result.verified is False
+    assert calibrate.result.reason.startswith(
+        "The m/z calibration is below the quality bar: Fitted on 1 calibration point"
+    )
     assert calibrate.await_count == 1
     # The applied fit is its own record; no failure marker over it.
     calibrate.recorder.assert_not_awaited()
@@ -273,3 +273,20 @@ async def test_a_fit_below_the_bar_is_reported_with_its_reasons():
     assert notification.parent_id is None
     assert "Fitted on 1 calibration point" in notification.message
     assert "skipped" in notification.message
+
+
+@pytest.mark.asyncio
+async def test_a_give_up_says_why_in_the_calibrations_own_words():
+    """The file's record may keep an earlier fit, so the reason travels here."""
+    calibrate, _ = await _run(
+        ApiException(
+            "m/z fitting sample '2025-09-20 10:30:00' warning: "
+            "Not enough calibration peaks",
+            {"data": {"warning": "Not enough calibration peaks.", "error": None}},
+            200,
+        )
+    )
+
+    assert calibrate.result.reason == (
+        "The m/z calibration failed: Not enough calibration peaks."
+    )

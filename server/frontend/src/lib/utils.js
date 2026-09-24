@@ -73,11 +73,47 @@ export function clone(object) {
   return object ? JSON.parse(JSON.stringify(object)) : object
 }
 
-export function debounce(callback, timeout = 500) {
+/**
+ * PrimeVue's severity for a notification status: its Message and Toast call
+ * a warning `warn`, and name the others as the server does.
+ *
+ * @param {string} status A notification status: success, info, warning or error.
+ * @returns {string} The severity to render it with.
+ */
+export const messageSeverity = (status) => ({ warning: 'warn' })[status] ?? status
+
+/**
+ * Call `callback` once the calls stop coming, with an optional ceiling on how
+ * long they may hold it off.
+ *
+ * Every call restarts the wait, so a caller that never goes quiet for
+ * `timeout` starves the callback indefinitely. `maxWait` is the longest the
+ * first call of a run may be held: once it passes, the callback runs on the
+ * next call and the run starts over. Leave it out for the plain behaviour.
+ *
+ * @param {Function} callback What to call.
+ * @param {number} timeout Quiet period before the call, in ms.
+ * @param {{maxWait?: number}} [options] `maxWait`: the longest a run of calls
+ *   may hold the callback off, in ms.
+ * @returns {Function} The debounced function.
+ */
+export function debounce(callback, timeout = 500, { maxWait } = {}) {
   let timeoutId = null
+  let runStarted = null
   return (...args) => {
+    const now = Date.now()
+    runStarted ??= now
+    if (maxWait !== undefined && now - runStarted >= maxWait) {
+      clearTimeout(timeoutId)
+      timeoutId = null
+      runStarted = null
+      callback(...args)
+      return
+    }
     clearTimeout(timeoutId)
     timeoutId = setTimeout(() => {
+      timeoutId = null
+      runStarted = null
       callback(...args)
     }, timeout)
   }
@@ -93,6 +129,19 @@ export function debounce(callback, timeout = 500) {
  */
 export function sampleInstrumentType(sample) {
   return sample?.instrument_type ?? instrumentType(sample?.instrument)
+}
+
+/**
+ * Whether the server would accept this as an instrument name: letters, digits
+ * and hyphens, up to 64 of them. The underscore is the separator between an
+ * instrument and the rest of a file name, so it cannot be part of one.
+ * Mirrors `INSTRUMENT_NAME_RE` in the backend.
+ *
+ * @param {string|null|undefined} instrument An instrument name
+ * @returns {boolean}
+ */
+export function isValidInstrumentName(instrument) {
+  return typeof instrument === 'string' && /^[A-Za-z0-9-]{1,64}$/.test(instrument)
 }
 
 export function instrumentType(instrument) {

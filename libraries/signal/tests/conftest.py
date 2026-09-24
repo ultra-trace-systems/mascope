@@ -6,9 +6,7 @@ from unittest.mock import MagicMock, patch
 import numpy as np
 import pytest
 import xarray as xr
-
-
-SIGNAL_TEST_FILENAME = "OrbiTest_1001.01.01_12h00m00s_TestFile"
+from signal_test_support import SIGNAL_TEST_FILENAME
 
 
 @pytest.fixture(scope="session")

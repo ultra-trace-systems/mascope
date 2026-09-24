@@ -7,12 +7,14 @@ import Tus from '@uppy/tus'
 import { useAuth } from './auth'
 import { useInstrument } from './data/modules/instrument'
 import { useIonizationMode } from './data/modules/ionization'
+import { TOKENLESS_UPLOADS, useServer } from './server'
 import { useUi } from './ui'
 
 import { api } from '@/api'
 import { maxUploadBytes } from '@/lib/features'
+import { hasIonizationToken } from '@/lib/ionizationModes'
 import { runtime } from '@/lib/runtime.js'
-import { genId } from '@/lib/utils'
+import { genId, isValidInstrumentName } from '@/lib/utils'
 
 // TODO_configuration Default sample file upload params
 const FILE_UPLOAD_EXTENSIONS = ['.h5', '.raw']
@@ -24,6 +26,10 @@ function validateFile(file) {
 }
 
 function validateInstrument(file) {
+  // A file the upload dialog assigned to an instrument reports it with the
+  // upload, and the server files a reported instrument under any valid name.
+  // Such a file's name is not asked to name the instrument, or its class.
+  if (file.meta?.instrument) return isValidInstrumentName(file.meta.instrument)
   // parse filename. The prefix names the instrument, and the instrument's
   // class is the one recorded for its files - a name need not say it, so a
   // name the server does not know is what makes a file invalid here.
@@ -41,11 +47,9 @@ function validateInstrument(file) {
 }
 
 function validateIonization(file) {
-  const ionization = useIonizationMode().list.some((i) =>
-    file.name.includes(i.ionization_mode_token)
+  return (
+    hasIonizationToken(file.name, useIonizationMode().list) || useServer().can(TOKENLESS_UPLOADS)
   )
-  if (!ionization) return false
-  return true
 }
 
 export const useUppy = defineStore('app.uppy', () => {
@@ -96,6 +100,25 @@ export const useUppy = defineStore('app.uppy', () => {
       req.setHeader('X-SID', api.socket.id)
     }
   })
+  // One note for a drop, about the files Uppy admitted - after its own checks
+  // for duplicates, types and sizes - and only once the modes are known.
+  uppy.on('files-added', (files) => {
+    const modes = useIonizationMode()
+    if (modes.pending) return
+    const untokened = files.filter((file) => !hasIonizationToken(file.name, modes.list))
+    if (!untokened.length) return
+    ui.notification.push({
+      type: 'sample_file_upload',
+      status: 'info',
+      message:
+        untokened.length === 1
+          ? `${untokened[0].name} carries no ionization mode token: check Raw ` +
+            'files after processing, where it may need its chemistry chosen.'
+          : `${untokened.length} files carry no ionization mode token: check Raw ` +
+            'files after processing, where they may need their chemistry chosen.'
+    })
+  })
+
   // Register event handlers to track upload progress
   let process_id
 
@@ -183,5 +206,20 @@ export const useUppy = defineStore('app.uppy', () => {
     invalidFiles.value = []
   }
 
-  return { get, clearInvalid, invalidFiles }
+  /**
+   * Add the files the upload dialog hands back, in one call, so the note on
+   * names without a token speaks for them once, as it does for a drop. Uppy
+   * reports the files it refuses itself.
+   *
+   * @param {object[]} files - the files, as Uppy's `addFiles` takes them
+   */
+  function addFromDialog(files) {
+    try {
+      uppy.addFiles(files)
+    } catch {
+      // An error other than a refusal adds none of them, and Uppy said so.
+    }
+  }
+
+  return { get, clearInvalid, addFromDialog, invalidFiles }
 })

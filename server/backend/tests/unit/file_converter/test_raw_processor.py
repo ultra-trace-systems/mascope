@@ -35,6 +35,9 @@ KORBI_POS = (
 EXPECTED_RANGE = [40.0, 500.0]
 EXPECTED_POLARITY = "+"
 EXPECTED_CREATED_TO_SEC = datetime(2026, 1, 9, 17, 43, 57)
+EXPECTED_METHOD_FILE = (
+    r"C:\Xcalibur\methods\5.1 Methods\ambient_pos_massrange40-500.meth"
+)
 
 
 @pytest.fixture
@@ -62,9 +65,10 @@ def test_ingestion_is_dll_free_and_correct(props):
     assert props.instrument_type == "orbi"
     assert props.length > 0
     assert props.interval > 0
-    # Orbitrap files carry neither of these; the processor must report them empty.
+    # Orbitrap files carry no m/z calibration coefficient.
     assert props.mz_calibration is None
-    assert props.method_file == ""
+    # The instrument method, verbatim from the file's sample information.
+    assert props.method_file == EXPECTED_METHOD_FILE
 
 
 def test_acquisition_timestamp_is_exact_and_tz_independent(props):
@@ -109,3 +113,102 @@ def test_acquisition_params_never_fail_ingestion(props, monkeypatch):
     )
     processor.file_to_process = str(KORBI_POS)
     assert processor._get_sample_file_props().acquisition_params == {}
+
+
+def test_scan_streams_are_captured_into_props(props):
+    """The stream census reaches .props via the DLL-free path, and only there."""
+    streams = props.scan_streams
+    assert [stream["key"] for stream in streams] == [
+        "FTMS + p NSI Full ms [40.0000-500.0000] R=120000"
+    ]
+    stream = streams[0]
+    assert stream["signature"]["polarity"] == EXPECTED_POLARITY
+    assert stream["blocks"] == 1
+    assert stream["acquisition_params"]["source"] == "opentfraw"
+    json.dumps(streams)  # .props is written with json.dump
+
+
+def test_scan_streams_never_fail_ingestion(props, monkeypatch):
+    """The census is best-effort, like the acquisition parameters."""
+
+    def boom(self):
+        raise RuntimeError("reader exploded")
+
+    monkeypatch.setattr("mascope_thermo.backend.OpenTFRawBackend.scan_filters", boom)
+    processor = RawProcessor(
+        socket_client=None, file_queue=Queue(), shutdown_event=Event()
+    )
+    processor.file_to_process = str(KORBI_POS)
+    assert processor._get_sample_file_props().scan_streams == []
+
+
+class _TwoRangesPerPolarity:
+    """Reader stand-in for a method that alternates two scan ranges."""
+
+    _FILTERS = (
+        "FTMS - p NSI Full ms [40.0000-160.0000]",
+        "FTMS - p NSI Full ms [128.0000-600.0000]",
+    )
+
+    def scan_filters(self):
+        return [
+            {"scan": n, "time_s": float(n), "filter": self._FILTERS[n % 2]}
+            for n in range(1, 7)
+        ]
+
+    def scan_trailer(self, scan_number):  # noqa: ARG002
+        return {"FT Resolution:": 120000}
+
+    def acquisition_parameters(self, max_scans=5, scan_numbers=None):  # noqa: ARG002
+        return {}
+
+
+def test_pooled_ms1_streams_are_reported_once_at_info():
+    """Peak detection pools the two ranges into one peak list. That is a
+    property of the acquisition, reported once, and not a fault."""
+    import logging
+    from contextlib import contextmanager
+
+    from test_utils import captured_logs
+
+    processor = RawProcessor(
+        socket_client=None, file_queue=Queue(), shutdown_event=Event()
+    )
+    processor.file_to_process = "ORBI-1_two_ranges.raw"
+
+    @contextmanager
+    def _context(_file_path):
+        yield _TwoRangesPerPolarity()
+
+    processor._file_context_manager = _context
+
+    # Read through the runtime logger the processor's stdlib logger is bridged
+    # to: that is where the log files and the monitoring sink see the record.
+    # Nothing else runs inside the block, so every record is the census's own,
+    # whichever module logs it.
+    with captured_logs() as records:
+        streams = processor.scan_streams
+
+    assert len(streams) == 2
+    pooled = [r for r in records if "MS1 scan streams" in r["message"]]
+    assert [r["level"].name for r in pooled] == ["INFO"]
+    message = pooled[0]["message"]
+    assert "2 MS1 scan streams in polarity -" in message
+    assert "[40.0000-160.0000]" in message
+    assert "[128.0000-600.0000]" in message
+    assert not [r for r in records if r["level"].no >= logging.WARNING]
+
+
+def test_method_file_never_fails_ingestion(props, monkeypatch):
+    """The method name is descriptive metadata: a reader that cannot supply it
+    must degrade to "" rather than cost us the file."""
+
+    def boom(self):
+        raise RuntimeError("reader exploded")
+
+    monkeypatch.setattr("mascope_thermo.backend.OpenTFRawBackend.method_file", boom)
+    processor = RawProcessor(
+        socket_client=None, file_queue=Queue(), shutdown_event=Event()
+    )
+    processor.file_to_process = str(KORBI_POS)
+    assert processor._get_sample_file_props().method_file == ""

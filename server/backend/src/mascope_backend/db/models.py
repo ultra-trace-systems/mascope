@@ -416,6 +416,117 @@ class UserRecoveryCode(Base):
     user = relationship("User", back_populates="recovery_code")
 
 
+class Notification(Base):
+    """
+    A message kept for one person until they have read it.
+
+    A live notification reaches only the browsers open when it is sent. A row
+    here is what a person finds when they next sign in: the outcome of an
+    instrument's processing that needs someone, addressed to the people
+    answerable for that instrument (``api/new/notifications/service.py``).
+
+    One unread row stands for every file of one instrument that ends the same
+    way before the row is read: ``count`` and the files in ``payload`` grow,
+    and the message follows. Reading it closes the digest, and the next such
+    file starts a new row - the partial unique index keeps it to one open row
+    per (person, kind, instrument). The instrument is matched on
+    ``instrument_key``, its trimmed lower case, as its workspace is, so case
+    variants of one instrument share a digest. Every file a digest took is
+    linked in ``notification_file``; ``resolved_utc`` is set once none of them
+    is left in the state the row reports, and cleared if another arrives
+    before the row is read. ``version`` goes up with every change, so a client
+    can tell which of two copies of a row is newer.
+    """
+
+    __tablename__ = "notification"
+
+    notification_id: Mapped[str] = mapped_column(String(16), primary_key=True)
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("user.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    # What happened: a NotificationKind value (api/new/notifications/config.py).
+    kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    # How it reads: "info", "warning" or "error", as on a live notification.
+    severity: Mapped[str] = mapped_column(String(16), nullable=False)
+    # The instrument whose files it is about, when it is about any, as the
+    # first of them spelled it; instrument_key is what rows are matched on.
+    instrument: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    instrument_key: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    message: Mapped[str] = mapped_column(Text, nullable=False)
+    # How many events the row stands for.
+    count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=1, server_default=text("1")
+    )
+    # What a client needs to act on it, e.g. the latest files it names.
+    payload: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    created_utc: Mapped[dt] = mapped_column(
+        TIMESTAMP(timezone=True),
+        nullable=False,
+        default=lambda: dt.now(timezone.utc),
+    )
+    updated_utc: Mapped[dt] = mapped_column(
+        TIMESTAMP(timezone=True),
+        nullable=False,
+        default=lambda: dt.now(timezone.utc),
+    )
+    read_utc: Mapped[Optional[dt]] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=True
+    )
+    resolved_utc: Mapped[Optional[dt]] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=True
+    )
+    version: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=1, server_default=text("1")
+    )
+
+    __table_args__ = (
+        # One open digest per person, kind and instrument. NULLS NOT DISTINCT
+        # so a notification about no instrument is one digest too.
+        Index(
+            "uq_notification_open",
+            "user_id",
+            "kind",
+            "instrument_key",
+            unique=True,
+            postgresql_where=text("read_utc IS NULL"),
+            postgresql_nulls_not_distinct=True,
+        ),
+        # The digests an instrument's outcome may settle, looked up after every
+        # file that finishes.
+        Index(
+            "ix_notification_unresolved",
+            "instrument_key",
+            "kind",
+            postgresql_where=text("resolved_utc IS NULL"),
+        ),
+    )
+
+
+class NotificationFile(Base):
+    """
+    A file a digest took (``Notification``).
+
+    The digest names only its latest files, for a person to read; this is
+    every one of them. It tells a file that ends the same way again from a
+    new one, and says when none of them is left in the state the digest
+    reports. A deleted file leaves its digests with it.
+    """
+
+    __tablename__ = "notification_file"
+
+    notification_id: Mapped[str] = mapped_column(
+        String(16),
+        ForeignKey("notification.notification_id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    sample_file_id: Mapped[str] = mapped_column(
+        String(16),
+        ForeignKey("sample_file.sample_file_id", ondelete="CASCADE"),
+        primary_key=True,
+        index=True,
+    )
+
+
 class AgentDevice(Base):
     """
     A machine paired to hold an agent credential (e.g. the File Agent on an
@@ -754,6 +865,24 @@ class SampleFile(Base):
     # The file's name on the uploading machine, before the server filed it
     # under the instrument the agent reported. NULL when nothing renamed it.
     source_filename: Mapped[Optional[str]] = mapped_column(String(256), nullable=True)
+    # When the converter registered the file, set by the database on insert.
+    # NULL on rows registered before the column existed: their time is not
+    # known, and nothing stands in for it - a file's samples are recreated
+    # when it is re-processed, so their times do not say when it arrived.
+    sample_file_utc_created: Mapped[Optional[dt]] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=True, index=True, server_default=func.now()
+    )
+    # How far auto-processing got, written by each stage of the pipeline: a
+    # ProcessingStatus value (api/controllers/sample/files/process/status.py),
+    # a sentence or two saying what it means for this file, and when it was
+    # written. NULL on rows processed before the status was recorded.
+    processing_status: Mapped[Optional[str]] = mapped_column(
+        String(24), nullable=True, index=True
+    )
+    processing_detail: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    processing_updated_utc: Mapped[Optional[dt]] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=True
+    )
 
     # Relationships
     instrument_function = relationship(
@@ -2476,6 +2605,8 @@ __all__ = [
     "Role",
     "AccessToken",
     "UserRecoveryCode",
+    "Notification",
+    "NotificationFile",
     "AgentDevice",
     "Dataset",
     "SampleBatch",

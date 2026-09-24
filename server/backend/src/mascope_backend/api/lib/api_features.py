@@ -1,6 +1,6 @@
 import inspect
 from functools import wraps
-from typing import Callable
+from typing import Any, Callable
 
 from fastapi import params
 from fastapi.encoders import jsonable_encoder
@@ -9,18 +9,87 @@ from rich.pretty import pretty_repr
 
 from mascope_backend.api.lib.exceptions.api_exceptions import (
     ApiException,
-    api_e_response_json,
+    ResponseRenderError,
+    api_error_body,
     compose_user_message,
     handle_exception,
     process_exception,
 )
 from mascope_backend.api.lib.utils import beautify_func_name, handle_reloads
 from mascope_backend.db.id import gen_id
+from mascope_backend.json_safe import non_finite_to_none
 from mascope_backend.runtime import runtime
 from mascope_backend.socket.notifications import (
     UserNotification,
     handle_notifications,
 )
+
+
+class NanSafeJSONResponse(JSONResponse):
+    """
+    The JSON response of an ``@api_route``: strict, unless a float is not.
+
+    Starlette renders with ``allow_nan=False``, since NaN and +/-Infinity have
+    no JSON representation, so one of them anywhere in a payload raises
+    ValueError and loses the whole response. The body is rendered strictly
+    first. Only when that raises ValueError is it rendered again with every
+    non-finite float mapped to ``null`` (``non_finite_to_none``, which leaves
+    text such as a formula "NaN" alone), and a WARNING names the route: a
+    route that sends them has left a missing value undecided, and should
+    return None for it itself.
+
+    A payload that fails the second render too is broken in some other way -
+    a NaN dict key, text that cannot be encoded as UTF-8 - and that error
+    propagates.
+    """
+
+    def __init__(self, content: Any, *, route: str, **kwargs) -> None:
+        # Set before super().__init__, which renders the body.
+        self.route = route
+        super().__init__(content, **kwargs)
+
+    def render(self, content: Any) -> bytes:
+        try:
+            return super().render(content)
+        except ValueError:
+            body = super().render(non_finite_to_none(content))
+        runtime.logger.warning(
+            f"Route {self.route} returned non-finite floats (NaN or Infinity), "
+            "which JSON cannot carry; they were sent as null"
+        )
+        return body
+
+
+def _json_response(
+    content: Any, status_code: int, headers: dict[str, str], route: str
+) -> JSONResponse:
+    """
+    Render a route's response body as JSON.
+
+    :param content: The response body, before JSON encoding.
+    :type content: Any
+    :param status_code: HTTP status of the response.
+    :type status_code: int
+    :param headers: Extra response headers.
+    :type headers: dict[str, str]
+    :param route: The route's qualified name, for the log.
+    :type route: str
+    :raises ResponseRenderError: The body cannot be rendered, whatever the
+        encoder raised.
+    :return: The rendered response.
+    :rtype: JSONResponse
+    """
+    try:
+        return NanSafeJSONResponse(
+            content=jsonable_encoder(content),
+            status_code=status_code,
+            headers=headers,
+            route=route,
+        )
+    except Exception as e:
+        raise ResponseRenderError(
+            f"Response of {route} could not be rendered as JSON: {e}"
+        ) from e
 
 
 def _binds_auth_dependency(param: inspect.Parameter) -> bool:
@@ -107,6 +176,11 @@ def api_route(
     3. Consistent error handling
     4. Optional token-based access for external service/agents/packages
 
+    The handler's result, or the ApiException it raises, is rendered as a
+    ``NanSafeJSONResponse``: a non-finite float is sent as ``null`` with a
+    WARNING naming the route, and a body that cannot be rendered at all is
+    answered 500 and logged at ERROR.
+
     By default, all routes require authentication via auth user dependency injection.
     Routes must either:
     - Include auth user dependency (e.g., user=Depends(guest_user))
@@ -170,6 +244,9 @@ def api_route(
                 )
                 raise ValueError(error_message)
 
+        route = f"{func.__module__}.{func.__qualname__}"
+        context_message = f"Error in {beautify_func_name(func.__name__)}"
+
         @wraps(func)
         async def wrapper(*args, **kwargs):
             # --- Log authenticated user information if available ---
@@ -177,6 +254,7 @@ def api_route(
             if user:
                 runtime.logger.trace(f"User:\n{pretty_repr(user.to_dict())}")
 
+            headers = {}
             try:
                 # --- Execute the route handler
                 result = await func(*args, **kwargs)
@@ -186,21 +264,23 @@ def api_route(
                     return result
 
                 # --- Prepare response headers ---
-                headers = {}
                 if result is not None and "process_id" in result:
                     headers["Process-ID"] = result.pop("process_id")
-
-                # --- Return formatted JSON response ---
-                return JSONResponse(
-                    status_code=status_code,
-                    content=jsonable_encoder(result),
-                    headers=headers,
-                )
+                content, response_status = result, status_code
             except ApiException as e:
-                return api_e_response_json(e)
+                # --- An error the handler reports with its own status ---
+                content, response_status = api_error_body(e), e.status_code
             except Exception as e:
                 # --- Handle generic exceptions ---
-                context_message = f"Error in {beautify_func_name(func.__name__)}"
+                return handle_exception(e, context_message)
+
+            # --- Return formatted JSON response ---
+            # Rendered outside the handler's try: a body the handler built but
+            # that cannot be rendered is a fault in the route, answered 500,
+            # never a bad request (see ResponseRenderError).
+            try:
+                return _json_response(content, response_status, headers, route)
+            except ResponseRenderError as e:
                 return handle_exception(e, context_message)
 
         return wrapper
@@ -221,6 +301,7 @@ RESULT_STATUS_NOTIFICATION = {
     "skipped": "success",  # nothing to do is not a problem
     "partial": "warning",
     "locked": "warning",  # another process holds the item; it was not touched
+    "parked": "warning",  # waits for a person to decide; nothing failed
     "failed": "error",
     "error": "error",  # the same outcome under the name the API layer uses
 }

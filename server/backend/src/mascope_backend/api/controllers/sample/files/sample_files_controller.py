@@ -2,7 +2,7 @@ import asyncio
 import math
 import os
 import shutil
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
 from fastapi import BackgroundTasks, HTTPException, UploadFile
@@ -18,6 +18,9 @@ from mascope_backend.api.controllers.dataset.acquisition.service import (
     create_acquisition_datasets,
     delete_acquisition_datasets,
 )
+from mascope_backend.api.controllers.sample.files.process.status import (
+    read_pooled_streams_note,
+)
 from mascope_backend.api.controllers.sample.lib.fetch_affected_sample_data import (
     fetch_affected_sample_data,
 )
@@ -32,12 +35,16 @@ from mascope_backend.api.lib.exceptions.api_exceptions import (
     raise_api_warning,
 )
 from mascope_backend.api.lib.sorting import order_by_column
+from mascope_backend.api.models.sample.files.config import ProcessingStatus
 from mascope_backend.api.models.sample.files.sample_file_pydantic_model import (
     SampleFileCreate,
     SampleFileSortColumn,
     SampleFileUpdate,
 )
 from mascope_backend.api.new.instruments import get_instruments
+from mascope_backend.api.new.notifications.service import (
+    resolve_processing_notifications,
+)
 from mascope_backend.db import (
     AgentDevice,
     Dataset,
@@ -275,6 +282,12 @@ async def get_sample_files(
     datetime_max: datetime | None = None,
     instrument: str | None = None,
     filename: str | None = None,
+    source_filename: str | None = None,
+    registered_within: int | None = None,
+    uploaded_by_device_id: int | None = None,
+    uploaded_by_user_id: int | None = None,
+    processing_status: list[str] | None = None,
+    processing_updated_min: datetime | None = None,
     sort: str = "datetime_utc",
     order: str = "asc",
     page: int | None = None,
@@ -284,12 +297,23 @@ async def get_sample_files(
 ) -> dict:
     """
     Retrieves a paginated list of sample files, optionally filtered by date range,
-    instrument, or filename, and sorted by a specified column.
+    instrument, filename or processing status, and sorted by a specified column.
 
     :param datetime_min: Minimum date and time for filtering sample files, optional.
     :param datetime_max: Maximum date and time for filtering sample files, optional.
     :param instrument: Instrument name for filtering sample files, optional.
     :param filename: Filename for filtering sample files, optional.
+    :param source_filename: The name a file had on the machine that uploaded
+        it, optional.
+    :param registered_within: Only files registered in the last this many
+        seconds, by the server's clock, optional.
+    :param uploaded_by_device_id: Only files uploaded through this paired
+        device, optional.
+    :param uploaded_by_user_id: Only files uploaded by this account, optional.
+    :param processing_status: Processing statuses to keep, optional; a file
+        matches when its status is any of them.
+    :param processing_updated_min: Earliest time a file's processing status
+        was recorded, optional.
     :param sort: Column to sort by, defaults to "datetime_utc".
     :param order: Sorting order, "asc" for ascending or "desc" for descending.
     :param page: Page number for pagination, defaults to None (no pagination).
@@ -306,9 +330,13 @@ async def get_sample_files(
 
         # --- Apply access filters
         if allowed_instruments is not None:
-            # Build OR: instrument in allowed set, or file linked to user's workspaces
+            # Build OR: instrument in allowed set, or file linked to user's workspaces.
+            # Matched as the workspace is, on the trimmed lower case: a file
+            # recorded as "orbihel" belongs to "Acquisitions OrbiHel" too.
             instrument_filter = (
-                SampleFile.instrument.in_(allowed_instruments)
+                func.lower(func.trim(SampleFile.instrument)).in_(
+                    {name.strip().lower() for name in allowed_instruments}
+                )
                 if allowed_instruments
                 else None
             )
@@ -348,10 +376,36 @@ async def get_sample_files(
             stmt = stmt.where(SampleFile.instrument == instrument)
         if filename:
             stmt = stmt.where(SampleFile.filename == filename)
+        if source_filename:
+            stmt = stmt.where(SampleFile.source_filename == source_filename)
+        if registered_within:
+            stmt = stmt.where(
+                SampleFile.sample_file_utc_created
+                >= func.now() - timedelta(seconds=registered_within)
+            )
+        if uploaded_by_device_id is not None:
+            stmt = stmt.where(SampleFile.uploaded_by_device_id == uploaded_by_device_id)
+        if uploaded_by_user_id is not None:
+            stmt = stmt.where(SampleFile.uploaded_by_user_id == uploaded_by_user_id)
+        if processing_status:
+            stmt = stmt.where(
+                SampleFile.processing_status.in_(
+                    [str(status) for status in processing_status]
+                )
+            )
+        if processing_updated_min:
+            stmt = stmt.where(
+                SampleFile.processing_updated_utc >= processing_updated_min
+            )
 
         # --- Apply sorting
+        # Rows without a value last in either direction, so the newest come
+        # first on a descending sort of a column older rows leave NULL; and
+        # the id breaks ties, so pages of rows that share a value neither
+        # repeat nor skip any.
         stmt = stmt.order_by(
-            order_by_column(SampleFile, sort, order, SampleFileSortColumn)
+            order_by_column(SampleFile, sort, order, SampleFileSortColumn).nulls_last(),
+            SampleFile.sample_file_id,
         )
 
         # --- Apply pagination
@@ -489,6 +543,7 @@ async def create_sample_file(
 
         # Step 2: Construct new sample file. The uploading user comes from
         # the authenticated request (user_id), not from the request body.
+        # Registered means converted: auto-processing takes it from here.
         new_sample_file = SampleFile(
             sample_file_id=gen_id(16),
             **sample_file_create.model_dump(
@@ -497,6 +552,11 @@ async def create_sample_file(
             mz_calibration=mz_calibration,
             uploaded_by_device_id=device_id,
             uploaded_by_user_id=user_id,
+            processing_status=ProcessingStatus.CONVERTED.value,
+            processing_detail=await read_pooled_streams_note(
+                sample_file_create.filename
+            ),
+            processing_updated_utc=datetime.now(timezone.utc),
         )
         session.add(new_sample_file)
 
@@ -532,6 +592,7 @@ async def create_sample_file(
             independent_transaction=True,
             user_id=user_id,
             process_id=process_id,
+            instrument=new_sample_file.instrument,
         )
 
         # Step 7: Return created sample file
@@ -579,6 +640,9 @@ async def delete_sample_file_db_record(sample_file_id: str) -> dict[str, str]:
         record_id=sample_file_id,
         room=sample_file.instrument,
     )
+    # The file left its digests with it, and may have been the last one in
+    # their state.
+    await resolve_processing_notifications(sample_file.instrument)
 
     return {
         "status": "success",
@@ -1576,12 +1640,15 @@ async def get_sample_file_peak_timeseries(
             },
         }
 
+    # A peak's heights are NaN placeholders until its timeseries is computed,
+    # which this route does not do. get_peaks drops such peaks only for files
+    # without a source data file, so the nearest peak can be one of them.
     return {
         "message": f"Successfully retrieved timeseries for peak m/z {peak_mz} in '{filename}'.",
         "results": len(peak_timeseries.time.values),
         "data": {
             "mz": peak_mz_data,
-            "height": peak_timeseries.values.tolist(),
+            "height": finite_or_none(peak_timeseries.values.tolist()),
             "time": peak_timeseries.time.values.tolist(),
         },
     }

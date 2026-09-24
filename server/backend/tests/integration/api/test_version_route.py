@@ -23,6 +23,7 @@ from httpx import ASGITransport, AsyncClient
 
 from mascope_backend.api.new.version import routes as version_routes
 from mascope_backend.app.fast import fast
+from mascope_backend.capabilities import SERVER_CAPABILITIES
 from mascope_backend.runtime import runtime
 
 
@@ -38,6 +39,22 @@ async def test_admin_reads_the_running_version(admin_client, monkeypatch):
 
     assert resp.status_code == 200
     assert resp.json()["data"]["version"] == VERSION_SENTINEL
+
+
+@pytest.mark.asyncio
+async def test_the_server_announces_what_it_can_do(guest_client):
+    """The web app reads the capabilities here before relying on them.
+
+    A browser upload lets a file without an ionization mode token through only
+    when the server announces that it keeps such a file for someone to choose
+    its chemistry; an older server announces nothing.
+    """
+    resp = await guest_client.get("/api/version")
+
+    assert resp.status_code == 200
+    capabilities = resp.json()["data"]["capabilities"]
+    assert capabilities == SERVER_CAPABILITIES
+    assert capabilities["files_uploads_without_ionization_token"] is True
 
 
 @pytest.mark.asyncio

@@ -12,11 +12,7 @@ from unittest.mock import MagicMock, patch
 import numpy as np
 import pytest
 import xarray as xr
-
-
-TEST_FILENAME = "OrbiTest_1001.01.01_12h00m00s_TestFile"
-TEST_MZ_SIZE = 20
-TEST_TIME_SIZE = 50
+from file_test_support import TEST_FILENAME, TEST_MZ_SIZE, TEST_TIME_SIZE
 
 
 @pytest.fixture(scope="session")

@@ -21,15 +21,17 @@ the whole m/z range and varied peak densities in a second or two per file.
 """
 
 import os
+import re
 
 import numpy as np
 import opentfraw
 import pytest
-from conftest import TEST_FILES_DIR
+from thermo_test_support import TEST_FILES_DIR
 
 import mascope_thermo.thermo as m_thermo
-from mascope_thermo.backend import open_backend
+from mascope_thermo.backend import MS_SCAN_DETECTOR_STATS, open_backend
 from mascope_thermo.lib import thermo_available
+from mascope_thermo.scan_filter import parse_scan_filter
 
 
 # Every test here compares OpenTFRaw against the Thermo backend, which needs the
@@ -45,6 +47,47 @@ RAW_FILES = sorted(TEST_FILES_DIR.glob("*.raw"))
 # Cap on XIC targets per file (even spread across m/z). Override to widen
 # coverage (e.g. MASCOPE_PARITY_MAX_XIC_TARGETS=1000) at the cost of runtime.
 MAX_XIC_TARGETS = int(os.environ.get("MASCOPE_PARITY_MAX_XIC_TARGETS", "200"))
+
+# The decimals of a filter's first scan-range bound: the m/z precision the
+# rendering used.
+_RANGE_DECIMALS = re.compile(r"\[\d+\.(\d+)-")
+
+
+def _assert_same_filter(ours: str | None, theirs: str) -> None:
+    """OpenTFRaw's rendering of a scan filter says what the Thermo library's does.
+
+    OpenTFRaw may leave out the tokens it does not render (``lock``, ``sid=``,
+    ``cv=``, the other flags, the ``{segment,event}`` prefix), but whatever it
+    does write must agree. It writes m/z to four decimals, so m/z is compared to
+    the last decimal of the precision the Thermo library rendered.
+    """
+    assert ours is not None, f"OpenTFRaw renders no filter for {theirs!r}"
+    o, t = parse_scan_filter(ours), parse_scan_filter(theirs)
+    context = f"{ours!r} vs {theirs!r}"
+    for name in (
+        "analyzer",
+        "polarity",
+        "data_type",
+        "source",
+        "dependent",
+        "scan_mode",
+        "ms_order",
+    ):
+        assert getattr(o, name) == getattr(t, name), f"{name}: {context}"
+    assert set(o.flags) <= set(t.flags), context
+    for name in ("source_fragmentation", "compensation_voltage", "segment", "event"):
+        assert getattr(o, name) in (None, getattr(t, name)), f"{name}: {context}"
+    match = _RANGE_DECIMALS.search(theirs)
+    tolerance = 10.0 ** -(len(match.group(1)) if match else 4) + 1e-9
+    assert [p.activation for p in o.precursors] == [
+        p.activation for p in t.precursors
+    ], context
+    assert [p.mz for p in o.precursors] == pytest.approx(
+        [p.mz for p in t.precursors], abs=tolerance
+    ), context
+    assert len(o.scan_ranges) == len(t.scan_ranges), context
+    for ours_range, theirs_range in zip(o.scan_ranges, t.scan_ranges):
+        assert ours_range == pytest.approx(theirs_range, abs=tolerance), context
 
 
 def _run_under(monkeypatch, backend, fn, *args, **kwargs):
@@ -248,17 +291,19 @@ def test_ms2_events_match_thermo(monkeypatch, path):
 @pytest.mark.parametrize("path", RAW_FILES, ids=lambda p: p.name)
 def test_scan_statistics_match_thermo(monkeypatch, path):
     """OpenTFRaw's mapped scan statistics must match Thermo for the fields it
-    provides (the scan-statistics metadata remap). Uses only the base opentfraw
-    typed scan dict.
+    provides (the scan-statistics metadata remap), on the scans of every MS
+    order. ``ScanType`` is compared as a parsed filter (``_assert_same_filter``),
+    and the detector fields must hold the same fixed values, which is what
+    reporting them for OpenTFRaw rests on.
     """
     path = str(path)
 
     monkeypatch.setenv("MASCOPE_THERMO_BACKEND", "thermo")
     with open_backend(path) as backend:
-        th = backend.scan_statistics()
+        th = backend.scan_statistics(ms_type=None)
     monkeypatch.setenv("MASCOPE_THERMO_BACKEND", "opentfraw")
     with open_backend(path) as backend:
-        ot = backend.scan_statistics()
+        ot = backend.scan_statistics(ms_type=None)
 
     assert set(ot) == set(th), "scan set differs"
     for scan_number, t in th.items():
@@ -270,6 +315,119 @@ def test_scan_statistics_match_thermo(monkeypatch, path):
         assert o["BasePeakIntensity"] == pytest.approx(
             t["BasePeakIntensity"], rel=1e-3, abs=1.0
         )
+        assert o["LowMass"] == pytest.approx(t["LowMass"], rel=1e-9)
+        assert o["HighMass"] == pytest.approx(t["HighMass"], rel=1e-9)
+        assert o["ScanNumber"] == t["ScanNumber"]
+        assert o["ScanEventNumber"] == t["ScanEventNumber"]
+        assert o["IsCentroidScan"] == t["IsCentroidScan"]
+        _assert_same_filter(o["ScanType"], t["ScanType"])
+        for name in MS_SCAN_DETECTOR_STATS:
+            assert o[name] == t[name] and type(o[name]) is type(t[name]), name
+
+
+# A trailer value as the Thermo library renders a number: digits, the machine's
+# decimal separator ("." or ","), an optional exponent.
+_TRAILER_NUMBER = re.compile(r"[+-]?(\d*)(?:[.,](\d*))?(?:[eE]([+-]?\d+))?")
+
+# The Thermo library's text for a switch OpenTFRaw reads as a bool.
+_TRAILER_SWITCH = {True: {"On", "Yes", "True"}, False: {"Off", "No", "False"}}
+
+
+def _trailer_number(value) -> tuple[float, float] | None:
+    """``(number, half a unit in its last digit)`` for a trailer value that
+    reads as a number, else None.
+
+    The Thermo library's text holds only the digits it displays, so the stored
+    number may lie up to half a unit in the last of them away. A value that is
+    already a number is exact.
+    """
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return float(value), 0.0
+    text = str(value).strip()
+    match = _TRAILER_NUMBER.fullmatch(text)
+    if not match or not (match.group(1) or match.group(2)):
+        return None
+    last_digit = int(match.group(3) or 0) - len(match.group(2) or "")
+    return float(text.replace(",", ".")), 0.5 * 10.0**last_digit
+
+
+def _same_trailer_value(ours, theirs) -> bool:
+    """OpenTFRaw's trailer value says what the Thermo library's text says."""
+    ours_number, theirs_number = _trailer_number(ours), _trailer_number(theirs)
+    if ours_number is not None and theirs_number is not None:
+        (o, o_half), (t, t_half) = ours_number, theirs_number
+        # The last term absorbs float64 rounding, which is far below a digit.
+        return abs(o - t) <= o_half + t_half + 1e-14 * abs(t)
+    if ours is None:
+        return theirs == ""
+    if isinstance(ours, bool):
+        return theirs in _TRAILER_SWITCH[ours]
+    return ours == theirs
+
+
+@pytest.mark.skipif(not RAW_FILES, reason="no .raw files in test_files/")
+@pytest.mark.parametrize("path", RAW_FILES, ids=lambda p: p.name)
+def test_scan_acquisition_settings_match_thermo(monkeypatch, path):
+    """OpenTFRaw's trailer table must be the Thermo library's: the same labels
+    in the same order, and the same value under each label, on the scans of
+    every MS order.
+
+    The backends type the values differently (``scan_trailer``). The Thermo
+    library gives text in the machine's number format, rounded to the digits
+    it displays, where OpenTFRaw gives the stored number, so a value both read
+    as a number must agree to half a unit in the last digit displayed. A
+    switch the Thermo library writes On/Off or Yes/No is True/False in
+    OpenTFRaw, a section heading's empty text is None, and any other text must
+    be identical.
+    """
+    path = str(path)
+
+    monkeypatch.setenv("MASCOPE_THERMO_BACKEND", "thermo")
+    with open_backend(path) as backend:
+        th = backend.scan_acquisition_settings(ms_type=None)
+    monkeypatch.setenv("MASCOPE_THERMO_BACKEND", "opentfraw")
+    with open_backend(path) as backend:
+        ot = backend.scan_acquisition_settings(ms_type=None)
+
+    # OpenTFRaw reads the trailer as a dict (scan_parameters), so it cannot
+    # list a label the instrument repeats more than once.
+    labels = th["header_labels"]
+    assert len(set(labels)) == len(labels), (
+        f"the trailer repeats {sorted({x for x in labels if labels.count(x) > 1})}"
+        ", which OpenTFRaw reads as a dict and so reports once"
+    )
+    assert ot["header_labels"] == labels
+    assert set(ot["settings"]) == set(th["settings"]), "scan set differs"
+    for scan_number, theirs in th["settings"].items():
+        ours = ot["settings"][scan_number]
+        for label, o, t in zip(labels, ours, theirs, strict=True):
+            assert _same_trailer_value(o, t), (
+                f"scan {scan_number}, {label!r}: OpenTFRaw {o!r} vs Thermo {t!r}"
+            )
+
+
+def _stats_per_scan(path):
+    return m_thermo.RawFileMetadataLegacy(path).to_dict()["stats_per_scan"]
+
+
+@pytest.mark.skipif(not RAW_FILES, reason="no .raw files in test_files/")
+@pytest.mark.parametrize("path", RAW_FILES, ids=lambda p: p.name)
+def test_stats_per_scan_keys_match_thermo(monkeypatch, path):
+    """The metadata route's ``stats_per_scan`` must give every scan the same
+    keys, in the same order, under both backends: the statistics fields and
+    the trailer labels. A scan looked up by one, ``"FT Resolution:"`` say,
+    is then found whichever backend read the file.
+    """
+    path = str(path)
+
+    th = _run_under(monkeypatch, "thermo", _stats_per_scan, path)
+    ot = _run_under(monkeypatch, "opentfraw", _stats_per_scan, path)
+
+    assert set(ot) == set(th), "scan set differs"
+    for scan_number, row in th.items():
+        assert list(ot[scan_number]) == list(row), f"scan {scan_number}"
 
 
 def _hcd_tuple(value):
@@ -608,3 +766,21 @@ def test_reconstructed_profile_matches_thermo(monkeypatch, path):
     assert 0.9 <= float(np.median(apex_ratios)) <= 1.1, (
         f"median reconstructed apex ratio vs Thermo = {np.median(apex_ratios):.3f}"
     )
+
+
+@pytest.mark.skipif(not RAW_FILES, reason="no .raw files in test_files/")
+@pytest.mark.parametrize("path", RAW_FILES, ids=lambda p: p.name)
+def test_method_file_matches_thermo(monkeypatch, path):
+    """OpenTFRaw's instrument method must be the string Thermo's
+    ``SampleInformation.InstrumentMethodFile`` reports, byte for byte: rows
+    written before and after the reader switch are matched on it."""
+    path = str(path)
+
+    monkeypatch.setenv("MASCOPE_THERMO_BACKEND", "thermo")
+    with open_backend(path) as backend:
+        th = backend.method_file()
+    monkeypatch.setenv("MASCOPE_THERMO_BACKEND", "opentfraw")
+    with open_backend(path) as backend:
+        ot = backend.method_file()
+
+    assert ot == th

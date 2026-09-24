@@ -18,8 +18,8 @@ what still needs a human decision. Current state, last verified 2026-07-28:
 |---|---|
 | 1. Harvest `scan_parameters()` into `.props` | **Shipped** (PR #1723) |
 | 2. Bump opentfraw off 1.2.0 | **Already done on develop** - see below |
-| 3. Populate `method_file` | **Open, unblocked, next** |
-| 4. Fix `delete_instrument_config` fan-out | **Open, needs a decision** (2.2) |
+| 3. Populate `method_file` | **Shipped** (2026-09-18); backfill with `populate_orbitrap_method_file` |
+| 4. Fix `delete_instrument_config` fan-out | **Fixed** (2026-09-18): deletes the named config only |
 | 5. File upstream opentfraw issues | **Open** |
 | 6-9. Presets, notation, pane UX, run-config stamp | **Open** |
 
@@ -132,6 +132,10 @@ Other evidence:
 
 ### 2.2 A live data-loss path, found while researching this
 
+> Fixed 2026-09-18 (Phase 0 item 3): both reader backends now report the
+> method, and `populate_orbitrap_method_file` backfills the affected rows. The
+> analysis below describes the state before that fix.
+
 `SampleFile.method_file` is **hardcoded to `""` for every Orbitrap file**:
 
 ```python
@@ -167,6 +171,7 @@ Two real bugs do fall out of the empty `method_file`, though:
    sample file on that instrument loses its `instrument_function_id`, and
    `lib.py:106-107` then raises "Instrument configuration not found". This should
    be fixed to delete by id regardless of the rest of this document.
+   **Fixed 2026-09-18:** the service now deletes the named row only (item 4).
 2. **The backfill script does perform the reuse I wrongly attributed to
    analysis**: `db/scripts/populate_none_instrument_function_ids.py:61-77` copies
    the newest `InstrumentFunction` for the instrument regardless of method when
@@ -426,7 +431,9 @@ Multi Inject Info:     'IT=250;250'
 
 Mascope reads **five** keys off `scan()` (`backend.py:287-293
 _OTF_TRAILER_FIELDS`) and four labels via `scan_parameters()` at `:1446`/`:1725`.
-Everything else is discarded.
+Everything else is discarded. (Since superseded: `scan_acquisition_settings()`
+now returns the whole `scan_parameters()` trailer, and `_OTF_TRAILER_FIELDS` is
+gone.)
 
 For an acquisition-method redesign this is better than the method text: it is
 already structured and typed, it needs no bump, no upstream PR, and no OLE2
@@ -549,7 +556,10 @@ Independently valuable, ships before any of the redesign lands.
    parameters now reach `.props` per sample file via
    `ReaderBackend.acquisition_parameters()`. Implemented as a new protocol
    member rather than by widening `_OTF_TRAILER_FIELDS`, whose shape
-   `scan_acquisition_settings()` pins and which has a live consumer.
+   `scan_acquisition_settings()` pinned and which had a live consumer.
+   `scan_acquisition_settings()` has since moved onto `scan_parameters()` too:
+   it returns the whole trailer under Thermo's labels, and
+   `_OTF_TRAILER_FIELDS` is gone.
 
 2. ~~**Bump opentfraw**~~ - **ALREADY DONE on develop**, but not deliberately:
    it arrived as a routine dependency-group bump, so `opentfraw~=1.3` / 1.3.7 is
@@ -587,6 +597,11 @@ Independently valuable, ships before any of the redesign lands.
    Either guard the empty-key case or drop the fan-out - **this needs a human
    call on intent, not a unilateral patch.** Item 3 removes the sharp edge but
    not the ambiguity.
+
+   **Decided and fixed 2026-09-18: the fan-out is dropped.** A config belongs
+   to one sample file (ingest inserts one per file), so configs sharing
+   `(instrument, method_file)` are not one config. The delete removes the named
+   row, and only the sample file that pointed at it loses its link.
 
 5. **File the upstream issues** while the rest proceeds: the
    `extract_utf16le_text` mojibake bug with the offset-18006-vs-39064 reproducer,

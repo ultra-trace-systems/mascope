@@ -5,6 +5,7 @@ Run with `uv run pytest` in `agents/file`.
 """
 
 import os
+import re
 import tomllib
 
 import pytest
@@ -81,6 +82,43 @@ def test_toml_str_roundtrip(value):
 )
 def test_is_valid_instrument(value, expected):
     assert config.is_valid_instrument(value) is expected
+
+
+# --- USER_CONFIG_HEADER ---
+
+
+def _header_entry(setting: str) -> str:
+    """The lines ``USER_CONFIG_HEADER`` devotes to one setting.
+
+    An entry starts at ``#   <setting>`` and runs to the next entry or the
+    blank comment line after the list.
+
+    :param setting: Name of the setting as the header spells it
+    :type setting: str
+    :return: That setting's lines, joined
+    :rtype: str
+    """
+    lines = config.USER_CONFIG_HEADER.splitlines()
+    starts = [i for i, line in enumerate(lines) if line.startswith(f"#   {setting}")]
+    assert len(starts) == 1, f"'{setting}' starts {len(starts)} entries in the header"
+    end = starts[0] + 1
+    while end < len(lines) and not (
+        re.match(r"^#   \S", lines[end]) or lines[end].strip() == "#"
+    ):
+        end += 1
+    return "\n".join(lines[starts[0] : end])
+
+
+def test_header_does_not_offer_to_leave_the_instrument_empty():
+    # The header is written into every config.toml and is the only
+    # documentation on an instrument PC. It used to say the instrument could
+    # be left empty "to keep the server reading the instrument from the file
+    # name alone", which reads as a working configuration and is not one:
+    # main._validate_instrument refuses to start without a name. The phrase
+    # itself is fine - the timezone really can be left empty - so this pins
+    # the one entry that contradicted the agent.
+    assert "leave empty" not in _header_entry("instrument").lower()
+    assert "leave empty" in _header_entry("timezone").lower()
 
 
 # --- merge_settings / missing_settings ---

@@ -30,6 +30,8 @@ from typing import Literal, Protocol, runtime_checkable
 
 import numpy as np
 
+from mascope_thermo.scan_filter import parse_scan_filter
+
 
 ENV_BACKEND = "MASCOPE_THERMO_BACKEND"
 
@@ -57,8 +59,8 @@ def _parse_ms2_event(filter_string: str) -> tuple[float, str] | None:
     ``None`` when the filter carries no resolvable MS2 event.
 
     The activation is lower-cased. It becomes the group key, and the two
-    backends render the filter by different routes -- Thermo re-renders it from
-    the parsed ``IScanFilter``, OpenTFRaw returns the stored string -- so a
+    backends render the filter by different routes -- Thermo from its parsed
+    ``IScanFilter``, OpenTFRaw from the scan event it decodes -- so a
     difference in case alone would otherwise split one acquisition's scans into
     two groups depending on which backend read it. Digits are left as rendered,
     so the key still mirrors the instrument's own notation.
@@ -118,6 +120,12 @@ class ReaderBackend(Protocol):
         cannot provide it."""
         ...
 
+    def method_file(self) -> str:
+        """Instrument method the file was acquired with, as recorded in its
+        sample information: the Xcalibur path of the ``.meth`` file, verbatim.
+        Empty when the file records none."""
+        ...
+
     def scan_acquisition_settings(
         self,
         polarity: Polarity | None = None,
@@ -125,10 +133,21 @@ class ReaderBackend(Protocol):
         t_max: float | None = None,
         ms_type: MsType | None = "Ms",
     ) -> dict:
-        """Per-scan trailer table ``{"header_labels": [...], "settings": {...}}``."""
+        """Per-scan trailer table ``{"header_labels": [...], "settings": {...}}``.
+
+        ``header_labels`` is the trailer's labels, the instrument's own
+        (``"FT Resolution:"``, ``"=== Mass Calibration: ===:"``), one list for
+        every selected scan. ``settings`` maps each scan's 1-based number to
+        its values in label order. Every backend reports the same labels,
+        except that OpenTFRaw reads the trailer as a dict, so a label an
+        instrument repeats would appear there once. Values are verbatim, so
+        their type depends on the backend (see :meth:`scan_trailer`).
+        """
         ...
 
-    def acquisition_parameters(self, max_scans: int = ...) -> dict:
+    def acquisition_parameters(
+        self, max_scans: int = ..., scan_numbers: list[int] | None = None
+    ) -> dict:
         """Method-level acquisition parameters sampled from the per-scan trailer.
 
         Returns ``{"source", "scans_sampled", "constant", "varying"}`` -- see
@@ -137,6 +156,30 @@ class ReaderBackend(Protocol):
         field set: it exists to record what acquisitions actually carry, so a
         structured acquisition-method schema can later be designed from
         evidence instead of guesswork.
+
+        Up to ``max_scans`` scans are sampled evenly from ``scan_numbers``, or
+        from every MS1 scan when none are given. A scan stream passes its own
+        scans, so its summary is not a mix of two methods' settings.
+        """
+        ...
+
+    def scan_filters(self) -> list[dict]:
+        """Every scan's filter, in acquisition order.
+
+        ``[{"scan": 1-based number, "time_s": start time [s], "filter": text}]``
+        for every scan of every polarity and MS order. No scan is left out, not
+        even an outlier first scan: this describes the file rather than
+        selecting from it. The text is as the reader renders it; see
+        :mod:`mascope_thermo.scan_filter` for what it holds.
+        """
+        ...
+
+    def scan_trailer(self, scan_number: int) -> dict:
+        """One scan's trailer, the instrument's own ``{label: value}`` table.
+
+        Values are verbatim, so their type depends on the backend (see
+        :func:`_summarize_acquisition_parameters`). Empty when the scan has
+        none.
         """
         ...
 
@@ -147,7 +190,21 @@ class ReaderBackend(Protocol):
         t_max: float | None = None,
         ms_type: MsType | None = "Ms",
     ) -> dict:
-        """Per-scan statistics keyed by 1-based scan number."""
+        """Per-scan statistics keyed by 1-based scan number.
+
+        Every backend gives each scan the same keys: all of
+        :data:`SCAN_STAT_FIELDS`, plus ``MsType``. A field the backend cannot
+        read is ``None`` rather than missing, so a consumer finds out which
+        backend lacks it instead of meeting a ``KeyError`` on one backend
+        only. The OpenTFRaw backend's are
+        :data:`OPENTFRAW_UNAVAILABLE_SCAN_STATS`.
+
+        ``ScanType`` is the scan filter as the backend renders it, and the two
+        render some filters differently (``libraries/thermo/docs/backend.md``,
+        "Scan Streams"). The OpenTFRaw backend reads ``IsCentroidScan`` from
+        that filter, so for a scan opentfraw renders no filter for, both are
+        ``None``.
+        """
         ...
 
     def scan_indices(
@@ -302,8 +359,9 @@ INSTRUMENT_FIELDS = (
     "HasAccurateMassPrecursors",
 )
 
-# Per-scan statistics fields read from Thermo's ScanStats. (OpenTFRaw currently
-# exposes a subset of these fields; see the metadata-remap follow-up issue.)
+# Per-scan statistics fields, named as in Thermo's ScanStats. Every backend
+# returns all of them; one it cannot read is None (see
+# OPENTFRAW_UNAVAILABLE_SCAN_STATS).
 SCAN_STAT_FIELDS = (
     "HighMass",
     "LowMass",
@@ -327,16 +385,27 @@ SCAN_STAT_FIELDS = (
     "CycleNumber",
 )
 
-# Per-scan acquisition fields OpenTFRaw decodes (from its typed scan dict),
-# surfaced as a trailer-like table. The label strings are descriptive and
-# intentionally differ from Thermo's trailer labels, which OpenTFRaw does not
-# expose; the (key, label) pairs map an OpenTFRaw scan-dict key to a column.
-_OTF_TRAILER_FIELDS = (
-    ("ion_injection_time_ms", "Ion Injection Time (ms)"),
-    ("charge", "Charge State"),
-    ("precursor_mz", "Precursor m/z"),
-    ("isolation_width", "Isolation Width (m/z)"),
-    ("collision_energy", "Collision Energy"),
+# SCAN_STAT_FIELDS that describe UV, PDA and analog detector data, with the
+# values ScanStats holds for every MS scan. The MS scan index has no field for
+# them, and the MS controller is the only one either backend reads, so the
+# OpenTFRaw backend reports these same values.
+MS_SCAN_DETECTOR_STATS = {
+    "LongWavelength": 0.0,
+    "ShortWavelength": 0.0,
+    "NumberOfChannels": 0,
+    "IsUniformTime": False,
+    "AbsorbanceUnitScale": 0.0,
+    "WavelengthStep": 0.0,
+    "Frequency": 0.0,
+}
+
+# SCAN_STAT_FIELDS the OpenTFRaw backend reports as None. opentfraw decodes the
+# scan-index words behind PacketCount and SegmentNumber but does not pass them
+# to Python, and does not decode CycleNumber.
+OPENTFRAW_UNAVAILABLE_SCAN_STATS = (
+    "PacketCount",
+    "SegmentNumber",
+    "CycleNumber",
 )
 
 # Default number of scans sampled by acquisition_parameters(). The trailer is
@@ -426,6 +495,32 @@ def _summarize_acquisition_parameters(source: str, per_scan: list[dict]) -> dict
         "constant": constant,
         "varying": sorted(varying),
     }
+
+
+def _trailer_table(trailers: dict[int, dict]) -> dict:
+    """Per-scan trailers as one table, in the shape ``scan_acquisition_settings``
+    returns.
+
+    A raw file lays out its trailer once for all of its scans, so every scan's
+    trailer normally carries the same labels in the same order, and
+    ``header_labels`` is those labels. Rows are filled by label rather than by
+    position: a scan whose trailer lacks a label gets None there, and a scan
+    with no trailer at all gets a row of None. The table keeps one label list
+    and every scan keeps every label. A label only some scans carry is kept,
+    in the order first met.
+
+    :param trailers: ``{scan_number: {label: value}}``, in scan order.
+    :return: ``{"header_labels": [...], "settings": {scan_number: [...]}}``
+    :rtype: dict
+    """
+    header_labels = list(
+        dict.fromkeys(label for trailer in trailers.values() for label in trailer)
+    )
+    settings = {
+        scan: [trailer.get(label) for label in header_labels]
+        for scan, trailer in trailers.items()
+    }
+    return {"header_labels": header_labels, "settings": settings}
 
 
 # Output grid resolution (constant ppm) for average_profile. Fine enough to
@@ -652,6 +747,9 @@ class ThermoBackend:
         d = self._raw.CreationDate
         return datetime(d.Year, d.Month, d.Day, d.Hour, d.Minute, d.Second)
 
+    def method_file(self) -> str:
+        return str(self._raw.SampleInformation.InstrumentMethodFile or "")
+
     def scan_acquisition_settings(
         self,
         polarity: Polarity | None = None,
@@ -659,6 +757,9 @@ class ThermoBackend:
         t_max: float | None = None,
         ms_type: MsType | None = "Ms",
     ) -> dict:
+        # The file defines its trailer's labels once for all of its scans
+        # (GetTrailerExtraHeaderInformation), so each scan's values line up
+        # with the first scan's labels by position.
         selector = self._selector(polarity, t_min, t_max, ms_type)
         settings: dict[int, list] = {}
         header_labels = None
@@ -669,13 +770,36 @@ class ThermoBackend:
             settings[i] = list(header.Values)
         return {"header_labels": header_labels, "settings": settings}
 
-    def acquisition_parameters(self, max_scans: int = _ACQUISITION_PARAM_SCANS) -> dict:
-        selector = self._selector(None, None, None, "Ms")
-        per_scan = []
-        for i in _sample_evenly(list(selector.scan_indices_1based), max_scans):
-            header = self._raw.GetTrailerExtraInformation(i)
-            per_scan.append(dict(zip(list(header.Labels), list(header.Values))))
+    def acquisition_parameters(
+        self,
+        max_scans: int = _ACQUISITION_PARAM_SCANS,
+        scan_numbers: list[int] | None = None,
+    ) -> dict:
+        if scan_numbers is None:
+            scan_numbers = self._selector(None, None, None, "Ms").scan_indices_1based
+        per_scan = [
+            self.scan_trailer(i) for i in _sample_evenly(list(scan_numbers), max_scans)
+        ]
         return _summarize_acquisition_parameters("thermo", per_scan)
+
+    def scan_filters(self) -> list[dict]:
+        selector = self._selector(ms_type=None)
+        return [
+            {
+                "scan": scan_number,
+                "time_s": stats.StartTime * _SECONDS_PER_MINUTE,
+                "filter": scan_filter.ToString(),
+            }
+            for scan_number, scan_filter, stats in zip(
+                selector.all_scan_indices,
+                selector.raw_scan_filters,
+                selector.raw_scan_stats,
+            )
+        ]
+
+    def scan_trailer(self, scan_number: int) -> dict:
+        header = self._raw.GetTrailerExtraInformation(scan_number)
+        return dict(zip(list(header.Labels), list(header.Values)))
 
     def scan_statistics(
         self,
@@ -1156,6 +1280,12 @@ class OpenTFRawBackend:
             return None
         return datetime.fromtimestamp(float(ts), tz=timezone.utc).replace(tzinfo=None)
 
+    def method_file(self) -> str:
+        # The sample-information block of the file header; reading it touches
+        # no scan data.
+        info = self._raw.sample_info or {}
+        return str(info.get("inst_method") or "")
+
     def scan_indices(
         self,
         polarity: Polarity | None = None,
@@ -1206,30 +1336,50 @@ class OpenTFRawBackend:
         t_max: float | None = None,
         ms_type: MsType | None = "Ms",
     ) -> dict:
-        # OpenTFRaw exposes typed per-scan params rather than Thermo's
-        # trailer-label table, so surface the subset OpenTFRaw decodes under
-        # descriptive labels. Shape matches ThermoBackend (header_labels +
-        # settings rows aligned 1:1); the label *names* differ from Thermo's.
-        selected = self._selected(polarity, t_min, t_max, ms_type)
-        header_labels = [label for _, label in _OTF_TRAILER_FIELDS]
-        settings = {
-            int(s["scan_number"]): [s.get(key) for key, _ in _OTF_TRAILER_FIELDS]
-            for s in selected
-        }
-        return {"header_labels": header_labels, "settings": settings}
+        # The trailer scan_trailer() reads, so the labels and their order are
+        # the ones the Thermo backend reports. Rows are aligned by label
+        # (_trailer_table): opentfraw gives a scan with no trailer record no
+        # entries at all.
+        return _trailer_table(
+            {
+                int(s["scan_number"]): self.scan_trailer(int(s["scan_number"]))
+                for s in self._selected(polarity, t_min, t_max, ms_type)
+            }
+        )
 
-    def acquisition_parameters(self, max_scans: int = _ACQUISITION_PARAM_SCANS) -> dict:
-        # scan_parameters() is the instrument's own trailer-extra table -- far
-        # richer than the typed subset _OTF_TRAILER_FIELDS surfaces (tens of
-        # entries: application mode, FT resolution, AGC target, S-Lens RF, FAIMS
-        # state, source CID). Read it directly rather than widening
-        # _OTF_TRAILER_FIELDS, whose shape scan_acquisition_settings() pins.
-        scan_numbers = [int(s["scan_number"]) for s in self._selected(ms_type="Ms")]
+    def acquisition_parameters(
+        self,
+        max_scans: int = _ACQUISITION_PARAM_SCANS,
+        scan_numbers: list[int] | None = None,
+    ) -> dict:
+        if scan_numbers is None:
+            scan_numbers = [int(s["scan_number"]) for s in self._selected(ms_type="Ms")]
         per_scan = [
-            self._raw.scan_parameters(n) or {}
-            for n in _sample_evenly(scan_numbers, max_scans)
+            self.scan_trailer(n) for n in _sample_evenly(list(scan_numbers), max_scans)
         ]
         return _summarize_acquisition_parameters("opentfraw", per_scan)
+
+    def scan_filters(self) -> list[dict]:
+        return [
+            {
+                "scan": int(s["scan_number"]),
+                "time_s": s["retention_time"] * _SECONDS_PER_MINUTE,
+                "filter": s["filter_string"] or "",
+            }
+            for s in self._all_scans()
+        ]
+
+    def scan_trailer(self, scan_number: int) -> dict:
+        # scan_parameters() is the instrument's own trailer-extra table (tens
+        # of entries: application mode, FT resolution, AGC target, S-Lens RF,
+        # FAIMS state, source CID), under the labels Thermo's
+        # GetTrailerExtraInformation gives and in the same order. Values are
+        # typed where Thermo gives text: numbers at full precision, where
+        # Thermo rounds to the digits it displays, True/False for On/Off and
+        # Yes/No, and None for the "=== ... ===:" section headings. It is a
+        # dict, so a label the trailer repeats appears here once, where
+        # GetTrailerExtraInformation lists it each time.
+        return self._raw.scan_parameters(scan_number) or {}
 
     def scan_statistics(
         self,
@@ -1238,27 +1388,40 @@ class OpenTFRawBackend:
         t_max: float | None = None,
         ms_type: MsType | None = "Ms",
     ) -> dict:
-        # Map the per-scan stats OpenTFRaw decodes onto Thermo's ScanStats field
-        # names. Fields OpenTFRaw does not provide (LongWavelength, Frequency,
-        # PacketCount, ...) are omitted rather than faked. StartTime is in
-        # minutes, matching Thermo's ScanStats.StartTime. MsType mirrors Thermo's
+        # Map the per-scan stats OpenTFRaw exposes onto Thermo's ScanStats field
+        # names. StartTime is in minutes, matching Thermo's ScanStats.StartTime.
+        # ScanType is the scan filter as opentfraw renders it, and IsCentroidScan
+        # reads that filter's scan data type. ScanEventNumber is the trailer's
+        # "Scan Event:", which counts from 1. The detector fields take the values
+        # ScanStats holds for MS scans (MS_SCAN_DETECTOR_STATS), and the fields
+        # opentfraw does not expose are None, not faked
+        # (OPENTFRAW_UNAVAILABLE_SCAN_STATS). MsType mirrors Thermo's
         # MSOrder.ToString() ("Ms" / "Ms2").
-        selected = self._selected(polarity, t_min, t_max, ms_type)
-        return {
-            int(s["scan_number"]): {
+        stats: dict[int, dict] = {}
+        for s in self._selected(polarity, t_min, t_max, ms_type):
+            scan_number = int(s["scan_number"])
+            scan_filter = s["filter_string"] or None
+            data_type = parse_scan_filter(scan_filter).data_type
+            trailer = self._raw.scan_parameters(scan_number) or {}
+            scan_event = trailer.get("Scan Event:")
+            stats[scan_number] = {
+                **dict.fromkeys(SCAN_STAT_FIELDS),
+                **MS_SCAN_DETECTOR_STATS,
                 "TIC": float(s["total_ion_current"]),
                 "StartTime": float(s["retention_time"]),
                 "BasePeakMass": float(s["base_peak_mz"]),
                 "BasePeakIntensity": float(s["base_peak_intensity"]),
                 "LowMass": float(s["low_mz"]),
                 "HighMass": float(s["high_mz"]),
-                "ScanNumber": int(s["scan_number"]),
+                "ScanNumber": scan_number,
+                "ScanEventNumber": None if scan_event is None else int(scan_event) - 1,
+                "ScanType": scan_filter,
+                "IsCentroidScan": None if data_type is None else data_type == "c",
                 "MsType": "Ms"
                 if int(s["ms_level"]) == 1
                 else f"Ms{int(s['ms_level'])}",
             }
-            for s in selected
-        }
+        return stats
 
     def _validate_mz_range(
         self, mz_min: float | None, mz_max: float | None
@@ -1933,12 +2096,12 @@ class OpenTFRawBackend:
         for mz, intensity, _, _ in scans:
             order = np.argsort(mz, kind="stable")
             mz_sorted, int_sorted = mz[order], intensity[order]
-            target_integral += float(np.trapz(int_sorted, mz_sorted))
+            target_integral += float(np.trapezoid(int_sorted, mz_sorted))
             a = int(np.searchsorted(grid, mz_sorted[0], side="left"))
             b = int(np.searchsorted(grid, mz_sorted[-1], side="right"))
             if b > a:
                 summed[a:b] += np.interp(grid[a:b], mz_sorted, int_sorted)
-        grid_integral = float(np.trapz(summed, grid))
+        grid_integral = float(np.trapezoid(summed, grid))
         if grid_integral > 0:
             summed *= target_integral / grid_integral
         return grid, summed

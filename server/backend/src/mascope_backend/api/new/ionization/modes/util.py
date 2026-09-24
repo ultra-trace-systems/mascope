@@ -12,6 +12,47 @@ from mascope_backend.runtime import runtime
 COLLECTION_ID_FIELDS = ("calibration_collection_id", "diagnostic_collection_id")
 
 
+class NoTokenMatchError(ValueError):
+    """No configured ionization mode token occurs in a file's name.
+
+    Told apart from tokens that match but not one mode per polarity: a file
+    no token matches may have been bound another way, its chemistry chosen by
+    hand, while an ambiguous name is a configuration to fix.
+    """
+
+
+def _mode_name(mode: IonizationMode) -> str:
+    token = mode.ionization_mode_token
+    return f"'{mode.ionization_mode_name}'" + (f" (token '{token}')" if token else "")
+
+
+def one_mode_per_polarity(
+    sample_file: SampleFile, modes: list[IonizationMode]
+) -> tuple[list[IonizationMode], list[str]]:
+    """Pick the one mode of each polarity a file holds.
+
+    The rule every way of binding a file shares - by its name's tokens, or by
+    modes a person chose: each polarity of the file takes exactly one mode.
+
+    :param sample_file: The file to bind.
+    :param modes: The candidates: the modes its tokens match, or the ones
+        chosen for it.
+    :return: The mode of each polarity, in the file's polarity order, and a
+        phrase for each polarity that has none or more than one.
+    """
+    chosen, problems = [], []
+    for polarity in sample_file.polarity:
+        matching = [mode for mode in modes if mode.ionization_mode_polarity == polarity]
+        if len(matching) == 1:
+            chosen.append(matching[0])
+        elif not matching:
+            problems.append(f"no mode matches polarity {polarity}")
+        else:
+            names = ", ".join(_mode_name(mode) for mode in matching)
+            problems.append(f"{len(matching)} modes match polarity {polarity}: {names}")
+    return chosen, problems
+
+
 async def fetch_mode_collection_ids(ionization_mode_id: str) -> dict[str, str | None]:
     """Fetch the calibration and diagnostic collection ids a mode is bound to.
 
@@ -146,11 +187,17 @@ async def resolve_ionization_modes_by_tokens(
 ) -> list[IonizationMode]:
     """Resolve ionization modes based on tokens in the sample file.
 
-    Raises ValueError if the number of matched ionization modes is incorrect.
+    A mode matches when its token is a substring of the file name and its
+    polarity occurs in the file. Every polarity of the file must match exactly
+    one mode: a dual-polarity file whose name matches two positive tokens and
+    no negative one is refused, not routed twice as positive.
 
     :param sample_file: The sample file to resolve ionization modes for.
     :type sample_file: SampleFile
-    :return: A list of resolved ionization modes.
+    :raises NoTokenMatchError: If no mode's token occurs in the name.
+    :raises ValueError: If a polarity of the file matches no mode or more
+        than one.
+    :return: One mode per polarity of the file, in the file's polarity order.
     :rtype: list[IonizationMode]
     """
     runtime.logger.debug(
@@ -158,14 +205,14 @@ async def resolve_ionization_modes_by_tokens(
     )
     # Fetch all ionization modes
     all_ionization_modes = await fetch_all_ionization_modes()
+    file_polarities = set(sample_file.polarity)
     # Match ionization modes based on tokens in the filename
     matched_ionization_modes = []
     for ionization_mode in all_ionization_modes:
         if not ionization_mode.ionization_mode_token:
             continue
         if (
-            ionization_mode.ionization_mode_token
-            and ionization_mode.ionization_mode_polarity in sample_file.polarity
+            ionization_mode.ionization_mode_polarity in file_polarities
             and ionization_mode.ionization_mode_token in sample_file.filename
         ):
             runtime.logger.debug(
@@ -174,27 +221,21 @@ async def resolve_ionization_modes_by_tokens(
             )
             matched_ionization_modes.append(ionization_mode)
 
-    if len(matched_ionization_modes) == len(sample_file.polarity):
-        # Found matching ionization modes for all polarities (1 or 2)
-        return matched_ionization_modes
-    elif len(matched_ionization_modes) == 0:
-        # No ionization modes found by tokens
-        raise ValueError(
+    if not matched_ionization_modes:
+        raise NoTokenMatchError(
             f"No ionization mode tokens found for file {sample_file.filename}. "
             "Configure tokens in ionization settings"
         )
-    elif len(matched_ionization_modes) < len(sample_file.polarity):
-        # Not enough ionization modes found by tokens
+
+    chosen, problems = one_mode_per_polarity(sample_file, matched_ionization_modes)
+    if problems:
         raise ValueError(
-            f"No ionization mode token found for both polarities in file {sample_file.filename}. "
+            f"Ionization mode tokens must match exactly one mode per polarity in "
+            f"file {sample_file.filename}, but {'; '.join(problems)}. "
             "Configure tokens in ionization settings"
         )
-    elif len(matched_ionization_modes) > len(sample_file.polarity):
-        # Found too many ionization modes, likely overlapping tokens
-        raise ValueError(
-            f"Found too many matching ionization modes for file {sample_file.filename}. "
-            "Configure tokens in ionization settings"
-        )
+
+    return chosen
 
 
 async def token_is_unique(token: str, ignore_id: str | None = None) -> bool:

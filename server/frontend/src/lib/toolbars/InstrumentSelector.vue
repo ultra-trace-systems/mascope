@@ -1,26 +1,55 @@
 <script setup>
+/**
+ * Choose which instrument's acquisitions are listed, or all of them.
+ *
+ * "All instruments" is the store's unfocused state rather than a record, so
+ * it rides in the options as a sentinel and is mapped back to `unfocus()`.
+ */
+import { computed } from 'vue'
+
 import Select from 'primevue/select'
 
 import { useApp } from '@/stores'
 
 const app = useApp()
+
+const ALL_LABEL = 'All instruments'
+const ALL = { instrument: null, all: true }
+
+const options = computed(() => [ALL, ...(app.data.instrument.list ?? [])])
+
+// A getter rather than the `instrument` field: the sentinel has no instrument
+// name, and PrimeVue takes the option's aria-label and its type-ahead
+// matching from this - a null label leaves the entry unnamed to a screen
+// reader and unreachable by typing.
+const labelOf = (option) => option?.instrument ?? ALL_LABEL
+
+const chosen = computed({
+  get: () => app.data.instrument.focused ?? ALL,
+  set: (option) =>
+    option?.instrument ? app.data.instrument.focus(option) : app.data.instrument.unfocus()
+})
 </script>
 
 <template>
   <label for="instrument-selector" class="hidden">Instrument selector</label>
   <Select
     inputId="instrument-selector"
-    v-model="app.data.instrument.focused"
-    :options="app.data.instrument.list"
+    v-model="chosen"
+    :options="options"
     dataKey="instrument"
-    optionLabel="instrument"
+    :optionLabel="labelOf"
     optionDisabled="disabled"
     v-tooltip.left="'Instrument'"
     :pt="
       app.ui.help.bottom_end(`
           <h1>Instrument Selector</h1>
 
-          <p>Select an instrument to list acquisitions for.</p>
+          <p>
+            Select an instrument to list acquisitions for, or
+            <em>All instruments</em> to list every one you can see at once.
+            The Instrument column then says which is which.
+          </p>
     `)
     "
   >
@@ -28,7 +57,11 @@ const app = useApp()
       <span v-if="value?.instrument">
         {{ value.instrument }}
       </span>
-      <i v-else> None </i>
+      <i v-else> {{ ALL_LABEL }} </i>
+    </template>
+    <template #option="{ option }">
+      <span v-if="option.instrument">{{ option.instrument }}</span>
+      <i v-else>{{ ALL_LABEL }}</i>
     </template>
     <template #dropdownicon>
       <svg

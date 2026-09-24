@@ -310,6 +310,9 @@ async def test_spawn_forwards_every_argument(isolated_background_state):
             user_id=7,
             process_id="p-1",
             parent_id="p-0",
+            instrument="Instr-A",
+            ionization_mode_ids=["im-1"],
+            reset_calibration=True,
         )
         await asyncio.gather(*isolated_background_state)
 
@@ -319,6 +322,9 @@ async def test_spawn_forwards_every_argument(isolated_background_state):
         "user_id": 7,
         "process_id": "p-1",
         "parent_id": "p-0",
+        "instrument": "Instr-A",
+        "ionization_mode_ids": ["im-1"],
+        "reset_calibration": True,
     }
 
 

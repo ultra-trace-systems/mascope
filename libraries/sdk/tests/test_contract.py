@@ -22,6 +22,8 @@ In CI they run inside the demo-stack e2e job. Configuration:
 
 - ``MASCOPE_SDK_TEST_URL``: app origin (default ``http://127.0.0.1:8080``).
 - ``MASCOPE_SDK_TEST_TOKEN``: access token (default: the public demo token).
+- ``MASCOPE_SDK_TEST_MS2_SAMPLE``: a sample with MS2 scans, for a stack where
+  the probe in ``ms2_sample_id`` would not find one.
 
 The suite also runs against an *older published* SDK (a compatibility check
 can install mascope-sdk from PyPI and point it at a current server), so tests
@@ -117,6 +119,45 @@ def top_peak_timeseries(mascope, matched_peaks):
     ts = mascope.samples.get_peak_timeseries(sample_id, peak_id=peak["peak_id"])
     assert ts is not None and not ts.empty
     return peak, ts
+
+
+@pytest.fixture(scope="module")
+def ms2_sample_id(mascope):
+    """A sample with MS2 scans, else skip every test that needs one.
+
+    ``MASCOPE_SDK_TEST_MS2_SAMPLE`` names one directly. Otherwise the MS2
+    summary of the first sample in each batch is probed - one request per
+    batch, not per sample, since an MS2 acquisition in the demo bundle goes in
+    a batch of its own (docs/demo_dataset.md). The bundle is MS1-only today,
+    so absence is an environment gap rather than a contract violation.
+
+    A probe the server cannot answer - a non-Orbitrap file, a raw missing from
+    the filestore - is passed over rather than failed on: it says nothing
+    about the sample the tests need. A broken summary route still fails
+    ``test_summary_reports_scan_counts``, which calls it unguarded.
+    """
+    from mascope_sdk.exceptions import MascopeAPIError
+
+    _skip_unless_attr(mascope.samples, "ms2")
+    override = os.environ.get("MASCOPE_SDK_TEST_MS2_SAMPLE")
+    if override:
+        return override
+    for _, dataset in mascope.datasets.list().iterrows():
+        batches = mascope.batches.list(dataset["dataset_id"])
+        if batches is None or batches.empty:
+            continue
+        for batch_id in batches["sample_batch_id"]:
+            samples = mascope.samples.list(batch_id)
+            if samples is None or samples.empty:
+                continue
+            sample_id = samples.iloc[0]["sample_item_id"]
+            try:
+                summary = mascope.samples.ms2(sample_id).get_summary()
+            except MascopeAPIError:
+                continue
+            if summary and summary["ms2_scan_count"] > 0:
+                return sample_id
+    pytest.skip("stack carries no sample with MS2 scans")
 
 
 @requires_stack
@@ -317,6 +358,84 @@ class TestSpectraContract:
 
         assert ts is not None and not ts.empty
         assert (ts["peak_id"] == peak["peak_id"]).all()
+
+
+# Every averaged MS2 spectrum carries these. parent_peak_mz and activation
+# joined the original four in v1.8.0.
+MS2_SPECTRUM_FIELDS = {
+    "parent_peak_mz",
+    "activation",
+    "mz",
+    "intensity",
+    "resolution",
+    "signal_to_noise",
+}
+
+
+@requires_stack
+class TestMs2Contract:
+    """MS2 read paths (`/api/samples/{id}/ms2/*`).
+
+    ``get_averaged_centroids()`` hands the route's response back unparsed, and
+    every published SDK documents its keys as the parent peak m/z as a string,
+    so scripts parse them: the default key shape is the contract, and a server
+    that changes it fails here against the published SDK. The per-step split
+    is opt-in (``by_activation``) and keys each spectrum
+    ``"<parent m/z>@<activation>"``.
+
+    The demo bundle is MS1-only today, so only the summary runs there; the
+    centroid tests skip until the stack carries an MS2 acquisition.
+    """
+
+    def test_summary_reports_scan_counts(self, mascope):
+        _skip_unless_attr(mascope.samples, "ms2")
+        sample_id = _first_sample_id(mascope)
+
+        summary = mascope.samples.ms2(sample_id).get_summary()
+
+        assert isinstance(summary, dict)
+        assert {
+            "parent_peaks",
+            "groups",
+            "hcd_energy_map",
+            "isolation_width",
+            "ms1_scan_count",
+            "ms2_scan_count",
+        } <= set(summary)
+        if summary["ms2_scan_count"] == 0:
+            # An MS1-only acquisition answers with an empty summary, not an
+            # error - the ms2_sample_id probe relies on that.
+            assert summary["parent_peaks"] == []
+            assert summary["groups"] == []
+        else:
+            assert summary["parent_peaks"]
+
+    def test_averaged_centroids_are_keyed_by_parent_mz(self, mascope, ms2_sample_id):
+        centroids = mascope.samples.ms2(ms2_sample_id).get_averaged_centroids()
+
+        assert isinstance(centroids, dict) and centroids
+        for key, spectrum in centroids.items():
+            assert "@" not in key, f"default spectra must be keyed by m/z: {key!r}"
+            assert MS2_SPECTRUM_FIELDS <= set(spectrum)
+            # A script indexing by parent peak parses the key as its m/z.
+            assert float(key) == spectrum["parent_peak_mz"]
+            assert spectrum["activation"] == ""
+            assert len(spectrum["mz"]) == len(spectrum["intensity"])
+
+    def test_by_activation_keys_one_spectrum_per_group(self, mascope, ms2_sample_id):
+        ms2 = mascope.samples.ms2(ms2_sample_id)
+        _skip_unless_param(ms2.get_averaged_centroids, "by_activation")
+
+        centroids = ms2.get_averaged_centroids(by_activation=True)
+
+        assert isinstance(centroids, dict) and centroids
+        for key, spectrum in centroids.items():
+            assert MS2_SPECTRUM_FIELDS <= set(spectrum)
+            # A group whose scan filter carried no activation keeps the bare
+            # m/z, which partitions to an empty activation.
+            parent_mz, _, activation = key.partition("@")
+            assert float(parent_mz) == spectrum["parent_peak_mz"]
+            assert activation == spectrum["activation"]
 
 
 @requires_stack

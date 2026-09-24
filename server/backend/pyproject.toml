@@ -43,7 +43,7 @@ dependencies = [
     # (Windows dev runs); Linux containers use the system tzdata either way.
     "tzdata>=2025.1",
     "typer>=0.27.1,<0.28",
-    "uvicorn>=0.34,<0.53",
+    "uvicorn>=0.34,<0.54",
     "websocket-client~=1.8",
     "zarr>=3.3,<4",
     # Pinned. 4.2.0 fixes the upload-breaking file_dep bug (issue #1159)

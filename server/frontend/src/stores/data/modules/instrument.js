@@ -19,9 +19,16 @@ export const useInstrument = defineStore('app.data.instrument', () => {
     {
       key,
       selection: {
-        mode: 'single',
-        persist: true,
-        subscribe: true
+        // 'binary', not 'single': one instrument at a time, but no instrument
+        // is a state of its own - Raw files then lists every instrument the
+        // user can see. 'single' refuses to stay unfocused and reassigns the
+        // first record after every load, so "All instruments" could not be
+        // chosen, let alone kept.
+        mode: 'binary',
+        persist: true
+        // Room subscriptions are the acquisition store's: with no instrument
+        // focused it needs every instrument's room, which a per-record
+        // subscription cannot express.
       }
     }
   )

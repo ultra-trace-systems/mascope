@@ -1,8 +1,10 @@
 <script setup>
 import { ref, reactive, computed, watch, onMounted, onUnmounted } from 'vue'
+import { storeToRefs } from 'pinia'
 
 import Button from 'primevue/button'
 import Select from 'primevue/select'
+import Tag from 'primevue/tag'
 import DatePicker from 'primevue/datepicker'
 import DataTable from 'primevue/datatable'
 import Column from 'primevue/column'
@@ -23,12 +25,18 @@ import '@uppy/drop-target/css/style.min.css'
 import {
   DialogSampleOp,
   DialogBatchImport,
+  DialogChooseChemistry,
   DialogFileUpload,
   DialogIonizationOp
 } from '@/lib/dialogs'
 import { InstrumentSelector } from '@/lib/toolbars'
 
 import { api } from '@/api'
+import {
+  PROCESSING_STATUS_FILTERS,
+  canChooseChemistry,
+  processingStatus
+} from '@/lib/processingStatus'
 import { useApp } from '@/stores'
 
 const app = useApp()
@@ -60,20 +68,91 @@ onUnmounted(() => {
   uppy.removePlugin(uppy.getPlugin('DropTarget'))
 })
 
-defineProps({
+const props = defineProps({
   active: {
     type: Boolean
   }
 })
 
+// Tell the store when its list is on screen: it holds an event room per
+// instrument shown, which is worth nothing to a tab parked elsewhere, and
+// reloads when it comes back.
+watch(
+  () => props.active,
+  (on) => app.data.acquisition.setWatching(on),
+  { immediate: true }
+)
+onUnmounted(() => app.data.acquisition.setWatching(false))
+
 const dialog = reactive({
   sample: null,
   batchImport: false,
-  mechanism: null
+  mechanism: null,
+  chemistry: false
 })
+
+// The selected files as the list has them now: a status update replaces a
+// row in the list, not the copy the selection holds.
+const liveSelection = () =>
+  app.data.acquisition.selected.map(
+    (chosen) =>
+      app.data.acquisition.list.find((row) => row.sample_file_id === chosen.sample_file_id) ??
+      chosen
+  )
+
+// What the dialog asks about: the rows as the list has them now, not the
+// copies taken when they were selected. A status can change while the dialog
+// is open, and it stands open across the ionization settings.
+const chemistryFiles = computed(() => liveSelection())
+
+// --- Choose chemistry -> ionization settings -> Choose chemistry.
+// Files whose chemistry has to be chosen by hand are often the ones no
+// configured mode describes, so the dialog offers the ionization settings.
+// The two are modal, so Choose chemistry gives way and is brought back with
+// the same files still selected, and the mode just added among its options.
+const resumeChemistry = ref(false)
+// Whether the open now on screen is the return from the settings. The dialog
+// is told rather than left to remember: a visit does not always end in coming
+// back, and a flag it raised for itself would then still be up at the next
+// open, for whatever files were selected by then.
+const chemistryResumed = ref(false)
+const configureChemistry = () => {
+  resumeChemistry.value = true
+  dialog.chemistry = false
+  dialog.mechanism = true
+}
+watch(
+  () => dialog.mechanism,
+  (open) => {
+    if (open || !resumeChemistry.value) return
+    resumeChemistry.value = false
+    // The files can be deleted, taken over, or given a chemistry by someone
+    // else while the settings are open - the same question the context menu
+    // asks before offering the dialog at all.
+    if (!canChooseChemistry(liveSelection())) return
+    chemistryResumed.value = true
+    dialog.chemistry = true
+  }
+)
+// The flag lives only as long as the dialog it was raised for, however that
+// dialog ends: processed, cancelled, or sent to the settings again.
+watch(
+  () => dialog.chemistry,
+  (open) => {
+    if (!open) chemistryResumed.value = false
+  }
+)
 
 const contextMenuRef = ref(null)
 const contextMenuItems = ref([
+  {
+    label: 'Choose chemistry',
+    icon: 'pi ph ph-flask',
+    visible: () => canChooseChemistry(liveSelection()),
+    command: () => {
+      dialog.chemistry = true
+    }
+  },
   {
     label: 'Download',
     icon: 'pi pi-download',
@@ -167,8 +246,8 @@ const contextMenuItems = ref([
 ])
 const contextMenuRow = ref(null)
 
-const search = ref('')
-const polarityDropdown = ref('')
+// Kept in the store, so opening files from elsewhere can clear them.
+const { search, polarity: polarityDropdown } = storeToRefs(app.data.acquisition)
 
 // Client-side filters narrow the current page. Cross-page search/polarity
 // requires server-side filter push-down - tracked as a follow-up to #1354.
@@ -198,11 +277,7 @@ const pageCount = computed(() => app.data.acquisition.list?.length ?? 0)
 // can carry over and produce range-select artifacts.
 const tableKey = computed(() => `${app.data.acquisition.first}-${app.data.acquisition.rows}`)
 
-const clearFilters = () => {
-  app.data.acquisition.resetFilters()
-  search.value = ''
-  polarityDropdown.value = ''
-}
+const clearFilters = () => app.data.acquisition.resetFilters()
 
 // Check if files with both "+" and "-" polarities are selected
 const hasBothPolarities = computed(() => {
@@ -317,6 +392,16 @@ const currentPageReportTemplate =
         style="max-width: 100px"
         placeholder="Polarity"
       />
+      <Select
+        inputId="processing-status"
+        v-model="app.data.acquisition.processingStatus"
+        :options="PROCESSING_STATUS_FILTERS"
+        optionLabel="label"
+        optionValue="value"
+        style="max-width: 160px"
+        placeholder="Status"
+        aria-label="Processing status"
+      />
       <div class="search-cell">
         <FloatLabel style="width: 100%">
           <IconField class="full">
@@ -387,6 +472,17 @@ const currentPageReportTemplate =
               "
             >
               <Column
+                header="Instrument"
+                field="instrument"
+                sortable
+                style="width: 160px"
+                bodyClass="ellipsis-cell"
+              >
+                <template #body="{ data }">
+                  <span :title="data.instrument">{{ data.instrument }}</span>
+                </template>
+              </Column>
+              <Column
                 header="Filename"
                 field="filename"
                 sortable
@@ -395,6 +491,24 @@ const currentPageReportTemplate =
               >
                 <template #body="{ data }">
                   <span :title="data.filename">{{ data.filename }}</span>
+                </template>
+              </Column>
+              <Column
+                header="Status"
+                field="processing_status"
+                sortable
+                style="width: 170px"
+                bodyClass="ellipsis-cell"
+              >
+                <template #body="{ data }">
+                  <Tag
+                    v-if="processingStatus(data)"
+                    v-tooltip.top="{ value: processingStatus(data).tooltip, showDelay: 300 }"
+                    :value="processingStatus(data).label"
+                    :severity="processingStatus(data).severity"
+                    :icon="`pi ${processingStatus(data).icon}`"
+                    :class="['processing-status', processingStatus(data).state]"
+                  />
                 </template>
               </Column>
               <Column header="Polarity" field="polarity" sortable style="width: 90px" />
@@ -452,19 +566,15 @@ const currentPageReportTemplate =
         :polarity="derivedPolarity"
         @submit="app.data.acquisition.unfocus()"
       />
-      <DialogFileUpload
-        :files="app.uppy.invalidFiles"
-        @upload="
-          $event.map((file) => {
-            try {
-              uppy.addFile(file)
-            } catch (error) {
-              uppy.info(error, 'error')
-            }
-          })
-        "
-      />
+      <DialogFileUpload :files="app.uppy.invalidFiles" @upload="app.uppy.addFromDialog($event)" />
       <DialogIonizationOp v-model:visible="dialog.mechanism" />
+      <DialogChooseChemistry
+        v-model:visible="dialog.chemistry"
+        :files="chemistryFiles"
+        :resume="chemistryResumed"
+        @configure="configureChemistry"
+        @submit="app.data.acquisition.unfocus()"
+      />
       <ContextMenu :model="contextMenuItems" ref="contextMenuRef" />
     </div>
   </div>
@@ -609,6 +719,11 @@ menu :deep(.full) {
 
 .inactive {
   opacity: 0.5;
+}
+
+.processing-status {
+  font-size: 11px;
+  white-space: nowrap;
 }
 
 .info-line {

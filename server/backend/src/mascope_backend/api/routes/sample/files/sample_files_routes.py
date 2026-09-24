@@ -10,6 +10,7 @@ from fastapi import (
     File,
     Form,
     HTTPException,
+    Query,
     Request,
     UploadFile,
 )
@@ -20,8 +21,13 @@ from mascope_backend.api.controllers.dataset.acquisition.service import (
     recorded_instrument_type,
 )
 from mascope_backend.api.controllers.sample.files.process.service import (
+    bind_sample_files,
+    modes_to_rebind,
     re_process_sample_files,
     spawn_auto_process_sample_file,
+)
+from mascope_backend.api.controllers.sample.files.process.status import (
+    claim_for_processing,
 )
 from mascope_backend.api.controllers.sample.files.sample_files_controller import (
     compute_sample_file_peaks,
@@ -43,6 +49,7 @@ from mascope_backend.api.controllers.sample.files.sample_files_controller import
 )
 from mascope_backend.api.lib.api_features import api_route
 from mascope_backend.api.models.sample.files.sample_file_pydantic_model import (
+    BindSampleFilesBody,
     DeleteSampleFilesBody,
     GetRecentSampleFilesQueryParams,
     GetSampleFilePeaksQueryParams,
@@ -79,7 +86,8 @@ sample_files_router = APIRouter(prefix="/api/sample/files", tags=["Sample Files"
 @sample_files_router.get("")
 @api_route(token_access=True)
 async def get_sample_files_route(
-    query_params: GetSampleFilesQueryParams = Depends(),
+    request: Request,
+    query_params: GetSampleFilesQueryParams = Query(),
     user=Depends(current_active_user),
 ):
     """Retrieve a list of sample files with optional filtering and pagination.
@@ -88,13 +96,15 @@ async def get_sample_files_route(
     the user is a member of, plus files linked to sample items in any workspace
     the user has access to.  Superusers see all files.
 
+    :param request: The request, for the device behind its token.
     :param query_params: Query parameters for filtering, sorting, and pagination.
     :param user: Authenticated user.
     :return: A dictionary with total count and list of sample files.
     """
     allowed = await accessible_acquisition_instruments(user)
     return await get_sample_files(
-        **query_params.model_dump(),
+        **query_params.model_dump(exclude={"uploaded_by_me"}),
+        **_uploaded_by(request, user, query_params.uploaded_by_me),
         allowed_instruments=allowed,
         user_id=None if allowed is None else user.id,
     )
@@ -103,21 +113,34 @@ async def get_sample_files_route(
 @sample_files_router.get("/recent")
 @api_route()
 async def get_recent_sample_files_route(
-    query_params: GetRecentSampleFilesQueryParams = Depends(),
+    request: Request,
+    query_params: GetRecentSampleFilesQueryParams = Query(),
     user=Depends(current_active_user),
 ):
     """Retrieve recent sample files within a specified date range.
 
+    Recent by acquisition time, or by when each file's processing status was
+    last recorded (``recent_by``): a file uploaded or re-processed long after
+    it was acquired is recent by the second.
+
+    :param request: The request, for the device behind its token.
     :param query_params: Query parameters including date range in days.
     :param user: Authenticated user.
     :return: A dictionary with recent sample files matching criteria.
     """
-    datetime_min = datetime.now(timezone.utc) - timedelta(days=query_params.days)
-    query_params_dict = query_params.model_dump(exclude={"days"})
+    since = datetime.now(timezone.utc) - timedelta(days=query_params.days)
+    query_params_dict = query_params.model_dump(
+        exclude={"days", "recent_by", "uploaded_by_me"}
+    )
     allowed = await accessible_acquisition_instruments(user)
     query_params_dict.update(
         {
-            "datetime_min": datetime_min,
+            **_uploaded_by(request, user, query_params.uploaded_by_me),
+            (
+                "processing_updated_min"
+                if query_params.recent_by == "processing"
+                else "datetime_min"
+            ): since,
             "allowed_instruments": allowed,
             "user_id": None if allowed is None else user.id,
         }
@@ -380,18 +403,55 @@ async def process_sample_item_route(
     # Get data for notifications
     process_id = gen_id(8)
 
+    # A file whose chemistry was chosen by hand keeps it: no token binds it.
+    ionization_mode_ids = await modes_to_rebind(sample_file_id)
+    # The run starts by clearing what an earlier run left, and until it
+    # records its own stages the row would still say how that run ended. A
+    # file another run has claimed is left to it.
+    if not await claim_for_processing([sample_file_id], "Queued for processing."):
+        raise HTTPException(
+            status_code=409,
+            detail=f"'{sample_file.get('filename')}' is being processed already",
+        )
     background_tasks.add_task(
         spawn_auto_process_sample_file,
         sample_file_id=sample_file_id,
         independent_transaction=True,
         user_id=user.id,
         process_id=process_id,
+        instrument=sample_file.get("instrument"),
+        ionization_mode_ids=ionization_mode_ids,
     )
 
     return {
         "message": f"Processing file '{sample_file.get('filename')}', please wait.",
         "process_id": process_id,
     }
+
+
+@sample_files_router.post("/bind")
+@api_route(status_code=202)
+async def bind_sample_files_route(
+    body: BindSampleFilesBody,
+    user=Depends(current_active_user),
+):
+    """Process files that need a chemistry under ionization modes chosen for them.
+
+    For files whose names carry no token of a configured mode. Each is bound
+    to the chosen mode of each polarity it holds and processed as a token
+    would have had it processed. Only files without samples are bound, so
+    nothing is rebuilt here, and an editor may choose.
+
+    :param body: The files, and the modes chosen for them.
+    :param user: The current authenticated user with editor permissions.
+    :return: The files started and the files refused, with why.
+    """
+    await check_sample_file_instrument_access_bulk(body.sample_file_ids, user, "editor")
+    return await bind_sample_files(
+        sample_file_ids=body.sample_file_ids,
+        ionization_mode_ids=body.ionization_mode_ids,
+        user_id=user.id,
+    )
 
 
 @sample_files_router.post("/reprocess")
@@ -441,6 +501,26 @@ def _request_device_id(request: Request) -> int | None:
     :rtype: int | None
     """
     return getattr(request.state, "token_device_id", None)
+
+
+def _uploaded_by(request: Request, user, mine: bool) -> dict:
+    """The file-list filter ``uploaded_by_me`` asks for, as its keywords.
+
+    The paired device behind the request's token when it has one: an agent
+    is told about its own uploads, not about another agent's file of the same
+    name. A request with no device is answered by its account.
+
+    :param request: The request.
+    :param user: The account it authenticated as.
+    :param mine: Whether the asker wants only its own uploads.
+    :return: ``get_sample_files`` keywords, none when ``mine`` is false.
+    """
+    if not mine:
+        return {}
+    device_id = _request_device_id(request)
+    if device_id is not None:
+        return {"uploaded_by_device_id": device_id}
+    return {"uploaded_by_user_id": user.id}
 
 
 async def check_instrument_taken_from_a_file_name(instrument: str) -> None:

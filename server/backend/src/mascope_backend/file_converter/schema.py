@@ -19,7 +19,25 @@ class SampleFileProps(BaseModel):
             "reader cannot supply it. Values are stored verbatim, so their type "
             "depends on 'source': the Thermo backend reports every trailer value "
             "as text while OpenTFRaw parses them into typed scalars. Normalise "
-            "per 'source' when analysing across a mixed corpus."
+            "per 'source' when analysing across a mixed corpus. The scans are "
+            "sampled from every MS1 scan, so for a file with more than one scan "
+            "stream the summary mixes them; scan_streams holds one per stream."
+        ),
+    )
+
+    scan_streams: list[dict] = Field(
+        default_factory=list,
+        description=(
+            "The file's scan streams: its scans grouped by scan signature, the "
+            "fields of the scan filter that say what a scan measured (analyzer, "
+            "polarity, data type, source, source fragmentation, FAIMS CV, scan "
+            "mode, MS order, targeted precursors, scan ranges) plus the FT "
+            "resolution. Per stream: key, signature, scans, blocks, t_first and "
+            "t_last [s], filters, and acquisition_params sampled from its own "
+            "scans (MS1 streams only; an MSn stream carries {}). A census "
+            "stored only in .props: processing still pools every "
+            "MS1 scan of a polarity. Empty for TofDaq files, for files converted "
+            "before the census existed, and when the reader cannot supply it."
         ),
     )
 

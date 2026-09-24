@@ -5,8 +5,9 @@ Handles automated creation of ACQUISITION datasets, batches, and sample items, a
 """
 
 import asyncio
+from dataclasses import dataclass
 
-from sqlalchemy import delete, select
+from sqlalchemy import and_, delete, select
 from sqlalchemy.exc import InterfaceError, OperationalError, SQLAlchemyError
 from sqlalchemy.exc import TimeoutError as SQLAlchemyTimeoutError
 
@@ -28,6 +29,12 @@ from mascope_backend.api.controllers.match.match_controller import (
 from mascope_backend.api.controllers.sample.batches.sample_batches_controller import (
     get_or_create_acquisition_batch,
 )
+from mascope_backend.api.controllers.sample.files.process.status import (
+    claim_for_processing,
+    compose_detail,
+    read_pooled_streams_note,
+    record_processing_status,
+)
 from mascope_backend.api.controllers.sample.items.sample_items_controller import (
     create_sample_items,
 )
@@ -37,29 +44,38 @@ from mascope_backend.api.controllers.sample.lib.fetch_affected_sample_data impor
 from mascope_backend.api.controllers.sample.lib.sample_file_fetch import (
     fetch_sample_file,
 )
-from mascope_backend.api.lib.api_features import api_controller_background_task
+from mascope_backend.api.lib.api_features import (
+    api_controller,
+    api_controller_background_task,
+)
 from mascope_backend.api.lib.exceptions.api_exceptions import (
     ApiException,
+    is_expected_client_error,
     raise_api_warning,
 )
 from mascope_backend.api.models.sample.batches.config import sample_batch_config
 from mascope_backend.api.models.sample.batches.sample_batch_pydantic_model import (
     SampleBatchCreate,
 )
+from mascope_backend.api.models.sample.files.config import ProcessingStatus
 from mascope_backend.api.models.sample.items.sample_item_pydantic_model import (
     SampleItemCreate,
 )
 from mascope_backend.api.new.ionization.modes.util import (
+    NoTokenMatchError,
+    one_mode_per_polarity,
     resolve_ionization_modes_by_tokens,
 )
 from mascope_backend.api.new.peak_assignments.service import (
     auto_assign_sample_peaks,
 )
 from mascope_backend.db import (
+    Dataset,
     IonizationMode,
     SampleBatch,
     SampleFile,
     SampleItem,
+    Workspace,
     async_session,
 )
 from mascope_backend.db.id import gen_id
@@ -142,6 +158,49 @@ def _log_cancellation(message: str) -> None:
         runtime.logger.error(message)
 
 
+def _report_given_up(sample_file_id: str, attempts: int, error: Exception) -> None:
+    """Report a pipeline that stopped for good, at a level that matches its cause.
+
+    The file is named at INFO whatever the cause. Nothing downstream says which
+    file it was: the sample_file row stays, its batch still settles ``ready``,
+    and the only trace is an absence - no matched peaks, and no sample items
+    either when a retry had already cleared the partial ones.
+
+    Only an ApiException can also need an ERROR here. Anything else still
+    reaches the background-task decorator, whose ``process_exception`` logs it
+    at the level its class deserves - with the traceback when it is a fault -
+    so an ERROR here would report the same incident twice. An ApiException
+    passes the decorator unlogged, and is classified on the terms the rest of
+    the API uses (:func:`is_expected_client_error`). A routine outcome - a
+    raised warning, such as an m/z calibration the match gate will not accept,
+    or a 4xx such as a file deleted mid-run - stays at INFO: the decorator
+    still hands it to the user, and it is nothing an operator can act on.
+
+    A fault's ERROR names neither the file nor the error. The error-monitoring
+    sink groups issues by the formatted message, so text that carries either
+    opens an issue per file - one for every queued file when an outage hits an
+    ingest burst. The status code stays in the text, so distinct faults still
+    group apart.
+
+    :param sample_file_id: File whose pipeline gave up.
+    :param attempts: Attempts spent, the last one included.
+    :param error: What the last attempt raised.
+    """
+    runtime.logger.info(
+        f"Auto-processing gave up on sample file {sample_file_id} after "
+        f"{attempts} attempt(s); it will have no matched peaks: {error}"
+    )
+    if not isinstance(error, ApiException) or is_expected_client_error(
+        error, error.status_code
+    ):
+        return
+    runtime.logger.error(
+        f"Auto-processing gave up on a sample file after {attempts} attempt(s) "
+        f"(status {error.status_code}); it will have no matched peaks. The file "
+        "and the cause are named at INFO in this worker's log"
+    )
+
+
 def _observe_background_task(task: asyncio.Task) -> None:
     """Log the failure of a background task and release its reference."""
     _background_tasks.discard(task)
@@ -190,6 +249,268 @@ def _is_recoverable_error(exc: Exception) -> bool:
     return isinstance(exc, (SQLAlchemyTimeoutError, OperationalError, InterfaceError))
 
 
+#: What a person can do for a file that needs a chemistry, besides naming
+#: it after a mode's token.
+CHOOSE_CHEMISTRY = "Or choose its chemistry in Raw files."
+
+
+def choose_ionization_modes(
+    sample_file: SampleFile, ionization_modes: list[IonizationMode]
+) -> list[IonizationMode]:
+    """The chosen modes that apply to a file: one for each polarity it holds.
+
+    Modes are chosen for several files at once, so a mode of a polarity the
+    file does not hold is passed over for that file rather than refused.
+
+    :param sample_file: The file to bind.
+    :param ionization_modes: The modes chosen for it.
+    :raises ValueError: When a polarity of the file has no chosen mode, or
+        more than one.
+    :return: One mode per polarity of the file, in the file's polarity order.
+    """
+    chosen, problems = one_mode_per_polarity(sample_file, ionization_modes)
+    if problems:
+        raise ValueError(
+            f"The chosen ionization modes must include one per polarity of file "
+            f"{sample_file.filename}, but {'; '.join(problems)}"
+        )
+    return chosen
+
+
+async def fetch_ionization_modes(
+    ionization_mode_ids: list[str],
+) -> list[IonizationMode]:
+    """The ionization modes with these ids.
+
+    :raises ValueError: When an id names no mode.
+    """
+    async with async_session() as session:
+        modes = (
+            await session.scalars(
+                select(IonizationMode).where(
+                    IonizationMode.ionization_mode_id.in_(ionization_mode_ids)
+                )
+            )
+        ).all()
+    missing = set(ionization_mode_ids) - {mode.ionization_mode_id for mode in modes}
+    if missing:
+        raise ValueError(f"No ionization mode has the id {', '.join(sorted(missing))}")
+    return list(modes)
+
+
+def _pipeline_item():
+    """Whether a sample item is one auto-processing made for its file.
+
+    An ACQUISITION item in an ACQUISITION batch of an ACQUISITION dataset in a
+    system workspace: an instrument's year-dataset, where the pipeline files
+    its samples (``get_acquisition_dataset``). No one of these says it alone.
+    A person can create an ACQUISITION-typed item in a batch of their own.
+    ``is_system`` also marks the "System Workspace" an older deployment's
+    datasets were moved into, and a dataset a person creates in an
+    instrument's workspace is in a system workspace too. Those datasets are
+    ANALYSIS datasets, and an ACQUISITION batch is refused in one.
+    """
+    return and_(
+        SampleItem.sample_item_type == "ACQUISITION",
+        SampleItem.sample_batch_id.in_(
+            select(SampleBatch.sample_batch_id)
+            .join(Dataset, Dataset.dataset_id == SampleBatch.dataset_id)
+            .join(Workspace, Workspace.workspace_id == Dataset.workspace_id)
+            .where(
+                SampleBatch.sample_batch_type == "ACQUISITION",
+                Dataset.dataset_type == "ACQUISITION",
+                Workspace.is_system.is_(True),
+            )
+        ),
+    )
+
+
+async def _acquisition_item_mode_ids(sample_file_id: str) -> list[str]:
+    """The ionization modes auto-processing made a file's samples under."""
+    async with async_session() as session:
+        return list(
+            await session.scalars(
+                select(SampleItem.ionization_mode_id)
+                .where(
+                    SampleItem.sample_file_id == sample_file_id,
+                    _pipeline_item(),
+                    SampleItem.ionization_mode_id.is_not(None),
+                )
+                .distinct()
+            )
+        )
+
+
+def _failure_detail(exc: BaseException) -> str:
+    """What a person is told about the error that stopped a pipeline.
+
+    The detail is served to everyone who can list the file, so it carries an
+    error's own text only where the API already writes that text for its
+    user: an ApiException's user message, and a ValueError, the API's
+    client-class error. Any other error is a fault whose text can hold SQL
+    with its bound parameters, pool internals or file paths. For those the
+    detail names only the kind of failure, as ``process_exception`` does for
+    the notification, and the worker's log names the file and the error.
+    """
+    if isinstance(exc, ApiException):
+        return str(exc.user_message)
+    if isinstance(exc, SQLAlchemyTimeoutError):
+        return "The server was too busy to process the file. Process it again."
+    if isinstance(exc, SQLAlchemyError):
+        return "A database operation failed while the file was processed."
+    if isinstance(exc, ValueError):
+        return str(exc) or type(exc).__name__
+    return "Processing stopped on an unexpected error."
+
+
+#: How long a pipeline that gave up waits to record that it failed. A run that
+#: gave up on pool starvation writes on the same starved pool, and must not
+#: wait out the whole pool timeout for its report.
+_FAILED_STATUS_TIMEOUT_S = 10
+
+
+async def _record_failed(sample_file_id: str, error: Exception) -> None:
+    """Record that a pipeline stopped for good on ``error``.
+
+    Awaited inside the wrapper's ``except`` clause, where a cancellation would
+    bypass that try's ``except asyncio.CancelledError``, so it is reported
+    here, as the backoff wait reports its own. A write that does not finish in
+    time leaves the file in its last in-progress status, which the next
+    startup marks failed.
+
+    :param sample_file_id: File whose pipeline gave up.
+    :param error: What the last attempt raised.
+    """
+    try:
+        await asyncio.wait_for(
+            record_processing_status(
+                sample_file_id, ProcessingStatus.FAILED, _failure_detail(error)
+            ),
+            timeout=_FAILED_STATUS_TIMEOUT_S,
+        )
+    except asyncio.TimeoutError:
+        runtime.logger.info(
+            f"Could not record within {_FAILED_STATUS_TIMEOUT_S}s that "
+            f"auto-processing failed for sample file {sample_file_id}; it keeps "
+            "its last status until a restart marks it failed"
+        )
+    except asyncio.CancelledError:
+        _report_cancelled(sample_file_id, "while recording that it failed")
+        raise
+
+
+def _bound_detail(ionization_modes: list[IonizationMode], by_token: bool) -> str:
+    """Name the modes a file was bound to, and what bound it."""
+    names = " and ".join(
+        f"'{mode.ionization_mode_name}' ({mode.ionization_mode_polarity})"
+        for mode in ionization_modes
+    )
+    if not by_token:
+        return f"Bound to {names} without a file-name token."
+    tokens = "token" if len(ionization_modes) == 1 else "tokens"
+    return f"Bound by file-name {tokens} to {names}."
+
+
+async def _park_needing_chemistry(
+    sample_file: SampleFile, reason: str, streams_note: str | None
+) -> dict:
+    """Leave a file that binds to no ionization mode waiting for a chemistry.
+
+    Nothing has failed: the file is converted and stored, and only a person
+    can say which chemistry it was acquired under. It gets no samples until
+    then. Its status says so, which keeps it for the people answerable for
+    the instrument (``api/new/notifications``), and the run reports a warning
+    rather than an error.
+
+    :param sample_file: The file.
+    :param reason: What the routing found.
+    :param streams_note: The file's pooled-streams note, if any.
+    :return: The run's result.
+    """
+    reason = reason.strip().rstrip(".") + "."
+    # The detail is the file's own reason; Raw files, where it is read, says
+    # what to do about it.
+    await record_processing_status(
+        sample_file.sample_file_id,
+        ProcessingStatus.NEEDS_CHEMISTRY,
+        compose_detail(reason, streams_note),
+    )
+    # INFO: a data condition a person resolves, not a fault
+    runtime.logger.info(
+        f"Sample file '{sample_file.filename}' needs a chemistry: {reason}"
+    )
+    return {
+        "status": "parked",
+        "message": f"{reason} {CHOOSE_CHEMISTRY}",
+        "_notification_data": {
+            "affected_sample_batch_ids": [],
+            "affected_sample_item_ids": [],
+            "instrument": sample_file.instrument,
+            "sample_file_id": sample_file.sample_file_id,
+        },
+    }
+
+
+def _calibration_failure_detail(mz_calibration: dict | None) -> str:
+    """Say what is wrong with a file's m/z calibration record.
+
+    Reads the record calibration left on the file: a failed fit carries its
+    error, a fit below the quality bar its reasons.
+    """
+    record = mz_calibration or {}
+    if record.get("status") == "failed":
+        error = str(record.get("error") or "").strip().rstrip(".")
+        return (
+            f"The m/z calibration failed: {error}."
+            if error
+            else "The m/z calibration failed."
+        )
+    issues = [
+        str(issue.get("message", "")).strip()
+        for issue in record.get("quality_issues") or []
+        if isinstance(issue, dict) and issue.get("message")
+    ]
+    if record.get("status") == "poor" and issues:
+        return f"The m/z calibration is below the quality bar: {' '.join(issues)}"
+    return "The file's m/z calibration is not verified."
+
+
+def _is_verified_record(mz_calibration: dict | None) -> bool:
+    """Whether matching accepts a file's m/z calibration record.
+
+    The verified gate of ``match_compute_sample``, which refuses every other
+    record with a raised warning: no record means the acquisition axis, which
+    is accepted, and any record must say it was verified. A TOF file's
+    converter record never does (see ``is_unfitted_record``).
+    """
+    return mz_calibration is None or bool(mz_calibration.get("verified", False))
+
+
+@dataclass(frozen=True)
+class CalibrationOutcome:
+    """How a sample's automatic m/z calibration ended.
+
+    The reason travels with the outcome rather than being read back from the
+    file's record, which does not always hold it: a failure never overwrites
+    an applied fit or an earlier failure's record.
+    """
+
+    #: A fit was applied and verified.
+    verified: bool
+    #: Why the sample is not calibrated, as a sentence for the file's
+    #: processing detail; None when verified.
+    reason: str | None = None
+
+
+def _calibration_error_reason(error: ApiException) -> str:
+    """The reason a calibration attempt gave, without its final period."""
+    data = (
+        error.tech_message.get("data") if isinstance(error.tech_message, dict) else None
+    )
+    reason = (data or {}).get("warning") or (data or {}).get("error")
+    return str(reason or error.user_message).strip().rstrip(".")
+
+
 async def _delete_partial_acquisition_items(sample_file_id: str) -> None:
     """Delete ACQUISITION sample items an earlier pipeline run left behind.
 
@@ -205,14 +526,14 @@ async def _delete_partial_acquisition_items(sample_file_id: str) -> None:
     mode. For a file processed for the first time the delete matches nothing
     and costs one statement.
 
-    Only ACQUISITION items are removed - user-created samples referencing the
-    file are never touched.
+    Only the pipeline's own items are removed (:func:`_pipeline_item`) - a
+    sample a person made from the file is never touched, whatever its type.
     """
     async with async_session() as session:
         result = await session.execute(
             delete(SampleItem).where(
                 SampleItem.sample_file_id == sample_file_id,
-                SampleItem.sample_item_type == "ACQUISITION",
+                _pipeline_item(),
             )
         )
         await session.commit()
@@ -220,6 +541,26 @@ async def _delete_partial_acquisition_items(sample_file_id: str) -> None:
         runtime.logger.info(
             f"Removed {result.rowcount} partial ACQUISITION sample item(s) "
             f"for sample file {sample_file_id} before retrying"
+        )
+
+
+async def _reset_calibration(sample_file_id: str) -> None:
+    """Restore a file's acquisition m/z axis before it is rebuilt.
+
+    Best effort, as in re-processing: a reset that fails leaves the previous
+    calibration in effect, and the file is rebuilt all the same.
+    """
+    try:
+        await reset_mz_calibration(
+            await fetch_sample_file(sample_file_id=sample_file_id)
+        )
+    except Exception:  # noqa: BLE001 - the rebuild matters more than the reset
+        runtime.logger.info(
+            f"Could not reset the m/z calibration of sample file {sample_file_id} "
+            "before rebuilding it; its previous calibration remains in effect"
+        )
+        runtime.logger.opt(exception=True).warning(
+            "Could not reset a sample file's m/z calibration before rebuilding it"
         )
 
 
@@ -269,6 +610,9 @@ async def auto_process_sample_file(
     user_id: int | None = None,
     process_id: str | None = None,
     parent_id: str | None = None,
+    instrument: str | None = None,
+    ionization_mode_ids: list[str] | None = None,
+    reset_calibration: bool = False,
 ) -> dict:
     """
     Main orchestrator for automatic sample file processing pipeline.
@@ -283,7 +627,8 @@ async def auto_process_sample_file(
       (the uploading user becomes workspace owner if the workspace is newly created)
     - Create ACQUISITION batches and sample items for each sample file ionization mode
     - Perform calibration and match computation for created ACQUISITION samples
-      (calibration is skipped for blank files or when no calibration collection is set)
+      (blank files skip all of it; calibration is also skipped when no
+      calibration collection is set)
     - Schedule rematch tasks for other affected samples
     - Return processing results with affected IDs or UI reloads
 
@@ -298,11 +643,26 @@ async def auto_process_sample_file(
     :type process_id: str | None, optional
     :param parent_id: Parent process ID for tracking hierarchical processes
     :type parent_id: str | None, optional
+    :param instrument: The file's instrument. The pipeline itself never reads
+        it: it names the room that hears how the run ended. A finished run
+        also reports its instrument in its result, but a failed run has no
+        result, so this is the only way its error reaches that room.
+    :type instrument: str | None, optional
+    :param ionization_mode_ids: The modes to bind the file to, chosen by a
+        person or kept from its samples. None binds it by its file-name
+        tokens, and a file they bind to nothing waits for a chemistry.
+    :type ionization_mode_ids: list[str] | None, optional
+    :param reset_calibration: Restore the file's acquisition m/z axis before
+        the first attempt, as re-processing does, for a file rebuilt under
+        other modes.
+    :type reset_calibration: bool, optional
     :return: Processing results with affected IDs
     """
     for attempt in range(_AUTO_PROCESS_RETRIES + 1):
         try:
             async with _auto_process_gate:
+                if reset_calibration and attempt == 0:
+                    await _reset_calibration(sample_file_id)
                 # Any earlier run - a failed attempt, or a whole earlier
                 # pipeline a restart cut short - may have committed sample
                 # items before dying in calibration/matching. Clear them on
@@ -315,6 +675,7 @@ async def auto_process_sample_file(
                     user_id=user_id,
                     process_id=process_id,
                     parent_id=parent_id,
+                    ionization_mode_ids=ionization_mode_ids,
                 )
         except asyncio.CancelledError:
             # CancelledError is a BaseException, so every `except Exception` in
@@ -326,20 +687,16 @@ async def auto_process_sample_file(
             raise
         except Exception as e:
             if attempt >= _AUTO_PROCESS_RETRIES or not _is_recoverable_error(e):
-                # Terminal. Nothing downstream says which file this was: the
-                # sample_file row stays, its batch still settles `ready`, and
-                # the only trace is an absence - no matched peaks, and no
-                # sample items either when a retry had already cleared the
-                # partial ones. Name the file here or the shortfall is only
+                # Terminal. Name the file here or the shortfall is only
                 # discoverable by counting rows afterwards.
-                runtime.logger.error(
-                    f"Auto-processing gave up on sample file {sample_file_id} "
-                    f"after {attempt + 1} attempt(s); it will have no matched "
-                    f"peaks: {e}"
-                )
+                _report_given_up(sample_file_id, attempts=attempt + 1, error=e)
+                await _record_failed(sample_file_id, e)
                 raise
             delay = _AUTO_PROCESS_RETRY_DELAYS_S[attempt]
-            runtime.logger.warning(
+            # INFO: a retry that usually succeeds, and the line names the file,
+            # so at WARNING it would open a monitoring issue per file and per
+            # attempt. A retry that does not help ends in the give-up above.
+            runtime.logger.info(
                 f"Auto-processing attempt {attempt + 1} for sample file "
                 f"{sample_file_id} hit a recoverable error ({e}); retrying "
                 f"in {delay}s"
@@ -483,6 +840,9 @@ async def spawn_auto_process_sample_file(
     user_id: int | None = None,
     process_id: str | None = None,
     parent_id: str | None = None,
+    instrument: str | None = None,
+    ionization_mode_ids: list[str] | None = None,
+    reset_calibration: bool = False,
 ) -> None:
     """Start the auto-processing pipeline detached from the request that triggered it.
 
@@ -508,6 +868,9 @@ async def spawn_auto_process_sample_file(
         "independent_transaction": independent_transaction,
         "user_id": user_id,
         "parent_id": parent_id,
+        "instrument": instrument,
+        "ionization_mode_ids": ionization_mode_ids,
+        "reset_calibration": reset_calibration,
     }
     # Omitted rather than forwarded as None. api_controller_background_task
     # reads it as ``kwargs.get("process_id", gen_id(8))``, so an absent key
@@ -531,6 +894,7 @@ async def _auto_process_sample_file(
     user_id: int | None = None,
     process_id: str | None = None,
     parent_id: str | None = None,
+    ionization_mode_ids: list[str] | None = None,
 ) -> dict:
     """Gated body of ``auto_process_sample_file`` - see the public wrapper."""
     # Initialize collector for affected sample items
@@ -538,6 +902,9 @@ async def _auto_process_sample_file(
 
     # --- Validate sample file existence --- #
     sample_file = await fetch_sample_file(sample_file_id=sample_file_id)
+    # Describes the file rather than a stage, so every status this run
+    # records carries it.
+    streams_note = await read_pooled_streams_note(sample_file.filename)
 
     # --- Get ACQUISITION dataset for the instrument --- #
     # The year-dataset and the daily batch inside it must be dated off the SAME
@@ -557,6 +924,25 @@ async def _auto_process_sample_file(
         )
     ).get("data")
 
+    # --- Bind the file to its ionization modes --- #
+    # After the dataset on purpose: a file that binds to nothing still gets
+    # its instrument's workspace, which is where its modes are configured.
+    by_token = ionization_mode_ids is None
+    if by_token:
+        try:
+            bound_modes = await resolve_ionization_modes_by_tokens(sample_file)
+        except ValueError as e:
+            return await _park_needing_chemistry(sample_file, str(e), streams_note)
+    else:
+        try:
+            bound_modes = choose_ionization_modes(
+                sample_file, await fetch_ionization_modes(ionization_mode_ids)
+            )
+        except ValueError as e:
+            # A chosen mode was deleted, or changed, while the file waited:
+            # it needs a chemistry again, and can be given one.
+            return await _park_needing_chemistry(sample_file, str(e), streams_note)
+
     # --- Create ACQUISITION batches and sample items for each ionization mode --- #
     (
         acquisition_samples,
@@ -564,6 +950,12 @@ async def _auto_process_sample_file(
     ) = await create_acquisition_batches_and_items(
         sample_file=sample_file,
         dataset_id=acquisition_dataset.get("dataset_id"),
+        ionization_modes=bound_modes,
+    )
+    await record_processing_status(
+        sample_file_id,
+        ProcessingStatus.BOUND,
+        compose_detail(_bound_detail(bound_modes, by_token), streams_note),
     )
 
     # Extract batch and sample IDs for notifications
@@ -574,32 +966,82 @@ async def _auto_process_sample_file(
         sample["sample_item_id"] for sample in acquisition_samples
     )
 
-    # Blank files are stored without an instrument config and should skip calibration.
+    # Blank files are stored without an instrument config and have no peaks:
+    # they skip calibration, matching and peak assignment.
     is_blank_sample_file = sample_file.instrument_function_id is None
 
-    # --- Perform calibration and matching for created ACQUISITION samples --- #
+    # --- Calibrate every ACQUISITION sample of the file before matching any --- #
+    # The m/z calibration belongs to the FILE, not the sample item: applying a
+    # fit rescales the whole peak store and removes the matches of every sample
+    # item on the file (calibration_mz_apply). A dual-polarity file has one
+    # sample item per polarity, so matching one before calibrating the other
+    # would lose its matches to the apply.
+    ionization_modes = {}
     for sample in acquisition_samples:
-        sample_item_id = sample["sample_item_id"]
-
-        # Get ionization mode to check calibration collection
         async with async_session() as session:
-            ionization_mode = await session.get(
+            ionization_modes[sample["sample_item_id"]] = await session.get(
                 IonizationMode, sample["ionization_mode_id"]
             )
 
+    # Each polarity drifts on its own, but a file holds one m/z calibration: a
+    # second polarity's fit replaces the first's, so whichever is calibrated
+    # last would set the axis for both. Until each polarity can carry its own
+    # fit, a file whose samples would calibrate more than once is not
+    # calibrated here. With exactly one calibrating sample, its fit rescales
+    # the whole file, so the file's other samples are matched on that fit too.
+    calibrating_sample_ids = {
+        sample_item_id
+        for sample_item_id, ionization_mode in ionization_modes.items()
+        if ionization_mode
+        and ionization_mode.calibration_collection_id
+        and not is_blank_sample_file
+    }
+    shared_calibration = len(calibrating_sample_ids) > 1
+    # For the file's final status: why it was not calibrated, as a clause, and
+    # why samples went unmatched when calibration stopped them.
+    not_calibrated_reason: str | None = None
+    unmatched_reason: str | None = None
+    if shared_calibration:
+        not_calibrated_reason = (
+            f"{len(calibrating_sample_ids)} of its samples have a calibration "
+            "collection, and a file holds one m/z calibration for all of them"
+        )
+        # INFO: a data condition, fires for every such file
+        runtime.logger.info(
+            f"Skipping m/z calibration for '{sample_file.filename}': "
+            f"{not_calibrated_reason}."
+        )
+        calibrating_sample_ids.clear()
+    elif not calibrating_sample_ids and not is_blank_sample_file:
+        uncalibrated_modes = sorted(
+            {
+                f"'{mode.ionization_mode_name}'"
+                for mode in ionization_modes.values()
+                if mode is not None
+            }
+        )
+        not_calibrated_reason = (
+            f"ionization mode {', '.join(uncalibrated_modes)} has no "
+            "calibration collection"
+            if len(uncalibrated_modes) == 1
+            else f"ionization modes {', '.join(uncalibrated_modes)} have no "
+            "calibration collection"
+        )
+
+    matchable_sample_ids: set[str] = set()
+    for sample in acquisition_samples:
+        sample_item_id = sample["sample_item_id"]
+        ionization_mode = ionization_modes[sample_item_id]
+
         # Perform calibration only when collection is configured and file is not blank.
-        if (
-            ionization_mode
-            and ionization_mode.calibration_collection_id
-            and not is_blank_sample_file
-        ):
-            calibrated = await calibrate_with_retry(
+        if sample_item_id in calibrating_sample_ids:
+            outcome = await calibrate_with_retry(
                 sample=sample,
                 sample_file_id=sample_file.sample_file_id,
                 user_id=user_id,
                 process_id=process_id,
             )
-            if not calibrated:
+            if not outcome.verified:
                 # The failed or below-bar record calibrate_with_retry leaves
                 # would trip the verified gate in match_compute_sample as a
                 # raised warning, failing the whole pipeline; skip matching
@@ -609,14 +1051,25 @@ async def _auto_process_sample_file(
                     "Skipping matching and peak assignment for sample "
                     f"'{sample['sample_item_name']}': m/z calibration not verified."
                 )
+                unmatched_reason = outcome.reason
                 continue
-        elif is_blank_sample_file:
-            runtime.logger.info(
-                "Skipping m/z calibration for blank file "
-                f"'{sample['sample_item_name']}'. "
-                "Calibration is not applicable."
+            await record_processing_status(
+                sample_file_id,
+                ProcessingStatus.CALIBRATED,
+                compose_detail(streams_note),
             )
-        else:
+        elif is_blank_sample_file:
+            # A blank has no peaks, so there is nothing to match or assign
+            # either. Held back explicitly, as batch matching does:
+            # match_compute_sample refuses a blank with a raised warning, which
+            # would end the whole run and report a routine file to the
+            # instrument room as a warning.
+            runtime.logger.info(
+                "Skipping m/z calibration, matching and peak assignment for "
+                f"blank file '{sample['sample_item_name']}': it has no peaks."
+            )
+            continue
+        elif not shared_calibration:
             ionization_mode_name = (
                 ionization_mode.ionization_mode_name if ionization_mode else "unknown"
             )
@@ -627,6 +1080,56 @@ async def _auto_process_sample_file(
                 "Calibration collection is not set for the ionization mode "
                 f"'{ionization_mode_name}'."
             )
+        matchable_sample_ids.add(sample_item_id)
+
+    # --- Hold back what the match gate would refuse --- #
+    # match_compute_sample refuses a sample whose file record is not verified,
+    # with a raised warning that ends the whole run - so judge the record here,
+    # as calibration left it. A calibration that was not verified leaves the
+    # record unverified unless an earlier fit survives it; a skipped
+    # calibration leaves whatever an earlier run stored; and a TOF file that
+    # was never fitted keeps its converter's record, which matching refuses
+    # though the pipeline had no calibrants to fit it with.
+    mz_calibration = sample_file.mz_calibration
+    if calibrating_sample_ids and matchable_sample_ids:
+        mz_calibration = (
+            await fetch_sample_file(sample_file_id=sample_file_id)
+        ).mz_calibration
+    calibration_note: str | None = None
+    if matchable_sample_ids and not _is_verified_record(mz_calibration):
+        runtime.logger.info(
+            "Skipping matching and peak assignment for "
+            f"{len(matchable_sample_ids)} sample(s) of '{sample_file.filename}': "
+            "the file's m/z calibration is not verified."
+        )
+        matchable_sample_ids.clear()
+        if unmatched_reason is None:
+            unmatched_reason = (
+                f"Not m/z calibrated: {not_calibrated_reason}. Matching needs a "
+                "verified m/z calibration."
+                if is_unfitted_record(mz_calibration) and not_calibrated_reason
+                else _calibration_failure_detail(mz_calibration)
+            )
+    elif is_blank_sample_file:
+        calibration_note = "Blank measurement: no peaks to calibrate, match or assign."
+    elif not_calibrated_reason:
+        axis = (
+            "the acquisition axis"
+            if mz_calibration is None
+            else "the calibration already on the file"
+        )
+        calibration_note = f"Not m/z calibrated: {not_calibrated_reason}."
+        if shared_calibration:
+            calibration_note += f" Matched on {axis}."
+    elif mz_calibration is not None and mz_calibration.get("status") == "poor":
+        # Verified under a gate that only warns, and matched on.
+        calibration_note = _calibration_failure_detail(mz_calibration)
+
+    # --- Match and assign the samples --- #
+    for sample in acquisition_samples:
+        sample_item_id = sample["sample_item_id"]
+        if sample_item_id not in matchable_sample_ids:
+            continue
 
         await match_compute_sample(
             sample_item_id=sample_item_id,
@@ -684,6 +1187,40 @@ async def _auto_process_sample_file(
         )
     ).affected_samples
 
+    # Recorded last, so that `done` means the run returned: a failure in
+    # anything above is recorded as `failed` by the wrapper instead. `done`
+    # also means every sample was matched, or a blank had nothing to match.
+    matched = len(matchable_sample_ids)
+    unmatched = len(acquisition_sample_item_ids) - matched
+    if is_blank_sample_file:
+        await record_processing_status(
+            sample_file_id,
+            ProcessingStatus.DONE,
+            compose_detail(calibration_note, streams_note),
+        )
+    elif not unmatched:
+        await record_processing_status(
+            sample_file_id,
+            ProcessingStatus.DONE,
+            compose_detail(
+                f"Matched {matched} sample{'s' if matched != 1 else ''}.",
+                calibration_note,
+                streams_note,
+            ),
+        )
+    else:
+        skipped = (
+            f"Matching and peak assignment were skipped for {unmatched} of its "
+            f"{len(acquisition_sample_item_ids)} samples."
+            if matched
+            else "Matching and peak assignment were skipped."
+        )
+        await record_processing_status(
+            sample_file_id,
+            ProcessingStatus.CALIBRATION_FAILED,
+            compose_detail(unmatched_reason, skipped, streams_note),
+        )
+
     return {
         "message": (
             f"Auto-processing complete for {sample_file.filename}, processed "
@@ -696,6 +1233,146 @@ async def _auto_process_sample_file(
             "instrument": sample_file.instrument,
         },
     }
+
+
+@api_controller()
+async def bind_sample_files(
+    sample_file_ids: list[str],
+    ionization_mode_ids: list[str],
+    user_id: int | None = None,
+) -> dict:
+    """
+    Process files under the ionization modes chosen for them.
+
+    For files whose names bind them to no mode: the ones a ``needs_chemistry``
+    status names, one that failed before its samples were made, or one bound
+    wrongly by hand. Each file is bound to the chosen mode of each polarity it
+    holds and processed as a token would have had it processed - its samples
+    created, calibrated and matched - in a detached pipeline per file, behind
+    the same ingest gate as every upload. A file that has samples already is
+    rebuilt under the chosen modes, as re-processing rebuilds one: its m/z
+    calibration is reset, and the pipeline replaces its samples.
+    Re-processing keeps the modes a file bound here has, since no token binds
+    it again.
+
+    A sample a person made from the file is never touched: the pipeline
+    replaces only its own. Such a file - one processed by hand into someone's
+    batch, say - keeps its m/z calibration rather than having it reset under
+    that sample. If a chosen mode calibrates the file, the new fit marks that
+    batch for re-matching, as any new calibration of the file does.
+
+    Each file is claimed - marked ``queued`` - before its pipeline starts, so
+    a second choice for the same file is refused rather than starting a second
+    run. Refused, each with its reason while the others go ahead: a file
+    being processed already, and a file the chosen modes do not fit.
+
+    :param sample_file_ids: The files to bind.
+    :type sample_file_ids: list[str]
+    :param ionization_mode_ids: The modes chosen, at most one per polarity.
+    :type ionization_mode_ids: list[str]
+    :param user_id: The person who chose, told how each run ends.
+    :type user_id: int | None, optional
+    :raises ApiException: 422 when no file could be bound, and a 207 warning
+        naming the refused files when only some could be.
+    :return: The files started.
+    :rtype: dict
+    """
+    try:
+        ionization_modes = await fetch_ionization_modes(ionization_mode_ids)
+    except ValueError as e:
+        raise ApiException(user_message=str(e), tech_message={}, status_code=422) from e
+
+    async with async_session() as session:
+        sample_files = {
+            sample_file.sample_file_id: sample_file
+            for sample_file in await session.scalars(
+                select(SampleFile).where(SampleFile.sample_file_id.in_(sample_file_ids))
+            )
+        }
+        with_user_samples = set(
+            await session.scalars(
+                select(SampleItem.sample_file_id)
+                .where(
+                    SampleItem.sample_file_id.in_(sample_file_ids),
+                    ~_pipeline_item(),
+                )
+                .distinct()
+            )
+        )
+
+    candidates: list[tuple[SampleFile, list[str]]] = []
+    refused: list[dict] = []
+
+    def refuse(sample_file_id: str, filename: str | None, message: str) -> None:
+        refused.append(
+            {"sample_file_id": sample_file_id, "filename": filename, "message": message}
+        )
+
+    for sample_file_id in sample_file_ids:
+        sample_file = sample_files.get(sample_file_id)
+        if sample_file is None:
+            refuse(
+                sample_file_id,
+                None,
+                f"Sample file with ID '{sample_file_id}' not found",
+            )
+            continue
+        try:
+            chosen = choose_ionization_modes(sample_file, ionization_modes)
+        except ValueError as e:
+            refuse(sample_file_id, sample_file.filename, str(e))
+            continue
+        candidates.append((sample_file, [mode.ionization_mode_id for mode in chosen]))
+
+    claimed = set(
+        await claim_for_processing(
+            [sample_file.sample_file_id for sample_file, _ in candidates],
+            "Queued for processing under the chosen chemistry.",
+        )
+    )
+    started = []
+    for sample_file, mode_ids in candidates:
+        if sample_file.sample_file_id in claimed:
+            started.append((sample_file, mode_ids))
+        else:
+            refuse(
+                sample_file.sample_file_id,
+                sample_file.filename,
+                f"{sample_file.filename} is being processed already",
+            )
+
+    reasons = "\n".join(f"{refusal['message']}." for refusal in refused)
+    if not started:
+        raise ApiException(
+            user_message=f"No file could be bound:\n{reasons}",
+            tech_message={"refused": refused},
+            status_code=422,
+        )
+
+    for sample_file, mode_ids in started:
+        await spawn_auto_process_sample_file(
+            sample_file_id=sample_file.sample_file_id,
+            independent_transaction=True,
+            user_id=user_id,
+            instrument=sample_file.instrument,
+            ionization_mode_ids=mode_ids,
+            reset_calibration=sample_file.sample_file_id not in with_user_samples,
+        )
+
+    files = f"{len(started)} file{'' if len(started) == 1 else 's'}"
+    message = f"Processing {files} under the chosen chemistry."
+    data = {
+        "started": [sample_file.sample_file_id for sample_file, _ in started],
+        "refused": refused,
+    }
+    if refused:
+        # Partly done, as re-processing and deleting several files report it.
+        raise_api_warning(
+            f"{message} {len(refused)} could not be bound:\n{reasons}",
+            data,
+            status_code=207,
+        )
+    return {"message": message, "data": data}
 
 
 @api_controller_background_task(
@@ -779,7 +1456,7 @@ async def re_process_sample_files(
             )
             .where(
                 SampleItem.sample_file_id.in_(found_ids),
-                SampleItem.sample_item_type != "ACQUISITION",
+                ~_pipeline_item(),
             )
         )
         user_created_samples = result.all()
@@ -792,6 +1469,8 @@ async def re_process_sample_files(
 
     # --- Validate each file --- #
     valid_sample_files = []
+    # Files no token binds, re-processed under the modes their samples have.
+    kept_mode_ids: dict[str, list[str]] = {}
 
     for sample_file in sample_files:
         # Check for user-created samples
@@ -810,10 +1489,14 @@ async def re_process_sample_files(
             continue
 
         # Verify ionization modes are defined properly
+        no_token: NoTokenMatchError | None = None
         try:
             await resolve_ionization_modes_by_tokens(sample_file)
+        except NoTokenMatchError as e:
+            no_token = e
         except ValueError as ve:
-            # Ionization mode resolution failed
+            # Tokens that match, but not one mode per polarity: a
+            # configuration to fix, which no earlier binding stands in for.
             failed_files.append(
                 {
                     "sample_file_id": sample_file.sample_file_id,
@@ -837,6 +1520,31 @@ async def re_process_sample_files(
             )
             continue
 
+        if no_token is not None:
+            # A file bound without a token - its chemistry chosen by hand -
+            # has no token to bind it again, so it keeps the modes its
+            # samples were created under. Read before they are cleared, and
+            # outside the except clause, where an error would escape the
+            # handlers that keep one file's failure its own.
+            try:
+                kept = await _kept_mode_ids(sample_file)
+            except Exception as e:  # noqa: BLE001 - one file's failure
+                runtime.logger.info(
+                    f"Could not read the modes of sample file {sample_file.filename}'s "
+                    f"samples: {e}"
+                )
+                kept = None
+            if kept is None:
+                failed_files.append(
+                    {
+                        "sample_file_id": sample_file.sample_file_id,
+                        "filename": sample_file.filename,
+                        "message": str(no_token),
+                    }
+                )
+                continue
+            kept_mode_ids[sample_file.sample_file_id] = kept
+
         # Passed all validations
         valid_sample_files.append(sample_file)
 
@@ -850,6 +1558,22 @@ async def re_process_sample_files(
     # meant to repair.
     for sample_file in valid_sample_files:
         try:
+            # Before anything of the file is destroyed: until the rebuild
+            # records its own stages, the row would still say how the last run
+            # ended - `done` on a file with no samples, if a restart cut in -
+            # and an in-progress status is what a restart marks failed. A file
+            # another run has claimed meanwhile is left to it.
+            if not await claim_for_processing(
+                [sample_file.sample_file_id], "Queued for re-processing."
+            ):
+                failed_files.append(
+                    {
+                        "sample_file_id": sample_file.sample_file_id,
+                        "filename": sample_file.filename,
+                        "message": f"{sample_file.filename} is being processed already",
+                    }
+                )
+                continue
             # Orbitrap calibration is cumulative (the file's m/z axes are
             # rescaled in place), so without this a re-processed file silently
             # keeps its previous calibration. A failed reset keeps the old
@@ -864,12 +1588,18 @@ async def re_process_sample_files(
                     "previous calibration remains in effect."
                 )
 
-            affected_sample_batch_ids.update(
-                await _clear_sample_items_for_reprocessing(
+            try:
+                cleared_batch_ids = await _clear_sample_items_for_reprocessing(
                     sample_file_id=sample_file.sample_file_id,
                     independent_transaction=independent_transaction,
                 )
-            )
+            except Exception as e:
+                # No pipeline runs for the file after this, and the pipeline
+                # is what records how a run ended: without this the file
+                # would read queued, with no run behind it, until a restart.
+                await _record_failed(sample_file.sample_file_id, e)
+                raise
+            affected_sample_batch_ids.update(cleared_batch_ids)
 
             result = await auto_process_sample_file(
                 sample_file_id=sample_file.sample_file_id,
@@ -877,7 +1607,19 @@ async def re_process_sample_files(
                 user_id=user_id,
                 process_id=gen_id(8),
                 parent_id=process_id,
+                ionization_mode_ids=kept_mode_ids.get(sample_file.sample_file_id),
             )
+            if result.get("status") == "parked":
+                # Its token was removed while the batch waited: it needs a
+                # chemistry now, and was not re-processed.
+                failed_files.append(
+                    {
+                        "sample_file_id": sample_file.sample_file_id,
+                        "filename": sample_file.filename,
+                        "message": result["message"],
+                    }
+                )
+                continue
 
             processed_files.append(
                 {
@@ -957,6 +1699,45 @@ async def re_process_sample_files(
         raise_api_warning(message, notification_data, status_code=207)
 
 
+async def modes_to_rebind(sample_file_id: str) -> list[str] | None:
+    """The modes to process a file under again, when its tokens do not bind it.
+
+    A file whose chemistry was chosen by hand has no token to bind it again,
+    so it keeps the modes its samples were made under, as re-processing
+    keeps them. None leaves the binding to the tokens: they bind the file, or
+    the run finds that they do not and parks it.
+
+    :param sample_file_id: The file.
+    :return: The modes its samples have, or None.
+    """
+    sample_file = await fetch_sample_file(sample_file_id=sample_file_id)
+    try:
+        await resolve_ionization_modes_by_tokens(sample_file)
+    except NoTokenMatchError:
+        return await _kept_mode_ids(sample_file)
+    except ValueError:
+        return None
+    return None
+
+
+async def _kept_mode_ids(sample_file: SampleFile) -> list[str] | None:
+    """The modes a file's samples have, when they still bind it.
+
+    :return: One mode id per polarity of the file, or None when its samples
+        do not give one - it has none, or a mode was deleted since.
+    """
+    mode_ids = await _acquisition_item_mode_ids(sample_file.sample_file_id)
+    if not mode_ids:
+        return None
+    try:
+        modes = choose_ionization_modes(
+            sample_file, await fetch_ionization_modes(mode_ids)
+        )
+    except ValueError:
+        return None
+    return [mode.ionization_mode_id for mode in modes]
+
+
 async def _clear_sample_items_for_reprocessing(
     sample_file_id: str,
     independent_transaction: bool,
@@ -1009,12 +1790,14 @@ async def _clear_sample_items_for_reprocessing(
 
 
 async def create_acquisition_batches_and_items(
-    sample_file: SampleFile, dataset_id: str
+    sample_file: SampleFile,
+    dataset_id: str,
+    ionization_modes: list[IonizationMode],
 ) -> tuple[list[dict], list[dict]]:
     """
     Create ACQUISITION batches and sample items for each ionization mode of sample file.
 
-    For each ionization mode in the sample file:
+    For each ionization mode the file was bound to:
     - Get or create daily ACQUISITION batch in provided acquisition dataset
     - Create ACQUISITION sample item within the batch
     - Configure batch with appropriate target collections and ionization mechanisms
@@ -1023,13 +1806,13 @@ async def create_acquisition_batches_and_items(
     :type sample_file: SampleFile
     :param dataset_id: ID of ACQUISITION dataset to create batches in
     :type dataset_id: str
+    :param ionization_modes: The modes the file is bound to, one per polarity
+    :type ionization_modes: list[IonizationMode]
     :return: Tuple of (created sample items, created/retrieved batches)
     :rtype: tuple[list[dict], list[dict]]
     """
     sample_items_to_create = []
     acquisition_sample_batches = []
-
-    ionization_modes = await resolve_ionization_modes_by_tokens(sample_file)
 
     for ionization_mode in ionization_modes:
         # --- Generate daily ACQUISITION batch name for this ionization mode ---
@@ -1190,11 +1973,7 @@ async def _report_calibration_given_up(
         # Nobody to notify - a pipeline started without a user (tests,
         # background reprocessing). The failure is still logged and persisted.
         return
-    data = (
-        error.tech_message.get("data") if isinstance(error.tech_message, dict) else None
-    )
-    reason = (data or {}).get("warning") or (data or {}).get("error")
-    reason = str(reason or error.user_message).rstrip(".")
+    reason = _calibration_error_reason(error)
     attempted = f" after {attempts} attempts" if attempts > 1 else ""
     tolerance = (
         f" (m/z error tolerance widened to {mz_error_tolerance:g} ppm)"
@@ -1262,7 +2041,7 @@ async def calibrate_with_retry(
     sample_file_id: str | None = None,
     user_id: int | None = None,
     process_id: str | None = None,
-) -> bool:
+) -> CalibrationOutcome:
     """Calibrate sample with retry logic
 
     If no matching calibration peaks are found, the m/z error tolerance is doubled
@@ -1272,10 +2051,11 @@ async def calibrate_with_retry(
 
     When every attempt fails, the outcome is persisted on the sample file via
     :func:`_record_calibration_failure`, reported to the user once via
-    :func:`_report_calibration_given_up`, and ``False`` is returned so the
-    caller can skip steps that assume a calibrated m/z axis (matching,
-    assignment). A fit that is applied but misses the quality bar returns
-    ``False`` too, after its own report, without retrying.
+    :func:`_report_calibration_given_up`, and an unverified outcome is
+    returned so the caller can skip steps that assume a calibrated m/z axis
+    (matching, assignment). A fit that is applied but misses the quality bar
+    returns an unverified outcome too, after its own report, without
+    retrying. Either carries the reason, for the file's processing detail.
 
     :param sample: Sample dict to calibrate
     :type sample: dict
@@ -1285,8 +2065,8 @@ async def calibrate_with_retry(
     :type user_id: int | None, optional
     :param process_id: Process ID for tracking
     :type process_id: str | None, optional
-    :return: True when a verified fit was applied, False otherwise.
-    :rtype: bool
+    :return: Whether a verified fit was applied, and why not when it was not.
+    :rtype: CalibrationOutcome
     """
     mz_calibration_params = calibration_params_factory(sample["filename"])
     for i in range(1, CALIBRATION_ITERATIONS + 1):
@@ -1305,14 +2085,18 @@ async def calibrate_with_retry(
             )
             data = (result or {}).get("data") or {}
             if data.get("verified", True):
-                return True
+                return CalibrationOutcome(verified=True)
             # Applied, but below the quality bar: the record says so and the
             # verified gate keeps the sample out of matching. A wider
             # tolerance only admits worse calibrants, so no retry.
-            await _report_calibration_below_bar(
-                sample, data.get("quality_issues") or [], user_id=user_id
+            issues = data.get("quality_issues") or []
+            await _report_calibration_below_bar(sample, issues, user_id=user_id)
+            return CalibrationOutcome(
+                verified=False,
+                reason=_calibration_failure_detail(
+                    {"status": "poor", "quality_issues": issues}
+                ),
             )
-            return False
         except ApiException as e:
             if e.status_code not in RETRYABLE_CALIBRATION_STATUS:
                 # A fault rather than a data condition: a wider tolerance
@@ -1336,7 +2120,10 @@ async def calibrate_with_retry(
                     user_id=user_id,
                     status="error",
                 )
-                return False
+                return CalibrationOutcome(
+                    verified=False,
+                    reason=f"The m/z calibration failed: {_calibration_error_reason(e)}.",
+                )
             if i == CALIBRATION_ITERATIONS:
                 # INFO: an expected data condition (a spectrum too poor to
                 # yield calibration peaks), and this fires per sample of every
@@ -1362,7 +2149,10 @@ async def calibrate_with_retry(
                     user_id=user_id,
                     status="warning",
                 )
-                return False
+                return CalibrationOutcome(
+                    verified=False,
+                    reason=f"The m/z calibration failed: {_calibration_error_reason(e)}.",
+                )
             else:
                 # Double the m/z error tolerance, check refinement window limits, then retry
                 old_tolerance = mz_calibration_params.mz_error_tolerance
@@ -1384,4 +2174,4 @@ async def calibrate_with_retry(
                 )
     # Unreachable: the final iteration always returns above. Kept so the
     # signature honestly never yields None.
-    return False
+    return CalibrationOutcome(verified=False, reason="The m/z calibration failed.")

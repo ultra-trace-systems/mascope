@@ -17,6 +17,7 @@ from sqlalchemy import delete, select
 from mascope_backend.accounts import ACCOUNT_TYPE_MACHINE
 from mascope_backend.api.new.auth.pairing import service as pairing_service
 from mascope_backend.app.fast import fast
+from mascope_backend.capabilities import SERVER_CAPABILITIES
 from mascope_backend.db import AccessToken, AgentDevice, User
 from mascope_backend.roles import ROLE_ACCESS_LEVELS
 
@@ -94,7 +95,8 @@ async def test_full_pairing_flow(
     assert started["expires_in"] > 0
     # What this server does with what the agent reports, so the agent's setup
     # can skip the upload-prefix question an older server needed answered.
-    assert started["capabilities"] == {"files_uploads_under_reported_instrument": True}
+    assert started["capabilities"] == SERVER_CAPABILITIES
+    assert started["capabilities"]["files_uploads_under_reported_instrument"] is True
 
     # Agent polls before approval: pending
     resp = await public_client.post(

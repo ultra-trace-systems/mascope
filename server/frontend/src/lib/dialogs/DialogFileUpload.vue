@@ -2,6 +2,7 @@
 import { reactive, ref, computed, watch, nextTick } from 'vue'
 
 import Button from 'primevue/button'
+import Checkbox from 'primevue/checkbox'
 import Select from 'primevue/select'
 import MultiSelect from 'primevue/multiselect'
 import FloatLabel from 'primevue/floatlabel'
@@ -10,14 +11,20 @@ import Message from 'primevue/message'
 
 import DialogIonizationOp from './DialogIonizationOp.vue'
 
+import { hasIonizationToken } from '@/lib/ionizationModes'
+import { isValidInstrumentName } from '@/lib/utils'
 import { useApp } from '@/stores'
 import { useInstrument } from '@/stores/data/modules/instrument'
+import { TOKENLESS_UPLOADS } from '@/stores/server'
 
 const app = useApp()
 // The class of an instrument by name: recorded for its files where the
 // server knows it, the name rule otherwise. The same answer the server
 // files by, so what this dialog offers is what it will accept.
 const instrumentClass = useInstrument().typeOf
+// A server that keeps a file without a token, for someone to choose its
+// chemistry, needs no token added here.
+const server = app.server
 
 const props = defineProps({
   files: {
@@ -71,7 +78,10 @@ const processed = computed(() => {
       validInstrumentName = false
     }
     let validIonization = true
-    if (!availableIonizationModes.value.some((mode) => file.name.includes(mode.token))) {
+    if (
+      !server.can(TOKENLESS_UPLOADS) &&
+      !hasIonizationToken(file.name, app.data.ionization.mode.list)
+    ) {
       invalid.ionization.push(file)
       validIonization = false
     }
@@ -91,17 +101,38 @@ const count = computed(() => ({
   total: props.files.length
 }))
 
-// The server's rule for an instrument name: letters, digits and hyphens,
-// up to 64 of them. Underscores are the separator and cannot be part of it.
-const validInstrumentName = (name) => /^[A-Za-z0-9-]{1,64}$/.test(name)
+// The instruments these files will be filed under: one per class that has a
+// file needing one. The name is reported with the upload rather than written
+// into the file name, so it only has to be a name the server accepts - it
+// need not say the instrument's class, and need not be one already known.
+const chosenInstruments = computed(() =>
+  [
+    processed.value.invalid.tof.length > 0 ? instrument.tof : null,
+    processed.value.invalid.orbi.length > 0 ? instrument.orbi : null
+  ].filter((name) => isValidInstrumentName(name))
+)
+
+const newInstruments = computed(() =>
+  chosenInstruments.value.filter(
+    (name) => !app.data.instrument.list.some((known) => known.instrument === name)
+  )
+)
+
+// Naming an instrument now creates one, and a typo creates a second
+// instrument with its own workspace that nobody asked for. Say which name is
+// new and have it confirmed, rather than let a slip pass unremarked.
+const confirmedNew = ref(false)
+watch(
+  () => newInstruments.value.join(','),
+  () => (confirmedNew.value = false)
+)
 
 const invalid = computed(() => {
   const invalidOrbi =
-    processed.value.invalid.orbi.length > 0 && instrumentClass(instrument.orbi) !== 'orbi'
+    processed.value.invalid.orbi.length > 0 && !isValidInstrumentName(instrument.orbi)
   const invalidTof =
-    processed.value.invalid.tof.length > 0 && instrumentClass(instrument.tof) !== 'tof'
-  const invalidInstrumentName =
-    !validInstrumentName(instrument.tof) || !validInstrumentName(instrument.orbi)
+    processed.value.invalid.tof.length > 0 && !isValidInstrumentName(instrument.tof)
+  const unconfirmedNew = newInstruments.value.length > 0 && !confirmedNew.value
   const invalidIonization =
     processed.value.invalid.ionization.length > 0 && !validIonizationSelection.value
   const noFiles =
@@ -110,7 +141,7 @@ const invalid = computed(() => {
       processed.value.invalid.ionization.length +
       processed.value.valid.length ==
     0
-  return invalidOrbi || invalidTof || invalidInstrumentName || invalidIonization || noFiles
+  return invalidOrbi || invalidTof || unconfirmedNew || invalidIonization || noFiles
 })
 
 // handle file selection
@@ -134,71 +165,55 @@ const upload = () => {
   // Create token string from selected tokens
   const tokenString = ionizationTokens.value.join('_')
 
-  // Process TOF files with instrument name issues
-  processed.value.invalid.tof.forEach((file) => {
-    let newName = `${instrument.tof}_${file.name}`
+  // Insert ionization tokens before the file extension, where the name rule
+  // reads them.
+  const withTokens = (name) => {
+    const parts = name.split('.')
+    return `${parts.slice(0, -1).join('.')}_${tokenString}.${parts.slice(-1)[0]}`
+  }
 
-    // Check if this file also needs ionization token
-    const needsIonization = processed.value.invalid.ionization.some(
-      (ionFile) => ionFile.name === file.name
-    )
-    if (needsIonization && tokenString) {
-      // Insert ionization tokens before file extension
-      const parts = newName.split('.')
-      const nameWithoutExt = parts.slice(0, -1).join('.')
-      const ext = parts.slice(-1)[0]
-      newName = `${nameWithoutExt}_${tokenString}.${ext}`
-    }
-
-    allProcessedFiles.set(file.name, {
-      ...file,
-      name: newName
+  // Files whose name names no instrument the server can file them under are
+  // uploaded reporting the chosen one, the way a File Agent reports the
+  // instrument it watches. The name itself is left alone: the server stores
+  // the file under the same `<instrument>_<name>` this dialog used to rename
+  // it to, and a reported instrument need not say its class.
+  const report = (files, chosen) =>
+    files.forEach((file) => {
+      const needsIonization = processed.value.invalid.ionization.some(
+        (ionFile) => ionFile.name === file.name
+      )
+      allProcessedFiles.set(file.name, {
+        ...file,
+        name: needsIonization && tokenString ? withTokens(file.name) : file.name,
+        meta: { ...file.meta, instrument: chosen }
+      })
     })
-  })
 
-  // Process Orbi files with instrument name issues
-  processed.value.invalid.orbi.forEach((file) => {
-    let newName = `${instrument.orbi}_${file.name}`
-
-    // Check if this file also needs ionization token
-    const needsIonization = processed.value.invalid.ionization.some(
-      (ionFile) => ionFile.name === file.name
-    )
-    if (needsIonization && tokenString) {
-      // Insert ionization tokens before file extension
-      const parts = newName.split('.')
-      const nameWithoutExt = parts.slice(0, -1).join('.')
-      const ext = parts.slice(-1)[0]
-      newName = `${nameWithoutExt}_${tokenString}.${ext}`
-    }
-
-    allProcessedFiles.set(file.name, {
-      ...file,
-      name: newName
-    })
-  })
+  report(processed.value.invalid.tof, instrument.tof)
+  report(processed.value.invalid.orbi, instrument.orbi)
 
   // Process files that only have ionization issues (not already processed above)
   processed.value.invalid.ionization.forEach((file) => {
     // Skip if already processed as TOF or Orbi file
     if (!allProcessedFiles.has(file.name) && tokenString) {
-      const parts = file.name.split('.')
-      const nameWithoutExt = parts.slice(0, -1).join('.')
-      const ext = parts.slice(-1)[0]
-      const newName = `${nameWithoutExt}_${tokenString}.${ext}`
-
       allProcessedFiles.set(file.name, {
         ...file,
-        name: newName
+        name: withTokens(file.name)
       })
     }
   })
 
-  const renamedFiles = Array.from(allProcessedFiles.values())
+  // Files refused when they were dropped but fine now - the server's
+  // capabilities arrived after the drop, say - go through as they are.
+  processed.value.valid.forEach((file) => {
+    if (!allProcessedFiles.has(file.name)) allProcessedFiles.set(file.name, file)
+  })
+
+  const resolved = Array.from(allProcessedFiles.values())
 
   active.value = false
   app.uppy.clearInvalid()
-  emit('upload', renamedFiles)
+  emit('upload', resolved)
 }
 
 const cancel = () => {
@@ -220,9 +235,9 @@ const cancel = () => {
       </ul>
       <p>
         <i>
-          A file name must start with the instrument it belongs to, separated from the rest by an
-          underscore. Pick a TOF instrument below, or type the name of one whose own name says it is
-          a TOF (it contains TOF or API, in lower or upper case).
+          A file name usually starts with the instrument it belongs to, separated from the rest by
+          an underscore. These do not, so pick the instrument they came from below, or type the name
+          of a new one. It is reported with the upload; the files keep their own names.
         </i>
       </p>
       <p>Please select or enter an instrument to assign these files to:</p>
@@ -247,15 +262,12 @@ const cancel = () => {
         <Message
           severity="warn"
           icon="pi pi-exclamation-triangle"
-          v-if="
-            instrument.tof &&
-            (instrumentClass(instrument.tof) !== 'tof' || !validInstrumentName(instrument.tof))
-          "
+          v-if="instrument.tof && !isValidInstrumentName(instrument.tof)"
           style="margin-bottom: 2rem"
         >
           <i>
-            You entered an invalid TOF instrument name; please enter a valid instrument name, as
-            explained above.
+            An instrument name is 1 to 64 letters, digits and hyphens. The underscore separates the
+            instrument from the rest of a file name, so it cannot be part of one.
           </i>
         </Message>
       </div>
@@ -271,9 +283,9 @@ const cancel = () => {
       </ul>
       <p>
         <i>
-          A file name must start with the instrument it belongs to, separated from the rest by an
-          underscore. Pick an Orbitrap instrument below, or type the name of one whose own name says
-          it is an Orbitrap (it contains ORBI, in lower or upper case).
+          A file name usually starts with the instrument it belongs to, separated from the rest by
+          an underscore. These do not, so pick the instrument they came from below, or type the name
+          of a new one. It is reported with the upload; the files keep their own names.
         </i>
       </p>
       <p>Please select or enter an instrument to assign these files to:</p>
@@ -298,18 +310,44 @@ const cancel = () => {
         <Message
           severity="warn"
           icon="pi pi-exclamation-triangle"
-          v-if="
-            instrument.orbi &&
-            (instrumentClass(instrument.orbi) !== 'orbi' || !validInstrumentName(instrument.orbi))
-          "
+          v-if="instrument.orbi && !isValidInstrumentName(instrument.orbi)"
           style="margin-bottom: 2rem"
         >
           <i>
-            You entered an invalid OrbiTrap instrument name; please enter a valid instrument name,
-            as explained above.
+            An instrument name is 1 to 64 letters, digits and hyphens. The underscore separates the
+            instrument from the rest of a file name, so it cannot be part of one.
           </i>
         </Message>
       </div>
+    </template>
+    <!-- A NAME THE SERVER DOES NOT KNOW MAKES AN INSTRUMENT -->
+    <template v-if="newInstruments.length > 0">
+      <Message severity="warn" icon="pi pi-exclamation-triangle" :closable="false">
+        <span v-if="newInstruments.length === 1">
+          <b>{{ newInstruments[0] }}</b> is not an instrument this server has files for. Uploading
+          creates it, with its own acquisitions workspace.
+        </span>
+        <span v-else>
+          <b>{{ newInstruments.join(' and ') }}</b> are not instruments this server has files for.
+          Uploading creates them, each with its own acquisitions workspace.
+        </span>
+      </Message>
+      <div class="row" style="justify-content: flex-start; gap: 0.5rem; margin: 0.75rem 0">
+        <Checkbox v-model="confirmedNew" inputId="confirm-new-instrument" binary />
+        <label for="confirm-new-instrument">
+          {{ newInstruments.length === 1 ? 'Create it' : 'Create them' }}
+        </label>
+      </div>
+    </template>
+    <!-- FINE AS THEY ARE -->
+    <template v-if="processed.valid.length > 0">
+      <h3>Ready to upload</h3>
+      <p>These files can be uploaded as they are:</p>
+      <ul>
+        <li v-for="file in processed.valid" :key="file.name">
+          {{ file.name }}
+        </li>
+      </ul>
     </template>
     <!-- MISSING IONIZATION -->
     <template v-if="processed.invalid.ionization.length > 0">

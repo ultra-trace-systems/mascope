@@ -26,6 +26,7 @@ The two halves that must not move:
 from unittest.mock import AsyncMock
 
 import pytest
+from test_utils import captured_logs
 
 from mascope_backend.api.lib import api_features
 from mascope_backend.api.lib.api_features import api_controller_background_task
@@ -33,7 +34,6 @@ from mascope_backend.api.lib.exceptions.api_exceptions import (
     ApiException,
     raise_api_warning,
 )
-from mascope_backend.runtime import runtime
 from mascope_backend.socket.notifications import handle_notifications
 from mascope_backend.socket.notifications.schemas import UserNotification
 
@@ -51,18 +51,13 @@ def emit(monkeypatch) -> AsyncMock:
 class _Monitored:
     """Collects the records error monitoring would receive (WARNING+)."""
 
-    def __init__(self):
-        self.records = []
-
     def __enter__(self):
-        self._sink_id = runtime.logger.add(
-            lambda message: self.records.append(message.record), level="WARNING"
-        )
+        self._capture = captured_logs(level="WARNING")
+        self.records = self._capture.__enter__()
         return self
 
     def __exit__(self, *exc_info):
-        runtime.logger.remove(self._sink_id)
-        return False
+        return self._capture.__exit__(*exc_info)
 
     @property
     def levels(self) -> list[str]:

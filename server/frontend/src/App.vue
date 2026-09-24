@@ -9,7 +9,7 @@ import { useToast } from 'primevue/usetoast'
 
 import { api } from '@/api'
 import { runtime } from '@/lib/runtime.js'
-import { beautifySnakeCase } from '@/lib/utils'
+import { beautifySnakeCase, messageSeverity } from '@/lib/utils'
 import { BaseBrandLogo, BaseLegalFooter } from '@/lib/base'
 import BaseUpdateBanner from '@/lib/base/BaseUpdateBanner.vue'
 import { useApp } from '@/stores'
@@ -40,10 +40,7 @@ app.ui.notification.on('*', (notification) => {
   if (notification === null) return
   const { status, type, message, data, error } = notification
   if (status !== 'pending') {
-    const severity =
-      {
-        warning: 'warn'
-      }[status] ?? status
+    const severity = messageSeverity(status)
 
     const duration = status === 'error' ? 10000 : status === 'warning' ? 7000 : 3000
 

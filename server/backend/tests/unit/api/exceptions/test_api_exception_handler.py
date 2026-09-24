@@ -16,6 +16,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 from fastapi.testclient import TestClient
+from test_utils import captured_logs
 
 from mascope_backend.api.lib.exceptions.api_exceptions import (
     ApiException,
@@ -88,16 +89,8 @@ class TestHandlerIsSerializationOnly:
     async def test_it_does_not_relog_an_already_logged_exception(self):
         # process_exception logged the ApiException at its proper level when
         # it was built; logging again here would double-count it.
-        from mascope_backend.runtime import runtime
-
-        records = []
-        sink_id = runtime.logger.add(
-            lambda message: records.append(message.record), level="TRACE"
-        )
-        try:
+        with captured_logs() as records:
             response = await api_exception_handler(None, EXPIRED_TOKEN)
-        finally:
-            runtime.logger.remove(sink_id)
 
         assert isinstance(response, JSONResponse)
         assert response.status_code == 401

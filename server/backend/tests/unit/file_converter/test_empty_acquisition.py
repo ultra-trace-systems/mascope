@@ -31,6 +31,7 @@ from threading import Event
 
 import numpy as np
 import pytest
+from test_utils import captured_logs
 
 from mascope_backend.file_converter.base_processor import BaseFileProcessor
 from mascope_backend.file_converter.errors import (
@@ -42,7 +43,6 @@ from mascope_backend.file_converter.errors import (
     describe_exception,
     is_routine_file_failure,
 )
-from mascope_backend.runtime import runtime
 from mascope_thermo.processor import RawProcessor
 from mascope_thermo.thermo import NoScansFoundError
 from mascope_tofwerk.processor import H5Processor
@@ -79,14 +79,8 @@ def _tof(buf_times):
 
 def _captured(work):
     """Run ``work`` with every log record of the runtime logger captured."""
-    records = []
-    sink_id = runtime.logger.add(
-        lambda message: records.append(message.record), level="TRACE"
-    )
-    try:
+    with captured_logs() as records:
         work()
-    finally:
-        runtime.logger.remove(sink_id)
     return records
 
 
@@ -125,6 +119,13 @@ class _ScanlessRawFile:
         from datetime import datetime, timezone
 
         return datetime(2026, 8, 19, 7, 42, tzinfo=timezone.utc)
+
+    def method_file(self):
+        return ""
+
+    def scan_filters(self):
+        # A census of no scans is empty, as the real readers report it.
+        return []
 
 
 class _PopulatedRawFile:
@@ -208,6 +209,9 @@ class _Ms2OnlyRawFile:
         from datetime import datetime, timezone
 
         return datetime(2026, 9, 4, 16, 12, tzinfo=timezone.utc)
+
+    def method_file(self):
+        return ""
 
 
 class TestThermoMs1LessAcquisition:
@@ -390,6 +394,8 @@ class _ScanlessOpenTFRaw:
     num_scans = 0
     #: Read by OpenTFRawBackend.created(): an Xcalibur audit timestamp.
     created = 1755589320.0
+    #: Read by OpenTFRawBackend.method_file(): the header's sample information.
+    sample_info = {"inst_method": ""}
 
     def iter_scans(self):
         return iter(())

@@ -27,3 +27,16 @@ class DatasetConfig(BaseModel):
 
 # Global dataset configuration instance
 dataset_config = DatasetConfig()
+
+
+def acquisition_workspace_name(instrument: str) -> str:
+    """The name of an instrument's system acquisition workspace.
+
+    Workspaces are found by it case-insensitively (``ix_workspace_name_ci`` is
+    unique on its lower case), so every case variant of an instrument, and
+    one with stray whitespace, shares one workspace.
+
+    :param instrument: The instrument, as a file records it.
+    :return: The workspace name.
+    """
+    return f"{dataset_config.ACQUISITION_NAME_PREFIX} {instrument.strip()}"

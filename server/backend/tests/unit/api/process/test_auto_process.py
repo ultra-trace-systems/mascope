@@ -7,6 +7,7 @@ Tests verify the orchestration logic of ``auto_process_sample_file``:
 - Batch and sample item creation
 - Calibration skip logic (blank files, missing calibration collection)
 - Match computation for each sample
+- The processing status recorded at each stage
 - Return structure
 
 All external dependencies are mocked — no DB, file I/O, or Socket.IO required.
@@ -16,12 +17,18 @@ from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from test_utils import captured_logs
+
+from mascope_backend.runtime import runtime
 
 
 # Module path prefix for patching
 _SVC = "mascope_backend.api.controllers.sample.files.process.service"
 _NOTIF = "mascope_backend.socket.notifications"
 _UTILS = "mascope_backend.api.lib.utils"
+# The background-task decorator's module, which imports handle_notifications
+# and handle_reloads by name: patched there, the decorator sees the mocks.
+_FEATURES = "mascope_backend.api.lib.api_features"
 
 
 # ---------------------------------------------------------------------------
@@ -51,6 +58,15 @@ def _make_sample_file(
         2025, 9, 20, 8, 30, 0, tzinfo=timezone.utc
     )
     return sf
+
+
+def _outcome(verified: bool, reason: str | None = None):
+    """What ``calibrate_with_retry`` returns: verified, or why not."""
+    from mascope_backend.api.controllers.sample.files.process.service import (
+        CalibrationOutcome,
+    )
+
+    return CalibrationOutcome(verified=verified, reason=reason)
 
 
 def _make_ionization_mode(
@@ -119,6 +135,11 @@ def _base_patches():
         "get_acquisition_dataset": patch(
             f"{_SVC}.get_acquisition_dataset", new_callable=AsyncMock
         ),
+        "resolve": patch(
+            f"{_SVC}.resolve_ionization_modes_by_tokens",
+            new_callable=AsyncMock,
+            return_value=[_make_ionization_mode()],
+        ),
         "create_batches": patch(
             f"{_SVC}.create_acquisition_batches_and_items", new_callable=AsyncMock
         ),
@@ -142,6 +163,28 @@ def _stop_all_patches():
     """Safety net — stop all patches after each test."""
     yield
     patch.stopall()
+
+
+@pytest.fixture(autouse=True)
+def status():
+    """The processing-status writer, recorded instead of written.
+
+    Also stubs the scan stream census, which would read the file's props
+    from the filestore. Request the fixture by name to read what was
+    recorded: ``[(status, detail), ...]`` in order via :func:`_recorded`.
+    """
+    with (
+        patch(f"{_SVC}.record_processing_status", new_callable=AsyncMock) as record,
+        patch(f"{_SVC}.read_pooled_streams_note", new_callable=AsyncMock) as note,
+    ):
+        note.return_value = None
+        record.note = note
+        yield record
+
+
+def _recorded(status) -> list[tuple[str, str | None]]:
+    """The (status, detail) pairs recorded, in order."""
+    return [(call.args[1].value, call.args[2]) for call in status.call_args_list]
 
 
 # ---------------------------------------------------------------------------
@@ -313,7 +356,7 @@ async def test_failed_calibration_skips_matching_and_assignment():
     mocks["get_acquisition_dataset"].return_value = {"data": dataset}
     mocks["create_batches"].return_value = ([sample_item], [batch])
     mocks["fetch_affected"].return_value = _make_affected_data([sample_item])
-    mocks["calibrate"].return_value = False
+    mocks["calibrate"].return_value = _outcome(False, "The m/z calibration failed.")
 
     mock_session = AsyncMock()
     mock_session.get = AsyncMock(return_value=ion_mode)
@@ -335,8 +378,14 @@ async def test_failed_calibration_skips_matching_and_assignment():
 
 
 @pytest.mark.asyncio
-async def test_skips_calibration_for_blank_file():
-    """Blank files (instrument_function_id is None) skip calibration but still match."""
+async def test_blank_file_skips_calibration_matching_and_assignment():
+    """Blank files (instrument_function_id is None) skip everything that needs peaks.
+
+    A blank is fully processed once its sample items exist. The real
+    match_compute_sample refuses a blank with a raised warning, which would end
+    the run and report a routine file to the instrument room as a warning; a
+    mocked match cannot show that, so this pins that it is never called.
+    """
     from mascope_backend.api.controllers.sample.files.process.service import (
         auto_process_sample_file,
     )
@@ -362,7 +411,7 @@ async def test_skips_calibration_for_blank_file():
     mock_ctx.__aexit__ = AsyncMock(return_value=False)
     mocks["async_session"].return_value = mock_ctx
 
-    await auto_process_sample_file(
+    result = await auto_process_sample_file(
         sample_file_id="sf-001",
         independent_transaction=True,
         user_id=42,
@@ -370,10 +419,10 @@ async def test_skips_calibration_for_blank_file():
     )
 
     mocks["calibrate"].assert_not_called()
-    # Match should still run
-    mocks["match"].assert_called_once()
-    # Stage-A peak assignment runs even for a blank file (the engine skips it internally)
-    mocks["assign"].assert_called_once()
+    mocks["match"].assert_not_called()
+    mocks["assign"].assert_not_called()
+    # Completed rather than failed: the created sample is reported as usual.
+    assert result["_notification_data"]["affected_sample_item_ids"] == ["si-001"]
 
 
 @pytest.mark.asyncio
@@ -418,7 +467,8 @@ async def test_skips_calibration_when_no_calibration_collection():
 
 @pytest.mark.asyncio
 async def test_processes_multiple_ionization_modes():
-    """Each ionization mode produces its own calibration + match cycle."""
+    """Each ionization mode is matched; calibrating two modes of one file is
+    skipped, since the file holds a single m/z calibration for both."""
     from mascope_backend.api.controllers.sample.files.process.service import (
         auto_process_sample_file,
     )
@@ -479,9 +529,245 @@ async def test_processes_multiple_ionization_modes():
         process_id="proc-001",
     )
 
-    assert mocks["calibrate"].call_count == 2
+    mocks["calibrate"].assert_not_called()
     assert mocks["match"].call_count == 2
     assert mocks["assign"].call_count == 2
+
+
+def _start_dual_polarity(*, calibrate, neg_collection="cal-neg", pos_collection=None):
+    """Start the base patches for a ``+-`` file, negative polarity first.
+
+    The file carries one ACQUISITION sample item per polarity. ``calibrate``
+    becomes the side effect of ``calibrate_with_retry`` and receives the shared
+    file record to update, the way ``calibration_mz_apply`` stores its fit on
+    the file rather than on the sample item.
+    """
+    sample_file = _make_sample_file(polarity="+-")
+    sample_file.mz_calibration = None
+    ion_modes = {
+        "im-neg": _make_ionization_mode(
+            ionization_mode_id="im-neg",
+            ionization_mode_polarity="-",
+            calibration_collection_id=neg_collection,
+        ),
+        "im-pos": _make_ionization_mode(
+            ionization_mode_id="im-pos",
+            ionization_mode_polarity="+",
+            calibration_collection_id=pos_collection,
+        ),
+    }
+    samples = [
+        _make_sample_item(sample_item_id="si-neg", ionization_mode_id="im-neg"),
+        _make_sample_item(sample_item_id="si-pos", ionization_mode_id="im-pos"),
+    ]
+
+    patches = _base_patches()
+    mocks = {k: p.start() for k, p in patches.items()}
+    mocks["fetch_sample_file"].return_value = sample_file
+    mocks["get_acquisition_dataset"].return_value = {"data": _make_dataset()}
+    mocks["create_batches"].return_value = (
+        samples,
+        [
+            _make_batch(sample_batch_id="batch-neg"),
+            _make_batch(sample_batch_id="batch-pos"),
+        ],
+    )
+    mocks["fetch_affected"].return_value = _make_affected_data(samples)
+
+    async def _calibrate(sample, **_):
+        return await calibrate(sample, sample_file)
+
+    mocks["calibrate"].side_effect = _calibrate
+
+    async def _get_ion_mode(model_class, mode_id):
+        return ion_modes[mode_id]
+
+    mock_session = AsyncMock()
+    mock_session.get = AsyncMock(side_effect=_get_ion_mode)
+    mock_ctx = AsyncMock()
+    mock_ctx.__aenter__ = AsyncMock(return_value=mock_session)
+    mock_ctx.__aexit__ = AsyncMock(return_value=False)
+    mocks["async_session"].return_value = mock_ctx
+    return mocks, sample_file
+
+
+@pytest.mark.asyncio
+async def test_calibrating_one_polarity_keeps_the_others_matches():
+    """
+    Calibrating one polarity must not cost the other polarity its matches.
+
+    The m/z calibration is per file: applying a fit rescales the whole peak
+    store and removes the matches of every sample item on the file. Matching
+    the first polarity before calibrating the second used to lose the first
+    polarity's fresh matches to that apply.
+    """
+    from mascope_backend.api.controllers.sample.files.process.service import (
+        auto_process_sample_file,
+    )
+
+    matches: dict[str, bool] = {}
+
+    async def calibrate(sample, sample_file):
+        # What calibration_mz_apply does to the file's sample items.
+        matches.clear()
+        sample_file.mz_calibration = {"mode": "one-point", "verified": True}
+        return _outcome(True)
+
+    mocks, _ = _start_dual_polarity(
+        calibrate=calibrate, neg_collection=None, pos_collection="cal-pos"
+    )
+
+    async def match(sample_item_id, **_):
+        matches[sample_item_id] = True
+
+    mocks["match"].side_effect = match
+
+    await auto_process_sample_file(
+        sample_file_id="sf-001", independent_transaction=True, process_id="proc-001"
+    )
+
+    mocks["calibrate"].assert_called_once()
+    assert matches == {"si-neg": True, "si-pos": True}
+    assert mocks["assign"].call_count == 2
+
+
+@pytest.mark.asyncio
+async def test_both_polarities_with_calibrants_match_on_the_acquisition_axis():
+    """
+    A file with a calibrant on both polarities is not calibrated at all.
+
+    The file holds one m/z calibration, so the polarity calibrated last would
+    set the axis for both. Both samples are matched on the acquisition axis
+    instead.
+    """
+    from mascope_backend.api.controllers.sample.files.process.service import (
+        auto_process_sample_file,
+    )
+
+    async def calibrate(sample, sample_file):
+        raise AssertionError("a shared-calibration file must not be calibrated")
+
+    mocks, _ = _start_dual_polarity(
+        calibrate=calibrate, neg_collection="cal-neg", pos_collection="cal-pos"
+    )
+
+    await auto_process_sample_file(
+        sample_file_id="sf-001", independent_transaction=True, process_id="proc-001"
+    )
+
+    mocks["calibrate"].assert_not_called()
+    matched = {c.kwargs["sample_item_id"] for c in mocks["match"].call_args_list}
+    assert matched == {"si-neg", "si-pos"}
+    assert mocks["assign"].call_count == 2
+
+
+@pytest.mark.parametrize(
+    ("record", "matched"),
+    [
+        # An earlier run's failure marker: the verified gate would refuse both.
+        ({"status": "failed", "verified": False}, set()),
+        # An earlier run's verified fit stays, and both match on it.
+        ({"mode": "one-point", "verified": True}, {"si-neg", "si-pos"}),
+        # A TOF converter record, which the verified gate refuses as well.
+        ({"mode": 1, "par": [1.0, 0.0], "status": "unfitted"}, set()),
+    ],
+)
+@pytest.mark.asyncio
+async def test_skipped_shared_calibration_judges_the_record_an_earlier_run_left(
+    record, matched
+):
+    """
+    Re-running the pipeline without a reset keeps an earlier run's record.
+
+    A file with a calibrant on both polarities is not calibrated here, so it
+    is matched on whatever that record describes - and an unverified one would
+    trip the verified gate and fail the pipeline, as on the single-calibration
+    path. A TOF file's converter record is never verified, so it is held back
+    too.
+    """
+    from mascope_backend.api.controllers.sample.files.process.service import (
+        auto_process_sample_file,
+    )
+
+    async def calibrate(sample, sample_file):
+        raise AssertionError("a shared-calibration file must not be calibrated")
+
+    mocks, sample_file = _start_dual_polarity(
+        calibrate=calibrate, neg_collection="cal-neg", pos_collection="cal-pos"
+    )
+    sample_file.mz_calibration = record
+
+    result = await auto_process_sample_file(
+        sample_file_id="sf-001", independent_transaction=True, process_id="proc-001"
+    )
+
+    mocks["calibrate"].assert_not_called()
+    assert {
+        c.kwargs["sample_item_id"] for c in mocks["match"].call_args_list
+    } == matched
+    assert mocks["assign"].call_count == len(matched)
+    assert "Auto-processing complete" in result["message"]
+
+
+@pytest.mark.asyncio
+async def test_unverified_calibration_holds_back_the_other_polarity():
+    """
+    An unverified record on the file is shared by every sample on it.
+
+    The verified gate in the match computation would refuse the uncalibrated
+    polarity too, and fail the pipeline with it. Neither sample is matched,
+    and the pipeline still completes.
+    """
+    from mascope_backend.api.controllers.sample.files.process.service import (
+        auto_process_sample_file,
+    )
+
+    async def calibrate(sample, sample_file):
+        sample_file.mz_calibration = {"status": "failed", "verified": False}
+        return _outcome(False, "The m/z calibration failed.")
+
+    mocks, _ = _start_dual_polarity(
+        calibrate=calibrate, neg_collection=None, pos_collection="cal-pos"
+    )
+
+    result = await auto_process_sample_file(
+        sample_file_id="sf-001", independent_transaction=True, process_id="proc-001"
+    )
+
+    mocks["calibrate"].assert_called_once()
+    mocks["match"].assert_not_called()
+    mocks["assign"].assert_not_called()
+    assert "Auto-processing complete" in result["message"]
+
+
+@pytest.mark.asyncio
+async def test_failed_refit_keeps_the_earlier_fit_for_the_other_polarity():
+    """
+    A fit that fails before applying leaves an earlier verified fit in place.
+
+    The failure marker never overwrites an applied fit, so on reprocessing the
+    uncalibrated polarity is still matched on it; only the failed one is held
+    back.
+    """
+    from mascope_backend.api.controllers.sample.files.process.service import (
+        auto_process_sample_file,
+    )
+
+    async def calibrate(sample, sample_file):
+        return _outcome(False, "The m/z calibration failed.")
+
+    mocks, sample_file = _start_dual_polarity(
+        calibrate=calibrate, neg_collection=None, pos_collection="cal-pos"
+    )
+    sample_file.mz_calibration = {"mode": "one-point", "verified": True}
+
+    await auto_process_sample_file(
+        sample_file_id="sf-001", independent_transaction=True, process_id="proc-001"
+    )
+
+    mocks["match"].assert_called_once()
+    assert mocks["match"].call_args.kwargs["sample_item_id"] == "si-neg"
+    mocks["assign"].assert_called_once()
 
 
 @pytest.mark.asyncio
@@ -522,6 +808,7 @@ async def test_creates_batches_with_correct_dataset_id():
     mocks["create_batches"].assert_called_once_with(
         sample_file=sample_file,
         dataset_id="ds-specific",
+        ionization_modes=mocks["resolve"].return_value,
     )
 
 
@@ -714,6 +1001,55 @@ async def test_concurrent_pipelines_are_bounded():
     assert peak == service._AUTO_PROCESS_CONCURRENCY
 
 
+def _monitored(records: list) -> list:
+    """Records that would reach error monitoring (WARNING and above)."""
+    return [r for r in records if r["level"].no >= runtime.logger.level("WARNING").no]
+
+
+def _lines(records: list) -> list[tuple[str, str]]:
+    """Level and message of each record, for assertions that read."""
+    return [(r["level"].name, r["message"]) for r in records]
+
+
+def _gave_up_at_info(records: list) -> list[str]:
+    """The give-up lines logged at INFO."""
+    return [
+        message
+        for level, message in _lines(records)
+        if level == "INFO" and "gave up" in message
+    ]
+
+
+async def _run_until_given_up(
+    sample_file_id: str, error: Exception
+) -> tuple[list, AsyncMock]:
+    """
+    Run the pipeline wrapper, as the routes spawn it, with a body that always
+    raises ``error``.
+
+    An independent transaction, so the decorator reports the outcome itself
+    and nothing reaches the caller. It imports its notification and reload
+    helpers by name, so they are patched where it looks them up.
+
+    :return: The log records emitted meanwhile, and the body mock.
+    """
+    from mascope_backend.api.controllers.sample.files.process import service
+
+    body = AsyncMock(side_effect=error)
+    with (
+        patch(f"{_SVC}._auto_process_sample_file", new=body),
+        patch(f"{_SVC}._delete_partial_acquisition_items", new=AsyncMock()),
+        patch.object(service, "_AUTO_PROCESS_RETRY_DELAYS_S", (0, 0, 0)),
+        patch(f"{_FEATURES}.handle_notifications", new_callable=AsyncMock),
+        patch(f"{_FEATURES}.handle_reloads", new_callable=AsyncMock),
+        captured_logs() as records,
+    ):
+        await service.auto_process_sample_file(
+            sample_file_id=sample_file_id, independent_transaction=True
+        )
+    return records, body
+
+
 @pytest.mark.asyncio
 async def test_names_the_file_when_it_gives_up():
     """
@@ -722,52 +1058,700 @@ async def test_names_the_file_when_it_gives_up():
     A file whose pipeline never completes keeps its sample_file row and its
     batch still settles `ready`, so without this the shortfall is only
     visible by counting rows afterwards - the demo bundle shipped incomplete
-    goldens exactly that way (see the demo coverage guard).
+    goldens exactly that way (see the demo coverage guard). It is named at
+    INFO, which reaches the container and file logs, and so is each retry
+    before it: monitoring gets one ERROR, and it names no file.
     """
     from mascope_backend.api.controllers.sample.files.process import service
     from mascope_backend.api.lib.exceptions.api_exceptions import ApiException
 
-    body = AsyncMock(side_effect=ApiException("busy", {}, 503))
-    logged: list[str] = []
+    records, body = await _run_until_given_up(
+        "sf-gaveup", ApiException("busy", {}, 503)
+    )
 
-    with (
-        patch(f"{_SVC}._auto_process_sample_file", new=body),
-        patch(f"{_SVC}._delete_partial_acquisition_items", new=AsyncMock()),
-        patch.object(service, "_AUTO_PROCESS_RETRY_DELAYS_S", (0, 0, 0)),
-        patch.object(service.runtime.logger, "error", side_effect=logged.append),
-        patch(f"{_NOTIF}.handle_notifications", new_callable=AsyncMock),
-        patch(f"{_UTILS}.handle_reloads", new_callable=AsyncMock),
-    ):
-        with pytest.raises(ApiException):
-            await service.auto_process_sample_file(
-                sample_file_id="sf-gaveup", independent_transaction=False
-            )
-
-    assert any("sf-gaveup" in line for line in logged), logged
-    assert any("gave up" in line for line in logged), logged
+    assert body.call_count == service._AUTO_PROCESS_RETRIES + 1
+    info = _gave_up_at_info(records)
+    assert len(info) == 1 and "sf-gaveup" in info[0] and "busy" in info[0], info
+    monitored = _lines(_monitored(records))
+    assert len(monitored) == 1 and monitored[0][0] == "ERROR", monitored
+    assert "status 503" in monitored[0][1], monitored
+    assert "sf-gaveup" not in monitored[0][1], monitored
 
 
 @pytest.mark.asyncio
 async def test_names_the_file_on_a_non_recoverable_error():
     """The give-up log covers the no-retry path too, not just exhaustion."""
+    from mascope_backend.api.lib.exceptions.api_exceptions import ApiException
+
+    records, body = await _run_until_given_up(
+        "sf-corrupt", ApiException("corrupt", {}, 500)
+    )
+
+    assert body.call_count == 1  # not retried
+    info = _gave_up_at_info(records)
+    assert len(info) == 1 and "sf-corrupt" in info[0], info
+    monitored = _lines(_monitored(records))
+    assert len(monitored) == 1 and "status 500" in monitored[0][1], monitored
+
+
+@pytest.mark.asyncio
+async def test_give_up_error_reads_the_same_for_every_file():
+    """
+    The ERROR text depends on the kind of fault only, never on the file.
+
+    Error monitoring groups issues by the formatted message, so text that
+    carries the file id or the error opens an issue - and an alert - per file.
+    The same fault on two files has to read identically, while different
+    faults still read apart.
+    """
+    from mascope_backend.api.lib.exceptions.api_exceptions import ApiException
+
+    first, _ = await _run_until_given_up(
+        "sf-first", ApiException("Sample 'one' is corrupt", {}, 500)
+    )
+    second, _ = await _run_until_given_up(
+        "sf-second", ApiException("Sample 'two' is corrupt", {}, 500)
+    )
+    other, _ = await _run_until_given_up("sf-third", ApiException("busy", {}, 503))
+
+    first, second, other = (_lines(_monitored(r)) for r in (first, second, other))
+    assert len(first) == 1 and first == second, (first, second)
+    assert "sf-" not in first[0][1] and "corrupt" not in first[0][1], first
+    assert len(other) == 1 and other != first, other
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("status_code", "message"),
+    [
+        (200, "m/z calibration is not verified for sample file"),
+        (207, "Some samples could not be matched"),
+        (404, "Sample file not found"),
+    ],
+)
+async def test_a_routine_give_up_stays_out_of_monitoring(status_code, message):
+    """
+    A raised warning or a 4xx is routine, as the rest of the API classifies it.
+
+    The decorator still hands it to the user and the file is still named at
+    INFO, but nothing reaches monitoring: there is nothing to act on.
+    """
+    from mascope_backend.api.lib.exceptions.api_exceptions import ApiException
+
+    records, body = await _run_until_given_up(
+        "sf-routine", ApiException(message, {}, status_code)
+    )
+
+    assert body.call_count == 1  # not retried
+    info = _gave_up_at_info(records)
+    assert len(info) == 1 and "sf-routine" in info[0], info
+    assert _monitored(records) == [], _lines(_monitored(records))
+
+
+@pytest.mark.asyncio
+async def test_a_fault_outside_the_api_is_reported_once():
+    """
+    An exception that is not an ApiException is left to the decorator.
+
+    Its process_exception logs a fault with the traceback, so an ERROR from
+    the give-up as well would be a second monitoring event for one incident.
+    """
+    records, _ = await _run_until_given_up("sf-boom", RuntimeError("boom"))
+
+    info = _gave_up_at_info(records)
+    assert len(info) == 1 and "sf-boom" in info[0], info
+    monitored = _monitored(records)
+    assert len(monitored) == 1, _lines(monitored)
+    # The decorator's record, traceback and all - not the give-up.
+    assert monitored[0]["exception"] is not None, _lines(monitored)
+    assert "gave up" not in monitored[0]["message"], _lines(monitored)
+
+
+@pytest.mark.asyncio
+async def test_a_client_class_error_outside_the_api_stays_at_info():
+    """
+    A ValueError - a file name that matches no ionization mode, say - is a
+    client-class error: the decorator logs it at INFO, and the give-up must
+    not contradict that with an ERROR.
+    """
+    records, _ = await _run_until_given_up(
+        "sf-no-token", ValueError("No ionization mode tokens found for file")
+    )
+
+    assert len(_gave_up_at_info(records)) == 1, _lines(records)
+    assert _monitored(records) == [], _lines(_monitored(records))
+
+
+# ---------------------------------------------------------------------------
+# Processing status
+# ---------------------------------------------------------------------------
+
+
+def _start_single(
+    *, calibration_collection_id="cal-001", instrument_function_id="ifunc-001"
+):
+    """Start the base patches for a one-polarity file bound to one mode."""
+    sample_file = _make_sample_file(instrument_function_id=instrument_function_id)
+    sample_file.mz_calibration = None
+    ion_mode = _make_ionization_mode(
+        calibration_collection_id=calibration_collection_id
+    )
+    sample_item = _make_sample_item()
+
+    patches = _base_patches()
+    mocks = {k: p.start() for k, p in patches.items()}
+    mocks["fetch_sample_file"].return_value = sample_file
+    mocks["get_acquisition_dataset"].return_value = {"data": _make_dataset()}
+    mocks["resolve"].return_value = [ion_mode]
+    mocks["create_batches"].return_value = ([sample_item], [_make_batch()])
+    mocks["fetch_affected"].return_value = _make_affected_data([sample_item])
+
+    mock_session = AsyncMock()
+    mock_session.get = AsyncMock(return_value=ion_mode)
+    mock_ctx = AsyncMock()
+    mock_ctx.__aenter__ = AsyncMock(return_value=mock_session)
+    mock_ctx.__aexit__ = AsyncMock(return_value=False)
+    mocks["async_session"].return_value = mock_ctx
+    return mocks, sample_file
+
+
+async def _run_pipeline(**kwargs):
+    from mascope_backend.api.controllers.sample.files.process.service import (
+        auto_process_sample_file,
+    )
+
+    return await auto_process_sample_file(
+        sample_file_id="sf-001",
+        independent_transaction=True,
+        user_id=42,
+        process_id="proc-001",
+        **kwargs,
+    )
+
+
+@pytest.mark.asyncio
+async def test_records_each_stage_a_calibrated_file_reaches(status):
+    _start_single()
+
+    await _run_pipeline()
+
+    recorded = _recorded(status)
+    assert [state for state, _ in recorded] == ["bound", "calibrated", "done"]
+    assert recorded[0][1] == "Bound by file-name token to 'Bromide RI' (-)."
+    assert recorded[-1][1] == "Matched 1 sample."
+    assert all(call.args[0] == "sf-001" for call in status.call_args_list)
+
+
+@pytest.mark.asyncio
+async def test_a_file_that_binds_to_nothing_waits_for_a_chemistry(status):
+    """Routing found no mode: the file is parked, not failed."""
+    mocks, _ = _start_single()
+    message = (
+        "No ionization mode tokens found for file 2025.09.20_test_file.raw. "
+        "Configure tokens in ionization settings"
+    )
+    mocks["resolve"].side_effect = ValueError(message)
+
+    with patch(f"{_FEATURES}.handle_notifications", new_callable=AsyncMock) as notify:
+        result = await _run_pipeline()
+
+    # The detail is the file's reason; the live notice says what to do.
+    assert _recorded(status) == [("needs_chemistry", f"{message}.")]
+    mocks["create_batches"].assert_not_called()
+    mocks["calibrate"].assert_not_called()
+    mocks["match"].assert_not_called()
+    assert result["status"] == "parked"
+    # Reported as a warning for the instrument, not as a failed run.
+    (call,) = notify.call_args_list
+    assert call.args[0] == ["instrument"]
+    assert call.args[1].status == "warning"
+    assert call.args[1].message == f"{message}. Or choose its chemistry in Raw files."
+    assert result["_notification_data"]["instrument"] == "Orbion"
+
+
+@pytest.mark.asyncio
+async def test_a_failed_calibration_is_the_files_outcome(status):
+    mocks, sample_file = _start_single()
+
+    async def calibrate(**_):
+        sample_file.mz_calibration = {
+            "status": "failed",
+            "verified": False,
+            "error": "No calibration peaks found.",
+        }
+        return _outcome(
+            False, "The m/z calibration failed: No calibration peaks found."
+        )
+
+    mocks["calibrate"].side_effect = calibrate
+
+    await _run_pipeline()
+
+    recorded = _recorded(status)
+    assert [state for state, _ in recorded] == ["bound", "calibration_failed"]
+    assert recorded[-1][1] == (
+        "The m/z calibration failed: No calibration peaks found. "
+        "Matching and peak assignment were skipped."
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_calibration_below_the_bar_names_its_reasons(status):
+    mocks, sample_file = _start_single()
+
+    async def calibrate(**_):
+        sample_file.mz_calibration = {
+            "status": "poor",
+            "verified": False,
+            "quality_issues": [{"message": "Only 2 calibration points."}],
+        }
+        return _outcome(
+            False,
+            "The m/z calibration is below the quality bar: Only 2 calibration points.",
+        )
+
+    mocks["calibrate"].side_effect = calibrate
+
+    await _run_pipeline()
+
+    state, detail = _recorded(status)[-1]
+    assert state == "calibration_failed"
+    assert detail.startswith(
+        "The m/z calibration is below the quality bar: Only 2 calibration points."
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_fit_below_the_bar_that_the_gate_lets_through_is_done(status):
+    """Under a gate that only warns, the file is matched and says why to look."""
+    mocks, sample_file = _start_single()
+
+    async def calibrate(**_):
+        sample_file.mz_calibration = {
+            "status": "poor",
+            "verified": True,
+            "quality_issues": [{"message": "Mean error 4.1 ppm."}],
+        }
+        return _outcome(True)
+
+    mocks["calibrate"].side_effect = calibrate
+
+    await _run_pipeline()
+
+    assert _recorded(status)[-1] == (
+        "done",
+        "Matched 1 sample. The m/z calibration is below the quality bar: "
+        "Mean error 4.1 ppm.",
+    )
+
+
+@pytest.mark.asyncio
+async def test_done_says_why_a_file_was_not_calibrated(status):
+    _start_single(calibration_collection_id=None)
+
+    await _run_pipeline()
+
+    assert _recorded(status)[-1] == (
+        "done",
+        "Matched 1 sample. Not m/z calibrated: ionization mode 'Bromide RI' "
+        "has no calibration collection.",
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_blank_file_is_done_without_being_matched(status):
+    """A blank has no peaks: nothing to calibrate or match, and nothing wrong."""
+    mocks, _ = _start_single(instrument_function_id=None)
+
+    await _run_pipeline()
+
+    mocks["match"].assert_not_called()
+    assert _recorded(status) == [
+        ("bound", "Bound by file-name token to 'Bromide RI' (-)."),
+        ("done", "Blank measurement: no peaks to calibrate, match or assign."),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_done_says_a_shared_calibration_was_skipped(status):
+    async def calibrate(sample, sample_file):
+        raise AssertionError("a shared-calibration file must not be calibrated")
+
+    _start_dual_polarity(
+        calibrate=calibrate, neg_collection="cal-neg", pos_collection="cal-pos"
+    )
+
+    await _run_pipeline()
+
+    assert _recorded(status)[-1] == (
+        "done",
+        "Matched 2 samples. Not m/z calibrated: 2 of its samples have a "
+        "calibration collection, and a file holds one m/z calibration for all "
+        "of them. Matched on the acquisition axis.",
+    )
+
+
+@pytest.mark.asyncio
+async def test_an_unverified_record_holds_back_the_whole_file(status):
+    """The failure of one polarity's fit is the outcome for both."""
+
+    async def calibrate(sample, sample_file):
+        sample_file.mz_calibration = {"status": "failed", "verified": False}
+        return _outcome(False, "The m/z calibration failed.")
+
+    _start_dual_polarity(
+        calibrate=calibrate, neg_collection=None, pos_collection="cal-pos"
+    )
+
+    await _run_pipeline()
+
+    assert _recorded(status)[-1] == (
+        "calibration_failed",
+        "The m/z calibration failed. Matching and peak assignment were skipped.",
+    )
+
+
+@pytest.mark.asyncio
+async def test_every_status_carries_the_pooled_streams_note(status):
+    """The note describes the file, so no stage may drop it."""
+    note = "Polarity - pools 2 MS1 scan streams into one peak list: A; B."
+    status.note.return_value = note
+    _start_single()
+
+    await _run_pipeline()
+
+    recorded = _recorded(status)
+    assert [state for state, _ in recorded] == ["bound", "calibrated", "done"]
+    assert all(detail.endswith(note) for _, detail in recorded)
+    assert recorded[1][1] == note
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "record",
+    [
+        {"mode": 1, "par": [1.0, 0.0], "status": "unfitted", "verified": False},
+        # Registered before the converter's record was stamped.
+        {"mode": 1, "par": [1.0, 0.0]},
+    ],
+)
+async def test_a_tof_file_without_calibrants_is_held_back(status, record):
+    """The match gate refuses a converter record, so the file is not matched.
+
+    Left to the gate, the refusal would end the run on a warning and the file
+    would be recorded as failed; it is a calibration the pipeline could not
+    make, and says what is missing.
+    """
+    mocks, sample_file = _start_single(calibration_collection_id=None)
+    sample_file.mz_calibration = record
+
+    result = await _run_pipeline()
+
+    mocks["match"].assert_not_called()
+    mocks["assign"].assert_not_called()
+    assert "Auto-processing complete" in result["message"]
+    assert _recorded(status)[-1] == (
+        "calibration_failed",
+        "Not m/z calibrated: ionization mode 'Bromide RI' has no calibration "
+        "collection. Matching needs a verified m/z calibration. Matching and "
+        "peak assignment were skipped.",
+    )
+
+
+@pytest.mark.asyncio
+async def test_the_reason_comes_from_the_calibration_not_the_record(status):
+    """A failure never overwrites an applied fit, so the record can be stale."""
+    mocks, sample_file = _start_single()
+    sample_file.mz_calibration = {"mode": "one-point", "verified": True}
+    mocks["calibrate"].return_value = _outcome(
+        False, "The m/z calibration failed: Not enough calibration peaks."
+    )
+
+    await _run_pipeline()
+
+    assert _recorded(status)[-1] == (
+        "calibration_failed",
+        "The m/z calibration failed: Not enough calibration peaks. Matching "
+        "and peak assignment were skipped.",
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_file_matched_in_part_is_not_done(status):
+    """One polarity's fit failed while the other matched on an earlier fit."""
+
+    async def calibrate(sample, sample_file):
+        return _outcome(False, "The m/z calibration failed: No calibration peaks.")
+
+    mocks, sample_file = _start_dual_polarity(
+        calibrate=calibrate, neg_collection=None, pos_collection="cal-pos"
+    )
+    sample_file.mz_calibration = {"mode": "one-point", "verified": True}
+
+    await _run_pipeline()
+
+    mocks["match"].assert_called_once()
+    assert _recorded(status)[-1] == (
+        "calibration_failed",
+        "The m/z calibration failed: No calibration peaks. Matching and peak "
+        "assignment were skipped for 1 of its 2 samples.",
+    )
+
+
+def _db_error(text: str):
+    from sqlalchemy.exc import OperationalError
+
+    return OperationalError(text, {"sample_file_id": "sf-001"}, Exception("gone"))
+
+
+@pytest.mark.parametrize(
+    ("error", "detail"),
+    [
+        (
+            "api",
+            "The peak store is corrupt",
+        ),
+        (ValueError("must include one per polarity"), "must include one per polarity"),
+        (
+            "timeout",
+            "The server was too busy to process the file. Process it again.",
+        ),
+        (
+            "database",
+            "A database operation failed while the file was processed.",
+        ),
+        (
+            RuntimeError("SELECT * FROM sample_file WHERE id = 'sf-001'"),
+            "Processing stopped on an unexpected error.",
+        ),
+    ],
+)
+def test_a_failure_detail_keeps_internals_out(error, detail):
+    """The detail is served to every reader of the file list."""
+    from sqlalchemy.exc import TimeoutError as SQLAlchemyTimeoutError
+
+    from mascope_backend.api.controllers.sample.files.process.service import (
+        _failure_detail,
+    )
+    from mascope_backend.api.lib.exceptions.api_exceptions import ApiException
+
+    error = {
+        "api": ApiException("The peak store is corrupt", {}, 400),
+        "timeout": SQLAlchemyTimeoutError("QueuePool limit of size 5 overflow 10"),
+        "database": _db_error("SELECT * FROM sample_file WHERE id = $1"),
+    }.get(error, error)
+
+    assert _failure_detail(error) == detail
+
+
+@pytest.mark.asyncio
+async def test_a_pipeline_that_gives_up_is_marked_failed(status):
     from mascope_backend.api.controllers.sample.files.process import service
     from mascope_backend.api.lib.exceptions.api_exceptions import ApiException
 
-    body = AsyncMock(side_effect=ApiException("corrupt", {}, 400))
-    logged: list[str] = []
+    body = AsyncMock(side_effect=ApiException("The peak store is corrupt", {}, 400))
+
+    with (
+        patch(f"{_SVC}._auto_process_sample_file", new=body),
+        patch(f"{_SVC}._delete_partial_acquisition_items", new=AsyncMock()),
+        patch(f"{_FEATURES}.handle_notifications", new_callable=AsyncMock),
+        patch(f"{_FEATURES}.handle_reloads", new_callable=AsyncMock),
+    ):
+        await service.auto_process_sample_file(
+            sample_file_id="sf-corrupt", independent_transaction=True
+        )
+
+    assert status.call_args.args[0] == "sf-corrupt"
+    assert _recorded(status) == [("failed", "The peak store is corrupt")]
+
+
+@pytest.mark.asyncio
+async def test_a_retry_that_recovers_records_no_failure(status):
+    from mascope_backend.api.controllers.sample.files.process import service
+    from mascope_backend.api.lib.exceptions.api_exceptions import ApiException
+
+    body = AsyncMock(side_effect=[ApiException("busy", {}, 503), {"message": "ok"}])
 
     with (
         patch(f"{_SVC}._auto_process_sample_file", new=body),
         patch(f"{_SVC}._delete_partial_acquisition_items", new=AsyncMock()),
         patch.object(service, "_AUTO_PROCESS_RETRY_DELAYS_S", (0, 0, 0)),
-        patch.object(service.runtime.logger, "error", side_effect=logged.append),
-        patch(f"{_NOTIF}.handle_notifications", new_callable=AsyncMock),
-        patch(f"{_UTILS}.handle_reloads", new_callable=AsyncMock),
+        patch(f"{_FEATURES}.handle_notifications", new_callable=AsyncMock),
+        patch(f"{_FEATURES}.handle_reloads", new_callable=AsyncMock),
     ):
-        with pytest.raises(ApiException):
-            await service.auto_process_sample_file(
-                sample_file_id="sf-corrupt", independent_transaction=False
-            )
+        await service.auto_process_sample_file(
+            sample_file_id="sf-retry", independent_transaction=True
+        )
 
-    assert any("sf-corrupt" in line for line in logged), logged
-    assert body.call_count == 1  # not retried
+    status.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_modes_chosen_for_a_file_bind_it_without_its_tokens(status):
+    mocks, _ = _start_single()
+    chosen = _make_ionization_mode(ionization_mode_name="Nitrate")
+
+    with patch(
+        f"{_SVC}.fetch_ionization_modes",
+        new_callable=AsyncMock,
+        return_value=[chosen],
+    ) as fetch:
+        await _run_pipeline(ionization_mode_ids=["im-001"])
+
+    fetch.assert_awaited_once_with(["im-001"])
+    mocks["resolve"].assert_not_called()
+    assert mocks["create_batches"].call_args.kwargs["ionization_modes"] == [chosen]
+    assert _recorded(status)[0] == (
+        "bound",
+        "Bound to 'Nitrate' (-) without a file-name token.",
+    )
+    assert _recorded(status)[-1][0] == "done"
+
+
+@pytest.mark.asyncio
+async def test_chosen_modes_that_no_longer_fit_park_the_file(status):
+    """A mode chosen for it changed while it waited: it can be given another."""
+    mocks, sample_file = _start_single()
+    sample_file.polarity = "+-"
+
+    with patch(
+        f"{_SVC}.fetch_ionization_modes",
+        new_callable=AsyncMock,
+        return_value=[_make_ionization_mode()],
+    ):
+        result = await _run_pipeline(ionization_mode_ids=["im-001"])
+
+    mocks["create_batches"].assert_not_called()
+    assert result["status"] == "parked"
+    ((state, detail),) = _recorded(status)
+    assert state == "needs_chemistry"
+    assert "must include one per polarity" in detail
+    assert "no mode matches polarity +" in detail
+
+
+def _mode_of(polarity: str, name: str):
+    return _make_ionization_mode(
+        ionization_mode_id=f"im-{name}",
+        ionization_mode_name=name,
+        ionization_mode_polarity=polarity,
+    )
+
+
+def test_each_polarity_of_a_file_takes_the_chosen_mode_of_its_polarity():
+    from mascope_backend.api.controllers.sample.files.process.service import (
+        choose_ionization_modes,
+    )
+
+    negative, positive = _mode_of("-", "neg"), _mode_of("+", "pos")
+
+    both = choose_ionization_modes(
+        _make_sample_file(polarity="+-"), [negative, positive]
+    )
+    only = choose_ionization_modes(
+        _make_sample_file(polarity="-"), [negative, positive]
+    )
+
+    assert both == [positive, negative]
+    assert only == [negative]
+
+
+@pytest.mark.parametrize(
+    ("modes", "problem"),
+    [
+        ([], "no mode matches polarity -"),
+        ([("-", "a"), ("-", "b")], "2 modes match polarity -"),
+    ],
+)
+def test_a_polarity_without_exactly_one_chosen_mode_is_refused(modes, problem):
+    from mascope_backend.api.controllers.sample.files.process.service import (
+        choose_ionization_modes,
+    )
+
+    with pytest.raises(ValueError, match=problem):
+        choose_ionization_modes(
+            _make_sample_file(polarity="-"),
+            [_mode_of(polarity, name) for polarity, name in modes],
+        )
+
+
+async def _give_up():
+    """Run the wrapper, as the routes spawn it, to a give-up on a bad file."""
+    from mascope_backend.api.controllers.sample.files.process import service
+    from mascope_backend.api.lib.exceptions.api_exceptions import ApiException
+
+    body = AsyncMock(side_effect=ApiException("The peak store is corrupt", {}, 400))
+    with (
+        patch(f"{_SVC}._auto_process_sample_file", new=body),
+        patch(f"{_SVC}._delete_partial_acquisition_items", new=AsyncMock()),
+        patch.object(service, "_FAILED_STATUS_TIMEOUT_S", 0.05),
+        patch(f"{_FEATURES}.handle_notifications", new_callable=AsyncMock),
+        patch(f"{_FEATURES}.handle_reloads", new_callable=AsyncMock),
+    ):
+        await service.auto_process_sample_file(
+            sample_file_id="sf-slow", independent_transaction=True
+        )
+
+
+@pytest.mark.asyncio
+async def test_a_cancellation_while_recording_the_failure_is_reported(status):
+    """Raised inside the except clause, it would bypass the cancel handler."""
+    import asyncio
+
+    status.side_effect = asyncio.CancelledError()
+
+    with captured_logs() as records:
+        with pytest.raises(asyncio.CancelledError):
+            await _give_up()
+
+    assert any(
+        "sf-slow was cancelled while recording that it failed" in message
+        for _, message in _lines(records)
+    ), _lines(records)
+
+
+@pytest.mark.asyncio
+async def test_a_failure_that_cannot_be_recorded_in_time_is_logged(status):
+    """The write waits on the pool the run may have given up on."""
+    import asyncio
+
+    async def record(*_):
+        await asyncio.sleep(1)
+
+    status.side_effect = record
+
+    with captured_logs() as records:
+        await _give_up()
+
+    assert any(
+        level == "INFO"
+        and "Could not record within" in message
+        and "sf-slow" in message
+        for level, message in _lines(records)
+    ), _lines(records)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("asked", "resets"), [(True, 1), (False, 0)])
+async def test_a_rebuild_resets_the_calibration_once_before_it_starts(asked, resets):
+    """As re-processing does, and not again on a retry."""
+    from mascope_backend.api.controllers.sample.files.process import service
+    from mascope_backend.api.lib.exceptions.api_exceptions import ApiException
+
+    reset = AsyncMock()
+    body = AsyncMock(side_effect=[ApiException("busy", {}, 503), {"message": "ok"}])
+    with (
+        patch(f"{_SVC}._reset_calibration", reset),
+        patch(f"{_SVC}._auto_process_sample_file", body),
+        patch(f"{_SVC}._delete_partial_acquisition_items", AsyncMock()),
+        patch.object(service, "_AUTO_PROCESS_RETRY_DELAYS_S", (0, 0, 0)),
+        patch(f"{_FEATURES}.handle_notifications", new_callable=AsyncMock),
+        patch(f"{_FEATURES}.handle_reloads", new_callable=AsyncMock),
+    ):
+        await service.auto_process_sample_file(
+            sample_file_id="sf-rebind",
+            independent_transaction=True,
+            reset_calibration=asked,
+        )
+
+    assert body.await_count == 2
+    assert reset.await_count == resets

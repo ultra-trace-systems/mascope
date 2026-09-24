@@ -9,10 +9,12 @@ import PrimeVue from 'primevue/config'
 // effects). Pinia still has to be active for the pane's own sidebar-menu store.
 const clearLog = vi.fn()
 const notification = reactive({ log: [], clearLog })
+// Nothing kept: the pane's kept-notification section has its own spec.
+const inbox = reactive({ items: [], sorted: [], unread: [] })
 
 vi.mock('@/stores', () => ({
   useApp: () => ({
-    ui: { notification, help: { set: vi.fn(), directive: () => ({}) } }
+    ui: { notification, inbox, help: { set: vi.fn(), directive: () => ({}) } }
   })
 }))
 

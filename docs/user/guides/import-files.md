@@ -32,9 +32,9 @@ and makes you its owner.
 File Agent versions upload each file in a single request capped at
 100 MB - download the newest installer to lift the limit.
 
-**A filename Mascope can read.** Mascope reads three things out of the filename,
-so uploads are rejected if any is missing. This applies to both upload paths.
-Name files as:
+**A filename Mascope can read.** Mascope reads three things out of the filename.
+An upload without the first two is rejected; one without the third waits for you
+to choose its chemistry. This applies to both upload paths. Name files as:
 
 ```
 <instrument>_<timestamp>_<ionization-token>...<.raw|.h5>
@@ -47,20 +47,28 @@ Name files as:
   paired **File Agent** that names its instrument in its configuration files
   every upload under that name, and its file names need not carry the
   instrument at all: the server puts `<instrument>_` in front of the stored
-  name. For files uploaded from the browser the name is the only source, so
-  there it still has to start with the instrument - either one Mascope
-  already holds files for, or a name that says its own class (containing
-  `orbi`, `tof` or `api`) for an instrument it has never seen.
+  name. A browser upload whose name starts with no instrument Mascope can
+  place is not refused either: it asks which instrument the files came from,
+  offering the ones it knows and taking the name of a new one, and reports
+  that with the upload the way an agent does. A name it has never seen is
+  a new instrument, so it asks you to confirm before creating it.
 - **Timestamp** — an acquisition date/time somewhere in the name, in one of the
   recognised forms (for example `20240115_1430`, `20240115143000`, or
   `2024.01.15-14h30m00s`). Mascope uses it to place and order the file.
-- **Ionization token** — the short token of a configured **ionization mode** must
-  appear in the name. This is how Mascope knows how the sample was ionized.
+- **Ionization token** — the short token of a configured **ionization mode** in
+  the name is how Mascope knows how the sample was ionized, and lets it
+  process the file on its own. The name must match exactly one mode for each
+  polarity in the file: a file acquired in both polarities needs the token of a
+  positive mode and the token of a negative mode. A file whose name matches no
+  mode, or two modes of the same polarity, is still uploaded and converted, but
+  it gets no samples until you
+  [choose its chemistry](#choose-the-chemistry-of-a-file-that-needs-one).
 
-**Configured ionization modes.** Because the filename must contain a known
-ionization token, the ionization modes you use have to exist first. This is a
-prerequisite in its own right — see [Set up ionization modes](#set-up-ionization-modes)
-below.
+**Configured ionization modes.** A file is processed on its own only when its
+name carries the token of a configured ionization mode, so the modes you use
+should exist first: a file uploaded before its mode waits for someone to choose
+its chemistry. This is a prerequisite in its own right — see
+[Set up ionization modes](#set-up-ionization-modes) below.
 
 **A place to analyse in.** Your copies of the samples will live in a **batch**,
 which lives in a **dataset** inside a **workspace** of your own. If you do not
@@ -71,8 +79,9 @@ have them yet, create them first — see
 
 An **ionization mode** tells Mascope how a measurement was ionized, and it is
 what links a raw file to the right processing. Its filename token is what lets
-Mascope recognise and process an uploaded file, so the modes you acquire under
-must be configured before you import. See
+Mascope recognise and process an uploaded file on its own, so configure the
+modes you acquire under before you import; a file whose name carries no token
+still uploads, and waits for its chemistry to be chosen. See
 [Concepts → Ionization](../concepts/index.md#ionization-modes-and-mechanisms) for
 what a mode represents.
 
@@ -144,21 +153,76 @@ To import files you already have on your machine:
 2. Either click **Upload** and pick your files, or drag them onto the pane. You
    can add many files at once (up to 2.5 GB each).
 3. Mascope validates each file's name against the rules above. Anything it cannot
-   read (unknown instrument prefix, wrong extension, or no matching ionization
-   token) is listed as invalid and left out; fix the name and try again.
+   read (unknown instrument prefix or wrong extension) is listed as invalid and
+   left out; fix the name and try again. A file whose name carries no
+   ionization token is uploaded, with a note that it will wait for its
+   chemistry to be chosen.
 4. Watch the progress notification until the uploads finish.
 
 However they arrive, uploaded files appear in the raw-files table (listed by
-filename, polarity, and datetime), and Mascope processes each one automatically
-in the background: for every ionization mode in the file it creates a
-calibrated, matched **sample** in the instrument's `Acquisitions <instrument>`
-workspace. Those acquisition records are read-only — to analyse the data, copy
-the samples into a batch of your own. That is the next step.
+filename, status, polarity, and datetime), and Mascope processes each one
+automatically in the background: for every ionization mode in the file it
+creates a calibrated, matched **sample** in the instrument's
+`Acquisitions <instrument>` workspace. Those acquisition records are read-only —
+to analyse the data, copy the samples into a batch of your own. That is the
+next step.
+
+The **Status** column says how far processing got. Hover a status to read what
+it means for that file, and use the status filter at the top of the tab to list
+the files that need attention across every page. With a status chosen, the time
+window goes by when each file's status was recorded, so a file uploaded or
+re-processed long after it was acquired is listed too.
+
+| Status | Meaning |
+|---|---|
+| Converted, Queued, Bound, Calibrated | Still being processed: the file was read (or processing was asked for again, and waits its turn), its samples exist, and its m/z axis was calibrated. |
+| Done | Every sample of the file was matched, or it is a blank measurement with nothing to match. The detail says when the file was not calibrated, and why. |
+| Needs a chemistry | The file's name binds it to no ionization mode - it carries no mode's token, tokens of two modes of one polarity, or, for a file of both polarities, a token for only one of them - so it has no samples yet. Choose its chemistry (below), or fix the tokens and re-process it. |
+| Calibration failed | An m/z calibration failed or is below the quality bar, so some or all of the samples were not matched. A TOF file is matched only on a verified m/z calibration, so one whose ionization mode has no calibration collection ends here too, and the detail names the missing collection. |
+| Failed | Processing stopped on an error, or was interrupted by a server restart. Re-process the file. |
+
+A file still shown in progress a day after its status was recorded has
+stopped - a server worker restarted under it, say - and its status says so:
+re-process the file, or choose its chemistry. Files processed before Mascope
+recorded the status show none. When an Orbitrap method alternates scan ranges
+or scan modes within one polarity, the detail also says that peak detection
+pools those scan streams into one peak list.
+
+### Choose the chemistry of a file that needs one
+
+A file whose name binds it to no ionization mode - no mode's token, tokens of
+two modes of one polarity, or a token for only one of a file's two
+polarities - is still converted and stored, but it waits as
+**Needs a chemistry** until someone says which chemistry it was acquired
+under. The people answerable for the instrument find it under **Needs
+attention** in the notifications pane.
+
+1. In the **Raw files** tab, set the status filter to **Needs a chemistry**.
+2. Select the files that share a chemistry, right-click them and choose
+   **Choose chemistry**.
+3. Pick an ionization mode for each polarity the files hold, then **Process**.
+
+The files are processed under those modes as if their names carried the
+modes' tokens: calibrated, matched, and filed in the daily acquisition
+batches. An editor of the instrument may do it. Re-processing a file whose
+name carries no mode's token later keeps the modes it was given. Re-processing
+refuses a name with tokens of two modes of one polarity, or with a token for
+only one of its polarities: choose its chemistry again, or fix the tokens.
+
+The same action gives a chemistry to a file that failed before its samples
+were made, and corrects a wrong choice: a file that has samples already is
+rebuilt under the modes you pick. It is not offered while a file is being
+processed. Only the acquisition samples are replaced: a sample someone made
+from the file in a batch of their own stays, and the file keeps its m/z
+calibration rather than having it reset under that sample. If the mode you
+pick calibrates the file, the new calibration marks that batch for
+re-matching, as any new calibration of the file does. Re-processing still
+refuses such a file.
 
 !!! tip "Finding files after upload"
     The table shows one time window at a time (default: the last 24 hours). Use
-    the time-range and polarity filters and the filename search at the top of the
-    tab to locate older files.
+    the time-range, status and polarity filters and the filename search at the
+    top of the tab to locate older files.
 
 ## Build your batch from the acquisition samples
 
@@ -223,14 +287,16 @@ batch has samples, you can go straight to analysis:
 ## Troubleshooting
 
 - **A file was rejected as invalid on upload.** The name is missing something
-  Mascope needs. Check the instrument prefix matches the extension, that a
-  timestamp is present, and that the name contains a configured ionization
-  token. Add the ionization mode (or fix the name) and re-upload.
+  Mascope needs. Check the instrument prefix matches the extension and that a
+  timestamp is present, then fix the name and re-upload. A missing ionization
+  token no longer rejects a file: it waits in Raw files as *Needs a chemistry*.
 - **The filename token isn't recognised.** Confirm an ionization mode with that
   exact token exists in **Edit ionizations → Ionization Modes**, and that the
   token field is filled in (a mode with no token cannot match a filename).
   Processing a single file by hand does not depend on the token — pick the
-  ionization mode in the dialog instead — but upload and batch import do.
+  ionization mode in the dialog instead — and neither does uploading: a file
+  without a token waits in Raw files for its chemistry to be chosen. Batch
+  import into a batch of your own still reads the token.
 - **"Paste samples" doesn't appear in the menu.** Copy samples first, then make
   sure your own batch is open — the paste goes into the batch whose *Samples*
   pane you right-click.
@@ -239,7 +305,9 @@ batch has samples, you can go straight to analysis:
   polarity from the dropdown.
 - **A file needs re-processing.** Right-click it in the raw-files table and choose
   **Re-process** to rebuild its acquisition data under the current ionization
-  modes. This is only available for files not tied to a batch you created.
+  modes. A file whose name matches no token keeps the modes its samples have,
+  such as one whose chemistry was chosen by hand. This is only available for
+  files not tied to a batch you created.
 - **Uploads from the File Agent keep failing.** See the File Agent's
   [troubleshooting section](../instruments/index.md#troubleshooting-uploads) —
   it covers rejected tokens, HTTP 404s, and the 100 MB size limit.

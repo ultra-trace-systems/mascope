@@ -1,7 +1,7 @@
 """Unit tests for calibration peak filtering methods."""
 
 import numpy as np
-from conftest import get_small_peak_data, get_test_calibration_handler
+from calibration_test_support import get_small_peak_data, get_test_calibration_handler
 
 from mascope_backend.api.controllers.calibration.lib.calibration_mz_fit import (
     BaseCalibrationHandler,

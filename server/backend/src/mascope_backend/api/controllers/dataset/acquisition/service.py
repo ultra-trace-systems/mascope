@@ -17,7 +17,6 @@ from mascope_backend.api.models.dataset.dataset_pydantic_model import (
 from mascope_backend.api.new.auth.config import auth_settings
 from mascope_backend.api.new.instruments.service import get_instruments
 from mascope_backend.db import (
-    AgentDevice,
     Dataset,
     SampleFile,
     User,
@@ -25,6 +24,7 @@ from mascope_backend.db import (
     WorkspaceMember,
     async_session,
 )
+from mascope_backend.db.devices import device_sponsor_id
 from mascope_backend.db.id import gen_id
 from mascope_backend.runtime import runtime
 from mascope_backend.socket.records.service import (
@@ -43,33 +43,6 @@ _ROLE_MAP = {
     for name, level in _role_levels.items()
     if level >= _role_levels["admin"]
 }
-
-
-async def _resolve_device_sponsor(session, machine_user_id: int | None) -> int | None:
-    """The sponsor of the device that authenticates as this machine account.
-
-    Returns ``None`` when the id is not a machine account's - a person's
-    upload has no sponsor to add. This is what lets a plain-editor sponsor keep
-    seeing what their instrument agent ingests, even though the upload itself
-    authenticates as the machine.
-
-    :param session: An open async session.
-    :param machine_user_id: The uploading account's id (may be a person's).
-    :return: The sponsor's user id, or ``None``.
-    """
-    if machine_user_id is None:
-        return None
-    return (
-        (
-            await session.execute(
-                select(AgentDevice.sponsor_user_id).where(
-                    AgentDevice.machine_user_id == machine_user_id
-                )
-            )
-        )
-        .scalars()
-        .first()
-    )
 
 
 async def _ensure_instrument_workspace(
@@ -124,8 +97,11 @@ async def _ensure_instrument_workspace(
             )
 
             # The uploading account and (for an agent upload) the device's
-            # sponsor both become owners.
-            sponsor_id = await _resolve_device_sponsor(session, owner_user_id)
+            # sponsor both become owners. A person's upload has no sponsor to
+            # add; the sponsor is what lets a plain-editor sponsor keep seeing
+            # what their instrument agent ingests, although the upload itself
+            # authenticates as the machine.
+            sponsor_id = await device_sponsor_id(session, owner_user_id)
             force_owner_ids = {
                 uid for uid in (owner_user_id, sponsor_id) if uid is not None
             }

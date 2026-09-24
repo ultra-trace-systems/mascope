@@ -3,6 +3,8 @@
 from copy import deepcopy
 from typing import Any
 
+from mascope_backend.db import async_session
+from mascope_backend.db.devices import device_sponsor_id
 from mascope_backend.runtime import runtime
 from mascope_backend.socket import sio
 from mascope_backend.socket.notifications.schemas import UserNotification
@@ -252,6 +254,37 @@ async def send_progress_user_notification(
         await emit_user_notification(notification_copy, user_id=user_id)
 
 
+async def error_recipient(user_id: int | None) -> int | None:
+    """The account that reads an error or a warning from a task this account started.
+
+    Nobody signs in as a machine account, so its personal room never has a
+    browser in it: a notice addressed there reaches no one. When a paired
+    agent's upload fails to process, or waits for a chemistry, the person who
+    sponsors the agent's device reads it instead. Everyone else reads their
+    own.
+
+    The lookup must not cost the error it is routing: if it fails, the
+    account itself stays the recipient.
+
+    :param user_id: The account the task ran for, if any.
+    :type user_id: int | None
+    :return: The account to address the error to.
+    :rtype: int | None
+    """
+    if user_id is None:
+        return None
+    try:
+        async with async_session() as session:
+            sponsor_id = await device_sponsor_id(session, user_id)
+    except Exception:  # noqa: BLE001 - the error being routed matters more
+        runtime.logger.opt(exception=True).warning(
+            f"Could not look up a device sponsor for account {user_id}; "
+            "addressing its error notification to the account itself"
+        )
+        return user_id
+    return sponsor_id if sponsor_id is not None else user_id
+
+
 async def handle_notifications(
     rooms: list[str],
     notification: UserNotification,
@@ -267,6 +300,13 @@ async def handle_notifications(
     Extraction priority:
         room_id: kwargs[key] → result[key] → result['data'][key] → result['_notification_data'][key]
         user_id: kwargs['user_id'] → result['_notification_data']['user_id']
+
+    An error or a warning is addressed to :func:`error_recipient` of that
+    user: a task a paired agent started reports them to the agent's sponsor,
+    not to the agent's machine account. Successes keep the user they ran for,
+    so an agent's routine successes do not follow its sponsor around the app.
+    So does a ``silent`` notice, which only ends a progress bar in the browser
+    that started the task.
 
     When neither resolves there is nobody to send to. For an ordinary
     notification that is an actionable fault - a message meant for a user was
@@ -288,6 +328,8 @@ async def handle_notifications(
         if notification_data := result.get("_notification_data"):
             if isinstance(notification_data, dict):
                 user_id = notification_data.get("user_id")
+    if notification.status in ("error", "warning") and not notification.silent:
+        user_id = await error_recipient(user_id)
 
     for room_key in rooms:
         room_id = kwargs.get(room_key)

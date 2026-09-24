@@ -4,6 +4,7 @@ import { useSplit } from './split'
 import { useTab } from './tab'
 import { useHelp } from './help'
 import { useNotification } from './notification'
+import { useInbox } from './inbox'
 import { useMatchMode } from './matchMode'
 
 export const useUi = () => ({
@@ -13,5 +14,6 @@ export const useUi = () => ({
   tab: useTab(),
   help: useHelp(),
   notification: useNotification(),
+  inbox: useInbox(),
   matchMode: useMatchMode()
 })

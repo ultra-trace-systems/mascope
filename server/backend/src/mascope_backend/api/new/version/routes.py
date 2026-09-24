@@ -6,6 +6,7 @@ from fastapi.responses import FileResponse
 from mascope_backend.api.lib.api_features import api_route
 from mascope_backend.api.lib.exceptions.api_exceptions import ApiException
 from mascope_backend.api.new.auth.dependencies import guest_user
+from mascope_backend.capabilities import SERVER_CAPABILITIES
 from mascope_backend.runtime import runtime
 
 
@@ -26,10 +27,10 @@ def third_party_notices_path() -> Path:
 
 
 @version_router.get("")
-@api_route()
+@api_route(token_access=True)
 async def get_version_route(user=Depends(guest_user)):
     """
-    Report the version of the running deployment.
+    Report the version of the running deployment, and what it can do.
 
     Lets an operator, an audit, or an automated security assessment attribute
     what it is looking at to a specific artifact without shell access to the
@@ -54,15 +55,22 @@ async def get_version_route(user=Depends(guest_user)):
     the value is not secret. Signing in is asked for as least privilege for an
     operational endpoint, not to keep the version from anyone.
 
+    The capabilities (``mascope_backend.capabilities``) are the behaviours a
+    client may rely on only once the server announces them. The web app reads
+    them to decide, for instance, whether to accept a file whose name carries
+    no ionization mode token, and a paired File Agent - with its device token,
+    hence ``token_access`` - whether it can follow what becomes of its
+    uploads.
+
     :param user: The currently authenticated user.
     :type user: User
-    :return: A message and the running version.
+    :return: A message, the running version and the server's capabilities.
     :rtype: dict
     """
     version = runtime.version or "unknown"
     return {
         "message": f"Mascope version '{version}'.",
-        "data": {"version": version},
+        "data": {"version": version, "capabilities": dict(SERVER_CAPABILITIES)},
     }
 
 

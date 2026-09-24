@@ -15,7 +15,7 @@ MS1 KORBI files are committed).
 
 import numpy as np
 import pytest
-from conftest import POS_ORBI_FILE_PATH, TEST_FILES_DIR, read_or_xfail
+from thermo_test_support import POS_ORBI_FILE_PATH, TEST_FILES_DIR, read_or_xfail
 
 import mascope_thermo.backend as m_backend
 import mascope_thermo.thermo as m_thermo

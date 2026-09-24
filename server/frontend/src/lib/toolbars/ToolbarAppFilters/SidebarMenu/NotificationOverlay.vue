@@ -7,40 +7,40 @@ import { useApp } from '@/stores'
 
 const app = useApp()
 
+// Errors and warnings to read: the live ones since the pane was last opened,
+// and the kept ones still pending - not marked read, and not resolved since.
+// A kept notification stays counted until then, whether or not the pane has
+// been opened. The live copies of the outcomes it keeps are not counted (see
+// the notification store), so one file is not counted twice.
+const errors = computed(() => app.ui.notification.recentErrors + app.ui.inbox.pendingErrors)
+const warnings = computed(
+  () =>
+    app.ui.notification.recentWarnings + app.ui.inbox.pending.length - app.ui.inbox.pendingErrors
+)
+
 /**
- * Computes the badge count to display based on recentErrors or recentWarnings.
- * If there are recent errors, their count is displayed.
- * If there are no errors but warnings, the warning count is displayed.
- * If there are neither, an empty string is returned, hiding the badge.
+ * The badge shows the errors when there are any, else the warnings, and is
+ * hidden when there are neither.
  *
  *  @returns {String} The badge value as a string.
  */
-const badgeValue = computed(() => {
-  const errors = app.ui.notification.recentErrors
-  const warnings = app.ui.notification.recentWarnings
-  return errors > 0 ? String(errors) : warnings > 0 ? String(warnings) : ''
-})
+const badgeValue = computed(() =>
+  errors.value > 0 ? String(errors.value) : warnings.value > 0 ? String(warnings.value) : ''
+)
 
 /**
- * Determines the severity of the badge.
- * If there are any recent errors, the badge severity is set to 'danger'.
- * Otherwise, if there are only warnings, the badge severity is set to 'warn'.
+ * 'danger' when anything to read is an error, else 'warn'.
  *
  * @returns {String} The badge severity ('danger' or 'warn').
  */
-const badgeSeverity = computed(() => {
-  return app.ui.notification.recentErrors > 0 ? 'danger' : 'warn'
-})
+const badgeSeverity = computed(() => (errors.value > 0 ? 'danger' : 'warn'))
 
 /**
- * Controls the visibility of the notification badge.
- * If there are no recent errors or warnings, the badge is hidden.
+ * Hidden when there is nothing to read.
  *
  * @returns {Boolean} True if the badge should be hidden, otherwise false.
  */
-const hiddenBadge = computed(() => {
-  return app.ui.notification.recentWarnings === 0 && app.ui.notification.recentErrors === 0
-})
+const hiddenBadge = computed(() => errors.value === 0 && warnings.value === 0)
 </script>
 
 <template>
