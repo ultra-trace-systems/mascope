@@ -1,4 +1,4 @@
-from sqlalchemy import and_, select
+from sqlalchemy import and_, exists, or_, select
 
 from mascope_backend.db import (
     IonizationMode,
@@ -86,11 +86,62 @@ async def fetch_mode_collection_ids(ionization_mode_id: str) -> dict[str, str | 
 async def fetch_all_ionization_modes() -> list[IonizationMode]:
     """Fetch all ionization modes from the database.
 
+    Every mode, the ones Mascope ships included: this is what routing reads,
+    and the next binding rung routes *to* those rows. Hiding an unadopted mode
+    is the listing's concern, and ``get_ionization_modes`` does it there.
+
     :return: A list of all ionization modes.
     :rtype: list[IonizationMode]
     """
     async with async_session() as session:
         result = await session.execute(select(IonizationMode))
+        ionization_modes = result.scalars().all()
+        return ionization_modes
+
+
+def system_mode_adopted():
+    """Whether a deployment has taken up a mode Mascope ships.
+
+    One definition, used everywhere, because the answer decides two things
+    that have to agree: whether the mode is offered, and whether it may be
+    dropped when a mechanism it holds is deleted. Read differently in the two
+    places, a mode could be hidden from the listing and still pin its
+    mechanisms behind a refusal naming a mode nobody can see.
+
+    A mode is adopted once it carries anything of the deployment's: either
+    target collection, or a sample bound to it. Anything less and the mode is
+    still exactly as it was seeded.
+
+    :return: A SQL predicate over ``IonizationMode``.
+    """
+    return or_(
+        IonizationMode.calibration_collection_id.is_not(None),
+        IonizationMode.diagnostic_collection_id.is_not(None),
+        exists().where(
+            SampleItem.ionization_mode_id == IonizationMode.ionization_mode_id
+        ),
+    )
+
+
+async def fetch_listable_ionization_modes() -> list[IonizationMode]:
+    """Fetch the ionization modes a deployment should be offered.
+
+    A mode Mascope ships is left out until the deployment adopts it. Before
+    that it calibrates and matches nothing, so offering it would only invite a
+    sample that cannot be processed. After it, the mode has to be listed: it
+    is a mode like any other, and a sample bound to one carries an id the
+    browser must resolve.
+
+    :return: A list of the deployment's own modes and the seeded ones it
+        has adopted.
+    :rtype: list[IonizationMode]
+    """
+    async with async_session() as session:
+        result = await session.execute(
+            select(IonizationMode).where(
+                or_(IonizationMode.system_key.is_(None), system_mode_adopted())
+            )
+        )
         ionization_modes = result.scalars().all()
         return ionization_modes
 

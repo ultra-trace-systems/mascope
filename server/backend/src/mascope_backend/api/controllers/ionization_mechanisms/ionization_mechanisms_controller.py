@@ -24,6 +24,7 @@ from mascope_backend.api.models.ionization_mechanisms.ionization_mechanism_pydan
     IonizationMechanismRead,
     IonizationMechanismSortColumn,
 )
+from mascope_backend.api.new.ionization.modes.util import system_mode_adopted
 from mascope_backend.db import (
     IonizationMechanism,
     IonizationMode,
@@ -296,6 +297,42 @@ async def create_ionization_mechanism(
     }
 
 
+async def _release_unadopted_system_modes(
+    session, ionization_mechanism_id: str
+) -> set[str]:
+    """Delete the seeded modes holding this mechanism that nobody adopted.
+
+    Adoption is ``system_mode_adopted``, the same predicate the listing reads,
+    so a mode this refuses to release is one the deployment can actually see.
+    A seeded mode that is not adopted carries nothing of the deployment's.
+
+    :param session: The session the deletion runs in.
+    :param ionization_mechanism_id: The mechanism about to be deleted.
+    :return: The ids released. This session has not committed them, so the
+        caller cannot tell they are gone by reading another one.
+    :rtype: set[str]
+    """
+    released: set[str] = set()
+    modes = (
+        (
+            await session.execute(
+                select(IonizationMode).where(
+                    IonizationMode.system_key.is_not(None),
+                    ~system_mode_adopted(),
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    for mode in modes:
+        if ionization_mechanism_id not in mode.ionization_mechanism_ids:
+            continue
+        await session.delete(mode)
+        released.add(mode.ionization_mode_id)
+    return released
+
+
 @api_controller()
 async def delete_ionization_mechanism(ionization_mechanism_id: str) -> dict:
     """
@@ -325,16 +362,42 @@ async def delete_ionization_mechanism(ionization_mechanism_id: str) -> dict:
                 f"Ionization mechanism with ID '{ionization_mechanism_id}' not found"
             )
 
-        # -- Retrieve the ionization mechanism and check for ionization mode references -- #
-        ionization_data = await get_ionization_mechanism(ionization_mechanism_id)
-        ionization_details = ionization_data.get("data")
+        # -- Drop the seeded modes nobody adopted that hold this mechanism -- #
+        # A mode Mascope ships cannot be deleted through its own route, so one
+        # built on a mechanism the deployment is retiring would pin that
+        # mechanism for good. Unadopted, the mode has no collections and no
+        # samples, so nothing is lost; seeding leaves it out from now on,
+        # because the mechanism it needs is gone.
+        released = await _release_unadopted_system_modes(
+            session, ionization_mechanism_id
+        )
+
+        # -- Find the ionization modes still referencing it -- #
+        # Read in this session rather than through get_ionization_mechanism,
+        # which opens its own: the modes just released are deleted here and
+        # not yet committed, so another session would still count them and
+        # refuse a deletion nothing is blocking.
+        blocking = [
+            mode
+            for mode in (await session.execute(select(IonizationMode))).scalars().all()
+            if ionization_mechanism_id in mode.ionization_mechanism_ids
+            and mode.ionization_mode_id not in released
+        ]
 
         # -- Prevent deletion if referenced in any ionization modes -- #
-        if ionization_details["ionization_modes_count"] > 0:
+        if blocking:
             raise ApiException(
                 f"Ionization mechanism '{ionization_mechanism.ionization_mechanism}' cannot be deleted as it is used in"
-                f" {ionization_details['ionization_modes_count']} ionization modes.",
-                {"ionization_modes": ionization_details["ionization_modes"]},
+                f" {len(blocking)} ionization modes.",
+                {
+                    "ionization_modes": [
+                        {
+                            "ion_mode_id": mode.ionization_mode_id,
+                            "ion_mode_name": mode.ionization_mode_name,
+                        }
+                        for mode in blocking
+                    ]
+                },
                 400,
             )
 

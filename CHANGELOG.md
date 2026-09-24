@@ -263,6 +263,35 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   window under the run's ceiling, radicals only from a source that allows
   them, and the licences the deployment matches against.
 
+- **Mascope now ships the chemistries it knows.** Every deployment named its
+  ionization modes itself, so one reagent is spelled many ways and nothing
+  could refer to "nitrate" as such - across the production fleet, fifty
+  separate mode rows mean uronium and twenty-six mean nitrate. Eleven
+  system-owned modes now carry one identity per chemistry, the same on every
+  server: nitrate and 15N-labelled nitrate, bromide, iodide, deprotonation and
+  ambient for negative polarity; uronium, ammonium and 15N-labelled ammonium,
+  protonation and ambient for positive. Routing a file by the acquisition
+  method it was measured under needs one such identity to route to.
+
+  They are created at start, from the ionization mechanisms the deployment
+  already has: a chemistry whose mechanisms are not configured here is left
+  out, and appears once they are. Nothing creates a mechanism on its own,
+  because a new mechanism gives every compound in the library another set of
+  ions and does the same for every compound imported afterwards - a cost only
+  a deployment that runs the chemistry should pay.
+
+  A seeded mode changes nothing on its own. It carries no filename token, so
+  no file name routes to one, and no target collections, so none calibrates or
+  matches anything; the ionization settings leave it out until the deployment
+  adopts it by giving it a calibration collection, after which it is listed
+  like any other mode. Its name, token, polarity and mechanisms are what say
+  which chemistry it is and cannot be edited, and it cannot be deleted; its
+  collections are the deployment's own. Deleting an ionization mechanism a
+  seeded mode holds releases that mode when nothing has been done with it, so
+  a mechanism never becomes undeletable for carrying one. Modes a deployment
+  made are untouched,
+  keep their names, and are still listed, edited and deleted as before.
+
 ### Changed
 
 - **Peak assignment still ships off, and the assignment work in these notes

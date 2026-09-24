@@ -1241,6 +1241,14 @@ class IonizationMode(Base):
     )
     ionization_mode_polarity: Mapped[str] = mapped_column(String(1))
     ionization_mechanism_ids: Mapped[list[str]] = mapped_column(JSON)
+    # The chemistry this row stands for, the same string on every server, for
+    # the modes Mascope ships (mascope_backend.ionization_catalogue). NULL on a
+    # mode the deployment made, which is every mode it names itself. A row that
+    # has one owns its name, polarity and mechanisms: only its target
+    # collections are the deployment's to set.
+    system_key: Mapped[Optional[str]] = mapped_column(
+        String(64), nullable=True, unique=True
+    )
     calibration_collection_id: Mapped[Optional[str]] = mapped_column(
         String(16),
         ForeignKey("target_collection.target_collection_id", ondelete="SET NULL"),

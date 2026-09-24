@@ -108,6 +108,15 @@ class IonizationModeUpdate(
 
 
 class GetIonizationModesQueryParams(QueryParamsModel):
-    """Placeholder for future query parameters for getting ionization modes."""
+    """Query parameters for getting ionization modes."""
 
-    pass
+    include_system: bool = Field(
+        False,
+        description=(
+            "Include the modes Mascope ships that this deployment has not "
+            "adopted. They are left out by default: without target "
+            "collections such a mode calibrates and matches nothing, so "
+            "offering it would only invite a sample that cannot be processed. "
+            "Ask for them to adopt one."
+        ),
+    )

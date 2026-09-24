@@ -20,6 +20,7 @@ from mascope_backend.db import (
     async_session,
 )
 from mascope_backend.db.id import gen_id
+from mascope_backend.ionization_catalogue import SYSTEM_MODE_EDITABLE_FIELDS
 from mascope_backend.socket.records.service import (
     emit_record_created,
     emit_record_deleted,
@@ -28,9 +29,27 @@ from mascope_backend.socket.records.service import (
 
 from .util import (
     fetch_all_ionization_modes,
+    fetch_listable_ionization_modes,
     resolve_ionization_modes_by_tokens,
     token_is_unique,
 )
+
+
+def _mechanism_set(ionization_mechanism_ids) -> set:
+    """The mechanisms of a mode, as what they are: a set.
+
+    The order they arrive in carries no meaning, and neither does a repeat.
+    Both the protection check and the rematch decision read them this way, and
+    read them through here so the two cannot drift apart.
+    """
+    return set(ionization_mechanism_ids or [])
+
+
+def _same_value(field: str, incoming, current) -> bool:
+    """Whether an update leaves a field as it was."""
+    if field == "ionization_mechanism_ids":
+        return _mechanism_set(incoming) == _mechanism_set(current)
+    return incoming == current
 
 
 @api_controller()
@@ -149,13 +168,22 @@ async def get_ionization_mode(
 
 
 @api_controller()
-async def get_ionization_modes() -> dict:
+async def get_ionization_modes(include_system: bool = False) -> dict:
     """
-    Retrieves all ionization modes
+    Retrieves the ionization modes.
 
+    The modes Mascope ships that this deployment has not adopted are left out
+    unless asked for: without target collections such a mode calibrates and
+    matches nothing. Asking for them is how one is adopted in the first place.
+
+    :param include_system: Whether to include unadopted seeded modes.
     :return: A dictionary containing total results count and a list of ionization modes.
     """
-    ionization_modes = await fetch_all_ionization_modes()
+    ionization_modes = await (
+        fetch_all_ionization_modes()
+        if include_system
+        else fetch_listable_ionization_modes()
+    )
 
     return {
         "message": "Ionization modes retrieved successfully.",
@@ -223,6 +251,30 @@ async def update_ionization_mode(
                 f"Ionization mode with ID {ionization_mode_id} not found"
             )
         update_data = ionization_mode_data.model_dump(exclude_unset=True)
+
+        # A mode Mascope ships owns its chemistry: the name, token, polarity
+        # and mechanisms say which chemistry it is and read the same on every
+        # server. Its target collections are the deployment's own data.
+        # Compared by value, so a request that echoes the whole mode back to
+        # change one collection is not refused for the fields it did not touch.
+        if ionization_mode.system_key:
+            protected = [
+                field
+                for field, value in update_data.items()
+                if field not in SYSTEM_MODE_EDITABLE_FIELDS
+                and not _same_value(field, value, getattr(ionization_mode, field))
+            ]
+            if protected:
+                raise ValueError(
+                    f"Ionization mode '{ionization_mode.ionization_mode_name}' is one "
+                    f"Mascope ships, so {', '.join(sorted(protected))} cannot be "
+                    "changed. Its calibration and diagnostic collections can."
+                )
+            # The echoed list matched as a set, which a reordered or repeated
+            # one also does. Dropping it here keeps the stored definition
+            # exactly as seeded, so it reads the same on every server.
+            update_data.pop("ionization_mechanism_ids", None)
+
         # Check for token conflicts if being updated
         new_token = update_data.get("ionization_mode_token")
         if new_token and new_token != ionization_mode.ionization_mode_token:
@@ -283,9 +335,10 @@ async def update_ionization_mode(
 
         # Determine which fields are changing (used to flag affected batches).
         # Computed against the current entity before the values are applied below.
-        mechanisms_changed = "ionization_mechanism_ids" in update_data and set(
-            update_data["ionization_mechanism_ids"]
-        ) != set(ionization_mode.ionization_mechanism_ids)
+        mechanisms_changed = "ionization_mechanism_ids" in update_data and (
+            _mechanism_set(update_data["ionization_mechanism_ids"])
+            != _mechanism_set(ionization_mode.ionization_mechanism_ids)
+        )
         calibration_changed = (
             "calibration_collection_id" in update_data
             and update_data["calibration_collection_id"]
@@ -412,6 +465,12 @@ async def delete_ionization_mode(ionization_mode_id: str) -> dict:
         if not ionization_mode:
             raise NotFoundException(
                 f"Ionization mode with ID '{ionization_mode_id}' not found"
+            )
+
+        if ionization_mode.system_key:
+            raise ValueError(
+                f"Ionization mode '{ionization_mode.ionization_mode_name}' is one "
+                "Mascope ships and cannot be deleted"
             )
 
         # Step 2: Check for associations with samples
