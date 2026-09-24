@@ -9,7 +9,8 @@ fast-forward of 304 commits, the epic branch `epic/assignment-quality` is
 gone, and the feature stays behind `peak_assignment = false` until it is
 switched on. Stage 3 steps land as PRs straight into `develop`, one per
 step, and are named here as they merge; their baseline is the last stage 2
-round (step 2.8, engine 0.5.0, tiering rule set 6).
+round (step 2.8, engine 0.5.0, tiering rule set 6) and, for the chamber
+dataset's sets G to J, the chemist's reading of 2026-09-24 (decision 21).
 
 | step | PR | state |
 |---|---|---|
@@ -42,12 +43,18 @@ round (step 2.8, engine 0.5.0, tiering rule set 6).
 | 2.2b - mass-dependent centre for the mass gate | #2131 | measured: a run's mass gate judges a row at its own m/z where the run's commits demand a centre that follows `ppm = a + b * 1000 / mz`, accepted on peaky's rules; the line is fitted over every committed monoisotopic row (the plan owner's answer, recorded in the step), and the constant centre and the width stay the anchors'. A takes a line on all six samples (-0.113 to -0.137 mDa over m/z 57 to about 500) and C2 on one (-0.077); every other run keeps the constant centre and records the rule that refused the line. It moves no tier, formula, role, owner or cap on 48,894 peaks, and G1, G1 conditioned and G2 are identical on every set: every row that crosses three widths was already below assignability. What moves is `mass_z` - 2,316 rows on A, 130 on C2 - and A's seven itemised curated rows come inside three widths (-3.49..-4.38 to -0.80..-1.62). The plan owner kept the target library's exemption from the cap for now, to be revisited after 2.5d's review (decision 3's third addendum) |
 | 2.7a - reference refresh: peaky's branch rebased on main 0.8.0, re-pinned, the 43 runs re-published | #2151, peaky `epic/v2-fit-reference` at `26e0ff3` | measured: the branch is rebased on peaky's main, pinned to this epic's head and green in CI for the first time since 2.1b, and all 43 runs are re-published at `26e0ff3`, the batch sets pinned to the gate's samples because main's `batch` now picks its own. Against the refreshed reference G1 is 6.1 on A, 10.9 on C, 7.9 on D and 32.7 on B, where the reference is silent on 23.7 points, and G1 conditioned meets 20% on the TOF sets for the first time (E 13.0, F1 7.8, F2 17.1). C2's refreshed reference scores at no offset: step 2.5d's list edits left it four anchors, and peaky skips the labelled reagent's own lines, so C2 is read against the frozen reference until it is recalibrated. `compare_runs.py --engine-b-before` reads the frozen reference from the store |
 | 2.8 - the band first, one reading per ion, the inspector's ionization and list names | #2154 | measured: every row under the top band names it first (14,855 of the round's monoisotopic rows); a row whose ion also reads as a closed-shell molecule through another channel is held at candidate unless a second channel committed its neutral (decision 20), which takes 75 rows from assigned - 70 urea adducts against an ammonium reading the nitrogen rule did not ask and 5 bromide clusters - and returns 12 nitrate clusters on F2 whose only other reading is a carbonate radical; a channel the mode and its profile both name is searched once, so no row lists its own reading as another one (265 on C before), and stays secondary: C's declared carbonate channel keeps the minor-channel cap, on the plan owner's call (decision 20); no owner changes; G2 identical, G7 0; the inspector names the ionization and the reference lists' compounds, looked up on the detail read as Stage A matches |
-| 3.1 - series detection on the batch ledger | - | planned |
-| 3.2 - time-series coherence | - | planned |
-| 3.3 - calibration from verdicts, per profile | - | planned |
-| 3.4 - gate automation | - | planned |
-| 3.5 - profiles as versioned rows, routing by detection | - | planned |
-| 3.6 - m/z calibrants below the brightest lines, and an offset term (calibration node) | - | planned |
+| 3.1 - a profile for the charge-transfer source | - | planned |
+| 3.2 - formate as an opportunistic channel | - | planned |
+| 3.3 - name the source ions | - | planned |
+| 3.4 - an opportunistic channel needs a second channel | - | planned |
+| 3.5 - calibrants below the brightest lines, an offset term, and the low-mass bend (calibration node) | - | planned |
+| 3.6 - priors and the dataset's context | - | planned |
+| 3.7 - stage 3 gate, engine 0.6.0 | - | planned |
+| 4.1 - series detection on the batch ledger | - | planned |
+| 4.2 - time-series coherence | - | planned |
+| 4.3 - calibration from verdicts, per profile | - | planned |
+| 4.4 - gate automation | - | planned |
+| 4.5 - profiles as versioned rows, routing by detection | - | planned |
 
 ## Purpose
 
@@ -79,7 +86,7 @@ measured causes, ranked by the peaks they move:
 Peaky's advantage is its first pass (1,115 of 1,192 main peaks): a bounded,
 profile-driven grid, self-calibration, arbitration with an adduct policy, and
 mechanical tiers. The exotic passes contribute 77 peaks. This plan harvests
-the first pass in three stages and leaves the exotic passes for the data to
+the first pass in four stages and leaves the exotic passes for the data to
 justify.
 
 ### Relationship to the existing designs
@@ -89,7 +96,7 @@ justify.
   batch series) is adopted as the shape of stages 1 and 3. This plan
   re-sequences it by measured impact and makes two changes: presets ship in
   the library and are resolved from the ionization mode first, with the
-  versioned DB rows and their settings UI last (step 3.5), because
+  versioned DB rows and their settings UI last (step 4.5), because
   editability is not what the stakeholders judged; and its harvest map's
   "do not port tiers, degeneracy, self-calibration gates" is reopened -
   the judgement layer is the second-largest gap - but it is reimplemented on
@@ -98,7 +105,7 @@ justify.
   (spectral neighbourhood), L3 (reagent priors) and L5 (arbitration with
   honest verdicts) of that architecture; the fit score stays pure throughout.
 - [verification_calibration_loop.md](verification_calibration_loop.md): step
-  3.3 feeds it Stage B rows and profile keys.
+  4.3 feeds it Stage B rows and profile keys.
 - [peak_assignment_batch_primary.md](peak_assignment_batch_primary.md): stage
   3 runs on the batch ledger's anchors and propagation machinery.
 - The reference-database seed proposal ("Atmospheric CIMS Reference Seed",
@@ -119,7 +126,7 @@ justify.
   the feature dark behind `peak_assignment = false` until it is switched
   on, so a step that lands ships nothing by itself. Each stage ends with
   an engine version bump (`PEAK_ASSIGNMENT_ENGINE_VERSION` 0.4.0, 0.5.0,
-  0.6.0) because each changes results; steps inside a stage do not bump.
+  0.6.0, 0.7.0) because each changes results; steps inside a stage do not bump.
   The reference engine's own changes live on peaky's `epic/v2-fit-reference`,
   which pins `mascope-tools` to a Mascope revision by git source so that
   nothing on peaky's main depends on unreleased code; step 2.7 says when
@@ -157,12 +164,21 @@ justify.
   | D | Orbitrap A | bromide CIMS, negative (the demo dataset's source batch) | 6 | measured |
   | E | TOF, single acquisition set | bromide CIMS, negative | 3 | measured |
   | F | TOF, multi-scheme source | bromide and nitrate CIMS, negative, one day each | 6 + 5 | measured |
+  | G | Orbitrap, chamber oxidation | 15N-nitrate CIMS, negative, with and without reagent ion | 6 + 6 | measured 2026-09-24, no reference run |
+  | H | Orbitrap, chamber oxidation | urea CIMS, positive, with and without reagent ion | 5 + 6 | measured 2026-09-24, no reference run |
+  | I | Orbitrap, chamber oxidation | EASY-IC charge-transfer source, positive and negative | 6 + 6 | measured 2026-09-24, no reference run |
+  | J | TOF, chamber oxidation | nitrate and bromide CIMS mixed, negative | 6 | measured 2026-09-24, not gated (decision 22) |
+
+  Sets G to J are a customer's alpha-pinene chamber oxidation dataset, cloned
+  to the testbed on 2026-09-24 with its processed peak lists (the private
+  testbed note holds the names). They carry no reference run and are judged
+  on the intrinsic metrics G9 to G11 (decision 21).
 
   Sets D to F need peaky reference runs with TOF-appropriate windows where
   the instrument is a TOF (its Orbitrap defaults of 1 ppm trust and 3 ppm
   search are meaningless at 10 ppm accuracy), and the in-app engine's TOF
   window default from step 1.1. The demo dataset carries set D's chemistry
-  in public form, which is what step 3.4 can run in CI. A stage gate is
+  in public form, which is what step 4.4 can run in CI. A stage gate is
   judged on the whole set; a chemistry that regresses blocks the stage even
   when the pooled number improves.
 - **Regression guards.** With the identity profile (`none`) and today's
@@ -663,7 +679,7 @@ The confidence layer. This is where "assigned" starts meaning something.
   every instrument (issue #2095), and decision 3's addendum kept curated
   rows exempt from the cap because ten of the fourteen off-calibration
   monoisotopic rows were one ion at the low-mass edge, off the same way in
-  every sample. Step 3.3 defers the mass-dependent term to verdict anchors
+  every sample. Step 4.3 defers the mass-dependent term to verdict anchors
   below m/z 100. peaky measured the same shape on a labelled-ammonium file
   - the backbone at -0.76 ppm for m/z 80-120, -0.29 at 120-160, -0.18
   above, and every bright ion below m/z 80 at -2 ppm, which is -0.12 mDa,
@@ -1449,98 +1465,112 @@ its own status.
 - **Size.** S. The engine stays at 0.5.0, since steps inside a stage do not
   bump; the rule set is 6.
 
-## Stage 3 - use the batch (engine 0.6.0)
+## Stage 3 - read the source right (engine 0.6.0)
 
-Corroboration that only a batch can give, on the batch ledger.
+What a chemist reading the ledger of a customer's chamber oxidation dataset
+found wrong before any batch is consulted (decision 21). The dataset holds
+six Orbitrap chemistries and a mixed-reagent TOF batch (sets G to J); the
+reading is in the private testbed notes and its numbers are under "Baselines
+on the chamber dataset" below. Each step is small and lands as its own PR
+into `develop`; the stage ends with a gate over sets A to J and the 0.6.0
+bump.
 
-### 3.1 Series detection on the batch ledger
+### 3.1 A profile for the charge-transfer source
 
-- **What.** Port `series_gka.py` units and `series_detect.py`'s
-  decoy-controlled detection (pure) to `mascope_tools.composition.series`.
-  A batch operation, "Detect series", walks from Assigned anchors along
-  CH2, O, H2O, CO, CO2, C2H2O and the profile's contaminant units (C2H6OSi,
-  CF2), proposes members at exact mass among unassigned or candidate
-  anchors, scores them per sample through the batch untargeted propagation
-  chain, and commits only families that beat the decoy offsets (re-derive
-  the 12-link and 3x enrichment thresholds on our data). A member carries
-  `has_anchor`, which 2.4's tiers count as corroboration.
-- **Where.** `batch_untargeted.py`'s propagation and consensus recompute; a
-  route and compute-bar entry beside "Search untargeted".
-- **Verify.** FDR on the decoys per batch; series-derived rows agree with
-  peaky's `residual:series` rows where both exist. peaky's merged ledger
-  now carries `alternatives` (every losing reading, best first) and
-  `stage` (`cover` or `residual`; peaky #43, #44), and `peaky
-  publish-batch` maps fixed columns, so the comparison reads them from
-  peaky's run folder rather than from the import.
-- **Size.** L. Depends on stage 2.
+- **What.** The library gains the EasyIC profile, pulled forward from step
+  4.5 where peaky's port was listed: positive, charge transfer `[M]+.` with
+  hydride abstraction `[M-H]+` and protonation `[M+H]+` as secondary
+  channels (peaky #27, #53); negative, deprotonation with the source's own
+  anions as reagent lines. Both take the ambient context's element caps and
+  ratio windows. A mode declaring only a bare `+` or `-` resolves to this
+  profile - and until it exists, to the identity profile with the ambient
+  context - never to the ESI profiles with no context.
+- **Why.** The two EASY-IC batches of the chamber dataset resolve to
+  `ESI_NEG` and `ESI_POS` with no context, and the untargeted grid (C0-60
+  H0-120 N0-6 O0-25 S0-3, no ratio windows) then commits 357 of 373 assigned
+  neutrals on the negative batch as formulas no atmosphere produces (C4H2N5-,
+  C3N2O-, C3HN4-, median H/C 0.5 on three-carbon molecules) while carbonate,
+  nitrate, bicarbonate, bromide and trifluoroacetate stay unassigned. On the
+  positive batch the toluene radical cation is assigned, protonated toluene
+  is a candidate, and tropylium, a third of the batch's intensity, sits below
+  assignability because `+` is the mode's only mechanism.
+- **Where.** `mascope_tools.composition.profiles` (the polarity fallback and
+  the new profile); the reagent pass's source-ion library for the EasyIC
+  source.
+- **Verify.** Sets I+ and I-: G9 from 51% and 96% to the target; G10 from
+  0. No change on any other set.
+- **Size.** M.
 
-### 3.2 Time-series coherence
+### 3.2 Formate as an opportunistic channel
 
-- **What.** For a neutral seen in two channels, the channels' batch time
-  series (the records series endpoint) must correlate; r >= 0.6 corroborates,
-  anti-correlation demotes to candidate with a reason. A channel holding a
-  constant ratio to a bright parent across the batch is a sidelobe and
-  becomes `artifact`.
-  - **Persistence is admission, not evidence** (peaky #34). A peak
-    present in more of the batch's spectra than the batch's own split of
-    the occurrence distribution is searched however faint, and an M0
-    admitted by persistence alone is capped at candidate until an
-    isotopologue, a channel or a series corroborates it: persistence
-    proves the ion is real, and at a few counts nothing constrains which
-    formula it got.
-  - **Predicted diagnostic satellites in the batch fold** (peaky #45). The
-    15N, 18O, 34S, 29Si, 30Si, 37Cl and 81Br lines of every committed M0
-    sit below the picker's edge in most files and stand only where a plume
-    lifts them; the fold predicts them at the parent's trace centre and
-    stamps a line only where the height ratio holds in the same sample
-    and across the track, since a true satellite passes in nearly every
-    judged sample and an independent compound in few.
-  - **The consensus rule, stated against peaky's.** peaky's merge is a
-    two-stage file-count vote - which ion, then which label - with a
-    curated exemption (peaky #43); Mascope's fold weights by intensity.
-    The two are compared on one batch before either is called right.
-- **Verify.** On the two 400-600-sample testbed batches; compare with
-  peaky's pass-7 skips.
-- **Size.** M. Depends on 2.3 and 2.4.
+- **What.** `+HCOO-` joins the secondary adducts of the negative profiles
+  (nitrate, 15N-nitrate, bromide, iodide), gated on the formate ion at m/z
+  44.998 the way carbonate is gated on its probe, and capped like carbonate.
+  The same-ion policy (decision 20) reaches it: where a peak reads both as a
+  C(n+1) acid deprotonated and as a C(n) neutral with formate, and that C(n)
+  neutral has a reading of its own on a primary channel in the sample, the
+  formate reading is the row's, at candidate unless a second channel commits
+  it.
+- **Why.** In the 15N-nitrate batch without reagent ion a series read as C11
+  acids - C11H20O7 at 263.11 is the batch's strongest assigned peak, with
+  C11H20O5, C11H18O6, C11H18O7, C11H20O8 and C11H20O9 behind it - carries 24%
+  of the assigned-plus-candidate intensity, all at "assigned" with candidate
+  density 1 and errors within 0.15 ppm. Alpha-pinene is C10 and nothing in
+  its oxidation adds a carbon; every one of these formulas is, atom for atom,
+  a C10 product the engine assigns 46 Da lower plus formic acid, and formate
+  is among the strongest ions in the spectra. Neither mass nor co-occurrence
+  can separate the two readings (in spectra this dense any small offset finds
+  a partner), so the chemistry decides, and the engine cannot express the
+  adduct because no profile knows the channel. The formate dimer at 91.004,
+  28% of the M0 intensity with reagent ion, is the same gap.
+- **Where.** `profiles.py` `secondary_adducts` and the channel probe;
+  `engine._apply_minor_channel_policy`; the arbitration's same-ion key.
+- **Verify.** Set G without reagent ion: the assigned C11 anion share of
+  assigned-plus-candidate intensity (G11) from 24% to under 1%, each row
+  moving to its C10 formate reading; the C10 partners' own rows unchanged.
+  No change on a set where the formate probe is absent.
+- **Size.** M.
 
-### 3.3 Calibration from verdicts, per profile
+### 3.3 Name the source ions
 
-- **What.** `assignment_calibration` records the reagent profile (the
-  profiles design's first calibration step); `recalibrate_instrument`
-  admits Stage B rows now that their evidence is on the v2 scale; a review
-  routine on the testbed verifies the top disagreements between the engines
-  (`tier_disagrees`) so labels accumulate; the corroboration weights are
-  refit per profile. The fitted axis gains a mass-dependent term once the
-  verdict anchors reach below m/z 100: after step 2.2 the residual was
-  measured to curve at the low-mass end on every instrument, on files the
-  calibration node marks verified (issue #2095), while the gate's single
-  width caps nothing there.
-- **Verify.** Before and after ECE from the recalibration route; the
-  provisional gate behaves.
-- **Size.** M. Depends on 2.1 and the verification UI (shipped).
+- **What.** The reagent and artifact pass claims the small ions a source
+  makes and a chemist recognises at sight, per polarity and profile: formate,
+  nitrite and its 15N form, the ozone anion, carbonate with its water and
+  hydroxide clusters, bicarbonate and peroxybicarbonate, CF3- and CF3O- (the
+  fluorinated fragments that ride with trifluoroacetic acid), bromide with
+  its water and peroxide clusters where a mode declares bromide, and
+  nitronium, NO+ and O2+ on a charge-transfer source. A claimed row carries
+  role `reagent` or `artifact` and names its ion, as decision 10 requires.
+  Formate and nitrite double as low-mass calibrants for step 3.5.
+- **Why.** These ions are honestly left unassigned today, which is the right
+  failure, but they carry 15% of the summed intensity of the 15N-nitrate
+  batch with reagent ion (formate alone 5.5%) and 63% of the mixed-reagent
+  TOF batch's, and every reading counts them as unassigned intensity. The
+  engine already names the reagent's own ladder; this is the rest of the
+  source.
+- **Where.** `reagent_pass.py`'s library and the profiles' reagent lines.
+- **Verify.** G10 on sets G to J at or above target; G4 unchanged or better;
+  no analyte row claimed (the stage-1 guard).
+- **Size.** S. The union of two reagent libraries on a mixed-reagent mode is
+  not in this step (decision 22).
 
-### 3.4 Gate automation
+### 3.4 An opportunistic channel needs a second channel
 
-- **What.** `compare_runs.py --gate thresholds.json` fails when a metric
-  regresses past its target; a scheduled run on the testbed re-runs the
-  engine on the fixed sample set after each epic merge and posts the table.
+- **What.** `_apply_minor_channel_policy` no longer lifts the cap on an
+  isotopologue alone: a secondary-channel winner reaches "assigned" when a
+  primary channel committed the same neutral in the sample, or a list names
+  it. The isotopologue still counts toward the row's band.
+- **Why.** A 13C partner proves the ion's carbon count, never which neutral
+  clustered: benzene and methanol read through the carbonate channel reached
+  "assigned" on isotopologue corroboration alone. The rule was followed and
+  the chemistry was not.
+- **Where.** `engine.py`, the policy's corroboration branch and its reason
+  in provenance.
+- **Verify.** On sets C, C2 and G the carbonate-channel assigned rows drop to
+  those with a second channel or a list; G7 stays 0; no other set moves.
 - **Size.** S.
 
-### 3.5 Profiles as versioned rows, routing by detection
-
-- **What.** The profiles design's DB half: `reagent_profile` and
-  `chemistry_context` tables seeded from the library, `ionization_mode
-  .reagent_profile_id`, the settings surface, and the fingerprint-based
-  `resolve_ionization_modes_by_peaks` from the setup-simplification
-  proposal. Last because it changes who can edit chemistry, not what the
-  engine concludes. The library also ports the two profiles peaky added
-  after the 1.1 port: EasyIC, the charge-transfer source (`[M]+.`,
-  `[M-H]+`, `[M+H]+` secondary; peaky #27), and 15N-ammonium
-  (`[M+^NH4]+` with a declustering `[M+H]+`, purity 0.98, no
-  opportunistic channels on a labelled run; peaky #30).
-- **Size.** L. Decision D5.
-
-### 3.6 Calibrants below the brightest lines, and an offset term
+### 3.5 Calibrants below the brightest lines, an offset term, and the low-mass bend
 
 - **What.** The m/z calibration node leaves out a calibrant line brighter
   than a cap, as it already leaves out one below `peak_intensity_min`. The
@@ -1572,11 +1602,138 @@ Corroboration that only a batch can give, on the batch ledger.
   Calibrant lists without the reagent ions already exist for the
   higher-m/z nitrate modes of the same instrument; the cap makes that the
   node's rule on every mode.
+- **Why, from the chamber dataset.** The uronium batch with reagent ion
+  sits at +0.9 ppm across the range (median +0.88, interquartile 0.62 to
+  1.15 ppm on assigned rows), which the mass gate absorbs and the node
+  should remove. At m/z 45 to 47 formate and 15N-nitrite read 5 to 11 ppm
+  off while everything above m/z 100 sits within 0.3 ppm: the curve bends
+  where the source ions live. Both are calibration-shape matters, not
+  assignment ones, and the offset term this step adds is the first half of
+  straightening them; the bend needs the low-mass calibrants step 3.3 names.
 - **Verify.** Refit the gate's Orbitrap files with the cap and with today's
   lists. The committed analytes' median error moves toward zero where bright
   lines had pulled a fit, and away from it nowhere.
 - **Size.** S. It is the calibration node's, not the engine's, and it
   re-bases every set it touches, so it lands between rounds.
+
+### 3.6 Priors and the dataset's context
+
+- **What.** Every atmospheric context carries a sulfur prior and an
+  odd-nitrogen prior: a formula with sulfur, or with two or more nitrogens
+  and fewer than two oxygens per nitrogen, needs corroboration beyond the
+  mass fit to reach "assigned". A dataset or batch can name its context
+  once, and a run on `auto` takes it before the profile's default. On a TOF
+  the untargeted grid is bounded by the sample's fitted width rather than the
+  instrument class's 10 ppm.
+- **Why.** Sulfur formulas are 5% of the assigned neutrals in the nitrate
+  batches, 2% in uronium and 22% on the TOF, in an alpha-pinene system with
+  no sulfur source; the chamber context, run by hand on the nitrate
+  representatives, halved them and touched nothing else. The engine
+  auto-resolved "ambient air" for a chamber experiment because nothing told
+  it otherwise.
+- **Where.** `profiles.py` contexts; the run config's context resolution
+  (`resolved_profile.context` from the dataset when set); the grid's window
+  on TOF in the untargeted stage.
+- **Verify.** G9 on every set at or below target with no loss on G2; the
+  TOF set's candidate and below-assignability shares fall.
+- **Size.** S-M.
+
+### 3.7 Stage 3 gate, engine 0.6.0
+
+- Protocol run over sets A to J, status table, version bump, changelog.
+  Expected: G9 at or below 2% and G10 at or above 95% on every gated set,
+  G11 at 0 on set G; G1 and G2 unchanged within noise on sets A to F. Set J
+  is measured and reported, not gated (decision 22).
+
+## Stage 4 - use the batch (engine 0.7.0)
+
+Corroboration that only a batch can give, on the batch ledger.
+
+### 4.1 Series detection on the batch ledger
+
+- **What.** Port `series_gka.py` units and `series_detect.py`'s
+  decoy-controlled detection (pure) to `mascope_tools.composition.series`.
+  A batch operation, "Detect series", walks from Assigned anchors along
+  CH2, O, H2O, CO, CO2, C2H2O and the profile's contaminant units (C2H6OSi,
+  CF2), proposes members at exact mass among unassigned or candidate
+  anchors, scores them per sample through the batch untargeted propagation
+  chain, and commits only families that beat the decoy offsets (re-derive
+  the 12-link and 3x enrichment thresholds on our data). A member carries
+  `has_anchor`, which 2.4's tiers count as corroboration.
+- **Where.** `batch_untargeted.py`'s propagation and consensus recompute; a
+  route and compute-bar entry beside "Search untargeted".
+- **Verify.** FDR on the decoys per batch; series-derived rows agree with
+  peaky's `residual:series` rows where both exist. peaky's merged ledger
+  now carries `alternatives` (every losing reading, best first) and
+  `stage` (`cover` or `residual`; peaky #43, #44), and `peaky
+  publish-batch` maps fixed columns, so the comparison reads them from
+  peaky's run folder rather than from the import.
+- **Size.** L. Depends on stages 2 and 3.
+
+### 4.2 Time-series coherence
+
+- **What.** For a neutral seen in two channels, the channels' batch time
+  series (the records series endpoint) must correlate; r >= 0.6 corroborates,
+  anti-correlation demotes to candidate with a reason. A channel holding a
+  constant ratio to a bright parent across the batch is a sidelobe and
+  becomes `artifact`.
+  - **Persistence is admission, not evidence** (peaky #34). A peak
+    present in more of the batch's spectra than the batch's own split of
+    the occurrence distribution is searched however faint, and an M0
+    admitted by persistence alone is capped at candidate until an
+    isotopologue, a channel or a series corroborates it: persistence
+    proves the ion is real, and at a few counts nothing constrains which
+    formula it got.
+  - **Predicted diagnostic satellites in the batch fold** (peaky #45). The
+    15N, 18O, 34S, 29Si, 30Si, 37Cl and 81Br lines of every committed M0
+    sit below the picker's edge in most files and stand only where a plume
+    lifts them; the fold predicts them at the parent's trace centre and
+    stamps a line only where the height ratio holds in the same sample
+    and across the track, since a true satellite passes in nearly every
+    judged sample and an independent compound in few.
+  - **The consensus rule, stated against peaky's.** peaky's merge is a
+    two-stage file-count vote - which ion, then which label - with a
+    curated exemption (peaky #43); Mascope's fold weights by intensity.
+    The two are compared on one batch before either is called right.
+- **Verify.** On the two 400-600-sample testbed batches; compare with
+  peaky's pass-7 skips.
+- **Size.** M. Depends on 2.3 and 2.4.
+
+### 4.3 Calibration from verdicts, per profile
+
+- **What.** `assignment_calibration` records the reagent profile (the
+  profiles design's first calibration step); `recalibrate_instrument`
+  admits Stage B rows now that their evidence is on the v2 scale; a review
+  routine on the testbed verifies the top disagreements between the engines
+  (`tier_disagrees`) so labels accumulate; the corroboration weights are
+  refit per profile. The fitted axis gains a mass-dependent term once the
+  verdict anchors reach below m/z 100: after step 2.2 the residual was
+  measured to curve at the low-mass end on every instrument, on files the
+  calibration node marks verified (issue #2095), while the gate's single
+  width caps nothing there.
+- **Verify.** Before and after ECE from the recalibration route; the
+  provisional gate behaves.
+- **Size.** M. Depends on 2.1 and the verification UI (shipped).
+
+### 4.4 Gate automation
+
+- **What.** `compare_runs.py --gate thresholds.json` fails when a metric
+  regresses past its target; a scheduled run on the testbed re-runs the
+  engine on the fixed sample set after each epic merge and posts the table.
+- **Size.** S.
+
+### 4.5 Profiles as versioned rows, routing by detection
+
+- **What.** The profiles design's DB half: `reagent_profile` and
+  `chemistry_context` tables seeded from the library, `ionization_mode
+  .reagent_profile_id`, the settings surface, and the fingerprint-based
+  `resolve_ionization_modes_by_peaks` from the setup-simplification
+  proposal. Last because it changes who can edit chemistry, not what the
+  engine concludes. The library also ports 15N-ammonium, the second
+  profile peaky added after the 1.1 port (`[M+^NH4]+` with a declustering
+  `[M+H]+`, purity 0.98, no opportunistic channels on a labelled run; peaky
+  #30); the first, EasyIC, moved forward to step 3.1.
+- **Size.** L. Decision D5.
 
 ## Metrics and targets
 
@@ -1802,7 +1959,7 @@ The stage targets below are stated for the Orbitrap sets A-D and C2; C and D
 start from a worse baseline than A and B and are held to the same targets, and
 C2 is held to C's.
 
-| metric | today A | today B | today C | after stage 1 | after stage 2 | after stage 3 |
+| metric | today A | today B | today C | after stage 1 | after stage 2 | after stage 4 (the batch) |
 |---|---|---|---|---|---|---|
 | G1 "assigned" rows the reference does not confirm (stage 1 gate: A 41.5%, B 24.3%, C 41.5%, D 37.3% - met; C2 55.2% - missed. After 2.1: A 35.4, B 18.9, C 34.7, C2 40.1, D 21.0 - met on all five, and B inside the stage-2 bound. After 2.4, read on the rows the reference commits an M0 on (decision 14): A 3.1, B 12.3, C 1.3, C2 0.4, D 1.4 - met on all five - against A 23.0, B 36.9, C 21.0, C2 23.1, D 8.4 unconditioned. Stage 2 gate (0.5.0, against the refreshed reference): A 6.1, B 32.7, C 10.9, C2 19.8, D 7.8 - met on A, C, C2 and D; conditioned, within 20% on all eight sets) | 73% | 57% | 99% | <= 45% | <= 20% | <= 15% |
 | G2 reference Assigned peaks recovered: same formula / same ion (stage 1 gate: A 95.6/97.2% and B 95.2/96.1% - both bounds met; C 87.3/87.9% and D 80.1/82.3% - same formula met, same ion missed; C2 68.3% - missed, and 4.2 points of it are the nitrate ladder the pre-pass correctly claims. After 2.1: A 95.6/97.2, B 95.2/96.1, C 87.7/88.2, C2 74.9/74.9, D 80.6/82.8. Stage 2 gate, refreshed reference: A 95.2/96.6, B 93.8/94.8, C 93.7/93.7, C2 87.2/87.2, D 85.0/86.6 - the formula bound met on all five) | 39% / - | 12% / - | 18% / - | >= 80% / >= 95% (A, C), >= 70% / >= 95% (B) | >= 85% / >= 95% | hold |
@@ -3724,12 +3881,50 @@ width therefore stands for untargeted rows, as decision 3's addendum found for
 curated ones. What the measurement names is a calibration-shape defect on
 files the node marks verified, recorded on issue #2095; a mass-dependent term
 belongs in the fitted axis once anchors reach below m/z 100, which is step
-3.3's, not in the gate.
+4.3's, not in the gate.
+
+### Baselines on the chamber dataset (2026-09-24)
+
+Sets G to J, read on chemical plausibility with no reference run (decision
+21). Three intrinsic metrics join the gate:
+
+- **G9, implausible assigned neutrals:** the share of assigned M0 neutrals
+  that carry sulfur in a sulfur-free system, or two or more nitrogens with
+  fewer than two oxygens per nitrogen, or H/C above 2.4, or a negative
+  double-bond equivalent. Target at or below 2% on every set.
+- **G10, source ions named:** the share of the summed intensity on the source
+  and reagent ions of step 3.3's list that a run parks as reagent or
+  artifact. Target at or above 95%.
+- **G11, formate pseudo-acids:** the share of assigned-plus-candidate M0
+  intensity on assigned rows read as a C(n+1) acid whose C(n) formate reading
+  has a partner assigned in the sample. Target 0 at "assigned".
+
+| set | samples | peaks per sample | intensity assigned / candidate / reagent / unassigned | G9 | G10 | G11 | mass error, assigned rows |
+|---|---|---|---|---|---|---|---|
+| G, no reagent ion | 6 | 1,530 | 58 / 21 / 0 / 9 % | 5.1% (120 of 2,364) | 0 | 24% (250 rows) | +0.14 ppm |
+| G, reagent ion | 6 | 619 | 16 / 24 / 40 / 15 % | 4.0% (38 of 939) | reagent ladder only | 0.8% (34) | +0.15 ppm |
+| H, no reagent ion | 6 | 1,212 | 69 / 19 / 0 / 1 % | 2.4% (73 of 3,039) | - | 0 | +0.01 ppm |
+| H, reagent ion | 5 | 328 | 1 / 1 / 96 / 1 % | 4.0% (18 of 445) | reagent ladder only | 0 | +0.88 ppm |
+| I, negative | 6 | 224 | 23 / 36 / 0 / 39 % | 96% (357 of 373) | 0 | 0 | +0.43 ppm |
+| I, positive | 6 | 134 | 3 / 25 / 0 / 44 % (24% below assignability) | 51% (124 of 243) | 0 | 0 | -0.27 ppm |
+| J | 6 | 1,383 | 4 / 4 / 7 / 74 % | 25% (164 of 645) | nitrate ladder only; bromide 0 | 0.3% (36) | +0.32 ppm (worst 9) |
+
+What the reading confirmed as sound, for the record: the reagent ladders of
+every profile are parked correctly (15N-nitrate, its acid dimer and water
+clusters; urea, its dimer and trimer; nitrate's on the TOF); the first-
+generation alpha-pinene products come out on top in the chemistry-aware
+batches (pinonic, norpinonic and the C10 hydroxy acids deprotonated;
+pinonaldehyde, pinonic acid and the C10H14O class protonated and as urea
+adducts, each through two channels); the contaminant lists name
+bis(2-ethylhexyl) phthalate, triethyl phosphate, the D3 siloxane and the
+perfluorinated acids in every ion form; isotopologue bookkeeping holds
+(median 13C abundance error 0.07 to 0.08); and mass accuracy on assigned rows
+is within 0.4 ppm interquartile wherever the calibration is good.
 
 ## Decisions (taken 2026-09-07)
 
 1. **Presets before rows.** Profiles ship as library presets resolved from
-   the ionization mode; the versioned DB rows and settings UI are step 3.5.
+   the ionization mode; the versioned DB rows and settings UI are step 4.5.
    The run config snapshot keeps runs reproducible without a schema change.
 2. **The same-ion policy.** The adduct or cluster reading wins when two
    candidates form the same ion; the covalent reading is kept as a flagged
@@ -3991,7 +4186,7 @@ belongs in the fitted axis once anchors reach below m/z 100, which is step
     P(correct) refused on Stage B rows because the curve was fitted on v2 -
     and one thing it mislabels: every Stage B row is stamped `score_version`
     2 while its fit is v1, contained only because calibration admits Stage A
-    rows until 3.3. So after 2.1 the engine computes one fit, v2, with the
+    rows until 4.3. So after 2.1 the engine computes one fit, v2, with the
     real per-peak signal-to-noise from the filestore, in the finder's
     election and in the re-score, and v1's number is carried nowhere - not
     in provenance for audit, as this step first said. The feature is in
@@ -4093,8 +4288,8 @@ belongs in the fitted axis once anchors reach below m/z 100, which is step
     unreleased library, and it is rebased on main at 2.7a and at the
     release. peaky's isoprene list is lifted in 2.5b, its mass-dependent
     centre becomes step 2.2b, its persistence admission, predicted
-    satellites and vote rule are named in 3.2, and its two new profiles in
-    3.5. *Refreshed 2026-09-17 by step 2.7a: the branch is `26e0ff3`, the
+    satellites and vote rule are named in 4.2, and its two new profiles in
+    3.1 and 4.5. *Refreshed 2026-09-17 by step 2.7a: the branch is `26e0ff3`, the
     twelve commits and one that re-pins the library to this epic's head.*
 
 17. **A source's window, radical allowance and polarity live on its row,
@@ -4241,7 +4436,7 @@ belongs in the fitted axis once anchors reach below m/z 100, which is step
       toward agreement with it. The gate still reports G1 and G2, and the plan
       returns to them when the rework lands.
     - **A mass offset across the range is the calibration node's to remove.**
-      The offset term goes into the node's fit (step 3.6) rather than a
+      The offset term goes into the node's fit (step 3.5) rather than a
       second centre into the engine's scoring: data is calibrated before it
       is assigned.
     - **Declaring a channel does not make its reagent the mode's own**
@@ -4251,6 +4446,26 @@ belongs in the fitted axis once anchors reach below m/z 100, which is step
       uncorroborated winner through it stays capped at candidate. A channel
       the profile names secondary stays secondary wherever a mode declares
       it.
+21. **The source is read before the batch** (taken 2026-09-24 by the plan
+    owner, on a chemist's reading of a customer chamber oxidation dataset:
+    six Orbitrap chemistries and a mixed-reagent TOF batch, sets G to J).
+    What the reading found ranks above batch corroboration: a profile for
+    the charge-transfer source, a formate channel, the source ions named, a
+    second channel for an opportunistic one, calibration before assignment,
+    and priors with the dataset's context become stage 3; the batch stage
+    becomes stage 4 and its engine version 0.7.0. The dataset is judged on
+    chemical plausibility alone (G9 to G11), with no reference run: decision
+    20's second bullet taken further, since there is nothing to target.
+22. **Mixed-reagent modes wait for the ingest split** (taken 2026-09-24 by
+    the plan owner). The mixed nitrate and bromide TOF batch (set J) resolves
+    to the nitrate profile and the bromide half of its reagent chemistry,
+    63% of its intensity, goes unnamed. The engine's fix would be the union
+    of every declared reagent channel's library, but such acquisitions are
+    not typical, and the ingest routing and splitting design
+    (`ingest_routing_and_splitting.md`, #2098 phase 2) splits a
+    multi-chemistry acquisition into sample items of one chemistry each,
+    after which each item resolves to its own profile. Set J is measured at
+    every gate and not gated until then.
 
 ## Risks
 
@@ -5999,7 +6214,7 @@ both on *Auto*.
   holds no copy of the fingerprint. Two read routes resolve a run config's names
   over a sample or over a batch's samples, from their ionization modes and
   polarities. The detection order and the polarity fallback therefore stay in
-  `detect_reagent_profile`, where step 3.5 will change them. A batch gets one
+  `detect_reagent_profile`, where step 4.5 will change them. A batch gets one
   answer per distinct resolution with its sample count, since the batch search
   resolves per sample.
 - **What a preview leaves out.** It names the profile, the context and the grid
@@ -6319,7 +6534,7 @@ both references. Since step 2.7a, three things changed:
   - The node's Orbitrap fit is one factor, the median of its lines, so it could
     not move. The plan owner's rule is that the brightest peaks are not
     calibrants: they carry artifacts and distortion on both instruments (step
-    3.6).
+    3.5).
 - **How.** The six files were refitted on a list without the reagent's own
   lines: nitric acid's weak lines, acetic acid, malonic through azelaic acid
   and palmitic acid, all existing compounds. The fit and the apply are the
@@ -6451,7 +6666,8 @@ terms, this is the point at which the feature can be re-presented.
   reading of today's reference, not a settled one.
 - **Stage 3's order** stands: 3.1 series, 3.2 time series (which also settles
   where a polyhalide came from), 3.3 calibration from verdicts, 3.4 gate
-  automation, 3.5 profiles as rows. 3.6, the calibration node's cap, is
+  automation, 3.5 profiles as rows (renumbered 4.1 to 4.5 on 2026-09-24,
+  decision 21). 3.6, the calibration node's cap (now step 3.5), is
   independent of the others.
 
 #### Verify, item by item
@@ -6582,7 +6798,7 @@ from 51 to 44, and all 38,190 committed rows carry their reasons.
 
 peaky's residual explainer, ladder gap-fill, labelled-reagent rescue and
 certified-neutral passes (77 peaks on the testbed; revisit with the data
-after stage 3); retention-time and MS2 evidence (their own designs); the
+after stage 4); retention-time and MS2 evidence (their own designs); the
 reagent axis' eventual move into `IonizationSetup`
 ([ionization_method_config.md](ionization_method_config.md)).
 
@@ -6594,7 +6810,7 @@ reagent axis' eventual move into `IonizationSetup`
   confidence architecture.
 - [peak_assignment_paradigm.md](peak_assignment_paradigm.md) - the engine.
 - [peak_assignment_batch_primary.md](peak_assignment_batch_primary.md) - the
-  batch ledger stage 3 builds on.
+  batch ledger stage 4 builds on.
 - [verification_calibration_loop.md](verification_calibration_loop.md) -
   verdicts to calibration.
 - [reference_data_authoring.md](reference_data_authoring.md) and the
