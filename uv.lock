@@ -1858,7 +1858,7 @@ requires-dist = [
     { name = "mascope-file", editable = "libraries/file" },
     { name = "mascope-runtime", editable = "libraries/runtime" },
     { name = "numpy", specifier = "~=2.5" },
-    { name = "opentfraw", specifier = "~=1.4" },
+    { name = "opentfraw", specifier = "==1.4.0" },
     { name = "pythonnet", specifier = "~=3.1" },
     { name = "xarray", specifier = ">=2026.7.0" },
 ]
