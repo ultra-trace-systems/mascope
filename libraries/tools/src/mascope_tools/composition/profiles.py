@@ -17,7 +17,9 @@ axes would be five reagents times nine contexts of duplicated data.
 
 The presets are ported from peaky's ``chem/profiles.py`` and ``chem/contexts.py``
 (github.com/ultra-trace-systems/peaky), where they were fitted on real
-Br-/uronium/NO3-/I- campaigns. Two things are deliberately *not* ported:
+Br-/uronium/NO3-/I- campaigns; the charge-transfer profiles followed in step
+3.1, from peaky's EasyIC profile and a chemist's reading of a chamber dataset
+measured on that source. Two things are deliberately *not* ported:
 
 - peaky's context also carries a CHO(N) grid box (``grid_c_max``/``grid_o_max``)
   because its passes build the grid from the context. Here the grid belongs to
@@ -550,9 +552,89 @@ ESI_NEG = ReagentProfile(
     aliases=("esi-", "esi-neg", "negative"),
 )
 
+#: The charge-transfer source. An Orbitrap's EASY-IC internal-calibration
+#: source is a fluoranthene ion beam, and run as a low-pressure chemical
+#: ionization source it ionizes the sample by charge transfer: a mode built on
+#: it declares the bare sign - electron transfer, ``[M]+.`` or ``[M]-.`` - and
+#: nothing else. Before this profile existed such a mode fell to the ESI
+#: preset of its polarity, a C60 grid with no matrix prior, and on a chamber
+#: dataset that read 357 of the 373 neutrals it committed on the negative
+#: batch as formulas no atmosphere makes (C4H2N5-, C3N2O-, C3HN4-) while the
+#: source's own ions stayed unassigned.
+#:
+#: The grid is peaky's EasyIC grid: reduced, hydrocarbon-rich chemistry
+#: rather than an oxidation-product source, so it stops at O15 in positive
+#: mode. Both polarities take the ambient-air context, whose element caps and
+#: ratio windows are what reject the nitrogen-rich, hydrogen-poor formulas
+#: above; the PAH corner peaky's own context opens (H/C down to 0.3) is left to
+#: a reference list, since the one PAH the source is certain to show is its
+#: reagent, and the reagent pass names that.
+#:
+#: The reagent's own channels are opportunistic here, not declared: charge
+#: transfer keeps an aromatic intact as its radical cation, but the same source
+#: abstracts a hydride from an alcohol or an alkane (``[M-H]+``, ethanol's only
+#: channel, and the tropylium ion of toluene) and protonates where a proton is
+#: to be had (``[M+H]+``, protonated acetone). In negative mode the anions the
+#: discharge makes deprotonate acids (``[M-H]-``). A mode declares only the bare
+#: sign, so those channels are searched as secondary ones - switched on by the
+#: source's own fingerprint and capped at candidate without corroboration -
+#: and a same-ion family that reads one peak both as a radical through the bare
+#: sign and as a closed-shell molecule through one of them elects the molecule.
+EASYIC_POS = ReagentProfile(
+    name="EASYIC_POS",
+    label="Charge transfer (EASY-IC), positive",
+    polarity="+",
+    element_ranges="C0-40 H0-80 N0-5 O0-15 S0-2",
+    reagent_formula="C16H10",
+    detection=("+",),
+    # Hydride abstraction (``-H-``: a hydride removed leaves a cation) and
+    # proton transfer. Both are real channels of this source and neither is
+    # what a mode declares; see ``reagents.SECONDARY_CHANNELS`` for what
+    # switches each on.
+    secondary_adducts=("-H-", "+H+"),
+    default_context=AMBIENT_AIR.name,
+    aliases=(
+        "easyic",
+        "easy-ic",
+        "easyic+",
+        "easy-ic+",
+        "charge-transfer",
+        "charge-transfer+",
+        "ct+",
+        "fluoranthene",
+    ),
+)
+
+EASYIC_NEG = ReagentProfile(
+    name="EASYIC_NEG",
+    label="Charge transfer (EASY-IC), negative",
+    polarity="-",
+    # Oxygen to 20: the negative source reads acids, and a deprotonated acid
+    # carries more oxygen than the hydrocarbons the positive one keeps intact.
+    element_ranges="C0-40 H0-80 N0-5 O0-20 S0-2",
+    reagent_formula="C16H10",
+    detection=("-",),
+    # Deprotonation, opened where the spectrum shows the source's anions
+    # deprotonating acids of their own.
+    secondary_adducts=("-H+",),
+    default_context=AMBIENT_AIR.name,
+    aliases=("easyic-", "easy-ic-", "charge-transfer-", "ct-"),
+)
+
 REAGENT_PROFILES: dict[str, ReagentProfile] = {
     profile.name: profile
-    for profile in (NO_PROFILE, BR, UR, NO3, NO3_15N, IODIDE, ESI_POS, ESI_NEG)
+    for profile in (
+        NO_PROFILE,
+        BR,
+        UR,
+        NO3,
+        NO3_15N,
+        IODIDE,
+        EASYIC_POS,
+        EASYIC_NEG,
+        ESI_POS,
+        ESI_NEG,
+    )
 }
 
 _PROFILE_ALIASES: dict[str, str] = {
@@ -563,10 +645,23 @@ _PROFILE_ALIASES: dict[str, str] = {
 
 #: Fingerprint order. A mode carrying several diagnostic mechanisms resolves the
 #: same way every time, and the labelled nitrate is tested before the unlabelled
-#: one because a 15N deployment often keeps both mechanisms on the mode.
-_DETECTION_ORDER: tuple[ReagentProfile, ...] = (UR, NO3_15N, NO3, BR, IODIDE)
+#: one because a 15N deployment often keeps both mechanisms on the mode. The
+#: bare sign comes after every reagent: a reagent mode that also declares
+#: electron transfer is still that reagent's source, and only a mode with no
+#: reagent at all is read as the charge-transfer one.
+_DETECTION_ORDER: tuple[ReagentProfile, ...] = (
+    UR,
+    NO3_15N,
+    NO3,
+    BR,
+    IODIDE,
+    EASYIC_POS,
+    EASYIC_NEG,
+)
 
-#: The generic profile per polarity, used when no mechanism is diagnostic.
+#: The generic profile per polarity, used when no mechanism is diagnostic and
+#: the mode declares no bare sign either - protonation or deprotonation alone,
+#: which is how an electrospray or APCI mode is written.
 #: Keyed by the single-character form the sample row carries, with the spelled-out
 #: words accepted too - the same polarity is written both ways across the codebase
 #: (a sample is "+", a batch "pos"), and a fallback that silently missed on the
@@ -620,9 +715,12 @@ def detect_reagent_profile(
 
     The mechanism panel is the fingerprint the deployment already maintains:
     a mode carrying ``+(CH4N2O)H+`` is a urea source whatever it is named, and
-    one carrying ``+Br-`` is a bromide source. Only when nothing is diagnostic
-    does the polarity decide, and then the answer is the generic ESI preset -
-    a broad grid and no matrix prior, because nothing was learned.
+    one carrying ``+Br-`` is a bromide source. A mode with no reagent whose
+    panel carries the bare sign - electron transfer, which is how a
+    charge-transfer source such as an Orbitrap's EASY-IC is declared - is
+    that source. Only when nothing at all is diagnostic does the polarity
+    decide, and then the answer is the generic ESI preset - a broad grid and
+    no matrix prior, because nothing was learned.
 
     :param mechanism_notations: The mode's mechanism notations, in the form the
         mechanism table stores (``"+Br-"``, ``"+(CH4N2O)H+"``).

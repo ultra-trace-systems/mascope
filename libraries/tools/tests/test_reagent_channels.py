@@ -25,6 +25,9 @@ UREA_AMMONIUM = 138.0986  # [(CH4N2O)2+NH4]+
 UREA_SODIUM = 83.0216  # [(CH4N2O)+Na]+
 CARBONATE = 59.9853  # [CO3]-
 DIBROMIDE = 157.8372  # [Br2]-
+FLUORANTHENE_CATION = 202.0777  # [C16H10]+
+HYDRONIUM = 19.0178  # [H3O]+
+BICARBONATE = 60.9931  # [HCO3]-
 
 
 class TestTheProbes:
@@ -66,6 +69,21 @@ class TestTheProbes:
         assert R.present_notations(evidence) == ["+NH4+"]
         assert evidence[0].probe == probe.label
         assert evidence[0].mz_error_ppm == pytest.approx(7.0, abs=0.1)
+
+    def test_the_charge_transfer_probes_land_on_the_fluoranthene_beam(self):
+        by_label = {
+            probe.label: probe
+            for channel in R.secondary_channels("EASYIC_POS")
+            for probe in channel.probes
+        }
+        assert by_label["[C16H10]+"].mz == pytest.approx(FLUORANTHENE_CATION, abs=5e-4)
+        assert by_label["[H3O]+"].mz == pytest.approx(HYDRONIUM, abs=5e-4)
+        negative = {
+            probe.label: probe
+            for channel in R.secondary_channels("EASYIC_NEG")
+            for probe in channel.probes
+        }
+        assert negative["[HCO3]-"].mz == pytest.approx(BICARBONATE, abs=5e-4)
 
     def test_a_channel_with_no_probes_can_never_switch_on(self):
         channel = R.SecondaryChannel(notation="+Xx+", label="Unprovable")
@@ -115,6 +133,45 @@ class TestDetection:
         mz, intensity = _spectrum((DIBROMIDE, 0.05))
         evidence = R.detect_channels(R.secondary_channels("BR"), mz, intensity, ppm=5.0)
         assert R.present_notations(evidence) == ["+Br2-"]
+
+    def test_the_fluoranthene_ion_switches_hydride_abstraction_on(self):
+        # The reagent cation is the hydride acceptor: where the beam is, the
+        # abstraction channel is. Proton transfer needs its own evidence.
+        mz, intensity = _spectrum((FLUORANTHENE_CATION, 0.3), (300.0, 0.01))
+        evidence = R.detect_channels(
+            R.secondary_channels("EASYIC_POS"), mz, intensity, ppm=5.0
+        )
+        assert R.present_notations(evidence) == ["-H-"]
+        assert evidence[0].probe == "[C16H10]+"
+
+    def test_a_narrow_window_leaves_the_charge_transfer_channels_on(self):
+        # The chamber batches this profile was measured on were acquired at
+        # m/z 42 to 160, below every probe. The source ran all the same, so
+        # the window's silence is a fact about the window - the nitrate
+        # carbonate ruling, applied to a source whose reagent sits at 202.
+        mz, intensity = _spectrum((50.0, 0.01), (150.0, 0.01))
+        evidence = R.detect_channels(
+            R.secondary_channels("EASYIC_POS"), mz, intensity, ppm=5.0
+        )
+        assert R.present_notations(evidence) == ["-H-", "+H+"]
+        assert {item.status for item in evidence} == {R.STATUS_UNOBSERVABLE}
+
+    def test_a_wide_window_without_the_beam_switches_them_off(self):
+        # Every probe inside the acquisition and none matched: the source is
+        # not running charge transfer, whatever the mode is called.
+        mz, intensity = _spectrum((50.0, 0.01), (450.0, 0.01))
+        evidence = R.detect_channels(
+            R.secondary_channels("EASYIC_POS"), mz, intensity, ppm=5.0
+        )
+        assert R.present_notations(evidence) == []
+
+    def test_the_source_acids_switch_deprotonation_on(self):
+        mz, intensity = _spectrum((BICARBONATE, 0.02), (300.0, 0.01))
+        evidence = R.detect_channels(
+            R.secondary_channels("EASYIC_NEG"), mz, intensity, ppm=5.0
+        )
+        assert R.present_notations(evidence) == ["-H+"]
+        assert evidence[0].probe == "[HCO3]-"
 
 
 class TestTheRecord:

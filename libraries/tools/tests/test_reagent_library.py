@@ -57,6 +57,10 @@ class TestTheLibraryMasses:
             ("UR", "[CH4N2O+H]+", 61.0396),
             ("UR", "[(CH4N2O)2+H]+", 121.0720),
             ("UR", "[(CH4N2O)3+H]+", 181.1044),
+            ("EASYIC_POS", "[C16H10]+", 202.0777),
+            ("EASYIC_POS", "[C16H10+H]+", 203.0855),
+            ("EASYIC_POS", "[C16H10-C2H2]+", 176.0621),
+            ("EASYIC_NEG", "[C16H10]-", 202.0788),
         ],
     )
     def test_a_known_reagent_ion_lands_where_it_should(self, profile, label, expected):
@@ -83,7 +87,7 @@ class TestTheLibraryMasses:
 
     def test_no_two_ions_of_one_library_share_a_mass(self):
         """Or a claim would depend on the order the table happens to be in."""
-        for profile in ("BR", "IODIDE", "NO3", "NO3_15N", "UR"):
+        for profile in ("BR", "IODIDE", "NO3", "NO3_15N", "UR", "EASYIC_POS"):
             masses = sorted(cluster.mz for cluster in reagent_library(profile))
             for lower, upper in zip(masses, masses[1:]):
                 separation = (upper - lower) / lower * 1e6
@@ -97,6 +101,18 @@ class TestWhatTheLibraryRefusesToClaim:
         """An electrospray makes no one carrier whose clusters could be listed."""
         assert reagent_library("ESI_POS") == ()
         assert reagent_library("ESI_NEG") == ()
+
+    def test_the_charge_transfer_library_is_the_reagent_beam_alone(self):
+        """Every atom is fluoranthene's. The air-plasma cations the discharge
+        throws are the source's but not the reagent's, and the anions a
+        negative source makes from air carry sample oxygen; both belong to
+        the source-ion step, not here."""
+        for profile in ("EASYIC_POS", "EASYIC_NEG"):
+            for cluster in reagent_library(profile):
+                assert set(cluster.formula) <= set("CH0123456789"), cluster.label
+        anchors = [c.label for c in reagent_library("EASYIC_POS") if c.anchor]
+        assert anchors == ["[C16H10]+"]
+        assert [c.label for c in reagent_library("EASYIC_NEG")] == ["[C16H10]-"]
         assert reagent_library("none") == ()
 
     def test_the_urea_monomer_ammonium_is_a_probe_but_not_a_claim(self):

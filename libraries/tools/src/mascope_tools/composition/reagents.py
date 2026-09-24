@@ -249,6 +249,49 @@ _DIBROMIDE_PROBES = (ProbeIon("Br2", -1, "[Br2]-"),)
 _DIIODIDE_PROBES = (ProbeIon("I2", -1, "[I2]-"),)
 
 
+#: The fluoranthene ion of a charge-transfer (EASY-IC) source, in the polarity
+#: the source runs. Its presence is the statement that the fluoranthene beam is
+#: what ionizes this sample, which is what the source's abstraction channel
+#: needs: the reagent cation is the hydride acceptor, so where it is, so is
+#: hydride abstraction.
+_FLUORANTHENE_CATION_PROBES = (
+    ProbeIon("C16H10", 1, "[C16H10]+"),
+    ProbeIon("C16H9", 1, "[C16H10-H]+"),
+)
+
+#: Evidence that a charge-transfer source has protons to give: its own reagent
+#: protonated, and the hydronium series a wet source makes. The dry source
+#: shows the first and none of the second, which is why fluoranthene is listed
+#: and not water alone.
+_PROTON_TRANSFER_PROBES = (
+    ProbeIon("C16H11", 1, "[C16H10+H]+"),
+    ProbeIon("H3O", 1, "[H3O]+"),
+    ProbeIon("H5O2", 1, "[H3O+H2O]+"),
+)
+
+#: The deprotonated acids a negative charge-transfer source makes on its own:
+#: bicarbonate, nitrate, formate and nitrite, the anions of the carbonic,
+#: nitric, formic and nitrous acids in any air sample. Where the source's
+#: anions have taken a proton off those, they take one off the sample's acids.
+_DEPROTONATED_ACID_PROBES = (
+    ProbeIon("CHO3", -1, "[HCO3]-"),
+    ProbeIon("NO3", -1, "[NO3]-"),
+    ProbeIon("CHO2", -1, "[HCOO]-"),
+    ProbeIon("NO2", -1, "[NO2]-"),
+)
+
+#: Why the charge-transfer channels default ON where a spectrum could not have
+#: shown them. The fluoranthene ion sits at m/z 202, and the acquisitions this
+#: source is used for are narrow: the chamber batches that measured this
+#: profile were acquired at m/z 42 to 160, where no fluoranthene ion, no
+#: hydronium and no reagent-derived cluster could appear. The source ran all
+#: the same, so the window's silence is a fact about the window.
+_CHARGE_TRANSFER_NOTE = (
+    "the fluoranthene beam is the source's own reagent and this acquisition "
+    "cannot show it below m/z 202, so its silence is not evidence"
+)
+
+
 #: Why the nitrate profiles default their carbonate channel ON where a spectrum
 #: could not have shown it. Measured on a broad-window (m/z 50-650) run of the
 #: same chemistry as the narrow gate set: every sample carries [CO3]- at 0.5-1.0%
@@ -330,6 +373,38 @@ SECONDARY_CHANNELS: dict[str, tuple[SecondaryChannel, ...]] = {
             label="Diiodide cluster",
             probes=_DIIODIDE_PROBES,
             note="the reagent's own second cluster rung",
+        ),
+    ),
+    "EASYIC_POS": (
+        SecondaryChannel(
+            notation="-H-",
+            label="Hydride abstraction",
+            probes=_FLUORANTHENE_CATION_PROBES,
+            when_unobservable=UNOBSERVABLE_ON,
+            note=_CHARGE_TRANSFER_NOTE,
+        ),
+        SecondaryChannel(
+            notation="+H+",
+            label="Proton transfer",
+            probes=_PROTON_TRANSFER_PROBES,
+            when_unobservable=UNOBSERVABLE_ON,
+            note=(
+                "protonated fluoranthene or hydronium: the source has protons "
+                "to give; " + _CHARGE_TRANSFER_NOTE
+            ),
+        ),
+    ),
+    "EASYIC_NEG": (
+        SecondaryChannel(
+            notation="-H+",
+            label="Deprotonation",
+            probes=_DEPROTONATED_ACID_PROBES,
+            when_unobservable=UNOBSERVABLE_ON,
+            note=(
+                "the source's anions deprotonate the acids of air; where "
+                "bicarbonate, nitrate, formate or nitrite is in the spectrum "
+                "they deprotonate the sample's acids too"
+            ),
         ),
     ),
     "ESI_POS": (
@@ -561,6 +636,8 @@ KIND_ADDUCT = "adduct"
 KIND_OXIDE = "oxide"
 #: A bright ion the source throws that is not a rung of any ladder.
 KIND_BACKGROUND = "background"
+#: A fragment of the reagent ion itself.
+KIND_FRAGMENT = "fragment"
 
 
 @dataclass(frozen=True)
@@ -785,6 +862,41 @@ def _urea_clusters(
     return tuple(clusters)
 
 
+def _fluoranthene_ladder() -> tuple[ReagentCluster, ...]:
+    """The charge-transfer source's own ions: the fluoranthene beam.
+
+    The reagent cation ``[C16H10]+`` at m/z 202.078 anchors the pass - the
+    brightest thing an EASY-IC source makes in a window that reaches it, and
+    an aromatic no chamber or ambient sample shows at that height. Around it
+    sit what the beam does to itself: the hydrogen-loss fragment, the
+    protonated ion, the dimer, and the acetylene-loss fragments that are the
+    canonical PAH cation fragmentation (``-C2H2`` with ``-H``, so a fragment
+    cannot gain hydrogen, which is what makes those two attributable).
+
+    Every atom here is the reagent's own. The air-plasma cations the discharge
+    also throws (nitronium, NO+, O2+) are the source's but not the reagent's,
+    and belong to the source-ion step of the plan (3.3) rather than to this
+    ladder.
+    """
+    return (
+        ReagentCluster("C16H10", 1, "[C16H10]+", KIND_CLUSTER, anchor=True),
+        ReagentCluster("C16H9", 1, "[C16H10-H]+", KIND_FRAGMENT),
+        ReagentCluster("C16H11", 1, "[C16H10+H]+", KIND_ADDUCT),
+        ReagentCluster("C32H20", 1, "[(C16H10)2]+", KIND_CLUSTER),
+        ReagentCluster("C14H8", 1, "[C16H10-C2H2]+", KIND_FRAGMENT),
+        ReagentCluster("C12H6", 1, "[C16H10-2xC2H2]+", KIND_FRAGMENT),
+    )
+
+
+#: The negative source's reagent: the fluoranthene radical anion, the negative
+#: EASY-IC lock mass at m/z 202.079. The anions it goes on to make from air
+#: (the ozone anion, carbonate and its clusters, bicarbonate) carry sample
+#: oxygen and belong to the source-ion step, not to the reagent's own ladder.
+_FLUORANTHENE_ANION: tuple[ReagentCluster, ...] = (
+    ReagentCluster("C16H10", -1, "[C16H10]-", KIND_CLUSTER, anchor=True),
+)
+
+
 #: The reagent-cluster library per profile, keyed the way
 #: :data:`SECONDARY_CHANNELS` is. A profile with no single reagent species -
 #: an electrospray - has no library, which is not an omission: there is no one
@@ -795,6 +907,8 @@ REAGENT_CLUSTERS: dict[str, tuple[ReagentCluster, ...]] = {
     "NO3": _nitrate_clusters("NO3"),
     "NO3_15N": _nitrate_clusters("^NO3"),
     "UR": _urea_clusters(),
+    "EASYIC_POS": _fluoranthene_ladder(),
+    "EASYIC_NEG": _FLUORANTHENE_ANION,
 }
 
 

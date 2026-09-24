@@ -290,10 +290,12 @@ append-only with an `is_active` flag - this is the same pattern, and it closes
 
 ### 4.4 `Adduct` - structured, replacing the notation string
 
-The current model is one `String(256)` parsed by **two different parsers with
-divergent grammars** (`target_ions_compute._mechanism_parts` and
-`mascope_tools.composition.utils.parse_ionization`, which special-cases `-H-`,
-a string the backend validator will never produce).
+The current model is one `String(256)` parsed by **two different parsers**
+(`target_ions_compute._mechanism_parts` and
+`mascope_tools.composition.utils.parse_ionization`). Their grammars diverged
+until the assignment plan's step 3.1: the library special-cased `-H-` as
+deprotonation, where the validator reads it as a hydride removed and stores it
+under the positive polarity. Both now read it the same way.
 
 ```
 Adduct

@@ -226,6 +226,23 @@ class TestWhereTheClaimedLinesPutTheAxis:
         assert offset is None
 
 
+class TestTheChargeTransferBeam:
+    def test_the_fluoranthene_ion_is_claimed_as_the_reagent(self):
+        # The EASY-IC source's own beam, in a window that reaches it: a reagent
+        # row that names the ion and no analyte, so the brightest aromatic in
+        # the spectrum never becomes a fluoranthene assignment.
+        rows = _rows("EASYIC_POS", ("C16H10", 1, 1e6))
+        assert rows, "the reagent cation must be claimed"
+        assert rows[0]["role"] == ROLE_REAGENT
+        assert rows[0]["ion_formula"] == "C16H10"
+        assert rows[0]["assigned_formula"] is None
+        assert rows[0]["provenance"]["reagent"]["ion"] == "[C16H10]+"
+
+    def test_the_negative_beam_is_the_anion(self):
+        rows = _rows("EASYIC_NEG", ("C16H10", -1, 1e6))
+        assert rows[0]["provenance"]["reagent"]["ion"] == "[C16H10]-"
+
+
 class TestWhenThereIsNothingToClaim:
     def test_a_profile_with_no_reagent_writes_no_rows(self):
         assert _rows("ESI_POS") == []

@@ -24,12 +24,14 @@ Kept secret-free and import-light, like ``roles``.
 
 # Mechanism name -> the polarity of the ion it yields. The name is Mascope's
 # own adduct notation, operation sign included: "+Br-" adds a bromide adduct,
-# "-H+" removes a proton, and a bare "+" or "-" is charge with no adduct.
+# "-H+" removes a proton and leaves an anion, "-H-" removes a hydride and
+# leaves a cation, and a bare "+" or "-" is charge with no adduct.
 MECHANISM_POLARITIES: dict[str, str] = {
     "+": "+",
     "-": "-",
     "+H+": "+",
     "-H+": "-",
+    "-H-": "+",
     "+NO3-": "-",
     "+^NO3-": "-",
     "+Br-": "-",

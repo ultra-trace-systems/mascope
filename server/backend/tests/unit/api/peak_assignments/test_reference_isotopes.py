@@ -26,7 +26,7 @@ from mascope_tools.composition.profiles import KNOWN_WINDOW_CEILING
 _MOD = "mascope_backend.api.new.peak_assignments.service"
 
 
-def _mechanism(mech_id="m-deprot", notation="-H-", polarity="-"):
+def _mechanism(mech_id="m-deprot", notation="-H+", polarity="-"):
     return SimpleNamespace(
         ionization_mechanism_id=mech_id,
         ionization_mechanism=notation,
@@ -75,7 +75,7 @@ def test_expands_formula_into_reference_isotope_rows():
     # Every reference row: no curated target, right formula/mechanism/resolution.
     assert df["target_compound_id"].isna().all()
     assert (df["target_compound_formula"] == "C10H16O3").all()
-    assert (df["ionization_mechanism"] == "-H-").all()
+    assert (df["ionization_mechanism"] == "-H+").all()
     assert (df["resolution"] == "HIGH").all()
     # The one-to-many identities ride on each row.
     identities = df["reference_identities"].iloc[0]
