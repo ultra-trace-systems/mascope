@@ -546,7 +546,9 @@ consumers. That is good news for sequencing. Three seams need care:
 `AssignmentCalibration.corroboration_weights` is JSON keyed by the notation:
 `{"[M+Br]-": 2.28, "[M+NH4]+": 0.83}`. A weight is matched to an adduct by
 mechanism rather than by spelling (`apply_corroboration` compares
-`mechanism_key`s), so a calibration stored with legacy keys still applies.
+`mechanism_key`s), so a calibration stored with legacy keys still applies, and
+the data migration that rewrites the mechanism rows (`5193d1e942e0`) rewrites
+these keys with them.
 
 ### 8.2 Calibration keying should include the setup
 

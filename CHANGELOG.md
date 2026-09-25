@@ -409,6 +409,15 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   string in neither, such as `H+` with no leading sign, which it used to read as
   deprotonation; `mascope_tools.composition.mechanism_notation` converts between
   the two.
+- **Upgrading rewrites every stored mechanism in the standard adduct
+  notation**, and the keys of a stored calibration's corroboration weights
+  with them; a downgrade writes them back in the older spelling. The map is
+  exact both ways, so a round trip leaves every row as it was. A mechanism
+  that reads as neither spelling, or whose rewrite would take a spelling
+  another row already holds, is left as it is and named in the migration's
+  output. What a run recorded about itself keeps the spelling it was
+  recorded in and is shown in the standard one (assignment quality plan,
+  step 3.3b).
 - **The peak inspector is more compact and has a column of its own, and the
   tier chip names the tier alone.**
   - **Find more**, the composition search, starts from the focused sample's
