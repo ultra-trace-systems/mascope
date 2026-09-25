@@ -66,17 +66,17 @@ const joinTerms = (terms) =>
 
 /**
  * The terms in the order a mechanism is written in: alphabetical. Each term is
- * taken as a legacy moiety splits it, and joining the sorted terms can put a
- * group at the front of the last one, which the split then takes apart, so the
- * order is the one that splits the same way again once joined.
+ * first split as far as a legacy moiety splits it, so a term that opens with a
+ * group reads as the terms it holds wherever it stands: `[M+K+(H2O)Na]+` and
+ * `[M+(H2O)Na+K]+` are both `[M+H2O+K+Na]+`.
  */
 function orderedTerms(terms) {
   const sameTerms = (a, b) => a.length === b.length && a.every((term, i) => term === b[i])
-  let ordered = splitMoiety(joinTerms(terms)).sort()
+  let parts = [...terms]
   for (;;) {
-    const again = splitMoiety(joinTerms(ordered))
-    if (sameTerms(again, ordered)) return ordered
-    ordered = again.sort()
+    const split = parts.flatMap((term) => splitMoiety(term))
+    if (sameTerms(split, parts)) return split.sort()
+    parts = split
   }
 }
 

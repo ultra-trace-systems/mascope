@@ -56,8 +56,34 @@ const OUT_OF_ORDER = [
   ['[M+H2O+H]+', '[M+H+H2O]+'],
   ['+(H2O)(H2O)H+', '[M+H+H2O+H2O]+'],
   ['+(A)(B)+', '[M+(B)+A]+'],
-  ['[M+(B)C+(A)]+', '[M+(A)+B+C]+']
+  // A term that opens with a group reads as the terms it holds, wherever it
+  // stands among the others.
+  ['[M+(B)C+(A)]+', '[M+(A)+B+C]+'],
+  ['[M+(H2O)Na+K]+', '[M+H2O+K+Na]+'],
+  ['[M+K+(H2O)Na]+', '[M+H2O+K+Na]+'],
+  ['+(K)(H2O)Na+', '[M+H2O+K+Na]+'],
+  ['+((H2O)Na)K+', '[M+H2O+K+Na]+'],
+  ['[M+(H2O)H+NH4]+', '[M+H+H2O+NH4]+'],
+  ['[M+NH4+(H2O)H]+', '[M+H+H2O+NH4]+']
 ]
+
+// Terms to write mechanisms of in every order, the grouped and the multiplied
+// among them - the library's test pins the same set.
+const TERMS = ['H', 'K', 'H2O', '(H2O)Na', '(H2O)2', '(CH3)3C', '((A)B)C', '(A)', '^NO3']
+
+const combinations = (items, count) =>
+  count === 0
+    ? [[]]
+    : items.flatMap((item, i) =>
+        combinations(items.slice(i + 1), count - 1).map((rest) => [item, ...rest])
+      )
+
+const permutations = (items) =>
+  items.length <= 1
+    ? [items]
+    : items.flatMap((item, i) =>
+        permutations([...items.slice(0, i), ...items.slice(i + 1)]).map((rest) => [item, ...rest])
+      )
 
 describe('standardMechanism', () => {
   it.each(STORED)('writes %s as %s', (legacy, standard) => {
@@ -69,6 +95,20 @@ describe('standardMechanism', () => {
     expect(standardMechanism(typed)).toBe(stored)
     expect(parseMechanism(typed)).toEqual(parseMechanism(stored))
   })
+
+  it.each([...combinations(TERMS, 2), ...combinations(TERMS, 3)].map((terms) => [terms]))(
+    'writes every order of %j as one spelling',
+    (terms) => {
+      const written = new Set(
+        permutations(terms).map((order) =>
+          standardMechanism(`[M${order.map((term) => `+${term}`).join('')}]+`)
+        )
+      )
+      expect(written.size).toBe(1)
+      const [stored] = written
+      expect(standardMechanism(stored)).toBe(stored)
+    }
+  )
 
   it('writes a standard spelling as the server stores it', () => {
     expect(standardMechanism('[M+(CH4N2O)H]+')).toBe('[M+CH4N2O+H]+')

@@ -15,6 +15,8 @@ What is pinned:
 - what neither notation can say is refused with the reason, not approximated.
 """
 
+import itertools
+
 import pytest
 
 from mascope_tools.composition.calibration import PROVISIONAL_ORBITRAP_CORROBORATION
@@ -80,9 +82,20 @@ OUT_OF_ORDER = [
     ("[M+H2O+H]+", "[M+H+H2O]+"),
     ("+(H2O)(H2O)H+", "[M+H+H2O+H2O]+"),
     ("+(A)(B)+", "[M+(B)+A]+"),
-    # Joined in order, the group at the front of the last term splits off.
+    # A term that opens with a group reads as the terms it holds, wherever
+    # it stands among the others.
     ("[M+(B)C+(A)]+", "[M+(A)+B+C]+"),
+    ("[M+(H2O)Na+K]+", "[M+H2O+K+Na]+"),
+    ("[M+K+(H2O)Na]+", "[M+H2O+K+Na]+"),
+    ("+(K)(H2O)Na+", "[M+H2O+K+Na]+"),
+    ("+((H2O)Na)K+", "[M+H2O+K+Na]+"),
+    ("[M+(H2O)H+NH4]+", "[M+H+H2O+NH4]+"),
+    ("[M+NH4+(H2O)H]+", "[M+H+H2O+NH4]+"),
 ]
+
+#: Terms to write mechanisms of in every order, the grouped and the
+#: multiplied among them.
+TERMS = ["H", "K", "H2O", "(H2O)Na", "(H2O)2", "(CH3)3C", "((A)B)C", "(A)", "^NO3"]
 
 
 @pytest.mark.parametrize(("legacy", "standard"), STORED + UNUSUAL)
@@ -104,6 +117,25 @@ def test_terms_typed_in_another_order_are_the_same_mechanism(typed, stored):
     assert standard_notation(typed) == stored
     assert mechanism_key(typed) == stored
     assert parse_mechanism(typed) == parse_mechanism(stored)
+    assert standard_notation(legacy_notation(stored)) == stored
+
+
+@pytest.mark.parametrize(
+    "terms",
+    [
+        combination
+        for count in (2, 3)
+        for combination in itertools.combinations(TERMS, count)
+    ],
+)
+def test_every_order_of_the_terms_is_one_spelling(terms):
+    written = {
+        standard_notation("[M" + "".join("+" + term for term in order) + "]+")
+        for order in itertools.permutations(terms)
+    }
+    assert len(written) == 1
+    (stored,) = written
+    assert standard_notation(stored) == stored
     assert standard_notation(legacy_notation(stored)) == stored
 
 
