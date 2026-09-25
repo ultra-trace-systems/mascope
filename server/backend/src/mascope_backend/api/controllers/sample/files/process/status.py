@@ -29,6 +29,7 @@ from mascope_backend.api.new.notifications.service import (
     keep_processing_outcome,
 )
 from mascope_backend.db import SampleFile, async_session
+from mascope_backend.method_keys import usable_streams
 from mascope_backend.runtime import runtime
 from mascope_backend.socket.records.service import emit_record_updated
 from mascope_file.io import read_props
@@ -115,14 +116,7 @@ async def read_scan_streams(filename: str) -> list[dict] | None:
     """
     try:
         props = await asyncio.to_thread(read_props, filename)
-        streams = props.get("scan_streams")
-        if not isinstance(streams, list):
-            return []
-        return [
-            stream
-            for stream in streams
-            if isinstance(stream, dict) and isinstance(stream.get("signature"), dict)
-        ]
+        return usable_streams(props.get("scan_streams"))
     except Exception:  # noqa: BLE001 - a missing census is not a processing error
         runtime.logger.opt(exception=True).debug(
             f"Could not read the .props of {filename}"

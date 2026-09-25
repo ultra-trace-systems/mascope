@@ -558,7 +558,8 @@ several reagent bottles is the expected cause.
 
 - Files ingested up to June 2026 carry their method name.
 - Later files carry it once `populate_orbitrap_method_file` (#2155) has run
-  on the server.
+  on the server, which it has: measured in September 2026, every production
+  server had a method name on all but a handful of its Orbitrap files.
 - A file of a census-bearing instrument also needs its scan-stream census,
   because the signature class comes from the census and nothing may be
   substituted for it. The census is recorded when a file is converted, and
@@ -967,9 +968,9 @@ Needed before any rung can be provisional or park.
   5.3 defines them, with both riders in force - unanimity to route, and a
   constant configuration name treated as no method name. `backend.method_binding`
   is `"shadow"`, so nothing reads the rows back; the backfills are
-  `mascope db script run backfill_scan_stream_census`, which gives the
+  `mascope prod db script run backfill_scan_stream_census`, which gives the
   Orbitrap history a signature class to be keyed on, and then
-  `mascope db script run backfill_method_bindings`. What remains is the rung
+  `mascope prod db script run backfill_method_bindings`. What remains is the rung
   that consults them, behind the value that switches it on per site, and the
   conflicts as review items.
 - **Defaults:** the instrument-default rung (#1463), and the seeded

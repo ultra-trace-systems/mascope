@@ -113,6 +113,33 @@ def method_key(method_file: str | None) -> str:
     return key
 
 
+def usable_streams(streams: object) -> list[dict]:
+    """The census entries a caller may walk without guarding each field.
+
+    Every entry that comes back is a dict whose ``signature`` is a dict. A
+    census of another shape is a ``.props`` nothing in Mascope wrote; the
+    entries that do not fit are dropped rather than failing the file.
+
+    One filter, because two callers have to agree on what counts as a census:
+    :func:`process.status.read_scan_streams` reads it for the binding, and
+    ``backfill_scan_stream_census`` decides from it which files still need
+    one. If they disagreed, a file one of them called filled would be a file
+    the other skipped for good.
+
+    :param streams: The ``scan_streams`` field of a ``.props``, whatever it
+        holds.
+    :return: The entries of a shape a caller may walk; empty for anything else.
+    :rtype: list[dict]
+    """
+    if not isinstance(streams, list):
+        return []
+    return [
+        stream
+        for stream in streams
+        if isinstance(stream, dict) and isinstance(stream.get("signature"), dict)
+    ]
+
+
 def signature_class(
     streams: list[dict] | None,
     polarity: str,

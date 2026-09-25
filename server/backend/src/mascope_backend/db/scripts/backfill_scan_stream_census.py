@@ -29,11 +29,17 @@ fill in. The instrument types that bear a census are the ones
 constant and cannot come to disagree about which files need one.
 
 Reading a raw file per census is slow, so the run is **bounded and
-resumable**: a file that already has a census is never reopened, and
-``CENSUS_LIMIT`` caps how many files one run reads. Run it again until it
-reports nothing left to do.
+resumable**: a file that already has a census is never reopened,
+``CENSUS_LIMIT`` caps how many files one run reads, and every attempt that
+produced no census is recorded in the file's props so the next run moves past
+it instead of retrying the same head of the list forever. Run it again until
+it reports nothing left to do. ``CENSUS_RETRY=1`` clears that memory and tries
+the failures again, after whatever made them fail has been dealt with.
 
-Set DRY_RUN=1 to report what would be written without writing.
+``DRY_RUN=1`` reports what the run would do - the counts all come from the
+survey - and reads a handful of files to show what a census looks like. It
+deliberately does not read them all: that is where the time goes, and reading
+them twice to write them once is the expensive way to be careful.
 
 Usage:
     mascope dev db script run backfill_scan_stream_census
@@ -41,12 +47,14 @@ Usage:
 
     DRY_RUN=1 mascope prod db script run backfill_scan_stream_census
     CENSUS_LIMIT=5000 mascope prod db script run backfill_scan_stream_census
+    CENSUS_RETRY=1 mascope prod db script run backfill_scan_stream_census
 
 Date: 2026-09-25
 """
 
 import asyncio
 import os
+from datetime import datetime, timezone
 from typing import Callable
 
 from sqlalchemy import bindparam, text
@@ -54,7 +62,7 @@ from sqlalchemy import bindparam, text
 import mascope_file.io as m_io
 import mascope_file.name as m_name
 from mascope_backend.db import async_session, configure_database_engine
-from mascope_backend.method_keys import CENSUS_BEARING_INSTRUMENT_TYPES
+from mascope_backend.method_keys import CENSUS_BEARING_INSTRUMENT_TYPES, usable_streams
 from mascope_backend.runtime import runtime
 from mascope_thermo.backend import open_backend
 from mascope_thermo.streams import scan_streams
@@ -64,6 +72,11 @@ from mascope_thermo.streams import scan_streams
 #: writes it and ``process.status.read_scan_streams`` reads it back under this
 #: same name.
 CENSUS_FIELD = "scan_streams"
+
+#: The props field recording an attempt that produced no census, so that a
+#: bounded run makes progress instead of reopening the same files. Written by
+#: this script alone; nothing reads it but this script.
+ATTEMPT_FIELD = "scan_streams_backfill"
 
 #: Props read at once while looking for the files that carry no census. Each
 #: is a small local JSON load, so this bounds open descriptors rather than
@@ -79,6 +92,13 @@ _READ_CONCURRENCY = 4
 #: Files listed individually in the report.
 _PREVIEW_LIMIT = 20
 
+#: Files a dry run actually opens, to show what a census looks like.
+_DRY_RUN_SAMPLE = 20
+
+#: Reader failures logged with a traceback, so a reader regression is visible
+#: rather than lost among files whose raw data was simply not kept.
+_TRACEBACK_LIMIT = 3
+
 #: A progress line every this many files read.
 _PROGRESS_EVERY = 500
 
@@ -90,26 +110,55 @@ _PROGRESS_EVERY = 500
 _SURVEY_BATCH = 2000
 _READ_BATCH = 200
 
+#: Every file of a census-bearing instrument, the ones a method binding could
+#: be learned from first.
+#:
+#: ``routed`` is ``process.service._pipeline_item()`` spelled in SQL, the same
+#: filter ``backfill_method_bindings`` reads its history through: an
+#: ACQUISITION item, in an ACQUISITION batch, of an ACQUISITION dataset, in a
+#: system workspace. Files outside it are still worth a census - the pooled
+#: streams note reads one - but a capped run should spend its reads where the
+#: bindings are, not on recent manual uploads into people's own workspaces.
+_CANDIDATES_SQL = """
+    SELECT
+        sf.sample_file_id AS sample_file_id,
+        sf.filename       AS filename,
+        EXISTS (
+            SELECT 1
+            FROM sample_item si
+            JOIN sample_batch sb ON sb.sample_batch_id = si.sample_batch_id
+            JOIN dataset d       ON d.dataset_id = sb.dataset_id
+            JOIN workspace w     ON w.workspace_id = d.workspace_id
+            WHERE si.sample_file_id = sf.sample_file_id
+              AND si.sample_item_type = 'ACQUISITION'
+              AND sb.sample_batch_type = 'ACQUISITION'
+              AND d.dataset_type = 'ACQUISITION'
+              AND w.is_system IS TRUE
+        ) AS routed
+    FROM sample_file sf
+    WHERE sf.instrument_type IN :types
+    ORDER BY routed DESC, sf.datetime_utc DESC, sf.filename DESC
+"""
+
+
+class BadLimit(ValueError):
+    """``CENSUS_LIMIT`` was set to something that is not a bound."""
+
 
 async def _candidates() -> list[dict]:
-    """Every file of a census-bearing instrument, newest first.
+    """Every file of a census-bearing instrument, best candidates first.
 
-    Newest first because a bounded run should reach the methods still in use:
-    the census is here to key a method binding, and a method last run a year
-    ago routes nothing today. A run carried through to the end reaches the
-    same state whichever way it goes.
+    Routed files first, then newest first, because a bounded run should reach
+    the methods still in use: the census is here to key a method binding, and
+    a method last run a year ago routes nothing today. A run carried through
+    to the end reaches the same state whichever way it goes.
 
-    :return: One dict per file: sample_file_id and filename.
+    :return: One dict per file: sample_file_id, filename and routed.
     :rtype: list[dict]
     """
     async with async_session() as session:
         result = await session.execute(
-            text("""
-                SELECT sample_file_id, filename
-                FROM sample_file
-                WHERE instrument_type IN :types
-                ORDER BY datetime_utc DESC, filename DESC
-            """).bindparams(bindparam("types", expanding=True)),
+            text(_CANDIDATES_SQL).bindparams(bindparam("types", expanding=True)),
             {"types": sorted(CENSUS_BEARING_INSTRUMENT_TYPES)},
         )
         return [dict(row._mapping) for row in result]
@@ -124,12 +173,21 @@ def needs_census(props: dict) -> bool:
     replaced since, and a file of a census-bearing instrument that holds any
     scans at all holds at least one stream.
 
+    The shape is judged by :func:`usable_streams`, the same filter
+    ``read_scan_streams`` applies before the binding backfill sees a census.
+    Anything it drops is a census the binding cannot key on, so calling such a
+    file filled here would leave it skipped there for good.
+
     :param props: A sample file's ``.props``.
     :return: True when the file should be reopened for its census.
     :rtype: bool
     """
-    streams = props.get(CENSUS_FIELD)
-    return not isinstance(streams, list) or not streams
+    return not usable_streams(props.get(CENSUS_FIELD))
+
+
+def _attempted(props: dict) -> bool:
+    """Whether a previous run already tried this file and got no census."""
+    return bool(props.get(ATTEMPT_FIELD))
 
 
 def _read_props(filename: str) -> dict | None:
@@ -140,23 +198,45 @@ def _read_props(filename: str) -> dict | None:
         return None
 
 
-def _read_census(filename: str) -> list[dict] | None:
+def _has_raw(filename: str) -> bool:
+    """Whether the sample still holds the raw data a census is read from.
+
+    Two ``os.path.isfile`` calls, so the survey can leave out the files whose
+    raw data was cleared without opening anything. Without this they stay at
+    the head of the list on every run and a capped run makes no progress.
+    """
+    try:
+        return m_name.get_sample_file_type(filename).endswith("_raw")
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _read_census(filename: str) -> tuple[list[dict] | None, str | None]:
     """The scan-stream census of one file, read from its raw data.
 
     :param filename: Sample file name (base, not full path).
-    :return: The census, or None when the file cannot be read - its raw data
-        was not kept beside the sample, or the reader refused it.
-    :rtype: list[dict] | None
+    :return: ``(census, None)``, or ``(None, reason)`` where reason is
+        ``"no_raw"`` when the raw data is not there to read and ``"reader"``
+        when it is and the reader refused it. The two are counted apart
+        because a reader regression would otherwise read as cleared raw data.
+    :rtype: tuple[list[dict] | None, str | None]
     """
     try:
-        with open_backend(m_name.filename_to_datafile_path(filename)) as reader:
-            return scan_streams(reader)
-    except Exception as exc:  # noqa: BLE001
-        # INFO per file: run() raises one summary WARNING for the lot, so a
-        # server whose older raw data has been cleared does not report one
-        # monitoring event per file.
-        runtime.logger.info(f"  Cannot read {filename}: {exc}")
-        return None
+        path = m_name.filename_to_datafile_path(filename)
+    except FileNotFoundError:
+        # The sample holds no source data at all: converted data only.
+        return None, "no_raw"
+    if not os.path.isfile(path):
+        return None, "no_raw"
+    try:
+        with open_backend(path) as reader:
+            return scan_streams(reader), None
+    except Exception:  # noqa: BLE001
+        # Decided from the path above rather than from the exception: a
+        # reader raises its own type for a file it cannot open, so catching
+        # FileNotFoundError here counted a missing file as a reader failure
+        # and defeated the point of telling the two apart.
+        return None, "reader"
 
 
 def _write_census(filename: str, streams: list[dict]) -> None:
@@ -164,17 +244,43 @@ def _write_census(filename: str, streams: list[dict]) -> None:
     m_io.update_props(filename, {CENSUS_FIELD: streams})
 
 
+def _write_attempt(filename: str, result: str) -> None:
+    """Record that this file was read and produced no census."""
+    m_io.update_props(
+        filename,
+        {
+            ATTEMPT_FIELD: {
+                "at": datetime.now(timezone.utc).isoformat(),
+                "result": result,
+            }
+        },
+    )
+
+
 async def _survey(
     candidates: list[dict],
     read_props: Callable[[str], dict | None],
+    has_raw: Callable[[str], bool],
+    limit: int | None = None,
+    retry: bool = False,
 ) -> tuple[list[str], dict[str, int]]:
-    """Split the candidates into the files to read and counts for the rest.
+    """The files to read, and counts for the candidates left out.
 
-    :param candidates: Rows from :func:`_candidates`.
+    Stops as soon as ``limit`` files have been found. The documented way to
+    fill a large server is repeated capped runs, and surveying every candidate
+    each time would read the whole filestore's props once per run to fill one
+    run's worth of censuses.
+
+    :param candidates: Rows from :func:`_candidates`, best first.
     :param read_props: Reads a file's props: :func:`_read_props`, or a
         stand-in.
-    :return: The filenames carrying no census, in candidate order, and the
-        ``has_census`` and ``no_props`` counts.
+    :param has_raw: Whether the raw data is still there: :func:`_has_raw`, or
+        a stand-in.
+    :param limit: Stop once this many files are found; None surveys them all.
+    :param retry: Include files a previous run tried and got no census from.
+    :return: The filenames to read, best first, and the counts of the
+        candidates left out. ``surveyed`` says how many were looked at, which
+        is every candidate only on an uncapped run.
     :rtype: tuple[list[str], dict[str, int]]
     """
     gate = asyncio.Semaphore(_PROPS_CONCURRENCY)
@@ -184,26 +290,39 @@ async def _survey(
             return filename, await asyncio.to_thread(read_props, filename)
 
     pending: list[str] = []
-    counts = {"has_census": 0, "no_props": 0}
+    counts = {
+        "surveyed": 0,
+        "has_census": 0,
+        "no_props": 0,
+        "no_raw": 0,
+        "already_tried": 0,
+    }
     for start in range(0, len(candidates), _SURVEY_BATCH):
         batch = candidates[start : start + _SURVEY_BATCH]
         for filename, props in await asyncio.gather(
             *(one(c["filename"]) for c in batch)
         ):
+            counts["surveyed"] += 1
             if props is None:
                 counts["no_props"] += 1
-            elif needs_census(props):
-                pending.append(filename)
-            else:
+            elif not needs_census(props):
                 counts["has_census"] += 1
+            elif _attempted(props) and not retry:
+                counts["already_tried"] += 1
+            elif not await asyncio.to_thread(has_raw, filename):
+                counts["no_raw"] += 1
+            else:
+                pending.append(filename)
+        if limit is not None and len(pending) >= limit:
+            return pending[:limit], counts
     return pending, counts
 
 
 async def _fill(
     pending: list[str],
-    read: Callable[[str], list[dict] | None],
+    read: Callable[[str], tuple[list[dict] | None, str | None]],
     write: Callable[[str, list[dict]], None],
-    dry_run: bool,
+    write_attempt: Callable[[str, str], None],
 ) -> dict[str, int]:
     """Read each pending file's census and write it, a few files at a time.
 
@@ -211,38 +330,71 @@ async def _fill(
     is expected to be interrupted - a production server holds six figures of
     these - and a file whose census is on disk is one the next run skips.
 
+    A file that produces no census has the attempt recorded instead, so the
+    next run moves past it. A write that fails is counted and the run carries
+    on: one sample deleted while the run is walking the filestore should not
+    end a multi-hour job with a traceback and no summary.
+
     :param pending: Filenames to read, from :func:`_survey`.
     :param read: Reads one census: :func:`_read_census`, or a stand-in.
     :param write: Writes one census: :func:`_write_census`, or a stand-in.
-    :param dry_run: Report what would be written without writing it.
-    :return: The ``written``, ``unreadable`` and ``empty`` counts.
+    :param write_attempt: Records a read that produced none.
+    :return: The per-outcome counts.
     :rtype: dict[str, int]
     """
     gate = asyncio.Semaphore(_READ_CONCURRENCY)
-    counts = {"written": 0, "unreadable": 0, "empty": 0}
+    counts = {"written": 0, "no_raw": 0, "reader": 0, "empty": 0, "unwritable": 0}
     previewed = 0
+    traced = 0
     done = 0
 
+    def record(filename: str, result: str) -> None:
+        try:
+            write_attempt(filename, result)
+        except Exception as exc:  # noqa: BLE001
+            counts["unwritable"] += 1
+            runtime.logger.info(f"  Cannot record the attempt on {filename}: {exc}")
+
     async def one(filename: str) -> None:
-        nonlocal previewed, done
+        nonlocal previewed, traced, done
         async with gate:
-            streams = await asyncio.to_thread(read, filename)
-            if streams is None:
-                counts["unreadable"] += 1
+            streams, reason = await asyncio.to_thread(read, filename)
+            if reason == "no_raw":
+                counts["no_raw"] += 1
+                # Nothing is recorded: the survey leaves these out by itself,
+                # cheaply, on every run.
+            elif reason == "reader":
+                counts["reader"] += 1
+                if traced < _TRACEBACK_LIMIT:
+                    traced += 1
+                    runtime.logger.opt(exception=True).info(
+                        f"  Reader refused {filename}"
+                    )
+                else:
+                    runtime.logger.info(f"  Reader refused {filename}")
+                await asyncio.to_thread(record, filename, "reader")
             elif not streams:
                 # The file opened and reported no streams at all. Writing an
                 # empty census would record it as answered and stop the next
                 # run retrying it, which is the opposite of what an empty
-                # answer from a census-bearing instrument deserves.
+                # answer from a census-bearing instrument deserves - so the
+                # attempt is recorded instead, and CENSUS_RETRY=1 tries again.
                 counts["empty"] += 1
                 runtime.logger.info(f"  {filename}: no scan streams reported")
+                await asyncio.to_thread(record, filename, "empty")
             else:
-                if not dry_run:
+                try:
                     await asyncio.to_thread(write, filename, streams)
-                counts["written"] += 1
-                if previewed < _PREVIEW_LIMIT:
-                    previewed += 1
-                    runtime.logger.info(f"  {filename}: {len(streams)} scan streams")
+                except Exception as exc:  # noqa: BLE001
+                    counts["unwritable"] += 1
+                    runtime.logger.info(f"  Cannot write {filename}: {exc}")
+                else:
+                    counts["written"] += 1
+                    if previewed < _PREVIEW_LIMIT:
+                        previewed += 1
+                        runtime.logger.info(
+                            f"  {filename}: {len(streams)} scan streams"
+                        )
             done += 1
             if done % _PROGRESS_EVERY == 0:
                 runtime.logger.info(f"  ... {done} of {len(pending)} files read")
@@ -257,24 +409,27 @@ async def _fill(
 def _limit() -> int | None:
     """How many files one run may read, from ``CENSUS_LIMIT``.
 
-    :return: The cap, or None for no cap. A value that is not a positive
-        number is reported and ignored rather than silently capping the run at
-        zero.
-    :rtype: int | None
+    :return: The cap, or None when the variable is unset.
+    :raises BadLimit: The variable is set to something that is not a positive
+        whole number. Refused rather than ignored: an operator who set it
+        wanted a bounded run, and falling back to reading every raw file on
+        the server is the expensive way to answer a typo.
     """
     raw = os.environ.get("CENSUS_LIMIT")
     if not raw:
         return None
     try:
         limit = int(raw)
-    except ValueError:
-        limit = 0
+    except ValueError as exc:
+        raise BadLimit(
+            f"CENSUS_LIMIT={raw!r} is not a whole number. Unset it to read "
+            f"every file that carries no census."
+        ) from exc
     if limit <= 0:
-        runtime.logger.warning(
-            f"CENSUS_LIMIT={raw!r} is not a positive whole number; ignoring it "
-            f"and reading every file that carries no census."
+        raise BadLimit(
+            f"CENSUS_LIMIT={raw!r} is not a positive number. Unset it to read "
+            f"every file that carries no census."
         )
-        return None
     return limit
 
 
@@ -282,6 +437,7 @@ async def run() -> None:
     """Find the files carrying no scan-stream census and write them one."""
     await configure_database_engine()
     dry_run = os.environ.get("DRY_RUN") == "1"
+    retry = os.environ.get("CENSUS_RETRY") == "1"
     limit = _limit()
 
     candidates = await _candidates()
@@ -291,42 +447,99 @@ async def run() -> None:
             f"({', '.join(sorted(CENSUS_BEARING_INSTRUMENT_TYPES))})."
         )
         return
-    runtime.logger.info(f"Files of a census-bearing instrument: {len(candidates)}")
-
-    pending, survey = await _survey(candidates, _read_props)
+    routed = sum(1 for c in candidates if c["routed"])
     runtime.logger.info(
-        f"Carrying no census: {len(pending)} "
-        f"(already recorded: {survey['has_census']}, no props: {survey['no_props']})"
+        f"Files of a census-bearing instrument: {len(candidates)} "
+        f"({routed} of them routed by the pipeline, read first)"
     )
+
+    # A dry run surveys every candidate: the counts are the point of it, and
+    # they are only true of the whole server when nothing stopped early.
+    pending, survey = await _survey(
+        candidates, _read_props, _has_raw, None if dry_run else limit, retry
+    )
+    capped = survey["surveyed"] < len(candidates)
+    runtime.logger.info(
+        f"Surveyed {survey['surveyed']} of {len(candidates)}: "
+        f"{len(pending)} to read, already recorded {survey['has_census']}, "
+        f"raw data not kept {survey['no_raw']}, "
+        f"tried before {survey['already_tried']}, no props {survey['no_props']}"
+    )
+    if survey["already_tried"] and not retry:
+        runtime.logger.info(
+            "  Files tried before produced no census; CENSUS_RETRY=1 tries them again."
+        )
     if not pending:
         runtime.logger.info("Nothing left to do.")
         return
 
-    batch = pending if limit is None else pending[:limit]
-    if len(batch) < len(pending):
+    if dry_run:
+        sample = pending[:_DRY_RUN_SAMPLE]
         runtime.logger.info(
-            f"CENSUS_LIMIT={limit}: reading {len(batch)} of them this run."
+            f"DRY_RUN=1: {len(pending)} files would be read and recorded"
+            f"{f' (capped at {limit} per run)' if limit else ''}. "
+            f"Reading {len(sample)} of them to show what is there; "
+            f"nothing is written."
         )
+        counts = await _fill(sample, _read_census, _no_write, _no_write)
+        runtime.logger.info("=" * 80)
+        runtime.logger.info("BACKFILL SCAN STREAM CENSUS COMPLETE (DRY RUN)")
+        runtime.logger.info(
+            f"Candidates: {len(candidates)}, would record: {len(pending)}, "
+            f"already recorded: {survey['has_census']}, "
+            f"raw data not kept: {survey['no_raw']}, "
+            f"no props: {survey['no_props']}, "
+            f"sampled {len(sample)}: {counts['written']} with a census, "
+            f"{counts['empty']} with none, {counts['reader']} the reader refused"
+        )
+        runtime.logger.info("=" * 80)
+        return
 
-    counts = await _fill(batch, _read_census, _write_census, dry_run)
+    if limit and len(pending) >= limit:
+        runtime.logger.info(f"CENSUS_LIMIT={limit}: reading {len(pending)} this run.")
 
-    written = "would record" if dry_run else "recorded"
-    remaining = len(pending) - counts["written"]
+    counts = await _fill(pending, _read_census, _write_census, _write_attempt)
+
     runtime.logger.info("=" * 80)
     runtime.logger.info("BACKFILL SCAN STREAM CENSUS COMPLETE")
     runtime.logger.info(
-        f"Candidates: {len(candidates)}, "
-        f"already recorded: {survey['has_census']}, "
-        f"{written}: {counts['written']}, "
+        f"Candidates: {len(candidates)}, surveyed: {survey['surveyed']}, "
+        f"recorded: {counts['written']}, "
         f"no scan streams reported: {counts['empty']}, "
-        f"unreadable: {counts['unreadable']}, "
-        f"no props: {survey['no_props']}, "
-        f"still carrying none after this run: {remaining}"
+        f"reader refused: {counts['reader']}, "
+        f"raw data not kept: {survey['no_raw'] + counts['no_raw']}, "
+        f"could not be written: {counts['unwritable']}, "
+        f"no props: {survey['no_props']}"
     )
-    runtime.logger.info("=" * 80)
-    if counts["unreadable"] or counts["empty"]:
-        runtime.logger.warning(
-            f"Scan stream census backfill could not read {counts['unreadable']} "
-            f"files and found no scan streams in {counts['empty']}; those keep "
-            f"no census, and the method binding backfill goes on skipping them."
+    if capped:
+        runtime.logger.info(
+            "The survey stopped at the cap, so run this again until it reports "
+            "nothing left to do."
         )
+    runtime.logger.info("=" * 80)
+    if counts["reader"] or counts["empty"] or counts["unwritable"]:
+        runtime.logger.warning(
+            f"Scan stream census backfill: the reader refused {counts['reader']} "
+            f"files, {counts['empty']} reported no scan streams, and "
+            f"{counts['unwritable']} could not be written. Those keep no census, "
+            f"and the method binding backfill goes on skipping them."
+        )
+
+
+def _no_write(*_args) -> None:
+    """A write that does nothing, for the dry run."""
+
+
+def main() -> None:
+    """Entry point for ``mascope dev|prod db script run``."""
+    try:
+        asyncio.run(run())
+    except KeyboardInterrupt:
+        runtime.logger.info("Cancelled by user (Ctrl+C)")
+    except Exception as e:
+        runtime.logger.exception(f"Script failed: {e}")
+        raise
+
+
+if __name__ == "__main__":
+    main()

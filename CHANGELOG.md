@@ -381,9 +381,14 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   (`DRY_RUN=1` first) reopens the files that carry no census and records what
   they measured. Nothing is re-converted, no sample changes and no database row
   is touched. Reading a raw file per census is slow, so the run is bounded and
-  resumable: a file that has a census is never reopened, and `CENSUS_LIMIT=<n>`
-  caps how many files one run reads. Run it before the method binding backfill,
-  or run that one again afterwards.
+  resumable: a file that has a census is never reopened, `CENSUS_LIMIT=<n>`
+  caps how many files one run reads, and a file that could not be filled is
+  marked so the next run moves past it instead of retrying the same head of
+  the list - `CENSUS_RETRY=1` tries those again once whatever stopped them has
+  been dealt with. `DRY_RUN=1` reports the counts and reads a handful of files
+  to show what a census looks like, rather than reading them all to write
+  none. Run it before the method binding backfill, or run that one again
+  afterwards.
 
 ### Changed
 
@@ -834,9 +839,11 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 - **A sample's properties survive a write that does not finish.** `.props`
   was rewritten in place, so a process that died between truncating it and
   writing the new content left the file empty - and it holds the sample's m/z
-  calibration fit, which costs a refit rather than a reread. The new
-  properties are now written beside the old ones and renamed over them, so an
-  interrupted write leaves the previous properties intact.
+  calibration fit, which costs a refit rather than a reread. The properties
+  are now written beside the old ones and renamed over them, through the same
+  helper the runtime state file uses: the content is flushed to disk before
+  the rename, each writer gets its own temporary, and on Windows the rename
+  waits out a reader holding the file open instead of failing the write.
 
 - **`-H-` means what the notation says.** The composition library read `-H-`
   as deprotonation, one electron mass off the anion and the opposite polarity

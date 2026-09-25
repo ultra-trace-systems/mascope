@@ -56,15 +56,14 @@ plus a temporary one built for a compose invocation) must not share
 or clobber each other's state.
 """
 
-import contextlib
 import copy
 import json
 import os
-import random
-import tempfile
 import time
 
 from loguru import logger
+
+from mascope_runtime.atomic import write_json
 
 
 # Writes are atomic, so an unreadable file is corrupt rather than torn -
@@ -166,37 +165,9 @@ class RuntimeJsonState(object):
 
     def _write_state(self, state: dict):
         """Write the state file atomically, so readers never see a partial file."""
-        directory = os.path.dirname(self._state_path)
-        fd, tmp_path = tempfile.mkstemp(
-            dir=directory, prefix=".state.json.", suffix=".tmp"
+        write_json(
+            self._state_path, state, indent=2, prefix=".", timeout=_REPLACE_TIMEOUT
         )
-        try:
-            with os.fdopen(fd, "w") as f:
-                json.dump(state, f, indent=2)
-                f.flush()
-                os.fsync(f.fileno())
-            self._replace(tmp_path)
-        finally:
-            # A successful replace moved the temp file away; anything still
-            # there is from a failed write and must not be left behind.
-            with contextlib.suppress(OSError):
-                os.unlink(tmp_path)
-
-    def _replace(self, tmp_path: str):
-        deadline = time.monotonic() + _REPLACE_TIMEOUT
-        delay = 0.001
-        while True:
-            try:
-                os.replace(tmp_path, self._state_path)
-                return
-            except PermissionError:
-                # Windows only: a reader currently holds the destination
-                # open. Back off (with jitter, so concurrent writers do not
-                # keep colliding) and try again until the budget runs out.
-                if time.monotonic() >= deadline:
-                    raise
-            time.sleep(delay * (1 + random.random()))
-            delay = min(delay * 2, 0.1)
 
 
 class RuntimeTempState(object):
