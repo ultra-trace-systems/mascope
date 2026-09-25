@@ -316,9 +316,16 @@ async def test_history_folds_into_a_row_live_learning_already_made(
 
 
 @pytest.mark.asyncio
-async def test_running_it_again_is_safe(async_session_factory, history):
+async def test_running_it_again_changes_nothing(async_session_factory, history):
+    """Including the counts: the merge takes the larger, not the sum.
+
+    Every file live learning counted has pipeline items, so it is in this
+    history too - a sum would count those files twice on the first run and
+    double every merged row on the next.
+    """
     mode = await history["add_mode"]()
-    await history["add_file"](mode)
+    for minutes in range(3):
+        await history["add_file"](mode, minutes=minutes)
 
     await backfill_method_bindings()
     first = await _rows(async_session_factory, history["instrument"])
@@ -326,10 +333,82 @@ async def test_running_it_again_is_safe(async_session_factory, history):
     second = await _rows(async_session_factory, history["instrument"])
 
     assert len(second) == len(first) == 1
-    # A second run adds the same history again, which is why it is worth
-    # saying that n_streams counts observations rather than files.
     assert second[0].binding_key == first[0].binding_key
     assert second[0].state == first[0].state
+    assert second[0].n_streams == first[0].n_streams == 3
+    assert second[0].n_disagreements == first[0].n_disagreements
+
+
+@pytest.mark.asyncio
+async def test_the_live_row_s_own_count_is_not_added_to(async_session_factory, history):
+    """A backfill after a week of shadow learning must not count twice."""
+    mode = await history["add_mode"]()
+    live = await history["add_file"](mode)
+
+    digest = binding_digest(
+        history["instrument"], method_key(TOF_METHOD), signature_class([], "-", "tof")
+    )
+    async with async_session_factory() as session:
+        session.add(
+            MethodBinding(
+                method_binding_id=gen_id(),
+                binding_key=digest,
+                instrument=history["instrument"],
+                method_key=TOF_METHOD,
+                signature_class="-",
+                ionization_mode_id=mode.ionization_mode_id,
+                chemistry_keys=["mech-deprot,mech-no3"],
+                state="learned",
+                source="token",
+                first_seen=live.datetime_utc,
+                last_seen=live.datetime_utc,
+                n_streams=1,
+                n_disagreements=0,
+            )
+        )
+        await session.commit()
+
+    await backfill_method_bindings()
+
+    rows = await _rows(async_session_factory, history["instrument"])
+    # One file, counted once - not once by live learning and again here.
+    assert rows[0].n_streams == 1
+
+
+@pytest.mark.asyncio
+async def test_the_history_is_walked_across_pages(
+    async_session_factory, history, monkeypatch
+):
+    """Paged by the last row read, so no row is read twice or skipped."""
+    monkeypatch.setattr("mascope_backend.db.scripts.backfill_method_bindings._PAGE", 2)
+    mode = await history["add_mode"]()
+    for minutes in range(5):
+        await history["add_file"](mode, minutes=minutes)
+
+    await backfill_method_bindings()
+
+    rows = await _rows(async_session_factory, history["instrument"])
+    assert len(rows) == 1
+    assert rows[0].n_streams == 5
+
+
+@pytest.mark.asyncio
+async def test_a_duplicate_split_across_a_page_boundary_counts_once(
+    async_session_factory, history, monkeypatch
+):
+    """The de-duplication compares with the previous row, across pages too."""
+    monkeypatch.setattr("mascope_backend.db.scripts.backfill_method_bindings._PAGE", 2)
+    mode = await history["add_mode"]()
+    # Two files, the first with three items: with a page of 2, that file's
+    # items straddle the boundary.
+    await history["add_file"](mode, minutes=0, items=3)
+    await history["add_file"](mode, minutes=1)
+
+    await backfill_method_bindings()
+
+    rows = await _rows(async_session_factory, history["instrument"])
+    assert len(rows) == 1
+    assert rows[0].n_streams == 2
 
 
 @pytest.mark.asyncio

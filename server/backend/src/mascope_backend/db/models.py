@@ -1332,8 +1332,11 @@ class MethodBinding(Base):
     #: ACQUISITION sample items, as the backfill script does.
     n_streams: Mapped[int] = mapped_column(Integer, default=0)
     #: The file, and the chemistry, of the last observation folded in. A
-    #: repeat of both is a retry and is ignored; the same file with another
-    #: chemistry is a person re-binding it, and counts.
+    #: repeat of both is ignored; the same file with another chemistry is a
+    #: person re-binding it, and counts. Only a CONSECUTIVE repeat - another
+    #: file of this key in between defeats the comparison - so what keeps the
+    #: pipeline's retries from counting four times is a set shared by the
+    #: attempts of one run, not this.
     #:
     #: Deliberately NOT a foreign key. It is a marker, not a reference:
     #: nothing joins it, and a value left behind by a deleted file answers

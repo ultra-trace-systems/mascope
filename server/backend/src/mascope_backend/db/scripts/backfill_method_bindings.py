@@ -14,8 +14,12 @@ skips**: ``shadow`` is the default, so live learning starts creating rows the
 moment the release lands, and the busiest methods have a row - built from the
 last few files - before anyone runs this. Skipping those would leave exactly
 the keys that matter with no history, and a key whose past holds two
-chemistries would read `learned` on the handful seen live. Running it twice
-is safe, and a second run after more ingest adds only what is new.
+chemistries would read `learned` on the handful seen live.
+
+Running it twice changes nothing: the chemistries merge as a set, the span by
+min and max, and ``n_streams`` takes the larger of the two counts rather than
+their sum - every file live learning counted has pipeline items and so is in
+this history as well, which a sum would count twice.
 
 **It reads the scan-stream census from each file's ``.props``**, for the
 instruments whose reader records one, because the signature class comes from
@@ -88,6 +92,12 @@ _PREVIEW_LIMIT = 20
 #: :func:`_history_pages` instead, by comparing each row with the previous
 #: one: the two share a filename and a timestamp, so this order puts them
 #: next to each other.
+#:
+#: Paged by the last row read, not by OFFSET. OFFSET re-runs this five-way
+#: join and its sort for every page - about sixty of them on the largest
+#: production server - and shifts under the cursor when a re-process deletes
+#: items ahead of it, which silently skips a row. The row-value comparison
+#: matches the ORDER BY exactly, so each page starts where the last ended.
 _HISTORY_SQL = """
     SELECT
         sf.filename                     AS filename,
@@ -109,8 +119,13 @@ _HISTORY_SQL = """
       AND d.dataset_type = 'ACQUISITION'
       AND w.is_system IS TRUE
       AND si.ionization_mode_id IS NOT NULL
+      AND (
+        :after IS FALSE
+        OR (sf.datetime_utc, sf.filename, im.ionization_mode_id)
+            > (CAST(:cursor_dt AS timestamptz), :cursor_file, :cursor_mode)
+      )
     ORDER BY sf.datetime_utc, sf.filename, im.ionization_mode_id
-    LIMIT :limit OFFSET :offset
+    LIMIT :limit
 """
 
 
@@ -130,14 +145,21 @@ async def _history_pages():
 
     :return: Pages of dicts, each page in acquisition order.
     """
-    offset = 0
+    cursor = None
     async with async_session() as session:
         while True:
             page = [
                 dict(row)
                 for row in (
                     await session.execute(
-                        text(_HISTORY_SQL), {"limit": _PAGE, "offset": offset}
+                        text(_HISTORY_SQL),
+                        {
+                            "limit": _PAGE,
+                            "after": cursor is not None,
+                            "cursor_dt": cursor[0] if cursor else None,
+                            "cursor_file": cursor[1] if cursor else None,
+                            "cursor_mode": cursor[2] if cursor else None,
+                        },
                     )
                 ).mappings()
             ]
@@ -145,7 +167,8 @@ async def _history_pages():
                 yield page
             if len(page) < _PAGE:
                 return
-            offset += _PAGE
+            last = page[-1]
+            cursor = (last["datetime_utc"], last["filename"], last["mode_id"])
 
 
 async def _census(filenames: list[str]) -> dict[str, list[dict]]:
@@ -293,7 +316,12 @@ def _merge(row: MethodBinding, record: dict) -> bool:
         row.n_disagreements = (row.n_disagreements or 0) + len(added)
     if len(row.chemistry_keys or []) > 1:
         row.state = "ambiguous"
-    row.n_streams = (row.n_streams or 0) + record["n_streams"]
+    # max, not a sum: every file live learning counted has pipeline items, so
+    # it is in this history too. Adding would count those files twice on the
+    # first run and double every merged row on the next. The history is close
+    # to a superset of what live learning saw, so the larger of the two is
+    # both about right and the same whatever number of times this runs.
+    row.n_streams = max(row.n_streams or 0, record["n_streams"])
     row.first_seen = min(row.first_seen, record["first_seen"])
     row.last_seen = max(row.last_seen, record["last_seen"])
     return bool(added) and not was_ambiguous and len(row.chemistry_keys or []) > 1

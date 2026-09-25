@@ -895,6 +895,36 @@ async def test_retries_recoverable_error_then_succeeds():
 
 
 @pytest.mark.asyncio
+async def test_every_attempt_of_a_run_shares_one_recorded_binding_set():
+    """So a retried run teaches its method once, not once per attempt.
+
+    The row-level guard cannot do this: the backoffs are tens of seconds, so
+    another file of the same key is easily learned in between and the
+    comparison with whatever the row last saw misses.
+    """
+    from mascope_backend.api.controllers.sample.files.process import service
+    from mascope_backend.api.lib.exceptions.api_exceptions import ApiException
+
+    ok = {"message": "done", "_notification_data": {}}
+    body = AsyncMock(side_effect=[ApiException("busy", {}, 503), ok])
+
+    with (
+        patch(f"{_SVC}._auto_process_sample_file", new=body),
+        patch(f"{_SVC}._delete_partial_acquisition_items", new=AsyncMock()),
+        patch.object(service, "_AUTO_PROCESS_RETRY_DELAYS_S", (0, 0, 0)),
+        patch(f"{_NOTIF}.handle_notifications", new_callable=AsyncMock),
+        patch(f"{_UTILS}.handle_reloads", new_callable=AsyncMock),
+    ):
+        await service.auto_process_sample_file(
+            sample_file_id="sf-retry", independent_transaction=True
+        )
+
+    passed = [call.kwargs["recorded_bindings"] for call in body.call_args_list]
+    assert len(passed) == 2
+    assert passed[0] is passed[1]
+
+
+@pytest.mark.asyncio
 async def test_retries_raw_pool_timeout():
     """An unwrapped SQLAlchemy pool timeout is recoverable too."""
     from sqlalchemy.exc import TimeoutError as SQLAlchemyTimeoutError

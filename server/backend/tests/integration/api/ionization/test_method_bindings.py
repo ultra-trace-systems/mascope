@@ -11,6 +11,7 @@ filename token.
 import pytest
 import pytest_asyncio
 from sqlalchemy import delete, select
+from test_utils import captured_logs
 
 from mascope_backend.api.controllers.sample.files.process.bindings import (
     learn_method_bindings,
@@ -180,6 +181,69 @@ async def test_one_file_saying_the_same_thing_again_counts_once(
     assert [o["repeated"] for o in outcomes[1:]] == [1, 1, 1]
     row = await binding_of(sample_file, streams=_streams())
     assert row.n_streams == 1
+
+
+@pytest.mark.asyncio
+async def test_a_run_s_recorded_set_survives_another_file_in_between(
+    modes, binding_of, instrument
+):
+    """The case the row-level guard cannot catch.
+
+    A retry is tens of seconds after the attempt that failed, and every
+    constant-name TOF file of an instrument now shares one key per polarity,
+    so another file of the same key landing in between is the likely case -
+    and then a comparison with whatever the row last saw counts the retry
+    again.
+    """
+    retried = _File(instrument)
+    recorded: set[str] = set()
+
+    first = await learn_method_bindings(
+        retried,
+        [modes["nitrate"]],
+        source="token",
+        streams=_streams(),
+        recorded=recorded,
+    )
+    # Another file of the same key, as a concurrent ingest would.
+    await learn_method_bindings(
+        _File(instrument), [modes["nitrate"]], source="token", streams=_streams()
+    )
+    # The retry of the first file's run, carrying the same set.
+    again = await learn_method_bindings(
+        retried,
+        [modes["nitrate"]],
+        source="token",
+        streams=_streams(),
+        recorded=recorded,
+    )
+
+    assert first["created"] == 1
+    assert again["repeated"] == 1
+    row = await binding_of(retried, streams=_streams())
+    # The first file and the one in between, not the retry.
+    assert row.n_streams == 2
+
+
+@pytest.mark.asyncio
+async def test_a_census_less_file_of_a_census_bearing_reader_is_logged(
+    modes, instrument
+):
+    """The converter always writes one, so a missing census is an anomaly.
+
+    An unreadable `.props` or a reader failure is the only way to get here,
+    the file's method learns nothing from it, and this line is the only sign.
+    """
+    sample_file = _File(instrument, method_file="nitrate.meth", instrument_type="orbi")
+    with captured_logs("WARNING") as records:
+        counts = await learn_method_bindings(
+            sample_file, [modes["nitrate"]], source="token"
+        )
+
+    assert counts["no_signature"] == 1
+    warned = [r["message"] for r in records if r["level"].name == "WARNING"]
+    assert any("scan-stream census" in message for message in warned), warned
+    assert any(sample_file.filename in message for message in warned), warned
 
 
 @pytest.mark.asyncio
