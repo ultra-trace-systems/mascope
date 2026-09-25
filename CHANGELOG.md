@@ -394,7 +394,10 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   The terms are kept in alphabetical order, so a mechanism has one spelling
   however it is typed: `[M+H+CH4N2O]+` is stored as `[M+CH4N2O+H]+`, and
   refused where that is already held. The editor now says what is wrong with a
-  mechanism as it is typed, or the spelling it will be stored in. What neither spelling can say is refused rather
+  mechanism as it is typed, or the spelling it will be stored in. A stored
+  mechanism in neither spelling, a free-text label an older validator let
+  through, is left out of a peak assignment run and reported once in the log
+  rather than failing the run. What neither spelling can say is refused rather
   than approximated: a dimer (`[2M+H]+`), a doubly charged ion (`[M+2H]2+`) or
   a mechanism that both adds and removes (`[M+Na-2H]-`). The shipped
   chemistries, the chemistry profiles' fingerprints and secondary channels and

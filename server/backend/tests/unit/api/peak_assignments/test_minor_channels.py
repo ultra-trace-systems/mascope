@@ -13,6 +13,7 @@ import pandas as pd
 import pytest
 
 from mascope_backend.api.new.peak_assignments import engine as engine_module
+from mascope_backend.api.new.peak_assignments import service as service_module
 from mascope_backend.api.new.peak_assignments.config import PeakAssignmentConfig
 from mascope_backend.api.new.peak_assignments.engine import (
     apply_partner_gates,
@@ -23,7 +24,11 @@ from mascope_backend.api.new.peak_assignments.profiles import (
     resolve_profile,
     with_secondary_channels,
 )
-from mascope_backend.api.new.peak_assignments.service import _searched_mechanisms
+from mascope_backend.api.new.peak_assignments.service import (
+    _readable,
+    _searched_mechanisms,
+    _untargeted_ionization_notations,
+)
 from mascope_backend.api.new.peak_assignments.tiers import (
     TIER_ASSIGNED,
     TIER_CANDIDATE,
@@ -847,3 +852,37 @@ class TestTheChannelsASampleIsSearchedThrough:
 
     def test_a_mode_that_declares_nothing_searches_nothing(self):
         assert _searched_mechanisms([], [self.AMMONIUM], self._resolved([])) == []
+
+
+class TestEachMechanismIsSearchedOnce:
+    PROTON = _mechanism("im-h", "[M+H]+")
+
+    def test_two_rows_of_one_mechanism_are_searched_through_the_first(self):
+        # Spellings of one mechanism stored before it had one spelling read
+        # alike through the column; searched twice, every neutral would be
+        # proposed through it twice.
+        notations, mechanism_id_by_notation = _untargeted_ionization_notations(
+            [
+                _mechanism("im-nh4-a", "[M+NH4]+"),
+                _mechanism("im-h", "[M+H]+"),
+                _mechanism("im-nh4-b", "[M+NH4]+"),
+            ]
+        )
+        assert notations == ["[M+NH4]+", "[M+H]+"]
+        assert mechanism_id_by_notation == {"[M+NH4]+": "im-nh4-a", "[M+H]+": "im-h"}
+
+    def test_a_row_in_neither_notation_is_left_out_and_reported_once(self, monkeypatch):
+        warnings = []
+        monkeypatch.setattr(
+            service_module.runtime.logger,
+            "warning",
+            lambda message: warnings.append(message),
+        )
+        monkeypatch.setattr(service_module, "_reported_unreadable", set())
+        label = _mechanism("im-label", "+H+ (a free-text label)")
+
+        assert not _readable(label)
+        assert not _readable(label)
+        assert _readable(self.PROTON)
+        assert len(warnings) == 1
+        assert "im-label" in warnings[0]
