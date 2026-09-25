@@ -7,6 +7,7 @@ explains equally well, and it must not let one hand out the ledger's strongest
 word on its own authority.
 """
 
+import itertools
 from types import SimpleNamespace
 
 import pandas as pd
@@ -178,6 +179,52 @@ class TestTheCorroborationCap:
         assert rows[0]["provenance"]["minor_channel"]["capped"] is False
 
 
+#: A charge-transfer source: electron transfer, and proton transfer and hydride
+#: abstraction beside it.
+CT_IDS = {"+": "im-ct", "[M+H]+": "im-h", "[M-H]+": "im-hydride"}
+
+BANDS = {TIER_ASSIGNED: 0.75, TIER_CANDIDATE: 0.45}
+
+
+def ledger_row(
+    row_id,
+    formula,
+    mechanism_id,
+    *,
+    alternatives=(),
+    tier=TIER_ASSIGNED,
+    capped=None,
+    source="untargeted",
+    intensity=1.0e5,
+):
+    """A monoisotopic row as a stage built and the policy judged it."""
+    provenance = {"plausibility": 1.0, "evidence": 0.99}
+    if capped is not None:
+        provenance["minor_channel"] = {"corroborated_by": None, "capped": capped}
+    return {
+        "peak_assignment_id": row_id,
+        "role": "M0",
+        "sample_peak_id": f"peak-{row_id}",
+        "sample_peak_intensity": intensity,
+        "assigned_formula": formula,
+        "ion_formula": None,
+        "ionization_mechanism_id": mechanism_id,
+        "tier": tier,
+        "fit_score": 0.99,
+        "source": source,
+        "alternatives": [
+            {
+                "assigned_formula": alt_formula,
+                "ionization_mechanism_id": alt_mechanism,
+                "same_ion": True,
+                "plausibility": 1.0,
+            }
+            for alt_formula, alt_mechanism in alternatives
+        ],
+        "provenance": provenance,
+    }
+
+
 class TestThePartnerGate:
     """An opportunistic reading of an ion the mode's own channel also reads
     stands only where the sample commits its neutral through a mode channel.
@@ -189,9 +236,6 @@ class TestThePartnerGate:
     """
 
     IDS = {"[M+NO3]-": "im-no3", "[M-H]-": "im-deprot", "[M+HCOO]-": "im-formate"}
-    CT_IDS = {"+": "im-ct", "[M+H]+": "im-h", "[M-H]+": "im-hydride"}
-
-    BANDS = {TIER_ASSIGNED: 0.75, TIER_CANDIDATE: 0.45}
 
     def _gate(self, rows, ids, minor, gated):
         apply_partner_gates(
@@ -199,7 +243,7 @@ class TestThePartnerGate:
             notation_by_id={mid: n for n, mid in ids.items()},
             minor_channels=frozenset(minor),
             partner_gated_channels=frozenset(gated),
-            tier_bands=self.BANDS,
+            tier_bands=BANDS,
         )
         return rows
 
@@ -430,7 +474,7 @@ class TestThePartnerGate:
                 _match(92.0621, "C7H8", "C7H8+", "+", 0.99),
             ],
             peaks,
-            self.CT_IDS,
+            CT_IDS,
             minor={"[M+H]+", "[M-H]+"},
             gated={"[M+H]+", "[M-H]+"},
         )
@@ -465,44 +509,7 @@ class TestThePartnerGate:
         assert child["assigned_formula"] == "C11H20O7"
         assert child["ionization_mechanism_id"] == "im-deprot"
 
-    @staticmethod
-    def _row(
-        row_id,
-        formula,
-        mechanism_id,
-        *,
-        alternatives=(),
-        tier=TIER_ASSIGNED,
-        capped=None,
-        source="untargeted",
-        intensity=1.0e5,
-    ):
-        """A monoisotopic row as a stage built and the policy judged it."""
-        provenance = {"plausibility": 1.0, "evidence": 0.99}
-        if capped is not None:
-            provenance["minor_channel"] = {"corroborated_by": None, "capped": capped}
-        return {
-            "peak_assignment_id": row_id,
-            "role": "M0",
-            "sample_peak_id": f"peak-{row_id}",
-            "sample_peak_intensity": intensity,
-            "assigned_formula": formula,
-            "ion_formula": None,
-            "ionization_mechanism_id": mechanism_id,
-            "tier": tier,
-            "fit_score": 0.99,
-            "source": source,
-            "alternatives": [
-                {
-                    "assigned_formula": alt_formula,
-                    "ionization_mechanism_id": alt_mechanism,
-                    "same_ion": True,
-                    "plausibility": 1.0,
-                }
-                for alt_formula, alt_mechanism in alternatives
-            ],
-            "provenance": provenance,
-        }
+    _row = staticmethod(ledger_row)
 
     def _formate(self, row_id, formula, acid=None):
         """A formate reading the policy capped, with its acid reading if any."""
@@ -546,7 +553,7 @@ class TestThePartnerGate:
             notation_by_id={mid: n for n, mid in self.IDS.items()},
             minor_channels=frozenset({"[M+HCOO]-"}),
             partner_gated_channels=frozenset({"[M+HCOO]-"}),
-            tier_bands=self.BANDS,
+            tier_bands=BANDS,
         )
         assert summary["settled"] is False and summary["rounds"] == 1
         assert r1["provenance"]["partner_gate"]["kept"]
@@ -565,7 +572,7 @@ class TestThePartnerGate:
             notation_by_id={mid: n for n, mid in self.IDS.items()},
             minor_channels=frozenset({"[M+HCOO]-"}),
             partner_gated_channels=frozenset({"[M+HCOO]-"}),
-            tier_bands=self.BANDS,
+            tier_bands=BANDS,
         )
         assert (r["assigned_formula"], r["ionization_mechanism_id"]) == (
             "C9H16O3",
@@ -646,7 +653,7 @@ class TestThePartnerGate:
             notation_by_id={mid: n for n, mid in self.IDS.items()},
             minor_channels=frozenset({"[M+HCOO]-"}),
             partner_gated_channels=frozenset({"[M+HCOO]-"}),
-            tier_bands=self.BANDS,
+            tier_bands=BANDS,
         )
         assert formate["provenance"]["partner_gate"]["uncapped"] is True
         assert formate["provenance"]["minor_channel"]["capped"] is False
@@ -663,33 +670,32 @@ class TestTheStrongerPartnerDecides:
     electron transfer: C7H6 faintly, toluene at 27 to 31 times its height. The
     election's prior for the heavier mechanism takes the proton; the sample
     says toluene, and how strongly it says so decides whether the other
-    reading is still a doubt.
+    reading is still a doubt. The contest is read once, after the walk, on
+    the partners' peak heights.
     """
 
-    CT_IDS = {"+": "im-ct", "[M+H]+": "im-h", "[M-H]+": "im-hydride"}
     OPENED = frozenset({"[M+H]+", "[M-H]+"})
-    BANDS = {TIER_ASSIGNED: 0.75, TIER_CANDIDATE: 0.45}
-
-    _row = staticmethod(TestThePartnerGate._row)
 
     def _gate(self, rows, *, opened=OPENED):
         return apply_partner_gates(
             rows,
-            notation_by_id={mid: n for n, mid in self.CT_IDS.items()},
+            notation_by_id={mid: n for n, mid in CT_IDS.items()},
             minor_channels=opened,
             partner_gated_channels=opened,
-            tier_bands=self.BANDS,
+            tier_bands=BANDS,
         )
 
-    def _benzyl(self, elected="C7H6", mechanism="im-h", other=("C7H8", "im-hydride")):
+    @staticmethod
+    def _benzyl(elected="C7H6", mechanism="im-h", other=("C7H8", "im-hydride")):
         """The benzyl cation as the election or a stage left it."""
-        return self._row(
+        return ledger_row(
             "benzyl", elected, mechanism, alternatives=(other,), intensity=4.0e5
         )
 
-    def _seen(self, row_id, formula, intensity, tier=TIER_ASSIGNED):
+    @staticmethod
+    def _seen(row_id, formula, intensity, tier=TIER_ASSIGNED):
         """A molecule the sample commits through electron transfer."""
-        return self._row(row_id, formula, "im-ct", tier=tier, intensity=intensity)
+        return ledger_row(row_id, formula, "im-ct", tier=tier, intensity=intensity)
 
     def test_the_brighter_partner_takes_the_ion_and_settles_it(self):
         benzyl = self._benzyl()
@@ -715,14 +721,7 @@ class TestTheStrongerPartnerDecides:
             "partner": True,
             "took_from": "C7H6",
             "contest": [
-                {
-                    "reading": "C7H6",
-                    "via": "[M+H]+",
-                    "on": "intensity",
-                    "tiers": [TIER_ASSIGNED, TIER_ASSIGNED],
-                    "ratio": 30.0,
-                    "decisive": True,
-                }
+                {"reading": "C7H6", "via": "[M+H]+", "ratio": 30.0, "decisive": True}
             ],
         }
         # The sample did bear the proton's reading out: outweighed, not unmet.
@@ -731,12 +730,26 @@ class TestTheStrongerPartnerDecides:
         assert proton["partner_gate"] == "outweighed"
         assert {
             key: summary[key]
-            for key in ("contested", "contest_swapped", "outweighed", "within_margin")
-        } == {"contested": 1, "contest_swapped": 1, "outweighed": 1, "within_margin": 0}
+            for key in (
+                "contested",
+                "contest_swapped",
+                "outweighed",
+                "within_margin",
+                "margin",
+            )
+        } == {
+            "contested": 1,
+            "contest_swapped": 1,
+            "outweighed": 1,
+            "within_margin": 0,
+            "margin": 10.0,
+        }
 
-    def test_a_partner_at_a_higher_tier_takes_it_however_faint(self):
-        # C7H6's row is the brighter, but only a candidate: the tier decides
-        # before the height, and settles it at any margin.
+    def test_a_partners_tier_is_its_bar_and_not_its_weight(self):
+        # C7H6's row is a candidate and twenty times as bright as toluene's
+        # assigned one. A tier read at the gate is not the tier the row ends
+        # on, and a contest that weighed it would corroborate the partner it
+        # chose: the peak decides.
         benzyl = self._benzyl()
         self._gate(
             [
@@ -745,13 +758,25 @@ class TestTheStrongerPartnerDecides:
                 self._seen("tol", "C7H8", 5.0e4),
             ]
         )
-        assert benzyl["assigned_formula"] == "C7H8"
-        [entry] = benzyl["provenance"]["partner_gate"]["contest"]
-        assert entry["on"] == "tier"
-        assert entry["tiers"] == [TIER_ASSIGNED, TIER_CANDIDATE]
-        assert entry["ratio"] == 0.05
-        assert entry["decisive"] is True
+        assert benzyl["assigned_formula"] == "C7H6"
+        assert benzyl["provenance"]["partner_gate"]["contest"] == [
+            {"reading": "C7H8", "via": "[M-H]+", "ratio": 20.0, "decisive": True}
+        ]
         assert benzyl["alternatives"][0]["partner_gate"] == "outweighed"
+
+    def test_a_row_under_the_candidate_bar_is_no_partner(self):
+        benzyl = self._benzyl()
+        summary = self._gate(
+            [
+                benzyl,
+                self._seen("c7h6", "C7H6", 1.0e5),
+                self._seen("tol", "C7H8", 3.0e6, tier="below_assignability"),
+            ]
+        )
+        assert benzyl["assigned_formula"] == "C7H6"
+        assert "contest" not in benzyl["provenance"]["partner_gate"]
+        assert benzyl["alternatives"][0]["partner_gate"] == "unmet"
+        assert summary["contested"] == 0
 
     def test_within_the_margin_the_other_reading_is_left_a_rival(self):
         # C5H7+ at 67.054: isoprene is seen seven times as strongly as C5H6,
@@ -764,19 +789,33 @@ class TestTheStrongerPartnerDecides:
             "C5H8",
             "im-hydride",
         )
-        [entry] = c5h7["provenance"]["partner_gate"]["contest"]
-        assert (entry["ratio"], entry["decisive"]) == (7.0, False)
+        assert c5h7["provenance"]["partner_gate"]["contest"] == [
+            {"reading": "C5H6", "via": "[M+H]+", "ratio": 7.0, "decisive": False}
+        ]
         [proton] = c5h7["alternatives"]
         assert "partner_gate" not in proton
         assert (summary["outweighed"], summary["within_margin"]) == (0, 1)
 
-    def test_the_margin_is_ten_times(self):
+    @pytest.mark.parametrize(
+        "isoprene, ratio, decisive",
+        [(1.0e6, 10.0, True), (9.999e5, 9.99, False), (9.99999999e5, 9.99, False)],
+    )
+    def test_the_margin_is_ten_times_and_reads_as_it_is_decided(
+        self, isoprene, ratio, decisive
+    ):
+        # The record rounds down and decides on what it records, so a ratio
+        # short of the margin never reads as the margin.
         assert engine_module.PARTNER_MARGIN == 10.0
         c5h7 = self._benzyl(elected="C5H6", other=("C5H8", "im-hydride"))
         self._gate(
-            [c5h7, self._seen("c5h6", "C5H6", 1.0e5), self._seen("iso", "C5H8", 1.0e6)]
+            [
+                c5h7,
+                self._seen("c5h6", "C5H6", 1.0e5),
+                self._seen("iso", "C5H8", isoprene),
+            ]
         )
-        assert c5h7["provenance"]["partner_gate"]["contest"][0]["decisive"] is True
+        [entry] = c5h7["provenance"]["partner_gate"]["contest"]
+        assert (entry["ratio"], entry["decisive"]) == (ratio, decisive)
 
     def test_a_row_holding_the_stronger_reading_keeps_it_and_says_so(self):
         benzyl = self._benzyl(
@@ -808,12 +847,12 @@ class TestTheStrongerPartnerDecides:
         assert benzyl["assigned_formula"] == "C7H6"
         gate = benzyl["provenance"]["partner_gate"]
         assert "took_from" not in gate
-        [entry] = gate["contest"]
-        assert (entry["ratio"], entry["decisive"]) == (1.0, False)
-        # A tie that swapped would swap back every round and never settle.
-        assert (summary["rounds"], summary["settled"]) == (2, True)
+        assert gate["contest"] == [
+            {"reading": "C7H8", "via": "[M-H]+", "ratio": 1.0, "decisive": False}
+        ]
+        assert summary["contest_swapped"] == 0
 
-    def test_the_strongest_partner_is_the_one_weighed(self):
+    def test_the_brightest_partner_is_the_one_weighed(self):
         # Two rows commit C7H6 through electron transfer: the brighter one is its
         # partner, and toluene has to be ten times that one.
         benzyl = self._benzyl()
@@ -830,10 +869,9 @@ class TestTheStrongerPartnerDecides:
 
     def test_a_partner_a_swap_makes_is_weighed(self):
         # Toluene's row was elected through proton transfer as a reading
-        # nothing bears out, so the gate turns it to toluene through electron
-        # transfer - after the benzyl cation was first judged against a ledger with no
-        # toluene in it. The contest reads the ledger as the swap left it.
-        toluene = self._row(
+        # nothing bears out, so the walk turns it to toluene through electron
+        # transfer; the contest reads the ledger the walk settled on.
+        toluene = ledger_row(
             "tol",
             "C7H7",
             "im-h",
@@ -851,21 +889,20 @@ class TestTheStrongerPartnerDecides:
         assert benzyl["provenance"]["partner_gate"]["contest"][0]["ratio"] == 30.0
         assert summary["settled"] is True
 
-    def test_a_partner_a_swap_takes_away_is_no_longer_weighed(self):
-        # Toluene's only partner is a row the gate had turned to toluene
+    def test_a_partner_a_swap_takes_away_is_not_weighed(self):
+        # Toluene's only partner is a row the walk had turned to toluene
         # through electron transfer, setting aside a reading nothing bore out. The
         # sample bears that reading out, so the row turns back and toluene is
-        # left with no partner: the benzyl cation, which took toluene's reading
-        # on the ledger as it first stood, goes back to the one the sample
-        # still shows, and toluene's is set aside.
-        partner = self._row("tol", "C7H8", "im-ct", intensity=3.0e6)
+        # left with no partner: against the settled ledger the benzyl cation
+        # keeps the reading the sample still shows, and toluene's is set aside.
+        partner = ledger_row("tol", "C7H8", "im-ct", intensity=3.0e6)
         partner["provenance"]["partner_gate"] = {
             "channel": "[M+H]+",
             "partner": False,
             "displaced": "C7H7",
             "through": "+",
         }
-        partner["alternatives"][:] = [
+        partner["alternatives"] = [
             {
                 "assigned_formula": "C7H7",
                 "ionization_mechanism_id": "im-h",
@@ -891,51 +928,55 @@ class TestTheStrongerPartnerDecides:
             "C7H6",
             "im-h",
         )
-        assert "contest" not in benzyl["provenance"]["partner_gate"]
+        assert benzyl["provenance"]["partner_gate"] == {
+            "channel": "[M+H]+",
+            "partner": True,
+        }
         assert benzyl["alternatives"][0]["assigned_formula"] == "C7H8"
         assert benzyl["alternatives"][0]["partner_gate"] == "unmet"
         assert (summary["contested"], summary["settled"]) == (0, True)
 
-    def test_a_set_aside_reading_the_ledger_bears_out_is_weighed_not_restored(self):
+    def test_a_set_aside_reading_the_ledger_bears_out_is_weighed(self):
         # Nothing shows C7H6 when the benzyl cation is first judged, so it
         # takes toluene's reading and sets the proton's aside. A later swap
-        # gives C7H6 a partner - a faint one. The row weighs the two instead of
-        # turning back to the reading it set aside.
+        # gives C7H6 a partner - a faint one - and the row turns back to it;
+        # the contest then weighs the two, and toluene's partner is brighter.
         benzyl = self._benzyl()
-        c7h6 = self._row(
+        c7h6 = ledger_row(
             "c7h6", "C7H5", "im-h", alternatives=(("C7H6", "im-ct"),), intensity=1.0e5
         )
-        summary = self._gate([benzyl, self._seen("tol", "C7H8", 3.0e6), c7h6])
+        self._gate([benzyl, self._seen("tol", "C7H8", 3.0e6), c7h6])
         assert c7h6["assigned_formula"] == "C7H6"
         assert benzyl["assigned_formula"] == "C7H8"
-        gate = benzyl["provenance"]["partner_gate"]
-        assert (gate["partner"], gate["displaced"]) == (True, "C7H6")
-        assert "took_from" not in gate
-        assert gate["contest"][0]["decisive"] is True
+        assert benzyl["provenance"]["partner_gate"] == {
+            "channel": "[M-H]+",
+            "partner": True,
+            "took_from": "C7H6",
+            "contest": [
+                {"reading": "C7H6", "via": "[M+H]+", "ratio": 30.0, "decisive": True}
+            ],
+        }
         assert benzyl["alternatives"][0]["partner_gate"] == "outweighed"
-        assert summary["rounds"] == 3
 
-    def test_a_reading_a_contest_displaced_stays_one_the_sample_bore_out(self):
+    @pytest.mark.parametrize("order", list(itertools.permutations(range(4))))
+    def test_the_row_order_decides_nothing(self, order):
         # The C11 ion reads as C10H18O5 with formate, C9H16O5 with acetate
-        # (both held to a partner here) and the C11 acid. The contest takes
-        # the acetate reading; then the row that partnered C9H16O5 turns back
-        # to the reading it had set aside, the acetate reading is left with no
-        # partner, and the acid becomes the row's. The formate reading the
-        # contest displaced still has its partner, so it is not set aside: it
-        # stays a rival the sample shows.
+        # (both held to a partner here) and the C11 acid. The row that
+        # partners C9H16O5 turns back to a reading it had set aside, so on the
+        # settled ledger only the formate reading has a partner, whichever row
+        # the walk reached first.
         ids = {
             "[M-H]-": "im-deprot",
             "[M+HCOO]-": "im-formate",
             "[M+CH3COO]-": "im-acetate",
         }
-        row = self._row(
+        row = ledger_row(
             "r",
             "C10H18O5",
             "im-formate",
             alternatives=(("C9H16O5", "im-acetate"), ("C11H20O7", "im-deprot")),
         )
-        formate_partner = self._row("a", "C10H18O5", "im-deprot", intensity=1.0e5)
-        acetate_partner = self._row(
+        acetate_partner = ledger_row(
             "b",
             "C9H16O5",
             "im-deprot",
@@ -949,29 +990,67 @@ class TestTheStrongerPartnerDecides:
             "through": "[M-H]-",
         }
         acetate_partner["alternatives"][0]["partner_gate"] = "unmet"
+        rows = [
+            row,
+            ledger_row("a", "C10H18O5", "im-deprot", intensity=1.0e5),
+            acetate_partner,
+            ledger_row("c", "C8H14O3", "im-deprot"),
+        ]
         opened = frozenset({"[M+HCOO]-", "[M+CH3COO]-"})
-        apply_partner_gates(
-            [
-                row,
-                formate_partner,
-                acetate_partner,
-                self._row("c", "C8H14O3", "im-deprot"),
-            ],
+        summary = apply_partner_gates(
+            [rows[i] for i in order],
             notation_by_id={mid: n for n, mid in ids.items()},
             minor_channels=opened,
             partner_gated_channels=opened,
-            tier_bands=self.BANDS,
+            tier_bands=BANDS,
         )
-        assert acetate_partner["assigned_formula"] == "C8H14O3"
         assert (row["assigned_formula"], row["ionization_mechanism_id"]) == (
-            "C11H20O7",
-            "im-deprot",
+            "C10H18O5",
+            "im-formate",
         )
         marks = {
             alt["assigned_formula"]: alt.get("partner_gate")
             for alt in row["alternatives"]
         }
-        assert marks == {"C9H16O5": "unmet", "C10H18O5": None}
+        assert marks == {"C9H16O5": "unmet", "C11H20O7": None}
+        assert summary["contested"] == 0
+
+    def test_a_contest_swap_asks_the_mass_gate_again(self):
+        # The policy capped the proton's reading; the walk lifts the cap on
+        # C7H6's partner, and the mass gate's ceiling holds the row there.
+        # Toluene less a hydride is the less plausible reading here and does
+        # not reach the ceiling, so once the contest takes it the row is no
+        # longer recorded as held there.
+        benzyl = ledger_row(
+            "benzyl",
+            "C7H6",
+            "im-h",
+            alternatives=(("C7H8", "im-hydride"),),
+            tier=TIER_CANDIDATE,
+            capped=True,
+            intensity=4.0e5,
+        )
+        benzyl["provenance"]["mass_gate"] = {
+            "corroborated_by": None,
+            "ceiling": TIER_CANDIDATE,
+            "reason": "off_calibration",
+        }
+        benzyl["alternatives"][0]["plausibility"] = 0.5
+        summary = self._gate(
+            [
+                benzyl,
+                self._seen("c7h6", "C7H6", 1.0e5),
+                self._seen("tol", "C7H8", 3.0e6),
+            ]
+        )
+        assert benzyl["assigned_formula"] == "C7H8"
+        assert benzyl["tier"] == TIER_CANDIDATE
+        assert benzyl["provenance"]["mass_gate"] == {
+            "corroborated_by": None,
+            "ceiling": TIER_CANDIDATE,
+            "reason": "off_calibration",
+        }
+        assert summary["held"] == 0
 
     def test_a_modes_own_reading_is_not_contested(self):
         # A proton-transfer source declares protonation beside electron transfer,
@@ -1000,13 +1079,13 @@ class TestTheStrongerPartnerDecides:
         # Nothing shows C7H4, so the row reads another way; of the two
         # opportunistic readings the sample bears out, the one it shows more
         # strongly is taken.
-        row = self._row(
+        row = ledger_row(
             "r",
             "C7H4",
             "im-h",
             alternatives=(("C7H6", "im-hydride"), ("C7H8", "im-other")),
         )
-        ids = {**self.CT_IDS, "[M+X]+": "im-other"}
+        ids = {**CT_IDS, "[M+X]+": "im-other"}
         apply_partner_gates(
             [
                 row,
@@ -1016,12 +1095,24 @@ class TestTheStrongerPartnerDecides:
             notation_by_id={mid: n for n, mid in ids.items()},
             minor_channels=frozenset({"[M+H]+", "[M-H]+", "[M+X]+"}),
             partner_gated_channels=frozenset({"[M+H]+", "[M-H]+"}),
-            tier_bands=self.BANDS,
+            tier_bands=BANDS,
         )
         assert (row["assigned_formula"], row["ionization_mechanism_id"]) == (
             "C7H8",
             "im-other",
         )
+
+    def test_a_gated_channel_has_to_be_a_minor_one(self):
+        # A gated reading is never a partner; that is what lets the contest be
+        # read once, after the walk.
+        with pytest.raises(ValueError, match="minor"):
+            apply_partner_gates(
+                [self._benzyl()],
+                notation_by_id={mid: n for n, mid in CT_IDS.items()},
+                minor_channels=frozenset({"[M-H]+"}),
+                partner_gated_channels=self.OPENED,
+                tier_bands=BANDS,
+            )
 
 
 class TestResolution:

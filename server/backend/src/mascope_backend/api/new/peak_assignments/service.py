@@ -83,6 +83,7 @@ from mascope_backend.api.new.peak_assignments.engine import (
     CROSS_CHANNEL_KEY,
     LIST_PRIOR_WEIGHT,
     MASS_CALIBRATION_KEY,
+    PARTNER_GATE_KEY,
     PATTERN_SCORING_KEY,
     REFERENCE_IDENTITIES_COL,
     SEARCH_SCOPE_KEY,
@@ -1411,12 +1412,14 @@ class JudgedCommits:
     :param mass_calibration: The mass gate's summary.
     :param cross_channel: The cross-channel pass's summary.
     :param tiering: The tiering pass's summary, with what the claims did.
+    :param partner_gate: The partner gate's summary, with its margin.
     """
 
     rows: list[dict]
     mass_calibration: dict
     cross_channel: dict
     tiering: dict
+    partner_gate: dict
 
 
 def judge_commits(
@@ -1476,7 +1479,7 @@ def judge_commits(
             fallback_sigma_ppm=fallback_sigma_ppm,
             lines=lines,
         )
-        apply_partner_gates(
+        partner_gate = apply_partner_gates(
             judged,
             notation_by_id=notation_by_id,
             minor_channels=minor_channels,
@@ -1513,7 +1516,9 @@ def judge_commits(
                 # the rounds ran out.
                 unapplied=len(found),
             )
-            return JudgedCommits(judged, mass_calibration, cross_channel, tiering)
+            return JudgedCommits(
+                judged, mass_calibration, cross_channel, tiering, partner_gate
+            )
         claims.update((claim.row_id, claim) for claim in found)
 
 
@@ -1964,6 +1969,7 @@ def _stored_run_config(
     mass_calibration: dict | None = None,
     cross_channel: dict | None = None,
     tiering: dict | None = None,
+    partner_gate: dict | None = None,
 ) -> dict:
     """The blob persisted on a run: the requested config plus server-side state.
 
@@ -2000,6 +2006,10 @@ def _stored_run_config(
     that produced it. It records the rule set's version, the thresholds it
     demoted on, and what each rule took.
 
+    The partner gate is the seventh, beside the cross-channel pass that reads
+    what it leaves: which opportunistic readings stood on a partner, which it
+    turned to another reading, and what its contest took and at what margin.
+
     :param config: The validated client-supplied run configuration.
     :param resolved_profile: The chemistry the run resolved to, when known.
     :param search_scope: What the untargeted stage was offered, once it is known.
@@ -2007,6 +2017,7 @@ def _stored_run_config(
     :param mass_calibration: What the finished ledger measured of itself.
     :param cross_channel: What the sample's own channels corroborated.
     :param tiering: The rule set that judged the commits, and what it took.
+    :param partner_gate: What the partner gate decided, and at what margin.
     :return: A JSON-serializable dict for ``PeakAssignmentRun.config``.
     """
     stored = config.model_dump()
@@ -2023,6 +2034,8 @@ def _stored_run_config(
         stored[CROSS_CHANNEL_KEY] = cross_channel
     if tiering is not None:
         stored[TIERING_KEY] = tiering
+    if partner_gate is not None:
+        stored[PARTNER_GATE_KEY] = partner_gate
     return stored
 
 
@@ -2035,6 +2048,7 @@ async def _record_resolved_profile(
     mass_calibration: dict | None = None,
     cross_channel: dict | None = None,
     tiering: dict | None = None,
+    partner_gate: dict | None = None,
 ) -> None:
     """Write the resolved chemistry onto a run that is about to use it.
 
@@ -2055,6 +2069,7 @@ async def _record_resolved_profile(
     :param mass_calibration: What the ledger measured of its own mass accuracy.
     :param cross_channel: What the sample's own channels corroborated.
     :param tiering: The rule set that judged the commits, and what it took.
+    :param partner_gate: What the partner gate decided, and at what margin.
     """
     async with async_session() as session:
         await session.execute(
@@ -2069,6 +2084,7 @@ async def _record_resolved_profile(
                     mass_calibration,
                     cross_channel,
                     tiering,
+                    partner_gate,
                 )
             )
         )
@@ -2965,6 +2981,7 @@ async def _run_sample_assignment(
         mass_calibration = judged.mass_calibration
         cross_channel = judged.cross_channel
         tiering = judged.tiering
+        partner_gate = judged.partner_gate
         if mass_calibration["applied"]:
             trend = mass_calibration["trend"]
             centre = (
@@ -2998,6 +3015,20 @@ async def _run_sample_assignment(
             f"held at candidate for it), {followed['untracked']} not at all "
             f"({mass_calibration['capped_untracked']} held at candidate for it)"
         )
+        if partner_gate["rounds"]:
+            runtime.logger.info(
+                f"Sample '{sample.sample_item_name}' partner gate: "
+                f"{partner_gate['partnered']} opportunistic readings stand on a "
+                f"partner, {partner_gate['swapped']} turned to another reading and "
+                f"{partner_gate['kept']} left to the cap, over "
+                f"{partner_gate['rounds']} rounds"
+                + ("" if partner_gate["settled"] else " (not settled)")
+                + f"; {partner_gate['contested']} weighed against another borne-out "
+                f"reading, {partner_gate['contest_swapped']} taken by it, "
+                f"{partner_gate['outweighed']} readings outweighed at "
+                f"{partner_gate['margin']:g} times and "
+                f"{partner_gate['within_margin']} within it"
+            )
         runtime.logger.info(
             f"Sample '{sample.sample_item_name}' corroborates "
             f"{cross_channel['corroborated']} of {cross_channel['committed_m0']} "
@@ -3051,6 +3082,7 @@ async def _run_sample_assignment(
             mass_calibration,
             cross_channel,
             tiering,
+            partner_gate,
         )
         await send_progress_user_notification(notification, 0.8)
 

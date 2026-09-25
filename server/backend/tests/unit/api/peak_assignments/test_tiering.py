@@ -716,35 +716,49 @@ class TestWhatTheEarlierPassesDecided:
         assert reason["caps"] is True
 
     @pytest.mark.parametrize(
-        "ambiguity, detail",
+        "formula, ambiguity, detail",
         [
+            # Its own molecule has no partner of its own to weigh.
             (
-                {"alternative": "C7H8", "via": "[M-H]+", "shown": True},
+                "C7H6",
+                {"alternative": "C7H8", "via": "[M-H]+", "shown": True, "ratio": None},
                 "the same ion reads as C7H8 through [M-H]+, another molecule the "
                 "spectrum cannot tell from this one, and the sample also commits "
                 "C7H8 through one of the mode's own channels, so a second channel "
                 "does not settle which",
             ),
-            # Weighed by the partner gate and found short of its margin.
+            # Its own molecule shown more strongly, short of the margin.
             (
-                {
-                    "alternative": "C5H6",
-                    "via": "[M+H]+",
-                    "shown": True,
-                    "on": "intensity",
-                    "tiers": ["assigned", "assigned"],
-                    "ratio": 7.2,
-                },
+                "C5H8",
+                {"alternative": "C5H6", "via": "[M+H]+", "shown": True, "ratio": 7.2},
                 "the same ion reads as C5H6 through [M+H]+, another molecule the "
                 "spectrum cannot tell from this one; the sample commits both "
                 "molecules through the mode's own channels, C5H8 on a peak only "
                 "7.2 times as bright as C5H6's, short of the 10 times that would "
                 "settle which",
             ),
+            # Rounded down, so a ratio short of the margin never reads as it.
+            (
+                "C5H8",
+                {"alternative": "C5H6", "via": "[M+H]+", "shown": True, "ratio": 9.99},
+                "the same ion reads as C5H6 through [M+H]+, another molecule the "
+                "spectrum cannot tell from this one; the sample commits both "
+                "molecules through the mode's own channels, C5H8 on a peak only "
+                "9.9 times as bright as C5H6's, short of the 10 times that would "
+                "settle which",
+            ),
+            # The rival's molecule shown more strongly than its own.
+            (
+                "C7H6",
+                {"alternative": "C7H8", "via": "[M-H]+", "shown": True, "ratio": 0.03},
+                "the same ion reads as C7H8 through [M-H]+, another molecule the "
+                "spectrum cannot tell from this one; the sample commits both "
+                "molecules through the mode's own channels, C7H8 on the brighter "
+                "peak, so a second channel does not settle which",
+            ),
         ],
     )
-    def test_a_rival_the_sample_shows_says_so(self, ambiguity, detail):
-        formula = "C7H6" if ambiguity["alternative"] == "C7H8" else "C5H8"
+    def test_a_rival_the_sample_shows_says_so(self, formula, ambiguity, detail):
         cross_channel = {
             "channels": ["+", "[M-H]+"],
             "capped": "candidate",
@@ -767,6 +781,28 @@ class TestWhatTheEarlierPassesDecided:
         ]
         assert reason["detail"] == detail
         assert reason["caps"] is True
+
+    def test_an_isotopologue_says_its_m0s_rival_is_shown(self):
+        cross_channel = {
+            "inherited_from": "pa-owner",
+            "shown": True,
+            "capped": "candidate",
+            "reason": "ambiguous_adduct",
+        }
+        rows = [
+            row("pa-kid", tier="candidate", provenance={"cross_channel": cross_channel})
+        ]
+        run(rows)
+        (reason,) = [
+            reason
+            for reason in rows[0]["provenance"]["tier_reasons"]
+            if reason["rule"] == REASON_AMBIGUOUS_ADDUCT
+        ]
+        assert reason["detail"] == (
+            "its monoisotopic row's ion reads as another molecule too, which the "
+            "sample also commits through one of the mode's own channels, so a "
+            "second channel does not settle which"
+        )
 
     def test_a_shown_rival_that_moves_the_nitrogen_count_says_which_question(self):
         cross_channel = {
@@ -1131,32 +1167,19 @@ class TestAReadingOfTheSameIonThatSomethingSettled:
             "than a molecule, so it is no rival"
         )
 
-    @pytest.mark.parametrize(
-        "weighed, strength",
-        [
-            (
-                {"on": "intensity", "tiers": ["assigned", "assigned"], "ratio": 30.4},
-                "on a peak 30 times as bright as C3H4O's",
-            ),
-            (
-                {"on": "tier", "tiers": ["assigned", "candidate"], "ratio": 0.05},
-                "at assigned, and C3H4O only at candidate",
-            ),
-        ],
-    )
-    def test_the_stronger_partner_says_by_how_much(self, weighed, strength):
+    def test_the_stronger_partner_says_by_how_much(self):
         rows = [
             row(
                 "pa-1",
                 "C3H7NO",
-                provenance={"cross_channel": settled("partner", **weighed)},
+                provenance={"cross_channel": settled("partner", ratio=30.4)},
             )
         ]
         run(rows)
         assert self.detail_of(rows, REASON_SAME_ION_SETTLED) == (
             "the same ion also reads as C3H4O through [M+NH4]+; the sample commits "
-            f"C3H7NO through one of the mode's own channels {strength}, which "
-            "settles it"
+            "C3H7NO through one of the mode's own channels on a peak 30 times as "
+            "bright as C3H4O's, which settles it"
         )
         assert tier_of(rows, "pa-1") == "assigned"
 
