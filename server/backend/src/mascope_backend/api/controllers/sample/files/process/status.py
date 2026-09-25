@@ -88,13 +88,20 @@ def pooled_streams_note(streams: list[dict]) -> str | None:
     return " ".join(notes) or None
 
 
-async def read_scan_streams(filename: str) -> list[dict]:
+async def read_scan_streams(filename: str) -> list[dict] | None:
     """A stored file's scan-stream census, from its ``.props``.
 
-    A file converted before the census existed, or by a reader that takes
-    none, has no streams to report. Nothing that reads this may cost the file
-    its processing - registration reads it too, and so does the pipeline - so
-    a props file that cannot be read reports no streams rather than raising.
+    **``[]`` and ``None`` mean different things.** ``[]`` is a file that
+    records no census: one converted before the census existed, or by a reader
+    that takes none. Both are ordinary, and nearly every Orbitrap file
+    predating the census is re-processed sooner or later. ``None`` is a
+    ``.props`` that could not be read at all, which is an anomaly worth a line
+    in the log - so the caller can tell the two apart instead of treating
+    every old file as a fault.
+
+    Nothing that reads this may cost the file its processing - registration
+    reads it too, and so does the pipeline - so an unreadable props answers
+    ``None`` rather than raising.
 
     **The shape is checked here, not by each caller.** Every entry that comes
     back is a dict whose ``signature`` is a dict, so a caller may walk
@@ -103,7 +110,8 @@ async def read_scan_streams(filename: str) -> list[dict]:
     that do not fit are dropped rather than failing the file.
 
     :param filename: The sample file's stored name.
-    :return: The census, or ``[]``.
+    :return: The census, ``[]`` when the file records none, or ``None`` when
+        its ``.props`` could not be read.
     """
     try:
         props = await asyncio.to_thread(read_props, filename)
@@ -117,9 +125,9 @@ async def read_scan_streams(filename: str) -> list[dict]:
         ]
     except Exception:  # noqa: BLE001 - a missing census is not a processing error
         runtime.logger.opt(exception=True).debug(
-            f"No scan stream census readable for {filename}"
+            f"Could not read the .props of {filename}"
         )
-        return []
+        return None
 
 
 async def read_pooled_streams_note(filename: str) -> str | None:
@@ -128,7 +136,7 @@ async def read_pooled_streams_note(filename: str) -> str | None:
     :param filename: The sample file's stored name.
     :return: The note, or None.
     """
-    return pooled_streams_note(await read_scan_streams(filename))
+    return pooled_streams_note(await read_scan_streams(filename) or [])
 
 
 async def claim_for_processing(sample_file_ids: list[str], detail: str) -> list[str]:
