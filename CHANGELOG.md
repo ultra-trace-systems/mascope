@@ -50,7 +50,10 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   series of C11 acids at the top tier, a quarter of one batch's assigned
   intensity, every one of them a C10 oxidation product plus formic acid
   (assignment quality plan, step 3.2). The channel is searched only where the
-  deployment holds the `+HCOO-` mechanism.
+  deployment holds the `+HCOO-` mechanism, which no deployment has by
+  default: an operator adds it once under Ionization mechanisms, polarity
+  negative, and until then the run's snapshot lists the channel as
+  unavailable.
 
 - **Mascope now ships curated atmospheric CIMS reference lists, and
   `mascope reference seed` loads them.** The lists:
