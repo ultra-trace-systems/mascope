@@ -77,6 +77,7 @@ async def learn_method_bindings(
     bound_modes: list[IonizationMode],
     source: str,
     streams: list[dict] | None = None,
+    recorded: set[str] | None = None,
 ) -> dict[str, int]:
     """Record what the modes this file bound to say about its method.
 
@@ -92,6 +93,11 @@ async def learn_method_bindings(
     :param bound_modes: The modes it bound to, one per polarity.
     :param source: The rung that bound it, one of :data:`LEARNING_SOURCES`.
     :param streams: The file's scan-stream census, when it has one.
+    :param recorded: The binding keys this pipeline run has already taught,
+        added to here. The pipeline shares one set across the attempts of a
+        run, so a file whose later stages fail and retry - tens of seconds
+        apart, with other files of the same key arriving in between - teaches
+        its method once and not once per attempt.
     :return: Counts of the rows created, refreshed and marked ambiguous.
     :rtype: dict[str, int]
     """
@@ -118,6 +124,18 @@ async def learn_method_bindings(
                 # file, so what it measured is not known. Keying it on
                 # anything else would split this method's history between the
                 # guess and the census later files carry.
+                #
+                # WARNING, not a silent skip: the converter has written a
+                # census for every file since it existed, so one missing at
+                # ingest is an anomaly - an unreadable .props, or a reader
+                # that failed - and this line is the only sign of it. The
+                # file processes normally; only its method learns nothing.
+                runtime.logger.warning(
+                    f"No scan-stream census for {sample_file.filename} on "
+                    f"{sample_file.instrument}, whose reader records one, so "
+                    "its acquisition method learned nothing from this file. "
+                    "Check that the file's .props is readable."
+                )
                 counts["no_signature"] += 1
                 continue
             digest = binding_digest(sample_file.instrument, key, signature)
@@ -131,6 +149,9 @@ async def learn_method_bindings(
         observations.sort(key=lambda observation: observation[0])
         async with async_session() as session:
             for digest, signature, mode in observations:
+                if recorded is not None and digest in recorded:
+                    counts["repeated"] += 1
+                    continue
                 outcome = await _observe(
                     session,
                     digest=digest,
@@ -143,6 +164,8 @@ async def learn_method_bindings(
                     sample_file_id=sample_file.sample_file_id,
                 )
                 counts[outcome] = counts.get(outcome, 0) + 1
+                if recorded is not None:
+                    recorded.add(digest)
             await session.commit()
     except Exception as e:  # noqa: BLE001 - a recording is never worth a file
         runtime.logger.opt(exception=True).warning(
@@ -173,12 +196,16 @@ async def _observe(
     that row instead, and is counted exactly once either way.
 
     **A file repeating what it already said is not a second observation.**
-    The pipeline retries a recoverable failure up to four times, each attempt
-    re-binding the file before it reaches the stage that failed, so without
-    this one file's one acquisition would count four times. A repeat is the
-    same file AND the same chemistry as this row last learned; a file coming
-    back with a *different* chemistry is new information - a person re-bound
-    it - and is recorded, ambiguity and all.
+    A repeat is the same file AND the same chemistry as this row *last*
+    learned; a file coming back with a different chemistry is new information
+    - a person re-bound it - and is recorded, ambiguity and all.
+
+    This catches only a *consecutive* repeat, which is what a person clicking
+    re-process twice produces. It is not what stops the pipeline's retries
+    counting four times: those are tens of seconds apart, so another file of
+    the same key can be learned in between and the comparison misses. The
+    run-scoped ``recorded`` set in :func:`learn_method_bindings` is what
+    handles retries.
 
     :return: ``"created"``, ``"refreshed"``, ``"ambiguous"`` or
         ``"repeated"``.

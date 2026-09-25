@@ -662,6 +662,11 @@ async def auto_process_sample_file(
     :type reset_calibration: bool, optional
     :return: Processing results with affected IDs
     """
+    # The keys this run has already taught, shared by every attempt: the
+    # backoffs are tens of seconds, so another file of the same key can easily
+    # be learned in between, and a guard that only compared with whatever the
+    # row last saw would let the retry count again.
+    recorded_bindings: set[str] = set()
     for attempt in range(_AUTO_PROCESS_RETRIES + 1):
         try:
             async with _auto_process_gate:
@@ -680,6 +685,7 @@ async def auto_process_sample_file(
                     process_id=process_id,
                     parent_id=parent_id,
                     ionization_mode_ids=ionization_mode_ids,
+                    recorded_bindings=recorded_bindings,
                 )
         except asyncio.CancelledError:
             # CancelledError is a BaseException, so every `except Exception` in
@@ -899,8 +905,14 @@ async def _auto_process_sample_file(
     process_id: str | None = None,
     parent_id: str | None = None,
     ionization_mode_ids: list[str] | None = None,
+    recorded_bindings: set[str] | None = None,
 ) -> dict:
-    """Gated body of ``auto_process_sample_file`` - see the public wrapper."""
+    """Gated body of ``auto_process_sample_file`` - see the public wrapper.
+
+    ``recorded_bindings`` is shared by every attempt of one run, so a file
+    whose later stages fail and retry teaches its method once rather than
+    once per attempt.
+    """
     # Initialize collector for affected sample items
     all_affected_sample_item_ids = set()
 
@@ -956,6 +968,7 @@ async def _auto_process_sample_file(
         bound_modes,
         source="token" if by_token else "explicit",
         streams=scan_streams,
+        recorded=recorded_bindings,
     )
 
     # --- Create ACQUISITION batches and sample items for each ionization mode --- #
