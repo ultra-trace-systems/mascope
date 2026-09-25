@@ -61,6 +61,7 @@ from mascope_backend.api.new.peak_assignments.engine import (
     ROLE_REAGENT,
     SOURCE_UNTARGETED,
     SampleMassAccuracy,
+    apply_partner_gates,
     evidence_for,
     pattern_scoring_for,
     tier_for_evidence,
@@ -344,7 +345,7 @@ async def _search_sample(
             matches_df, mechanism_id_by_notation, to_custom_element_format
         ),
     )
-    return untargeted_matches_to_peak_assignments(
+    rows = untargeted_matches_to_peak_assignments(
         matches_df,
         peaks_df=frame,
         sample_item_id=sample_item_id,
@@ -356,7 +357,49 @@ async def _search_sample(
         max_alternatives=config.max_alternatives,
         minor_channels=resolved_profile.minor_channels,
         fit_by_seed=fit_by_seed,
+    )
+    return gate_search_rows(
+        rows,
+        resolved_profile=resolved_profile,
+        mechanism_id_by_notation=mechanism_id_by_notation,
+        tier_bands=config.tier_bands(),
     ), unsearched
+
+
+def gate_search_rows(
+    rows: list[dict],
+    *,
+    resolved_profile: ResolvedProfile,
+    mechanism_id_by_notation: dict[str, str],
+    tier_bands: dict[str, float] | None,
+) -> list[dict]:
+    """The partner gate over a batch search's own rows, in place.
+
+    A batch search runs no Stage A, no mass gate and no cross-channel pass:
+    its rows are the finder's, judged by the minor-channel policy alone. The
+    partner gate is the one judgement a sample's own rows can make for
+    themselves, and without it a batch run keeps the election a run of the
+    same sample turns back - tropylium as protonated C7H6 here, toluene less
+    a hydride there (``engine.apply_partner_gates``).
+
+    :param rows: The search's rows, as the engine built them.
+    :param resolved_profile: The sample's resolved chemistry.
+    :param mechanism_id_by_notation: The searched mechanisms.
+    :param tier_bands: The batch's evidence bands, for a swapped reading's
+        tier.
+    :return: The same rows.
+    """
+    apply_partner_gates(
+        rows,
+        notation_by_id={
+            mechanism_id: notation
+            for notation, mechanism_id in mechanism_id_by_notation.items()
+        },
+        minor_channels=resolved_profile.minor_channels,
+        partner_gated_channels=resolved_profile.partner_gated_channels,
+        tier_bands=tier_bands,
+    )
+    return rows
 
 
 async def _apply_search_rows(

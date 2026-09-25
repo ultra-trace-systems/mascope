@@ -1355,7 +1355,7 @@ def judge_commits(
     minor_channels: frozenset[str] = frozenset(),
     partner_gated_channels: frozenset[str] = frozenset(),
 ) -> JudgedCommits:
-    """Run the partner gate, the mass gate, the cross-channel pass and the
+    """Run the mass gate, the partner gate, the cross-channel pass and the
     tiering pass, and read the lines they find in doubt as their neighbours'.
 
     The three passes read the finished ledger, and a claim changes it: a
@@ -1378,8 +1378,9 @@ def judge_commits(
         names first among its reasons.
     :param minor_channels: The run's opportunistic channels.
     :param partner_gated_channels: Those of them held to a partner
-        (``engine.apply_partner_gates``), read over both stages' rows before
-        any pass demotes.
+        (``engine.apply_partner_gates``), read over both stages' rows after
+        the mass gate, so a partner is a reading it left committed, and
+        before the cross-channel pass, so a reading set aside is no rival.
     :return: The judged rows and each pass's summary.
     """
     claims: dict[str, EnvelopeClaim] = {}
@@ -1389,18 +1390,18 @@ def judge_commits(
         judged = apply_claims(
             copy.deepcopy(rows), claims.values(), max_alternatives=max_alternatives
         )
+        mass_calibration = apply_mass_gate(
+            judged,
+            stage_a_accuracy=stage_a_accuracy,
+            fallback_sigma_ppm=fallback_sigma_ppm,
+            lines=lines,
+        )
         apply_partner_gates(
             judged,
             notation_by_id=notation_by_id,
             minor_channels=minor_channels,
             partner_gated_channels=partner_gated_channels,
             tier_bands=tier_bands,
-        )
-        mass_calibration = apply_mass_gate(
-            judged,
-            stage_a_accuracy=stage_a_accuracy,
-            fallback_sigma_ppm=fallback_sigma_ppm,
-            lines=lines,
         )
         cross_channel = apply_cross_channel(judged, notation_by_id=notation_by_id)
         tiering = apply_tiering(

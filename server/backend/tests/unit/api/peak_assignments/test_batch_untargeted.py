@@ -7,9 +7,12 @@ outcome says. See ``batch_untargeted.py``.
 
 from types import SimpleNamespace
 
+import pandas as pd
+
 from mascope_backend.api.new.peak_assignments.batch_peaks import role_code
 from mascope_backend.api.new.peak_assignments.batch_untargeted import (
     choose_representatives,
+    gate_search_rows,
     group_by_sample,
     owner_anchor_of,
     search_config,
@@ -19,8 +22,12 @@ from mascope_backend.api.new.peak_assignments.config import PeakAssignmentConfig
 from mascope_backend.api.new.peak_assignments.engine import (
     ROLE_ARTIFACT,
     ROLE_REAGENT,
+    untargeted_matches_to_peak_assignments,
 )
-from mascope_backend.api.new.peak_assignments.profiles import resolve_profile
+from mascope_backend.api.new.peak_assignments.profiles import (
+    resolve_profile,
+    with_secondary_channels,
+)
 
 
 REAGENT_ROLE_CODE = role_code(ROLE_REAGENT)
@@ -238,3 +245,82 @@ def test_the_outcome_names_the_samples_it_could_not_read():
     two = search_outcome({**counts, "samples_failed": 2}, "sb-1")
     assert two["status"] == "partial"
     assert two["message"].endswith("2 samples could not be read and were skipped.")
+
+
+def _match(mz, formula, ion, mechanism, family=()):
+    return {
+        "mz": mz,
+        "formula": formula,
+        "ion": ion,
+        "ionization_mechanism": mechanism,
+        "isotopic_pattern_score": 0.99,
+        "isotope_label": "M0",
+        "other_candidates": "",
+        "mz_error_ppm": 0.0,
+        "intensity_error": 0.0,
+        "same_ion_alternatives": [
+            {
+                "formula": alt_formula,
+                "ion": alt_ion,
+                "ionization_mechanism": alt_mechanism,
+                "neutral_mass": 0.0,
+                "unsaturation": None,
+            }
+            for alt_formula, alt_ion, alt_mechanism in family
+        ],
+    }
+
+
+def test_the_search_reads_the_partner_gate_over_its_own_rows():
+    # A batch search runs no Stage A and none of the judging passes, so the
+    # one rule its rows can apply for themselves is the partner gate: the
+    # tropylium ion reads as toluene less a hydride here as in a run of the
+    # sample, not as the protonated C7H6 the election prefers.
+    config = PeakAssignmentConfig()
+    resolved = resolve_profile(config, ["+"], instrument_type="orbi", polarity="+")
+    resolved = with_secondary_channels(
+        resolved,
+        [91.0542, 92.0621, 202.0777],
+        [1.0e6, 3.0e6, 5.0e6],
+        ["+H+", "-H-"],
+    )
+    assert {"+H+", "-H-"} <= resolved.partner_gated_channels
+    ids = {"+": "im-ct", "+H+": "im-h", "-H-": "im-hydride"}
+    peaks = pd.DataFrame(
+        [
+            {"sample_peak_id": "p1", "mz": 91.0542, "intensity": 1.0e6},
+            {"sample_peak_id": "p2", "mz": 92.0621, "intensity": 3.0e6},
+        ]
+    )
+    rows = untargeted_matches_to_peak_assignments(
+        pd.DataFrame(
+            [
+                _match(
+                    91.0542,
+                    "C7H6",
+                    "C7H7+",
+                    "+H+",
+                    family=[("C7H8", "C7H7+", "-H-")],
+                ),
+                _match(92.0621, "C7H8", "C7H8+", "+"),
+            ]
+        ),
+        peaks_df=peaks,
+        sample_item_id="si-1",
+        peak_assignment_run_id="run-1",
+        candidate_threshold=config.candidate_threshold,
+        assigned_threshold=config.assigned_threshold,
+        mechanism_id_by_notation=ids,
+        max_alternatives=5,
+        minor_channels=resolved.minor_channels,
+    )
+    gated = gate_search_rows(
+        rows,
+        resolved_profile=resolved,
+        mechanism_id_by_notation=ids,
+        tier_bands=config.tier_bands(),
+    )
+    tropylium = next(row for row in gated if row["sample_peak_id"] == "p1")
+    assert tropylium["assigned_formula"] == "C7H8"
+    assert tropylium["ionization_mechanism_id"] == "im-hydride"
+    assert tropylium["provenance"]["partner_gate"]["through"] == "-H-"
