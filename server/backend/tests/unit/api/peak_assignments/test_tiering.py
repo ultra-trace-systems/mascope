@@ -760,7 +760,7 @@ class TestWhatTheEarlierPassesDecided:
     )
     def test_a_rival_the_sample_shows_says_so(self, formula, ambiguity, detail):
         cross_channel = {
-            "channels": ["[M]+.", "[M-H]+"],
+            "channels": ["[M-H]+", "[M]+."],
             "capped": "candidate",
             "reason": "ambiguous_adduct",
             "ambiguous_adduct": ambiguity,

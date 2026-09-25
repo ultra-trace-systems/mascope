@@ -974,6 +974,12 @@ class TestTheStrongerPartnerDecides:
             "C7H8",
             "im-ct",
         )
+        assert toluene["provenance"]["partner_gate"] == {
+            "channel": "[M+H]+",
+            "partner": False,
+            "displaced": "C7H7",
+            "through": "[M]+.",
+        }
         assert benzyl["assigned_formula"] == "C7H8"
         assert benzyl["provenance"]["partner_gate"]["took_from"] == "C7H6"
         assert benzyl["provenance"]["partner_gate"]["contest"][0]["ratio"] == 30.0
