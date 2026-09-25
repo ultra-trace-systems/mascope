@@ -391,13 +391,16 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   `[M-H]-`, and `-H-` is `[M-H]+`); it is still accepted when a mechanism is
   created, until 2.0, and is stored in the standard one, and a mechanism the
   deployment already holds in the other spelling is refused as a duplicate.
-  The editor now says what is wrong with a mechanism as it is typed. What
-  neither spelling can say is refused rather than approximated: a dimer
-  (`[2M+H]+`), a doubly charged ion (`[M+2H]2+`) or a mechanism that both adds
-  and removes (`[M+Na-2H]-`). The shipped chemistries, the chemistry profiles'
-  fingerprints and secondary channels and the provisional corroboration weights
-  are spelled in it, and a weight keyed in either spelling applies to an adduct
-  written in the other (assignment quality plan, step 3.3b). **For callers of
+  The terms are kept in alphabetical order, so a mechanism has one spelling
+  however it is typed: `[M+H+CH4N2O]+` is stored as `[M+CH4N2O+H]+`, and
+  refused where that is already held. The editor now says what is wrong with a
+  mechanism as it is typed, or the spelling it will be stored in. What neither spelling can say is refused rather
+  than approximated: a dimer (`[2M+H]+`), a doubly charged ion (`[M+2H]2+`) or
+  a mechanism that both adds and removes (`[M+Na-2H]-`). The shipped
+  chemistries, the chemistry profiles' fingerprints and secondary channels and
+  the provisional corroboration weights are spelled in it, and a weight keyed
+  in either spelling applies to an adduct written in the other
+  (assignment quality plan, step 3.3b). **For callers of
   `mascope_tools`:** `parse_ionization` reads both notations and refuses a
   string in neither, such as `H+` with no leading sign, which it used to read as
   deprotonation; `mascope_tools.composition.mechanism_notation` converts between

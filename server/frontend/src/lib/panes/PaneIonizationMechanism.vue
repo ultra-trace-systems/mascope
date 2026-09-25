@@ -18,7 +18,7 @@ import Message from 'primevue/message'
 import { useConfirm } from 'primevue/useconfirm'
 
 import { isValidChemicalFormula } from '@/lib/chem'
-import { mechanismProblem, mechanismTerms } from '@/lib/mechanism'
+import { mechanismProblem, mechanismTerms, standardMechanism } from '@/lib/mechanism'
 import { useApp } from '@/stores'
 
 const app = useApp()
@@ -44,6 +44,17 @@ const problem = computed(() => {
   if (notation) return notation
   const term = mechanismTerms(text).find((term) => !isValidChemicalFormula(term))
   return term ? `'${term}' is not a formula; a labelled atom is written with a caret, ^N` : null
+})
+
+// Under the field: what is wrong, else the spelling the server will store when
+// it is not what was typed (a legacy spelling, or terms in another order than
+// the alphabetical one a mechanism is written in), else examples.
+const hint = computed(() => {
+  if (problem.value) return problem.value
+  const text = add.mechanism.trim()
+  const stored = text ? standardMechanism(text) : text
+  if (stored !== text) return `Stored as ${stored}`
+  return 'For example [M+H]+, [M-H]-, [M+Br]-, or [M]+. for electron transfer'
 })
 
 // reset when create successful
@@ -93,7 +104,7 @@ defineExpose({
       size="small"
       variant="simple"
     >
-      {{ problem ?? 'For example [M+H]+, [M-H]-, [M+Br]-, or [M]+. for electron transfer' }}
+      {{ hint }}
     </Message>
   </menu>
   <section style="margin: 1rem 0">

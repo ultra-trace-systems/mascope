@@ -5,7 +5,9 @@
  * `[M+H]+`, `[M-H]-`, `[M+Br]-`, `[M+CH4N2O+H]+`, `[M]+.`. The terms inside
  * the brackets are what is added to or removed from the molecule M, and the
  * sign after them is the ion's own charge; `[M]+.` and `[M]-.` are electron
- * transfer.
+ * transfer. The terms are written in alphabetical order whichever order they
+ * were typed in, so one mechanism has one spelling: `[M+H+CH4N2O]+` is
+ * `[M+CH4N2O+H]+`.
  *
  * The legacy notation, `<operation><moiety><moiety charge>` (`+H+`, `-H+`,
  * `+Br-`, `+`), is still read: the server accepts it on input, a row written
@@ -62,10 +64,35 @@ const joinTerms = (terms) =>
     .map((term) => `(${term})`)
     .join('') + terms[terms.length - 1]
 
+/**
+ * The terms in the order a mechanism is written in: alphabetical. Each term is
+ * taken as a legacy moiety splits it, and joining the sorted terms can put a
+ * group at the front of the last one, which the split then takes apart, so the
+ * order is the one that splits the same way again once joined.
+ */
+function orderedTerms(terms) {
+  const sameTerms = (a, b) => a.length === b.length && a.every((term, i) => term === b[i])
+  let ordered = splitMoiety(joinTerms(terms)).sort()
+  for (;;) {
+    const again = splitMoiety(joinTerms(ordered))
+    if (sameTerms(again, ordered)) return ordered
+    ordered = again.sort()
+  }
+}
+
+/** Whether every `closing` in `text` closes an `opening` before it. */
+function nests(text, opening, closing) {
+  let depth = 0
+  for (const char of text) {
+    if (char === opening) depth += 1
+    else if (char === closing && --depth < 0) return false
+  }
+  return depth === 0
+}
+
 function checkFormulaText(text) {
   if (!FORMULA_TEXT.test(text)) return `'${text}' is not a formula`
-  const count = (char) => text.split(char).length - 1
-  if (count('(') !== count(')') || count('[') !== count(']')) {
+  if (!nests(text, '(', ')') || !nests(text, '[', ']')) {
     return `'${text}' has unbalanced brackets`
   }
   return null
@@ -83,7 +110,11 @@ function parseLegacy(notation) {
   if (problem) throw new Error(problem)
   const addition = notation[0] === '+'
   const moietyCharge = notation.at(-1) === '+' ? 1 : -1
-  return { addition, moiety, charge: addition ? moietyCharge : -moietyCharge }
+  return {
+    addition,
+    moiety: joinTerms(orderedTerms(splitMoiety(moiety))),
+    charge: addition ? moietyCharge : -moietyCharge
+  }
 }
 
 function parseStandard(notation) {
@@ -112,7 +143,7 @@ function parseStandard(notation) {
     if (problem) throw new Error(problem)
     if (isDigit(term[0])) throw new Error(`Write '${term}' as a formula, '(H2O)2' not '2H2O'`)
   }
-  return { addition: operations.has('+'), moiety: joinTerms(terms), charge }
+  return { addition: operations.has('+'), moiety: joinTerms(orderedTerms(terms)), charge }
 }
 
 /**

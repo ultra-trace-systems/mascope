@@ -16,15 +16,21 @@ bare ``+`` or ``-`` is electron transfer. Its trailing sign is the charge of
 the moiety, not of the ion, and that is the reading everyone who meets it gets
 wrong: ``-H+`` is the anion ``[M-H]-`` and ``-H-`` the cation ``[M-H]+``.
 
-The map between the two is exact in the direction a stored row travels. A
-legacy spelling converts to a standard one and back to itself character for
-character, which is what lets the data migration be one function and its
-inverse. A parenthesised group at the front of a legacy moiety becomes a term
-of its own when something follows it (``+(CH4N2O)H+`` is ``[M+CH4N2O+H]+``);
-a group with a multiplier stays inside the term it multiplies
-(``+(CH4N2O)2H+`` is ``[M+(CH4N2O)2H]+``). A standard spelling is stored as
-the same round trip writes it, so it survives a downgrade and an upgrade
-unchanged: ``[M+(CH4N2O)H]+`` is stored as ``[M+CH4N2O+H]+``.
+One mechanism has one spelling in each notation. Its terms are written in
+alphabetical order whichever order they were typed in, so ``[M+H+CH4N2O]+``
+is ``[M+CH4N2O+H]+``, and a mechanism is compared, looked up and shown by that
+spelling. A parenthesised group at the front of a legacy moiety becomes a
+term of its own when something follows it (``+(CH4N2O)H+`` is
+``[M+CH4N2O+H]+``); a group with a multiplier stays inside the term it
+multiplies (``+(CH4N2O)2H+`` is ``[M+(CH4N2O)2H]+``). A standard spelling is
+stored as the legacy round trip writes it, so it survives a downgrade and an
+upgrade unchanged: ``[M+(CH4N2O)H]+`` is stored as ``[M+CH4N2O+H]+``.
+
+The map between the two notations is exact on every spelling already written
+that way, and every legacy spelling the fleet stores is: it converts to a
+standard one and back to itself character for character, which is what lets
+the data migration be one function and its inverse. Any other spelling
+converts to the one spelling of the same mechanism.
 
 Only what both notations can say is accepted: one molecule, a single charge,
 and terms that are all added or all removed. ``[2M+H]+``, ``[M+2H]2+`` and
@@ -60,8 +66,9 @@ class MechanismParts:
     :param addition: Whether the moiety is added to the molecule (True) or
         removed from it. Electron transfer is an electron attached
         (``[M]-.``, an addition) or removed (``[M]+.``).
-    :param moiety: What is added or removed, as the legacy notation writes it:
-        ``"H"``, ``"NO3"``, ``"(CH4N2O)H"``. Empty for electron transfer.
+    :param moiety: What is added or removed, as the legacy notation writes it,
+        its terms in order: ``"H"``, ``"NO3"``, ``"(CH4N2O)H"``. Empty for
+        electron transfer.
     :param charge: The ion's charge, ``+1`` or ``-1``.
     """
 
@@ -154,13 +161,41 @@ def _join_terms(terms: list[str] | tuple[str, ...]) -> str:
     return "".join(f"({term})" for term in terms[:-1]) + terms[-1]
 
 
+def _ordered_terms(terms: Iterable[str]) -> tuple[str, ...]:
+    """The terms in the order a mechanism is written in: alphabetical.
+
+    Each term is taken as a legacy moiety splits it. Joining the sorted terms
+    can put a group at the front of the last one, which the split then takes
+    apart (``[M+(A)+(B)C]+`` is ``[M+(A)+B+C]+``), so the order is the one
+    that splits the same way again once joined. The terms only ever split
+    further, so this settles.
+    """
+    ordered = tuple(sorted(_split_moiety(_join_terms(tuple(terms)))))
+    while (again := _split_moiety(_join_terms(ordered))) != ordered:
+        ordered = tuple(sorted(again))
+    return ordered
+
+
+def _nests(text: str, opening: str, closing: str) -> bool:
+    """Whether every ``closing`` in ``text`` closes an ``opening`` before it."""
+    depth = 0
+    for char in text:
+        if char == opening:
+            depth += 1
+        elif char == closing:
+            depth -= 1
+            if depth < 0:
+                return False
+    return depth == 0
+
+
 def _check_formula_text(text: str, notation: str) -> None:
     """Refuse a moiety or term that cannot be a formula at all."""
     if not _FORMULA_TEXT.fullmatch(text):
         raise MechanismNotationError(
             f"Ionization mechanism {notation!r}: {text!r} is not a formula."
         )
-    if text.count("(") != text.count(")") or text.count("[") != text.count("]"):
+    if not (_nests(text, "(", ")") and _nests(text, "[", "]")):
         raise MechanismNotationError(
             f"Ionization mechanism {notation!r}: {text!r} has unbalanced brackets."
         )
@@ -183,7 +218,7 @@ def _parse_legacy(notation: str) -> MechanismParts:
     moiety_charge = 1 if notation[-1] == "+" else -1
     return MechanismParts(
         addition=addition,
-        moiety=moiety,
+        moiety=_join_terms(_ordered_terms(_split_moiety(moiety))),
         charge=moiety_charge if addition else -moiety_charge,
     )
 
@@ -236,7 +271,9 @@ def _parse_standard(notation: str) -> MechanismParts:
                 "as a formula, '(H2O)2' rather than '2H2O'."
             )
     return MechanismParts(
-        addition=operations == {"+"}, moiety=_join_terms(terms), charge=charge
+        addition=operations == {"+"},
+        moiety=_join_terms(_ordered_terms(terms)),
+        charge=charge,
     )
 
 
@@ -276,6 +313,8 @@ def standard_notation(text: str) -> str:
     '[M]+.'
     >>> standard_notation("[M+Br]-")
     '[M+Br]-'
+    >>> standard_notation("[M+H+CH4N2O]+")
+    '[M+CH4N2O+H]+'
 
     :param text: The mechanism in either notation.
     :raises MechanismNotationError: The text is neither notation.
@@ -308,8 +347,9 @@ def legacy_notation(text: str) -> str:
 def mechanism_key(text: str) -> str:
     """The spelling two mechanisms are compared by.
 
-    The standard notation where the text reads as a mechanism, so ``-H+`` and
-    ``[M-H]-`` are one mechanism; the text as it is otherwise, so a stored row
+    The standard notation where the text reads as a mechanism, so ``-H+``,
+    ``[M-H]-`` and, for a mechanism of several terms, any order they are
+    written in are one mechanism; the text as it is otherwise, so a stored row
     that reads as neither still equals itself and nothing else.
 
     :param text: The mechanism, in either notation or neither.
@@ -326,8 +366,9 @@ def mechanism_spellings(texts: Iterable[str]) -> list[str]:
 
     A row is stored in the standard notation, or in the legacy one where it
     was written before the standard existed, so a lookup by ``[M-H]-`` has to
-    reach ``-H+`` too, and the reverse. Text that reads as neither is looked
-    up as it is.
+    reach ``-H+`` too, and the reverse. Either way its terms are in order: the
+    validator stores them so, and the legacy rows the fleet stores are. Text
+    that reads as neither is looked up as it is.
 
     Examples
     --------

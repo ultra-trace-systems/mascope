@@ -8,8 +8,9 @@ import {
   standardMechanism
 } from '@/lib/mechanism'
 
-// Every legacy spelling the fleet's servers store, with its standard one - the
-// same table the library's test_mechanism_notation.py pins, so the two agree.
+// Every legacy spelling the fleet's servers store, with its standard one, and
+// the unusual ones the map must still carry both ways - the same tables the
+// library's test_mechanism_notation.py pins, so the two agree.
 const STORED = [
   ['+', '[M]+.'],
   ['-', '[M]-.'],
@@ -39,14 +40,34 @@ const STORED = [
   ['-CH3-', '[M-CH3]+'],
   ['+[15N]O3-', '[M+[15N]O3]-'],
   ['+((CH3CH2)2NH)H+', '[M+(CH3CH2)2NH+H]+'],
-  ['+(A)(B)+', '[M+A+(B)]+'],
+  ['+(H)(H2O)H2O+', '[M+H+H2O+H2O]+'],
+  ['+(H2O)2H+', '[M+(H2O)2H]+'],
+  ['+(CH3)3C+', '[M+(CH3)3C]+'],
+  ['+((A))(B)+', '[M+(A)+(B)]+'],
   ['+(CH4N2O)+', '[M+(CH4N2O)]+']
+]
+
+// A mechanism typed with its terms in another order, in either notation, and
+// the one spelling it is stored and shown in.
+const OUT_OF_ORDER = [
+  ['[M+H+CH4N2O]+', '[M+CH4N2O+H]+'],
+  ['+(H)CH4N2O+', '[M+CH4N2O+H]+'],
+  ['[M+NO3+HNO3]-', '[M+HNO3+NO3]-'],
+  ['[M+H2O+H]+', '[M+H+H2O]+'],
+  ['+(H2O)(H2O)H+', '[M+H+H2O+H2O]+'],
+  ['+(A)(B)+', '[M+(B)+A]+'],
+  ['[M+(B)C+(A)]+', '[M+(A)+B+C]+']
 ]
 
 describe('standardMechanism', () => {
   it.each(STORED)('writes %s as %s', (legacy, standard) => {
     expect(standardMechanism(legacy)).toBe(standard)
     expect(standardMechanism(standard)).toBe(standard)
+  })
+
+  it.each(OUT_OF_ORDER)('writes %s, its terms in order, as %s', (typed, stored) => {
+    expect(standardMechanism(typed)).toBe(stored)
+    expect(parseMechanism(typed)).toEqual(parseMechanism(stored))
   })
 
   it('writes a standard spelling as the server stores it', () => {
@@ -97,6 +118,7 @@ describe('mechanismProblem', () => {
     ['[M+Na-2H]-', 'not both'],
     ['[M+2H2O+H]+', 'formula'],
     ['[M+(H+H]+', 'unbalanced'],
+    ['[M+A)(B]+', 'unbalanced'],
     ['H+', "'[M+H]+'"],
     ['', "'[M+H]+'"]
   ])('says why %s does not read', (notation, reason) => {

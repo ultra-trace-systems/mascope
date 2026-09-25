@@ -106,7 +106,7 @@ watch(visible, () => {
                   </li>
                   <li>
                     <code>[M+CH4N2O+H]+</code> &mdash; a urea cluster, one term
-                    per species added (positive)
+                    per species added, saved in alphabetical order (positive)
                   </li>
                   <li>
                     <code>[M]+.</code> or <code>[M]-.</code> &mdash; electron

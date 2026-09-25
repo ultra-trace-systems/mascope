@@ -9,11 +9,15 @@ What is pinned:
   spelling a deployment stores converts to a standard one and back to itself,
   and a standard spelling is stored as that round trip writes it, so a
   downgrade followed by an upgrade leaves every row as it was;
+- one mechanism has one spelling: its terms are written in alphabetical order
+  whichever order they were typed in, and every spelling the fleet stores is
+  already written so;
 - what neither notation can say is refused with the reason, not approximated.
 """
 
 import pytest
 
+from mascope_tools.composition.calibration import PROVISIONAL_ORBITRAP_CORROBORATION
 from mascope_tools.composition.mechanism_notation import (
     MechanismNotationError,
     MechanismParts,
@@ -22,6 +26,8 @@ from mascope_tools.composition.mechanism_notation import (
     parse_mechanism,
     standard_notation,
 )
+from mascope_tools.composition.profiles import REAGENT_PROFILES
+from mascope_tools.composition.reagents import SECONDARY_CHANNELS
 
 
 #: Every legacy spelling the fleet's servers store, with its standard one.
@@ -58,11 +64,24 @@ UNUSUAL = [
     ("-CH3-", "[M-CH3]+"),
     ("+[15N]O3-", "[M+[15N]O3]-"),
     ("+((CH3CH2)2NH)H+", "[M+(CH3CH2)2NH+H]+"),
-    ("+(H2O)(H2O)H+", "[M+H2O+H2O+H]+"),
+    ("+(H)(H2O)H2O+", "[M+H+H2O+H2O]+"),
     ("+(H2O)2H+", "[M+(H2O)2H]+"),
     ("+(CH3)3C+", "[M+(CH3)3C]+"),
-    ("+(A)(B)+", "[M+A+(B)]+"),
+    ("+((A))(B)+", "[M+(A)+(B)]+"),
     ("+(CH4N2O)+", "[M+(CH4N2O)]+"),
+]
+
+#: A mechanism typed with its terms in another order, in either notation, and
+#: the one spelling it is stored and shown in.
+OUT_OF_ORDER = [
+    ("[M+H+CH4N2O]+", "[M+CH4N2O+H]+"),
+    ("+(H)CH4N2O+", "[M+CH4N2O+H]+"),
+    ("[M+NO3+HNO3]-", "[M+HNO3+NO3]-"),
+    ("[M+H2O+H]+", "[M+H+H2O]+"),
+    ("+(H2O)(H2O)H+", "[M+H+H2O+H2O]+"),
+    ("+(A)(B)+", "[M+(B)+A]+"),
+    # Joined in order, the group at the front of the last term splits off.
+    ("[M+(B)C+(A)]+", "[M+(A)+B+C]+"),
 ]
 
 
@@ -78,6 +97,30 @@ def test_a_legacy_spelling_converts_and_comes_back_as_it_was(legacy, standard):
 def test_both_spellings_are_one_mechanism(legacy, standard):
     assert parse_mechanism(legacy) == parse_mechanism(standard)
     assert mechanism_key(legacy) == mechanism_key(standard) == standard
+
+
+@pytest.mark.parametrize(("typed", "stored"), OUT_OF_ORDER)
+def test_terms_typed_in_another_order_are_the_same_mechanism(typed, stored):
+    assert standard_notation(typed) == stored
+    assert mechanism_key(typed) == stored
+    assert parse_mechanism(typed) == parse_mechanism(stored)
+    assert standard_notation(legacy_notation(stored)) == stored
+
+
+def _table_notations():
+    for profile in REAGENT_PROFILES.values():
+        yield from profile.detection
+        yield from profile.secondary_adducts
+    for channels in SECONDARY_CHANNELS.values():
+        yield from (channel.notation for channel in channels)
+    yield from PROVISIONAL_ORBITRAP_CORROBORATION
+
+
+@pytest.mark.parametrize("notation", sorted(set(_table_notations())))
+def test_the_library_spells_its_tables_as_mechanisms_are_compared(notation):
+    # A mode's mechanisms are keyed before they meet these tables, which are
+    # read as they are written.
+    assert mechanism_key(notation) == notation
 
 
 @pytest.mark.parametrize(
@@ -133,6 +176,8 @@ def test_a_standard_spelling_is_stored_as_its_round_trip_writes_it(typed, stored
         ("[M++H]+", "added with"),
         ("[M+ H]+", "not a formula"),
         ("[M+(CH4N2O+H]+", "unbalanced"),
+        ("[M+A)(B]+", "unbalanced"),
+        ("+A)(B+", "unbalanced"),
         ("H+", "standard adduct notation"),
         ("+H", "standard adduct notation"),
         ("++", "standard adduct notation"),

@@ -354,9 +354,13 @@ simultaneously an interoperability win (section 7).
 waiting for the structured model. The mechanism string is stored and shown in
 the standard notation; the legacy spelling is still read on input and stored in
 the standard one, and a row written before is read in the standard one until a
-data migration rewrites it. The map between the two is exact in the direction a
-stored row travels: every legacy spelling converts and converts back to itself,
-so no `legacy_notation` needs storing, since it is derived. What the notation
+data migration rewrites it. A mechanism has one spelling: its terms are written
+in alphabetical order however they were typed (`[M+H+CH4N2O]+` is
+`[M+CH4N2O+H]+`), so it is compared, looked up and refused as a duplicate by
+that spelling. The map between the two notations is exact in the direction a
+stored row travels: every legacy spelling the fleet stores is already in that
+order, and converts and converts back to itself, so no `legacy_notation` needs
+storing, since it is derived. What the notation
 cannot say yet it refuses rather than approximates: `[2M+H]+`, `[M+2H]2+` and a
 mechanism that both adds and removes (`[M+Na-2H]-`) wait for 4.4. The legacy
 form is refused on input at 2.0.

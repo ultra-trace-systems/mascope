@@ -106,7 +106,9 @@ notation: inside the brackets, what is added to or removed from the molecule
 The ion's polarity is the sign at the end, so a mechanism of the wrong polarity
 cannot be saved. One molecule and a single charge are what a mechanism
 describes: `[2M+H]+` and `[M+2H]2+` are refused, as is a mechanism that both adds
-and removes (`[M+Na-2H]-`).
+and removes (`[M+Na-2H]-`). The terms are saved in alphabetical order, so a
+mechanism has one spelling however it is typed: `[M+H+CH4N2O]+` is saved as
+`[M+CH4N2O+H]+`, and cannot be added a second time in the other order.
 
 The older spelling is still accepted and saved in the standard one: an operation,
 the formula, and the charge of the species moved rather than of the ion (`+H+`
