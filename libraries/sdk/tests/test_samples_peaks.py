@@ -100,7 +100,7 @@ class FakeServer:
                     "data": [
                         {
                             "ionization_mechanism_id": "mech-1",
-                            "ionization_mechanism": "+H+",
+                            "ionization_mechanism": "[M+H]+",
                         }
                     ],
                 }
@@ -255,7 +255,7 @@ class TestTargetCollectionNames:
         # The rest of the match flattening is untouched.
         assert _row(peaks, "p1")["target_collection_ids"] == ["tc-1", "tc-2"]
         assert _row(peaks, "p1")["target_compound_name"] == "Glucose"
-        assert _row(peaks, "p1")["ionization_mechanism"] == "+H+"
+        assert _row(peaks, "p1")["ionization_mechanism"] == "[M+H]+"
 
     def test_nothing_matched_keeps_the_column(self, monkeypatch):
         resource, _ = _serve(monkeypatch, peak_matches=[[], [], []])
