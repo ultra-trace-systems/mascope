@@ -41,7 +41,9 @@ vi.mock('@/stores', () => ({
       target: { compound: { list: [] } },
       ionization: {
         mode: { list: [{ ionization_mode_id: 'mode-1', ionization_mechanism_ids: ['mech-1'] }] },
-        mechanism: { list: [{ ionization_mechanism_id: 'mech-1', ionization_mechanism: '+NO3-' }] }
+        mechanism: {
+          list: [{ ionization_mechanism_id: 'mech-1', ionization_mechanism: '[M+NO3]-' }]
+        }
       },
       match: { params: { typeDefaults: {} } },
       peakAssignment: { peak: { forPeak: () => null, curate: vi.fn() } }

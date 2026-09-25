@@ -10,6 +10,7 @@ import { useApp } from '@/stores'
 import { BaseTierTag, BaseVerdictBadge } from '@/lib/base'
 import { num } from '@/lib/formatters'
 import { formatIsotopeFormula, neutralKey } from '@/lib/chem'
+import { standardMechanism } from '@/lib/mechanism'
 import {
   LEDGER_CONFIDENCE_TOOLTIP,
   LEDGER_P_CORRECT_TOOLTIP,
@@ -397,14 +398,26 @@ const m0 = computed(
 // the formula the family shares, so a focused isotopologue shows its M0's count,
 // flagged inherited. Only the count carries across - the channels are named in
 // the M0's provenance, and detail is fetched for the focused assignment alone.
+// The channels are named as the run recorded them, which for a run from before
+// the standard adduct notation is the legacy spelling; both show as the standard.
 const corroboration = computed(() => {
   const channels = provenance.value?.cross_channel?.channels
   if (channels?.length) {
-    return { n: channels.length, names: channels, scored: false, inherited: false }
+    return {
+      n: channels.length,
+      names: channels.map(standardMechanism),
+      scored: false,
+      inherited: false
+    }
   }
   const own = provenance.value?.corroboration
   if (own?.n_adducts != null) {
-    return { n: own.n_adducts, names: own.adducts ?? [], scored: true, inherited: false }
+    return {
+      n: own.n_adducts,
+      names: (own.adducts ?? []).map(standardMechanism),
+      scored: true,
+      inherited: false
+    }
   }
   // The slim ledger row carries both counts flattened, so the badge is there
   // before the detail fetch lands - just without the channel names.

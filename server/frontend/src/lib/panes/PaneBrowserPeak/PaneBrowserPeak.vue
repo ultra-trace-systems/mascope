@@ -192,7 +192,7 @@ onBeforeUnmount(() => {
               text
               severity="secondary"
               v-tooltip.top="
-                `${match.target_compound_formula}${
+                `${match.target_compound_formula} ${
                   app.data.ionization.mechanism.list.find(
                     (m) => m.ionization_mechanism_id === match.ionization_mechanism_id
                   )?.ionization_mechanism || ''

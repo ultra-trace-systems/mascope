@@ -665,14 +665,28 @@ describe('PanePeakAssign adduct corroboration', () => {
     focusedAssignment = { ...M0, corroboration_adducts: 2 }
     familyRows = [focusedAssignment, ISOTOPOLOGUE]
     detailRecord = {
-      provenance: { corroboration: { n_adducts: 2, adducts: ['+H+', '+Na+'], boost: 0.4 } }
+      provenance: { corroboration: { n_adducts: 2, adducts: ['[M+H]+', '[M+Na]+'], boost: 0.4 } }
     }
     const wrapper = await mountPane()
 
     expect(badge(wrapper).text()).toContain('Supported by 2 channels')
     expect(badge(wrapper).classes()).not.toContain('inherited')
     expect(wrapper.vm.corroborationTooltip).toContain(
-      'Seen through 2 ionization channels (+H+, +Na+)'
+      'Seen through 2 ionization channels ([M+H]+, [M+Na]+)'
+    )
+  })
+
+  // A run recorded before the standard adduct notation names its channels in
+  // the legacy spelling, and they read as the standard one.
+  it('names the adducts of a run recorded in the legacy notation in the standard one', async () => {
+    focusedAssignment = { ...M0, corroboration_adducts: 2 }
+    detailRecord = {
+      provenance: { corroboration: { n_adducts: 2, adducts: ['+H+', '-H-'], boost: 0.4 } }
+    }
+    const wrapper = await mountPane()
+
+    expect(wrapper.vm.corroborationTooltip).toContain(
+      'Seen through 2 ionization channels ([M+H]+, [M-H]+)'
     )
   })
 
@@ -704,11 +718,11 @@ describe('PanePeakAssign adduct corroboration', () => {
   // recorded and is folded into nothing.
   it('does not claim the channel count is in P(correct)', async () => {
     focusedAssignment = { ...M0, corroboration_channels: 2 }
-    detailRecord = { provenance: { cross_channel: { channels: ['+H+', '+NH4+'] } } }
+    detailRecord = { provenance: { cross_channel: { channels: ['[M+H]+', '[M+NH4]+'] } } }
     const wrapper = await mountPane()
 
     expect(wrapper.vm.corroborationTooltip).toContain(
-      'Seen through 2 ionization channels (+H+, +NH4+)'
+      'Seen through 2 ionization channels ([M+H]+, [M+NH4]+)'
     )
     expect(wrapper.vm.corroborationTooltip).toContain('It is not in P(correct).')
     expect(wrapper.vm.corroborationTooltip).not.toContain('It is in P(correct).')
@@ -2494,7 +2508,7 @@ describe('PanePeakAssign the same ion read another way', () => {
   }
   const AMBIGUOUS = {
     rule: 'ambiguous_nitrogen',
-    detail: 'C3H8NO+ reads as C3H4O through +NH4+ as well',
+    detail: 'C3H8NO+ reads as C3H4O through [M+NH4]+ as well',
     caps: true
   }
   const SAME_ION = {
@@ -2512,8 +2526,8 @@ describe('PanePeakAssign the same ion read another way', () => {
   beforeEach(() => {
     focusedAssignment = COMMITTED
     mechanisms = [
-      { ionization_mechanism_id: 'm-h', ionization_mechanism: '+H+' },
-      { ionization_mechanism_id: 'm-nh4', ionization_mechanism: '+NH4+' }
+      { ionization_mechanism_id: 'm-h', ionization_mechanism: '[M+H]+' },
+      { ionization_mechanism_id: 'm-nh4', ionization_mechanism: '[M+NH4]+' }
     ]
   })
 
@@ -2526,7 +2540,7 @@ describe('PanePeakAssign the same ion read another way', () => {
 
     expect(readings(wrapper)).toHaveLength(1)
     expect(readings(wrapper)[0].find('.reading-formula').text()).toBe('C3H4O')
-    expect(readings(wrapper)[0].find('.reading-channel').text()).toBe('through +NH4+')
+    expect(readings(wrapper)[0].find('.reading-channel').text()).toBe('through [M+NH4]+')
     expect(readings(wrapper)[0].attributes('data-tooltip')).toContain(
       'The same ion read as another neutral with another adduct.'
     )
@@ -2598,8 +2612,8 @@ describe('PanePeakAssign ionization and reference lists', () => {
   beforeEach(() => {
     focusedAssignment = DMF
     mechanisms = [
-      { ionization_mechanism_id: 'm-h', ionization_mechanism: '+H+' },
-      { ionization_mechanism_id: 'm-nh4', ionization_mechanism: '+NH4+' }
+      { ionization_mechanism_id: 'm-h', ionization_mechanism: '[M+H]+' },
+      { ionization_mechanism_id: 'm-nh4', ionization_mechanism: '[M+NH4]+' }
     ]
   })
 
@@ -2607,10 +2621,10 @@ describe('PanePeakAssign ionization and reference lists', () => {
     const wrapper = await mountPane({ recordTooltips: true })
     const title = [...wrapper.find('.insp-head .insp-title').element.children]
 
-    expect(title.map((node) => node.textContent)).toEqual(['C3H7NO', '+H+'])
+    expect(title.map((node) => node.textContent)).toEqual(['C3H7NO', '[M+H]+'])
     expect(title[1].dataset.testid).toBe('ionization')
     expect(field(wrapper, 'ionization').attributes('data-tooltip')).toBe(
-      'Ionization mechanism: C3H7NO +H+ → C3H8NO+'
+      'Ionization mechanism: C3H7NO [M+H]+ → C3H8NO+'
     )
   })
 
@@ -2767,8 +2781,8 @@ describe('PanePeakAssign the row read again', () => {
   beforeEach(() => {
     focusedAssignment = ROW
     mechanisms = [
-      { ionization_mechanism_id: 'm-co3', ionization_mechanism: '+CO3-' },
-      { ionization_mechanism_id: 'm-h', ionization_mechanism: '-H+' }
+      { ionization_mechanism_id: 'm-co3', ionization_mechanism: '[M+CO3]-' },
+      { ionization_mechanism_id: 'm-h', ionization_mechanism: '[M-H]-' }
     ]
   })
 
