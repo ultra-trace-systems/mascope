@@ -1,7 +1,6 @@
 # Automatic ingest: chemistry routing and acquisition splitting - design
 
-Status: **phase 1 shipped; phase 0 shipped bar its production backfill run**
-(2026-09-22). Written for issue #2098
+Status: **phases 0 and 1 shipped; phase 2 started** (2026-09-25). Written for issue #2098
 ("Split files into samples by scan attributes"), which carries the checklist
 of pull requests. The decisions in section 12 are open.
 
@@ -40,7 +39,7 @@ the table below and ticks its item on #2098.
 
 | Phase | Content | State |
 |---|---|---|
-| 0 | Stop losing information: method identity, stream census, token-rule and notification fixes | shipped, bar the production `populate_orbitrap_method_file` run |
+| 0 | Stop losing information: method identity, stream census, token-rule and notification fixes | shipped |
 | 1 | Per-file processing state, persistent notifications, "needs a chemistry" | shipped (#2164, #2166-#2169) |
 | 2 | Method bindings: routing without tokens | started; the seeded modes and the learning have shipped, nothing routes on a binding yet, section 10 marks each item as it ships |
 | 3 | The part contract: stream and window honoured by every consumer | open |
@@ -560,9 +559,18 @@ several reagent bottles is the expected cause.
 - Files ingested up to June 2026 carry their method name.
 - Later files carry it once `populate_orbitrap_method_file` (#2155) has run
   on the server.
+- A file of a census-bearing instrument also needs its scan-stream census,
+  because the signature class comes from the census and nothing may be
+  substituted for it. The census is recorded when a file is converted, and
+  never afterwards, so a file converted before it shipped carries none and is
+  skipped. `backfill_scan_stream_census` reopens those files and records one
+  from the raw data kept beside each converted sample. Measured on the
+  production fleet in September 2026 that was every Orbitrap file a server
+  held, so the census backfill runs first or the method backfill learns
+  nothing on the side where the method key discriminates at all.
 
-A server that installs phase 2 therefore starts with bindings for every
-method it has already routed.
+A server that installs phase 2 and runs both backfills therefore starts with
+bindings for every method it has already routed.
 
 **Without a method name** (some older instruments, generic TOF
 configurations), the key falls back to the signature class alone. Such a
@@ -958,7 +966,9 @@ Needed before any rung can be provisional or park.
   seen running, keyed on (instrument, method key, signature class) as section
   5.3 defines them, with both riders in force - unanimity to route, and a
   constant configuration name treated as no method name. `backend.method_binding`
-  is `"shadow"`, so nothing reads the rows back; the backfill is
+  is `"shadow"`, so nothing reads the rows back; the backfills are
+  `mascope db script run backfill_scan_stream_census`, which gives the
+  Orbitrap history a signature class to be keyed on, and then
   `mascope db script run backfill_method_bindings`. What remains is the rung
   that consults them, behind the value that switches it on per site, and the
   conflicts as review items.
