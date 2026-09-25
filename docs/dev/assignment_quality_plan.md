@@ -47,6 +47,7 @@ dataset's sets G to J, the chemist's reading of 2026-09-24 (decision 21).
 | 3.2 - formate as an opportunistic channel | #2198, stacked on #2197 | built: `+HCOO-` is a secondary channel of the nitrate, 15N-nitrate, bromide and iodide profiles, probed on formate, its dimer with formic acid and (nitrate) its cluster with the reagent's acid, built from the reagent so the labelled profile probes `[HCOO+H^NO3]-`; the nitrate profiles keep it on where the window cannot show a probe, as they do carbonate, because the batch carrying the C11 pseudo-acids is acquired from m/z 130 and the source makes no formate carrier above 127 (the two-acid cluster absent, the two-formic-acid cluster at 0.01-0.05% of base on the wide-window sister batch); the halide profiles claim only what they show. The election alone is not enough: measured with the channel open, it read every deprotonated acid as the molecule 46 Da lighter with formate (1,239 acid rows of six no-reagent-ion samples moved to formate and were capped; set C's same-formula agreement with the reference fell from 89.6% to 62.6%), so formate takes the partner gate of step 3.1 (`engine.apply_partner_gates`): the formate reading is the row's only where the lighter neutral is committed through a mode channel, otherwise the acid stands and the formate reading is set aside. Measured on the testbed with the partner gate judging every row against the ledger as it stands: set G without reagent ion G11 24.4 -> 5.6% of assigned-plus-candidate intensity (assigned-only 32.9 -> 7.1%), the deprotonated C11 rows 195 -> 79 (51 assigned), 104 of them now their C10 formate reading at assigned, each corroborated by the C10 neutral through a mode channel, 51 standing because no reading of the C10 neutral exists through a mode channel, 28 held at candidate; assigned rows per sample 486 -> 440, assigned intensity 58.4 -> 56.5%, of which 272 list-matched acids drop to candidate because their formate rival's lighter neutral is itself committed (O4 to O8 products; a real ambiguity for the small acids, and for a list's C11 the C10 reading is right). Set G with reagent ion G11 1.2 -> 0.5%. Set C tiers within two rows of before (assigned 615 -> 613), same-formula agreement with the reference 89.6 -> 88.0% where a partnered formate reading replaces an acid the reference reads as an acid; set C2 unchanged (probe absent, channel off). The target of under 1% is met with reagent ion and not without: the remaining 5.6% is C11 acids whose C10 partner is seen through no mode channel, which the rule leaves standing |
 | 3.3 - name the source ions | - | planned |
 | 3.3b - the standard adduct notation | - | planned (decision 23); before 2.0, as its own change |
+| 3.1c - the stronger partner decides | - | planned (decision 24); the need measured on set K: the benzyl cation as protonated C7H6 at assigned in 6 of 6 files with toluene less a hydride on the row |
 | 3.4 - an opportunistic channel needs a second channel | - | planned |
 | 3.5 - calibrants below the brightest lines, an offset term, and the low-mass bend (calibration node) | - | planned |
 | 3.6 - priors and the dataset's context | - | planned |
@@ -169,11 +170,20 @@ justify.
   | H | Orbitrap, chamber oxidation | urea CIMS, positive, with and without reagent ion | 5 + 6 | measured 2026-09-24, no reference run |
   | I | Orbitrap, chamber oxidation | EASY-IC charge-transfer source, positive and negative | 6 + 6 | measured 2026-09-24, no reference run |
   | J | TOF, chamber oxidation | nitrate and bromide CIMS mixed, negative | 6 | measured 2026-09-24, not gated (decision 22) |
+  | K | Orbitrap, certified cylinder | EASY-IC charge-transfer source, positive, acquired from m/z 50 to 200 | 6 | measured 2026-09-25, no reference run; the 36 files whose calibration verified |
+  | K2 | Orbitrap, certified cylinder | the same source, acquired from m/z 210 to 500 | 6 | cloned 2026-09-25; not runnable until the window has a calibrant (decision 24) |
+  | K3 | Orbitrap, certified cylinder | the same source, one window from m/z 40 to 500 | 6 + 1 | measured 2026-09-25, no reference run; the injection-hour file added |
+  | L | Orbitrap, certified cylinder | a proton-transfer source declaring protonation beside the bare sign, positive, m/z 50 to 200 | 6 | measured 2026-09-25, no reference run |
 
   Sets G to J are a customer's alpha-pinene chamber oxidation dataset, cloned
   to the testbed on 2026-09-24 with its processed peak lists (the private
   testbed note holds the names). They carry no reference run and are judged
-  on the intrinsic metrics G9 to G11 (decision 21).
+  on the intrinsic metrics G9 to G11 (decision 21). Sets K to L are the
+  internal Orbitrap's certified 18-component calibration cylinder of 22 and
+  23 September 2026, cloned to the testbed on 2026-09-25 with every file of
+  its five batches: a known mixture is ground truth for a source profile,
+  since every committed peak is either in the bottle or it is not
+  (decision 24).
 
   Sets D to F need peaky reference runs with TOF-appropriate windows where
   the instrument is a TOF (its Orbitrap defaults of 1 ppm trust and 3 ppm
@@ -3956,6 +3966,66 @@ Sets G to J, read on chemical plausibility with no reference run (decision
 | I, positive | 6 | 134 | 3 / 25 / 0 / 44 % (24% below assignability) | 51% (124 of 243) | 0 | 0 | -0.27 ppm |
 | J | 6 | 1,383 | 4 / 4 / 7 / 74 % | 25% (164 of 645) | nitrate ladder only; bromide 0 | 0.3% (36) | +0.32 ppm (worst 9) |
 
+### The certified cylinder, sets K to L (2026-09-25)
+
+Measured on the develop engine with steps 3.1 and 3.2 in (`c14a3fe16`), on the
+internal Orbitrap's certified 18-component calibration cylinder: the
+charge-transfer source in three windows (sets K, K2, K3) and a proton-transfer
+source declaring protonation beside the bare sign (set L), five time-spaced
+files plus the brightest per batch, and on K3 the injection-hour file too,
+since the fluoranthene beam dominates that window's total signal and the
+brightest file is not the cylinder's. The rows and reagent claims are the
+engine's; the reference engine's reading of the same cylinder is in its own
+record (peaky #53).
+
+| set | samples | M0 per sample | intensity assigned / candidate / below / unassigned | certified components at assigned through charge transfer | nitrogen-rich assigned neutrals (N >= 2, O < 2N) |
+|---|---|---|---|---|---|
+| K, 50-200 | 6 | 166 | 46 / 13 / 1 / 40 % | benzene 5, toluene 6, xylene 6, isoprene 6, styrene 6 of 6; acetone at candidate in 6; alpha-pinene below assignability in 4 | 21% of assigned rows, 26% of assigned intensity |
+| K3, 40-500 | 7 | 73 | 15 / 59 / 17 / 3 % (reagent 5) | on the injection file benzene, xylene, isoprene and styrene assigned; toluene is the library's row, below assignability in 4 of 7 | 34% of assigned rows |
+| L, 50-200 | 6 | 298 | 32 / 25 / 13 / 30 % | benzene 6, toluene 5, xylene 5, styrene 5, hexanal 5 of 6; isoprene 3; alpha-pinene below assignability in 5 | 11% of assigned rows, 8% of assigned intensity |
+
+What the set says, three findings and one about itself:
+
+- **Between two partnered opportunistic readings, the mechanism's mass still
+  decides.** The benzyl cation at 91.0542 reads as protonated C7H6 at
+  assigned in every K file, the failure the reference engine's cylinder run
+  names first, although toluene less a hydride is on the row. Both readings
+  have a partner (C7H6 through the bare sign at 90.046, toluene at 92.062 at
+  3% of signal), so the gate lets the election's heavier-mechanism prior take
+  the proton. The same for C5H7+ (protonated cyclopentadiene over isoprene
+  less a hydride, 6 of 6) and C6H11O+ (protonated C6H10O over hexanal, 4 of
+  6). On L, which declares protonation, the same rows sit at candidate with
+  toluene as the named rival: the honest tier, the declared channel's
+  formula. Step 3.1c.
+- **The instrument's bright-peak shift takes the brightest analyte.**
+  Alpha-pinene's radical cation, 13% of L's signal and its second-brightest
+  peak, reads 0.9 to 1.9 ppm high while the run's mass z stays under 1.3,
+  and its fit falls to 0.01 to 0.42: below assignability in 5 of 6 L files
+  and 4 of 6 K files, assigned only where it sits within 0.5 ppm. The
+  library's toluene row on K3 sits below assignability the same way. Pinene's
+  methyl-loss ion at 121.10, 8% of L's signal, reads as protonated cumene:
+  no `-CH3-` channel exists, and pinene itself is no partner while it is
+  below. Step 3.5, and the methyl-loss channel in 3.3.
+- **A nitrogen-free cylinder assigns nitrogen-rich formulas.** C2HN3, C2N2O,
+  C2H3N3 and C2H2N2O are among the neutrals assigned in most files of K and
+  K3, through the bare sign on their fit alone, 21 to 34% of the assigned
+  rows. The reference engine reads the same family as the source's air-plasma
+  background and holds it by its flat time series. Step 3.6's odd-nitrogen
+  prior, and 3.3's source-ion list.
+- **The narrow windows carry no calibrant.** The mode's calibration
+  collection holds NO2, N3, C4H8 and fluoranthene; a window from 50 to 200
+  sees two of them and verified 36 of 280 files, the injection hour, and the
+  210-500 window has no collection and no calibration at all, so the engine
+  refuses it (K2) by the rule that a sample is calibrated before it is
+  assigned. The ions the reference engine finds in every file of this source,
+  the PAH ladder in the low window and the siloxanes' methyl-loss ions in the
+  high one, are the calibrants those windows lack. Step 3.5.
+
+Sound, for the record: the fluoranthene beam is claimed as reagent on every
+K3 file; acetone reads as its own hydride ion and its protonated form, at
+assigned on K3 and at candidate on K; the charge-transfer readings of the
+aromatic components sit within 0.7 ppm of their masses.
+
 What the reading confirmed as sound, for the record: the reagent ladders of
 every profile are parked correctly (15N-nitrate, its acid dimer and water
 clusters; urea, its dimer and trimer; nitrate's on the TOF); the first-
@@ -4523,6 +4593,21 @@ is within 0.4 ppm interquartile wherever the calibration is good.
     the release that turns assignment on and makes the notation user-facing
     in the inspector and in the reference engine's publish path. The
     structured adduct row of the ionization method design can follow.
+24. **The certified cylinder is a gate set for the charge-transfer source**
+    (taken 2026-09-25 by the plan owner). A certified 18-component mixture
+    is ground truth for a source profile in a way a chamber dataset is not:
+    every committed peak is either in the bottle or it is not. The internal
+    Orbitrap's cylinder runs of 22 and 23 September 2026 are cloned to the
+    testbed as sets K (the charge-transfer source, m/z 50 to 200), K2 (210
+    to 500), K3 (one window from 40) and L (a proton-transfer source with
+    protonation declared beside the bare sign), and steps 3.1, 3.3, 3.5 and
+    3.6 are read against them. Two things it decided at once: between two
+    opportunistic readings that both have a partner, the reading whose
+    neutral the sample commits more strongly through a mode channel is the
+    row's, not the heavier mechanism's (step 3.1c: the benzyl cation as
+    toluene less a hydride, since toluene is 3% of the signal and C7H6 a
+    trace); and a window that holds no calibrant is not assigned until it
+    has one, so K2 waits on step 3.5 rather than on a relaxed rule.
 
 ## Risks
 
