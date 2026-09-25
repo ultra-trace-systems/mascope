@@ -164,16 +164,17 @@ def _join_terms(terms: list[str] | tuple[str, ...]) -> str:
 def _ordered_terms(terms: Iterable[str]) -> tuple[str, ...]:
     """The terms in the order a mechanism is written in: alphabetical.
 
-    Each term is taken as a legacy moiety splits it. Joining the sorted terms
-    can put a group at the front of the last one, which the split then takes
-    apart (``[M+(A)+(B)C]+`` is ``[M+(A)+B+C]+``), so the order is the one
-    that splits the same way again once joined. The terms only ever split
-    further, so this settles.
+    Each term is first split as far as a legacy moiety splits it, so a term
+    that opens with a group reads as the terms it holds wherever it stands:
+    ``[M+K+(H2O)Na]+`` and ``[M+(H2O)Na+K]+`` are both ``[M+H2O+K+Na]+``.
+    Split that far, the sorted terms come back unchanged from being joined
+    into a moiety and split again, so they are the terms the stored moiety
+    holds.
     """
-    ordered = tuple(sorted(_split_moiety(_join_terms(tuple(terms)))))
-    while (again := _split_moiety(_join_terms(ordered))) != ordered:
-        ordered = tuple(sorted(again))
-    return ordered
+    parts = tuple(terms)
+    while (split := tuple(p for term in parts for p in _split_moiety(term))) != parts:
+        parts = split
+    return tuple(sorted(parts))
 
 
 def _nests(text: str, opening: str, closing: str) -> bool:
