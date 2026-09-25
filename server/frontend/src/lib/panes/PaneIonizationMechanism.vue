@@ -2,7 +2,10 @@
 /**
  * Component for managing ionization mechanisms
  *
- * Allows adding and removing mechanisms with validation.
+ * Allows adding and removing mechanisms with validation. A mechanism is typed
+ * in the standard adduct notation (`[M+H]+`, `[M-H]-`, `[M]+.`); the legacy
+ * spelling (`+H+`, `-H+`, `+`) is accepted too, and the server stores either
+ * in the standard one.
  */
 import { reactive, computed, watch } from 'vue'
 
@@ -11,9 +14,11 @@ import Column from 'primevue/column'
 import Button from 'primevue/button'
 import InputText from 'primevue/inputtext'
 import FloatLabel from 'primevue/floatlabel'
+import Message from 'primevue/message'
 import { useConfirm } from 'primevue/useconfirm'
 
 import { isValidChemicalFormula } from '@/lib/chem'
+import { mechanismProblem, mechanismTerms } from '@/lib/mechanism'
 import { useApp } from '@/stores'
 
 const app = useApp()
@@ -27,13 +32,18 @@ const resetFields = () => {
   add.mechanism = ''
 }
 
-const polarityValid = computed(() => ['+', '-'].includes(add.mechanism.trim().slice(-1)))
-const prefixValid = computed(() => ['+', '-'].includes(add.mechanism.trim()[0]))
-const modificationValid = computed(() => {
-  const mech = add.mechanism.trim()
-  if (mech.length == 1) return true // Only polarity present
-  const core = mech.slice(1, -1)
-  return isValidChemicalFormula(core)
+// Why the typed mechanism cannot be added, or null: the notation first, then
+// each term as a formula of element symbols. A labelled atom is written with a
+// caret (^N); the bracketed form ([15N]) is refused here, as it always was,
+// because target ions are built from the caret form alone. Whether the symbols
+// are real elements is the server's check.
+const problem = computed(() => {
+  const text = add.mechanism.trim()
+  if (!text) return null
+  const notation = mechanismProblem(text)
+  if (notation) return notation
+  const term = mechanismTerms(text).find((term) => !isValidChemicalFormula(term))
+  return term ? `'${term}' is not a formula; a labelled atom is written with a caret, ^N` : null
 })
 
 // reset when create successful
@@ -53,27 +63,38 @@ defineExpose({
 </script>
 
 <template>
-  <menu class="row" style="margin-top: 1.5rem">
-    <FloatLabel style="flex-grow: 1">
-      <InputText
-        v-model="add.mechanism"
-        id="add-mechanism"
-        :invalid="!modificationValid || !prefixValid || !polarityValid"
-        style="width: 100%"
+  <menu style="margin-top: 1.5rem">
+    <div class="row">
+      <FloatLabel style="flex-grow: 1">
+        <InputText
+          v-model="add.mechanism"
+          id="add-mechanism"
+          :invalid="!!problem"
+          aria-describedby="add-mechanism-hint"
+          style="width: 100%"
+        />
+        <label for="add-mechanism">Mechanism*</label>
+      </FloatLabel>
+      <Button
+        label="Add"
+        icon="pi pi-plus"
+        @click="
+          () =>
+            app.data.ionization.mechanism.create({
+              ionization_mechanism: add.mechanism.trim()
+            })
+        "
+        :disabled="!add.mechanism.trim() || !!problem"
       />
-      <label for="add-mechanism">Mechanism*</label>
-    </FloatLabel>
-    <Button
-      label="Add"
-      icon="pi pi-plus"
-      @click="
-        () =>
-          app.data.ionization.mechanism.create({
-            ionization_mechanism: add.mechanism.trim()
-          })
-      "
-      :disabled="!add.mechanism.trim() || !modificationValid || !prefixValid || !polarityValid"
-    />
+    </div>
+    <Message
+      id="add-mechanism-hint"
+      :severity="problem ? 'error' : 'secondary'"
+      size="small"
+      variant="simple"
+    >
+      {{ problem ?? 'For example [M+H]+, [M-H]-, [M+Br]-, or [M]+. for electron transfer' }}
+    </Message>
   </menu>
   <section style="margin: 1rem 0">
     <DataTable

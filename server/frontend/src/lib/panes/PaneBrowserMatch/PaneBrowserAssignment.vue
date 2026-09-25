@@ -44,7 +44,7 @@ const runs = computed(() => app.data.peakAssignment.run)
 const assignments = computed(() => app.data.peakAssignment.peak)
 const tierCounts = computed(() => assignments.value.tierCounts)
 
-// Map ionization_mechanism_id -> readable notation (e.g. "+H+", "+Br-"), for
+// Map ionization_mechanism_id -> readable notation (e.g. "[M+H]+", "[M+Br]-"), for
 // the ledger's ionization column. The assignment carries only the id.
 const mechById = computed(() => {
   const map = new Map()

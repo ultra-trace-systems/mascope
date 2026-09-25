@@ -294,7 +294,7 @@ describe('BaseRunProvenance: the chemistry', () => {
     element_ranges_source: 'profile',
     mz_precision_ppm: 3,
     mz_precision_source: 'profile',
-    secondary_channels: ['+CO3-'],
+    secondary_channels: ['[M+CO3]-'],
     unavailable_channels: []
   }
   const withChemistry = (resolved) => ({
@@ -333,9 +333,18 @@ describe('BaseRunProvenance: the chemistry', () => {
         "Chemistry context: Ambient air, the profile's own",
         'Element grid: C1-40 H0-80 N0-3 O0-18 S0-1 Cl0-2 Br0-2',
         'm/z window: 3 ppm',
-        'Also searched through: +CO3-'
+        'Also searched through: [M+CO3]-'
       ].join('\n')
     )
+  })
+
+  it('shows the channels of a run recorded in the legacy notation in the standard one', () => {
+    const chip = mountRecording(
+      withChemistry({ ...RESOLVED, secondary_channels: ['+CO3-'], unavailable_channels: ['-H+'] })
+    ).findAll('.tag')[1]
+    const lines = chip.attributes('data-tooltip').split('\n')
+    expect(lines).toContain('Also searched through: [M+CO3]-')
+    expect(lines).toContain('Shown by the spectrum but not configured, so not searched: [M-H]-')
   })
 
   it('says which names and values the run was given rather than resolved', () => {
@@ -351,7 +360,7 @@ describe('BaseRunProvenance: the chemistry', () => {
         mz_precision_ppm: 5,
         mz_precision_source: 'config',
         secondary_channels: [],
-        unavailable_channels: ['+Br2-']
+        unavailable_channels: ['[M+Br2]-']
       })
     ).findAll('.tag')[1]
     expect(chip.attributes('data-tooltip')).toBe(
@@ -360,7 +369,7 @@ describe('BaseRunProvenance: the chemistry', () => {
         'Chemistry context: Chamber, named for this run',
         'Element grid: C0-20 H0-40 (set for this run)',
         'm/z window: 5 ppm (set for this run)',
-        'Shown by the spectrum but not configured, so not searched: +Br2-'
+        'Shown by the spectrum but not configured, so not searched: [M+Br2]-'
       ].join('\n')
     )
   })

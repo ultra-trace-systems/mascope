@@ -3,6 +3,7 @@ import { computed } from 'vue'
 
 import Tag from 'primevue/tag'
 
+import { standardMechanism } from '@/lib/mechanism'
 import { contextName, profileName, runChemistry } from '@/lib/peakAssignProfiles'
 
 // Provenance chips for one peak-assignment run: which engine produced it, at
@@ -174,12 +175,15 @@ const chemistryLabel = computed(() => {
 const isAuto = (requested) => !requested || requested === 'auto'
 const fromConfig = (source) => (source === 'config' ? ' (set for this run)' : '')
 const listed = (value) => (Array.isArray(value) ? value.filter(Boolean) : [])
+// A run recorded before the standard adduct notation lists its channels in the
+// legacy spelling; either is shown in the standard one.
+const channelsOf = (value) => listed(value).map(standardMechanism)
 
 const chemistryTooltip = computed(() => {
   const record = chemistry.value
   if (!record) return ''
-  const channels = listed(record.secondary_channels)
-  const unconfigured = listed(record.unavailable_channels)
+  const channels = channelsOf(record.secondary_channels)
+  const unconfigured = channelsOf(record.unavailable_channels)
   return [
     `Chemistry profile: ${profileName(record)}` +
       (isAuto(record.requested_profile)
