@@ -104,13 +104,13 @@ profile has no single reagent and sets none aside. Then:
 
 | Profile | Polarity | Recognised by | Context it takes |
 |---|---|---|---|
-| Bromide CIMS | negative | `+Br-` | Ambient air |
-| Uronium (urea) CIMS | positive | `+(CH4N2O)H+` | Uronium |
-| Nitrate CIMS | negative | `+NO3-` | Ambient air |
-| 15N-nitrate CIMS | negative | `+^NO3-` | Ambient air |
-| Iodide CIMS | negative | `+I-` | Ambient air |
-| Charge transfer (EASY-IC), positive | positive | a bare `+` and no reagent, on an Orbitrap | Ambient air |
-| Charge transfer (EASY-IC), negative | negative | a bare `-` and no reagent, on an Orbitrap | Ambient air |
+| Bromide CIMS | negative | `[M+Br]-` | Ambient air |
+| Uronium (urea) CIMS | positive | `[M+CH4N2O+H]+` | Uronium |
+| Nitrate CIMS | negative | `[M+NO3]-` | Ambient air |
+| 15N-nitrate CIMS | negative | `[M+^NO3]-` | Ambient air |
+| Iodide CIMS | negative | `[M+I]-` | Ambient air |
+| Charge transfer (EASY-IC), positive | positive | electron transfer, `[M]+.`, and no reagent, on an Orbitrap | Ambient air |
+| Charge transfer (EASY-IC), negative | negative | electron transfer, `[M]-.`, and no reagent, on an Orbitrap | Ambient air |
 | Positive ESI / APCI | positive | no diagnostic mechanism | none |
 | Negative ESI / APCI | negative | no diagnostic mechanism | none |
 
@@ -119,35 +119,36 @@ food and beverage, and uronium. Each describes itself where it is chosen.
 
 **Auto.** Both presets default to **Auto**. The profile is read off the sample's
 ionization mechanisms: a mode carrying the bromide mechanism is a bromide source, whatever
-the mode is called. On an Orbitrap, a mode with no reagent whose mechanisms include the
-bare `+` or `-`, electron transfer, is a charge-transfer source, the way that instrument's
-EASY-IC source is declared: it searches a hydrocarbon-sized grid under the ambient prior,
-its reagent pass claims the fluoranthene beam, and the channels such a source also runs,
-hydride abstraction (`-H-`) and proton transfer in positive mode and deprotonation in
-negative, are opened as secondary ones where the spectrum shows the source runs them (or
-where the acquisition could not have shown it), and capped at candidate without
-corroboration. A channel the mode declares itself, proton transfer beside the bare sign,
-is the mode's own and is not capped. An ion such a channel reads is often one the bare
-sign reads too, as a different molecule: the tropylium ion is protonated C7H6 or toluene
+the mode is called. On an Orbitrap, a mode with no reagent whose mechanisms include
+electron transfer, `[M]+.` or `[M]-.`, is a charge-transfer source, the way that
+instrument's EASY-IC source is declared: it searches a hydrocarbon-sized grid under the
+ambient prior, its reagent pass claims the fluoranthene beam, and the channels such a
+source also runs, hydride abstraction (`[M-H]+`) and proton transfer in positive mode and
+deprotonation in negative, are opened as secondary ones where the spectrum shows the
+source runs them (or where the acquisition could not have shown it), and capped at
+candidate without corroboration. A channel the mode declares itself, proton transfer
+beside electron transfer, is the mode's own and is not capped. An ion such a channel reads
+is often one electron transfer reads too, as a different molecule: the tropylium ion is
+protonated C7H6 or toluene
 less a hydride, and the search's own preference for the heavier mechanism would take the
 proton. So an opportunistic reading stands only where the sample commits its molecule
 through one of the mode's own channels; otherwise the mode's reading is the row's, and
 between two opportunistic readings the one whose molecule the sample shows wins. Toluene
-is seen through the bare sign, so tropylium reads as toluene. The reading set aside stays
+is seen through electron transfer, so tropylium reads as toluene. The reading set aside stays
 on the row, marked as not borne out, and does not count against the one that was. The rule
 is read after the run's mass gate, so a partner is a reading that gate left committed and a
 reading it lifts stays under that gate's ceiling, and a batch search reads it over its own
-rows. On any other instrument the bare sign names an
+rows. On any other instrument electron transfer names an
 ambient-ion mode as readily, and such a mode keeps the ESI profile of its polarity; so does
 a mode with only protonation or deprotonation and no reagent. A secondary channel is
-searched only where the deployment holds its mechanism: hydride abstraction needs a `-H-`
+searched only where the deployment holds its mechanism: hydride abstraction needs a `[M-H]+`
 mechanism, which no deployment has by default, so an operator who wants toluene's
 tropylium ion read adds it under Ionization mechanisms once; until then the run's snapshot
 lists the channel as unavailable. The context is the one the profile is normally used
 with.
 
 **Formate.** Every negative reagent profile (nitrate, 15N-nitrate, bromide, iodide) can
-open a formate adduct channel, `+HCOO-`, the way it opens carbonate: where the spectrum
+open a formate adduct channel, `[M+HCOO]-`, the way it opens carbonate: where the spectrum
 shows formate, its dimer with formic acid, or its cluster with the reagent's acid. On a
 nitrate source the channel also stays on where the acquisition starts above every
 formate carrier the source makes, since that silence is the window's, not the
@@ -157,7 +158,7 @@ two ways, and every acid reads that way. The formate reading is the row's only w
 lighter molecule is itself committed through one of the mode's own channels, which also
 corroborates it; otherwise the acid reading stands, and the formate reading stays on the
 row as one the sample did not bear out. The channel is searched only where the
-deployment holds the `+HCOO-` mechanism, which none has by default: an operator adds it
+deployment holds the `[M+HCOO]-` mechanism, which none has by default: an operator adds it
 once under Ionization mechanisms, polarity negative, and until then the run's snapshot
 lists the channel as unavailable.
 
@@ -457,7 +458,7 @@ in doubt, off its M0, read as the M0's line - is listed above that.
 measurements the reasons read.
 
 - The ***ionization*** follows the formula at the head of the card: the mechanism the ion
-  was read through (*+H+*, *+NH4+*, *-H+* ...). The neutral and the ion formula under it
+  was read through (*[M+H]+*, *[M+NH4]+*, *[M-H]-* ...). The neutral and the ion formula under it
   imply it, but it is half of the assignment, and hovering it spells out the reaction.
 - ***reference list***, above the evidence, is what a reference list calls the formula,
   with the list it comes from: the compound the run matched it from, or - marked

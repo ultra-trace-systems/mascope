@@ -1568,6 +1568,14 @@ document cites it.
    Consequently, **client-side validation in §8.3 does not claim to pre-empt the
    mechanism 422** - it catches shape errors, not chemistry.
 
+   The exact-string floor matches more than it did when this was decided: since
+   the assignment plan's step 3.3b the listing reads every mechanism in the
+   standard adduct notation (`[M-H]-`, `[M+Br]-`), which is how an external
+   engine writes an adduct, so the common case joins without any normalizer. A
+   caller still writing the legacy spelling (`-H+`) resolves null, as does a
+   labelled reagent written in explicit-isotope form (`[M+[15N]O3]-` against a
+   stored `[M+^NO3]-`).
+
    Downstream of this answer, and genuinely open: the mechanism the deployment
    does *not* know at all - auto-register it on import, or leave
    `ionization_mechanism_id` null (the notation still lives in `ion_formula` and

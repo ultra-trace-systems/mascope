@@ -290,12 +290,18 @@ append-only with an `is_active` flag - this is the same pattern, and it closes
 
 ### 4.4 `Adduct` - structured, replacing the notation string
 
-The current model is one `String(256)` parsed by **two different parsers**
+The current model is one `String(256)`. It had **two different parsers**
 (`target_ions_compute._mechanism_parts` and
-`mascope_tools.composition.utils.parse_ionization`). Their grammars diverged
+`mascope_tools.composition.utils.parse_ionization`), whose grammars diverged
 until the assignment plan's step 3.1: the library special-cased `-H-` as
 deprotonation, where the validator reads it as a hydride removed and stores it
-under the positive polarity. Both now read it the same way.
+under the positive polarity. Since step 3.3b the string is the standard adduct
+notation (section 5), and both parsers, the validator and the frontend read it
+through one notation module (`mascope_tools.composition.mechanism_notation`,
+mirrored by the frontend's `src/lib/mechanism.js`) that also reads the legacy
+spelling. The structured row below is still the fuller answer - it is what
+multimers, neutral losses and multiple charges need - and it can build on the
+string rather than replace a private dialect.
 
 ```
 Adduct
@@ -306,8 +312,8 @@ Adduct
   multimer_n       -- default 1; enables [2M+H]+
   neutral_loss     -- optional; enables [M+H-H2O]+
   name             -- "protonation", "bromide adduct"
-  legacy_notation  -- "+H+", retained: see 8.1
-  -- derived: ion_polarity, ion_charge, mass_shift, display "[M+H]+"
+  -- derived: ion_polarity, ion_charge, mass_shift, display "[M+H]+",
+  --          and the legacy spelling "+H+" (the map is exact, see section 5)
 ```
 
 Derived, not stored: ion polarity and charge. That removes the exact confusion
@@ -339,11 +345,21 @@ Mascope's `+H+` grammar is a private dialect. It is:
   neutral losses (`[M+H-H2O]+`), all of which are routine.
 
 Recommendation: make `[M+H]+` the **primary input and display form**, backed by
-the structured model in 4.4. Accept the legacy `+H+` form on input and keep it
-stored as `legacy_notation`.
+the structured model in 4.4. Accept the legacy `+H+` form on input.
 
 This is the highest clarity-per-line-of-code change in the document, and it is
 simultaneously an interoperability win (section 7).
+
+**Adopted** as step 3.3b of the assignment quality plan (decision 23), without
+waiting for the structured model. The mechanism string is stored and shown in
+the standard notation; the legacy spelling is still read on input and stored in
+the standard one, and a row written before is read in the standard one until a
+data migration rewrites it. The map between the two is exact in the direction a
+stored row travels: every legacy spelling converts and converts back to itself,
+so no `legacy_notation` needs storing, since it is derived. What the notation
+cannot say yet it refuses rather than approximates: `[2M+H]+`, `[M+2H]2+` and a
+mechanism that both adds and removes (`[M+Na-2H]-`) wait for 4.4. The legacy
+form is refused on input at 2.0.
 
 ---
 
@@ -477,7 +493,7 @@ is a direct signal for the one thing the method file cannot supply:
 
 - "`[M+Br]-` won 12% of assigned peaks under this method but is not in your
   panel - add it?"
-- "`[M+(CH4N2O)H]+` is in your panel but has won 0 peaks across 40 samples -
+- "`[M+CH4N2O+H]+` is in your panel but has won 0 peaks across 40 samples -
   remove it?"
 
 The same aggregation can refit the per-adduct corroboration weights, which are
@@ -523,10 +539,10 @@ consumers. That is good news for sequencing. Three seams need care:
 
 ### 8.1 Corroboration weights are keyed by the notation string
 
-`AssignmentCalibration.corroboration_weights` is JSON keyed by the raw notation:
-`{"+Br-": 2.28, "+NH4+": 0.83}`. Changing the primary notation must therefore
-either keep `legacy_notation` as the stable key (recommended - it is why 4.4
-retains the field) or migrate the JSON in the same transaction.
+`AssignmentCalibration.corroboration_weights` is JSON keyed by the notation:
+`{"[M+Br]-": 2.28, "[M+NH4]+": 0.83}`. A weight is matched to an adduct by
+mechanism rather than by spelling (`apply_corroboration` compares
+`mechanism_key`s), so a calibration stored with legacy keys still applies.
 
 ### 8.2 Calibration keying should include the setup
 
@@ -614,12 +630,12 @@ Independently valuable, ships before any of the redesign lands.
 6. **Ship an adduct preset library** and one-click setup: ESI+
    (`[M+H]+`, `[M+Na]+`, `[M+K]+`, `[M+NH4]+`, `[2M+H]+`, `[M+H-H2O]+`), ESI-
    (`[M-H]-`, `[M+Cl]-`, `[M+HCOO]-`, `[2M-H]-`), the reagent chemistries we
-   actually use (`[M+Br]-`, `[M+NO3]-`, `[M+(CH4N2O)H]+`), EI (`M+.`). Grouped
+   actually use (`[M+Br]-`, `[M+NO3]-`, `[M+CH4N2O+H]+`), EI (`[M]+.`). Grouped
    into named presets. **The highest-value item on the usability side** - it
    turns a blank wall into a starting point. (Item 1 is its counterpart on the
    metadata side.)
 7. Mechanism pane UX: inline per-rule error messages, worked examples in the
-   field, accept `[M+H]+` on input.
+   field, accept `[M+H]+` on input. Done with the plan's step 3.3b.
 8. Add the `doc` "Learn more" link to the ionization help cards - the popover
    already supports it and ionization passes none.
 9. Stamp the resolved mechanism ids into `PeakAssignmentRun.config` (epic
@@ -628,12 +644,14 @@ Independently valuable, ships before any of the redesign lands.
 ### Phase 1 - name the concept (weeks)
 
 10. `Instrument` table; migrate the derived-string usages.
-11. Structured `Adduct` model; `[M+H]+` primary, legacy string retained.
+11. Structured `Adduct` model. (`[M+H]+` became the primary form with the
+    plan's step 3.3b, on the string.)
 12. `IonizationSetup`, append-only versioned; stamp the version on runs, matches
     and calibrations. **Closes 2.3, R1, R3.**
 13. Reagent purity and allowed charge states become configuration rather than
     module constants.
-14. Retire one of the two mechanism parsers.
+14. Retire one of the two mechanism parsers. Since step 3.3b both read the
+    string through one notation module.
 
 ### Phase 2 - method capture (weeks)
 

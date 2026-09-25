@@ -90,18 +90,28 @@ Ionization Settings* dialog. It has two tabs: **Ionization Modes** and
 **Ionization Mechanisms**.
 
 **1. Define the mechanisms first (Ionization Mechanisms tab).** A mechanism
-describes a single charge-forming reaction as an operation, a modification
-formula, and the charge of the transferred species: a leading `+` (add) or `-`
-(remove), the formula added or removed (for example `H` or `Br`), and a trailing
-`+` or `-` giving that species' charge. The *ion* polarity is not written
-directly — it follows from the two signs: adding a positively charged species or
-removing a negatively charged one yields a positive ion, and vice versa. For
-example:
+describes a single charge-forming reaction, written in the standard adduct
+notation: inside the brackets, what is added to or removed from the molecule
+`M`, and after them the charge of the ion it makes. For example:
 
-- `+H+` — protonation, `[M+H]+` (positive)
-- `-H+` — deprotonation, i.e. removal of a proton (`H+`), giving `[M-H]-` (negative)
-- `+Br-` — bromide adduct, `[M+Br]-` (negative)
-- a bare `+` or `-` — electron transfer
+- `[M+H]+` — protonation (positive)
+- `[M-H]-` — deprotonation (negative)
+- `[M+Br]-` — bromide adduct (negative)
+- `[M-H]+` — hydride abstraction (positive)
+- `[M+CH4N2O+H]+` — a cluster with urea and a proton, one term per species added
+  (positive)
+- `[M+^NO3]-` — a labelled reagent, written as it is (negative)
+- `[M]+.` or `[M]-.` — electron transfer, the dot marking the radical ion
+
+The ion's polarity is the sign at the end, so a mechanism of the wrong polarity
+cannot be saved. One molecule and a single charge are what a mechanism
+describes: `[2M+H]+` and `[M+2H]2+` are refused, as is a mechanism that both adds
+and removes (`[M+Na-2H]-`).
+
+The older spelling is still accepted and saved in the standard one: an operation,
+the formula, and the charge of the species moved rather than of the ion (`+H+`
+for `[M+H]+`, `-H+` for `[M-H]-`, `+Br-` for `[M+Br]-`, a bare `+` or `-` for
+electron transfer).
 
 A mode can only use mechanisms of its own polarity, so make sure the ones you
 need exist.

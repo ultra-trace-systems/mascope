@@ -37,7 +37,7 @@ logic and data, not the runtime.
 
 | Channel | Home | Limitation |
 |---|---|---|
-| Adduct panel | `IonizationMode.ionization_mechanism_ids` → notation strings ([models.py](../../server/backend/src/mascope_backend/db/models.py)) | Free-text, filename-token routed, zero seeded rows — a fresh instance cannot ingest until someone hand-types `+H+`. No priors, no reagent semantics. |
+| Adduct panel | `IonizationMode.ionization_mechanism_ids` → notation strings ([models.py](../../server/backend/src/mascope_backend/db/models.py)) | Free-text, filename-token routed, zero seeded rows — a fresh instance cannot ingest until someone hand-types `[M+H]+`. No priors, no reagent semantics. |
 | Element grid (Stage B) | `PeakAssignmentConfig.formula_ranges`, default `DEFAULT_FORMULA_RANGE = "C0-100 H0-100 O0-100 N0-100"` ([cheminfo/config.py](../../server/backend/src/mascope_backend/api/new/cheminfo/config.py)) | One generic box for all chemistry. No S/halogens by default, yet 100 O — neither CIMS-correct nor cheap. Per-run string, nothing supplies a chemistry-aware default. |
 | Chemical plausibility | `formula_plausibility` ([heuristic_filter.py](../../libraries/tools/src/mascope_tools/composition/heuristic_filter.py)) — Seven Golden Rules, universal Kind & Fiehn bands | Matrix-agnostic by design. Ambient-air HOM chemistry, indoor siloxanes, and PFAS all get the same bands. |
 | Known-compound set (Stage A) | curated targets + reference mirror via `iter_known_compositions` ([known.py](../../libraries/reference/src/mascope_reference/known.py)) | The mirror window is hardcoded: `DEFAULT_ELEMENTS = {C,H,N,O,S}`, `DEFAULT_MAX_CARBON = 40`, `DEFAULT_MAX_MASS = 700`. Every active source applies to every run — no notion of "this list is for monoterpene oxidation studies". |
@@ -64,7 +64,7 @@ The codebase has been leaving hooks exactly where profiles land:
 - **Per-adduct corroboration weights are hand-fit provisional data**
   (`PROVISIONAL_ORBITRAP`,
   [calibration.py](../../libraries/tools/src/mascope_tools/composition/calibration.py)):
-  `{"+Br-": 2.28, "+NH4+": 0.83, "+(CH4N2O)H+": 0.70, …}` — measured per
+  `{"[M+Br]-": 2.28, "[M+NH4]+": 0.83, "[M+CH4N2O+H]+": 0.70, …}` — measured per
   reagent chemistry, stored per instrument.
 - **`acquisition_params` are captured on ingest and consumed by nothing**
   (Phase 0 item 1 of the ionization redesign, PR #1723) — the observed-physics
@@ -158,7 +158,7 @@ migration entirely.
 | `reagent_profile_id`, `version`, `is_active`, `supersedes_id` | identity + versioning |
 | `name`, `label`, `description` | `"BR"`, "Bromide CIMS" |
 | `polarity` | `+` / `-` |
-| `adducts` (JSON) | ordered notation list with optional per-adduct prior weight, e.g. `[{"notation": "+Br-", "prior": null}, …]` |
+| `adducts` (JSON) | ordered notation list with optional per-adduct prior weight, e.g. `[{"notation": "[M+Br]-", "prior": null}, …]` |
 | `element_ranges` | grid string, existing grammar: `"C0-40 H0-80 N0-3 O0-18 S0-2 Cl0-2 Br0-2"` |
 | `reagent_formula`, `reagent_charge` | the reagent ion, e.g. `Br`, −1 |
 | `cluster_grammar` (JSON) | which cluster series to enumerate: homomultimers Rₙ, hydrates R·(H₂O)ₖ, oxides ROₙ, acid adducts R·(HX)ₖ, positive `[Rₙ+H]+` — bounds per series |
@@ -360,11 +360,11 @@ their campaign provenance):
 | preset | polarity | adduct panel | element grid | notes |
 |---|---|---|---|---|
 | `BR` | − | `[M+Br]-`, `[M-H]-`, `[M+HBr+Br]-`; `[M+CO3]-`, `[M+Br2]-` and `[M+HCOO]-` secondary (formate from plan step 3.2) | `C0-40 H0-80 N0-3 O0-18 S0-2 Cl0-2 Br0-2` | corroboration weight already measured (+Br⁻ LR ≈ 9.8×) |
-| `UR` | + | `[M+H]+`, `[M+(CH4N2O)H]+` | `C0-40 H0-90 N0-8 O0-15 S0-2` | urea/uronium |
+| `UR` | + | `[M+H]+`, `[M+CH4N2O+H]+` | `C0-40 H0-90 N0-8 O0-15 S0-2` | urea/uronium |
 | `NO3` | − | `[M+NO3]-`, `[M-H]-`; `[M+CO3]-` and `[M+HCOO]-` secondary | `C0-40 H0-60 N0-3 O0-25 S0-2` | provisional in peaky — ship marked provisional |
 | `NO3_15N` | − | `[M+^NO3]-`, `[M-H]-`; `[M+CO3]-` and `[M+HCOO]-` secondary | as NO3 | `^N` purity 0.98 as data |
 | `IODIDE` | − | `[M+I]-`, `[M-H]-`, `[M+I2]-`, `[M-H+I2]-`; `[M+HCOO]-` secondary | `C0-40 H0-80 N0-3 O0-20 S0-2 Cl0-1` | I deliberately off the neutral grid |
-| `EASYIC_POS` / `EASYIC_NEG` | ± | `[M]+.` with `[M-H]+` (`-H-`) and `[M+H]+` secondary; `[M]-.` with `[M-H]-` secondary | `C0-40 H0-80 N0-5 O0-15 S0-2` (negative O0-20) | the charge-transfer (EASY-IC) source, recognised by the bare sign on an Orbitrap; ambient context; the fluoranthene beam as its reagent ladder (assignment plan step 3.1) |
+| `EASYIC_POS` / `EASYIC_NEG` | ± | `[M]+.` with `[M-H]+` and `[M+H]+` secondary; `[M]-.` with `[M-H]-` secondary | `C0-40 H0-80 N0-5 O0-15 S0-2` (negative O0-20) | the charge-transfer (EASY-IC) source, recognised by electron transfer on an Orbitrap; ambient context; the fluoranthene beam as its reagent ladder (assignment plan step 3.1) |
 | `ESI_POS` / `ESI_NEG` | ± | the generic panels from [ionization_method_config.md](ionization_method_config.md) Phase 0 item 6 | wide default | no reagent grammar; gives non-CIMS users seeded modes |
 
 Context presets: the nine peaky contexts with their windows/caps/families
@@ -456,7 +456,7 @@ behind the existing `peak_assignment` flag.
 
 ### Phase 4 — Calibration keying + the learning loop
 - Profile-aware calibration lookup; per-profile corroboration refits via the
-  existing recalibration route; ledger-driven suggestions ("`+Br-` won 12% of
+  existing recalibration route; ledger-driven suggestions ("`[M+Br]-` won 12% of
   peaks but is not in your panel") per ionization doc §6.5; context-window
   audit ("18% of confident assignments fall outside the ambient H/C window —
   widen?").
