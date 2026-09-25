@@ -294,6 +294,7 @@ class TestTheGate:
         assert rows[-1]["tier"] == TIER_CANDIDATE
         assert rows[-1]["provenance"]["mass_gate"] == {
             "corroborated_by": None,
+            "ceiling": TIER_CANDIDATE,
             "capped": TIER_CANDIDATE,
             "reason": REASON_OFF_CALIBRATION,
         }
@@ -347,12 +348,14 @@ class TestTheGate:
         assert library["tier"] == TIER_BELOW_ASSIGNABILITY
         assert library["provenance"]["mass_gate"] == {
             "corroborated_by": CORROBORATED_CURATED,
+            "ceiling": TIER_BELOW_ASSIGNABILITY,
             "capped": TIER_BELOW_ASSIGNABILITY,
             "reason": REASON_OFF_CALIBRATION,
         }
         assert seed["tier"] == TIER_BELOW_ASSIGNABILITY
         assert seed["provenance"]["mass_gate"] == {
             "corroborated_by": None,
+            "ceiling": TIER_BELOW_ASSIGNABILITY,
             "capped": TIER_BELOW_ASSIGNABILITY,
             "reason": REASON_OFF_CALIBRATION,
         }
@@ -392,6 +395,7 @@ class TestTheGate:
         assert child["provenance"]["mass_gate"] == {
             "corroborated_by": CORROBORATED_CURATED,
             "tracking": TRACKING_UNTRACKED,
+            "ceiling": TIER_CANDIDATE,
             "capped": TIER_CANDIDATE,
             "reason": REASON_OFF_CALIBRATION,
         }
@@ -407,6 +411,22 @@ class TestTheGate:
 
         assert rows[-1]["tier"] == TIER_CANDIDATE
         assert "capped" not in rows[-1]["provenance"]["mass_gate"]
+        assert summary["capped"] == 0
+
+    def test_a_row_already_at_the_cap_records_the_ceiling_it_would_hold(self):
+        # A pass that lifts a tier later (the partner gate) reads it: the
+        # row's own line is what the gate judged, whichever reading it ends
+        # up carrying.
+        rows = _anchors(12, spread=0.1) + [_row("held", ppm=2.5, tier=TIER_CANDIDATE)]
+
+        summary = apply_mass_gate(rows, fallback_sigma_ppm=PRECISION)
+
+        assert rows[-1]["tier"] == TIER_CANDIDATE
+        assert rows[-1]["provenance"]["mass_gate"] == {
+            "corroborated_by": None,
+            "ceiling": TIER_CANDIDATE,
+            "reason": REASON_OFF_CALIBRATION,
+        }
         assert summary["capped"] == 0
 
     def test_a_run_that_measured_no_calibration_gates_nothing(self):
@@ -1142,6 +1162,7 @@ class TestTheGateOnAnIsotopologue:
         assert child["provenance"]["mass_gate"] == {
             "corroborated_by": None,
             "tracking": TRACKING_IN_DOUBT,
+            "ceiling": TIER_CANDIDATE,
             "capped": TIER_CANDIDATE,
             "reason": REASON_ISOTOPOLOGUE_IN_DOUBT,
         }
@@ -1178,6 +1199,7 @@ class TestTheGateOnAnIsotopologue:
         assert child["provenance"]["mass_gate"] == {
             "corroborated_by": None,
             "tracking": TRACKING_UNTRACKED,
+            "ceiling": TIER_BELOW_ASSIGNABILITY,
             "capped": TIER_BELOW_ASSIGNABILITY,
             "reason": REASON_OFF_CALIBRATION,
         }
@@ -1196,6 +1218,7 @@ class TestTheGateOnAnIsotopologue:
         assert child["provenance"]["mass_gate"] == {
             "corroborated_by": None,
             "tracking": TRACKING_UNTRACKED,
+            "ceiling": TIER_CANDIDATE,
             "capped": TIER_CANDIDATE,
             "reason": REASON_ISOTOPOLOGUE_UNTRACKED,
         }
@@ -1218,13 +1241,18 @@ class TestTheGateOnAnIsotopologue:
         assert summary["anchors"] == 13
 
     def test_a_tier_already_below_the_cap_is_left_alone(self):
+        # The gate lowers nothing and counts nothing; it records the ceiling
+        # it would have held the row to, for a pass that lifts tiers later.
         rows, lines = _isotopologue_pair(1.5, tier=TIER_CANDIDATE)
 
         summary = apply_mass_gate(rows, fallback_sigma_ppm=PRECISION, lines=lines)
 
+        assert rows[-1]["tier"] == TIER_CANDIDATE
         assert rows[-1]["provenance"]["mass_gate"] == {
             "corroborated_by": None,
             "tracking": TRACKING_UNTRACKED,
+            "ceiling": TIER_CANDIDATE,
+            "reason": REASON_ISOTOPOLOGUE_UNTRACKED,
         }
         assert summary["capped_untracked"] == 0
 

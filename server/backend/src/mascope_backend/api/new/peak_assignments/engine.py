@@ -2606,7 +2606,9 @@ def apply_partner_gates(
     - otherwise the mode's own reading of the ion, where the family holds one
       whose neutral is a molecule, becomes the row's, keeping the fit and mass
       error that are the ion's, with its tier read off its own plausibility
-      under any cap the mass gate set on the ion; failing that, another
+      under the ceiling the mass gate recorded for the ion's line, which
+      every reading of the ion shares (a lifted cap is held the same way,
+      and the row then says the mass gate holds it); failing that, another
       opportunistic reading whose neutral the sample does show; failing that,
       the row stays as it is and the policy's cap holds - re-imposed where the
       partner that once lifted it is gone.
@@ -2636,8 +2638,9 @@ def apply_partner_gates(
     :return: A JSON-serializable summary of the ledger the walk left: rows
         standing on a partner, of them the caps lifted and the swaps undone,
         rows swapped to another reading, rows left to the cap, of them the
-        caps re-imposed, readings set aside, the rounds it took, and whether
-        a round changed nothing before the cap.
+        caps re-imposed, rows held under the mass gate's ceiling, readings
+        set aside, the rounds it took, and whether a round changed nothing
+        before the cap.
     """
     summary = {
         "partnered": 0,
@@ -2646,6 +2649,7 @@ def apply_partner_gates(
         "swapped_back": 0,
         "kept": 0,
         "recapped": 0,
+        "held": 0,
         "set_aside": 0,
         "rounds": 0,
         "settled": True,
@@ -2662,8 +2666,10 @@ def apply_partner_gates(
     candidate_threshold = bands.get(TIER_CANDIDATE)
     assigned_threshold = bands.get(TIER_ASSIGNED)
 
-    def tier_of(evidence: float, provenance: dict) -> str | None:
-        """The tier the evidence earns, under any cap the mass gate set."""
+    held: set[str] = set()
+
+    def tier_of(evidence: float, row: dict, provenance: dict) -> str | None:
+        """The tier the evidence earns, under the mass gate's ceiling."""
         if candidate_threshold is None or assigned_threshold is None:
             return None
         tier = tier_for_evidence(
@@ -2671,10 +2677,15 @@ def apply_partner_gates(
             candidate_threshold=candidate_threshold,
             assigned_threshold=assigned_threshold,
         )
-        # The mass gate judged the ion's line, which every reading of it shares.
-        capped = (provenance.get("mass_gate") or {}).get("capped")
-        if capped in TIER_RANK and TIER_RANK[capped] < TIER_RANK[tier]:
-            return capped
+        # The mass gate judged the ion's line, which every reading of it
+        # shares. Where its ceiling binds, the row's tier is that gate's
+        # word, and the row says so.
+        mass_gate = provenance.get("mass_gate") or {}
+        ceiling = mass_gate.get("ceiling") or mass_gate.get("capped")
+        if ceiling in TIER_RANK and TIER_RANK[ceiling] < TIER_RANK[tier]:
+            mass_gate["capped"] = ceiling
+            held.add(str(row.get("peak_assignment_id")))
+            return ceiling
         return tier
 
     def partner_key(row: dict) -> str | None:
@@ -2741,7 +2752,7 @@ def apply_partner_gates(
         evidence = round(fit * plausibility, 4)
         row["assigned_formula"] = chosen["assigned_formula"]
         row["ionization_mechanism_id"] = chosen["ionization_mechanism_id"]
-        restored = tier_of(evidence, provenance)
+        restored = tier_of(evidence, row, provenance)
         if restored is not None:
             row["tier"] = restored
         provenance["plausibility"] = plausibility
@@ -2828,7 +2839,7 @@ def apply_partner_gates(
                     if verdict.get("capped"):
                         verdict["capped"] = False
                         restored = tier_of(
-                            float(provenance.get("evidence") or 0.0), provenance
+                            float(provenance.get("evidence") or 0.0), row, provenance
                         )
                         if restored is not None:
                             row["tier"] = restored
@@ -2887,6 +2898,7 @@ def apply_partner_gates(
             break
     else:
         summary["settled"] = False
+    summary["held"] = len(held)
 
     # Same-ion readings through a gated channel that nothing bore out are set
     # aside on every row, a reference list's included - read last, against

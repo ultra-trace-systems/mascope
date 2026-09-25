@@ -769,6 +769,10 @@ def apply_mass_gate(
     ``candidate`` either way, since that compares two of the run's own lines
     and needs no calibration.
 
+    Every judged row's record names the strongest tier it may hold here
+    (``ceiling``) and why, whether or not this gate is what lowers it there
+    (``capped``): a later pass that lifts a tier reads the ceiling.
+
     :param assignments: Every row built for this sample, modified in place.
     :param stage_a_accuracy: What Stage A measured, for the run's record. It is
         reported beside this fit rather than folded into it: the two are
@@ -849,13 +853,19 @@ def apply_mass_gate(
         if z is not None:
             provenance["mass_z"] = round(z, 2)
         capped, reason = _cap_of(corroborated, followed, z)
+        if capped is not None:
+            # The strongest tier the row may hold here, and why, recorded
+            # whether or not this gate is what lowers the row to it: a pass
+            # that later lifts a tier (the partner gate) holds the row under
+            # the same ceiling.
+            gate["ceiling"] = capped
+            gate["reason"] = reason
         # Only ever downwards. A row the bands already put below the cap is not
-        # lifted onto it, and the gate's word for such a row is silence: it did
-        # not decide that tier and must not appear to have.
+        # lifted onto it, and the gate's word for such a row is its ceiling
+        # alone: it did not decide that tier and must not appear to have.
         if capped is not None and TIER_RANK[row["tier"]] > TIER_RANK[capped]:
             row["tier"] = capped
             gate["capped"] = capped
-            gate["reason"] = reason
             if reason == REASON_OFF_CALIBRATION:
                 summary["capped"] += 1
                 summary["capped_curated"] += corroborated == CORROBORATED_CURATED
