@@ -9,6 +9,7 @@ sharing lock on the destination is waited out instead of losing the write.
 
 import json
 import os
+import stat
 import threading
 import time
 from unittest.mock import patch
@@ -151,6 +152,44 @@ def test_a_sharing_violation_is_waited_out_rather_than_losing_the_write(props):
     assert len(attempts) == 2, "the first rename failed and was retried"
     assert _read(props) == {"mz_calibration": {"a": 2}}
     assert _temps(os.path.dirname(props)) == []
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Windows has no POSIX file modes")
+def test_the_file_keeps_the_permissions_it_had(props):
+    """A temporary is private; the rename would carry that onto the file.
+
+    .props at 0644 silently becoming 0600 is invisible to the app and breaks
+    anything reading the filestore as another user.
+    """
+    os.chmod(props, 0o644)
+
+    write_json(props, {"n": 1})
+
+    assert stat.S_IMODE(os.stat(props).st_mode) == 0o644
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Windows has no POSIX file modes")
+def test_a_new_file_gets_what_an_ordinary_write_would(tmp_path):
+    written = tmp_path / "new.json"
+    control = tmp_path / "control.json"
+
+    write_json(str(written), {"n": 1})
+    with open(control, "w") as f:
+        json.dump({"n": 1}, f)
+
+    assert stat.S_IMODE(os.stat(written).st_mode) == stat.S_IMODE(
+        os.stat(control).st_mode
+    )
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Windows has no POSIX file modes")
+def test_an_explicit_mode_is_applied(tmp_path):
+    """What the runtime state file asks for, so this change cannot loosen it."""
+    target = tmp_path / "state.json"
+
+    write_json(str(target), {"n": 1}, mode=0o600)
+
+    assert stat.S_IMODE(os.stat(target).st_mode) == 0o600
 
 
 def test_the_retry_gives_up_rather_than_spinning_forever(tmp_path):

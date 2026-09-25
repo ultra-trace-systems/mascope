@@ -211,37 +211,51 @@ def _has_raw(filename: str) -> bool:
         return False
 
 
-def _read_census(filename: str) -> tuple[list[dict] | None, str | None]:
+def _read_census(
+    filename: str,
+) -> tuple[list[dict] | None, str | None, Exception | None]:
     """The scan-stream census of one file, read from its raw data.
 
+    The reader's exception comes back rather than being logged here, because
+    the caller decides how many of them are worth a traceback - and it has to
+    be the object rather than the live exception state: this runs in a worker
+    thread, so by the time the caller logs, ``opt(exception=True)`` would find
+    nothing and this backend's formatter raises on the empty record.
+
     :param filename: Sample file name (base, not full path).
-    :return: ``(census, None)``, or ``(None, reason)`` where reason is
-        ``"no_raw"`` when the raw data is not there to read and ``"reader"``
-        when it is and the reader refused it. The two are counted apart
-        because a reader regression would otherwise read as cleared raw data.
-    :rtype: tuple[list[dict] | None, str | None]
+    :return: ``(census, None, None)``, or ``(None, reason, error)`` where
+        reason is ``"no_raw"`` when the raw data is not there to read and
+        ``"reader"`` when it is and the reader refused it. The two are counted
+        apart because a reader regression would otherwise read as cleared raw
+        data.
+    :rtype: tuple[list[dict] | None, str | None, Exception | None]
     """
     try:
         path = m_name.filename_to_datafile_path(filename)
     except FileNotFoundError:
         # The sample holds no source data at all: converted data only.
-        return None, "no_raw"
+        return None, "no_raw", None
     if not os.path.isfile(path):
-        return None, "no_raw"
+        return None, "no_raw", None
     try:
         with open_backend(path) as reader:
-            return scan_streams(reader), None
-    except Exception:  # noqa: BLE001
+            return scan_streams(reader), None, None
+    except Exception as exc:  # noqa: BLE001
         # Decided from the path above rather than from the exception: a
         # reader raises its own type for a file it cannot open, so catching
         # FileNotFoundError here counted a missing file as a reader failure
         # and defeated the point of telling the two apart.
-        return None, "reader"
+        return None, "reader", exc
 
 
 def _write_census(filename: str, streams: list[dict]) -> None:
-    """Record ``streams`` as one file's census, leaving the rest of its props."""
-    m_io.update_props(filename, {CENSUS_FIELD: streams})
+    """Record ``streams`` as one file's census, leaving the rest of its props.
+
+    Clears any attempt a previous run recorded: after a successful
+    ``CENSUS_RETRY=1`` the file would otherwise keep a note saying the reader
+    refused it, next to the census the reader produced.
+    """
+    m_io.update_props(filename, {CENSUS_FIELD: streams, ATTEMPT_FIELD: None})
 
 
 def _write_attempt(filename: str, result: str) -> None:
@@ -336,7 +350,8 @@ async def _fill(
     end a multi-hour job with a traceback and no summary.
 
     :param pending: Filenames to read, from :func:`_survey`.
-    :param read: Reads one census: :func:`_read_census`, or a stand-in.
+    :param read: Reads one census as ``(streams, reason, error)``:
+        :func:`_read_census`, or a stand-in.
     :param write: Writes one census: :func:`_write_census`, or a stand-in.
     :param write_attempt: Records a read that produced none.
     :return: The per-outcome counts.
@@ -358,7 +373,7 @@ async def _fill(
     async def one(filename: str) -> None:
         nonlocal previewed, traced, done
         async with gate:
-            streams, reason = await asyncio.to_thread(read, filename)
+            streams, reason, error = await asyncio.to_thread(read, filename)
             if reason == "no_raw":
                 counts["no_raw"] += 1
                 # Nothing is recorded: the survey leaves these out by itself,
@@ -367,7 +382,7 @@ async def _fill(
                 counts["reader"] += 1
                 if traced < _TRACEBACK_LIMIT:
                     traced += 1
-                    runtime.logger.opt(exception=True).info(
+                    runtime.logger.opt(exception=error).info(
                         f"  Reader refused {filename}"
                     )
                 else:
