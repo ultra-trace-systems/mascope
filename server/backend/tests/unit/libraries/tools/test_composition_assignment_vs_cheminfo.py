@@ -5,17 +5,31 @@ import pytest
 
 from mascope_backend.api.new.cheminfo.config import cheminfo_config
 from mascope_backend.api.new.cheminfo.utils import (
-    to_cheminfo_ionization_format,
     to_custom_element_format,
     to_explicit_isotope_format,
 )
 from mascope_tools.composition import CompositionSearchConfig
 from mascope_tools.composition.finder import find_compositions
+from mascope_tools.composition.mechanism_notation import parse_mechanism
 from mascope_tools.composition.utils import (
     normalize_formula_with_isotopes,
     parse_composition,
     to_hill_order,
 )
+
+
+def _cheminfo_ionization(mechanism: str) -> str:
+    """A mechanism as ChemInfo's ``ionizations`` parameter writes it.
+
+    ``<ion polarity>(<moiety>)<operation>``, the operation ``-1`` for a moiety
+    removed and empty for one added: ``[M+H]+`` is ``+(H)``, ``[M-H]-`` is
+    ``-(H)-1``, ``[M+Br]-`` is ``-(Br)`` and ``[M]+.`` is ``+()``.
+    """
+    parts = parse_mechanism(mechanism)
+    if parts.electron_transfer:
+        return f"{parts.polarity}()"
+    moiety, _ = to_explicit_isotope_format(parts.moiety)
+    return f"{parts.polarity}({moiety}){'' if parts.addition else '-1'}"
 
 
 def _normalize_formula(formula: str) -> str:
@@ -42,9 +56,7 @@ def _fetch_cheminfo_formulas(
 ) -> set[str]:
     """Fetch candidate formulas from ChemInfo for a given m/z and formula ranges."""
     explicit_ranges, _ = to_explicit_isotope_format(formula_ranges)
-    ionizations = ",".join(
-        [to_cheminfo_ionization_format(i) for i in ionization_mechanisms]
-    )
+    ionizations = ",".join(_cheminfo_ionization(i) for i in ionization_mechanisms)
 
     params = {
         "mass": mz,

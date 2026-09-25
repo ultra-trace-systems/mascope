@@ -1334,7 +1334,7 @@ about at request time.
   `mascope.ionization.list()` by exact string and leaves every non-match null;
   it does not guarantee that a supplied id is joinable, because it cannot
   determine that. The reason is **normalization**, not scope: the mapping the
-  server applies - `to_mascope_ion_mech`, `to_custom_element_format`,
+  server applies - `mechanism_key`, `to_custom_element_format`,
   `to_explicit_isotope_format` and the `CUSTOM_ELEMENTS` table - is backend-only
   code, and the SDK depends on nothing beyond requests, loguru, pandas, tqdm and
   python-dotenv, so a mechanism the deployment stores in custom-element notation
@@ -1548,7 +1548,7 @@ document cites it.
    422 is the only fail-fast worth the name.
 
    The alternative was to port the deployment's notation normalizers
-   (`to_mascope_ion_mech`, `to_custom_element_format`,
+   (`mechanism_key`, `to_custom_element_format`,
    `to_explicit_isotope_format`, the `CUSTOM_ELEMENTS` table) into the SDK and
    add a sample-scoped mechanism accessor. It is not worth it: it would
    duplicate chemistry into a package that depends on nothing but requests,

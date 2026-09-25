@@ -5,48 +5,6 @@ Utility functions for cheminfo composition search.
 import re
 
 from mascope_tools.composition.custom_elements import CUSTOM_ELEMENTS
-from mascope_tools.composition.mechanism_notation import (
-    mechanism_key,
-    parse_mechanism,
-)
-
-
-def to_cheminfo_ionization_format(ionization: str) -> str:
-    """
-    Convert a Mascope ionization mechanism to composition finder ionization format.
-
-    The mechanism is read in either notation: the standard adduct one
-    (``[M-H]-``, the ion's charge last) or the legacy
-    ``<operation><moiety><moiety charge>`` one (``-H+``); see
-    :mod:`mascope_tools.composition.mechanism_notation`.
-
-    The composition finder accepts ionizations in the format:
-        <polarity>(<modification formula>)<modification operation>
-    where:
-    - "polarity" is the charge polarity of the resulting ion ("+" or "-")
-    - "modification formula" is the chemical formula subtracted from or added to the parent molecule in the parentheses
-    - "modification operation" is either "-1" for subtraction or "" (empty string) for addition.
-
-    Examples how Mascope ionization mechanisms get converted:
-    - "[M+H]+" (legacy "+H+") becomes "+(H)" (composition finder)
-    - "[M+Cl]-" (legacy "+Cl-") becomes "-(Cl)" (composition finder)
-    - "[M]+." (legacy "+") becomes "+()" (composition finder)
-    - "[M-H]-" (legacy "-H+") becomes "-(H)-1" (composition finder)
-
-    :param ionization: Ionization mechanism string in Mascope format
-    :type ionization: str
-    :raises MechanismNotationError: The mechanism is in neither notation.
-    :return: Ionization string formatted for composition finder
-    :rtype: str
-    """
-    parts = parse_mechanism(ionization)
-    if parts.electron_transfer:
-        # Special case of electron abstraction/addition
-        return f"{parts.polarity}()"
-    # Strip custom element notation from body for composition finder
-    body, _ = to_explicit_isotope_format(parts.moiety)
-    operation = "" if parts.addition else "-1"
-    return f"{parts.polarity}({body}){operation}"
 
 
 def to_custom_element_format(formula: str) -> str:
@@ -110,52 +68,3 @@ def to_explicit_isotope_format(formula_ranges: str) -> str:
 
     result = re.sub(pattern, replace_custom_element, formula_ranges)
     return result, replacements
-
-
-def to_mascope_ion_mech(ionization: str, all_ionization_mechanisms: list) -> dict:
-    """
-    Convert composition finder ionization format back to Mascope format and find the matching mechanism.
-
-    The composition finder returns ionizations in formats like:
-    - "+(H)+" for protonation
-    - "(-1)(H)-1" for deprotonation
-
-    This function parses this format and finds the matching ionization mechanism in provided
-    Mascope database ionization mechanisms.
-
-    :param ionization: Ionization string in composition finder format
-    :type ionization: str
-    :param all_ionization_mechanisms: List of ionization mechanisms from the database
-    :type all_ionization_mechanisms: List[IonizationMechanism]
-    :return: Dictionary with ionization mechanism details
-    :rtype: dict
-    :raises ValueError: If the ionization format is invalid
-    :raises IndexError: If no matching ionization mechanism is found
-    """
-    pattern = r"^(\(-1\)|\+)\((.*?)\)(-1)?$"
-    match = re.search(pattern, ionization)
-
-    if not match:
-        raise ValueError(f"Invalid ionization format: {ionization}")
-
-    polarity = "-" if match.group(1) == "(-1)" else "+"
-    body = match.group(2) or ""
-    operation = "-" if match.group(3) == "-1" else "+"
-
-    # Remove explicit isotope notation from body
-    body = to_custom_element_format(body)
-
-    # For subtraction operations, the modification polarity is reversed relative to the resulting ion polarity
-    mod_polarity = polarity if operation == "+" else ("-" if polarity == "+" else "+")
-
-    # Reconstruct the Mascope ionization format
-    ionization_str = f"{operation}{body}{mod_polarity}" if body else mod_polarity
-
-    # Find matching mechanism in our database results all_ionization_mechanisms,
-    # by mechanism rather than by spelling; will raise IndexError if not found
-    wanted = mechanism_key(ionization_str)
-    return [
-        mech
-        for mech in all_ionization_mechanisms
-        if mechanism_key(mech.ionization_mechanism) == wanted
-    ][0].to_dict()
