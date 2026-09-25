@@ -1101,8 +1101,9 @@ async def fetch_sample_mechanisms(
     CPU-bound work can use them off the event loop.
 
     :param sample: Sample model object
-    :return: (all mechanism ids of the sample's ionization mode,
-        polarity-matching mechanism rows as detached namespaces)
+    :return: (the mechanism ids of the sample's ionization mode,
+        polarity-matching mechanism rows as detached namespaces), both
+        without a row that reads as neither notation (:func:`_readable`)
     """
     mechanism_ids = await fetch_sample_ionization_mechanism_ids(sample.sample_item_id)
     async with async_session() as session:
@@ -1119,16 +1120,37 @@ async def fetch_sample_mechanisms(
             .scalars()
             .all()
         )
-    mechanism_specs = [
+    return _without_unreadable(mechanism_ids, mechanisms)
+
+
+def _without_unreadable(
+    mechanism_ids: list[str], mechanisms: list
+) -> tuple[list[str], list[SimpleNamespace]]:
+    """The mode's mechanism ids and this polarity's rows, less every row that
+    reads as neither notation, the rows detached into plain namespaces.
+
+    The row's id goes as well as the row: Stage A fetches target ions by these
+    ids, and ions an older version generated for such a row read its text as
+    some other mechanism. Only this polarity's rows are read here; a row of
+    the other polarity never reaches the sample's Stage A, which fetches by
+    polarity too.
+
+    :param mechanism_ids: The mechanism ids of the sample's ionization mode.
+    :param mechanisms: The polarity-matching rows among them.
+    :return: The ids and the detached rows a run searches.
+    """
+    unreadable = {m.ionization_mechanism_id for m in mechanisms if not _readable(m)}
+    return [
+        mechanism_id for mechanism_id in mechanism_ids if mechanism_id not in unreadable
+    ], [
         SimpleNamespace(
             ionization_mechanism_id=m.ionization_mechanism_id,
             ionization_mechanism=m.ionization_mechanism,
             ionization_mechanism_polarity=m.ionization_mechanism_polarity,
         )
         for m in mechanisms
-        if _readable(m)
+        if m.ionization_mechanism_id not in unreadable
     ]
-    return mechanism_ids, mechanism_specs
 
 
 #: Mechanisms already reported as unreadable, so a stored row does not log for
@@ -1141,9 +1163,9 @@ def _readable(mechanism: IonizationMechanism) -> bool:
 
     The column reads a row in the standard notation (``StandardMechanism``),
     and one that reads in neither notation as it is stored: a free-text label
-    an older validator let through. Such a row has no target ions, since
-    target-ion generation skips it too, and the composition finder refuses it,
-    so a run leaves it out rather than failing on it, and reports it once.
+    an older validator let through. The composition finder refuses such a
+    row and target-ion generation skips it, so a run leaves it out rather
+    than failing on it, and reports it once.
     """
     try:
         parse_mechanism(mechanism.ionization_mechanism)
@@ -1323,12 +1345,24 @@ def _read_other_readings(
 
 
 def _notation_by_id(searched_mechanisms: list[SimpleNamespace]) -> dict[str, str]:
-    """The searched mechanisms' finder notations, keyed by mechanism id."""
+    """The searched mechanisms' finder notations, keyed by mechanism id.
+
+    Every row whose mechanism the search runs is here, the second of two rows
+    of one mechanism included. The finder searches that mechanism once,
+    through the first row (:func:`_untargeted_ionization_notations`), but the
+    second row's own target ions still reach Stage A, and a reading through
+    them is a reading through the same channel.
+    """
     _, mechanism_id_by_notation = _untargeted_ionization_notations(searched_mechanisms)
-    return {
+    notation_by_id = {
         mechanism_id: notation
         for notation, mechanism_id in mechanism_id_by_notation.items()
     }
+    for mechanism in searched_mechanisms:
+        notation, _ = to_explicit_isotope_format(mechanism.ionization_mechanism)
+        if notation in mechanism_id_by_notation:
+            notation_by_id.setdefault(mechanism.ionization_mechanism_id, notation)
+    return notation_by_id
 
 
 def _record_mirror_readings(
@@ -2757,10 +2791,7 @@ async def _run_sample_assignment(
                 list_readings(
                     stage_a_assignments,
                     search_peaks_df,
-                    {
-                        mechanism_id: notation
-                        for notation, mechanism_id in mechanism_id_by_notation.items()
-                    },
+                    _notation_by_id(searched_mechanisms),
                 )
                 if notations
                 else {}
