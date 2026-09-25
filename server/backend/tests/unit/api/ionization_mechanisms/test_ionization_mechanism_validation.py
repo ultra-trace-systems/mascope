@@ -38,6 +38,8 @@ from mascope_backend.api.models.ionization_mechanisms.ionization_mechanism_pydan
         ("+^NO3-", "[M+^NO3]-", "-"),
         ("[M+CH4N2O+H]+", "[M+CH4N2O+H]+", "+"),  # urea cluster
         ("+(CH4N2O)H+", "[M+CH4N2O+H]+", "+"),
+        ("[M+H+CH4N2O]+", "[M+CH4N2O+H]+", "+"),  # its terms in another order
+        ("+(H)CH4N2O+", "[M+CH4N2O+H]+", "+"),
         ("[M]+.", "[M]+.", "+"),  # electron abstraction
         ("+", "[M]+.", "+"),
         ("[M]-.", "[M]-.", "-"),  # electron capture
@@ -58,6 +60,7 @@ def test_either_notation_is_accepted_and_stored_in_the_standard_one(
         "+Zz+",  # unknown element
         "+H!+",  # invalid character
         "+(H+",  # unbalanced parenthesis
+        "[M+H)(H]+",  # parentheses closed before they open
         "H+",  # missing leading operation
         "+H",  # missing trailing polarity
         "+-",  # invalid sign combination

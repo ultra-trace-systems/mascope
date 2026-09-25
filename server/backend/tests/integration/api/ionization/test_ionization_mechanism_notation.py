@@ -5,9 +5,12 @@ A mechanism is written ``[M-H]-`` - the standard adduct notation, the ion's
 charge last - and a row written before that holds the legacy ``-H+`` until the
 migration rewrites it. Both have to behave as one mechanism: read back in the
 standard notation, found by either spelling, and refused a second time in the
-other one, which the column's unique constraint alone would let through.
+other one, which the column's unique constraint alone would let through. A
+mechanism of several terms is one mechanism whichever order they are typed in,
+and is stored with them in order.
 """
 
+import itertools
 import random
 
 import pytest
@@ -18,13 +21,46 @@ from mascope_backend.db import IonizationMechanism
 from mascope_backend.db.id import gen_id
 
 
+#: The moieties are drawn in turn, from a random start, so that no two tests
+#: of a session draw the same one.
+_DRAWS = itertools.count(random.randrange(12_544))
+
+
 def _unique_moiety() -> str:
     """A moiety no other test stores, since the mechanism column is unique.
 
-    Small, because creating a mechanism builds its ion for every compound in
-    the library, and a heavy moiety makes every one of those envelopes large.
+    Light, because creating a mechanism builds its ion for every compound in
+    the library, and a heavy moiety makes every one of those envelopes large:
+    one of 12,544, C2-9 H2-99 N0-3 O0-3. It sorts ahead of ``H``, as a term.
     """
-    return f"C{random.randint(2, 9)}H{random.randint(20, 99)}"
+    draw = next(_DRAWS) % 12_544
+    carbon, draw = 2 + draw % 8, draw // 8
+    hydrogen, draw = 2 + draw % 98, draw // 98
+    nitrogen, oxygen = draw % 4, draw // 4
+    return (
+        f"C{carbon}H{hydrogen}"
+        + (f"N{nitrogen}" if nitrogen else "")
+        + (f"O{oxygen}" if oxygen else "")
+    )
+
+
+async def _create(client, mechanism: str):
+    return await client.post(
+        "/api/ionization_mechanisms", json={"ionization_mechanism": mechanism}
+    )
+
+
+async def _refused_as_a_duplicate(client, mechanism: str) -> None:
+    """Assert the mechanism is refused as one that exists, and take out a row a
+    regression creates, so that one red test does not leave its spelling and
+    its ions behind for the tests after it."""
+    response = await _create(client, mechanism)
+    if response.status_code == 201:
+        await client.delete(
+            "/api/ionization_mechanisms/"
+            + response.json()["data"]["ionization_mechanism_id"]
+        )
+    assert response.status_code == 409, (mechanism, response.text)
 
 
 @pytest_asyncio.fixture
@@ -109,11 +145,7 @@ async def test_a_legacy_row_is_not_created_again_in_the_standard_spelling(
 ):
     _, _, standard = legacy_row
 
-    response = await editor_client.post(
-        "/api/ionization_mechanisms", json={"ionization_mechanism": standard}
-    )
-
-    assert response.status_code == 409, response.text
+    await _refused_as_a_duplicate(editor_client, standard)
 
 
 @pytest.mark.asyncio
@@ -122,9 +154,7 @@ async def test_a_legacy_spelling_is_created_in_the_standard_one(
 ):
     moiety = _unique_moiety()
 
-    response = await editor_client.post(
-        "/api/ionization_mechanisms", json={"ionization_mechanism": f"+{moiety}-"}
-    )
+    response = await _create(editor_client, f"+{moiety}-")
 
     assert response.status_code == 201, response.text
     data = response.json()["data"]
@@ -145,4 +175,25 @@ async def test_a_legacy_spelling_is_created_in_the_standard_one(
     finally:
         await editor_client.delete(
             f"/api/ionization_mechanisms/{data['ionization_mechanism_id']}"
+        )
+
+
+@pytest.mark.asyncio
+async def test_a_mechanism_is_stored_with_its_terms_in_order_and_created_once(
+    editor_client,
+):
+    moiety = _unique_moiety()
+    stored = f"[M+{moiety}+H]+"
+
+    response = await _create(editor_client, f"[M+H+{moiety}]+")
+
+    assert response.status_code == 201, response.text
+    created = response.json()["data"]
+    try:
+        assert created["ionization_mechanism"] == stored
+        for again in (stored, f"+(H){moiety}+", f"+({moiety})H+"):
+            await _refused_as_a_duplicate(editor_client, again)
+    finally:
+        await editor_client.delete(
+            f"/api/ionization_mechanisms/{created['ionization_mechanism_id']}"
         )
