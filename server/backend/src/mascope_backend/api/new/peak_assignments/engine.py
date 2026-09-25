@@ -2561,9 +2561,10 @@ PARTNER_GATE_UNMET = "unmet"
 
 #: The key an alternative carries when the sample bore it out, and bore the
 #: row's own reading out decisively more strongly (:func:`outweighs`): kept on
-#: the row, since the sample did show its molecule, and read by the
-#: cross-channel pass as settled by the stronger partner rather than as a
-#: rival.
+#: the row, since the sample did show its molecule. The mark is the contest's
+#: record for the reader. The cross-channel pass does not read it: it weighs
+#: the same partners again (``cross_channel.weighed``) and settles the ion by
+#: the stronger partner.
 PARTNER_GATE_OUTWEIGHED = "outweighed"
 
 #: The verdict a gated reading carries where its ion reads no other way and
@@ -2674,7 +2675,9 @@ def apply_partner_gates(
       and the row then says the mass gate holds it); failing that, the
       opportunistic reading whose neutral the sample shows most strongly;
       failing that, the row stays as it is and the policy's cap holds -
-      re-imposed where the partner that once lifted it is gone.
+      re-imposed where the partner that once lifted it is gone, read off the
+      tier the row's evidence earns and held under the mass gate's ceiling
+      as the policy's own cap was, not as the lifted reading was.
 
     The ledger is walked to a fixed point: every round judges every row
     against the partners the ledger holds at that moment, a swap changes the
@@ -2692,7 +2695,7 @@ def apply_partner_gates(
     row's, swapped in as above, and the row names the reading it took the ion
     from (``took_from``); at a tie the row keeps its reading. A contest swap
     moves a row between two gated readings, and a gated reading is nobody's
-    partner, so it changes nothing the walk decided and the result does not
+    partner, so it changes nothing the walk decided and the contest does not
     depend on the order of the rows. Only an opportunistic reading is
     contested: a reading through one of the mode's own channels keeps its
     formula.
@@ -2701,20 +2704,22 @@ def apply_partner_gates(
     reading, its channel, the ratio of the partners' peaks and whether it is
     decisive). Where the brighter partner is :data:`PARTNER_MARGIN` times as
     bright or more (:func:`outweighs`), the other reading is marked
-    :data:`PARTNER_GATE_OUTWEIGHED`, and the cross-channel pass reads the ion
-    as settled by the stronger partner. Within the margin it is left
-    unmarked: a rival whose molecule the sample also shows, which the
-    cross-channel pass reads as the doubt it is.
+    :data:`PARTNER_GATE_OUTWEIGHED`, and the cross-channel pass, weighing the
+    same partners again, settles the ion by the stronger partner. Within the
+    margin it is left unmarked: a rival whose molecule the sample also shows,
+    which the cross-channel pass weighs as the doubt it is.
 
-    For every monoisotopic row, a same-ion reading through a gated channel
-    whose neutral has no partner is marked :data:`PARTNER_GATE_UNMET`: a
-    reference list's acid is not doubted for a formate reading nothing bore
-    out. The opportunistic reading a swap displaced for want of a partner is
-    marked the same way, kept on the row for the reader, and the
-    cross-channel pass counts neither as a rival. The mode's own reading a
-    swap back displaced is not marked: it is a reading of the ion the sample
-    settled, and the cross-channel pass records by what. An isotopologue
-    follows its owner's reading, as it does everywhere.
+    For every monoisotopic row, a same-ion reading through a gated channel is
+    marked :data:`PARTNER_GATE_UNMET` exactly where its neutral has no partner
+    on the settled ledger: a reference list's acid is not doubted for a
+    formate reading nothing bore out, and a reading a swap earlier in the walk
+    set aside that the ledger now bears out is a reading of the ion again,
+    whichever reading the row ended on. The opportunistic reading a swap
+    displaced for want of a partner is marked the same way, kept on the row
+    for the reader, and the cross-channel pass counts neither as a rival. The
+    mode's own reading a swap back displaced is not marked: it is a reading of
+    the ion the sample settled, and the cross-channel pass records by what. An
+    isotopologue follows its owner's reading, as it does everywhere.
 
     :param assignments: Both stages' rows, modified in place.
     :param notation_by_id: The run's mechanisms, by the id the rows carry.
@@ -2769,25 +2774,46 @@ def apply_partner_gates(
 
     held: set[str] = set()
 
-    def tier_of(evidence: float, row: dict, provenance: dict) -> str | None:
-        """The tier the evidence earns, under the mass gate's ceiling."""
+    def earned(evidence: float) -> str | None:
+        """The tier the evidence earns, before any cap or ceiling."""
         if candidate_threshold is None or assigned_threshold is None:
             return None
-        tier = tier_for_evidence(
+        return tier_for_evidence(
             evidence,
             candidate_threshold=candidate_threshold,
             assigned_threshold=assigned_threshold,
         )
-        # The mass gate judged the ion's line, which every reading of it
-        # shares. Where its ceiling binds, the row's tier is that gate's
-        # word, and the row says so.
+
+    def under_ceiling(tier: str, provenance: dict) -> str:
+        """``tier`` under the mass gate's ceiling, the row saying where it binds.
+
+        The mass gate judged the ion's line, which every reading of it
+        shares. Where its ceiling binds, the row's tier is that gate's word.
+        """
         mass_gate = provenance.get("mass_gate") or {}
         ceiling = mass_gate.get("ceiling") or mass_gate.get("capped")
         if ceiling in TIER_RANK and TIER_RANK[ceiling] < TIER_RANK[tier]:
             mass_gate["capped"] = ceiling
-            held.add(str(row.get("peak_assignment_id")))
             return ceiling
         return tier
+
+    def tier_of(evidence: float, row: dict, provenance: dict) -> str | None:
+        """The tier the evidence earns, under the mass gate's ceiling."""
+        tier = earned(evidence)
+        if tier is None:
+            return None
+        ceiling = under_ceiling(tier, provenance)
+        if ceiling != tier:
+            held.add(str(row.get("peak_assignment_id")))
+        return ceiling
+
+    def unhold(row: dict, provenance: dict) -> None:
+        """Forget what the ceiling said of the row's last tier, which the tier
+        read next answers again."""
+        mass_gate = provenance.get("mass_gate")
+        if isinstance(mass_gate, dict) and "ceiling" in mass_gate:
+            mass_gate.pop("capped", None)
+        held.discard(str(row.get("peak_assignment_id")))
 
     def partner_key(row: dict) -> str | None:
         """The neutral a row commits through a mode channel, or None."""
@@ -2907,10 +2933,7 @@ def apply_partner_gates(
         # Whether the mass gate's ceiling holds the row down is the new
         # reading's question: the one it replaces may have been held where
         # this one is not.
-        mass_gate = provenance.get("mass_gate")
-        if isinstance(mass_gate, dict) and "ceiling" in mass_gate:
-            mass_gate.pop("capped", None)
-        held.discard(str(row.get("peak_assignment_id")))
+        unhold(row, provenance)
         restored = tier_of(evidence, row, provenance)
         if restored is not None:
             row["tier"] = restored
@@ -3028,11 +3051,21 @@ def apply_partner_gates(
                 if verdict is not None and verdict.get("corroborated_by") == (
                     "second_channel"
                 ):
-                    # The partner the policy or an earlier round read is gone.
+                    # The partner the policy or an earlier round read is gone:
+                    # the policy's cap again, read off the tier the evidence
+                    # earns rather than one a ceiling held a lifted reading at,
+                    # and under that ceiling as the policy's own cap was.
                     verdict["corroborated_by"] = None
-                    verdict["capped"] = row.get("tier") == TIER_ASSIGNED
+                    unhold(row, provenance)
+                    evidence = _float_or_none(provenance.get("evidence"))
+                    tier = None if evidence is None else earned(evidence)
+                    if tier is None:
+                        tier = row.get("tier")
+                    verdict["capped"] = tier == TIER_ASSIGNED
                     if verdict["capped"]:
-                        row["tier"] = TIER_CANDIDATE
+                        tier = TIER_CANDIDATE
+                    if tier in TIER_RANK:
+                        row["tier"] = under_ceiling(tier, provenance)
                     record["recapped"] = True
                 if record != gate:
                     provenance["partner_gate"] = record
@@ -3117,14 +3150,16 @@ def apply_partner_gates(
         if gate.get("displaced") and gate.get("partner") is False:
             summary["swapped"] += 1
         for alternative in row.get("alternatives") or []:
-            if alternative.get("partner_gate") == PARTNER_GATE_UNMET:
-                summary["set_aside"] += 1
-            elif (
-                alternative.get("same_ion")
-                and alternative.get("ionization_mechanism_id") in gated_ids
-                and not partnered(alternative.get("assigned_formula"))
+            if alternative.get("same_ion") and (
+                alternative.get("ionization_mechanism_id") in gated_ids
             ):
-                alternative["partner_gate"] = PARTNER_GATE_UNMET
+                if not partnered(alternative.get("assigned_formula")):
+                    alternative.setdefault("partner_gate", PARTNER_GATE_UNMET)
+                elif alternative.get("partner_gate") == PARTNER_GATE_UNMET:
+                    # The settled ledger bears it out, whatever a swap earlier
+                    # in the walk marked it: a reading of the ion again.
+                    del alternative["partner_gate"]
+            if alternative.get("partner_gate") == PARTNER_GATE_UNMET:
                 summary["set_aside"] += 1
     return summary
 

@@ -610,6 +610,121 @@ class TestARivalTheSampleShows:
             "ratio": None,
         }
 
+    def test_a_second_peak_of_the_same_ion_is_no_partner_either(self):
+        # The benzyl cation split across two peaks in the match window, both
+        # elected protonated C7H6: each is the other's ion again, not a second
+        # observation of C7H6, so neither settles the other against toluene.
+        rows = [
+            benzyl("C7H6", PROTON_TRANSFER, ("C7H8", HYDRIDE), intensity=2.0e6),
+            row(
+                "benzyl-2",
+                "C7H6",
+                PROTON_TRANSFER,
+                displaced=("C7H8", HYDRIDE),
+                intensity=1.0e6,
+            ),
+            through_electron_transfer("toluene", "C7H8", intensity=5.0e4),
+        ]
+        summary = self.gate(rows)
+        for split in rows[:2]:
+            assert split["tier"] == "candidate"
+            assert split["provenance"]["cross_channel"][REASON_AMBIGUOUS_ADDUCT] == {
+                "alternative": "C7H8",
+                "via": "[M-H]+",
+            }
+        assert summary["settled"][SETTLED_BY_PARTNER] == 0
+
+    def test_nor_does_it_stand_in_for_a_faint_partner(self):
+        # Seen again through electron transfer on a faint peak: that peak is
+        # the row's partner, and the split peak beside the row adds nothing.
+        rows = [
+            benzyl("C7H6", PROTON_TRANSFER, ("C7H8", HYDRIDE), intensity=2.0e6),
+            row(
+                "benzyl-2",
+                "C7H6",
+                PROTON_TRANSFER,
+                displaced=("C7H8", HYDRIDE),
+                intensity=1.0e6,
+            ),
+            through_electron_transfer("c7h6", "C7H6", intensity=1.0e3),
+            through_electron_transfer("toluene", "C7H8", intensity=5.0e4),
+        ]
+        self.gate(rows)
+        assert rows[0]["tier"] == "candidate"
+        assert rows[0]["provenance"]["cross_channel"][REASON_AMBIGUOUS_ADDUCT] == {
+            "alternative": "C7H8",
+            "via": "[M-H]+",
+            "shown": True,
+            "ratio": 0.02,
+        }
+
+    def test_the_same_ion_read_the_other_way_shows_nothing_either(self):
+        # Two peaks of the benzyl cation, one read as toluene less a hydride
+        # and one as protonated C7H6: the second is this ion again, read the
+        # other way, not the sample showing C7H6. The first is corroborated
+        # through electron transfer, and nothing is left to doubt it.
+        rows = [
+            benzyl("C7H8", HYDRIDE, ("C7H6", PROTON_TRANSFER), intensity=1.0e6),
+            row(
+                "benzyl-2",
+                "C7H6",
+                PROTON_TRANSFER,
+                displaced=("C7H8", HYDRIDE),
+                intensity=5.0e5,
+            ),
+            through_electron_transfer("toluene", "C7H8", intensity=3.0e6),
+        ]
+        self.gate(rows)
+        assert rows[0]["tier"] == "assigned"
+        assert rows[0]["provenance"]["cross_channel"][SAME_ION_SETTLED]["by"] == (
+            SETTLED_BY_SECOND_CHANNEL
+        )
+
+    def test_a_row_nothing_corroborates_does_not_call_its_rival_shown(self):
+        # The sample shows toluene, but no second channel was there to settle
+        # anything, so the row gives the plain doubt.
+        rows = [
+            benzyl("C7H6", PROTON_TRANSFER, ("C7H8", HYDRIDE)),
+            through_electron_transfer("toluene", "C7H8", intensity=3.0e6),
+        ]
+        summary = self.gate(rows)
+        record = rows[0]["provenance"]["cross_channel"]
+        assert record["corroborated"] is False
+        assert record[REASON_AMBIGUOUS_ADDUCT] == {
+            "alternative": "C7H8",
+            "via": "[M-H]+",
+        }
+        assert summary["shown_rival"] == 0
+
+    def test_on_a_mode_with_one_channel_a_shown_rival_holds_the_row(self):
+        # Protonation is ESI's one channel of its own, so C6H15NO6's only peak
+        # through it is this one, which counts for neither reading. Sodium
+        # corroborates the row, and the sample shows glucose through a proton
+        # on a peak twenty thousand times fainter: that is enough to doubt it.
+        rows = [
+            row(
+                "h",
+                "C6H15NO6",
+                PROTON,
+                displaced=("C6H12O6", AMMONIUM),
+                intensity=2.0e6,
+            ),
+            row("na", "C6H15NO6", SODIUM, intensity=2.0e6),
+            row("glucose", "C6H12O6", PROTON, intensity=1.0e2),
+        ]
+        apply_cross_channel(
+            rows,
+            notation_by_id={PROTON: "[M+H]+", AMMONIUM: "[M+NH4]+", SODIUM: "[M+Na]+"},
+            minor_channels=frozenset({"[M+NH4]+", "[M+Na]+"}),
+        )
+        assert rows[0]["tier"] == "candidate"
+        assert rows[0]["provenance"]["cross_channel"][REASON_AMBIGUOUS_NITROGEN] == {
+            "alternative": "C6H12O6",
+            "via": "[M+NH4]+",
+            "shown": True,
+            "ratio": None,
+        }
+
     def test_where_the_sample_does_not_show_it_the_second_channel_settles(self):
         rows = [
             benzyl("C7H6", PROTON_TRANSFER, ("C7H8", HYDRIDE)),
@@ -623,14 +738,14 @@ class TestARivalTheSampleShows:
         assert summary["shown_rival"] == 0
 
     def test_a_molecule_seen_only_through_an_opportunistic_channel_is_not_shown(self):
-        # Toluene less a hydride on another peak is the channel's own reading
-        # again, not the sample showing toluene.
+        # Protonated toluene, another ion, is an opportunistic reading on a
+        # charge-transfer source, not the sample showing toluene.
         rows = [
             benzyl("C7H6", PROTON_TRANSFER, ("C7H8", HYDRIDE)),
             through_electron_transfer("c7h6", "C7H6"),
-            row("toluene", "C7H8", HYDRIDE),
+            row("toluene", "C7H8", PROTON_TRANSFER),
         ]
-        self.gate(rows)
+        self.gate(rows, opportunistic=("[M+H]+", "[M-H]+"))
         assert rows[0]["tier"] == "assigned"
 
     def test_a_molecule_seen_only_below_assignability_is_not_shown(self):
@@ -646,7 +761,7 @@ class TestARivalTheSampleShows:
         rows = [
             benzyl("C7H6", PROTON_TRANSFER, ("C7H8", HYDRIDE)),
             through_electron_transfer("c7h6", "C7H6"),
-            row("toluene", "C7H8", HYDRIDE),
+            row("toluene", "C7H8", PROTON_TRANSFER),
         ]
         apply_cross_channel(rows, notation_by_id=dict(CHARGE_TRANSFER))
         assert rows[0]["tier"] == "candidate"
@@ -703,6 +818,28 @@ class TestARivalTheSampleShows:
             "shown": True,
             "ratio": 0.25,
         }
+
+    def test_a_settled_row_names_the_sharpest_reading_with_what_settled_it(self):
+        # The sample shows C3H9NO2 a hundred times more faintly than
+        # dimethylformamide, which settles that reading. The nitrogen reading
+        # it does not show is the sharper doubt, settled by the second channel,
+        # and it is the one the row names.
+        rows = [
+            row("a", "C3H7NO", "h3o", displaced=self.DMF_HYDRONIUM),
+            row("b", "C3H7NO", PROTON, intensity=1.0e5),
+            row("c", "C3H9NO2", AMMONIUM, intensity=1.0e3),
+        ]
+        summary = apply_cross_channel(
+            rows, notation_by_id={**POSITIVE, "h3o": "[M+H3O]+"}
+        )
+        assert rows[0]["provenance"]["cross_channel"][SAME_ION_SETTLED] == {
+            "alternative": "C3H6O2",
+            "via": "[M+NH4]+",
+            "by": SETTLED_BY_SECOND_CHANNEL,
+            "through": ["[M+H]+"],
+        }
+        assert summary["settled"][SETTLED_BY_SECOND_CHANNEL] == 1
+        assert summary["settled"][SETTLED_BY_PARTNER] == 0
 
     def test_a_row_nothing_corroborates_names_the_sharper_doubt_as_before(self):
         # And says nothing of what the sample shows: no second channel was

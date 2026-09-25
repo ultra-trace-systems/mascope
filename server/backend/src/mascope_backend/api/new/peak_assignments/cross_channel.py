@@ -68,7 +68,13 @@ Four things settle it, and a row that one of them settles records which
   molecule is committed through one of the mode's own channels on a peak
   ``engine.PARTNER_MARGIN`` times as bright as the other's or more, the ion is
   settled. Closer than that, the other reading is a rival the sample shows, as
-  above.
+  above. A reading's own channel shows nothing for it: another peak of the
+  row's molecule through the row's channel is the row's ion again, split or on
+  a shoulder, and one of the other molecule through that reading's channel is
+  the same ion read the other way. So on a mode with one channel of its own,
+  such as protonation in ESI, the row's molecule has no partner but its own
+  peak, and a rival the sample shows holds the row at candidate however faint
+  it is.
 - **The target library.** The workspace named that compound for the modes its
   collection is attached to, so which reading the ion is was its curation's
   decision.
@@ -327,17 +333,25 @@ def sharpest(row: dict, readings: list[dict]) -> dict | None:
 
 
 def weighed(
-    row: dict, reading: dict, partners: dict[str, dict[int, float]]
+    row: dict,
+    channel: str | None,
+    reading: dict,
+    partners: dict[str, list[tuple[str, float]]],
 ) -> dict | None:
     """How strongly the sample shows the row's molecule against a reading's.
 
     Each read as the partner gate reads a partner (``engine.apply_partner_gates``):
     the brightest row that commits the neutral through one of the mode's own
-    channels (:func:`partner_heights`). The row itself is left out of its own
-    molecule's: its peak is the one ion both readings explain, and it is no
-    evidence for either.
+    channels (:func:`partner_heights`). Rows through the row's own channel are
+    left out of its molecule's, the row itself with them: its peak is the one
+    ion both readings explain, and another peak of the same neutral through the
+    same channel is that ion again, split or on a shoulder - the same evidence,
+    as :func:`partner_tier` counts it. Rows through the reading's channel are
+    left out of the reading's molecule's for the same reason: each is the same
+    ion read the other way.
 
     :param row: A committed monoisotopic row.
+    :param channel: The row's own channel.
     :param reading: Another reading of its ion, a molecule.
     :param partners: :func:`partner_heights`.
     :return: None where the sample does not commit the reading's molecule
@@ -346,17 +360,23 @@ def weighed(
         row's molecule has no partner of its own), and whether it settles the
         reading (``engine.outweighs``).
     """
-    theirs = partners.get(neutral_key(reading.get("assigned_formula")))
+    theirs = [
+        height
+        for through, height in partners.get(
+            neutral_key(reading.get("assigned_formula")), ()
+        )
+        if through != reading.get("channel")
+    ]
     if not theirs:
         return None
-    other = max(theirs.values())
+    other = max(theirs)
     own = max(
         (
             height
-            for key, height in partners.get(
-                neutral_key(row.get("assigned_formula")), {}
-            ).items()
-            if key != id(row)
+            for through, height in partners.get(
+                neutral_key(row.get("assigned_formula")), ()
+            )
+            if through != channel
         ),
         default=0.0,
     )
@@ -368,7 +388,7 @@ def same_ion_question(
     notation_by_id: dict[str, str],
     *,
     corroborated: bool,
-    partners: dict[str, dict[int, float]] | None = None,
+    partners: dict[str, list[tuple[str, float]]] | None = None,
 ) -> tuple[str, dict] | None:
     """Whether this row's ion reads another way, and what that leaves it.
 
@@ -388,6 +408,9 @@ def same_ion_question(
     of its own and the row's is no longer the whole of the evidence; so a
     corroborated row records the rival the sample shows, marked ``shown``.
 
+    Where nothing is left in doubt, the row names the reading that doubted it
+    most sharply and what settled that one.
+
     :param row: A committed monoisotopic row.
     :param notation_by_id: The run's mechanisms, by the id the rows carry.
     :param corroborated: Whether a second channel committed the row's neutral.
@@ -400,7 +423,8 @@ def same_ion_question(
         the reading and what settled it (``by``, and the ``ratio`` where it was
         the stronger partner).
     """
-    if notation_by_id.get(str(row.get("ionization_mechanism_id"))) is None:
+    channel = notation_by_id.get(str(row.get("ionization_mechanism_id")))
+    if channel is None:
         return None
     others = [
         reading
@@ -421,7 +445,8 @@ def same_ion_question(
             "by": SETTLED_BY_TARGET_LIBRARY,
         }
     weight = {
-        id(reading): weighed(row, reading, partners or {}) for reading in molecules
+        id(reading): weighed(row, channel, reading, partners or {})
+        for reading in molecules
     }
 
     def settles(reading: dict) -> bool:
@@ -436,18 +461,14 @@ def same_ion_question(
         and not (corroborated and weight[id(reading)] is None)
     ]
     if not doubts:
-        outweighed = [reading for reading in molecules if settles(reading)]
-        if outweighed:
-            settled = sharpest(row, outweighed)
+        settled = sharpest(row, molecules)
+        if settles(settled):
             return SAME_ION_SETTLED, {
                 **_named(settled),
                 "by": SETTLED_BY_PARTNER,
                 "ratio": weight[id(settled)]["ratio"],
             }
-        return SAME_ION_SETTLED, {
-            **_named(sharpest(row, molecules)),
-            "by": SETTLED_BY_SECOND_CHANNEL,
-        }
+        return SAME_ION_SETTLED, {**_named(settled), "by": SETTLED_BY_SECOND_CHANNEL}
     rival = sharpest(row, doubts)
     record = _named(rival)
     if corroborated:
@@ -567,7 +588,7 @@ def partner_heights(
     assignments: list[dict],
     notation_by_id: dict[str, str],
     minor_channels: frozenset[str],
-) -> dict[str, dict[int, float]]:
+) -> dict[str, list[tuple[str, float]]]:
     """How the sample shows each neutral through the mode's own channels.
 
     Per neutral, the peak height of every monoisotopic row that commits it at
@@ -580,10 +601,11 @@ def partner_heights(
     :param assignments: Every row built for this sample.
     :param notation_by_id: The run's mechanisms, by the id the rows carry.
     :param minor_channels: The run's opportunistic channels.
-    :return: Per neutral (:func:`neutral_key`), each such row's height, keyed by
-        the row's identity so that a row can be left out of its own neutral's.
+    :return: Per neutral (:func:`neutral_key`), each such row's channel and
+        height, the channel so that a reading's own can be left out
+        (:func:`weighed`).
     """
-    heights: dict[str, dict[int, float]] = {}
+    heights: dict[str, list[tuple[str, float]]] = {}
     for row in assignments:
         if (
             not is_committed(row)
@@ -595,7 +617,7 @@ def partner_heights(
         if not notation or notation in minor_channels:
             continue
         neutral = neutral_key(row.get("assigned_formula"))
-        heights.setdefault(neutral, {})[id(row)] = _height(row)
+        heights.setdefault(neutral, []).append((notation, _height(row)))
     return heights
 
 

@@ -613,6 +613,96 @@ class TestThePartnerGate:
         }
         assert formate["provenance"]["partner_gate"]["recapped"] is True
 
+    @pytest.mark.parametrize(
+        "ceiling", [TIER_CANDIDATE, "below_assignability"], ids=["at", "below"]
+    )
+    def test_a_cap_put_back_is_the_policys_under_the_ceiling(self, ceiling):
+        # s stands on the acid r's gate turns r into, which lifts s's cap
+        # under the mass gate's ceiling; r then swaps back and takes that
+        # partner away. The cap s gets back is the policy's, read off its
+        # evidence rather than off the tier the ceiling held the lifted
+        # reading at, and the mass gate holds s only where its ceiling is
+        # below that cap, as it did before the lift.
+        below = ceiling != TIER_CANDIDATE
+        r = self._formate("r", "C9H16O3", acid="C10H18O5")
+        s = self._formate("s", "C10H18O5")
+        s["provenance"]["mass_gate"] = {
+            "corroborated_by": None,
+            "ceiling": ceiling,
+            "reason": "off_calibration",
+        }
+        if below:
+            s["tier"] = s["provenance"]["mass_gate"]["capped"] = ceiling
+        t = self._formate("t", "C8H14O", acid="C9H16O3")
+        summary = apply_partner_gates(
+            [r, s, t],
+            notation_by_id={mid: n for n, mid in self.IDS.items()},
+            minor_channels=frozenset({"[M+HCOO]-"}),
+            partner_gated_channels=frozenset({"[M+HCOO]-"}),
+            tier_bands=BANDS,
+        )
+        assert s["provenance"]["partner_gate"]["recapped"] is True
+        assert s["provenance"]["minor_channel"] == {
+            "corroborated_by": None,
+            "capped": True,
+        }
+        assert s["tier"] == ceiling
+        assert s["provenance"]["mass_gate"].get("capped") == (
+            ceiling if below else None
+        )
+        assert summary["held"] == 0
+
+    def test_a_reading_the_ledger_bears_out_is_not_left_set_aside(self):
+        # Formate and acetate gated beside a third opportunistic channel that
+        # is not, on an ion no mode channel reads as a molecule. r takes the
+        # acetate reading, turns back to formate when q's swap bears that
+        # out, and ends on the propionate reading when q turns back and takes
+        # the partner away. The acetate reading its swap back set aside is
+        # borne out all along, so it is a reading of the ion again, which the
+        # cross-channel pass weighs; the formate one is not, and stays aside.
+        ids = {
+            "[M-H]-": "im-deprot",
+            "[M+HCOO]-": "im-formate",
+            "[M+CH3COO]-": "im-acetate",
+            "[M+C2H5COO]-": "im-propionate",
+        }
+        r = self._row(
+            "r",
+            "C10H18O5",
+            "im-formate",
+            alternatives=(("C9H16O5", "im-acetate"), ("C8H14O5", "im-propionate")),
+        )
+        q = self._row(
+            "q", "C9H16O3", "im-formate", alternatives=(("C10H18O5", "im-deprot"),)
+        )
+        t = self._row(
+            "t", "C8H14O", "im-formate", alternatives=(("C9H16O3", "im-deprot"),)
+        )
+        s = self._row(
+            "s",
+            "C7H12O3",
+            "im-formate",
+            alternatives=(("C8H14O5", "im-deprot"),),
+            intensity=1.0e6,
+        )
+        acetate_partner = self._row("p", "C9H16O5", "im-deprot", intensity=3.0e5)
+        summary = apply_partner_gates(
+            [r, q, t, s, acetate_partner],
+            notation_by_id={mid: n for n, mid in ids.items()},
+            minor_channels=frozenset({"[M+HCOO]-", "[M+CH3COO]-", "[M+C2H5COO]-"}),
+            partner_gated_channels=frozenset({"[M+HCOO]-", "[M+CH3COO]-"}),
+            tier_bands=BANDS,
+        )
+        assert (r["assigned_formula"], r["ionization_mechanism_id"]) == (
+            "C8H14O5",
+            "im-propionate",
+        )
+        assert {
+            alt["assigned_formula"]: alt.get("partner_gate")
+            for alt in r["alternatives"]
+        } == {"C10H18O5": "unmet", "C9H16O5": None}
+        assert summary["set_aside"] == 3
+
     def test_a_partner_is_matched_by_composition_not_spelling(self):
         # A target library holds what a person typed; the gate reads it as
         # the composition it is.

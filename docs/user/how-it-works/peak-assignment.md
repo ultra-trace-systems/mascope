@@ -442,9 +442,13 @@ What caps a row at candidate:
   sample shows this row's molecule on a peak at least ten times as bright as the other's,
   the question is settled; otherwise the row is held at *candidate*, and the sentence says
   the sample shows the other molecule too, and how the two compare. The row's own peak is
-  the one ion both readings explain, so it counts for neither. A formula from a loaded
-  reference list is asked too: the run gives it the other readings of its ion that the
-  formula search would have considered, shown with its close alternatives.
+  the one ion both readings explain, so it counts for neither, and neither does another
+  peak of the same ion, however it was read. So on a mode with one channel of its own,
+  such as protonation in ESI, the row's molecule has no other peak through that channel to
+  be weighed on, and a rival the sample shows holds the row at *candidate* however faint
+  the rival is. A formula from a loaded reference list is asked too: the run gives it the
+  other readings of its ion that the formula search would have considered, shown with its
+  close alternatives.
 - **off calibration** and **minor channel only** — caps the run applied earlier, restated
   here so every reason is in one place: a mass error far from the run's own fitted
   calibration with nothing corroborating it; and a commitment through a channel the

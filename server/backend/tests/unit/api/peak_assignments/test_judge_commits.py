@@ -20,7 +20,11 @@ import pytest
 
 from mascope_backend.api.new.peak_assignments import service
 from mascope_backend.api.new.peak_assignments import tiering as tiering_module
-from mascope_backend.api.new.peak_assignments.engine import SampleMassAccuracy
+from mascope_backend.api.new.peak_assignments.config import PeakAssignmentConfig
+from mascope_backend.api.new.peak_assignments.engine import (
+    PARTNER_GATE_KEY,
+    SampleMassAccuracy,
+)
 from mascope_backend.api.new.peak_assignments.envelope_claims import ENVELOPE_CLAIM
 from mascope_backend.api.new.peak_assignments.mass_gate import (
     TRACKING_TRACKS,
@@ -492,16 +496,19 @@ def elected(row_id: str, formula: str, ion: str, mz: float, mechanism: str, othe
     return row
 
 
+#: A charge-transfer source: electron transfer, and proton transfer and
+#: hydride abstraction opened beside it, both held to a partner.
+CHARGE_TRANSFER = {"im-1": "+", "im-h": "[M+H]+", "im-hydride": "[M-H]+"}
+OPENED = frozenset({"[M+H]+", "[M-H]+"})
+
+
 class TestTheStrongerPartnerOnTheJudgedLedger:
     """A charge-transfer source's ion read two opportunistic ways, each with a
     partner through electron transfer: the stronger partner takes it, and every
     pass after the gate reads what the contest left."""
 
-    IDS = {"im-1": "+", "im-h": "[M+H]+", "im-hydride": "[M-H]+"}
-    OPENED = frozenset({"[M+H]+", "[M-H]+"})
-
     def _judge(self, rows: list[dict]):
-        return judge_ledger(rows, self.IDS, minor=self.OPENED, gated=self.OPENED)
+        return judge_ledger(rows, CHARGE_TRANSFER, minor=OPENED, gated=OPENED)
 
     def _contest(self, ion: str, mz: float, lighter: str, heavier: str, height: float):
         """The ion elected through proton transfer as the lighter molecule,
@@ -626,9 +633,6 @@ class TestWhatTheSampleShowsOnTheJudgedLedger:
 
 
 def test_the_run_records_the_partner_gates_summary_beside_the_cross_channel_one():
-    from mascope_backend.api.new.peak_assignments.config import PeakAssignmentConfig
-    from mascope_backend.api.new.peak_assignments.engine import PARTNER_GATE_KEY
-
     judged = judge_ledger(
         anchors()
         + [
@@ -636,9 +640,9 @@ def test_the_run_records_the_partner_gates_summary_beside_the_cross_channel_one(
             commit("pa-lighter", "C7H6", "C7H6+", 90.0464, 1.0e5),
             commit("pa-heavier", "C7H8", "C7H8+", 92.0621, 3.0e6),
         ],
-        TestTheStrongerPartnerOnTheJudgedLedger.IDS,
-        minor=TestTheStrongerPartnerOnTheJudgedLedger.OPENED,
-        gated=TestTheStrongerPartnerOnTheJudgedLedger.OPENED,
+        CHARGE_TRANSFER,
+        minor=OPENED,
+        gated=OPENED,
     )
     stored = service._stored_run_config(
         PeakAssignmentConfig(), partner_gate=judged.partner_gate

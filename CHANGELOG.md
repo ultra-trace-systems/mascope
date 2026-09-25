@@ -443,10 +443,13 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   rival molecule the sample also commits through one of the mode's own channels,
   unless the sample shows the row's own molecule ten times as brightly or more,
   so such a row is held at candidate and the reason says the sample shows the
-  rival too. A formula a target library writes its own way, such as
-  `C6H4(CH3)2`, now counts as the molecule it spells when channels are
-  compared. `config.tiering` records rule set 7 (assignment quality plan,
-  step 3.1c).
+  rival too. Another peak of the same ion is no observation of either molecule.
+  So on an ESI source, whose one channel of its own is protonation, the row's
+  molecule has nothing through that channel to be weighed on, and such a row is
+  held at candidate however faint the rival. A formula a target library writes
+  its own way, such as `C6H4(CH3)2`, now counts as the molecule it spells when
+  channels are compared. `config.tiering` records rule set 7 (assignment
+  quality plan, step 3.1c).
 
 - **The peak inspector is more compact and has a column of its own, and the
   tier chip names the tier alone.**

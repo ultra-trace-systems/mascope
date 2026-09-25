@@ -106,8 +106,9 @@ what its noise and neighbours explain, or not at all.
 
 The cross-channel pass's same-ion rule (``ambiguous_nitrogen``,
 ``ambiguous_adduct``) is folded in wherever it found a rival molecule, whether
-or not it lowered the tier, and says so where the sample also shows the rival's
-molecule. Where another reading of the row's ion is settled - by a second
+or not it lowered the tier. On a row a second channel corroborates, it also says
+where the sample shows the rival's molecule, which is why that channel did not
+settle it. Where another reading of the row's ion is settled - by a second
 channel, by the stronger partner, by the target library, or by being a
 radical - the row says so among what it stands on (``same_ion_settled``), and
 its ``no_close_rival`` says the evidence separates the ion from the peak's other
