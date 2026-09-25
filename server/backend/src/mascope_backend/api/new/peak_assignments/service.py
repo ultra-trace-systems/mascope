@@ -177,8 +177,9 @@ from mascope_tools.composition.finder import assign_compositions
 from mascope_tools.composition.heuristic_filter import SCORE_VERSION
 from mascope_tools.composition.known_window import KnownWindow
 from mascope_tools.composition.mechanism_notation import (
-    mechanism_key,
+    MechanismNotationError,
     mechanism_spellings,
+    parse_mechanism,
 )
 from mascope_tools.composition.reagents import secondary_channels
 
@@ -1125,8 +1126,38 @@ async def fetch_sample_mechanisms(
             ionization_mechanism_polarity=m.ionization_mechanism_polarity,
         )
         for m in mechanisms
+        if _readable(m)
     ]
     return mechanism_ids, mechanism_specs
+
+
+#: Mechanisms already reported as unreadable, so a stored row does not log for
+#: every sample a run reads it for.
+_reported_unreadable: set[str] = set()
+
+
+def _readable(mechanism: IonizationMechanism) -> bool:
+    """Whether a mechanism row reads as a mechanism at all.
+
+    The column reads a row in the standard notation (``StandardMechanism``),
+    and one that reads in neither notation as it is stored: a free-text label
+    an older validator let through. Such a row has no target ions, since
+    target-ion generation skips it too, and the composition finder refuses it,
+    so a run leaves it out rather than failing on it, and reports it once.
+    """
+    try:
+        parse_mechanism(mechanism.ionization_mechanism)
+    except MechanismNotationError:
+        if mechanism.ionization_mechanism_id not in _reported_unreadable:
+            _reported_unreadable.add(mechanism.ionization_mechanism_id)
+            runtime.logger.warning(
+                f"Ionization mechanism {mechanism.ionization_mechanism!r} "
+                f"({mechanism.ionization_mechanism_id}) reads as neither "
+                "notation, so peak assignment does not search it; correct or "
+                "remove it."
+            )
+        return False
+    return True
 
 
 async def fetch_mechanisms_by_notation(
@@ -1235,11 +1266,12 @@ def _searched_mechanisms(
     """
     if not mechanisms:
         return []
+    # Read through the mechanism column, a row is already in the standard
+    # notation that the profile's channel tables are written in.
     return mechanisms + [
         mechanism
         for mechanism in secondary_mechanisms
-        if mechanism_key(mechanism.ionization_mechanism)
-        in resolved_profile.added_channels
+        if mechanism.ionization_mechanism in resolved_profile.added_channels
     ]
 
 
@@ -1751,8 +1783,14 @@ def _untargeted_ionization_notations(
     notation used by the composition finder.
 
     Every notation table of a run is built here, in the standard adduct
-    notation whichever spelling a mechanism arrived in, so it keys alike with
+    notation the mechanism column reads every row in, so it keys alike with
     the library's channel tables: ``[M+[15N]O3]-`` for ``[M+^NO3]-``.
+
+    Each mechanism is searched once. Two rows can read as one mechanism:
+    spellings of it stored before a mechanism had one spelling, which the
+    unique column could not tell apart. Searched twice, the finder would
+    propose every neutral through it twice. The first row is the one
+    searched, and the one a reading through it is recorded under.
 
     :param mechanisms: The sample's polarity-matching mechanisms, resolved
         once per run by :func:`fetch_sample_mechanisms`
@@ -1761,9 +1799,9 @@ def _untargeted_ionization_notations(
     notations: list[str] = []
     mechanism_id_by_notation: dict[str, str] = {}
     for mechanism in mechanisms:
-        notation, _ = to_explicit_isotope_format(
-            mechanism_key(mechanism.ionization_mechanism)
-        )
+        notation, _ = to_explicit_isotope_format(mechanism.ionization_mechanism)
+        if notation in mechanism_id_by_notation:
+            continue
         notations.append(notation)
         mechanism_id_by_notation[notation] = mechanism.ionization_mechanism_id
     return notations, mechanism_id_by_notation
