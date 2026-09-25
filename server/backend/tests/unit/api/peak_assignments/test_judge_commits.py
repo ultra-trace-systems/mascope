@@ -498,7 +498,7 @@ def elected(row_id: str, formula: str, ion: str, mz: float, mechanism: str, othe
 
 #: A charge-transfer source: electron transfer, and proton transfer and
 #: hydride abstraction opened beside it, both held to a partner.
-CHARGE_TRANSFER = {"im-1": "+", "im-h": "[M+H]+", "im-hydride": "[M-H]+"}
+CHARGE_TRANSFER = {"im-1": "[M]+.", "im-h": "[M+H]+", "im-hydride": "[M-H]+"}
 OPENED = frozenset({"[M+H]+", "[M-H]+"})
 
 
