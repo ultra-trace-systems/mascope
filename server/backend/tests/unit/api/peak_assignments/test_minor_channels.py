@@ -12,6 +12,7 @@ from types import SimpleNamespace
 import pandas as pd
 import pytest
 
+from mascope_backend.api.new.peak_assignments import engine as engine_module
 from mascope_backend.api.new.peak_assignments.config import PeakAssignmentConfig
 from mascope_backend.api.new.peak_assignments.engine import (
     apply_partner_gates,
@@ -332,6 +333,12 @@ class TestThePartnerGate:
         assert by_peak["p1"]["ionization_mechanism_id"] == "im-formate"
         assert by_peak["p1"]["provenance"]["partner_gate"]["partner"] is True
         assert by_peak["p1"]["tier"] == TIER_ASSIGNED
+        # The acid reading the swap back displaced is one the sample
+        # settled, not one it failed to bear out: it stays a rival for the
+        # cross-channel pass to record as settled.
+        [acid] = by_peak["p1"]["alternatives"]
+        assert acid["assigned_formula"] == "C11H20O7"
+        assert "partner_gate" not in acid
 
     def test_a_reference_list_row_is_the_partner_and_lifts_the_cap(self):
         # The C10 product is a Stage A match, not a search row: the policy
@@ -450,6 +457,166 @@ class TestThePartnerGate:
         child = [r for r in rows if r["role"] == "iso_child"][0]
         assert child["assigned_formula"] == "C11H20O7"
         assert child["ionization_mechanism_id"] == "im-deprot"
+
+    @staticmethod
+    def _row(
+        row_id,
+        formula,
+        mechanism_id,
+        *,
+        alternatives=(),
+        tier=TIER_ASSIGNED,
+        capped=None,
+        source="untargeted",
+    ):
+        """A monoisotopic row as a stage built and the policy judged it."""
+        provenance = {"plausibility": 1.0, "evidence": 0.99}
+        if capped is not None:
+            provenance["minor_channel"] = {"corroborated_by": None, "capped": capped}
+        return {
+            "peak_assignment_id": row_id,
+            "role": "M0",
+            "sample_peak_id": f"peak-{row_id}",
+            "assigned_formula": formula,
+            "ion_formula": None,
+            "ionization_mechanism_id": mechanism_id,
+            "tier": tier,
+            "fit_score": 0.99,
+            "source": source,
+            "alternatives": [
+                {
+                    "assigned_formula": alt_formula,
+                    "ionization_mechanism_id": alt_mechanism,
+                    "same_ion": True,
+                    "plausibility": 1.0,
+                }
+                for alt_formula, alt_mechanism in alternatives
+            ],
+            "provenance": provenance,
+        }
+
+    def _formate(self, row_id, formula, acid=None):
+        """A formate reading the policy capped, with its acid reading if any."""
+        return self._row(
+            row_id,
+            formula,
+            "im-formate",
+            tier=TIER_CANDIDATE,
+            capped=True,
+            alternatives=() if acid is None else ((acid, "im-deprot"),),
+        )
+
+    def test_a_reading_with_no_family_is_lifted_by_a_partner_a_swap_makes(self):
+        # r1's ion reads no other way, so the first round leaves it to the
+        # cap; r2's own gate then turns r2 into the C10 acid, which is exactly
+        # r1's partner, and r1 is judged again.
+        r1 = self._formate("r1", "C10H18O5")
+        r2 = self._formate("r2", "C9H16O3", acid="C10H18O5")
+        self._gate([r1, r2], self.IDS, minor={"+HCOO-"}, gated={"+HCOO-"})
+        assert (r2["assigned_formula"], r2["ionization_mechanism_id"]) == (
+            "C10H18O5",
+            "im-deprot",
+        )
+        assert r1["provenance"]["partner_gate"] == {
+            "channel": "+HCOO-",
+            "partner": True,
+            "uncapped": True,
+        }
+        assert r1["tier"] == TIER_ASSIGNED
+        assert r1["provenance"]["minor_channel"] == {
+            "corroborated_by": "second_channel",
+            "capped": False,
+        }
+
+    def test_the_walk_says_when_its_rounds_ran_out(self, monkeypatch):
+        monkeypatch.setattr(engine_module, "MAX_PARTNER_GATE_ROUNDS", 1)
+        r1 = self._formate("r1", "C10H18O5")
+        r2 = self._formate("r2", "C9H16O3", acid="C10H18O5")
+        summary = apply_partner_gates(
+            [r1, r2],
+            notation_by_id={mid: n for n, mid in self.IDS.items()},
+            minor_channels=frozenset({"+HCOO-"}),
+            partner_gated_channels=frozenset({"+HCOO-"}),
+            tier_bands=self.BANDS,
+        )
+        assert summary["settled"] is False and summary["rounds"] == 1
+        assert r1["provenance"]["partner_gate"]["kept"]
+
+    def test_a_row_whose_partner_a_swap_back_takes_is_judged_again(self):
+        # Round one turns r to its acid, which partners s, and t to its acid,
+        # which bears out r's set-aside reading. Round two swaps r back, and
+        # that takes away the C10H18O5 s stood on: s is judged again and
+        # reads its acid. Every formate reading left standing has its neutral
+        # committed through a mode channel.
+        r = self._formate("r", "C9H16O3", acid="C10H18O5")
+        s = self._formate("s", "C10H18O5", acid="C11H20O7")
+        t = self._formate("t", "C8H14O", acid="C9H16O3")
+        summary = apply_partner_gates(
+            [r, s, t],
+            notation_by_id={mid: n for n, mid in self.IDS.items()},
+            minor_channels=frozenset({"+HCOO-"}),
+            partner_gated_channels=frozenset({"+HCOO-"}),
+            tier_bands=self.BANDS,
+        )
+        assert (r["assigned_formula"], r["ionization_mechanism_id"]) == (
+            "C9H16O3",
+            "im-formate",
+        )
+        assert r["provenance"]["partner_gate"] == {
+            "channel": "+HCOO-",
+            "partner": True,
+            "returned": True,
+        }
+        assert (s["assigned_formula"], s["ionization_mechanism_id"]) == (
+            "C11H20O7",
+            "im-deprot",
+        )
+        assert s["provenance"]["partner_gate"]["displaced"] == "C10H18O5"
+        assert (t["assigned_formula"], t["ionization_mechanism_id"]) == (
+            "C9H16O3",
+            "im-deprot",
+        )
+        assert summary["settled"] is True
+        assert summary["partnered"] == 1 and summary["swapped"] == 2
+
+    def test_a_partner_that_is_gone_re_imposes_the_cap(self):
+        # The policy corroborated the formate reading on a search row that the
+        # gate does not count as a partner: nothing else reads the ion, so the
+        # row is left to the cap, and the cap is put back.
+        below = self._row("b", "C10H18O5", "im-deprot", tier="below_assignability")
+        formate = self._row("f", "C10H18O5", "im-formate")
+        formate["provenance"]["minor_channel"] = {
+            "corroborated_by": "second_channel",
+            "capped": False,
+        }
+        self._gate([below, formate], self.IDS, minor={"+HCOO-"}, gated={"+HCOO-"})
+        assert formate["tier"] == TIER_CANDIDATE
+        assert formate["provenance"]["minor_channel"] == {
+            "corroborated_by": None,
+            "capped": True,
+        }
+        assert formate["provenance"]["partner_gate"]["recapped"] is True
+
+    def test_a_partner_is_matched_by_composition_not_spelling(self):
+        # A target library holds what a person typed; the gate reads it as
+        # the composition it is.
+        library = self._row("a1", "CH3COOH", "im-deprot", source="database")
+        formate = self._formate("f1", "C2H4O2")
+        self._gate([library, formate], self.IDS, minor={"+HCOO-"}, gated={"+HCOO-"})
+        assert formate["provenance"]["partner_gate"]["partner"] is True
+        assert formate["tier"] == TIER_ASSIGNED
+
+    def test_a_swapped_reading_keeps_the_mass_gates_cap_on_its_ion(self):
+        # The mass gate judged the ion's line, which the acid reading shares.
+        row = self._formate("r", "C10H18O5", acid="C11H20O7")
+        row["provenance"]["mass_gate"] = {
+            "corroborated_by": None,
+            "capped": TIER_CANDIDATE,
+            "reason": "off_calibration",
+        }
+        self._gate([row], self.IDS, minor={"+HCOO-"}, gated={"+HCOO-"})
+        assert row["assigned_formula"] == "C11H20O7"
+        assert row["tier"] == TIER_CANDIDATE
 
 
 class TestResolution:

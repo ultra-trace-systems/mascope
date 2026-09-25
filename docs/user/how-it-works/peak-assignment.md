@@ -134,8 +134,9 @@ proton. So an opportunistic reading stands only where the sample commits its mol
 through one of the mode's own channels; otherwise the mode's reading is the row's, and
 between two opportunistic readings the one whose molecule the sample shows wins. Toluene
 is seen through the bare sign, so tropylium reads as toluene. The reading set aside stays
-on the row, marked as not borne out, and does not count against the one that was. On any
-other instrument the bare sign names an
+on the row, marked as not borne out, and does not count against the one that was. The rule
+is read after the run's mass gate, so a partner is a reading that gate left committed, and
+a batch search reads it over its own rows. On any other instrument the bare sign names an
 ambient-ion mode as readily, and such a mode keeps the ESI profile of its polarity; so does
 a mode with only protonation or deprotonation and no reagent. A secondary channel is
 searched only where the deployment holds its mechanism: hydride abstraction needs a `-H-`

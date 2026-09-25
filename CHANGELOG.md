@@ -23,7 +23,9 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   toluene less a hydride because toluene is seen through the bare sign, not as
   protonated C7H6, which the heavier mechanism would otherwise make it. The
   reading set aside stays on the row, marked as not borne out, and is no
-  rival to the one that was. A bare-sign mode on any other
+  rival to the one that was. The rule is read after the mass gate, so a
+  partner is a reading that gate left committed, and a batch search reads it
+  over its own rows. A bare-sign mode on any other
   instrument, an ambient-ion stream, keeps the ESI profile, as does a mode with
   only protonation or deprotonation. A secondary channel is searched only where
   the deployment holds its mechanism: no deployment has `-H-` by default, so an

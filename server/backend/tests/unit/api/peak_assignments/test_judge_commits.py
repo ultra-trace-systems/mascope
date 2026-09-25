@@ -354,3 +354,61 @@ class TestTheBandsReachTheReasons:
         low["provenance"]["evidence"] = 0.3
         judged = judge(anchors() + [low])
         assert "evidence_band" not in rules(by_id(judged.rows)["pa-low"])
+
+
+class TestThePartnerGateReadsTheJudgedLedger:
+    """The gate runs after the mass gate: a partner is a reading that gate
+    left committed, so one it sends below assignability is no partner."""
+
+    IDS = {"im-1": "-H+", "im-formate": "+HCOO-"}
+    BANDS = {"assigned": 0.75, "candidate": 0.45}
+
+    def _formate(self) -> dict:
+        row = commit("pa-f", "C10H18O5", "C10H19O7-", 263.1136, 1000.0)
+        row["ionization_mechanism_id"] = "im-formate"
+        row["alternatives"] = [
+            {
+                "assigned_formula": "C11H20O7",
+                "ionization_mechanism_id": "im-1",
+                "same_ion": True,
+                "plausibility": 1.0,
+            }
+        ]
+        row["provenance"]["minor_channel"] = {
+            "corroborated_by": "second_channel",
+            "capped": False,
+        }
+        return row
+
+    def _judge(self, rows: list[dict]):
+        return judge_commits(
+            rows,
+            stage_a_accuracy=SampleMassAccuracy(),
+            fallback_sigma_ppm=0.3,
+            notation_by_id=self.IDS,
+            mz_tolerance_ppm=5.0,
+            abundance_floor=0.01,
+            max_alternatives=5,
+            tier_bands=self.BANDS,
+            minor_channels=frozenset({"+HCOO-"}),
+            partner_gated_channels=frozenset({"+HCOO-"}),
+        )
+
+    def test_a_partner_the_mass_gate_sends_below_assignability_is_none(self):
+        # The C10 product is committed through deprotonation 5 ppm off a run
+        # whose anchors sit within 0.1: the mass gate puts it below
+        # assignability, and the formate reading that stood on it reads as
+        # the acid.
+        partner = commit("pa-p", "C10H18O5", "C10H17O5-", 217.1081, 800.0, ppm=5.0)
+        rows = by_id(self._judge(anchors() + [partner, self._formate()]).rows)
+        assert rows["pa-p"]["tier"] == "below_assignability"
+        assert rows["pa-f"]["assigned_formula"] == "C11H20O7"
+        assert rows["pa-f"]["ionization_mechanism_id"] == "im-1"
+        assert rows["pa-f"]["provenance"]["partner_gate"]["partner"] is False
+
+    def test_a_partner_on_calibration_stands(self):
+        partner = commit("pa-p", "C10H18O5", "C10H17O5-", 217.1081, 800.0)
+        rows = by_id(self._judge(anchors() + [partner, self._formate()]).rows)
+        assert rows["pa-p"]["tier"] == "assigned"
+        assert rows["pa-f"]["assigned_formula"] == "C10H18O5"
+        assert rows["pa-f"]["provenance"]["partner_gate"]["partner"] is True

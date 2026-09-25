@@ -147,7 +147,7 @@ class ResolvedProfile:
 
         A subset of :attr:`minor_channels`: a channel the profile marks
         ``needs_partner`` that this run searches. The engine reads it after
-        the untargeted stage (``engine._apply_partner_gates``).
+        the judged ledger (``engine.apply_partner_gates``).
         """
         gated = {
             channel.notation
