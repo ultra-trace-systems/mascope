@@ -31,7 +31,7 @@ class FragmentationAnalysis:
     :type data: DataExtractor
     :param compositions: Assigned compositions for each MS2 spectrum
     :type compositions: CompositionMap
-    :param reagent: Reagent adduct in Mascope notation (e.g. "+[15N]O3-")
+    :param reagent: Reagent adduct in Mascope notation (e.g. "[M+[15N]O3]-")
     :type reagent: str
     """
 

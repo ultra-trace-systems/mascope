@@ -43,12 +43,13 @@ from mascope_tools.composition import utils
 
 # Adduct channels ACTUALLY operative in the demo -- the mechanisms that appear in the
 # peak_assignment table (verified against the ionization_mechanism library), not the guessed
-# panel in make_candidates. Only 5 mechanisms are ever assigned: +H+, +NH4+, +(CH4N2O)H+ (pos)
-# and -H+, +Br- (neg). Defined-but-unused here: +Br2-, +Br3-, +NO3-, +CO3-, bare +/-. The
-# deprotonation is "-H+", the notation the mechanism library stores it under.
+# panel in make_candidates. Only 5 mechanisms are ever assigned: [M+H]+, [M+NH4]+,
+# [M+CH4N2O+H]+ (pos) and [M-H]-, [M+Br]- (neg). Defined-but-unused here: [M+Br2]-, [M+Br3]-,
+# [M+NO3]-, [M+CO3]-, [M]+. and [M]-.. The deprotonation is "[M-H]-", the notation the
+# mechanism library stores it under.
 CHANNELS = {
-    "neg": {"primary": "-H+", "adducts": ["-H+", "+Br-"]},
-    "pos": {"primary": "+H+", "adducts": ["+H+", "+NH4+", "+(CH4N2O)H+"]},
+    "neg": {"primary": "[M-H]-", "adducts": ["[M-H]-", "[M+Br]-"]},
+    "pos": {"primary": "[M+H]+", "adducts": ["[M+H]+", "[M+NH4]+", "[M+CH4N2O+H]+"]},
 }
 # Random decoy offsets are drawn in this |Da| range (comparable to real adduct differences,
 # ~17-80 Da) and rejected if within TOL_DA of any real adduct offset or a 13C/12C multiple.
