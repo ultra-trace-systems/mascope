@@ -45,15 +45,17 @@ dataset's sets G to J, the chemist's reading of 2026-09-24 (decision 21).
 | 2.8 - the band first, one reading per ion, the inspector's ionization and list names | #2154 | measured: every row under the top band names it first (14,855 of the round's monoisotopic rows); a row whose ion also reads as a closed-shell molecule through another channel is held at candidate unless a second channel committed its neutral (decision 20), which takes 75 rows from assigned - 70 urea adducts against an ammonium reading the nitrogen rule did not ask and 5 bromide clusters - and returns 12 nitrate clusters on F2 whose only other reading is a carbonate radical; a channel the mode and its profile both name is searched once, so no row lists its own reading as another one (265 on C before), and stays secondary: C's declared carbonate channel keeps the minor-channel cap, on the plan owner's call (decision 20); no owner changes; G2 identical, G7 0; the inspector names the ionization and the reference lists' compounds, looked up on the detail read as Stage A matches |
 | 3.1 - a profile for the charge-transfer source | #2197 | built: `EASYIC_POS` and `EASYIC_NEG` resolve from the bare sign on an Orbitrap after every reagent (a reagent mode that also declares electron transfer keeps its reagent; a mode with only protonation or deprotonation stays ESI; a bare-sign mode on a TOF, an ambient-ion stream, keeps the ESI path it had; a declared proton transfer or deprotonation beside the bare sign is the mode's own channel, not an opportunistic one), both under the ambient context; the fluoranthene beam is the reagent ladder (the air-plasma cations wait for 3.3); hydride abstraction `-H-` and proton transfer (positive) and deprotonation (negative) are secondary channels switched on by the beam, hydronium, and the source's own deprotonated acids, and left on where a narrow window cannot show them; their reading of an ion the bare sign also reads stands only where the sample commits the neutral through a mode channel (the partner gate, `engine.apply_partner_gates`, read over both stages' rows; carbonate is not gated until re-measured), so tropylium is toluene less a hydride rather than protonated C7H6; `parse_ionization` now reads `-H-` as the grammar and the validator do (a hydride removed, a cation) instead of as deprotonation - a breaking change for library callers: peaky rewrites `-H+` to `-H-` on the way in (a workaround from before `-H+` parsed as an anion, itself unreleased until the same library release), so peaky drops both rewrites and requires that release. The `-H-` mechanism row is an operator step, since seeding never creates mechanisms. Measured on the testbed (six representatives per set, `-H-` and `+HCOO-` rows added): set I- assigned rows per sample 66 -> 3 and assigned intensity 22.9 -> 1.7%, the 16 survivors all C2 nitrogen-rich formulas through the bare sign below the ratio windows' carbon floor (3.6's prior), so G9 reads 100% of a set 23 times smaller; set I+ assigned per sample 42 -> 43 with the bare sign 243 -> 111 rows and proton transfer 83 and hydride abstraction 37 opened (65 of the proton-transfer commits corroborated by the same neutral on the bare sign), tropylium read as toluene less a hydride at assigned in 5 of 6 samples, G9 51 -> 31% (71 of 231, all C2 or smaller); G10 stays 0 on both, the beam sits above both windows and the air-plasma cations are 3.3's. Sets C and C2 unchanged in tiers |
 | 3.1c - the stronger partner decides | #2205 | built: the partner gate keeps each neutral's partners (rows committing it at candidate or better through a mode channel) with their peak heights, current through every swap; after its walk, read once against the settled partners, a reading through a gated channel that stands on a partner is weighed against every other reading of its ion through a gated channel that has one, and the brighter partner takes the ion (`took_from`), a tie leaving the row its reading, with what it weighed recorded (`partner_gate.contest`: reading, channel, peak ratio, decisive). Where the brighter partner is at least `PARTNER_MARGIN` (10) times the other's, the other reading is marked `outweighed` and the cross-channel pass settles the ion by the partner (`same_ion_settled` by `partner`); within the margin it stays a rival and the row is held at candidate. A reading through a mode channel is not contested; where a reading has no partner and the family's mode reading is no molecule, the gate takes the opportunistic reading with the brightest partner rather than the first. The cross-channel pass weighs a rival whose molecule the sample commits through a mode channel the same way against the row's own molecule, leaving out the rows through either reading's own channel, on every row: decisively weaker it is settled, otherwise a second channel does not settle it (`shown`, counted as `shown_rival`); a typed formula such as `C6H4(CH3)2` is keyed as the molecule it spells. The run records the gate's summary and margin (`config.partner_gate`). Tiering rule set 7. The tier as a bar rather than a weight, the contest after the walk and the weighed shown rival are the review's (the step's as-built note). Measured on the testbed 2026-09-25 (develop `fb529440c`, rule set 7, margin 10): set K the benzyl cation as toluene less a hydride at assigned in 6 of 6 files, the methylbenzyl cation as xylene less a hydride in 6 (4 assigned, 2 candidate as before), C5H7+ as isoprene less a hydride in 6 (candidate in 5, assigned in the one file where isoprene's row is ten times the C5H6 row's); the gate contested 14 to 20 ions per file, swapped 7 to 12, outweighed 5 to 12 and held 7 to 12 within the margin; assigned rows per file 67 to 60 and assigned intensity 76 to 46% of the M0 total, almost all of it one ion: m/z 69.008, read as C2N2O through proton transfer and now as C2H2N2O less a hydride within the margin, 36% of the assigned intensity in every file and the air-plasma family of 3.3 and 3.6; C5H7+ is 1.5%. Set L keeps every formula and 200 rows, a third of its assigned rows and a quarter of its assigned intensity, fall to candidate on the shown hydride rival: the declared proton transfer is doubted wherever the hydride reading's molecule is seen through electron transfer. Set G, the wider reach: 158 deprotonated acids and 18 formate rows of the no-reagent-ion half fall to candidate, 42% of its assigned intensity, pinonic acid at 183.103 first, because the formate reading's molecule (nopinone) is seen through the nitrate adduct at about twice the acid's own; with reagent ion 59 rows and 8%. G11 unchanged at 5.6% of assigned-plus-candidate intensity, 7.1 to 0.3% of assigned. Set I+ 14 rows, I- none, set C 10 rows (assigned 613 to 603, the reference's confirmation 87.1 to 86.9%), set C2 unchanged |
-| 3.1d - the declared channel's prior | #2211 | built: the cross-channel pass reads `PARTNER_MARGIN` from the rival's side for a corroborated row through one of the mode's own channels - its second channel settles it unless the rival's molecule is shown ten times as brightly as the row's own or more, or the row's own molecule is shown through no other of the mode's channels - and records the rival it weighed with the ratio (`same_ion_settled` by `second_channel`, `shown_rival_weighed` in the run's summary); a reading through an opportunistic channel keeps the contest's margin; rule set 8; pass 9 not yet run. The need measured on pass 8: 176 acids of set G and 200 rows of set L held at candidate on a shown rival, most of them where the rival's molecule is not even brighter than the row's own; 63 of G's and 155 of L's return under one margin read both ways, pinonic acid among them |
+| 3.1d - the declared channel's prior | #2211 | measured 2026-09-25 (pass 9, develop `ecbceb593`, rule set 9, read together with 3.4b): on the proton-transfer cylinder set L the 155 rows the pass-8 buckets named return to assigned, 57 more are settled by the second channel but stay under their own band, and 65 stay held on the shown rival (38 where the rival's molecule is ten times as bright or more, 27 where the row's own molecule is shown through no other of the mode's channels); C5H7+ stays candidate in 5 of 6 files (ratios 0.01 to 0.09) and protonated benzene, predicted to stay, is assigned in 4 of 6, its C6H8 rival shown at only 0.95 to 1.3 times its own showing. On set G without reagent ion 45 acids return (the buckets said 63: 18 of those are settled by the second channel and held by their band, which the buckets did not read), pinonic acid assigned in 6 of 6 with nopinone recorded at about twice its showing, glycolic acid candidate in 6 of 6; 154 acids stay held (102 on a rival ten times as bright, 52 with no showing of their own beyond deprotonation) and the 20 formate rows stay, as opportunistic readings; with reagent ion 14 return. Set C's 10 rows return, C2 unchanged; K, K3 and I+ unchanged by the step, their moves being contests; G11 5.58% unchanged. The run's `shown_rival_weighed` reads 10 to 17 per file on G without reagent ion |
 | 3.2 - formate as an opportunistic channel | #2198, stacked on #2197 | built: `+HCOO-` is a secondary channel of the nitrate, 15N-nitrate, bromide and iodide profiles, probed on formate, its dimer with formic acid and (nitrate) its cluster with the reagent's acid, built from the reagent so the labelled profile probes `[HCOO+H^NO3]-`; the nitrate profiles keep it on where the window cannot show a probe, as they do carbonate, because the batch carrying the C11 pseudo-acids is acquired from m/z 130 and the source makes no formate carrier above 127 (the two-acid cluster absent, the two-formic-acid cluster at 0.01-0.05% of base on the wide-window sister batch); the halide profiles claim only what they show. The election alone is not enough: measured with the channel open, it read every deprotonated acid as the molecule 46 Da lighter with formate (1,239 acid rows of six no-reagent-ion samples moved to formate and were capped; set C's same-formula agreement with the reference fell from 89.6% to 62.6%), so formate takes the partner gate of step 3.1 (`engine.apply_partner_gates`): the formate reading is the row's only where the lighter neutral is committed through a mode channel, otherwise the acid stands and the formate reading is set aside. Measured on the testbed with the partner gate judging every row against the ledger as it stands: set G without reagent ion G11 24.4 -> 5.6% of assigned-plus-candidate intensity (assigned-only 32.9 -> 7.1%), the deprotonated C11 rows 195 -> 79 (51 assigned), 104 of them now their C10 formate reading at assigned, each corroborated by the C10 neutral through a mode channel, 51 standing because no reading of the C10 neutral exists through a mode channel, 28 held at candidate; assigned rows per sample 486 -> 440, assigned intensity 58.4 -> 56.5%, of which 272 list-matched acids drop to candidate because their formate rival's lighter neutral is itself committed (O4 to O8 products; a real ambiguity for the small acids, and for a list's C11 the C10 reading is right). Set G with reagent ion G11 1.2 -> 0.5%. Set C tiers within two rows of before (assigned 615 -> 613), same-formula agreement with the reference 89.6 -> 88.0% where a partnered formate reading replaces an acid the reference reads as an acid; set C2 unchanged (probe absent, channel off). The target of under 1% is met with reagent ion and not without: the remaining 5.6% is C11 acids whose C10 partner is seen through no mode channel, which the rule leaves standing |
 | 3.3 - name the source ions | - | planned; the list rewritten 2026-09-25 in four families with a literature reference per family, from the reference engine's reading (its #53) and the pass-8 fragment finding |
 | 3.3b - the standard adduct notation | #2203, #2204 stacked on it | built: both notations are read everywhere, through one reader in the library (`mechanism_notation`) mirrored by the frontend's; a new mechanism is stored in the standard form, and the mechanism column reads every row in it, so the API, exports, SDK and engine show `[M-H]-` before any row is rewritten; the profiles, channels, catalogue and provisional weights are spelled in it. The map is exact both ways on all 24 fleet spellings; #2204 rewrites the stored rows and the calibration weights' keys (alembic `5193d1e942e0`, the downgrade its inverse). Moves no metric. The legacy form is refused at 2.0 |
 | 3.3c - reagent rows read like rows | - | planned, recorded 2026-09-25 from the peak browser by the plan owner: a reagent row shows no formula, and the lines of its cluster's envelope stand beside it as unrelated reagent rows; the ion formula in the column, the envelope's lines under their monoisotopic row |
 | 3.3d - source-solvent clusters | - | planned, from the reference engine's reading (its #55): the proton- and hydride-bound ladders of water, methanol, ethanol and acetone claimed as reagent rows under its ladder rules |
 | 3.4 - an opportunistic channel needs a second channel | - | planned |
-| 3.4b - one peak is not enough | #2212 | built: a monoisotopic row the formula search elected with no line of its own isotope pattern committed beside it, no second channel committing its neutral and no list it was matched from is held at candidate with the reason `lone_peak`; a line the mass gate finds untracked is no second observation, a line in doubt is; a row that keeps its tier names its second observation first (`corroborated`, `second_line`, `on_a_list`); a neighbour nothing but the rule holds at candidate still has the row on its predicted line claimed, which gives it the line (the step's as-built note). Tiering rule set 9. Not yet measured on the testbed; the need, measured on set J: a peak at m/z 455.0 assigned as C11H11N3O11S at fit 76% on one line at the noise floor, read as three formulas across the set's six files; 44% of J's assigned rows and 13 to 35% of the chamber Orbitrap sets' stand on one peak, under 5% of assigned intensity everywhere |
+| 3.4b - one peak is not enough | #2212 | measured 2026-09-25 (pass 9, develop `ecbceb593`, rule set 9): G12 at 0 on every set, and every assigned row from the search names a second channel, a second line or a list. What the rule took, as assigned rows per file and as intensity of the rows that fell, of the set's monoisotopic total: G without reagent ion 324 to 232 and 1.7%, with reagent ion 116 to 87 and 0.8%, I+ 36 to 31 and 0.4%, I- 3 to 0 and 10.6% (14 of its 16 assigned rows, the nitrogen-rich C2 formulas through the bare sign on one line each, the one set outside the 5% line and 3.6's first target), K 60 to 54 and 0.5%, K3 27 to 21 and 0.1%, L 119 to 113 and 0.1%, C 121 to 73 and 4.9%, C2 52 to 28 and 4.8%; J reported: 108 to 61 per file and 30.2 to 28.7% of intensity at assigned, the trigger row at m/z 455.0 now candidate in both files that had it assigned. G2 read on C: the reference's unconfirmed share of assigned rows 13.1 to 8.8%; on C2 19.8 to 4.8%. Eight rows on G without reagent ion lost their monoisotopic row to a neighbour's claim under the lone-neighbour allowance. The untracked-line reading cost 11 rows across every set (5, 1, 2, 2, 1 on G, G with reagent ion, J, K, L) against some 9,000 rows with no line at all, so the call the build raised is moot |
+| 3.4c - measure an alternative before committing | - | planned, from the plan owner's reading of 2026-09-25: a close alternative from the batch ledger shows no fit, plausibility or tier before "use this" pins it |
 | 3.5 - calibrants below the brightest lines, an offset term, and the low-mass bend (calibration node) | - | planned |
+| 3.5b - the envelope's tolerance, fitted per run | - | planned, from the plan owner's reading of 2026-09-25 and the pass-9 ledgers: the fit allows a clean isotope line 5% of its predicted share, the Orbitrap misses by a median 7% and a tenth of committed envelopes by 27% or more, and a row with three lines, two channels and a list sits below assignability on a fit of 41% |
 | 3.6 - priors and the dataset's context | - | planned |
 | 3.7 - stage 3 gate, engine 0.6.0 | - | planned; read against the literature and chemical reasoning, not the reference engine's formulas (decision 27) |
 | 4.1 - series detection on the batch ledger | - | planned |
@@ -2004,6 +2006,35 @@ bump.
     not.
   - Tiering rule set 9, after step 3.1d's 8.
 
+### 3.4c Measure an alternative before committing
+
+- **What.** A close alternative in the inspector is measured on the sample
+  before it is taken. The alternatives list shows, for each entry the run
+  did not measure (a batch-ledger identity, a list's compound the run did
+  not match), a *measure* action that scores the formula on the peak the
+  way Stage A scores a list's compound (the seeded fit: mass error against
+  the run's calibration, the envelope's lines and their shares, fit,
+  plausibility, and the tier the row would take under the run's own bands
+  and rules), and shows the result beside the current reading without
+  writing a row. *Use this* stays the commit, and takes what was measured.
+- **Why.** The plan owner's reading of 2026-09-25 on the internal
+  Orbitrap's uronium batch: a peak at m/z 297.0825 read as C10H16O10
+  `[M+H]+` at fit 0%, and the batch ledger offered
+  octamethylcyclotetrasiloxane (D4) `[M+H]+` as an alternative marked *not
+  measured*, with no fit, plausibility or tier to judge it on. Pinning it
+  was the only way to find out, and pinning is a batch-wide act. The
+  assignment then took D4 with three lines and two channels (3.5b says what
+  it made of them).
+- **Where.** The peak-assignment pane's alternatives list and its tooltip; a
+  read route that scores one formula on one peak of one sample through
+  `seeded_scoring` and the tiering pass's reasons without a ledger write;
+  the how-it-works page's paragraph on the alternatives.
+- **Verify.** On the uronium sample the D4 alternative shows its fit, its
+  lines, its plausibility and the tier it would take before *use this*; a
+  measured alternative reads the same numbers the assignment writes when it
+  is taken.
+- **Size.** M.
+
 ### 3.5 Calibrants below the brightest lines, an offset term, and the low-mass bend
 
 - **What.** The m/z calibration node leaves out a calibrant line brighter
@@ -2049,6 +2080,75 @@ bump.
   lines had pulled a fit, and away from it nowhere.
 - **Size.** S. It is the calibration node's, not the engine's, and it
   re-bases every set it touches, so it lands between rounds.
+
+### 3.5b The envelope's tolerance, fitted per run
+
+- **What.** The fit score's intensity term takes its width from the run.
+  Today a matched isotope line is scored on `exp(-0.5 * ((observed -
+  predicted) / sigma)^2)` with `sigma` the larger of the line's own noise,
+  5% of its predicted share and 0.001 (`score_pattern_v2`), so for a clean
+  peak the tolerance is 5% of the predicted share, and a line 15% under it
+  is a three-sigma miss that alone takes the ion's fit to about a half. The
+  run instead fits, on its own confidently committed envelopes (a second
+  channel or a list, mass within the gate, lines the gate calls tracking),
+  the relative error of a committed line against its predicted share: a
+  centre, since an Orbitrap reads its isotope lines low against the anchor,
+  and a width, which floors the 5%. The score subtracts the centre and
+  scores against the fitted width; the SNR terms stay as they are, since
+  they only ever widen. The run records both (`config.envelope_tolerance`),
+  with the count of lines they were fitted on, and falls back to today's
+  numbers where a run has too few. The mass term's width already works this
+  way (the per-sample `sigma_ppm`, and the mass gate's centre and width of
+  step 2.2); this is the same fit for the intensity axis.
+- **Why.** The plan owner's reading of 2026-09-25: on the internal
+  Orbitrap's uronium batch, D4 `[M+H]+` at m/z 297.0825 is committed with
+  three lines (M0 at 0.04 ppm, the 29Si line at -0.15 ppm, the 30Si line at
+  -0.09 ppm), through two channels and from a list, and sits below
+  assignability: fit 41%, evidence 41% under the candidate band of 45%,
+  because the 29Si line is 15.5% under its predicted share. That is as much
+  evidence as a mass spectrum gives without an orthogonal method, and the
+  band reads it as a weak row. Measured on the pass-9 ledgers, the committed
+  isotope lines of assigned and candidate rows miss their predicted share
+  by a median 6.8% on the chamber Orbitrap (1,257 lines), 7.2% on the
+  cylinder Orbitrap (717) and 7.1% on the TOF (340); the upper quartile
+  starts at 14 to 16% and the top tenth at 27, 27 and 37%. The miss has a
+  sign: -9.6% on the chamber Orbitrap and -6.0% on the cylinder one, the
+  lines reading low against the anchor, +4.2% on the TOF. Under the 5%
+  tolerance the intensity terms alone hold the fit under the assigned band
+  for 22%, 21% and 53% of the committed rows that have lines, and under the
+  candidate band for 12%, 10% and 38%; at a 15% tolerance 4%, 1% and 19%,
+  and 1%, 0% and 8%; at 25% next to none. The actual fit is under the
+  assigned band for 27%, 34% and 45% of them, the rest being the mass term
+  on the brightest lines, which is 3.5's. The plan owner's own ruler is the
+  bromide doublet: 79Br and 81Br at 50.7 to 49.3, on which the internal
+  Orbitrap is seen to miss on known ions. The fit is not wrong to score the
+  shares; it is wrong about how well the instrument measures them.
+- **The open call, until this is built.** A row with a second line, a
+  second channel and a list is the converse of decision 25, and the band
+  (2.8: the band first, the rules only lower) holds it below on the fit
+  number alone. The plan's answer is to fix the number, not to add a rule
+  that lifts a row over its band, since a fitted tolerance makes the fit
+  say what the evidence is and the band then reads right without a second
+  opinion. Whether such a row should meanwhile be read at candidate at
+  least is the plan owner's call.
+- **Where.** `score_pattern_v2` in `heuristic_filter.py` (a floor and a
+  centre for the relative error, parameters with today's values as
+  defaults); the engine's scoring call and the seeded fit; the service's
+  per-run fit of the two numbers over the run's committed envelopes, run
+  after Stage A and before the search is scored, or as a second scoring
+  pass over the committed rows; `config.py`; `fit_score.md` and the
+  how-it-works page's paragraph on the fit; tests on the score (a line 15%
+  under at a fitted 12% width scores as a one-sigma miss; the centre
+  subtracted; the fallback) and on the fit of the two numbers.
+- **Verify.** On the uronium sample the D4 row is at assigned with its
+  three lines named. On the gate's Orbitrap sets the share of committed
+  rows with lines whose fit is under the assigned band falls from 27 and
+  34% toward the mass term's share, and the bromide files read their
+  doublets at a fit above the band. No row gains assigned on a line the
+  gate calls untracked, and G12 stays at 0. G1 and G2 read as readings
+  (decision 27).
+- **Size.** M. The score is the library's, so the library and the backend
+  release together.
 
 ### 3.6 Priors and the dataset's context
 
@@ -5137,6 +5237,91 @@ is within 0.4 ppm interquartile wherever the calibration is good.
 - **Stage heterogeneity during stage 1.** Until 2.1, Stage B evidence stays
   on the v1 scale; the stage 1 gate therefore judges search metrics (G2-G6),
   not G1 alone.
+
+### After steps 3.1d and 3.4b, the declared channel's prior and one peak is not enough (2026-09-25)
+
+Measured on develop at `ecbceb593` (3.1d as built in #2211, 3.4b as built in
+#2212, rule set 9), against pass 8 (develop `fb529440c`, 3.1c, rule set 7):
+sets C and C2 through the reference comparison, the 24 chamber
+representatives of G, I+ and I-, the cylinder's 19 files of K, K3 and L, and
+the TOF batch J against its last run on the develop of 2026-09-24. The two
+steps pull in opposite directions on the same sets: 3.1d returns rows a
+shown rival had held, 3.4b takes rows one peak had carried. No row changed
+its formula. Every row that moved is the same reading at another tier, but
+for eight on G without reagent ion that lost their monoisotopic row to a
+neighbour's claim: a neighbour that nothing but the lone-peak rule held at
+candidate claimed the row on its predicted line, as the step's as-built note
+says it should, and stands on that line now.
+
+| set | rows moved | assigned rows per file | assigned intensity, share of M0 | what moved |
+|---|---|---|---|---|
+| G without reagent ion | 653 of 5,248 | 324 to 232 | 39.4 to 47.9% | 45 deprotonated acids back to assigned (3.1d); 600 rows to candidate on one peak (302 deprotonated, 269 through the labelled nitrate adduct, 24 nitrate adduct, 5 carbonate; 1.7% of intensity); 8 read as a neighbour's line |
+| G with reagent ion | 200 of 1,679 | 116 to 87 | 29.4 to 29.1% | 14 back (3.1d); 186 to candidate on one peak (0.8%) |
+| I+ | 33 of 404 | 36 to 31 | 11.2 to 10.8% | 33 to candidate on one peak, all through the bare sign (0.4%) |
+| I- | 14 of 120 | 3 to 0 | 27.9 to 17.3% | 14 of the set's 16 assigned rows to candidate on one peak, the nitrogen-rich C2 formulas through the bare sign (10.6%) |
+| K | 35 of 999 | 60 to 54 | 46.2 to 45.7% | 35 to candidate on one peak, bare sign (0.5%); every contested ion as in pass 8 |
+| K3 | 42 of 509 | 27 to 21 | 15.9 to 15.8% | 42 to candidate on one peak (0.1%) |
+| L | 348 of 1,789 | 119 to 113 | 10.9 to 11.1% | 155 protonated rows back to assigned (3.1d); 140 protonated and 53 bare-sign rows to candidate on one peak (0.1%) |
+| C | 259 of 1,119 | 121 to 73 | 71.7 to 67.0% | 10 acids back (3.1d); 249 to candidate on one peak (4.9%); the reference's unconfirmed share of assigned rows 13.1 to 8.8% |
+| C2 | 146 of 675 | 52 to 28 | 60.1 to 55.3% | 146 to candidate on one peak (4.8%); unconfirmed share 19.8 to 4.8% |
+| J (reported) | - | 108 to 61 | 30.2 to 28.7% | the trigger row at m/z 455.0 candidate in both files that had it assigned; the before is an older build |
+
+- **3.1d against its Verify.** On L the pass-8 buckets said 155 rows return
+  and 45 stay, and 155 return: 87 whose rival's molecule was shown at
+  between a tenth and once the row's own, 68 where the row's own was shown
+  the more brightly. Of the rest, 57 are settled by the second channel and
+  stay at candidate under their own band, and 65 are still held: 38 on a
+  rival shown ten times as brightly or more, 27 with the row's own molecule
+  shown through no other of the mode's channels. C5H7+ stays candidate in 5
+  of 6 files, isoprene shown at 11 to 100 times protonated cyclopentadiene,
+  and in the sixth it is settled at the 9.99 edge. Protonated benzene,
+  which the brief expected to stay, is assigned in 4 of 6: its C6H8 rival,
+  alpha-pinene's fragment, is shown at 0.95 to 1.3 times benzene's own
+  showing there, and in the two files where it is shown at fifty times, the
+  row stays held. On G without reagent ion the buckets said 63 return and
+  45 do: the buckets counted rows the second channel would settle, and 18
+  of those were under the assigned band on their own evidence and stay at
+  candidate for that, settled. Pinonic acid is assigned in 6 of 6 with
+  nopinone recorded at 1.9 to 2.1 times its showing; glycolic acid stays
+  candidate in 6 of 6, formaldehyde at a hundred times. 154 acids stay held
+  (102 on a rival ten times as bright, 52 with no showing of their own
+  beyond deprotonation) and the 20 formate rows stay, being readings
+  through a channel the run opened for itself. With reagent ion 14 return.
+  C's 10 rows return and C2 is untouched; K, K3 and I+ are untouched, their
+  pass-8 moves being contests; G11 is unchanged at 5.58% of
+  assigned-plus-candidate intensity. The run's summary counts the weighed
+  rows (`shown_rival_weighed` 10 to 17 per file on G without reagent ion).
+- **3.4b against its Verify.** G12 is 0 on every set, and every assigned row
+  from the search names what saw it twice: on G without reagent ion 639
+  rows a second channel, 237 a second channel and a second line, 63 a
+  second line alone; on L 478, 156 and 5. The rule's cost in intensity is
+  under the 5% line on every set but I-: 1.7 and 0.8% on G, 0.4% on I+,
+  0.5, 0.1 and 0.1% on the cylinder, 4.9 and 4.8% on C and C2. On I- the
+  rule takes 14 of the set's 16 assigned rows and 10.6% of its intensity:
+  the nitrogen-rich C2 formulas through the bare sign, each on one line
+  with no isotope line in reach and no second channel, which is exactly
+  the family step 3.6 exists to judge, and the set has three assigned rows
+  per file to begin with. G2 read on C moves the right way: the reference's
+  unconfirmed share of the assigned rows falls from 13.1 to 8.8%, and on C2
+  from 19.8 to 4.8%, so the rows the rule takes are the ones the reference
+  confirms least. On J the trigger row is a candidate in both files that
+  had it assigned. The build's open call, whether a committed line the
+  mass gate finds untracked is a second observation, costs 11 rows across
+  every set against some 9,000 lone-peak rows with no line at all, and is
+  left as built.
+- **What the pass shows next: the fit reads the Orbitrap's isotope shares
+  as misses.** The plan owner's reading of 2026-09-25 on the internal
+  Orbitrap's uronium batch (step 3.5b): D4 `[M+H]+` with three lines within
+  0.15 ppm, two channels and a list sits below assignability on a fit of
+  41%, its 29Si line 15.5% under the predicted share. On the pass-9 ledgers
+  the committed lines miss their predicted share by a median 7% on every
+  instrument and by 27% or more for a tenth of them, low against the anchor
+  on both Orbitraps; the score allows a clean line 5%. The intensity terms
+  alone hold a fifth of the Orbitrap's committed envelopes under the
+  assigned band and a tenth under the candidate band, and a tolerance
+  fitted per run, as the mass width already is, frees nearly all of them.
+  The same reading gave step 3.4c: the alternative D4 was offered with no
+  measurement to judge it on.
 
 ### After step 2.3, cross-channel corroboration and the reagent-N rule (2026-09-10)
 
