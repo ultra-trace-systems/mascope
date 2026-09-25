@@ -946,11 +946,11 @@ class TestTheRunsRecord:
     def test_the_rule_version_is_recorded(self):
         assert run([row("pa-1")])["version"] == TIERING_RULES_VERSION
 
-    def test_the_rule_set_is_7(self):
+    def test_the_rule_set_is_8(self):
         # The number, not the imported constant: a tier is comparable across
         # runs only under the same rules, so the set moves on purpose and this
         # test moves with it.
-        assert run([row("pa-1")])["version"] == 7
+        assert run([row("pa-1")])["version"] == 8
 
     def test_the_thresholds_are_recorded_with_it(self):
         summary = run([row("pa-1")])
@@ -1141,6 +1141,59 @@ class TestAReadingOfTheSameIonThatSomethingSettled:
         assert self.detail_of(rows, REASON_SAME_ION_SETTLED) == (
             "the same ion also reads as C3H4O through [M+NH4]+; C3H7NO is also "
             "committed through [M+CH4N2O+H]+, which settles it"
+        )
+
+    def weighed_second_channel(self, ratio) -> list[dict]:
+        """The mode's own reading, settled by its second channel against a
+        rival the sample shows too, short of the margin."""
+        rows = [
+            row(
+                "pa-1",
+                "C3H7NO",
+                provenance={
+                    "cross_channel": settled(
+                        "second_channel", ratio=ratio, through=["[M+CH4N2O+H]+"]
+                    )
+                },
+            )
+        ]
+        run(rows)
+        return rows
+
+    def test_against_a_brighter_rival_it_says_the_rival_is_short_of_the_margin(self):
+        rows = self.weighed_second_channel(0.5)
+        assert self.detail_of(rows, REASON_SAME_ION_SETTLED) == (
+            "the same ion also reads as C3H4O through [M+NH4]+; C3H7NO is also "
+            "committed through [M+CH4N2O+H]+, which settles it: the sample commits "
+            "C3H4O through one of the mode's own channels too, on a brighter peak "
+            "but not one 10 times as bright as C3H7NO's, which it would take to "
+            "doubt the mode's own reading"
+        )
+        assert tier_of(rows, "pa-1") == "assigned"
+
+    def test_a_ratio_that_rounds_to_the_margin_is_not_inverted_into_it(self):
+        # 0.1 is the row's side rounded down; the rival's side was short of 10.
+        rows = self.weighed_second_channel(0.1)
+        detail = self.detail_of(rows, REASON_SAME_ION_SETTLED)
+        assert "on a brighter peak but not one 10 times as bright" in detail
+
+    def test_a_second_channel_against_a_fainter_rival_says_so(self):
+        rows = self.weighed_second_channel(3.0)
+        assert self.detail_of(rows, REASON_SAME_ION_SETTLED) == (
+            "the same ion also reads as C3H4O through [M+NH4]+; C3H7NO is also "
+            "committed through [M+CH4N2O+H]+, which settles it: the sample commits "
+            "C3H4O through one of the mode's own channels too, on a peak no "
+            "brighter than C3H7NO's"
+        )
+
+    def test_a_second_channel_against_a_rival_it_could_not_weigh_says_so(self):
+        rows = self.weighed_second_channel(None)
+        assert self.detail_of(rows, REASON_SAME_ION_SETTLED) == (
+            "the same ion also reads as C3H4O through [M+NH4]+; C3H7NO is also "
+            "committed through [M+CH4N2O+H]+, which settles it: the sample commits "
+            "C3H4O through one of the mode's own channels too, but not on a peak "
+            "10 times as bright as C3H7NO's, which it would take to doubt the "
+            "mode's own reading"
         )
 
     def test_the_target_library_says_its_curation_chose(self):

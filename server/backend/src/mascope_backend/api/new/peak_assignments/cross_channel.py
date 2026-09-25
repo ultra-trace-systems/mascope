@@ -61,20 +61,29 @@ Four things settle it, and a row that one of them settles records which
   one neutral explains both, two coincidences are needed to avoid it. Unless the
   sample shows the other reading's molecule too, committed through one of the
   mode's own channels: then each reading has its own second observation, the
-  argument cuts both ways, and the rival stays the doubt it is.
+  argument cuts both ways, and the two are weighed, below. What the weighing
+  asks depends on the row's channel. A reading through one of the mode's own
+  channels is the mode's own reading of the ion - the operator declared that
+  channel as what the source does - and its second channel still settles it
+  unless the sample shows the other molecule ``engine.PARTNER_MARGIN`` times as
+  brightly as the row's own or more, or shows the row's own molecule through
+  no other of the mode's channels at all: a rival has to beat the declared
+  reading by the margin a contest demands, not merely fail to lose by it. The
+  row then records the rival it weighed, with the ratio. A reading through a
+  channel the run opened for itself has no such standing, and a rival the
+  sample shows stays the doubt it is unless the stronger partner settles it.
 - **The stronger partner.** Where the sample shows both molecules, the two are
   weighed the way the partner gate weighs two opportunistic readings
   (``engine.apply_partner_gates``, ``engine.outweighs``): where the row's
   molecule is committed through one of the mode's own channels on a peak
   ``engine.PARTNER_MARGIN`` times as bright as the other's or more, the ion is
-  settled. Closer than that, the other reading is a rival the sample shows, as
-  above. A reading's own channel shows nothing for it: another peak of the
-  row's molecule through the row's channel is the row's ion again, split or on
-  a shoulder, and one of the other molecule through that reading's channel is
-  the same ion read the other way. So on a mode with one channel of its own,
-  such as protonation in ESI, the row's molecule has no partner but its own
-  peak, and a rival the sample shows holds the row at candidate however faint
-  it is.
+  settled, whichever channel the row is read through. A reading's own channel
+  shows nothing for it: another peak of the row's molecule through the row's
+  channel is the row's ion again, split or on a shoulder, and one of the other
+  molecule through that reading's channel is the same ion read the other way.
+  So on a mode with one channel of its own, such as protonation in ESI, the
+  row's molecule has no partner but its own peak, and a rival the sample shows
+  holds the row at candidate however faint it is.
 - **The target library.** The workspace named that compound for the modes its
   collection is attached to, so which reading the ion is was its curation's
   decision.
@@ -357,8 +366,11 @@ def weighed(
     :return: None where the sample does not commit the reading's molecule
         through a mode channel. Otherwise the ratio of the two partners' peaks,
         the row's over the reading's (``engine.partner_ratio``, None where the
-        row's molecule has no partner of its own), and whether it settles the
-        reading (``engine.outweighs``).
+        row's molecule has no partner of its own); whether it settles the
+        reading (``engine.outweighs``, ``decisive``); and whether the margin
+        read from the reading's side goes to the reading (``rival_decisive``):
+        its molecule's peak is ``engine.PARTNER_MARGIN`` times as bright as the
+        row's or more, or the row's molecule has no partner at all.
     """
     theirs = [
         height
@@ -370,17 +382,19 @@ def weighed(
     if not theirs:
         return None
     other = max(theirs)
-    own = max(
-        (
-            height
-            for through, height in partners.get(
-                neutral_key(row.get("assigned_formula")), ()
-            )
-            if through != channel
-        ),
-        default=0.0,
-    )
-    return {"ratio": partner_ratio(own, other), "decisive": outweighs(own, other)}
+    ours = [
+        height
+        for through, height in partners.get(
+            neutral_key(row.get("assigned_formula")), ()
+        )
+        if through != channel
+    ]
+    own = max(ours, default=0.0)
+    return {
+        "ratio": partner_ratio(own, other),
+        "decisive": outweighs(own, other),
+        "rival_decisive": not ours or outweighs(other, own),
+    }
 
 
 def same_ion_question(
@@ -389,6 +403,7 @@ def same_ion_question(
     *,
     corroborated: bool,
     partners: dict[str, list[tuple[str, float]]] | None = None,
+    minor_channels: frozenset[str] = frozenset(),
 ) -> tuple[str, dict] | None:
     """Whether this row's ion reads another way, and what that leaves it.
 
@@ -403,10 +418,15 @@ def same_ion_question(
     A reading whose molecule the sample also commits through one of the mode's
     own channels is weighed against the row's own (:func:`weighed`): where the
     sample shows the row's molecule ``engine.PARTNER_MARGIN`` times as brightly
-    or more, the stronger partner settles it. Otherwise it is a doubt that a
-    second channel does not settle, since the reading has a second observation
-    of its own and the row's is no longer the whole of the evidence; so a
-    corroborated row records the rival the sample shows, marked ``shown``.
+    or more, the stronger partner settles it. Otherwise the reading has a second
+    observation of its own, and the row's is no longer the whole of the
+    evidence. A row read through a channel the run opened for itself is then in
+    doubt, and a corroborated one records the rival the sample shows, marked
+    ``shown``. The mode's own reading is in doubt only where the margin, read
+    from the other side, goes to the reading: its molecule is shown
+    ``engine.PARTNER_MARGIN`` times as brightly as the row's or more, or the
+    row's own molecule is shown through no other of the mode's channels. Short
+    of that, the declared reading stands on its second channel.
 
     Where nothing is left in doubt, the row names the reading that doubted it
     most sharply and what settled that one.
@@ -416,12 +436,16 @@ def same_ion_question(
     :param corroborated: Whether a second channel committed the row's neutral.
     :param partners: :func:`partner_heights`; nothing is shown where it is not
         given.
+    :param minor_channels: The run's opportunistic channels. A row through any
+        other channel is the mode's own reading of its ion; none by default,
+        where every channel is the mode's own.
     :return: None where the ion has no other reading this can weigh. Otherwise
         the reason and its record: one of :data:`AMBIGUITY_REASONS` with the
         rival molecule where nothing settled it - on a corroborated row with
         ``shown`` and the partners' ``ratio`` - or :data:`SAME_ION_SETTLED` with
-        the reading and what settled it (``by``, and the ``ratio`` where it was
-        the stronger partner).
+        the reading and what settled it (``by``, and the partners' ``ratio``
+        where the reading was weighed: settled by the stronger partner, or by
+        the second channel of the mode's own reading short of the margin).
     """
     channel = notation_by_id.get(str(row.get("ionization_mechanism_id")))
     if channel is None:
@@ -448,27 +472,35 @@ def same_ion_question(
         id(reading): weighed(row, channel, reading, partners or {})
         for reading in molecules
     }
+    # The mode's own reading, on a second channel: a rival the sample shows has
+    # to outweigh it by the margin rather than merely fail to lose by it.
+    declared = corroborated and channel not in minor_channels
 
-    def settles(reading: dict) -> bool:
+    def doubts_it(reading: dict) -> bool:
         found = weight[id(reading)]
-        return found is not None and found["decisive"]
+        if found is None:
+            # A second channel settles every rival the sample does not show.
+            return not corroborated
+        if found["decisive"]:
+            return False
+        return not declared or found["rival_decisive"]
 
-    doubts = [
-        reading
-        for reading in molecules
-        if not settles(reading)
-        # A second channel settles every rival the sample does not show.
-        and not (corroborated and weight[id(reading)] is None)
-    ]
+    doubts = [reading for reading in molecules if doubts_it(reading)]
     if not doubts:
         settled = sharpest(row, molecules)
-        if settles(settled):
+        found = weight[id(settled)]
+        if found is not None and found["decisive"]:
             return SAME_ION_SETTLED, {
                 **_named(settled),
                 "by": SETTLED_BY_PARTNER,
-                "ratio": weight[id(settled)]["ratio"],
+                "ratio": found["ratio"],
             }
-        return SAME_ION_SETTLED, {**_named(settled), "by": SETTLED_BY_SECOND_CHANNEL}
+        record = {**_named(settled), "by": SETTLED_BY_SECOND_CHANNEL}
+        if found is not None:
+            # A rival the sample shows, short of the margin that would doubt
+            # the mode's own reading: weighed, and recorded as weighed.
+            record["ratio"] = found["ratio"]
+        return SAME_ION_SETTLED, record
     rival = sharpest(row, doubts)
     record = _named(rival)
     if corroborated:
@@ -642,8 +674,9 @@ def apply_cross_channel(
     :param notation_by_id: The run's mechanisms, by the id the rows carry.
     :param minor_channels: The run's opportunistic channels. A neutral committed
         through any other channel is one the sample shows
-        (:func:`partner_heights`); none by default, where every channel is the
-        mode's own.
+        (:func:`partner_heights`), and a row read through one is the mode's own
+        reading of its ion, which a rival the sample shows has to outweigh by
+        the margin; none by default, where every channel is the mode's own.
     :return: A JSON-serializable summary for the run's config.
     """
     channels_searched = sorted(set(notation_by_id.values()))
@@ -674,6 +707,10 @@ def apply_cross_channel(
         # Of the rows those count, the ones a second channel corroborates,
         # which it does not settle against a rival the sample also shows.
         "shown_rival": 0,
+        # Rows read through the mode's own channel that a second channel
+        # settled against the rival they name, which the sample shows too,
+        # but not by the margin that would doubt the mode's own reading.
+        "shown_rival_weighed": 0,
         # Rows whose ion reads another way and that something settled, by what.
         "settled": {
             SETTLED_BY_SECOND_CHANNEL: 0,
@@ -708,7 +745,11 @@ def apply_cross_channel(
             "partner_tier": partner_tier(seen, own_channel),
         }
         question = same_ion_question(
-            row, notation_by_id, corroborated=corroborated, partners=partners
+            row,
+            notation_by_id,
+            corroborated=corroborated,
+            partners=partners,
+            minor_channels=minor_channels,
         )
         if question is not None:
             reason, found = question
@@ -717,6 +758,7 @@ def apply_cross_channel(
                     # The channels that settled it, which is what the row's
                     # reason names.
                     found["through"] = sorted(set(seen) - {own_channel})
+                    summary["shown_rival_weighed"] += "ratio" in found
                 record[SAME_ION_SETTLED] = found
                 summary["settled"][found["by"]] += 1
             else:

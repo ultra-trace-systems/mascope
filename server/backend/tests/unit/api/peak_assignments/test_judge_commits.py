@@ -632,6 +632,66 @@ class TestWhatTheSampleShowsOnTheJudgedLedger:
         )
 
 
+class TestTheDeclaredChannelOnTheJudgedLedger:
+    """A nitrate source's deprotonated acid also reads as the molecule 46 Da
+    lighter with formate, a channel the run opened for itself. The sample shows
+    that molecule through the nitrate adduct, and how brightly decides whether
+    it doubts the mode's own reading."""
+
+    IDS = {"im-1": "[M-H]-", "im-no3": "[M+NO3]-", "im-formate": "[M+HCOO]-"}
+    OPENED = frozenset({"[M+HCOO]-"})
+
+    def _judge(self, nopinone: float):
+        """Pinonic acid deprotonated, its own nitrate adduct at 1e5 counts, and
+        nopinone's at ``nopinone`` counts."""
+        acid = elected(
+            "pa-acid",
+            "C10H16O3",
+            "C10H15O3-",
+            183.1027,
+            "im-1",
+            ("C9H14O", "im-formate"),
+        )
+        acid["provenance"].pop("minor_channel")
+        acid_nitrate = commit("pa-acid-no3", "C10H16O3", "C10H16NO6-", 246.0983, 1.0e5)
+        acid_nitrate["ionization_mechanism_id"] = "im-no3"
+        rival = commit("pa-nopinone", "C9H14O", "C9H14NO4-", 200.0929, nopinone)
+        rival["ionization_mechanism_id"] = "im-no3"
+        judged = judge_ledger(
+            anchors() + [acid, acid_nitrate, rival],
+            self.IDS,
+            minor=self.OPENED,
+            gated=self.OPENED,
+        )
+        return by_id(judged.rows)["pa-acid"], judged
+
+    def test_a_rival_shown_twice_as_brightly_leaves_the_acid_assigned(self):
+        row, judged = self._judge(2.0e5)
+        assert (row["assigned_formula"], row["tier"]) == ("C10H16O3", "assigned")
+        reasons = {r["rule"]: r for r in row["provenance"]["tier_reasons"]}
+        assert reasons["same_ion_settled"]["caps"] is False
+        assert reasons["same_ion_settled"]["detail"] == (
+            "the same ion also reads as C9H14O through [M+HCOO]-; C10H16O3 is also "
+            "committed through [M+NO3]-, which settles it: the sample commits "
+            "C9H14O through one of the mode's own channels too, on a brighter peak "
+            "but not one 10 times as bright as C10H16O3's, which it would take to "
+            "doubt the mode's own reading"
+        )
+        assert judged.cross_channel["shown_rival_weighed"] == 1
+        assert judged.tiering["version"] == 8
+
+    def test_a_rival_shown_twenty_times_as_brightly_holds_it_at_candidate(self):
+        row, judged = self._judge(2.0e6)
+        assert (row["assigned_formula"], row["tier"]) == ("C10H16O3", "candidate")
+        assert row["provenance"]["cross_channel"]["ambiguous_adduct"] == {
+            "alternative": "C9H14O",
+            "via": "[M+HCOO]-",
+            "shown": True,
+            "ratio": 0.05,
+        }
+        assert judged.cross_channel["shown_rival"] == 1
+
+
 def test_the_run_records_the_partner_gates_summary_beside_the_cross_channel_one():
     judged = judge_ledger(
         anchors()

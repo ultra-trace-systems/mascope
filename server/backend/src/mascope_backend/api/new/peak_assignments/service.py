@@ -3040,8 +3040,11 @@ async def _run_sample_assignment(
             f"{cross_channel['capped_mirror']} of those reference-list matches "
             f"({cross_channel['capped_isotopologues']} isotopologues with them); "
             f"{sum(cross_channel['settled'].values())} others settled "
-            f"({cross_channel['settled']}); {mirror_families} reference-list "
-            "matches carry other readings of their ion"
+            f"({cross_channel['settled']}), "
+            f"{cross_channel['shown_rival_weighed']} of them the mode's own reading "
+            "against a rival the sample shows short of the "
+            f"{cross_channel['partner_margin']:g}-fold margin; {mirror_families} "
+            "reference-list matches carry other readings of their ion"
         )
         runtime.logger.info(
             f"Sample '{sample.sample_item_name}' tiers "

@@ -147,8 +147,10 @@ bright or less, it is marked as outweighed and the row counts the question as se
 closer than that, it is still a rival the sample shows, and the row is held at
 *candidate* with it named (*ambiguous adduct*, below): a reading the sample shows seven
 times as strongly is the better one, not a certain one. A reading through one of the
-mode's own channels is never outweighed this way; it is weighed the same way against a
-rival the sample shows (*ambiguous nitrogen* and *ambiguous adduct*, below). The rule is
+mode's own channels is never outweighed this way and keeps its formula; a rival the
+sample shows is weighed against it by the same margin, read from the other side: the
+rival has to be shown ten times as strongly to hold it at *candidate* (*ambiguous
+nitrogen* and *ambiguous adduct*, below). The rule is
 read after the run's mass gate, so a partner is a reading that gate left committed and a
 reading it lifts stays under that gate's ceiling, and a batch search reads it over its own
 rows. On any other instrument electron transfer names an
@@ -440,8 +442,19 @@ What caps a row at candidate:
   the mode's own channels: where it does, each reading has an observation of its own, and
   the two are weighed as two opportunistic readings are (*Auto*, above). Where the
   sample shows this row's molecule on a peak at least ten times as bright as the other's,
-  the question is settled; otherwise the row is held at *candidate*, and the sentence says
-  the sample shows the other molecule too, and how the two compare. The row's own peak is
+  the question is settled. Short of that, what decides is the channel the row is read
+  through. Through a channel the run opened for itself, the row is held at *candidate*.
+  Through one of the mode's own channels - the channels you declared as what the source
+  does - the row is held only where the sample shows the other molecule on a peak at
+  least ten times as bright as this one's, or shows this molecule through no other of the
+  mode's channels at all; otherwise its second channel settles the question, and the
+  sentence says the sample shows the other molecule too. The same margin is asked of a
+  rival as of the stronger reading of two opportunistic ones. On a nitrate source,
+  pinonic acid deprotonated also reads as nopinone with formate: nopinone seen twice as
+  brightly as the acid leaves the acid *assigned*, and formaldehyde seen a hundred times
+  as brightly as glycolic acid holds that acid at *candidate*. Either way the row keeps
+  its formula, and a held row's sentence says the sample shows the other molecule too and
+  how the two compare. The row's own peak is
   the one ion both readings explain, so it counts for neither, and neither does another
   peak of the same ion, however it was read. So on a mode with one channel of its own,
   such as protonation in ESI, the row's molecule has no other peak through that channel to
@@ -468,9 +481,11 @@ What caps a row at candidate:
 
 What a row that keeps its tier kept it on: **second channel** (the same neutral committed
 through two or more of the run's ionization channels), **same ion, settled** (the ion
-reads as another molecule too, and something settled which: a second channel, the sample
-showing this molecule decisively more strongly than the other (see *Auto* above), your
-target library, or the other reading being a radical - the sentence says which), **no close
+reads as another molecule too, and something settled which: a second channel - for a
+reading through one of the mode's own channels, even where the sample shows the other
+molecule too, short of ten times as brightly - the sample showing this molecule
+decisively more strongly than the other (see *Auto* above), your target library, or the
+other reading being a radical - the sentence says which), **no close
 rival** (the evidence separated the formula from every other candidate the run competed
 for the peak; where the ion reads another way, it separated the ion from every other ion,
 since two readings of one ion are one measurement), or **not measured** (nothing the pass

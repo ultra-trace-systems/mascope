@@ -394,7 +394,7 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 - **Peak assignment still ships off, and the assignment work in these notes
   stays dark until a deployment opts in.** The engine at 0.5.0 with tiering
-  rule set 7, the chemistry profiles, the reference seed lists and the
+  rule set 8, the chemistry profiles, the reference seed lists and the
   inspector are all behind `peak_assignment`, which has been `false` since
   1.8.0: with it off the assignment views stay hidden, the write routes answer
   403 and nothing is assigned on ingest, so an upgrade changes nothing here by
@@ -470,6 +470,27 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   its own way, such as `C6H4(CH3)2`, now counts as the molecule it spells when
   channels are compared. `config.tiering` records rule set 7 (assignment
   quality plan, step 3.1c).
+
+- **A rival has to be shown ten times as strongly to doubt a reading through
+  one of the mode's own channels.** The rule above held such a reading at
+  candidate wherever the sample also showed the rival's molecule, unless the
+  row's own molecule was shown ten times as brightly. It now reads the same
+  margin from the other side: a reading through a channel the mode declares is
+  settled by its second channel unless the sample shows the rival's molecule
+  ten times as brightly as the row's own or more, or shows the row's own
+  molecule through no other of the mode's channels. On a nitrate source,
+  pinonic acid deprotonated, whose formate reading's molecule nopinone is seen
+  through the nitrate adduct at about twice the acid's own, is assigned again,
+  while glycolic acid, against formaldehyde seen a hundred times as brightly,
+  stays a candidate with the rival named. The row records the rival it weighed
+  with the ratio (`same_ion_settled`, by `second_channel`, with `ratio`), its
+  reason says the sample shows the rival too, and the run counts such rows
+  (`shown_rival_weighed` in `config.cross_channel`). A reading through a
+  channel the run opened for itself keeps the contest's margin, a declared
+  channel keeps its formula as before, and an ESI row whose molecule is seen
+  through no other channel of the mode's own is still held however faint the
+  rival. `config.tiering` records rule set 8 (assignment quality plan, step
+  3.1d).
 
 - **The peak inspector is more compact and has a column of its own, and the
   tier chip names the tier alone.**

@@ -551,7 +551,8 @@ class TestARivalTheSampleShows:
         # A proton-transfer source declares protonation, so C7H6 through [M+H]+
         # is the mode's own reading, and C7H6 is also seen through electron
         # transfer. So is toluene, thirty times as brightly: the hydride reading
-        # has a second observation of its own.
+        # has a second observation of its own, past the margin a rival needs to
+        # doubt the mode's own reading.
         rows = [
             benzyl("C7H6", PROTON_TRANSFER, ("C7H8", HYDRIDE)),
             through_electron_transfer("c7h6", "C7H6", intensity=1.0e5),
@@ -761,7 +762,7 @@ class TestARivalTheSampleShows:
         rows = [
             benzyl("C7H6", PROTON_TRANSFER, ("C7H8", HYDRIDE)),
             through_electron_transfer("c7h6", "C7H6"),
-            row("toluene", "C7H8", PROTON_TRANSFER),
+            row("toluene", "C7H8", PROTON_TRANSFER, intensity=3.0e6),
         ]
         apply_cross_channel(rows, notation_by_id=dict(CHARGE_TRANSFER))
         assert rows[0]["tier"] == "candidate"
@@ -780,7 +781,7 @@ class TestARivalTheSampleShows:
             through_electron_transfer(
                 "xylene",
                 "C6H4(CH3)2",
-                intensity=7.0e5,
+                intensity=3.0e6,
                 source="database",
                 compound="tc-xylene",
             ),
@@ -792,7 +793,7 @@ class TestARivalTheSampleShows:
             "alternative": "C8H10",
             "via": "[M-H]+",
             "shown": True,
-            "ratio": 0.14,
+            "ratio": 0.03,
         }
 
     #: Dimethylformamide clustered with hydronium: C3H9NO2 through a proton
@@ -807,7 +808,7 @@ class TestARivalTheSampleShows:
         rows = [
             row("a", "C3H7NO", "h3o", displaced=self.DMF_HYDRONIUM),
             row("b", "C3H7NO", PROTON, intensity=1.0e5),
-            row("c", "C3H9NO2", AMMONIUM, intensity=4.0e5),
+            row("c", "C3H9NO2", AMMONIUM, intensity=4.0e6),
         ]
         apply_cross_channel(rows, notation_by_id={**POSITIVE, "h3o": "[M+H3O]+"})
         record = rows[0]["provenance"]["cross_channel"]
@@ -816,7 +817,7 @@ class TestARivalTheSampleShows:
             "alternative": "C3H9NO2",
             "via": "[M+H]+",
             "shown": True,
-            "ratio": 0.25,
+            "ratio": 0.02,
         }
 
     def test_a_settled_row_names_the_sharpest_reading_with_what_settled_it(self):
@@ -954,6 +955,214 @@ class TestTheStrongerPartner:
         committed["alternatives"][0]["partner_gate"] = "unmet"
         readings = same_ion_readings(committed, dict(CHARGE_TRANSFER))
         assert [r["assigned_formula"] for r in readings] == ["C7H7"]
+
+
+FORMATE = "formate"
+
+#: A nitrate source on the chamber dataset: deprotonation and the nitrate
+#: adduct declared, formate opened beside them.
+NITRATE_SOURCE = {DEPROT: "[M-H]-", NITRATE: "[M+NO3]-", FORMATE: "[M+HCOO]-"}
+
+
+def pinonic_acid(**kwargs) -> dict:
+    """Pinonic acid deprotonated at 183.103, which also reads as nopinone with
+    formate."""
+    return row("pinonic", "C10H16O3", DEPROT, displaced=("C9H14O", FORMATE), **kwargs)
+
+
+def through_nitrate(row_id: str, formula: str, **kwargs) -> dict:
+    """A molecule the sample commits through the nitrate adduct, one of the
+    mode's own channels."""
+    return row(row_id, formula, NITRATE, **kwargs)
+
+
+class TestTheDeclaredChannelsPrior:
+    """One margin, read both ways: a rival the sample shows has to outweigh the
+    mode's own reading tenfold to hold it at candidate, as the winner of a
+    contest has to outweigh the loser tenfold to settle the ion."""
+
+    def gate(self, rows: list[dict]) -> dict:
+        return apply_cross_channel(
+            rows,
+            notation_by_id=dict(NITRATE_SOURCE),
+            minor_channels=frozenset({"[M+HCOO]-"}),
+        )
+
+    def test_a_rival_shown_twice_as_brightly_does_not_doubt_the_modes_reading(self):
+        # Nopinone is seen through the nitrate adduct at twice the acid's own
+        # nitrate adduct: the better-shown molecule, not ten times better.
+        rows = [
+            pinonic_acid(),
+            through_nitrate("acid", "C10H16O3", intensity=1.0e5),
+            through_nitrate("nopinone", "C9H14O", intensity=2.0e5),
+        ]
+        summary = self.gate(rows)
+        assert rows[0]["tier"] == "assigned"
+        assert rows[0]["assigned_formula"] == "C10H16O3"
+        assert rows[0]["provenance"]["cross_channel"][SAME_ION_SETTLED] == {
+            "alternative": "C9H14O",
+            "via": "[M+HCOO]-",
+            "by": SETTLED_BY_SECOND_CHANNEL,
+            "ratio": 0.5,
+            "through": ["[M+NO3]-"],
+        }
+        assert (summary["shown_rival_weighed"], summary["shown_rival"]) == (1, 0)
+        assert (summary["settled"][SETTLED_BY_SECOND_CHANNEL], summary["capped"]) == (
+            1,
+            0,
+        )
+
+    def test_nor_does_one_the_sample_shows_more_faintly_than_the_rows_own(self):
+        # Short of the margin from the row's side too, so the stronger partner
+        # does not settle it; the declared reading's second channel does.
+        rows = [
+            pinonic_acid(),
+            through_nitrate("acid", "C10H16O3", intensity=3.0e5),
+            through_nitrate("nopinone", "C9H14O", intensity=1.0e5),
+        ]
+        self.gate(rows)
+        assert rows[0]["tier"] == "assigned"
+        assert rows[0]["provenance"]["cross_channel"][SAME_ION_SETTLED] == {
+            "alternative": "C9H14O",
+            "via": "[M+HCOO]-",
+            "by": SETTLED_BY_SECOND_CHANNEL,
+            "ratio": 3.0,
+            "through": ["[M+NO3]-"],
+        }
+
+    def test_a_rival_shown_twenty_times_as_brightly_holds_it(self):
+        # Glycolic acid, against formaldehyde with formate: the sample shows
+        # formaldehyde through the nitrate adduct twenty times as brightly.
+        rows = [
+            row("glycolic", "C2H4O3", DEPROT, displaced=("CH2O", FORMATE)),
+            through_nitrate("acid", "C2H4O3", intensity=5.0e4),
+            through_nitrate("formaldehyde", "CH2O", intensity=1.0e6),
+        ]
+        summary = self.gate(rows)
+        assert rows[0]["tier"] == "candidate"
+        assert rows[0]["assigned_formula"] == "C2H4O3"
+        record = rows[0]["provenance"]["cross_channel"]
+        assert record["reason"] == REASON_AMBIGUOUS_ADDUCT
+        assert record[REASON_AMBIGUOUS_ADDUCT] == {
+            "alternative": "CH2O",
+            "via": "[M+HCOO]-",
+            "shown": True,
+            "ratio": 0.05,
+        }
+        assert (summary["shown_rival"], summary["shown_rival_weighed"]) == (1, 0)
+
+    def test_the_margin_itself_holds_it(self):
+        # Ten times as bright is the margin, read as the contest reads it.
+        rows = [
+            pinonic_acid(),
+            through_nitrate("acid", "C10H16O3", intensity=1.0e5),
+            through_nitrate("nopinone", "C9H14O", intensity=1.0e6),
+        ]
+        self.gate(rows)
+        assert rows[0]["tier"] == "candidate"
+        record = rows[0]["provenance"]["cross_channel"]
+        assert record[REASON_AMBIGUOUS_ADDUCT]["ratio"] == 0.1
+
+    def test_short_of_it_the_margin_is_read_on_the_rivals_side(self):
+        # 9.99 times as bright is short of the margin, though the row's side
+        # rounds down to a tenth.
+        rows = [
+            pinonic_acid(),
+            through_nitrate("acid", "C10H16O3", intensity=1.0e5),
+            through_nitrate("nopinone", "C9H14O", intensity=9.99e5),
+        ]
+        self.gate(rows)
+        assert rows[0]["tier"] == "assigned"
+        record = rows[0]["provenance"]["cross_channel"]
+        assert record[SAME_ION_SETTLED]["ratio"] == 0.1
+
+    def test_a_row_whose_own_molecule_is_not_shown_beyond_its_channel_is_held(self):
+        # The acid is seen again only with formate, a channel the run opened
+        # for itself, which shows nothing: however faintly the sample shows
+        # nopinone, the acid has no partner to weigh against it.
+        rows = [
+            pinonic_acid(),
+            row("acid-formate", "C10H16O3", FORMATE, intensity=1.0e6),
+            through_nitrate("nopinone", "C9H14O", intensity=1.0e3),
+        ]
+        self.gate(rows)
+        assert rows[0]["tier"] == "candidate"
+        assert rows[0]["provenance"]["cross_channel"][REASON_AMBIGUOUS_ADDUCT] == {
+            "alternative": "C9H14O",
+            "via": "[M+HCOO]-",
+            "shown": True,
+            "ratio": None,
+        }
+
+    def test_unseen_is_unseen_whatever_the_rivals_height(self):
+        # A rival row with no height to weigh still shows its molecule, and
+        # the acid has nothing beyond its own channel to stand on.
+        rows = [
+            pinonic_acid(),
+            row("acid-formate", "C10H16O3", FORMATE),
+            through_nitrate("nopinone", "C9H14O", intensity=0.0),
+        ]
+        self.gate(rows)
+        assert rows[0]["tier"] == "candidate"
+        assert rows[0]["provenance"]["cross_channel"]["reason"] == (
+            REASON_AMBIGUOUS_ADDUCT
+        )
+
+    def test_a_reading_the_run_opened_for_itself_keeps_the_contests_margin(self):
+        # Nopinone with formate, against the acid the sample shows at half
+        # nopinone's own: short of the margin, so the rival is a doubt.
+        rows = [
+            row("nopinone-formate", "C9H14O", FORMATE, displaced=("C10H16O3", DEPROT)),
+            through_nitrate("nopinone", "C9H14O", intensity=2.0e5),
+            through_nitrate("acid", "C10H16O3", intensity=1.0e5),
+        ]
+        summary = self.gate(rows)
+        assert rows[0]["tier"] == "candidate"
+        assert rows[0]["provenance"]["cross_channel"][REASON_AMBIGUOUS_ADDUCT] == {
+            "alternative": "C10H16O3",
+            "via": "[M-H]-",
+            "shown": True,
+            "ratio": 2.0,
+        }
+        assert (summary["shown_rival"], summary["shown_rival_weighed"]) == (1, 0)
+
+    def test_the_stronger_partner_still_settles_the_modes_own_reading(self):
+        rows = [
+            pinonic_acid(),
+            through_nitrate("acid", "C10H16O3", intensity=1.0e6),
+            through_nitrate("nopinone", "C9H14O", intensity=1.0e5),
+        ]
+        summary = self.gate(rows)
+        assert rows[0]["provenance"]["cross_channel"][SAME_ION_SETTLED] == {
+            "alternative": "C9H14O",
+            "via": "[M+HCOO]-",
+            "by": SETTLED_BY_PARTNER,
+            "ratio": 10.0,
+        }
+        assert summary["shown_rival_weighed"] == 0
+
+    def test_a_rival_the_sample_does_not_show_is_settled_as_before(self):
+        rows = [pinonic_acid(), through_nitrate("acid", "C10H16O3")]
+        summary = self.gate(rows)
+        assert rows[0]["provenance"]["cross_channel"][SAME_ION_SETTLED] == {
+            "alternative": "C9H14O",
+            "via": "[M+HCOO]-",
+            "by": SETTLED_BY_SECOND_CHANNEL,
+            "through": ["[M+NO3]-"],
+        }
+        assert summary["shown_rival_weighed"] == 0
+
+    def test_its_isotopologues_stand_with_it(self):
+        rows = [
+            pinonic_acid(),
+            row("pinonic-13c", "C10H16O3", DEPROT, role="iso_child", owner="pinonic"),
+            through_nitrate("acid", "C10H16O3", intensity=1.0e5),
+            through_nitrate("nopinone", "C9H14O", intensity=2.0e5),
+        ]
+        summary = self.gate(rows)
+        assert rows[1]["tier"] == "assigned"
+        assert "cross_channel" not in rows[1].get("provenance", {})
+        assert summary["capped_isotopologues"] == 0
 
 
 class TestWhatHappensToTheIsotopologues:
