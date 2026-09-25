@@ -21,6 +21,7 @@ row holds.
 import contextlib
 import importlib.util
 import io
+import itertools
 import json
 from pathlib import Path
 
@@ -104,7 +105,17 @@ _READ_OTHERWISE = [
     "+(H2O)(H2O)H+",
     "+(A)(B)+",
     "[M+(B)C+(A)]+",
+    "[M+(H2O)Na+K]+",
+    "[M+K+(H2O)Na]+",
+    "+(K)(H2O)Na+",
+    "+((H2O)Na)K+",
+    "[M+(H2O)H+NH4]+",
+    "[M+NH4+(H2O)H]+",
 ]
+
+#: Terms to write mechanisms of in every order, the grouped and the multiplied
+#: among them - the set the library's own test writes in every order.
+_TERMS = ["H", "K", "H2O", "(H2O)Na", "(H2O)2", "(CH3)3C", "((A)B)C", "(A)", "^NO3"]
 
 # The rows the map must leave alone, and why. The potassium pair are two rows
 # of one mechanism: the legacy row cannot take the spelling the standard one
@@ -155,6 +166,24 @@ def test_the_migration_writes_what_the_library_reads(legacy, standard):
 def test_the_migration_writes_a_spelling_as_the_library_reads_it(spelling):
     assert _MIGRATION.to_standard(spelling) == standard_notation(spelling)
     assert _MIGRATION.to_legacy(spelling) == legacy_notation(spelling)
+
+
+@pytest.mark.parametrize(
+    "terms",
+    [
+        combination
+        for count in (2, 3)
+        for combination in itertools.combinations(_TERMS, count)
+    ],
+)
+def test_the_migration_writes_every_order_of_the_terms_as_the_library_does(terms):
+    for order in itertools.permutations(terms):
+        for spelling in (
+            "[M" + "".join("+" + term for term in order) + "]+",
+            "+" + "".join(f"({term})" for term in order[:-1]) + order[-1] + "+",
+        ):
+            assert _MIGRATION.to_standard(spelling) == standard_notation(spelling)
+            assert _MIGRATION.to_legacy(spelling) == legacy_notation(spelling)
 
 
 @pytest.mark.parametrize(
