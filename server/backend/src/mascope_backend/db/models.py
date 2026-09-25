@@ -7,6 +7,7 @@ samples, targets, and analysis matches.
 
 from datetime import datetime as dt
 from datetime import timezone
+from functools import lru_cache
 from typing import Optional
 
 from fastapi_users.db import (
@@ -1235,11 +1236,22 @@ class StandardMechanism(TypeDecorator):
     def process_result_value(self, value, dialect):
         if value is None:
             return value
-        # Imported here: the composition package pulls in the finder's
-        # dependencies, which nothing else that loads the models needs.
-        from mascope_tools.composition.mechanism_notation import mechanism_key
+        return _read_mechanism(value)
 
-        return mechanism_key(value)
+
+@lru_cache(maxsize=1024)
+def _read_mechanism(value: str) -> str:
+    """A stored mechanism in the standard notation, once per spelling.
+
+    Every row of a query that selects the column comes through here, the
+    target-isotope and match-record listings once per isotope or ion, and a
+    deployment holds a few dozen spellings at most.
+    """
+    # Imported here: the composition package pulls in the finder's
+    # dependencies, which nothing else that loads the models needs.
+    from mascope_tools.composition.mechanism_notation import mechanism_key
+
+    return mechanism_key(value)
 
 
 class IonizationMechanism(Base):
