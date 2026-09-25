@@ -98,7 +98,7 @@ indicator of a correct formula. It is now **measured and folded directly into `p
 ammonium/protonation barely). For a winner that got a lift, provenance carries:
 
 ```json
-"corroboration": { "adducts": ["+Br-", "-H+"], "n_adducts": 2, "boost": 0.46 }
+"corroboration": { "adducts": ["[M+Br]-", "[M-H]-"], "n_adducts": 2, "boost": 0.46 }
 ```
 
 - `adducts` — the distinct adducts the compound was seen via (notations).

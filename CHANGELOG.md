@@ -7,28 +7,30 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 ### Added
 
 - **Peak assignment reads a charge-transfer source.** On an Orbitrap, a mode
-  with no reagent whose mechanisms include the bare `+` or `-`, the way that
-  instrument's EASY-IC source is declared, resolves to a charge-transfer profile
-  of its polarity instead of the generic ESI one: a hydrocarbon-sized grid under
+  with no reagent whose mechanisms include electron transfer, `[M]+.` or
+  `[M]-.`, the way that instrument's EASY-IC source is declared, resolves to a
+  charge-transfer profile of its polarity instead of the generic ESI one: a
+  hydrocarbon-sized grid under
   the ambient-air prior, the fluoranthene beam claimed by the reagent pass, and
-  the channels such a source also runs - hydride abstraction (`-H-`) and proton
+  the channels such a source also runs - hydride abstraction (`[M-H]+`) and proton
   transfer in positive mode, deprotonation in negative - opened as secondary
   channels where the spectrum shows the source runs them, or where the
   acquisition could not have shown it, and capped at candidate without
-  corroboration. A channel the mode declares itself, proton transfer beside the
-  bare sign, is the mode's own and is not capped. Such a channel's reading of an
-  ion the bare sign also reads stands only where the sample commits its
+  corroboration. A channel the mode declares itself, proton transfer beside
+  electron transfer, is the mode's own and is not capped. Such a channel's reading
+  of an ion electron transfer also reads stands only where the sample commits its
   molecule through one of the mode's own channels, and between two such
   readings the one whose molecule the sample shows wins: tropylium reads as
-  toluene less a hydride because toluene is seen through the bare sign, not as
+  toluene less a hydride because toluene is seen through electron transfer, not as
   protonated C7H6, which the heavier mechanism would otherwise make it. The
   reading set aside stays on the row, marked as not borne out, and is no
   rival to the one that was. The rule is read after the mass gate, so a
   partner is a reading that gate left committed and a reading it lifts stays
-  under that gate's ceiling, and a batch search reads it over its own rows. A bare-sign mode on any other
-  instrument, an ambient-ion stream, keeps the ESI profile, as does a mode with
+  under that gate's ceiling, and a batch search reads it over its own rows. An
+  electron-transfer mode on any other instrument, an ambient-ion stream, keeps
+  the ESI profile, as does a mode with
   only protonation or deprotonation. A secondary channel is searched only where
-  the deployment holds its mechanism: no deployment has `-H-` by default, so an
+  the deployment holds its mechanism: no deployment has `[M-H]+` by default, so an
   operator adds it once under Ionization mechanisms, and until then the run's
   snapshot lists the channel as unavailable. Read on a chamber dataset measured
   on that source, where the ESI grid with no prior had committed formulas no
@@ -37,7 +39,7 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 - **Peak assignment can read a formate adduct on a negative reagent source.**
   The nitrate, 15N-nitrate, bromide and iodide profiles open a formate channel,
-  `+HCOO-`, the way they open carbonate: where the spectrum shows formate, its
+  `[M+HCOO]-`, the way they open carbonate: where the spectrum shows formate, its
   dimer with formic acid or its cluster with the reagent's acid, and on a
   nitrate source also where the acquisition starts above every carrier the
   source makes. A peak that reads both as a deprotonated acid and as the
@@ -50,7 +52,7 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   series of C11 acids at the top tier, a quarter of one batch's assigned
   intensity, every one of them a C10 oxidation product plus formic acid
   (assignment quality plan, step 3.2). The channel is searched only where the
-  deployment holds the `+HCOO-` mechanism, which no deployment has by
+  deployment holds the `[M+HCOO]-` mechanism, which no deployment has by
   default: an operator adds it once under Ionization mechanisms, polarity
   negative, and until then the run's snapshot lists the channel as
   unavailable.
@@ -379,6 +381,27 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   itself. Targeted matching is unchanged either way. A deployment that wants
   the feature sets `peak_assignment = true` under `[meta]` in its env config;
   the shipped reference lists load only when `reference seed` is run.
+- **Ionization mechanisms are written in the standard adduct notation.**
+  `[M+H]+`, `[M-H]-`, `[M+Br]-`, `[M-H]+`, `[M+CH4N2O+H]+`, `[M]+.`: what is
+  added to or removed from the molecule inside the brackets, and the ion's own
+  charge after them. The mechanism editor, the inspector, the match tables, the
+  exports and the SDK show every mechanism that way, one stored in the older
+  spelling included. That spelling, `<operation><moiety><moiety charge>`, put
+  the charge of the species moved last rather than the ion's (`-H+` is
+  `[M-H]-`, and `-H-` is `[M-H]+`); it is still accepted when a mechanism is
+  created, until 2.0, and is stored in the standard one, and a mechanism the
+  deployment already holds in the other spelling is refused as a duplicate.
+  The editor now says what is wrong with a mechanism as it is typed. What
+  neither spelling can say is refused rather than approximated: a dimer
+  (`[2M+H]+`), a doubly charged ion (`[M+2H]2+`) or a mechanism that both adds
+  and removes (`[M+Na-2H]-`). The shipped chemistries, the chemistry profiles'
+  fingerprints and secondary channels and the provisional corroboration weights
+  are spelled in it, and a weight keyed in either spelling applies to an adduct
+  written in the other (assignment quality plan, step 3.3b). **For callers of
+  `mascope_tools`:** `parse_ionization` reads both notations and refuses a
+  string in neither, such as `H+` with no leading sign, which it used to read as
+  deprotonation; `mascope_tools.composition.mechanism_notation` converts between
+  the two.
 - **The peak inspector is more compact and has a column of its own, and the
   tier chip names the tier alone.**
   - **Find more**, the composition search, starts from the focused sample's
