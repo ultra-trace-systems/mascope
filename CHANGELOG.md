@@ -842,8 +842,9 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   calibration fit, which costs a refit rather than a reread. The properties
   are now written beside the old ones and renamed over them, through the same
   helper the runtime state file uses: the content is flushed to disk before
-  the rename, each writer gets its own temporary, and on Windows the rename
-  waits out a reader holding the file open instead of failing the write.
+  the rename, each writer gets its own temporary, the file keeps the
+  permissions it had, and on Windows the rename waits out a reader holding the
+  file open instead of failing the write.
 
 - **`-H-` means what the notation says.** The composition library read `-H-`
   as deprotonation, one electron mass off the anion and the opposite polarity

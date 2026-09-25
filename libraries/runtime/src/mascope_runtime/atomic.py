@@ -14,8 +14,14 @@ each of them is a thing a writer gets wrong by leaving it out:
 - **The temporary name must be unique per writer, not per process.** Two
   threads of one process writing ``<path>.<pid>.tmp`` share one temporary,
   and one thread's rename publishes a file the other is still filling - the
-  torn file the rename was meant to prevent. :func:`tempfile.mkstemp` is
-  unique per call.
+  torn file the rename was meant to prevent.
+- **The file that arrives must have the permissions the file had.** A
+  temporary is created private - :func:`tempfile.mkstemp` makes it 0600 - and
+  the rename carries that mode onto the destination, so writing this way
+  silently tightens every file it touches. A ``.props`` that goes from 0644 to
+  0600 is invisible to the app and breaks anything reading the filestore as
+  another user. The mode of the file being replaced is carried over, and a new
+  file is created through the umask exactly as ``open()`` would.
 - **The content must reach the disk before the rename.** Without the fsync,
   the rename can land before the bytes do, and a power loss leaves the new
   name pointing at an empty file on some filesystems - which is the failure
@@ -31,8 +37,9 @@ import contextlib
 import json
 import os
 import random
-import tempfile
+import stat
 import time
+import uuid
 
 
 #: How long a rename keeps retrying a Windows sharing violation before giving
@@ -73,6 +80,7 @@ def write_json(
     indent: int | None = None,
     prefix: str = ".tmp.",
     timeout: float = REPLACE_TIMEOUT,
+    mode: int | None = None,
 ):
     """Write ``data`` to ``path`` as JSON, leaving the old file on any failure.
 
@@ -82,17 +90,31 @@ def write_json(
     :param prefix: Prefix for the temporary file, which is made in the same
         directory so the rename stays on one filesystem.
     :param timeout: How long the rename retries a Windows sharing lock [s].
+    :param mode: Permissions for the file that arrives. The default keeps
+        whatever the file being replaced has, and leaves a new file with what
+        an ordinary ``open()`` would have given it.
     :raises OSError: The write or the rename failed; ``path`` is unchanged.
     """
     directory = os.path.dirname(path) or "."
-    fd, temp_path = tempfile.mkstemp(
-        dir=directory, prefix=f"{prefix}{os.path.basename(path)}.", suffix=".tmp"
+    # Unique per call, like mkstemp, but created through the umask the way
+    # open() is rather than at 0600 - the rename carries the temporary's mode
+    # onto the destination.
+    temp_path = os.path.join(
+        directory, f"{prefix}{os.path.basename(path)}.{uuid.uuid4().hex}.tmp"
     )
+    fd = os.open(temp_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o666)
     try:
         with os.fdopen(fd, "w") as f:
             json.dump(data, f, indent=indent)
             f.flush()
             os.fsync(f.fileno())
+        if mode is None:
+            try:
+                mode = stat.S_IMODE(os.stat(path).st_mode)
+            except OSError:
+                mode = None  # A new file keeps what the umask gave it.
+        if mode is not None:
+            os.chmod(temp_path, mode)
         replace_with_retry(temp_path, path, timeout=timeout)
     finally:
         # A successful replace moved the temporary away; anything still there

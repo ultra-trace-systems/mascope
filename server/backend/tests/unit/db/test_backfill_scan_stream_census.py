@@ -233,7 +233,7 @@ async def test_each_readable_file_gets_its_census():
     written, attempts, write, write_attempt = _recorder()
 
     counts = await script._fill(
-        ["a.raw", "b.raw"], _always((A_CENSUS, None)), write, write_attempt
+        ["a.raw", "b.raw"], _always((A_CENSUS, None, None)), write, write_attempt
     )
 
     assert written == {"a.raw": A_CENSUS, "b.raw": A_CENSUS}
@@ -252,7 +252,10 @@ async def test_missing_raw_data_and_a_reader_failure_are_counted_apart():
 
     counts = await script._fill(
         ["gone.raw", "bad.raw"],
-        {"gone.raw": (None, "no_raw"), "bad.raw": (None, "reader")}.get,
+        {
+            "gone.raw": (None, "no_raw", None),
+            "bad.raw": (None, "reader", ValueError("the reader said no")),
+        }.get,
         write,
         write_attempt,
     )
@@ -276,7 +279,9 @@ async def test_a_file_reporting_no_streams_is_not_recorded_as_answered():
     """
     written, attempts, write, write_attempt = _recorder()
 
-    counts = await script._fill(["odd.raw"], _always(([], None)), write, write_attempt)
+    counts = await script._fill(
+        ["odd.raw"], _always(([], None, None)), write, write_attempt
+    )
 
     assert written == {}
     assert counts["empty"] == 1
@@ -300,7 +305,7 @@ async def test_one_failed_write_does_not_end_the_run():
 
     counts = await script._fill(
         ["a.raw", "gone.raw", "b.raw"],
-        _always((A_CENSUS, None)),
+        _always((A_CENSUS, None, None)),
         write,
         write_attempt,
     )
@@ -308,6 +313,48 @@ async def test_one_failed_write_does_not_end_the_run():
     assert set(written) == {"a.raw", "b.raw"}
     assert counts["written"] == 2
     assert counts["unwritable"] == 1
+
+
+@pytest.mark.asyncio
+async def test_the_readers_own_error_reaches_the_log():
+    """The exception has to travel, not be looked up.
+
+    It is caught in a worker thread, so ``opt(exception=True)`` in the event
+    loop finds nothing - and this backend's formatter does not merely print
+    "NoneType: None" for an empty record, it raises inside the handler and the
+    line is lost altogether.
+    """
+    written, attempts, write, write_attempt = _recorder()
+    cause = ValueError("the reader said no")
+
+    with captured_logs() as records:
+        await script._fill(
+            ["bad.raw"], _always((None, "reader", cause)), write, write_attempt
+        )
+
+    refused = [r for r in records if "bad.raw" in r["message"]]
+    assert refused, "the failure is reported"
+    assert refused[0]["exception"] is not None, "with the reader's own error"
+    assert refused[0]["exception"].value is cause
+
+
+@pytest.mark.asyncio
+async def test_writing_a_census_clears_an_earlier_failed_attempt():
+    """Otherwise a retried file keeps a note saying the reader refused it."""
+    updates = {}
+
+    def update_props(filename, fields):
+        updates[filename] = fields
+
+    original = script.m_io.update_props
+    script.m_io.update_props = update_props
+    try:
+        script._write_census("retried.raw", A_CENSUS)
+    finally:
+        script.m_io.update_props = original
+
+    assert updates["retried.raw"][script.CENSUS_FIELD] == A_CENSUS
+    assert updates["retried.raw"][script.ATTEMPT_FIELD] is None
 
 
 # --- the bound --------------------------------------------------------------
@@ -345,9 +392,10 @@ def test_the_census_of_a_real_file_is_read_from_its_raw_data(monkeypatch):
         script.m_name, "filename_to_datafile_path", lambda name: str(KORBI_POS)
     )
 
-    streams, reason = script._read_census("KORBI2_AMB_POS_20260109174345.raw")
+    streams, reason, error = script._read_census("KORBI2_AMB_POS_20260109174345.raw")
 
     assert reason is None
+    assert error is None
     assert streams, "the committed file holds scans, so it holds a stream"
     assert all(s["key"] for s in streams)
     assert any(s["signature"]["ms_order"] == 1 for s in streams)
@@ -364,10 +412,11 @@ def test_a_missing_raw_file_answers_no_raw(monkeypatch):
     )
 
     with captured_logs() as records:
-        streams, reason = script._read_census("missing.raw")
+        streams, reason, error = script._read_census("missing.raw")
 
     assert streams is None
     assert reason == "no_raw"
+    assert error is None
     # Nothing at WARNING: a server whose older raw data has been cleared would
     # otherwise open one monitoring issue per file.
     assert [r["message"] for r in records if r["level"].name == "WARNING"] == []

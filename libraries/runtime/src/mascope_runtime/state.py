@@ -165,8 +165,16 @@ class RuntimeJsonState(object):
 
     def _write_state(self, state: dict):
         """Write the state file atomically, so readers never see a partial file."""
+        # mode=0600 keeps what this file has had since it started being
+        # written through a temporary; the helper's default would loosen a
+        # newly created one to the umask.
         write_json(
-            self._state_path, state, indent=2, prefix=".", timeout=_REPLACE_TIMEOUT
+            self._state_path,
+            state,
+            indent=2,
+            prefix=".",
+            timeout=_REPLACE_TIMEOUT,
+            mode=0o600,
         )
 
 
