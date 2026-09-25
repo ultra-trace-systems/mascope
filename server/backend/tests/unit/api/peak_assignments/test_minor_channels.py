@@ -475,6 +475,7 @@ class TestThePartnerGate:
         tier=TIER_ASSIGNED,
         capped=None,
         source="untargeted",
+        intensity=1.0e5,
     ):
         """A monoisotopic row as a stage built and the policy judged it."""
         provenance = {"plausibility": 1.0, "evidence": 0.99}
@@ -484,6 +485,7 @@ class TestThePartnerGate:
             "peak_assignment_id": row_id,
             "role": "M0",
             "sample_peak_id": f"peak-{row_id}",
+            "sample_peak_intensity": intensity,
             "assigned_formula": formula,
             "ion_formula": None,
             "ionization_mechanism_id": mechanism_id,
@@ -651,6 +653,375 @@ class TestThePartnerGate:
         assert formate["tier"] == TIER_CANDIDATE
         assert formate["provenance"]["mass_gate"]["capped"] == TIER_CANDIDATE
         assert summary["held"] == 1
+
+
+class TestTheStrongerPartnerDecides:
+    """Two opportunistic readings of one ion, each with a partner.
+
+    The benzyl cation at 91.054 is protonated C7H6 or toluene less a hydride,
+    and on the certified cylinder the sample commits both molecules through
+    electron transfer: C7H6 faintly, toluene at 27 to 31 times its height. The
+    election's prior for the heavier mechanism takes the proton; the sample
+    says toluene, and how strongly it says so decides whether the other
+    reading is still a doubt.
+    """
+
+    CT_IDS = {"+": "im-ct", "[M+H]+": "im-h", "[M-H]+": "im-hydride"}
+    OPENED = frozenset({"[M+H]+", "[M-H]+"})
+    BANDS = {TIER_ASSIGNED: 0.75, TIER_CANDIDATE: 0.45}
+
+    _row = staticmethod(TestThePartnerGate._row)
+
+    def _gate(self, rows, *, opened=OPENED):
+        return apply_partner_gates(
+            rows,
+            notation_by_id={mid: n for n, mid in self.CT_IDS.items()},
+            minor_channels=opened,
+            partner_gated_channels=opened,
+            tier_bands=self.BANDS,
+        )
+
+    def _benzyl(self, elected="C7H6", mechanism="im-h", other=("C7H8", "im-hydride")):
+        """The benzyl cation as the election or a stage left it."""
+        return self._row(
+            "benzyl", elected, mechanism, alternatives=(other,), intensity=4.0e5
+        )
+
+    def _seen(self, row_id, formula, intensity, tier=TIER_ASSIGNED):
+        """A molecule the sample commits through electron transfer."""
+        return self._row(row_id, formula, "im-ct", tier=tier, intensity=intensity)
+
+    def test_the_brighter_partner_takes_the_ion_and_settles_it(self):
+        benzyl = self._benzyl()
+        summary = self._gate(
+            [
+                benzyl,
+                self._seen("c7h6", "C7H6", 1.0e5),
+                self._seen("tol", "C7H8", 3.0e6),
+            ]
+        )
+        assert (benzyl["assigned_formula"], benzyl["ionization_mechanism_id"]) == (
+            "C7H8",
+            "im-hydride",
+        )
+        # The ion's fit stays, and the tier is the new reading's own.
+        assert benzyl["tier"] == TIER_ASSIGNED
+        assert benzyl["provenance"]["minor_channel"] == {
+            "corroborated_by": "second_channel",
+            "capped": False,
+        }
+        assert benzyl["provenance"]["partner_gate"] == {
+            "channel": "[M-H]+",
+            "partner": True,
+            "took_from": "C7H6",
+            "contest": [
+                {
+                    "reading": "C7H6",
+                    "via": "[M+H]+",
+                    "on": "intensity",
+                    "tiers": [TIER_ASSIGNED, TIER_ASSIGNED],
+                    "ratio": 30.0,
+                    "decisive": True,
+                }
+            ],
+        }
+        # The sample did bear the proton's reading out: outweighed, not unmet.
+        [proton] = benzyl["alternatives"]
+        assert proton["assigned_formula"] == "C7H6"
+        assert proton["partner_gate"] == "outweighed"
+        assert {
+            key: summary[key]
+            for key in ("contested", "contest_swapped", "outweighed", "within_margin")
+        } == {"contested": 1, "contest_swapped": 1, "outweighed": 1, "within_margin": 0}
+
+    def test_a_partner_at_a_higher_tier_takes_it_however_faint(self):
+        # C7H6's row is the brighter, but only a candidate: the tier decides
+        # before the height, and settles it at any margin.
+        benzyl = self._benzyl()
+        self._gate(
+            [
+                benzyl,
+                self._seen("c7h6", "C7H6", 1.0e6, tier=TIER_CANDIDATE),
+                self._seen("tol", "C7H8", 5.0e4),
+            ]
+        )
+        assert benzyl["assigned_formula"] == "C7H8"
+        [entry] = benzyl["provenance"]["partner_gate"]["contest"]
+        assert entry["on"] == "tier"
+        assert entry["tiers"] == [TIER_ASSIGNED, TIER_CANDIDATE]
+        assert entry["ratio"] == 0.05
+        assert entry["decisive"] is True
+        assert benzyl["alternatives"][0]["partner_gate"] == "outweighed"
+
+    def test_within_the_margin_the_other_reading_is_left_a_rival(self):
+        # C5H7+ at 67.054: isoprene is seen seven times as strongly as C5H6,
+        # the better reading and not a certain one.
+        c5h7 = self._benzyl(elected="C5H6", other=("C5H8", "im-hydride"))
+        summary = self._gate(
+            [c5h7, self._seen("c5h6", "C5H6", 1.0e5), self._seen("iso", "C5H8", 7.0e5)]
+        )
+        assert (c5h7["assigned_formula"], c5h7["ionization_mechanism_id"]) == (
+            "C5H8",
+            "im-hydride",
+        )
+        [entry] = c5h7["provenance"]["partner_gate"]["contest"]
+        assert (entry["ratio"], entry["decisive"]) == (7.0, False)
+        [proton] = c5h7["alternatives"]
+        assert "partner_gate" not in proton
+        assert (summary["outweighed"], summary["within_margin"]) == (0, 1)
+
+    def test_the_margin_is_ten_times(self):
+        assert engine_module.PARTNER_MARGIN == 10.0
+        c5h7 = self._benzyl(elected="C5H6", other=("C5H8", "im-hydride"))
+        self._gate(
+            [c5h7, self._seen("c5h6", "C5H6", 1.0e5), self._seen("iso", "C5H8", 1.0e6)]
+        )
+        assert c5h7["provenance"]["partner_gate"]["contest"][0]["decisive"] is True
+
+    def test_a_row_holding_the_stronger_reading_keeps_it_and_says_so(self):
+        benzyl = self._benzyl(
+            elected="C7H8", mechanism="im-hydride", other=("C7H6", "im-h")
+        )
+        summary = self._gate(
+            [
+                benzyl,
+                self._seen("c7h6", "C7H6", 1.0e5),
+                self._seen("tol", "C7H8", 3.0e6),
+            ]
+        )
+        assert benzyl["assigned_formula"] == "C7H8"
+        gate = benzyl["provenance"]["partner_gate"]
+        assert "took_from" not in gate
+        assert gate["contest"][0]["decisive"] is True
+        assert benzyl["alternatives"][0]["partner_gate"] == "outweighed"
+        assert (summary["contested"], summary["contest_swapped"]) == (1, 0)
+
+    def test_a_tie_leaves_the_row_its_reading(self):
+        benzyl = self._benzyl()
+        summary = self._gate(
+            [
+                benzyl,
+                self._seen("c7h6", "C7H6", 1.0e5),
+                self._seen("tol", "C7H8", 1.0e5),
+            ]
+        )
+        assert benzyl["assigned_formula"] == "C7H6"
+        gate = benzyl["provenance"]["partner_gate"]
+        assert "took_from" not in gate
+        [entry] = gate["contest"]
+        assert (entry["ratio"], entry["decisive"]) == (1.0, False)
+        # A tie that swapped would swap back every round and never settle.
+        assert (summary["rounds"], summary["settled"]) == (2, True)
+
+    def test_the_strongest_partner_is_the_one_weighed(self):
+        # Two rows commit C7H6 through electron transfer: the brighter one is its
+        # partner, and toluene has to be ten times that one.
+        benzyl = self._benzyl()
+        self._gate(
+            [
+                benzyl,
+                self._seen("c7h6", "C7H6", 1.0e4),
+                self._seen("c7h6-2", "C7H6", 5.0e5),
+                self._seen("tol", "C7H8", 3.0e6),
+            ]
+        )
+        [entry] = benzyl["provenance"]["partner_gate"]["contest"]
+        assert (entry["ratio"], entry["decisive"]) == (6.0, False)
+
+    def test_a_partner_a_swap_makes_is_weighed(self):
+        # Toluene's row was elected through proton transfer as a reading
+        # nothing bears out, so the gate turns it to toluene through electron
+        # transfer - after the benzyl cation was first judged against a ledger with no
+        # toluene in it. The contest reads the ledger as the swap left it.
+        toluene = self._row(
+            "tol",
+            "C7H7",
+            "im-h",
+            alternatives=(("C7H8", "im-ct"),),
+            intensity=3.0e6,
+        )
+        benzyl = self._benzyl()
+        summary = self._gate([benzyl, self._seen("c7h6", "C7H6", 1.0e5), toluene])
+        assert (toluene["assigned_formula"], toluene["ionization_mechanism_id"]) == (
+            "C7H8",
+            "im-ct",
+        )
+        assert benzyl["assigned_formula"] == "C7H8"
+        assert benzyl["provenance"]["partner_gate"]["took_from"] == "C7H6"
+        assert benzyl["provenance"]["partner_gate"]["contest"][0]["ratio"] == 30.0
+        assert summary["settled"] is True
+
+    def test_a_partner_a_swap_takes_away_is_no_longer_weighed(self):
+        # Toluene's only partner is a row the gate had turned to toluene
+        # through electron transfer, setting aside a reading nothing bore out. The
+        # sample bears that reading out, so the row turns back and toluene is
+        # left with no partner: the benzyl cation, which took toluene's reading
+        # on the ledger as it first stood, goes back to the one the sample
+        # still shows, and toluene's is set aside.
+        partner = self._row("tol", "C7H8", "im-ct", intensity=3.0e6)
+        partner["provenance"]["partner_gate"] = {
+            "channel": "[M+H]+",
+            "partner": False,
+            "displaced": "C7H7",
+            "through": "+",
+        }
+        partner["alternatives"][:] = [
+            {
+                "assigned_formula": "C7H7",
+                "ionization_mechanism_id": "im-h",
+                "same_ion": True,
+                "plausibility": 1.0,
+                "partner_gate": "unmet",
+            }
+        ]
+        benzyl = self._benzyl()
+        summary = self._gate(
+            [
+                benzyl,
+                self._seen("c7h6", "C7H6", 1.0e5),
+                partner,
+                self._seen("c7h7", "C7H7", 2.0e5),
+            ]
+        )
+        assert (partner["assigned_formula"], partner["ionization_mechanism_id"]) == (
+            "C7H7",
+            "im-h",
+        )
+        assert (benzyl["assigned_formula"], benzyl["ionization_mechanism_id"]) == (
+            "C7H6",
+            "im-h",
+        )
+        assert "contest" not in benzyl["provenance"]["partner_gate"]
+        assert benzyl["alternatives"][0]["assigned_formula"] == "C7H8"
+        assert benzyl["alternatives"][0]["partner_gate"] == "unmet"
+        assert (summary["contested"], summary["settled"]) == (0, True)
+
+    def test_a_set_aside_reading_the_ledger_bears_out_is_weighed_not_restored(self):
+        # Nothing shows C7H6 when the benzyl cation is first judged, so it
+        # takes toluene's reading and sets the proton's aside. A later swap
+        # gives C7H6 a partner - a faint one. The row weighs the two instead of
+        # turning back to the reading it set aside.
+        benzyl = self._benzyl()
+        c7h6 = self._row(
+            "c7h6", "C7H5", "im-h", alternatives=(("C7H6", "im-ct"),), intensity=1.0e5
+        )
+        summary = self._gate([benzyl, self._seen("tol", "C7H8", 3.0e6), c7h6])
+        assert c7h6["assigned_formula"] == "C7H6"
+        assert benzyl["assigned_formula"] == "C7H8"
+        gate = benzyl["provenance"]["partner_gate"]
+        assert (gate["partner"], gate["displaced"]) == (True, "C7H6")
+        assert "took_from" not in gate
+        assert gate["contest"][0]["decisive"] is True
+        assert benzyl["alternatives"][0]["partner_gate"] == "outweighed"
+        assert summary["rounds"] == 3
+
+    def test_a_reading_a_contest_displaced_stays_one_the_sample_bore_out(self):
+        # The C11 ion reads as C10H18O5 with formate, C9H16O5 with acetate
+        # (both held to a partner here) and the C11 acid. The contest takes
+        # the acetate reading; then the row that partnered C9H16O5 turns back
+        # to the reading it had set aside, the acetate reading is left with no
+        # partner, and the acid becomes the row's. The formate reading the
+        # contest displaced still has its partner, so it is not set aside: it
+        # stays a rival the sample shows.
+        ids = {
+            "[M-H]-": "im-deprot",
+            "[M+HCOO]-": "im-formate",
+            "[M+CH3COO]-": "im-acetate",
+        }
+        row = self._row(
+            "r",
+            "C10H18O5",
+            "im-formate",
+            alternatives=(("C9H16O5", "im-acetate"), ("C11H20O7", "im-deprot")),
+        )
+        formate_partner = self._row("a", "C10H18O5", "im-deprot", intensity=1.0e5)
+        acetate_partner = self._row(
+            "b",
+            "C9H16O5",
+            "im-deprot",
+            alternatives=(("C8H14O3", "im-formate"),),
+            intensity=5.0e6,
+        )
+        acetate_partner["provenance"]["partner_gate"] = {
+            "channel": "[M+HCOO]-",
+            "partner": False,
+            "displaced": "C8H14O3",
+            "through": "[M-H]-",
+        }
+        acetate_partner["alternatives"][0]["partner_gate"] = "unmet"
+        opened = frozenset({"[M+HCOO]-", "[M+CH3COO]-"})
+        apply_partner_gates(
+            [
+                row,
+                formate_partner,
+                acetate_partner,
+                self._row("c", "C8H14O3", "im-deprot"),
+            ],
+            notation_by_id={mid: n for n, mid in ids.items()},
+            minor_channels=opened,
+            partner_gated_channels=opened,
+            tier_bands=self.BANDS,
+        )
+        assert acetate_partner["assigned_formula"] == "C8H14O3"
+        assert (row["assigned_formula"], row["ionization_mechanism_id"]) == (
+            "C11H20O7",
+            "im-deprot",
+        )
+        marks = {
+            alt["assigned_formula"]: alt.get("partner_gate")
+            for alt in row["alternatives"]
+        }
+        assert marks == {"C9H16O5": "unmet", "C10H18O5": None}
+
+    def test_a_modes_own_reading_is_not_contested(self):
+        # A proton-transfer source declares protonation beside electron transfer,
+        # so the proton's reading is the mode's own and keeps its formula
+        # however strongly the sample shows toluene. The hydride reading has a
+        # partner, so it is not set aside either: the cross-channel pass reads
+        # it as the rival it is.
+        benzyl = self._benzyl()
+        summary = self._gate(
+            [
+                benzyl,
+                self._seen("c7h6", "C7H6", 1.0e5),
+                self._seen("tol", "C7H8", 3.0e6),
+            ],
+            opened=frozenset({"[M-H]+"}),
+        )
+        assert (benzyl["assigned_formula"], benzyl["ionization_mechanism_id"]) == (
+            "C7H6",
+            "im-h",
+        )
+        assert "partner_gate" not in benzyl["provenance"]
+        assert "partner_gate" not in benzyl["alternatives"][0]
+        assert summary["contested"] == 0
+
+    def test_a_reading_with_no_partner_takes_the_strongest_one_offered(self):
+        # Nothing shows C7H4, so the row reads another way; of the two
+        # opportunistic readings the sample bears out, the one it shows more
+        # strongly is taken.
+        row = self._row(
+            "r",
+            "C7H4",
+            "im-h",
+            alternatives=(("C7H6", "im-hydride"), ("C7H8", "im-other")),
+        )
+        ids = {**self.CT_IDS, "[M+X]+": "im-other"}
+        apply_partner_gates(
+            [
+                row,
+                self._seen("c7h6", "C7H6", 1.0e5),
+                self._seen("tol", "C7H8", 3.0e6),
+            ],
+            notation_by_id={mid: n for n, mid in ids.items()},
+            minor_channels=frozenset({"[M+H]+", "[M-H]+", "[M+X]+"}),
+            partner_gated_channels=frozenset({"[M+H]+", "[M-H]+"}),
+            tier_bands=self.BANDS,
+        )
+        assert (row["assigned_formula"], row["ionization_mechanism_id"]) == (
+            "C7H8",
+            "im-other",
+        )
 
 
 class TestResolution:

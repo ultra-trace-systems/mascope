@@ -9,7 +9,8 @@ tier down, and an isotopologue lists its M0's reasons beneath its own.
 
 **Same ion, read another way** lists the other neutrals this ion reads as
 through the run's other channels. No mass or isotope pattern tells those
-readings apart; only a second channel can.
+readings apart; a second channel can, and so can the sample showing one of
+the molecules far more strongly than the other.
 
 A row assigned by hand, a run imported from another engine and a run made
 before Mascope recorded reasons list none.

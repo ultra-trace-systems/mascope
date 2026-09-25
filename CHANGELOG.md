@@ -374,7 +374,7 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 - **Peak assignment still ships off, and the assignment work in these notes
   stays dark until a deployment opts in.** The engine at 0.5.0 with tiering
-  rule set 6, the chemistry profiles, the reference seed lists and the
+  rule set 7, the chemistry profiles, the reference seed lists and the
   inspector are all behind `peak_assignment`, which has been `false` since
   1.8.0: with it off the assignment views stay hidden, the write routes answer
   403 and nothing is assigned on ingest, so an upgrade changes nothing here by
@@ -422,6 +422,28 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   as it is the one that applies. What a run recorded about itself keeps the
   spelling it was recorded in and is shown in the standard one (assignment
   quality plan, step 3.3b).
+
+- **Between two readings of an ion that the sample both bears out, the one it
+  shows more strongly wins.** On a charge-transfer source, an ion read through
+  proton transfer and through hydride abstraction as two molecules that the
+  sample also commits through electron transfer is now read as the molecule the
+  sample shows more strongly - committed at the higher tier, or at the same
+  tier on the brighter peak - instead of the one whose mechanism carries more
+  mass. On a certified mixture the benzyl cation had read as protonated C7H6,
+  which the mixture does not hold, because a trace of C7H6 is seen beside
+  toluene at 27 to 31 times its height; it now reads as toluene less a
+  hydride. The weaker reading stays on the row. Where its molecule is committed
+  at a lower tier, or on a peak under a tenth as bright, it is marked
+  `outweighed` and the ion counts as settled (`same_ion_settled`, by
+  `partner`); closer than that, the row is held at candidate with it named
+  (`ambiguous_adduct`). The row records what the two were weighed on in
+  `provenance.partner_gate.contest`. A reading through one of the mode's own
+  channels keeps its formula. The doubt reaches every row: a second channel no
+  longer settles a reading whose rival molecule the sample also commits through
+  one of the mode's own channels, so such a row is held at candidate and the
+  reason says the sample shows the rival too. `config.tiering` records rule
+  set 7 (assignment quality plan, step 3.1c).
+
 - **The peak inspector is more compact and has a column of its own, and the
   tier chip names the tier alone.**
   - **Find more**, the composition search, starts from the focused sample's

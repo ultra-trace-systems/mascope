@@ -2551,10 +2551,28 @@ def untargeted_matches_to_peak_assignments(
 #: kept on the row for the reader, and no rival in the cross-channel pass.
 PARTNER_GATE_UNMET = "unmet"
 
+#: The key an alternative carries when the sample bore it out and bore the
+#: row's own reading out decisively more strongly (:data:`PARTNER_MARGIN`):
+#: kept on the row, since the sample did show its molecule, and read by the
+#: cross-channel pass as settled by the stronger partner rather than as a
+#: rival.
+PARTNER_GATE_OUTWEIGHED = "outweighed"
+
 #: The verdict a gated reading carries where its ion reads no other way and
 #: the sample shows no partner: the row stays as the finder elected it, and
 #: the minor-channel policy's cap holds.
 PARTNER_GATE_KEPT = "no other reading of the ion"
+
+#: How many times brighter the stronger of two partners committed at one tier
+#: has to be for its reading to settle the ion. The stronger partner takes the
+#: ion at any margin, since the sample shows that molecule more strongly; the
+#: margin decides whether the other reading is still a doubt. On the certified
+#: cylinder the benzyl and methylbenzyl cations are decided by 22 to 41 times
+#: (toluene against C7H6, xylene against styrene) and C5H7+ by 7 to 10
+#: (isoprene against C5H6): the better reading in every file, and under an
+#: order of magnitude not a certain one, which is what the top tier is kept
+#: for. Partners at different tiers settle it at any margin.
+PARTNER_MARGIN = 10.0
 
 #: How many rounds the gate walks the ledger. Every round judges every row
 #: again against the partners the ledger holds at that moment - a reading's
@@ -2564,6 +2582,9 @@ PARTNER_GATE_KEPT = "no other reading of the ion"
 #: sample measured; the cap is a guard against a ledger with no settled
 #: reading, not a budget, and the summary says when it was hit.
 MAX_PARTNER_GATE_ROUNDS = 6
+
+#: A tier's name by its rank, for the record of what decided a contest.
+_TIER_BY_RANK = {rank: tier for tier, rank in TIER_RANK.items()}
 
 
 def apply_partner_gates(
@@ -2601,20 +2622,33 @@ def apply_partner_gates(
     compositions (:func:`formula_identity`): a target library's ``CH3COOH``
     partners a formate reading of ``C2H4O2``.
 
+    The partners are kept per neutral with how strongly each commits it - its
+    tier, then the height of its peak - so the strongest is read off the
+    ledger as it stands, current through every swap.
+
     For a monoisotopic row whose reading is through a partner-gated channel:
 
     - the reading stands where it has a partner. Where the minor-channel
       policy capped it for want of one among the search's own rows, the cap
       is lifted here and the row says the second channel corroborated it;
+    - unless the family holds another reading through a gated channel whose
+      neutral has a partner too, and a stronger one: committed at the higher
+      tier, or at one tier on the brighter peak. That reading becomes the
+      row's, swapped in as below, and the row names the reading it took the
+      ion from (``took_from``). The election's prior for the heavier
+      mechanism does not decide between two readings the sample bears out;
+      how strongly it bears each out does. Only an opportunistic reading is
+      contested this way: a reading through one of the mode's own channels
+      keeps its formula;
     - otherwise the mode's own reading of the ion, where the family holds one
       whose neutral is a molecule, becomes the row's, keeping the fit and mass
       error that are the ion's, with its tier read off its own plausibility
       under the ceiling the mass gate recorded for the ion's line, which
       every reading of the ion shares (a lifted cap is held the same way,
-      and the row then says the mass gate holds it); failing that, another
-      opportunistic reading whose neutral the sample does show; failing that,
-      the row stays as it is and the policy's cap holds - re-imposed where the
-      partner that once lifted it is gone.
+      and the row then says the mass gate holds it); failing that, the
+      opportunistic reading whose neutral the sample shows most strongly;
+      failing that, the row stays as it is and the policy's cap holds -
+      re-imposed where the partner that once lifted it is gone.
 
     The ledger is walked to a fixed point: every round judges every row
     against the partners the ledger holds at that moment, a swap changes the
@@ -2623,15 +2657,27 @@ def apply_partner_gates(
     that stood on a partner a swap back took is judged again. The walk ends
     when a round changes nothing (:data:`MAX_PARTNER_GATE_ROUNDS`).
 
+    Read against the partners the walk settled on, a row standing on a
+    partner through a gated channel records every other reading of its ion
+    the contest weighed and what decided it (``contest``): the partners'
+    tiers and the ratio of their peaks. Where the tiers differ, or the
+    stronger peak is :data:`PARTNER_MARGIN` times the other's or more, the
+    other reading is marked :data:`PARTNER_GATE_OUTWEIGHED`, and the
+    cross-channel pass reads the ion as settled by the stronger partner.
+    Within the margin it is left unmarked: a rival whose molecule the sample
+    also shows, which the cross-channel pass reads as the doubt it is.
+
     For every monoisotopic row, a same-ion reading through a gated channel
     whose neutral has no partner is marked :data:`PARTNER_GATE_UNMET`: a
     reference list's acid is not doubted for a formate reading nothing bore
-    out. The opportunistic reading a swap displaced is marked the same way,
-    kept on the row for the reader, and the cross-channel pass counts neither
-    as a rival. The mode's own reading a swap back displaced is not marked: it
-    is a reading of the ion the sample settled, and the cross-channel pass
-    records by what. An isotopologue follows its owner's reading, as it does
-    everywhere.
+    out. The opportunistic reading a swap displaced for want of a partner is
+    marked the same way, kept on the row for the reader, and the
+    cross-channel pass counts neither as a rival. A reading displaced with a
+    partner of its own is not marked unmet, since the sample bore it out: the
+    contest weighs it. The mode's own reading a swap back displaced is not
+    marked either: it is a reading of the ion the sample settled, and the
+    cross-channel pass records by what. An isotopologue follows its owner's
+    reading, as it does everywhere.
 
     :param assignments: Both stages' rows, modified in place.
     :param notation_by_id: The run's mechanisms, by the id the rows carry.
@@ -2642,7 +2688,9 @@ def apply_partner_gates(
         standing on a partner, of them the caps lifted and the swaps undone,
         rows swapped to another reading, rows left to the cap, of them the
         caps re-imposed, rows held under the mass gate's ceiling, readings
-        set aside, the rounds it took, and whether a round changed nothing
+        set aside, rows that weighed another partnered reading and of them
+        the ones the contest moved, the readings outweighed and those within
+        the margin, the rounds it took, and whether a round changed nothing
         before the cap.
     """
     summary = {
@@ -2654,6 +2702,10 @@ def apply_partner_gates(
         "recapped": 0,
         "held": 0,
         "set_aside": 0,
+        "contested": 0,
+        "contest_swapped": 0,
+        "outweighed": 0,
+        "within_margin": 0,
         "rounds": 0,
         "settled": True,
     }
@@ -2702,17 +2754,36 @@ def apply_partner_gates(
             return formula_identity(str(row["assigned_formula"]))
         return None
 
-    # Per neutral, how many rows commit it through a mode channel - kept
-    # current through every swap, so a row is judged against the ledger as it
-    # is, not as it was when the round began.
-    partners: Counter[str] = Counter()
+    def strength(row: dict) -> tuple[int, float]:
+        """How strongly a partner commits its neutral: its tier, then its peak."""
+        return (
+            TIER_RANK.get(str(row.get("tier")), 0),
+            _float_or_none(row.get("sample_peak_intensity")) or 0.0,
+        )
+
+    # Per neutral, the rows that commit it through a mode channel and how
+    # strongly - kept current through every swap, so a row is judged against
+    # the ledger as it is, not as it was when the round began.
+    partners: dict[str, dict[int, tuple[int, float]]] = {}
+
+    def track(row: dict, was: str | None) -> None:
+        """Keep a row's entry current once its reading or its tier moved."""
+        if was is not None:
+            partners.get(was, {}).pop(id(row), None)
+        now = partner_key(row)
+        if now is not None:
+            partners.setdefault(now, {})[id(row)] = strength(row)
+
     for row in assignments:
-        key = partner_key(row)
-        if key is not None:
-            partners[key] += 1
+        track(row, None)
+
+    def strongest(formula: str | None) -> tuple[int, float] | None:
+        """A neutral's strongest partner, or None where it has none."""
+        found = partners.get(formula_identity(str(formula or "")))
+        return max(found.values()) if found else None
 
     def partnered(formula: str | None) -> bool:
-        return bool(formula) and partners[formula_identity(str(formula))] > 0
+        return bool(formula) and strongest(formula) is not None
 
     def same_neutral(formula: str | None, other: str | None) -> bool:
         return formula_identity(str(formula or "")) == formula_identity(
@@ -2733,6 +2804,39 @@ def apply_partner_gates(
             and neutral_is_closed_shell(str(formula))
         )
 
+    def contenders(row: dict) -> list[dict]:
+        """The family's other readings through a gated channel with a partner.
+
+        Asked whatever mark an earlier round left on them: a reading set aside
+        for want of a partner that the ledger now bears out is weighed like
+        any other.
+        """
+        return [
+            alt
+            for alt in row.get("alternatives") or []
+            if molecule(alt)
+            and alt["ionization_mechanism_id"] in gated_ids
+            and not same_neutral(alt["assigned_formula"], row.get("assigned_formula"))
+            and partnered(alt["assigned_formula"])
+        ]
+
+    def weigh(row: dict, alternative: dict) -> dict:
+        """What the row's partner has over another reading's, and by how much."""
+        own = strongest(row.get("assigned_formula")) or (0, 0.0)
+        other = strongest(alternative.get("assigned_formula")) or (0, 0.0)
+        ratio = round(own[1] / other[1], 2) if other[1] > 0 else None
+        decisive = own > other and (
+            own[0] > other[0] or (own[1] > 0 and own[1] >= PARTNER_MARGIN * other[1])
+        )
+        return {
+            "reading": alternative.get("assigned_formula"),
+            "via": notation_by_id.get(str(alternative.get("ionization_mechanism_id"))),
+            "on": "tier" if own[0] != other[0] else "intensity",
+            "tiers": [_TIER_BY_RANK.get(own[0]), _TIER_BY_RANK.get(other[0])],
+            "ratio": ratio,
+            "decisive": decisive,
+        }
+
     def swap(row: dict, chosen: dict, provenance: dict, gate: dict) -> None:
         """Make ``chosen`` the row's reading and set the current one aside."""
         was = partner_key(row)
@@ -2747,8 +2851,11 @@ def apply_partner_gates(
             "same_ion": True,
             "source": row.get("source"),
         }
-        if row["ionization_mechanism_id"] in gated_ids:
-            # An opportunistic reading the sample did not bear out.
+        if row["ionization_mechanism_id"] in gated_ids and not partnered(
+            row["assigned_formula"]
+        ):
+            # An opportunistic reading the sample did not bear out. One it did
+            # bear out is left to the contest to weigh.
             displaced["partner_gate"] = PARTNER_GATE_UNMET
         plausibility = float(chosen.get("plausibility") or 0.0)
         fit = float(row.get("fit_score") or 0.0)
@@ -2782,11 +2889,7 @@ def apply_partner_gates(
         for child in children.get(str(row.get("peak_assignment_id")), ()):
             child["assigned_formula"] = row["assigned_formula"]
             child["ionization_mechanism_id"] = row["ionization_mechanism_id"]
-        now = partner_key(row)
-        if was is not None:
-            partners[was] -= 1
-        if now is not None:
-            partners[now] += 1
+        track(row, was)
 
     for _round in range(MAX_PARTNER_GATE_ROUNDS):
         summary["rounds"] += 1
@@ -2796,9 +2899,13 @@ def apply_partner_gates(
                 continue
             provenance = row.setdefault("provenance", {})
             gate = provenance.get("partner_gate") or {}
+            standing = row.get("ionization_mechanism_id") in gated_ids and partnered(
+                row.get("assigned_formula")
+            )
             # A row an earlier round swapped, whose set-aside reading the
-            # ledger now bears out: swap back.
-            if gate.get("displaced") and partnered(gate["displaced"]):
+            # ledger now bears out: swap back. Where the row's reading stands
+            # on a partner of its own, the two are weighed below instead.
+            if gate.get("displaced") and partnered(gate["displaced"]) and not standing:
                 back = next(
                     (
                         alt
@@ -2828,7 +2935,32 @@ def apply_partner_gates(
                 continue
             own = notation_by_id.get(row["ionization_mechanism_id"])
             verdict = provenance.get("minor_channel")
-            if partnered(row.get("assigned_formula")):
+            if standing:
+                # Two readings of the ion the sample bears out: the one whose
+                # partner is the stronger is the row's, at a tie the one it
+                # holds.
+                stronger = max(
+                    contenders(row),
+                    key=lambda alt: strongest(alt["assigned_formula"]),
+                    default=None,
+                )
+                if stronger is not None and strongest(
+                    stronger["assigned_formula"]
+                ) > strongest(row["assigned_formula"]):
+                    swap(
+                        row,
+                        stronger,
+                        provenance,
+                        {
+                            "channel": notation_by_id.get(
+                                stronger["ionization_mechanism_id"]
+                            ),
+                            "partner": True,
+                            "took_from": row["assigned_formula"],
+                        },
+                    )
+                    changed = True
+                    continue
                 record = {
                     key: value
                     for key, value in gate.items()
@@ -2841,11 +2973,13 @@ def apply_partner_gates(
                     verdict["corroborated_by"] = "second_channel"
                     if verdict.get("capped"):
                         verdict["capped"] = False
+                        was = partner_key(row)
                         restored = tier_of(
                             float(provenance.get("evidence") or 0.0), row, provenance
                         )
                         if restored is not None:
                             row["tier"] = restored
+                        track(row, was)
                         record["uncapped"] = True
                 if record != gate:
                     provenance["partner_gate"] = record
@@ -2859,14 +2993,15 @@ def apply_partner_gates(
                     if alt["ionization_mechanism_id"] not in minor_ids
                 ),
                 None,
-            ) or next(
+            ) or max(
                 (
                     alt
                     for alt in family
                     if alt["ionization_mechanism_id"] in minor_ids
                     and partnered(alt["assigned_formula"])
                 ),
-                None,
+                key=lambda alt: strongest(alt["assigned_formula"]),
+                default=None,
             )
             if chosen is None:
                 record = {"channel": own, "partner": False, "kept": PARTNER_GATE_KEPT}
@@ -2879,7 +3014,9 @@ def apply_partner_gates(
                     verdict["corroborated_by"] = None
                     verdict["capped"] = row.get("tier") == TIER_ASSIGNED
                     if verdict["capped"]:
+                        was = partner_key(row)
                         row["tier"] = TIER_CANDIDATE
+                        track(row, was)
                     record["recapped"] = True
                 if record != gate:
                     provenance["partner_gate"] = record
@@ -2903,9 +3040,11 @@ def apply_partner_gates(
         summary["settled"] = False
     summary["held"] = len(held)
 
-    # Same-ion readings through a gated channel that nothing bore out are set
-    # aside on every row, a reference list's included - read last, against
-    # the partners the walk settled on - and the ledger is tallied as it is.
+    # Read last, against the partners the walk settled on: the contests a
+    # standing reading won, with the readings it outweighed marked, and the
+    # same-ion readings through a gated channel that nothing bore out, set
+    # aside on every row, a reference list's included. The ledger is tallied
+    # as it is.
     for row in assignments:
         if row.get("role") != ROLE_M0:
             continue
@@ -2920,8 +3059,24 @@ def apply_partner_gates(
                 summary["recapped"] += bool(gate.get("recapped"))
         if gate.get("displaced") and gate.get("partner") is False:
             summary["swapped"] += 1
+        weighed = (
+            contenders(row)
+            if row.get("ionization_mechanism_id") in gated_ids
+            and partnered(row.get("assigned_formula"))
+            else []
+        )
+        contest = []
         for alternative in row.get("alternatives") or []:
-            if alternative.get("partner_gate") == PARTNER_GATE_UNMET:
+            if any(alternative is contender for contender in weighed):
+                entry = weigh(row, alternative)
+                contest.append(entry)
+                if entry["decisive"]:
+                    alternative["partner_gate"] = PARTNER_GATE_OUTWEIGHED
+                    summary["outweighed"] += 1
+                else:
+                    alternative.pop("partner_gate", None)
+                    summary["within_margin"] += 1
+            elif alternative.get("partner_gate") == PARTNER_GATE_UNMET:
                 summary["set_aside"] += 1
             elif (
                 alternative.get("same_ion")
@@ -2930,6 +3085,14 @@ def apply_partner_gates(
             ):
                 alternative["partner_gate"] = PARTNER_GATE_UNMET
                 summary["set_aside"] += 1
+        if contest:
+            row["provenance"]["partner_gate"] = {**gate, "contest": contest}
+            summary["contested"] += 1
+            summary["contest_swapped"] += bool(gate.get("took_from"))
+        elif "contest" in gate:
+            row["provenance"]["partner_gate"] = {
+                key: value for key, value in gate.items() if key != "contest"
+            }
     return summary
 
 

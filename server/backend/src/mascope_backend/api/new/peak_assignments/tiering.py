@@ -106,11 +106,12 @@ what its noise and neighbours explain, or not at all.
 
 The cross-channel pass's same-ion rule (``ambiguous_nitrogen``,
 ``ambiguous_adduct``) is folded in wherever it found a rival molecule, whether
-or not it lowered the tier. Where another reading of the row's ion is settled -
-by a second channel, by the target library, or by being a radical - the row
-says so among what it stands on (``same_ion_settled``), and its ``no_close_rival``
-says the evidence separates the ion from the peak's other candidates, not the
-readings of the ion from each other.
+or not it lowered the tier, and says so where the sample also shows the rival's
+molecule. Where another reading of the row's ion is settled - by a second
+channel, by the stronger partner, by the target library, or by being a
+radical - the row says so among what it stands on (``same_ion_settled``), and
+its ``no_close_rival`` says the evidence separates the ion from the peak's other
+candidates, not the readings of the ion from each other.
 """
 
 from __future__ import annotations
@@ -127,6 +128,7 @@ from mascope_backend.api.new.peak_assignments.cross_channel import (
     REASON_AMBIGUOUS_ADDUCT,
     REASON_AMBIGUOUS_NITROGEN,
     SAME_ION_SETTLED,
+    SETTLED_BY_PARTNER,
     SETTLED_BY_RADICAL,
     SETTLED_BY_SECOND_CHANNEL,
     SETTLED_BY_TARGET_LIBRARY,
@@ -134,6 +136,7 @@ from mascope_backend.api.new.peak_assignments.cross_channel import (
 )
 from mascope_backend.api.new.peak_assignments.engine import (
     GRID_RIVALS,
+    PARTNER_MARGIN,
     ROLE_ISO_CHILD,
     ROLE_M0,
     SOURCE_DATABASE,
@@ -173,7 +176,7 @@ from mascope_tools.composition.implausibility import implausible_signatures
 #: run, because a tier is only comparable across runs together with the rules
 #: that produced it - the same statement the tier BANDS carry, for the same
 #: reason.
-TIERING_RULES_VERSION = 6
+TIERING_RULES_VERSION = 7
 
 #: The row's evidence is under the band its tier would need. Not a rule of
 #: this pass: the band is the floor every rule here lowers from, and naming it
@@ -399,7 +402,9 @@ def ambiguity_detail(row: dict, rule: str, ambiguity: dict) -> str:
 
     :param row: A committed monoisotopic row.
     :param rule: One of the cross-channel pass's ambiguity reasons.
-    :param ambiguity: Its record: the rival molecule and its channel.
+    :param ambiguity: Its record: the rival molecule and its channel, whether
+        the sample commits the rival too (``shown``) and, where the partner gate
+        weighed the two, by how much.
     :return: The reason's sentence.
     """
     alternative = ambiguity.get("alternative") or "another molecule"
@@ -414,14 +419,29 @@ def ambiguity_detail(row: dict, rule: str, ambiguity: dict) -> str:
             if difference
             else ""
         )
+        reading = f"the same ion reads as {alternative} through {via}{moved}"
+        question = "the count"
+    else:
+        reading = (
+            f"the same ion reads as {alternative} through {via}, another molecule "
+            "the spectrum cannot tell from this one"
+        )
+        question = "which"
+    if ambiguity.get("shown") is not True:
+        return f"{reading}, and no second channel of this run settles {question}"
+    # The sample commits the rival's molecule too, so a second channel of the
+    # row's own is no longer the whole of the evidence.
+    ratio = ambiguity.get("ratio")
+    if ambiguity.get("on") == "intensity" and isinstance(ratio, (int, float)):
         return (
-            f"the same ion reads as {alternative} through {via}{moved}, and no "
-            "second channel of this run settles the count"
+            f"{reading}; the sample commits both molecules through the mode's own "
+            f"channels, {row.get('assigned_formula')} on a peak only {ratio:.1f} "
+            f"times as bright as {alternative}'s, short of the {PARTNER_MARGIN:g} "
+            f"times that would settle {question}"
         )
     return (
-        f"the same ion reads as {alternative} through {via}, another molecule the "
-        "spectrum cannot tell from this one, and no second channel of this run "
-        "settles which"
+        f"{reading}, and the sample also commits {alternative} through one of the "
+        f"mode's own channels, so a second channel does not settle {question}"
     )
 
 
@@ -430,16 +450,31 @@ def settled_detail(row: dict, settled: dict) -> str:
 
     :param row: A committed monoisotopic row.
     :param settled: The cross-channel pass's record: the other reading, its
-        channel, what settled it and, for a second channel, which.
+        channel, what settled it and, for a second channel, which; for the
+        stronger partner, what the partner gate weighed.
     :return: The reason's sentence.
     """
+    other = settled.get("alternative") or "another neutral"
     reading = (
-        f"the same ion also reads as {settled.get('alternative') or 'another neutral'}"
+        f"the same ion also reads as {other}"
         f" through {settled.get('via') or 'another channel'}"
     )
     by = settled.get("by")
     if by == SETTLED_BY_RADICAL:
         return f"{reading}, a radical rather than a molecule, so it is no rival"
+    if by == SETTLED_BY_PARTNER:
+        tiers = settled.get("tiers") or []
+        ratio = settled.get("ratio")
+        if settled.get("on") == "tier" and len(tiers) == 2:
+            strength = f"at {tiers[0]}, and {other} only at {tiers[1]}"
+        elif isinstance(ratio, (int, float)):
+            strength = f"on a peak {ratio:.0f} times as bright as {other}'s"
+        else:
+            strength = f"more strongly than {other}"
+        return (
+            f"{reading}; the sample commits {row.get('assigned_formula')} through "
+            f"one of the mode's own channels {strength}, which settles it"
+        )
     if by == SETTLED_BY_TARGET_LIBRARY:
         return (
             f"{reading}; this row is a compound of the target library, whose "
