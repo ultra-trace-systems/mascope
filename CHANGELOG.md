@@ -427,22 +427,26 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   shows more strongly wins.** On a charge-transfer source, an ion read through
   proton transfer and through hydride abstraction as two molecules that the
   sample also commits through electron transfer is now read as the molecule the
-  sample shows more strongly - committed at the higher tier, or at the same
-  tier on the brighter peak - instead of the one whose mechanism carries more
-  mass. On a certified mixture the benzyl cation had read as protonated C7H6,
-  which the mixture does not hold, because a trace of C7H6 is seen beside
-  toluene at 27 to 31 times its height; it now reads as toluene less a
-  hydride. The weaker reading stays on the row. Where its molecule is committed
-  at a lower tier, or on a peak under a tenth as bright, it is marked
-  `outweighed` and the ion counts as settled (`same_ion_settled`, by
-  `partner`); closer than that, the row is held at candidate with it named
-  (`ambiguous_adduct`). The row records what the two were weighed on in
-  `provenance.partner_gate.contest`. A reading through one of the mode's own
-  channels keeps its formula. The doubt reaches every row: a second channel no
-  longer settles a reading whose rival molecule the sample also commits through
-  one of the mode's own channels, so such a row is held at candidate and the
-  reason says the sample shows the rival too. `config.tiering` records rule
-  set 7 (assignment quality plan, step 3.1c).
+  sample shows more strongly - on the brighter peak, among the rows that commit
+  it at candidate or better through the mode's own channels - instead of the one
+  whose mechanism carries more mass. On a certified mixture the benzyl cation
+  had read as protonated C7H6, which the mixture does not hold, because a trace
+  of C7H6 is seen beside toluene at 27 to 31 times its height; it now reads as
+  toluene less a hydride. The weaker reading stays on the row. Where its
+  molecule's peak is a tenth as bright or less, it is marked `outweighed` and
+  the ion counts as settled (`same_ion_settled`, by `partner`); closer than
+  that, the row is held at candidate with it named (`ambiguous_adduct`). The
+  row records what the two were weighed on in `provenance.partner_gate.contest`,
+  and the run what the gate decided and at what margin in `config.partner_gate`.
+  A reading through one of the mode's own channels keeps its formula. The same
+  weighing reaches every row: a second channel no longer settles a reading whose
+  rival molecule the sample also commits through one of the mode's own channels,
+  unless the sample shows the row's own molecule ten times as brightly or more,
+  so such a row is held at candidate and the reason says the sample shows the
+  rival too. A formula a target library writes its own way, such as
+  `C6H4(CH3)2`, now counts as the molecule it spells when channels are
+  compared. `config.tiering` records rule set 7 (assignment quality plan,
+  step 3.1c).
 
 - **The peak inspector is more compact and has a column of its own, and the
   tier chip names the tier alone.**

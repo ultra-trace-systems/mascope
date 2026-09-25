@@ -450,6 +450,48 @@ class TestThePartnerGateReadsTheJudgedLedger:
         assert formate["provenance"]["mass_gate"]["capped"] == "candidate"
 
 
+def judge_ledger(
+    rows: list[dict],
+    notation_by_id: dict[str, str],
+    *,
+    minor: frozenset[str] = frozenset(),
+    gated: frozenset[str] = frozenset(),
+):
+    """Judge a ledger through every pass, under the run's bands."""
+    return judge_commits(
+        rows,
+        stage_a_accuracy=SampleMassAccuracy(),
+        fallback_sigma_ppm=0.3,
+        notation_by_id=notation_by_id,
+        mz_tolerance_ppm=5.0,
+        abundance_floor=0.01,
+        max_alternatives=5,
+        tier_bands={"assigned": 0.75, "candidate": 0.45},
+        minor_channels=minor,
+        partner_gated_channels=gated,
+    )
+
+
+def elected(row_id: str, formula: str, ion: str, mz: float, mechanism: str, other):
+    """A search's election, with another reading of its ion, ``other``, as
+    ``(neutral, mechanism id)``, and the policy's verdict corroborated."""
+    row = commit(row_id, formula, ion, mz, 4.0e5)
+    row["ionization_mechanism_id"] = mechanism
+    row["alternatives"] = [
+        {
+            "assigned_formula": other[0],
+            "ionization_mechanism_id": other[1],
+            "same_ion": True,
+            "plausibility": 1.0,
+        }
+    ]
+    row["provenance"]["minor_channel"] = {
+        "corroborated_by": "second_channel",
+        "capped": False,
+    }
+    return row
+
+
 class TestTheStrongerPartnerOnTheJudgedLedger:
     """A charge-transfer source's ion read two opportunistic ways, each with a
     partner through electron transfer: the stronger partner takes it, and every
@@ -458,45 +500,25 @@ class TestTheStrongerPartnerOnTheJudgedLedger:
     IDS = {"im-1": "+", "im-h": "[M+H]+", "im-hydride": "[M-H]+"}
     OPENED = frozenset({"[M+H]+", "[M-H]+"})
 
-    def _judge(self, ion: str, mz: float, lighter: str, heavier: str, height: float):
+    def _judge(self, rows: list[dict]):
+        return judge_ledger(rows, self.IDS, minor=self.OPENED, gated=self.OPENED)
+
+    def _contest(self, ion: str, mz: float, lighter: str, heavier: str, height: float):
         """The ion elected through proton transfer as the lighter molecule,
         with the heavier one less a hydride on the row, and both molecules
         committed through electron transfer, the heavier ``height`` counts high."""
-        elected = commit("pa-ion", lighter, ion, mz, 4.0e5)
-        elected["ionization_mechanism_id"] = "im-h"
-        elected["alternatives"] = [
-            {
-                "assigned_formula": heavier,
-                "ionization_mechanism_id": "im-hydride",
-                "same_ion": True,
-                "plausibility": 1.0,
-            }
-        ]
-        elected["provenance"]["minor_channel"] = {
-            "corroborated_by": "second_channel",
-            "capped": False,
-        }
-        rows = anchors() + [
-            elected,
-            commit("pa-lighter", lighter, f"{lighter}+", mz - 1.0078, 1.0e5),
-            commit("pa-heavier", heavier, f"{heavier}+", mz + 1.0078, height),
-        ]
-        judged = judge_commits(
-            rows,
-            stage_a_accuracy=SampleMassAccuracy(),
-            fallback_sigma_ppm=0.3,
-            notation_by_id=self.IDS,
-            mz_tolerance_ppm=5.0,
-            abundance_floor=0.01,
-            max_alternatives=5,
-            tier_bands={"assigned": 0.75, "candidate": 0.45},
-            minor_channels=self.OPENED,
-            partner_gated_channels=self.OPENED,
+        judged = self._judge(
+            anchors()
+            + [
+                elected("pa-ion", lighter, ion, mz, "im-h", (heavier, "im-hydride")),
+                commit("pa-lighter", lighter, f"{lighter}+", mz - 1.0078, 1.0e5),
+                commit("pa-heavier", heavier, f"{heavier}+", mz + 1.0078, height),
+            ]
         )
         return by_id(judged.rows)["pa-ion"], judged
 
     def test_the_benzyl_cation_is_toluene_less_a_hydride_and_settled(self):
-        row, judged = self._judge("C7H7+", 91.0542, "C7H6", "C7H8", 3.0e6)
+        row, judged = self._contest("C7H7+", 91.0542, "C7H6", "C7H8", 3.0e6)
         assert (row["assigned_formula"], row["ionization_mechanism_id"]) == (
             "C7H8",
             "im-hydride",
@@ -512,9 +534,14 @@ class TestTheStrongerPartnerOnTheJudgedLedger:
             "as C7H6's, which settles it"
         )
         assert judged.cross_channel["settled"]["partner"] == 1
+        # The run records what the gate decided, and at what margin.
+        assert {
+            key: judged.partner_gate[key]
+            for key in ("contested", "contest_swapped", "outweighed", "margin")
+        } == {"contested": 1, "contest_swapped": 1, "outweighed": 1, "margin": 10.0}
 
     def test_within_the_margin_isoprene_less_a_hydride_is_a_candidate(self):
-        row, judged = self._judge("C5H7+", 67.0542, "C5H6", "C5H8", 7.0e5)
+        row, judged = self._contest("C5H7+", 67.0542, "C5H6", "C5H8", 7.0e5)
         assert (row["assigned_formula"], row["ionization_mechanism_id"]) == (
             "C5H8",
             "im-hydride",
@@ -530,6 +557,40 @@ class TestTheStrongerPartnerOnTheJudgedLedger:
         )
         assert judged.cross_channel["shown_rival"] == 1
 
+    def test_a_partners_tier_at_the_gate_decides_nothing(self):
+        # Toluene's row is assigned when the gate reads it, but its evidence
+        # left three formulas standing and nothing else commits toluene, so
+        # the tiering pass caps it. C7H6's row is a candidate twenty times as
+        # bright. Weighed on the tier, the contest would have given the ion to
+        # toluene and made the benzyl row the second channel that exempts
+        # toluene from that cap; weighed on the peaks, C7H6 keeps the ion and
+        # toluene's row is capped.
+        lighter = commit("pa-lighter", "C7H6", "C7H6+", 90.0464, 1.0e6)
+        lighter["tier"] = "candidate"
+        lighter["provenance"]["evidence"] = 0.6
+        toluene = commit("pa-heavier", "C7H8", "C7H8+", 92.0621, 5.0e4)
+        toluene["provenance"]["candidate_density"] = 3
+        judged = self._judge(
+            anchors()
+            + [
+                elected(
+                    "pa-ion", "C7H6", "C7H7+", 91.0542, "im-h", ("C7H8", "im-hydride")
+                ),
+                lighter,
+                toluene,
+            ]
+        )
+        rows = by_id(judged.rows)
+        assert rows["pa-ion"]["assigned_formula"] == "C7H6"
+        assert rows["pa-ion"]["provenance"]["cross_channel"]["same_ion_settled"] == {
+            "alternative": "C7H8",
+            "via": "[M-H]+",
+            "by": "partner",
+            "ratio": 20.0,
+        }
+        assert rows["pa-heavier"]["tier"] == "candidate"
+        assert "candidate_density" in rules(rows["pa-heavier"])
+
 
 class TestWhatTheSampleShowsOnTheJudgedLedger:
     """The run tells the cross-channel pass which of its channels are
@@ -544,31 +605,44 @@ class TestWhatTheSampleShowsOnTheJudgedLedger:
         # C6H15NO6; C6H12O6 is seen only with sodium, itself an opportunistic
         # channel, so the sample does not show it and the second channel
         # settles the ion.
-        protonated = commit("pa-h", "C6H15NO6", "C6H16NO6+", 198.0972, 4.0e5)
-        protonated["alternatives"] = [
-            {
-                "assigned_formula": "C6H12O6",
-                "ionization_mechanism_id": "im-nh4",
-                "same_ion": True,
-                "plausibility": 1.0,
-            }
-        ]
+        protonated = elected(
+            "pa-h", "C6H15NO6", "C6H16NO6+", 198.0972, "im-1", ("C6H12O6", "im-nh4")
+        )
+        protonated["provenance"].pop("minor_channel")
         ammoniated = commit("pa-nh4", "C6H15NO6", "C6H19N2O6+", 215.1238, 1.0e5)
         ammoniated["ionization_mechanism_id"] = "im-nh4"
         sodiated = commit("pa-na", "C6H12O6", "C6H12NaO6+", 203.0526, 1.0e6)
         sodiated["ionization_mechanism_id"] = "im-na"
-        judged = judge_commits(
+        judged = judge_ledger(
             anchors() + [protonated, ammoniated, sodiated],
-            stage_a_accuracy=SampleMassAccuracy(),
-            fallback_sigma_ppm=0.3,
-            notation_by_id=self.IDS,
-            mz_tolerance_ppm=5.0,
-            abundance_floor=0.01,
-            max_alternatives=5,
-            minor_channels=frozenset({"[M+NH4]+", "[M+Na]+"}),
+            self.IDS,
+            minor=frozenset({"[M+NH4]+", "[M+Na]+"}),
         )
         row = by_id(judged.rows)["pa-h"]
         assert row["tier"] == "assigned"
         assert row["provenance"]["cross_channel"]["same_ion_settled"]["by"] == (
             "second_channel"
         )
+
+
+def test_the_run_records_the_partner_gates_summary_beside_the_cross_channel_one():
+    from mascope_backend.api.new.peak_assignments.config import PeakAssignmentConfig
+    from mascope_backend.api.new.peak_assignments.engine import PARTNER_GATE_KEY
+
+    judged = judge_ledger(
+        anchors()
+        + [
+            elected("pa-ion", "C7H6", "C7H7+", 91.0542, "im-h", ("C7H8", "im-hydride")),
+            commit("pa-lighter", "C7H6", "C7H6+", 90.0464, 1.0e5),
+            commit("pa-heavier", "C7H8", "C7H8+", 92.0621, 3.0e6),
+        ],
+        TestTheStrongerPartnerOnTheJudgedLedger.IDS,
+        minor=TestTheStrongerPartnerOnTheJudgedLedger.OPENED,
+        gated=TestTheStrongerPartnerOnTheJudgedLedger.OPENED,
+    )
+    stored = service._stored_run_config(
+        PeakAssignmentConfig(), partner_gate=judged.partner_gate
+    )
+    assert stored[PARTNER_GATE_KEY] == judged.partner_gate
+    assert stored[PARTNER_GATE_KEY]["margin"] == 10.0
+    assert PARTNER_GATE_KEY not in service._stored_run_config(PeakAssignmentConfig())

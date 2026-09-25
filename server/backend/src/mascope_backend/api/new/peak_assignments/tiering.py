@@ -117,6 +117,7 @@ candidates, not the readings of the ion from each other.
 from __future__ import annotations
 
 import bisect
+import math
 from collections import Counter, defaultdict
 from typing import Any, Iterable
 
@@ -375,8 +376,12 @@ def earlier_reasons(row: dict) -> list[dict]:
         reasons.append(
             _reason(
                 str(cross_channel["reason"]),
-                "its monoisotopic row's ion reads as another molecule too, and no "
-                "second channel of this run settles which",
+                "its monoisotopic row's ion reads as another molecule too, which "
+                "the sample also commits through one of the mode's own channels, "
+                "so a second channel does not settle which"
+                if cross_channel.get("shown") is True
+                else "its monoisotopic row's ion reads as another molecule too, "
+                "and no second channel of this run settles which",
                 caps=True,
             )
         )
@@ -402,9 +407,9 @@ def ambiguity_detail(row: dict, rule: str, ambiguity: dict) -> str:
 
     :param row: A committed monoisotopic row.
     :param rule: One of the cross-channel pass's ambiguity reasons.
-    :param ambiguity: Its record: the rival molecule and its channel, whether
-        the sample commits the rival too (``shown``) and, where the partner gate
-        weighed the two, by how much.
+    :param ambiguity: Its record: the rival molecule and its channel, and on a
+        corroborated row the sample's own showing of the rival (``shown``) and
+        the ratio of the two molecules' partners, the row's over the rival's.
     :return: The reason's sentence.
     """
     alternative = ambiguity.get("alternative") or "another molecule"
@@ -432,16 +437,23 @@ def ambiguity_detail(row: dict, rule: str, ambiguity: dict) -> str:
     # The sample commits the rival's molecule too, so a second channel of the
     # row's own is no longer the whole of the evidence.
     ratio = ambiguity.get("ratio")
-    if ambiguity.get("on") == "intensity" and isinstance(ratio, (int, float)):
+    if not isinstance(ratio, (int, float)):
         return (
-            f"{reading}; the sample commits both molecules through the mode's own "
-            f"channels, {row.get('assigned_formula')} on a peak only {ratio:.1f} "
-            f"times as bright as {alternative}'s, short of the {PARTNER_MARGIN:g} "
-            f"times that would settle {question}"
+            f"{reading}, and the sample also commits {alternative} through one of "
+            f"the mode's own channels, so a second channel does not settle {question}"
         )
+    both = f"{reading}; the sample commits both molecules through the mode's own "
+    if ratio < 1:
+        return (
+            f"{both}channels, {alternative} on the brighter peak, so a second "
+            f"channel does not settle {question}"
+        )
+    # Rounded down, so a ratio short of the margin never reads as it.
+    shown = math.floor(ratio * 10) / 10
     return (
-        f"{reading}, and the sample also commits {alternative} through one of the "
-        f"mode's own channels, so a second channel does not settle {question}"
+        f"{both}channels, {row.get('assigned_formula')} on a peak only {shown:.1f} "
+        f"times as bright as {alternative}'s, short of the {PARTNER_MARGIN:g} "
+        f"times that would settle {question}"
     )
 
 
@@ -451,7 +463,7 @@ def settled_detail(row: dict, settled: dict) -> str:
     :param row: A committed monoisotopic row.
     :param settled: The cross-channel pass's record: the other reading, its
         channel, what settled it and, for a second channel, which; for the
-        stronger partner, what the partner gate weighed.
+        stronger partner, the ratio of the two molecules' partners.
     :return: The reason's sentence.
     """
     other = settled.get("alternative") or "another neutral"
@@ -463,14 +475,12 @@ def settled_detail(row: dict, settled: dict) -> str:
     if by == SETTLED_BY_RADICAL:
         return f"{reading}, a radical rather than a molecule, so it is no rival"
     if by == SETTLED_BY_PARTNER:
-        tiers = settled.get("tiers") or []
         ratio = settled.get("ratio")
-        if settled.get("on") == "tier" and len(tiers) == 2:
-            strength = f"at {tiers[0]}, and {other} only at {tiers[1]}"
-        elif isinstance(ratio, (int, float)):
-            strength = f"on a peak {ratio:.0f} times as bright as {other}'s"
-        else:
-            strength = f"more strongly than {other}"
+        strength = (
+            f"on a peak {math.floor(ratio)} times as bright as {other}'s"
+            if isinstance(ratio, (int, float))
+            else f"more strongly than {other}"
+        )
         return (
             f"{reading}; the sample commits {row.get('assigned_formula')} through "
             f"one of the mode's own channels {strength}, which settles it"

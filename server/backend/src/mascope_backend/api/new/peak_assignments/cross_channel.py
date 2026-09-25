@@ -62,13 +62,13 @@ Four things settle it, and a row that one of them settles records which
   sample shows the other reading's molecule too, committed through one of the
   mode's own channels: then each reading has its own second observation, the
   argument cuts both ways, and the rival stays the doubt it is.
-- **The stronger partner.** Where the other reading is an opportunistic one the
-  sample also bears out, the partner gate weighs the two
-  (``engine.apply_partner_gates``): the reading whose molecule the sample commits
-  through a mode channel at the higher tier, or at one tier on a peak at least
-  ``engine.PARTNER_MARGIN`` times as bright, marks the other outweighed, and the
-  ion is settled. Within the margin nothing is marked, and the other reading is
-  a rival the sample shows, as above.
+- **The stronger partner.** Where the sample shows both molecules, the two are
+  weighed the way the partner gate weighs two opportunistic readings
+  (``engine.apply_partner_gates``, ``engine.outweighs``): where the row's
+  molecule is committed through one of the mode's own channels on a peak
+  ``engine.PARTNER_MARGIN`` times as bright as the other's or more, the ion is
+  settled. Closer than that, the other reading is a rival the sample shows, as
+  above.
 - **The target library.** The workspace named that compound for the modes its
   collection is attached to, so which reading the ion is was its curation's
   decision.
@@ -109,15 +109,18 @@ analyte does not carry it.
 
 from __future__ import annotations
 
+import math
 import re
 
 from mascope_backend.api.new.peak_assignments.engine import (
-    PARTNER_GATE_OUTWEIGHED,
     PARTNER_GATE_UNMET,
+    PARTNER_MARGIN,
     ROLE_ISO_CHILD,
     ROLE_M0,
     is_reference_mirror_row,
     is_target_library_row,
+    outweighs,
+    partner_ratio,
 )
 from mascope_backend.api.new.peak_assignments.mass_gate import is_committed
 from mascope_backend.api.new.peak_assignments.tiers import (
@@ -130,7 +133,7 @@ from mascope_tools.composition.heuristic_filter import (
     element_counts,
     neutral_is_closed_shell,
 )
-from mascope_tools.composition.utils import parse_ionization
+from mascope_tools.composition.utils import parse_composition, parse_ionization
 
 
 #: How many distinct channels a neutral needs before the run calls it
@@ -228,8 +231,8 @@ def same_ion_readings(row: dict, notation_by_id: dict[str, str]) -> list[dict]:
             continue
         # An opportunistic reading the partner gate displaced: the sample was
         # asked to bear it out and did not, so it is no doubt about the reading
-        # it did bear out (``engine.apply_partner_gates``). One it outweighed
-        # the sample did bear out, and is read with its mark.
+        # it did bear out (``engine.apply_partner_gates``). One its contest
+        # outweighed the sample did bear out, and is weighed again here.
         if alternative.get("partner_gate") == PARTNER_GATE_UNMET:
             continue
         notation = notation_by_id.get(str(alternative.get("ionization_mechanism_id")))
@@ -323,25 +326,41 @@ def sharpest(row: dict, readings: list[dict]) -> dict | None:
     )
 
 
-def weighed(row: dict, reading: dict) -> dict:
-    """What the partner gate found weighing the row's reading against another.
+def weighed(
+    row: dict, reading: dict, partners: dict[str, dict[int, float]]
+) -> dict | None:
+    """How strongly the sample shows the row's molecule against a reading's.
 
-    Read off the row's own record of the contest (``engine.apply_partner_gates``),
-    where the two readings were both borne out: which the partners' tiers or
-    the ratio of their peaks decided, and by how much.
+    Each read as the partner gate reads a partner (``engine.apply_partner_gates``):
+    the brightest row that commits the neutral through one of the mode's own
+    channels (:func:`partner_heights`). The row itself is left out of its own
+    molecule's: its peak is the one ion both readings explain, and it is no
+    evidence for either.
 
     :param row: A committed monoisotopic row.
-    :param reading: Another reading of its ion.
-    :return: The contest's ``on``, ``tiers`` and ``ratio`` for that reading, or
-        nothing where the gate weighed none.
+    :param reading: Another reading of its ion, a molecule.
+    :param partners: :func:`partner_heights`.
+    :return: None where the sample does not commit the reading's molecule
+        through a mode channel. Otherwise the ratio of the two partners' peaks,
+        the row's over the reading's (``engine.partner_ratio``, None where the
+        row's molecule has no partner of its own), and whether it settles the
+        reading (``engine.outweighs``).
     """
-    gate = (row.get("provenance") or {}).get("partner_gate") or {}
-    for entry in gate.get("contest") or []:
-        if neutral_key(entry.get("reading")) == neutral_key(
-            reading.get("assigned_formula")
-        ) and entry.get("via") == reading.get("channel"):
-            return {key: entry[key] for key in ("on", "tiers", "ratio") if key in entry}
-    return {}
+    theirs = partners.get(neutral_key(reading.get("assigned_formula")))
+    if not theirs:
+        return None
+    other = max(theirs.values())
+    own = max(
+        (
+            height
+            for key, height in partners.get(
+                neutral_key(row.get("assigned_formula")), {}
+            ).items()
+            if key != id(row)
+        ),
+        default=0.0,
+    )
+    return {"ratio": partner_ratio(own, other), "decisive": outweighs(own, other)}
 
 
 def same_ion_question(
@@ -349,7 +368,7 @@ def same_ion_question(
     notation_by_id: dict[str, str],
     *,
     corroborated: bool,
-    shown: frozenset[str] = frozenset(),
+    partners: dict[str, dict[int, float]] | None = None,
 ) -> tuple[str, dict] | None:
     """Whether this row's ion reads another way, and what that leaves it.
 
@@ -359,26 +378,27 @@ def same_ion_question(
     name is not asked at all, as a formula nothing can read is not.
 
     Where the ion reads as more than one molecule, the rival is the one that
-    doubts it most sharply (:func:`sharpest`). A reading the partner gate
-    outweighed is no rival: the stronger partner settled it.
+    doubts it most sharply (:func:`sharpest`).
 
-    A second channel settles the rival only where the sample does not also
-    commit the rival's molecule through one of the mode's own channels
-    (``shown``). Where it does, the rival has a second observation of its own,
-    so the row's is no longer the whole of the evidence, and a rival the sample
-    shows is the one the row records.
+    A reading whose molecule the sample also commits through one of the mode's
+    own channels is weighed against the row's own (:func:`weighed`): where the
+    sample shows the row's molecule ``engine.PARTNER_MARGIN`` times as brightly
+    or more, the stronger partner settles it. Otherwise it is a doubt that a
+    second channel does not settle, since the reading has a second observation
+    of its own and the row's is no longer the whole of the evidence; so a
+    corroborated row records the rival the sample shows, marked ``shown``.
 
     :param row: A committed monoisotopic row.
     :param notation_by_id: The run's mechanisms, by the id the rows carry.
     :param corroborated: Whether a second channel committed the row's neutral.
-    :param shown: The neutrals (:func:`neutral_key`) the sample commits through
-        one of the mode's own channels (:func:`shown_neutrals`).
+    :param partners: :func:`partner_heights`; nothing is shown where it is not
+        given.
     :return: None where the ion has no other reading this can weigh. Otherwise
         the reason and its record: one of :data:`AMBIGUITY_REASONS` with the
-        rival molecule where nothing settled it - marked ``shown`` where the
-        sample commits it too, with what the partner gate weighed where it
-        weighed the two - or :data:`SAME_ION_SETTLED` with the reading and what
-        settled it (``by``).
+        rival molecule where nothing settled it - on a corroborated row with
+        ``shown`` and the partners' ``ratio`` - or :data:`SAME_ION_SETTLED` with
+        the reading and what settled it (``by``, and the ``ratio`` where it was
+        the stronger partner).
     """
     if notation_by_id.get(str(row.get("ionization_mechanism_id"))) is None:
         return None
@@ -393,44 +413,46 @@ def same_ion_question(
     molecules = [
         reading for reading in others if is_molecule(reading.get("assigned_formula"))
     ]
-    outweighed = [
+    if not molecules:
+        return SAME_ION_SETTLED, {**_named(others[0]), "by": SETTLED_BY_RADICAL}
+    if is_target_library_row(row):
+        return SAME_ION_SETTLED, {
+            **_named(sharpest(row, molecules)),
+            "by": SETTLED_BY_TARGET_LIBRARY,
+        }
+    weight = {
+        id(reading): weighed(row, reading, partners or {}) for reading in molecules
+    }
+
+    def settles(reading: dict) -> bool:
+        found = weight[id(reading)]
+        return found is not None and found["decisive"]
+
+    doubts = [
         reading
         for reading in molecules
-        if reading.get("partner_gate") == PARTNER_GATE_OUTWEIGHED
+        if not settles(reading)
+        # A second channel settles every rival the sample does not show.
+        and not (corroborated and weight[id(reading)] is None)
     ]
-    rivals = [
-        reading
-        for reading in molecules
-        if reading.get("partner_gate") != PARTNER_GATE_OUTWEIGHED
-    ]
-    rival = sharpest(row, rivals)
-    if rival is None:
-        settled = sharpest(row, outweighed)
-        if settled is not None:
+    if not doubts:
+        outweighed = [reading for reading in molecules if settles(reading)]
+        if outweighed:
+            settled = sharpest(row, outweighed)
             return SAME_ION_SETTLED, {
                 **_named(settled),
                 "by": SETTLED_BY_PARTNER,
-                **weighed(row, settled),
+                "ratio": weight[id(settled)]["ratio"],
             }
-        return SAME_ION_SETTLED, {**_named(others[0]), "by": SETTLED_BY_RADICAL}
-    if is_target_library_row(row):
-        return SAME_ION_SETTLED, {**_named(rival), "by": SETTLED_BY_TARGET_LIBRARY}
-    if corroborated:
-        doubt = sharpest(
-            row,
-            [
-                reading
-                for reading in rivals
-                if neutral_key(reading.get("assigned_formula")) in shown
-            ],
-        )
-        if doubt is None:
-            return SAME_ION_SETTLED, {**_named(rival), "by": SETTLED_BY_SECOND_CHANNEL}
-        rival = doubt
+        return SAME_ION_SETTLED, {
+            **_named(sharpest(row, molecules)),
+            "by": SETTLED_BY_SECOND_CHANNEL,
+        }
+    rival = sharpest(row, doubts)
     record = _named(rival)
-    if neutral_key(rival.get("assigned_formula")) in shown:
+    if corroborated:
         record["shown"] = True
-        record.update(weighed(row, rival))
+        record["ratio"] = weight[id(rival)]["ratio"]
     return ambiguity_of(row, rival), record
 
 
@@ -440,10 +462,25 @@ def _named(reading: dict) -> dict:
 
 
 def neutral_key(formula: str | None) -> str:
-    """A neutral's identity, independent of how its formula was written."""
-    counts = element_counts(str(formula or ""))
+    """A neutral's identity, independent of how its formula was written.
+
+    A formula the element counter cannot read is read as the partner gate reads
+    one (``engine.formula_identity``): a target library holds what a person
+    typed, and ``C6H4(CH3)2`` is the xylene a search writes ``C8H10``.
+    """
+    text = str(formula or "")
+    counts = element_counts(text)
+    if counts is None:
+        try:
+            counts = {
+                symbol: count
+                for symbol, count in parse_composition(text).items()
+                if count
+            }
+        except Exception:  # noqa: BLE001 - an unreadable formula keeps its own text
+            counts = None
     if not counts:
-        return str(formula or "")
+        return text
     return " ".join(f"{element}{counts[element]}" for element in sorted(counts))
 
 
@@ -517,28 +554,49 @@ def partner_tier(channels: dict[str, str | None], own: str | None) -> str | None
     return best
 
 
-def shown_neutrals(
-    channels: dict[str, dict[str, str | None]], minor_channels: frozenset[str]
-) -> frozenset[str]:
-    """The neutrals the sample commits through one of the mode's own channels.
+def _height(row: dict) -> float:
+    """A row's peak height, 0 for one that has none."""
+    try:
+        height = float(row.get("sample_peak_intensity") or 0.0)
+    except (TypeError, ValueError):
+        return 0.0
+    return height if math.isfinite(height) else 0.0
 
-    At candidate or better, the partner gate's own bar for a partner
-    (``engine.apply_partner_gates``): a reading of one of these names a
-    molecule the sample itself bears out, which no prior sets aside.
 
-    :param channels: :func:`channels_by_neutral`.
-    :param minor_channels: The run's opportunistic channels, which show nothing
-        on their own.
-    :return: The neutrals, keyed as :func:`neutral_key` keys them.
+def partner_heights(
+    assignments: list[dict],
+    notation_by_id: dict[str, str],
+    minor_channels: frozenset[str],
+) -> dict[str, dict[int, float]]:
+    """How the sample shows each neutral through the mode's own channels.
+
+    Per neutral, the peak height of every monoisotopic row that commits it at
+    candidate or better through one of the mode's own channels: the partner
+    gate's own bar for a partner (``engine.apply_partner_gates``). A reading of
+    one of these names a molecule the sample itself bears out, which no prior
+    sets aside; an opportunistic channel shows nothing on its own. The bar is
+    one that the passes after the gate cannot take a row back under.
+
+    :param assignments: Every row built for this sample.
+    :param notation_by_id: The run's mechanisms, by the id the rows carry.
+    :param minor_channels: The run's opportunistic channels.
+    :return: Per neutral (:func:`neutral_key`), each such row's height, keyed by
+        the row's identity so that a row can be left out of its own neutral's.
     """
-    return frozenset(
-        neutral
-        for neutral, by_channel in channels.items()
-        if any(
-            channel not in minor_channels and tier in (TIER_ASSIGNED, TIER_CANDIDATE)
-            for channel, tier in by_channel.items()
-        )
-    )
+    heights: dict[str, dict[int, float]] = {}
+    for row in assignments:
+        if (
+            not is_committed(row)
+            or row.get("role") != ROLE_M0
+            or row.get("tier") not in (TIER_ASSIGNED, TIER_CANDIDATE)
+        ):
+            continue
+        notation = notation_by_id.get(str(row.get("ionization_mechanism_id")))
+        if not notation or notation in minor_channels:
+            continue
+        neutral = neutral_key(row.get("assigned_formula"))
+        heights.setdefault(neutral, {})[id(row)] = _height(row)
+    return heights
 
 
 def apply_cross_channel(
@@ -562,18 +620,21 @@ def apply_cross_channel(
     :param notation_by_id: The run's mechanisms, by the id the rows carry.
     :param minor_channels: The run's opportunistic channels. A neutral committed
         through any other channel is one the sample shows
-        (:func:`shown_neutrals`); none by default, where every channel is the
+        (:func:`partner_heights`); none by default, where every channel is the
         mode's own.
     :return: A JSON-serializable summary for the run's config.
     """
     channels_searched = sorted(set(notation_by_id.values()))
     donors = nitrogen_donating_channels(channels_searched)
     channels = channels_by_neutral(assignments, notation_by_id)
-    shown = shown_neutrals(channels, minor_channels)
+    partners = partner_heights(assignments, notation_by_id, minor_channels)
     summary = {
         "channels": channels_searched,
         "reagent_channels": sorted(donors),
         "min_channels": CHANNELS_FOR_CORROBORATION,
+        # How much brighter the row's molecule has to be shown than a rival's
+        # the sample also shows for the stronger partner to settle it.
+        "partner_margin": PARTNER_MARGIN,
         "committed_m0": 0,
         "neutrals": len(channels),
         "corroborated": 0,
@@ -608,8 +669,9 @@ def apply_cross_channel(
         "reagent_rule_applied": bool(donors),
     }
 
-    # Owner id -> the reason its cap carried, which its isotopologues carry too.
-    capped_owners: dict[str, str] = {}
+    # Owner id -> the reason its cap carried, and whether its rival is one the
+    # sample shows, which its isotopologues carry too.
+    capped_owners: dict[str, tuple[str, bool]] = {}
     for row in assignments:
         if not is_committed(row) or row.get("role") != ROLE_M0:
             continue
@@ -624,7 +686,7 @@ def apply_cross_channel(
             "partner_tier": partner_tier(seen, own_channel),
         }
         question = same_ion_question(
-            row, notation_by_id, corroborated=corroborated, shown=shown
+            row, notation_by_id, corroborated=corroborated, partners=partners
         )
         if question is not None:
             reason, found = question
@@ -637,14 +699,15 @@ def apply_cross_channel(
                 summary["settled"][found["by"]] += 1
             else:
                 mirror = is_reference_mirror_row(row)
+                shown = bool(found.get("shown"))
                 record[reason] = found
                 summary[reason] += 1
                 summary[f"{reason}_mirror"] += mirror
-                summary["shown_rival"] += corroborated
+                summary["shown_rival"] += shown
                 if _cap(row, record, reason):
                     summary["capped"] += 1
                     summary["capped_mirror"] += mirror
-                    capped_owners[str(row["peak_assignment_id"])] = reason
+                    capped_owners[str(row["peak_assignment_id"])] = (reason, shown)
         row.setdefault("provenance", {})["cross_channel"] = record
 
     # An isotopologue is its parent's ion on a second line of one envelope, so it
@@ -657,8 +720,11 @@ def apply_cross_channel(
         owner_id = str(row.get("owner_peak_assignment_id"))
         if owner_id not in capped_owners:
             continue
+        reason, shown = capped_owners[owner_id]
         record = {"inherited_from": owner_id}
-        if _cap(row, record, capped_owners[owner_id]):
+        if shown:
+            record["shown"] = True
+        if _cap(row, record, reason):
             summary["capped_isotopologues"] += 1
         row.setdefault("provenance", {})["cross_channel"] = record
     return summary
