@@ -149,12 +149,13 @@ def _join(terms: list[str]) -> str:
 
 
 def _ordered(terms: list[str]) -> list[str]:
-    """The terms in alphabetical order, each as a legacy moiety splits it,
-    settled where joining them in order would split the last one further."""
-    ordered = sorted(_split(_join(terms)))
-    while (again := _split(_join(ordered))) != ordered:
-        ordered = sorted(again)
-    return ordered
+    """The terms in alphabetical order, each first split as far as a legacy
+    moiety splits it, so a term that opens with a group reads as the terms it
+    holds wherever it stands."""
+    parts = list(terms)
+    while (split := [part for term in parts for part in _split(term)]) != parts:
+        parts = split
+    return sorted(parts)
 
 
 def _flip(sign: str) -> str:
