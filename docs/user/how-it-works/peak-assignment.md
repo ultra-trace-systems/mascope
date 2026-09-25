@@ -394,6 +394,18 @@ What caps a row at candidate:
   since the run never holds one at *assigned*. A list's presence is evidence for a
   formula, not a label on it, so a list compound is only held at *assigned* where
   nothing plausible competes with it.
+- **one peak only** — the formula search found the formula on one peak, and nothing
+  else in the run saw it: no line of its own isotope pattern is committed beside it, no
+  second ionization channel committed the same neutral, and it was not matched from a
+  list. However well it fits, one line is one observation. A faint line matches its
+  isotope pattern perfectly by having no other line to match, and on a TOF its mass
+  error is judged against a width of several ppm, so the top tier asks for a second
+  one: the isotope or adduct evidence [Schymanski et al. 2014][sch14] ask of a formula
+  before calling it unequivocal. An isotope line whose mass error does not follow the
+  row's (*off its M0*, below) does not count, since it is more likely another peak
+  inside the matching window; a line *in doubt* does. A formula matched from your
+  target library or a reference list is not asked: the list is its second
+  observation.
 - **a neighbour's isotope line** — a committed neighbouring compound's isotope pattern
   predicts a line on this peak, and the peak is no more than twice as tall as that line,
   so the line could account for all of it. The neighbour must itself be a reading the
@@ -480,7 +492,10 @@ What caps a row at candidate:
   exactly on calibration.
 
 What a row that keeps its tier kept it on: **second channel** (the same neutral committed
-through two or more of the run's ionization channels), **same ion, settled** (the ion
+through two or more of the run's ionization channels), **second line** (a line of its own
+isotope pattern committed with it, named with its m/z), **on a list** (matched from your
+target library or a reference list, named with the list's compound; the formula search
+did not elect it), **same ion, settled** (the ion
 reads as another molecule too, and something settled which: a second channel - for a
 reading through one of the mode's own channels, even where the sample shows the other
 molecule too, short of ten times as brightly - the sample showing this molecule

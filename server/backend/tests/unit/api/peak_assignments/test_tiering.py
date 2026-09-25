@@ -33,14 +33,17 @@ from mascope_backend.api.new.peak_assignments.tiering import (
     REASON_ENVELOPE_NEIGHBOUR,
     REASON_EVIDENCE_BAND,
     REASON_INHERITED,
+    REASON_LONE_PEAK,
     REASON_MINOR_CHANNEL,
     REASON_NO_CLOSE_RIVAL,
     REASON_NOT_MEASURED,
     REASON_ODD_ELECTRON,
     REASON_OFF_CALIBRATION,
+    REASON_ON_A_LIST,
     REASON_OXYGEN_FREE_CLUSTER,
     REASON_POLYHALIDE_CLUSTER,
     REASON_SAME_ION_SETTLED,
+    REASON_SECOND_LINE,
     TIERING_RULES_VERSION,
     apply_tiering,
     envelope_neighbours,
@@ -55,6 +58,11 @@ PLAIN = "C6H12O6"
 #: The same mass as its ion, read as a radical: C6H11O6 under a proton is an
 #: odd-electron neutral, which the nitrogen rule catches.
 RADICAL = "C6H11O6"
+
+#: Two of the run's channels committing a row's neutral. A test of another rule
+#: gives its row this second observation, so that it reads that rule alone and
+#: not one peak being all that saw the row (decision 25) as well.
+SEEN_TWICE = ["[M+H]+", "[M+NH4]+"]
 
 
 def row(
@@ -95,6 +103,31 @@ def row(
         "target_compound_id": compound,
         "provenance": blob,
     }
+
+
+def line_of(
+    owner: str,
+    row_id: str | None = None,
+    *,
+    label: str = "13C",
+    mz: float = 182.0741,
+    tracking: str | None = None,
+    **kwargs,
+) -> dict:
+    """A committed isotopologue row of ``owner``, as the mass gate read it."""
+    provenance = {"mass_gate": {"tracking": tracking}} if tracking else None
+    entry = row(
+        row_id or f"{owner}-{label}",
+        role="iso_child",
+        owner=owner,
+        mz=mz,
+        intensity=60.0,
+        density=None,
+        provenance=provenance,
+        **kwargs,
+    )
+    entry["isotope_label"] = label
+    return entry
 
 
 def tier_of(rows: list[dict], row_id: str) -> str:
@@ -177,7 +210,7 @@ class TestTheRadicalRule:
         assert REASON_ODD_ELECTRON not in rules_on(rows, "pa-1")
 
     def test_a_closed_shell_neutral_is_untouched(self):
-        rows = [row("pa-1", PLAIN)]
+        rows = [row("pa-1", PLAIN, channels=SEEN_TWICE)]
         run(rows)
         assert tier_of(rows, "pa-1") == "assigned"
 
@@ -204,7 +237,12 @@ CHANNELS = {
 def cluster(
     row_id: str, formula: str = "C10H16", mechanism: str = "m-nitrate", **kwargs
 ) -> dict:
-    """A committed row read through one of :data:`CHANNELS`."""
+    """A committed row read through one of :data:`CHANNELS`.
+
+    Seen through a second channel unless a test says otherwise: what these rules
+    doubt is the ion, and a row one peak alone saw would be capped for that too.
+    """
+    kwargs.setdefault("channels", ["[M+NO3]-", "[M-H]-"])
     entry = row(row_id, formula, ion=None, **kwargs)
     entry["ionization_mechanism_id"] = mechanism
     return entry
@@ -405,7 +443,8 @@ class TestTheDensityRule:
         assert tier_of(rows, "pa-1") == "assigned"
 
     def test_an_uncontested_reading_keeps_it(self):
-        rows = [row("pa-1", density=DENSITY_LIMIT - 1)]
+        # Its 13C line is the second observation; density does not count it.
+        rows = [row("pa-1", density=DENSITY_LIMIT - 1), line_of("pa-1")]
         run(rows)
         assert tier_of(rows, "pa-1") == "assigned"
 
@@ -424,6 +463,174 @@ class TestTheDensityRule:
         assert "4" in detail
 
 
+class TestOnePeakIsNotEnough:
+    """Decision 25: a row at assigned names what saw it twice."""
+
+    def reason(self, rows: list[dict], rule: str, row_id: str = "pa-1") -> dict:
+        return next(r for r in reasons_of(rows, row_id) if r["rule"] == rule)
+
+    def test_a_lone_peak_from_the_search_loses_the_top_tier(self):
+        rows = [row("pa-1")]
+        summary = run(rows)
+        assert tier_of(rows, "pa-1") == "candidate"
+        assert summary["capped_by_rule"] == {REASON_LONE_PEAK: 1}
+
+    def test_the_reason_says_what_was_not_seen(self):
+        rows = [row("pa-1", "C11H11N3O11S")]
+        run(rows)
+        assert self.reason(rows, REASON_LONE_PEAK) == {
+            "rule": REASON_LONE_PEAK,
+            "detail": (
+                "one peak is all that saw C11H11N3O11S: no other line of its "
+                "isotope pattern is committed, no second channel of this run "
+                "committed the same neutral, and it was not matched from a list"
+            ),
+            "caps": True,
+        }
+
+    def test_a_line_of_its_own_keeps_it(self):
+        rows = [row("pa-1"), line_of("pa-1")]
+        run(rows)
+        assert tier_of(rows, "pa-1") == "assigned"
+        assert self.reason(rows, REASON_SECOND_LINE)["detail"] == (
+            "a second line of its isotope pattern is committed with it, "
+            "13C at m/z 182.0741"
+        )
+
+    def test_several_lines_are_named(self):
+        rows = [
+            row("pa-1"),
+            line_of("pa-1", mz=182.0741),
+            line_of("pa-1", label="18O", mz=183.0750),
+            line_of("pa-1", label="13C2", mz=183.0774),
+            line_of("pa-1", label="13C18O", mz=184.0783),
+        ]
+        run(rows)
+        assert self.reason(rows, REASON_SECOND_LINE)["detail"] == (
+            "4 other lines of its isotope pattern are committed with it (13C at "
+            "m/z 182.0741, 18O at m/z 183.0750, 13C2 at m/z 183.0774, ...)"
+        )
+
+    def test_a_second_channel_keeps_it(self):
+        rows = [row("pa-1", channels=SEEN_TWICE)]
+        run(rows)
+        assert tier_of(rows, "pa-1") == "assigned"
+        assert REASON_CORROBORATED in rules_on(rows, "pa-1")
+        assert REASON_LONE_PEAK not in rules_on(rows, "pa-1")
+
+    def test_the_target_library_keeps_it(self):
+        rows = [row("pa-1", source="database", compound="compound-7")]
+        run(rows)
+        assert tier_of(rows, "pa-1") == "assigned"
+        assert self.reason(rows, REASON_ON_A_LIST)["detail"] == (
+            "matched from the target library, which somebody named for this data"
+        )
+
+    @pytest.mark.parametrize(
+        "identities, named",
+        [
+            (None, ""),
+            ([{"name": "Pinonic acid"}], ", as Pinonic acid"),
+            (
+                [{"name": "Pinonic acid"}, {"name": "Pinalic-4-acid"}],
+                ", as Pinonic acid and 1 more",
+            ),
+        ],
+    )
+    def test_a_reference_list_keeps_it_and_names_its_compound(self, identities, named):
+        provenance = {"reference_identities": identities} if identities else None
+        rows = [row("pa-1", "C10H16O3", source="database", provenance=provenance)]
+        run(rows)
+        assert tier_of(rows, "pa-1") == "assigned"
+        assert self.reason(rows, REASON_ON_A_LIST)["detail"] == (
+            f"matched from a reference list{named}"
+        )
+
+    def test_a_line_that_does_not_follow_it_saw_something_else(self):
+        # The mass gate's word for such a line is that it corroborates nothing:
+        # a peak inside the matching window by coincidence.
+        rows = [row("pa-1"), line_of("pa-1", tracking=TRACKING_UNTRACKED)]
+        run(rows)
+        assert tier_of(rows, "pa-1") == "candidate"
+        assert self.reason(rows, REASON_LONE_PEAK)["detail"] == (
+            "one peak is all that saw C6H12O6: the line of its isotope pattern "
+            "committed with it does not follow its mass error, even allowing for "
+            "the line's own noise and the peaks close beside it, no second "
+            "channel of this run committed the same neutral, and it was not "
+            "matched from a list"
+        )
+
+    def test_one_line_that_follows_it_is_enough_beside_one_that_does_not(self):
+        rows = [
+            row("pa-1"),
+            line_of("pa-1", tracking=TRACKING_UNTRACKED),
+            line_of("pa-1", label="18O", mz=183.0750, tracking=TRACKING_TRACKS),
+        ]
+        run(rows)
+        assert tier_of(rows, "pa-1") == "assigned"
+        assert self.reason(rows, REASON_SECOND_LINE)["detail"].endswith(
+            "18O at m/z 183.0750"
+        )
+
+    def test_a_line_in_doubt_is_still_a_line(self):
+        # Faint, and placed as well as its noise lets it be.
+        rows = [row("pa-1"), line_of("pa-1", tracking=TRACKING_IN_DOUBT)]
+        run(rows)
+        assert tier_of(rows, "pa-1") == "assigned"
+        assert REASON_SECOND_LINE in rules_on(rows, "pa-1")
+
+    def test_its_isotopologue_follows_it_down(self):
+        rows = [row("pa-1"), line_of("pa-1", "pa-kid", tracking=TRACKING_UNTRACKED)]
+        summary = run(rows)
+        assert tier_of(rows, "pa-kid") == "candidate"
+        assert summary["capped_isotopologues"] == 1
+        assert [r["rule"] for r in reasons_of(rows, "pa-kid")] == [
+            REASON_ISOTOPOLOGUE_UNTRACKED,
+            REASON_INHERITED,
+        ]
+
+    def test_a_line_of_another_row_is_not_its_own(self):
+        rows = [
+            row("pa-1"),
+            row("pa-2", mz=300.0, channels=SEEN_TWICE),
+            line_of("pa-2"),
+        ]
+        run(rows)
+        assert tier_of(rows, "pa-1") == "candidate"
+        assert tier_of(rows, "pa-2") == "assigned"
+
+    def test_a_row_its_evidence_put_lower_still_says_so(self):
+        rows = [row("pa-1", tier="below_assignability")]
+        summary = run(rows)
+        assert tier_of(rows, "pa-1") == "below_assignability"
+        assert self.reason(rows, REASON_LONE_PEAK)["caps"] is True
+        assert summary["capped_by_rule"] == {}
+
+    def test_a_row_whose_channels_were_never_recorded_is_not_asked(self):
+        # Without the cross-channel pass's record the rule cannot tell a lone
+        # peak from one a second channel saw, so it fails open.
+        rows = [row("pa-1")]
+        rows[0]["provenance"]["cross_channel"] = None
+        run(rows)
+        assert tier_of(rows, "pa-1") == "assigned"
+        assert REASON_LONE_PEAK not in rules_on(rows, "pa-1")
+
+    @pytest.mark.parametrize("source", ["manual", "reagent", None])
+    def test_only_the_search_s_rows_are_asked(self, source):
+        rows = [row("pa-1", source=source)]
+        run(rows)
+        assert REASON_LONE_PEAK not in rules_on(rows, "pa-1")
+
+    def test_what_saw_it_twice_is_named_first(self):
+        rows = [row("pa-1", channels=SEEN_TWICE), line_of("pa-1")]
+        run(rows)
+        assert [r["rule"] for r in reasons_of(rows, "pa-1")] == [
+            REASON_CORROBORATED,
+            REASON_SECOND_LINE,
+            REASON_NO_CLOSE_RIVAL,
+        ]
+
+
 class TestTheImplausibleFormula:
     def test_an_oxygen_lattice_loses_the_top_tier(self):
         rows = [row("pa-1", "C8H10O11", ion="C8H11O11+")]
@@ -432,7 +639,7 @@ class TestTheImplausibleFormula:
         assert "oxygen_lattice" in rules_on(rows, "pa-1")
 
     def test_a_small_organic_acid_does_not(self):
-        rows = [row("pa-1", "C3H4O4", ion="C3H5O4+")]
+        rows = [row("pa-1", "C3H4O4", ion="C3H5O4+", channels=SEEN_TWICE)]
         run(rows)
         assert tier_of(rows, "pa-1") == "assigned"
 
@@ -452,7 +659,7 @@ class TestTheImplausibleFormula:
         rows = [row("pa-1", "HS3", ion="S3-", source="database")]
         run(rows)
         assert tier_of(rows, "pa-1") == "assigned"
-        assert rules_on(rows, "pa-1") == {REASON_NO_CLOSE_RIVAL}
+        assert rules_on(rows, "pa-1") == {REASON_ON_A_LIST, REASON_NO_CLOSE_RIVAL}
 
     def test_a_curated_oxygen_lattice_keeps_its_tier(self):
         # Peroxyacetyl nitrate has the lattice's shape and is a species these
@@ -477,15 +684,23 @@ class TestTheNeighboursEnvelope:
         there with a formula of its own.
         """
         return [
-            row("pa-owner", PLAIN, mz=181.0707, intensity=1000.0, ion="C6H13O6+"),
-            # A closed-shell neutral, so nothing but this rule has an opinion
-            # about the second row.
+            row(
+                "pa-owner",
+                PLAIN,
+                mz=181.0707,
+                intensity=1000.0,
+                ion="C6H13O6+",
+                channels=SEEN_TWICE,
+            ),
+            # A closed-shell neutral seen twice, so nothing but this rule has an
+            # opinion about the second row.
             row(
                 "pa-child",
                 PLAIN,
                 mz=182.07404,
                 intensity=child_intensity,
                 ion="C6H13O6+",
+                channels=SEEN_TWICE,
             ),
         ]
 
@@ -542,7 +757,7 @@ class TestTheNeighboursEnvelope:
             "anchor_on_monoisotopic",
             lambda mzs, ints, labels: (mzs, ints, labels),
         )
-        rows = [row("pa-1", PLAIN, mz=181.0707, intensity=1000.0)]
+        rows = [row("pa-1", PLAIN, mz=181.0707, intensity=1000.0, channels=SEEN_TWICE)]
         run(rows)
         assert tier_of(rows, "pa-1") == "assigned"
 
@@ -568,8 +783,22 @@ class TestTheNeighboursEnvelope:
             lambda mzs, ints, labels: (mzs, ints, labels),
         )
         rows = [
-            row("pa-a", PLAIN, peak="shared", mz=181.0707, intensity=1000.0),
-            row("pa-b", PLAIN, peak="shared", mz=181.0707, intensity=1.0),
+            row(
+                "pa-a",
+                PLAIN,
+                peak="shared",
+                mz=181.0707,
+                intensity=1000.0,
+                channels=SEEN_TWICE,
+            ),
+            row(
+                "pa-b",
+                PLAIN,
+                peak="shared",
+                mz=181.0707,
+                intensity=1.0,
+                channels=SEEN_TWICE,
+            ),
         ]
         run(rows)
         assert tier_of(rows, "pa-a") == "assigned"
@@ -870,7 +1099,12 @@ class TestWhatTheEarlierPassesDecided:
         # because it is what that pass said; acting on it here would be this
         # pass demoting a row for a rule it does not own.
         rows = [
-            row("pa-1", tier="assigned", provenance={"mass_gate": {"capped": True}})
+            row(
+                "pa-1",
+                tier="assigned",
+                channels=SEEN_TWICE,
+                provenance={"mass_gate": {"capped": True}},
+            )
         ]
         summary = run(rows)
         assert tier_of(rows, "pa-1") == "assigned"
@@ -946,11 +1180,11 @@ class TestTheRunsRecord:
     def test_the_rule_version_is_recorded(self):
         assert run([row("pa-1")])["version"] == TIERING_RULES_VERSION
 
-    def test_the_rule_set_is_8(self):
+    def test_the_rule_set_is_9(self):
         # The number, not the imported constant: a tier is comparable across
         # runs only under the same rules, so the set moves on purpose and this
         # test moves with it.
-        assert run([row("pa-1")])["version"] == 8
+        assert run([row("pa-1")])["version"] == 9
 
     def test_the_thresholds_are_recorded_with_it(self):
         summary = run([row("pa-1")])
@@ -970,7 +1204,11 @@ class TestTheRunsRecord:
         rows = [row("pa-1", RADICAL, density=DENSITY_LIMIT)]
         summary = run(rows)
         assert summary["capped"] == 1
-        assert sum(summary["capped_by_rule"].values()) == 2
+        assert summary["capped_by_rule"] == {
+            REASON_ODD_ELECTRON: 1,
+            REASON_CANDIDATE_DENSITY: 1,
+            REASON_LONE_PEAK: 1,
+        }
 
 
 class TestWhatAStandingRowClaims:
@@ -979,7 +1217,7 @@ class TestWhatAStandingRowClaims:
         # other candidates. It does NOT say the run's element box held no other
         # formula for the mass - that is a wider question, and one the ledger
         # would be overstating if this reason answered it.
-        rows = [row("pa-1", density=1)]
+        rows = [row("pa-1", density=1), line_of("pa-1")]
         run(rows)
         assert REASON_NO_CLOSE_RIVAL in rules_on(rows, "pa-1")
         detail = next(
@@ -1213,7 +1451,10 @@ class TestAReadingOfTheSameIonThatSomethingSettled:
         )
 
     def test_a_radical_is_no_rival(self):
-        rows = [row("pa-1", "C3H7NO", provenance={"cross_channel": settled("radical")})]
+        rows = [
+            row("pa-1", "C3H7NO", provenance={"cross_channel": settled("radical")}),
+            line_of("pa-1"),
+        ]
         run(rows)
         assert self.detail_of(rows, REASON_SAME_ION_SETTLED) == (
             "the same ion also reads as C3H4O through [M+NH4]+, a radical rather "
@@ -1226,7 +1467,8 @@ class TestAReadingOfTheSameIonThatSomethingSettled:
                 "pa-1",
                 "C3H7NO",
                 provenance={"cross_channel": settled("partner", ratio=30.4)},
-            )
+            ),
+            line_of("pa-1"),
         ]
         run(rows)
         assert self.detail_of(rows, REASON_SAME_ION_SETTLED) == (
@@ -1239,7 +1481,10 @@ class TestAReadingOfTheSameIonThatSomethingSettled:
     def test_no_close_rival_does_not_claim_the_readings_apart(self):
         # The density weighs the formulas the run competed for the peak, and
         # another reading of the ion is the same measurement, not one of them.
-        rows = [row("pa-1", "C3H7NO", provenance={"cross_channel": settled("radical")})]
+        rows = [
+            row("pa-1", "C3H7NO", provenance={"cross_channel": settled("radical")}),
+            line_of("pa-1"),
+        ]
         run(rows)
         assert self.detail_of(rows, REASON_NO_CLOSE_RIVAL) == (
             "the evidence separates this ion from every other the run competed "
@@ -1247,7 +1492,7 @@ class TestAReadingOfTheSameIonThatSomethingSettled:
         )
 
     def test_a_row_whose_ion_reads_one_way_keeps_the_formula_sentence(self):
-        rows = [row("pa-1")]
+        rows = [row("pa-1"), line_of("pa-1")]
         run(rows)
         assert self.detail_of(rows, REASON_NO_CLOSE_RIVAL) == (
             "the evidence separates this formula from every other candidate the "
@@ -1274,7 +1519,10 @@ class TestAReadingOfTheSameIonThatSomethingSettled:
         ]
 
     def test_it_never_caps(self):
-        rows = [row("pa-1", "C3H7NO", provenance={"cross_channel": settled("radical")})]
+        rows = [
+            row("pa-1", "C3H7NO", provenance={"cross_channel": settled("radical")}),
+            line_of("pa-1"),
+        ]
         run(rows)
         assert tier_of(rows, "pa-1") == "assigned"
         assert not any(r["caps"] for r in rows[0]["provenance"]["tier_reasons"])
@@ -1290,7 +1538,7 @@ class TestAnOwnerTheRunDoesNotStandBehind:
         # sits there, small enough for the line to account for it.
         return [
             row("pa-owner", PLAIN, tier=owner_tier, mz=181.0707, intensity=1000.0),
-            row("pa-child", PLAIN, mz=182.07404, intensity=40.0),
+            row("pa-child", PLAIN, mz=182.07404, intensity=40.0, channels=SEEN_TWICE),
         ]
 
     def test_a_neighbour_below_assignability_takes_nothing(self):
@@ -1516,7 +1764,11 @@ def on_the_line(
 
 
 def claiming_owner(**fields) -> dict:
+    """The neighbour whose lines are claimed, held at assigned on a second
+    channel rather than on a line of its own, which would sit where the claims
+    look."""
     fields.setdefault("tier", "assigned")
+    fields.setdefault("channels", SEEN_TWICE)
     return row("pa-owner", PLAIN, mz=181.0707, intensity=1000.0, ppm=0.0, **fields)
 
 
@@ -1579,6 +1831,31 @@ class TestReadingALineAsTheNeighbours:
         assert envelope_entry(rows, "pa-child")["detail"].endswith(
             "it is not read as that line, because that reading is not held at assigned"
         )
+
+    def test_under_a_neighbour_held_only_for_its_one_peak_it_is_read_as_it(self):
+        # The neighbour's one other line is this peak, committed as a compound
+        # of its own: the claim gives it the second observation it lacked.
+        rows = [
+            claiming_owner(channels=["[M+H]+"]),
+            on_the_line("pa-child", ppm=0.2),
+        ]
+        claims, held = claims_in(rows)
+        assert tier_of(rows, "pa-owner") == "candidate"
+        assert rules_on(rows, "pa-owner") == {REASON_LONE_PEAK}
+        assert [claim.row_id for claim in claims] == ["pa-child"]
+        assert held == {}
+
+    def test_a_neighbour_its_evidence_holds_lower_as_well_is_not(self):
+        rows = [
+            banded("pa-owner", 0.62, tier="candidate", mz=181.0707, intensity=1000.0),
+            on_the_line("pa-child"),
+        ]
+        run(rows, abundance_floor=FLOOR, tier_bands=BANDS)
+        claims, held = find_envelope_claims(
+            rows, mz_tolerance_ppm=5.0, abundance_floor=FLOOR, precision_ppm=0.3
+        )
+        assert rules_on(rows, "pa-owner") == {REASON_EVIDENCE_BAND, REASON_LONE_PEAK}
+        assert (claims, held) == ([], {HELD_NEIGHBOUR_NOT_ASSIGNED: 1})
 
     def test_the_neighbour_s_tier_is_read_after_this_pass_took_what_it_took(self):
         # Assigned on its evidence, and capped here as a radical.

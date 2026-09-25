@@ -35,6 +35,9 @@ from mascope_backend.api.new.peak_assignments.tiering import (
     REASON_ENVELOPE_CLAIM,
     REASON_ENVELOPE_NEIGHBOUR,
     REASON_INHERITED,
+    REASON_LONE_PEAK,
+    REASON_SECOND_LINE,
+    TIERING_RULES_VERSION,
 )
 
 
@@ -73,6 +76,7 @@ def commit(
     compound: str | None = None,
     ppm: float = 0.0,
     label: str = "M0",
+    mechanism: str = "im-1",
 ) -> dict:
     """A committed row as a stage builds it."""
     return {
@@ -86,7 +90,7 @@ def commit(
         "role": role,
         "assigned_formula": formula,
         "ion_formula": ion,
-        "ionization_mechanism_id": "im-1",
+        "ionization_mechanism_id": mechanism,
         "isotope_label": label,
         "isotope_formula": None,
         "source": source,
@@ -123,8 +127,26 @@ def anchors() -> list[dict]:
     ]
 
 
-def owner() -> dict:
-    return commit("pa-x", "C6H12O6", "C6H13O6+", 200.0, 1000.0)
+def seen_again(row: dict, mz: float) -> dict:
+    """The same neutral committed through the run's second channel.
+
+    On a peak of its own, away from every envelope: what holds ``row`` at
+    assigned beside its one peak (decision 25).
+    """
+    return commit(
+        f"{row['peak_assignment_id']}-again",
+        row["assigned_formula"],
+        "again+",
+        mz,
+        300.0,
+        mechanism="im-2",
+    )
+
+
+def owner() -> list[dict]:
+    """The neighbour whose line is claimed, seen through the second channel."""
+    row = commit("pa-x", "C6H12O6", "C6H13O6+", 200.0, 1000.0)
+    return [row, seen_again(row, 400.0)]
 
 
 def on_its_line(**fields) -> dict:
@@ -132,12 +154,12 @@ def on_its_line(**fields) -> dict:
     return commit("pa-y", "C7H11NO4", "C7H12NO4+", 201.0, 150.0, **fields)
 
 
-def judge(rows: list[dict], channel: str = "[M+H]+"):
+def judge(rows: list[dict], channel: str = "[M+H]+", second: str = "[M+Na]+"):
     return judge_commits(
         rows,
         stage_a_accuracy=SampleMassAccuracy(),
         fallback_sigma_ppm=0.3,
-        notation_by_id={"im-1": channel},
+        notation_by_id={"im-1": channel, "im-2": second},
         mz_tolerance_ppm=5.0,
         abundance_floor=0.01,
         max_alternatives=5,
@@ -154,7 +176,7 @@ def rules(row: dict) -> list[str]:
 
 class TestAClaimIsJudgedAgain:
     def test_the_line_is_read_as_the_owner_s_and_every_pass_runs_over_it(self):
-        rows = anchors() + [owner(), on_its_line()]
+        rows = anchors() + [*owner(), on_its_line()]
         before = copy.deepcopy(rows)
 
         judged = judge(rows)
@@ -169,8 +191,8 @@ class TestAClaimIsJudgedAgain:
             "tracking": TRACKING_TRACKS,
         }
         assert rules(line) == [REASON_ENVELOPE_CLAIM, REASON_INHERITED]
-        assert judged.cross_channel["committed_m0"] == 13
-        assert judged.tiering["committed_m0"] == 13
+        assert judged.cross_channel["committed_m0"] == 14
+        assert judged.tiering["committed_m0"] == 14
         # The owner keeps its tier, and a claimed line is not its corroboration.
         owner_row = by_id(judged.rows)["pa-x"]
         assert owner_row["tier"] == "assigned"
@@ -189,7 +211,7 @@ class TestAClaimIsJudgedAgain:
         assert rows == before
 
     def test_a_ledger_with_nothing_to_claim_is_judged_once(self):
-        rows = anchors() + [owner()]
+        rows = anchors() + owner()
 
         judged = judge(rows)
 
@@ -203,7 +225,7 @@ class TestAClaimIsJudgedAgain:
         # made it an anchor. As the owner's line it anchors nothing, and its
         # isotopologue is the owner's 202 line, which goes with it.
         rows = anchors() + [
-            owner(),
+            *owner(),
             on_its_line(),
             commit(
                 "pa-y-13c",
@@ -238,7 +260,7 @@ class TestAClaimIsJudgedAgain:
 
     def test_a_line_the_owner_does_not_predict_leaves_the_ledger(self):
         rows = anchors() + [
-            owner(),
+            *owner(),
             on_its_line(),
             commit(
                 "pa-y-far",
@@ -262,10 +284,12 @@ class TestAClaimIsJudgedAgain:
         # Too tall for the owner's 202 line, short enough for the claimed row's:
         # the first reading caps it for sitting on a line of a row the second
         # reading no longer holds as a compound.
+        flagged = commit("pa-z", "C8H10N2O3", "C8H11N2O3+", 202.0, 25.0)
         rows = anchors() + [
-            owner(),
+            *owner(),
             on_its_line(),
-            commit("pa-z", "C8H10N2O3", "C8H11N2O3+", 202.0, 25.0),
+            flagged,
+            seen_again(flagged, 430.0),
         ]
 
         judged = judge(rows)
@@ -278,11 +302,17 @@ class TestAClaimIsJudgedAgain:
 
 
 def chain() -> list[dict]:
+    # V and X are the neighbours, each seen through the second channel too, as
+    # :func:`owner` is.
+    v = commit("pa-v", "C5H10O5", "C5H11O5+", 150.0, 1000.0)
+    x = commit("pa-x", "C3H6O3", "C3H7O3+", 150.8, 1000.0)
     return anchors() + [
-        commit("pa-v", "C5H10O5", "C5H11O5+", 150.0, 1000.0),
+        v,
         commit("pa-w", "C4H8O4", "C4H9O4+", 150.5, 100.0),
-        commit("pa-x", "C3H6O3", "C3H7O3+", 150.8, 1000.0),
+        x,
         commit("pa-z", "C2H4O2", "C2H5O2+", 151.3, 50.0),
+        seen_again(v, 410.0),
+        seen_again(x, 420.0),
     ]
 
 
@@ -316,16 +346,90 @@ class TestAChainOfClaims:
         ) == (1, 2, 1)
 
 
+class TestOnePeakOnTheJudgedLedger:
+    """What the mass gate found of a line is what the lone-peak rule reads."""
+
+    def test_a_line_that_tracks_is_a_second_observation_and_one_that_does_not_is_not(
+        self,
+    ):
+        rows = anchors() + [
+            commit("pa-lone", "C2H4O2", "C2H5O2+", 61.0, 500.0),
+            commit("pa-tracked", "C8H8O3", "C8H9O3+", 153.0, 800.0),
+            commit(
+                "pa-tracked-13c",
+                "C8H8O3",
+                "C8H9O3+",
+                154.0,
+                70.0,
+                role="iso_child",
+                owner="pa-tracked",
+                label="13C",
+                ppm=0.2,
+            ),
+            commit("pa-coincidence", "C9H10O4", "C9H11O4+", 183.0, 800.0),
+            # Five ppm off its parent, on an instrument placing lines within a
+            # third of one: a peak the matching window reached, not this ion.
+            commit(
+                "pa-coincidence-13c",
+                "C9H10O4",
+                "C9H11O4+",
+                184.0,
+                70.0,
+                role="iso_child",
+                owner="pa-coincidence",
+                label="13C",
+                ppm=5.0,
+            ),
+        ]
+
+        judged = judge(rows)
+
+        ledger = by_id(judged.rows)
+        assert ledger["pa-coincidence-13c"]["provenance"]["mass_gate"]["tracking"] == (
+            "untracked"
+        )
+        assert {
+            row_id: (ledger[row_id]["tier"], REASON_LONE_PEAK in rules(ledger[row_id]))
+            for row_id in ("pa-lone", "pa-tracked", "pa-coincidence")
+        } == {
+            "pa-lone": ("candidate", True),
+            "pa-tracked": ("assigned", False),
+            "pa-coincidence": ("candidate", True),
+        }
+        assert REASON_SECOND_LINE in rules(ledger["pa-tracked"])
+        assert judged.tiering["capped_by_rule"] == {REASON_LONE_PEAK: 2}
+
+    def test_a_neighbour_whose_line_was_read_as_a_compound_gets_it_back(self):
+        # The owner's one other line is the row the search committed on it. The
+        # first round holds the owner for its one peak and claims the line all
+        # the same; the second finds the line on it, and it stands.
+        rows = anchors() + [
+            commit("pa-x", "C6H12O6", "C6H13O6+", 200.0, 1000.0),
+            on_its_line(),
+        ]
+
+        judged = judge(rows)
+
+        ledger = by_id(judged.rows)
+        assert ledger["pa-y"]["owner_peak_assignment_id"] == "pa-x"
+        assert ledger["pa-x"]["tier"] == "assigned"
+        assert REASON_SECOND_LINE in rules(ledger["pa-x"])
+        assert REASON_LONE_PEAK not in rules(ledger["pa-x"])
+        assert (judged.tiering["claimed"], judged.tiering["claim_rounds"]) == (1, 2)
+
+
 class TestTheRunsChannels:
     def test_the_tiering_pass_reads_them(self):
         # A hydrocarbon clustered with nitrate is not held at assigned, so the
         # line its envelope predicts is not read as its isotopologue.
+        hydrocarbon = commit("pa-x", "C10H16", "C6H13O6+", 200.0, 1000.0)
         rows = anchors() + [
-            commit("pa-x", "C10H16", "C6H13O6+", 200.0, 1000.0),
+            hydrocarbon,
+            seen_again(hydrocarbon, 400.0),
             on_its_line(),
         ]
 
-        judged = judge(rows, channel="[M+NO3]-")
+        judged = judge(rows, channel="[M+NO3]-", second="[M-H]-")
 
         judged_rows = by_id(judged.rows)
         assert judged_rows["pa-x"]["tier"] == "candidate"
@@ -678,7 +782,7 @@ class TestTheDeclaredChannelOnTheJudgedLedger:
             "doubt the mode's own reading"
         )
         assert judged.cross_channel["shown_rival_weighed"] == 1
-        assert judged.tiering["version"] == 8
+        assert judged.tiering["version"] == TIERING_RULES_VERSION
 
     def test_a_rival_shown_twenty_times_as_brightly_holds_it_at_candidate(self):
         row, judged = self._judge(2.0e6)
