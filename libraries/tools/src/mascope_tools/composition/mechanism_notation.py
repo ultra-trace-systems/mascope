@@ -344,13 +344,16 @@ def legacy_notation(text: str) -> str:
     return parse_mechanism(text).legacy
 
 
+@lru_cache(maxsize=1024)
 def mechanism_key(text: str) -> str:
     """The spelling two mechanisms are compared by.
 
     The standard notation where the text reads as a mechanism, so ``-H+``,
     ``[M-H]-`` and, for a mechanism of several terms, any order they are
     written in are one mechanism; the text as it is otherwise, so a stored row
-    that reads as neither still equals itself and nothing else.
+    that reads as neither still equals itself and nothing else. Cached: the
+    mechanism column reads every row through it, and a deployment holds a few
+    dozen spellings at most.
 
     :param text: The mechanism, in either notation or neither.
     :return: The key to compare it by.
