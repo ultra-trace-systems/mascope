@@ -8,6 +8,7 @@ import shutil
 import subprocess
 import sys
 from contextlib import contextmanager
+from unittest.mock import patch
 
 import numpy as np
 import pytest
@@ -1082,3 +1083,62 @@ class TestMissingStoreRaisesFileNotFound:
                 m_io.load_array(TEST_FILENAME, "peak_timeseries")
         finally:
             shutil.rmtree(not_a_store, ignore_errors=True)
+
+
+class TestUpdateProps:
+    """Tests for update_props: what it keeps, and what a failed write leaves."""
+
+    def _write(self, sample_file_path, props):
+        with open(os.path.join(sample_file_path, ".props"), "w") as f:
+            json.dump(props, f)
+
+    def _read(self, sample_file_path):
+        with open(os.path.join(sample_file_path, ".props"), "r") as f:
+            return json.load(f)
+
+    def test_updates_the_named_fields_and_keeps_the_rest(self, sample_file_path):
+        self._write(sample_file_path, {"range": [1, 2], "mz_calibration": {"a": 1}})
+
+        m_io.update_props(TEST_FILENAME, {"scan_streams": [{"key": "s"}]})
+
+        assert self._read(sample_file_path) == {
+            "range": [1, 2],
+            "mz_calibration": {"a": 1},
+            "scan_streams": [{"key": "s"}],
+        }
+
+    def test_a_failed_write_leaves_the_previous_props_intact(self, sample_file_path):
+        """The reason the write goes through a temporary file.
+
+        .props carries a sample's calibration fit, so a half-written file
+        costs a refit rather than a reread. Writing in place truncated it
+        before the new content was known to be complete.
+        """
+        before = {"range": [1, 2], "mz_calibration": {"a": 1}}
+        self._write(sample_file_path, before)
+
+        with patch("mascope_file.io.json.dump", side_effect=OSError("disk full")):
+            with pytest.raises(OSError):
+                m_io.update_props(TEST_FILENAME, {"scan_streams": [{"key": "s"}]})
+
+        assert self._read(sample_file_path) == before
+
+    def test_a_failed_write_leaves_no_temporary_behind(self, sample_file_path):
+        self._write(sample_file_path, {"range": [1, 2]})
+
+        with patch("mascope_file.io.json.dump", side_effect=OSError("disk full")):
+            with pytest.raises(OSError):
+                m_io.update_props(TEST_FILENAME, {"scan_streams": []})
+
+        assert [
+            n for n in os.listdir(sample_file_path) if n.startswith(".props.")
+        ] == []
+
+    def test_a_successful_write_leaves_no_temporary_behind(self, sample_file_path):
+        self._write(sample_file_path, {"range": [1, 2]})
+
+        m_io.update_props(TEST_FILENAME, {"scan_streams": []})
+
+        assert [
+            n for n in os.listdir(sample_file_path) if n.startswith(".props.")
+        ] == []

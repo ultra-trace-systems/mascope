@@ -370,6 +370,21 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   read it out of the files already routed, instead of waiting for the next few
   weeks of uploads.
 
+- **The scan stream census can be filled in for files converted before it
+  existed.** A method binding is keyed on what a file's scans measured, and
+  that census is recorded once, when a file is converted. A file converted
+  before it shipped carries none, and `backfill_method_bindings` skips exactly
+  those - which on a server that has been running for years is its whole
+  Orbitrap history, the part where a method name tells chemistries apart at
+  all. The evidence is still on disk, in the raw data kept beside each
+  converted sample, so `mascope prod db script run backfill_scan_stream_census`
+  (`DRY_RUN=1` first) reopens the files that carry no census and records what
+  they measured. Nothing is re-converted, no sample changes and no database row
+  is touched. Reading a raw file per census is slow, so the run is bounded and
+  resumable: a file that has a census is never reopened, and `CENSUS_LIMIT=<n>`
+  caps how many files one run reads. Run it before the method binding backfill,
+  or run that one again afterwards.
+
 ### Changed
 
 - **Peak assignment still ships off, and the assignment work in these notes
@@ -815,6 +830,13 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   search happened to reach first.
 
 ### Fixed
+
+- **A sample's properties survive a write that does not finish.** `.props`
+  was rewritten in place, so a process that died between truncating it and
+  writing the new content left the file empty - and it holds the sample's m/z
+  calibration fit, which costs a refit rather than a reread. The new
+  properties are now written beside the old ones and renamed over them, so an
+  interrupted write leaves the previous properties intact.
 
 - **`-H-` means what the notation says.** The composition library read `-H-`
   as deprotonation, one electron mass off the anion and the opposite polarity

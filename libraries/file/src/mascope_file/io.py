@@ -435,6 +435,12 @@ def write_props(base_filename, props):
 def update_props(base_filename, props_to_update):
     """Update sample file properties and write to file. Properties given are updated, rest (if any) remain as is.
 
+    The new props are written to a temporary file beside the old one and
+    renamed over it, so a process that dies mid-write leaves the previous
+    props intact. Overwriting in place would leave a truncated .props, and it
+    holds a sample's calibration fit - losing it costs a refit, not just a
+    reread.
+
     :param base_filename: Sample file filename
     :type base_filename: str
     :param props_to_update: Properties to update,
@@ -446,8 +452,16 @@ def update_props(base_filename, props_to_update):
     with open(prop_path, "r") as f:
         props = json.load(f)
     props.update(props_to_update)
-    with open(prop_path, "w") as f:
-        json.dump(props, f, indent=4)
+    # Named per process, so two writers cannot share a half-written temporary;
+    # the rename itself stays last-writer-wins, as an in-place write was.
+    temp_path = f"{prop_path}.{os.getpid()}.tmp"
+    try:
+        with open(temp_path, "w") as f:
+            json.dump(props, f, indent=4)
+        os.replace(temp_path, prop_path)
+    finally:
+        if os.path.exists(temp_path):
+            os.remove(temp_path)
 
 
 def update_zarr_array_coord(base_filename, var, dim, coord):
