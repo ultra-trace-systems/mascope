@@ -50,7 +50,8 @@ class TestTheFormateAdductAndTheAcid:
     Both neutrals are molecules, so the election falls to the mechanism that
     carries the mass, and the formate adduct is that reading. The acid stays on
     the row as the reading it displaced; which of the two the sample supports
-    is the cross-channel pass's question, not the finder's.
+    is the engine's partner gate's question (``engine.apply_partner_gates``),
+    with the cross-channel pass reading what the gate leaves.
     """
 
     def test_the_formate_reading_is_elected_and_the_acid_kept(self):

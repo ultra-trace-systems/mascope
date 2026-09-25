@@ -274,8 +274,16 @@ _DIBROMIDE_PROBES = (ProbeIon("Br2", -1, "[Br2]-"),)
 _DIIODIDE_PROBES = (ProbeIon("I2", -1, "[I2]-"),)
 
 
+# Every formate channel needs a partner (``SecondaryChannel.needs_partner``,
+# read by the engine's partner gate): every deprotonated acid also reads as
+# the molecule 46 Da lighter with formate, and measured on the chamber
+# dataset the election alone took that reading for 1,239 acids of six
+# samples and capped them all. Only where the lighter molecule is itself
+# seen through a mode channel is the formate reading the row's; otherwise
+# the acid is, with the formate reading set aside on it. Of the 240 C11
+# pseudo-acid rows, 193 have such a partner.
 def _formate_probes(reagent_formula: str | None) -> tuple[ProbeIon, ...]:
-    """Formate's own ions, and its cluster with the reagent's acid.
+    """Formate's own ions, its cluster with the reagent's acid, and its hydrate.
 
     The bare anion at m/z 45 and its dimer with formic acid at 91 are the
     carrier showing itself: on the chamber dataset that measured this channel
@@ -285,10 +293,14 @@ def _formate_probes(reagent_formula: str | None) -> tuple[ProbeIon, ...]:
     reagent's label follows into it: the 15N-nitrate profile probes
     ``[HCOO+H(15N)O3]-`` at 108.99, where that dataset shows it at 0.1-0.6% of
     the base peak - and where the engine, lacking the channel, read it as
-    formic acid through the nitrate adduct, which is the same ion.
+    formic acid through the nitrate adduct, which is the same ion. The
+    cluster's hydrate, 18 Da above it, is the highest formate carrier the
+    source makes (127.00 on the labelled source), so a window that starts
+    between the cluster and the hydrate still answers for itself.
 
     :param reagent_formula: The reagent ion's composition, or None.
-    :return: The probe ions, the cluster omitted when there is no reagent.
+    :return: The probe ions, the cluster and its hydrate omitted when there
+        is no reagent.
     """
     probes = [
         ProbeIon("CHO2", -1, "[HCOO]-"),
@@ -297,6 +309,7 @@ def _formate_probes(reagent_formula: str | None) -> tuple[ProbeIon, ...]:
     if reagent_formula:
         acid = f"H{reagent_formula}"
         probes.append(ProbeIon(f"CHO2{acid}", -1, f"[HCOO+{acid}]-"))
+        probes.append(ProbeIon(f"CHO2{acid}H2O", -1, f"[HCOO+{acid}+H2O]-"))
     return tuple(probes)
 
 
@@ -305,32 +318,26 @@ def _formate_probes(reagent_formula: str | None) -> tuple[ProbeIon, ...]:
 #: C11 pseudo-acids is acquired from m/z 130, above every formate carrier the
 #: source makes: on the same source's wide-window batch the anion, the dimer
 #: and the reagent-acid cluster are bright, the hydrate of that cluster sits at
-#: 127, and above 130 there is nothing - no cluster with two acids at 173, the
-#: cluster with two formic acids at 137 at 0.01-0.05% of the base peak, the
-#: height of an analyte rather than a carrier. So a window starting at 130
-#: cannot show this channel however loud the source runs it, and reading its
-#: silence as absence would read a fact about the window as a fact about the
-#: chemistry. What the channel may then do is bounded as carbonate's is: it
-#: takes no peak from a declared mechanism, its reading of an ion the mode's own
-#: channel also reads is capped at candidate until the neutral it proposes is
-#: seen through that channel, and it commits as assigned only with
-#: corroboration.
+#: 127 and is the last probe, and above 130 there is nothing - no cluster with
+#: two acids at 173, the cluster with two formic acids at 137 at 0.01-0.05% of
+#: the base peak, the height of an analyte rather than a carrier. So a window
+#: starting at 130 cannot show this channel however loud the source runs it,
+#: and reading its silence as absence would read a fact about the window as
+#: a fact about the chemistry. What the channel may then do is bounded: its
+#: reading of an ion the mode's own channel also reads stands only where the
+#: neutral it proposes is itself seen through a mode channel, and otherwise
+#: the mode's own reading is the row's with the formate one set aside (the
+#: partner gate, above); and it commits as assigned only with corroboration.
 _NITRATE_FORMATE_NOTE = (
-    "formate, its dimer and its cluster with the reagent's acid; the source "
-    "makes no formate carrier above m/z 127, so a window starting higher "
-    "cannot show the channel and its silence is not evidence"
+    "formate, its dimer, its cluster with the reagent's acid and that "
+    "cluster's hydrate; the source makes no formate carrier above m/z 127, "
+    "so a window starting higher cannot show the channel and its silence is "
+    "not evidence"
 )
 
 #: The halide profiles keep the evidence they can show, as they do for
 #: carbonate: the bare formate ions only, and a window that cannot show them
 #: leaves the channel off.
-#:
-#: Every formate channel needs a partner (``SecondaryChannel.needs_partner``):
-#: every deprotonated acid also reads as the molecule 46 Da lighter with
-#: formate, and measured on the chamber dataset the election alone took that
-#: reading for 1,239 acids of six samples and capped them all. Only where the
-#: lighter molecule is itself seen through a mode channel is the formate
-#: reading the row's; 193 of the 240 C11 pseudo-acid rows have such a partner.
 _HALIDE_FORMATE_NOTE = "formate and its dimer with formic acid"
 
 

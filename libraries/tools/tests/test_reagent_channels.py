@@ -30,6 +30,7 @@ FLUORANTHENE_13C = 203.0811  # [13C]C15H10+, 17% of the beam
 FORMATE = 44.9982  # [HCOO]-
 FORMATE_DIMER = 91.0037  # [HCOO+HCOOH]-
 FORMATE_NITRIC = 107.9938  # [HCOO+HNO3]-
+WATER = 18.0106
 HYDRONIUM = 19.0178  # [H3O]+
 BICARBONATE = 60.9931  # [HCO3]-
 
@@ -124,9 +125,15 @@ class TestTheProbes:
         assert light["[HCOO]-"].mz == pytest.approx(FORMATE, abs=5e-4)
         assert light["[HCOO+HCOOH]-"].mz == pytest.approx(FORMATE_DIMER, abs=5e-4)
         assert light["[HCOO+HNO3]-"].mz == pytest.approx(FORMATE_NITRIC, abs=5e-4)
+        assert light["[HCOO+HNO3+H2O]-"].mz == pytest.approx(
+            FORMATE_NITRIC + WATER, abs=5e-4
+        )
         assert heavy["[HCOO+H^NO3]-"].mz - light["[HCOO+HNO3]-"].mz == pytest.approx(
             0.997, abs=1e-3
         )
+        assert heavy["[HCOO+H^NO3+H2O]-"].mz - light[
+            "[HCOO+HNO3+H2O]-"
+        ].mz == pytest.approx(0.997, abs=1e-3)
         # A halide profile keeps the evidence it can show: the bare ions only.
         bromide = [
             probe.label
@@ -272,6 +279,29 @@ class TestDetection:
         assert R.present_notations(evidence) == ["+CO3-", "+HCOO-"]
         formate = [item for item in evidence if item.notation == "+HCOO-"][0]
         assert formate.status == R.STATUS_UNOBSERVABLE
+
+    def test_a_nitrate_window_that_reaches_the_hydrate_answers_for_itself(self):
+        # The hydrate of the reagent-acid cluster is the highest formate
+        # carrier the source makes: a window starting between the cluster and
+        # the hydrate can show it, so its silence is evidence here.
+        mz, intensity = np.array([115.0, 150.0, 600.0]), np.array([1.0e5, 1.0e6, 1.0e4])
+        evidence = R.detect_channels(
+            R.secondary_channels("NO3"), mz, intensity, ppm=5.0
+        )
+        formate = [item for item in evidence if item.notation == "+HCOO-"][0]
+        assert formate.status == R.STATUS_NOT_FOUND
+        assert "+HCOO-" not in R.present_notations(evidence)
+        # ...and where the hydrate is there, the channel is on.
+        mz, intensity = (
+            np.array([115.0, FORMATE_NITRIC + WATER, 150.0, 600.0]),
+            np.array([1.0e5, 2.0e4, 1.0e6, 1.0e4]),
+        )
+        evidence = R.detect_channels(
+            R.secondary_channels("NO3"), mz, intensity, ppm=5.0
+        )
+        formate = [item for item in evidence if item.notation == "+HCOO-"][0]
+        assert formate.status == R.STATUS_FOUND
+        assert formate.probe == "[HCOO+HNO3+H2O]-"
 
     def test_a_halide_window_starting_above_formate_leaves_the_channel_off(self):
         # Silence is not evidence, but the halide profiles claim only what

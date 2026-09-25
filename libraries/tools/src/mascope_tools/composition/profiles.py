@@ -499,10 +499,10 @@ NO3 = ReagentProfile(
     # assigned-plus-candidate intensity - when nothing in that oxidation adds a
     # carbon and every one of them is, atom for atom, a C10 product the engine
     # assigns 46 Da lower plus formic acid. Mass and co-occurrence cannot part
-    # the two readings, so the chemistry decides: the same-ion election reads
-    # the formate adduct, the deprotonated acid stays on the row as its other
-    # reading, and the row is capped at candidate until the C10 neutral is
-    # seen through one of the mode's own channels.
+    # the two readings, so the chemistry decides: the formate reading is the
+    # row's only where the C10 neutral is itself seen through one of the
+    # mode's own channels (the engine's partner gate), and otherwise the acid
+    # is the row's reading, with the formate one set aside on it.
     secondary_adducts=("+CO3-", "+HCOO-"),
     default_context=AMBIENT_AIR.name,
     aliases=("no3", "nitrate", "nitrate-cims"),

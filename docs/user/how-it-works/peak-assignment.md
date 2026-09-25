@@ -156,7 +156,10 @@ deprotonated acid and as the formate adduct of a molecule 46 Da lighter is one i
 two ways, and every acid reads that way. The formate reading is the row's only where the
 lighter molecule is itself committed through one of the mode's own channels, which also
 corroborates it; otherwise the acid reading stands, and the formate reading stays on the
-row as one the sample did not bear out.
+row as one the sample did not bear out. The channel is searched only where the
+deployment holds the `+HCOO-` mechanism, which none has by default: an operator adds it
+once under Ionization mechanisms, polarity negative, and until then the run's snapshot
+lists the channel as unavailable.
 
 **No profile and No context.** *No profile* switches the layer off: the run searches
 the engine's original wide grid at a fixed 10 ppm window. *No context* applies no
