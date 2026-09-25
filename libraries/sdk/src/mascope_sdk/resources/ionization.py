@@ -9,7 +9,9 @@ class IonizationResource(BaseResource):
     """Resource for ionization mechanism operations.
 
     Ionization mechanisms describe how molecules become ions during mass spectrometry.
-    They are used for compound matching and chemical formula queries.
+    They are used for compound matching and chemical formula queries. A mechanism
+    is written in the standard adduct notation: ``"[M+H]+"``, ``"[M-H]-"``,
+    ``"[M+Br]-"``, and ``"[M]+."`` for electron transfer, the ion's charge last.
 
     Example::
 
@@ -35,9 +37,7 @@ class IonizationResource(BaseResource):
         Example::
 
             mechanisms = mascope.ionization.list()
-            protonation = mechanisms[
-                mechanisms["ionization_mechanism"].str.contains("+H+")
-            ]
+            protonation = mechanisms[mechanisms["ionization_mechanism"] == "[M+H]+"]
         """
         cache_key = "ionization_mechanisms"
         if cache_key in self._client._cache:
