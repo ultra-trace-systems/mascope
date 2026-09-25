@@ -111,7 +111,7 @@ class TestDirectCompositionAssignment:
         (539.75763, "C15H12Br4O2", "Br0-4"),
     ]
 
-    IONIZATION_MECHANISMS = ["-"]
+    IONIZATION_MECHANISMS = ["[M]-."]
 
     @pytest.mark.parametrize(
         "mz, expected_formula, formula_ranges_addition", TEST_CASES
@@ -162,23 +162,23 @@ class TestIonizationMechanismCompositionAssignment:
     # (m/z, expected_neutral_formula, ionization_mechanism, formula_ranges_addition)
     # m/z values computed from known neutral masses using the specified mechanism.
     TEST_CASES = [
-        # +H+ (protonation, [M+H]+)
-        (47.01276, "CH2O2", "+H+", ""),
-        (64.00292, "HNO3", "+H+", ""),
-        (64.99995, "[15N]HO3", "+H+", "[15N]0-1"),
-        (91.03897, "C3H6O3", "+H+", ""),
-        # + (electron loss, M+)
-        (46.00493, "CH2O2", "+", ""),
-        (47.00829, "[13C]H2O2", "+", "[13C]0-1"),
-        (62.99509, "HNO3", "+", ""),
-        # -H+ (H removal, [M-H]-)
-        (89.02441, "C3H6O3", "-H+", ""),
-        # +Br- (bromide adduct, [M+Br]-)
-        (124.92437, "CH2O2", "+Br-", ""),
-        # +NO3- (nitrate adduct, [M+NO3]-)
-        (107.99384, "CH2O2", "+NO3-", ""),
-        # +(CH4N2O)H+ (uronium adduct, [M+uronium+H]+)
-        (124.03528, "HNO3", "+(CH4N2O)H+", ""),
+        # protonation, [M+H]+
+        (47.01276, "CH2O2", "[M+H]+", ""),
+        (64.00292, "HNO3", "[M+H]+", ""),
+        (64.99995, "[15N]HO3", "[M+H]+", "[15N]0-1"),
+        (91.03897, "C3H6O3", "[M+H]+", ""),
+        # electron loss, [M]+.
+        (46.00493, "CH2O2", "[M]+.", ""),
+        (47.00829, "[13C]H2O2", "[M]+.", "[13C]0-1"),
+        (62.99509, "HNO3", "[M]+.", ""),
+        # H removal, [M-H]-
+        (89.02441, "C3H6O3", "[M-H]-", ""),
+        # bromide adduct, [M+Br]-
+        (124.92437, "CH2O2", "[M+Br]-", ""),
+        # nitrate adduct, [M+NO3]-
+        (107.99384, "CH2O2", "[M+NO3]-", ""),
+        # uronium adduct, [M+CH4N2O+H]+
+        (124.03528, "HNO3", "[M+CH4N2O+H]+", ""),
     ]
 
     @pytest.mark.parametrize(

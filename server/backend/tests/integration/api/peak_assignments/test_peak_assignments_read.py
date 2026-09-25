@@ -224,7 +224,7 @@ async def test_detail_returns_the_full_assignment(guest_client, pa_test_data):
     # The inspector detail the list omits...
     assert record["alternatives"][0]["assigned_formula"] == "C7H16O5"
     assert record["provenance"]["plausibility"] == pytest.approx(0.9)
-    assert record["provenance"]["corroboration"]["adducts"] == ["+H+", "+Na+"]
+    assert record["provenance"]["corroboration"]["adducts"] == ["[M+H]+", "[M+Na]+"]
     # ...plus the same flattened scalars the list rows carry.
     assert record["p_correct"] == pytest.approx(0.93)
     assert record["p_correct_provisional"] is True

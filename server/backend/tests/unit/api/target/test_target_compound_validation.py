@@ -106,7 +106,7 @@ def test_caret_isotope_reagents_are_still_accepted(formula):
     """Caret isotopes name a labelled reagent, not one isotopologue of a compound.
 
     These six are the shapes actually in production use across three servers
-    (the 15N nitrate reagent behind the ``+^NO3-`` mechanism and its clusters);
+    (the 15N nitrate reagent behind the ``[M+^NO3]-`` mechanism and its clusters);
     rejecting them alongside bracket notation would break live configuration.
     """
     assert TargetCompoundBase(target_compound_formula=formula)

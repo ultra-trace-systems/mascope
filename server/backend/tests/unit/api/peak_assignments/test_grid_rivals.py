@@ -18,7 +18,7 @@ def _rival(formula: str, fit: float = 0.9) -> dict:
     return {
         "formula": formula,
         "ion": f"{formula}H+",
-        "ionization_mechanism": "+H+",
+        "ionization_mechanism": "[M+H]+",
         "fit_score": fit,
         "mz_error_ppm": -0.4,
     }
@@ -41,7 +41,7 @@ def _list_hit(
     alternatives: list[dict] | None = None,
     channels: list[str] | None = None,
 ) -> dict:
-    provenance: dict = {"cross_channel": {"channels": channels or ["+H+"]}}
+    provenance: dict = {"cross_channel": {"channels": channels or ["[M+H]+"]}}
     if density is not None:
         provenance["candidate_density"] = density
     return {
@@ -90,7 +90,7 @@ class TestTheCount:
         row = _list_hit(density=1)
         summary = record_grid_rivals([row], [None])
         assert row["provenance"] == {
-            "cross_channel": {"channels": ["+H+"]},
+            "cross_channel": {"channels": ["[M+H]+"]},
             "candidate_density": 1,
         }
         assert summary == {"measured": 0, "with_rivals": 0}
@@ -111,7 +111,7 @@ class TestWhatTheRowSays:
             {
                 "formula": "C15H16S",
                 "ion_formula": "C15H16SH+",
-                "ionization_mechanism": "+H+",
+                "ionization_mechanism": "[M+H]+",
                 "fit_score": 0.9,
                 "mz_error_ppm": -0.4,
             }
@@ -176,7 +176,7 @@ class TestTheDensityRuleReadsIt:
         )
 
     def test_a_second_channel_keeps_the_tier(self):
-        row = _list_hit(channels=["+H+", "+NH4+"])
+        row = _list_hit(channels=["[M+H]+", "[M+NH4]+"])
         record_grid_rivals([row], [_found("C15H16S")])
         assert self._tier(row) == "assigned"
 

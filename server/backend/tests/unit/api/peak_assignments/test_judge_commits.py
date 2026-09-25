@@ -128,7 +128,7 @@ def on_its_line(**fields) -> dict:
     return commit("pa-y", "C7H11NO4", "C7H12NO4+", 201.0, 150.0, **fields)
 
 
-def judge(rows: list[dict], channel: str = "+H+"):
+def judge(rows: list[dict], channel: str = "[M+H]+"):
     return judge_commits(
         rows,
         stage_a_accuracy=SampleMassAccuracy(),
@@ -321,7 +321,7 @@ class TestTheRunsChannels:
             on_its_line(),
         ]
 
-        judged = judge(rows, channel="+NO3-")
+        judged = judge(rows, channel="[M+NO3]-")
 
         judged_rows = by_id(judged.rows)
         assert judged_rows["pa-x"]["tier"] == "candidate"
@@ -339,7 +339,7 @@ class TestTheBandsReachTheReasons:
             anchors() + [low],
             stage_a_accuracy=SampleMassAccuracy(),
             fallback_sigma_ppm=0.3,
-            notation_by_id={"im-1": "+H+"},
+            notation_by_id={"im-1": "[M+H]+"},
             mz_tolerance_ppm=5.0,
             abundance_floor=0.01,
             max_alternatives=5,
@@ -360,7 +360,7 @@ class TestThePartnerGateReadsTheJudgedLedger:
     """The gate runs after the mass gate: a partner is a reading that gate
     left committed, so one it sends below assignability is no partner."""
 
-    IDS = {"im-1": "-H+", "im-formate": "+HCOO-"}
+    IDS = {"im-1": "[M-H]-", "im-formate": "[M+HCOO]-"}
     BANDS = {"assigned": 0.75, "candidate": 0.45}
 
     def _formate(self) -> dict:
@@ -390,8 +390,8 @@ class TestThePartnerGateReadsTheJudgedLedger:
             abundance_floor=0.01,
             max_alternatives=5,
             tier_bands=self.BANDS,
-            minor_channels=frozenset({"+HCOO-"}),
-            partner_gated_channels=frozenset({"+HCOO-"}),
+            minor_channels=frozenset({"[M+HCOO]-"}),
+            partner_gated_channels=frozenset({"[M+HCOO]-"}),
         )
 
     def test_a_partner_the_mass_gate_sends_below_assignability_is_none(self):

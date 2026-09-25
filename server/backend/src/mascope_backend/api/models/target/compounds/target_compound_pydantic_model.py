@@ -33,7 +33,7 @@ def validate_compound_formula(value: Optional[str]) -> Optional[str]:
 
     Caret isotopes (``"^N"`` = 15N) stay allowed: they name a *labelled reagent*
     - a genuinely different substance, such as the 15N nitrate behind the
-    ``+^NO3-`` mechanism - rather than one isotopologue of an ordinary compound,
+    ``[M+^NO3]-`` mechanism - rather than one isotopologue of an ordinary compound,
     and a natural-abundance pattern is still computed around them.
 
     Anything that is not a parseable chemical formula (unknown elements such as

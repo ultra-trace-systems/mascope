@@ -260,7 +260,7 @@ async def retrieve_compositions_by_mz(
             )
 
             # Find matching ionization mechanism from database.
-            # Results use explicit isotope notation (e.g. +[15N]O3-)
+            # Results use explicit isotope notation (e.g. [M+[15N]O3]-)
             ion_mech_str = raw.get("ionization_mechanism", "")
             db_mech = explicit_to_db_mech.get(ion_mech_str)
             if not db_mech:

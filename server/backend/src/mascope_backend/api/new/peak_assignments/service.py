@@ -176,6 +176,10 @@ from mascope_tools.composition.calibration import (
 from mascope_tools.composition.finder import assign_compositions
 from mascope_tools.composition.heuristic_filter import SCORE_VERSION
 from mascope_tools.composition.known_window import KnownWindow
+from mascope_tools.composition.mechanism_notation import (
+    mechanism_key,
+    mechanism_spellings,
+)
 from mascope_tools.composition.reagents import secondary_channels
 
 
@@ -1139,7 +1143,8 @@ async def fetch_mechanisms_by_notation(
     :param notations: Mechanism notations to look up.
     :param polarity: The sample's polarity; a mechanism of the wrong polarity
         cannot ionize this sample whatever its notation says.
-    :return: The matching rows, detached for use off the event loop.
+    :return: The matching rows, detached for use off the event loop. A row is
+        found by either spelling of its mechanism and read in the standard one.
     """
     if not notations:
         return []
@@ -1148,7 +1153,9 @@ async def fetch_mechanisms_by_notation(
             (
                 await session.execute(
                     select(IonizationMechanism).where(
-                        IonizationMechanism.ionization_mechanism.in_(notations),
+                        IonizationMechanism.ionization_mechanism.in_(
+                            mechanism_spellings(notations)
+                        ),
                         IonizationMechanism.ionization_mechanism_polarity == polarity,
                     )
                 )
@@ -1231,7 +1238,8 @@ def _searched_mechanisms(
     return mechanisms + [
         mechanism
         for mechanism in secondary_mechanisms
-        if mechanism.ionization_mechanism in resolved_profile.added_channels
+        if mechanism_key(mechanism.ionization_mechanism)
+        in resolved_profile.added_channels
     ]
 
 
@@ -1742,6 +1750,10 @@ def _untargeted_ionization_notations(
     Resolve the sample's ionization mechanisms into the explicit-isotope
     notation used by the composition finder.
 
+    Every notation table of a run is built here, in the standard adduct
+    notation whichever spelling a mechanism arrived in, so it keys alike with
+    the library's channel tables: ``[M+[15N]O3]-`` for ``[M+^NO3]-``.
+
     :param mechanisms: The sample's polarity-matching mechanisms, resolved
         once per run by :func:`fetch_sample_mechanisms`
     :return: (explicit notation strings, notation -> mechanism id mapping)
@@ -1749,7 +1761,9 @@ def _untargeted_ionization_notations(
     notations: list[str] = []
     mechanism_id_by_notation: dict[str, str] = {}
     for mechanism in mechanisms:
-        notation, _ = to_explicit_isotope_format(mechanism.ionization_mechanism)
+        notation, _ = to_explicit_isotope_format(
+            mechanism_key(mechanism.ionization_mechanism)
+        )
         notations.append(notation)
         mechanism_id_by_notation[notation] = mechanism.ionization_mechanism_id
     return notations, mechanism_id_by_notation

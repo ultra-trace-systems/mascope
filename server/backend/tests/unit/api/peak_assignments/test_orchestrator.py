@@ -197,7 +197,7 @@ def _patches(
                 [
                     SimpleNamespace(
                         ionization_mechanism_id="im-1",
-                        ionization_mechanism="+H+",
+                        ionization_mechanism="[M+H]+",
                         ionization_mechanism_polarity="+",
                     )
                 ],
@@ -205,7 +205,7 @@ def _patches(
         ),
         "ionizations": patch(
             f"{_MOD}._untargeted_ionization_notations",
-            return_value=(["+H+"], {"+H+": "+H+"}),
+            return_value=(["[M+H]+"], {"[M+H]+": "[M+H]+"}),
         ),
         "compositions": patch(
             f"{_MOD}.assign_compositions",
@@ -526,7 +526,7 @@ class TestAListHitMeetsTheGrid:
     RIVAL = {
         "formula": "C7H16O5",
         "ion": "C7H17O5+",
-        "ionization_mechanism": "+H+",
+        "ionization_mechanism": "[M+H]+",
         "fit_score": 0.97,
         "mz_error_ppm": 0.3,
     }
@@ -563,7 +563,7 @@ class TestAListHitMeetsTheGrid:
         rival = {
             "formula": "C7H16O5",
             "ion": "C7H17O5+",
-            "ionization_mechanism": "+H+",
+            "ionization_mechanism": "[M+H]+",
             "isotopic_pattern_score": 0.95,
             "composition_error_ppm": 0.3,
             "candidate_density": 1,
@@ -578,7 +578,7 @@ class TestAListHitMeetsTheGrid:
                     "peak_mz": 181.0707,
                     "formula": "C6H12O6",
                     "ion": "C6H13O6+",
-                    "ionization_mechanism": "+H+",
+                    "ionization_mechanism": "[M+H]+",
                     "fit_score": 0.3,
                     "evidence": 0.3,
                     "rival_evidence": 0.95,
@@ -619,7 +619,7 @@ class TestAListHitMeetsTheGrid:
             181.0707: ListReading(
                 mz=181.0707,
                 formula="C6H12O6",
-                ionization_mechanism="+H+",
+                ionization_mechanism="[M+H]+",
                 mz_error_ppm=1.0,
                 keeps_peak=False,
             )
@@ -690,7 +690,7 @@ class TestAListHitMeetsTheGrid:
             held_against={
                 "formula": "C7H16O5",
                 "ion": "C7H17O5+",
-                "ionization_mechanism": "+H+",
+                "ionization_mechanism": "[M+H]+",
                 "fit_score": 0.971234,
                 "prior": 2.0,
                 "why": HELD_BY_LINES,
@@ -706,7 +706,7 @@ class TestAListHitMeetsTheGrid:
         assert row["provenance"]["grid_rivals"]["held_against"] == {
             "formula": "C7H16O5",
             "ion_formula": "C7H17O5+",
-            "ionization_mechanism": "+H+",
+            "ionization_mechanism": "[M+H]+",
             "fit_score": 0.9712,
             "prior": 2.0,
             "why": "unexplained_lines",
@@ -819,7 +819,7 @@ class TestAListHitMeetsTheGrid:
 
         recorder = _Recorder()
         mocks = self._start_with(recorder, self._taken())
-        mocks["ionizations"].return_value = (["+NH4+"], {"+NH4+": "im-2"})
+        mocks["ionizations"].return_value = (["[M+NH4]+"], {"[M+NH4]+": "im-2"})
 
         await _run(PeakAssignmentConfig(run_untargeted=True))
 
@@ -887,7 +887,7 @@ class TestAReferenceMirrorsNitrogenCount:
     async def test_its_ion_s_other_reading_reaches_the_cross_channel_pass(self):
         """A list's formula is given its ion's family before the pass reads it.
 
-        Dimethylformamide through +H+ is acrolein through +NH4+, and the run
+        Dimethylformamide through [M+H]+ is acrolein through [M+NH4]+, and the run
         searches both channels. Nothing else saw the neutral, so the count on it
         is the list's answer and the row is capped - which it can only be if the
         family was written onto the row before the cross-channel pass ran.
@@ -913,7 +913,7 @@ class TestAReferenceMirrorsNitrogenCount:
             sample_peak_intensity=10000.0,
             match_score=0.95,
             match_mz_error=0.2,
-            ionization="+H+",
+            ionization="[M+H]+",
             ionization_mechanism_id="im-1",
         )
         dimethylformamide["reference_identities"] = [
@@ -929,12 +929,12 @@ class TestAReferenceMirrorsNitrogenCount:
                 [
                     SimpleNamespace(
                         ionization_mechanism_id="im-1",
-                        ionization_mechanism="+H+",
+                        ionization_mechanism="[M+H]+",
                         ionization_mechanism_polarity="+",
                     ),
                     SimpleNamespace(
                         ionization_mechanism_id="im-2",
-                        ionization_mechanism="+NH4+",
+                        ionization_mechanism="[M+NH4]+",
                         ionization_mechanism_polarity="+",
                     ),
                 ],
@@ -942,7 +942,10 @@ class TestAReferenceMirrorsNitrogenCount:
         )
         patches["ionizations"] = patch(
             f"{_MOD}._untargeted_ionization_notations",
-            return_value=(["+H+", "+NH4+"], {"+H+": "im-1", "+NH4+": "im-2"}),
+            return_value=(
+                ["[M+H]+", "[M+NH4]+"],
+                {"[M+H]+": "im-1", "[M+NH4]+": "im-2"},
+            ),
         )
         _start(patches)
 
@@ -958,7 +961,7 @@ class TestAReferenceMirrorsNitrogenCount:
         ] == [("C3H4O", "im-2")]
         assert row["provenance"]["cross_channel"]["ambiguous_nitrogen"] == {
             "alternative": "C3H4O",
-            "via": "+NH4+",
+            "via": "[M+NH4]+",
         }
         assert row["tier"] == "candidate"
         assert REASON_AMBIGUOUS_NITROGEN in {
@@ -1317,7 +1320,7 @@ class TestResolvedProfile:
         assert "mass_calibration" not in configs[0]
         assert configs[1]["mass_calibration"]["committed"] == len(_stage_a_rows())
         snapshot = configs[0]["resolved_profile"]
-        # '+H+' is diagnostic of nothing, so a positive sample falls back to
+        # '[M+H]+' is diagnostic of nothing, so a positive sample falls back to
         # the generic positive preset - and says that it did.
         assert snapshot["profile"] == "ESI_POS"
         assert snapshot["requested_profile"] == "auto"

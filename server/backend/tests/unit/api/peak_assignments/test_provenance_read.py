@@ -115,13 +115,13 @@ class TestProvenanceScalars:
         # The corroboration marker is blank on an untargeted row without this:
         # `corroboration_adducts` counts the adducts a CURATED compound matched
         # through, so it is null on most of a ledger.
-        row = {**_UNTARGETED_ROW, "cross_channel": {"channels": ["+H+", "+NH4+"]}}
+        row = {**_UNTARGETED_ROW, "cross_channel": {"channels": ["[M+H]+", "[M+NH4]+"]}}
         assert _provenance_scalars(row, None)["corroboration_channels"] == 2
 
     def test_a_row_seen_in_one_channel_says_one(self):
         # Not None: one channel is a measured answer, and the marker's own
         # threshold is what decides whether it is worth rendering.
-        row = {**_UNTARGETED_ROW, "cross_channel": {"channels": ["+NH4+"]}}
+        row = {**_UNTARGETED_ROW, "cross_channel": {"channels": ["[M+NH4]+"]}}
         assert _provenance_scalars(row, None)["corroboration_channels"] == 1
 
     def test_a_row_the_pass_never_reached_has_no_count(self):

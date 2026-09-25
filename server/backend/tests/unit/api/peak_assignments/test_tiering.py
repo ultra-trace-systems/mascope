@@ -79,7 +79,7 @@ def row(
     blob: dict = dict(provenance or {})
     if density is not None:
         blob["candidate_density"] = density
-    blob.setdefault("cross_channel", {"channels": channels or ["+H+"]})
+    blob.setdefault("cross_channel", {"channels": channels or ["[M+H]+"]})
     return {
         "peak_assignment_id": row_id,
         "assigned_formula": formula,
@@ -118,7 +118,7 @@ def run(rows: list[dict], **kwargs) -> dict:
 
 class TestEveryCommittedRowSaysWhy:
     def test_a_row_that_keeps_its_tier_says_what_it_kept_it_on(self):
-        rows = [row("pa-1", channels=["+H+", "+NH4+"])]
+        rows = [row("pa-1", channels=["[M+H]+", "[M+NH4]+"])]
         run(rows)
         assert tier_of(rows, "pa-1") == "assigned"
         assert rules_on(rows, "pa-1")
@@ -162,7 +162,7 @@ class TestTheRadicalRule:
     def test_no_amount_of_corroboration_rescues_one(self):
         # The gate finds none that does: 0 of 1,794 such rows are confirmed,
         # whether or not a second channel saw the neutral.
-        rows = [row("pa-1", RADICAL, channels=["+H+", "+NH4+", "-H+"])]
+        rows = [row("pa-1", RADICAL, channels=["[M+H]+", "[M+NH4]+", "[M-H]-"])]
         run(rows)
         assert tier_of(rows, "pa-1") == "candidate"
 
@@ -190,14 +190,14 @@ class TestTheRadicalRule:
 #: A run's mechanisms as the tiering pass is handed them: the finder's
 #: spelling, by the id a row carries.
 CHANNELS = {
-    "m-nitrate": "+NO3-",
-    "m-labelled": "+[15N]O3-",
-    "m-acid-cluster": "+(HNO3)NO3-",
-    "m-deprotonation": "-H+",
-    "m-bromide": "+Br-",
-    "m-carbonate": "+CO3-",
-    "m-iodide": "+I-",
-    "m-dibromide": "+Br2-",
+    "m-nitrate": "[M+NO3]-",
+    "m-labelled": "[M+[15N]O3]-",
+    "m-acid-cluster": "[M+HNO3+NO3]-",
+    "m-deprotonation": "[M-H]-",
+    "m-bromide": "[M+Br]-",
+    "m-carbonate": "[M+CO3]-",
+    "m-iodide": "[M+I]-",
+    "m-dibromide": "[M+Br2]-",
 }
 
 
@@ -265,7 +265,7 @@ class TestAClusterWithNothingToHoldOnTo:
 
     def test_a_second_channel_does_not_rescue_it(self):
         # What the rule doubts is the ion, not whether the neutral was seen.
-        rows = [cluster("pa-1", channels=["+NO3-", "-H+"])]
+        rows = [cluster("pa-1", channels=["[M+NO3]-", "[M-H]-"])]
         run(rows, notation_by_id=CHANNELS)
         assert tier_of(rows, "pa-1") == "candidate"
 
@@ -298,7 +298,7 @@ class TestAClusterWithNothingToHoldOnTo:
             if reason["rule"] == REASON_OXYGEN_FREE_CLUSTER
         ]
         assert "C10H16" in detail
-        assert "+[15N]O3-" in detail
+        assert "[M+[15N]O3]-" in detail
 
 
 def halide(
@@ -359,7 +359,7 @@ class TestAPolyhalideTheSourceCanMakeToo:
     def test_a_second_channel_does_not_rescue_it(self):
         # What the rule doubts is where the ion came from, not whether the
         # neutral was seen.
-        rows = [halide("pa-1", channels=["+Br-", "+I-"])]
+        rows = [halide("pa-1", channels=["[M+Br]-", "[M+I]-"])]
         run(rows, notation_by_id=CHANNELS)
         assert tier_of(rows, "pa-1") == "candidate"
 
@@ -387,7 +387,7 @@ class TestAPolyhalideTheSourceCanMakeToo:
             if reason["rule"] == REASON_POLYHALIDE_CLUSTER
         ]
         assert "BrI" in detail
-        assert "+Br-" in detail
+        assert "[M+Br]-" in detail
 
 
 class TestTheDensityRule:
@@ -400,7 +400,7 @@ class TestTheDensityRule:
     def test_a_second_channel_keeps_it(self):
         # Density says the peak alone cannot decide. A second channel is
         # evidence from outside the peak, which is exactly what settles it.
-        rows = [row("pa-1", density=DENSITY_LIMIT, channels=["+H+", "+NH4+"])]
+        rows = [row("pa-1", density=DENSITY_LIMIT, channels=["[M+H]+", "[M+NH4]+"])]
         run(rows)
         assert tier_of(rows, "pa-1") == "assigned"
 
@@ -603,8 +603,11 @@ class TestWhatTheEarlierPassesDecided:
             (
                 {
                     "cross_channel": {
-                        "channels": ["+NH4+"],
-                        "ambiguous_nitrogen": {"alternative": "C6H15NO6", "via": "+H+"},
+                        "channels": ["[M+NH4]+"],
+                        "ambiguous_nitrogen": {
+                            "alternative": "C6H15NO6",
+                            "via": "[M+H]+",
+                        },
                     }
                 },
                 REASON_AMBIGUOUS_NITROGEN,
@@ -612,8 +615,11 @@ class TestWhatTheEarlierPassesDecided:
             (
                 {
                     "cross_channel": {
-                        "channels": ["+Br-"],
-                        "ambiguous_adduct": {"alternative": "C6H13BrO6", "via": "-H+"},
+                        "channels": ["[M+Br]-"],
+                        "ambiguous_adduct": {
+                            "alternative": "C6H13BrO6",
+                            "via": "[M-H]-",
+                        },
                     }
                 },
                 REASON_AMBIGUOUS_ADDUCT,
@@ -642,18 +648,18 @@ class TestWhatTheEarlierPassesDecided:
             (
                 "C6H12O6",
                 "C6H15NO6",
-                "+H+",
-                "the same ion reads as C6H15NO6 through +H+, which puts one more "
+                "[M+H]+",
+                "the same ion reads as C6H15NO6 through [M+H]+, which puts one more "
                 "nitrogen on the analyte, and no second channel of this run "
                 "settles the count",
             ),
-            # Dimethylformamide through +H+ is acrolein through +NH4+: the doubt
+            # Dimethylformamide through [M+H]+ is acrolein through [M+NH4]+: the doubt
             # runs the other way, and the sentence says which.
             (
                 "C3H7NO",
                 "C3H4O",
-                "+NH4+",
-                "the same ion reads as C3H4O through +NH4+, which puts one fewer "
+                "[M+NH4]+",
+                "the same ion reads as C3H4O through [M+NH4]+, which puts one fewer "
                 "nitrogen on the analyte, and no second channel of this run "
                 "settles the count",
             ),
@@ -663,7 +669,7 @@ class TestWhatTheEarlierPassesDecided:
         self, formula, alternative, via, detail
     ):
         cross_channel = {
-            "channels": ["+H+"],
+            "channels": ["[M+H]+"],
             "capped": True,
             "ambiguous_nitrogen": {"alternative": alternative, "via": via},
         }
@@ -685,8 +691,8 @@ class TestWhatTheEarlierPassesDecided:
 
     def test_the_adduct_reason_names_the_other_molecule(self):
         cross_channel = {
-            "channels": ["+Br-"],
-            "ambiguous_adduct": {"alternative": "CH3BrO2", "via": "-H+"},
+            "channels": ["[M+Br]-"],
+            "ambiguous_adduct": {"alternative": "CH3BrO2", "via": "[M-H]-"},
         }
         rows = [
             row(
@@ -703,7 +709,7 @@ class TestWhatTheEarlierPassesDecided:
             if reason["rule"] == REASON_AMBIGUOUS_ADDUCT
         ]
         assert reason["detail"] == (
-            "the same ion reads as CH3BrO2 through -H+, another molecule the "
+            "the same ion reads as CH3BrO2 through [M-H]-, another molecule the "
             "spectrum cannot tell from this one, and no second channel of this "
             "run settles which"
         )
@@ -713,8 +719,8 @@ class TestWhatTheEarlierPassesDecided:
         # The pass recorded the rival without lowering anything, and the row
         # still says what it is in doubt with.
         cross_channel = {
-            "channels": ["+NH4+"],
-            "ambiguous_nitrogen": {"alternative": "C6H15NO6", "via": "+H+"},
+            "channels": ["[M+NH4]+"],
+            "ambiguous_nitrogen": {"alternative": "C6H15NO6", "via": "[M+H]+"},
         }
         rows = [
             row(
@@ -764,7 +770,7 @@ class TestWhatTheEarlierPassesDecided:
 
 class TestOnlyEverDown:
     def test_a_row_below_the_top_tier_is_not_promoted(self):
-        rows = [row("pa-1", tier="candidate", channels=["+H+", "+NH4+"])]
+        rows = [row("pa-1", tier="candidate", channels=["[M+H]+", "[M+NH4]+"])]
         run(rows)
         assert tier_of(rows, "pa-1") == "candidate"
 
@@ -863,7 +869,7 @@ class TestWhatAStandingRowClaims:
         assert "unique" not in detail.lower()
 
     def test_a_corroborated_row_names_its_channels(self):
-        rows = [row("pa-1", channels=["+H+", "+NH4+", "-H+"])]
+        rows = [row("pa-1", channels=["[M+H]+", "[M+NH4]+", "[M-H]-"])]
         run(rows)
         detail = next(
             r["detail"]
@@ -873,7 +879,7 @@ class TestWhatAStandingRowClaims:
         assert "3" in detail
 
     def test_a_standing_reason_never_caps(self):
-        rows = [row("pa-1", channels=["+H+", "+NH4+"])]
+        rows = [row("pa-1", channels=["[M+H]+", "[M+NH4]+"])]
         run(rows)
         assert not any(r["caps"] for r in rows[0]["provenance"]["tier_reasons"])
 
@@ -937,7 +943,9 @@ class TestTheBandComesFirst:
         # separated from every other ion. The band says why it is low; the rest
         # still say what it has.
         rows = [
-            banded("pa-1", 0.081, tier="below_assignability", channels=["+H+", "+U+"])
+            banded(
+                "pa-1", 0.081, tier="below_assignability", channels=["[M+H]+", "[M+U]+"]
+            )
         ]
         run(rows, tier_bands=BANDS)
         assert [r["rule"] for r in rows[0]["provenance"]["tier_reasons"]] == [
@@ -976,10 +984,12 @@ class TestTheBandComesFirst:
 
 def settled(by: str, **extra) -> dict:
     return {
-        "channels": ["+H+", "+(CH4N2O)H+"] if by == "second_channel" else ["+H+"],
+        "channels": ["[M+H]+", "[M+CH4N2O+H]+"]
+        if by == "second_channel"
+        else ["[M+H]+"],
         "same_ion_settled": {
             "alternative": "C3H4O",
-            "via": "+NH4+",
+            "via": "[M+NH4]+",
             "by": by,
             **extra,
         },
@@ -1000,14 +1010,16 @@ class TestAReadingOfTheSameIonThatSomethingSettled:
                 "pa-1",
                 "C3H7NO",
                 provenance={
-                    "cross_channel": settled("second_channel", through=["+(CH4N2O)H+"])
+                    "cross_channel": settled(
+                        "second_channel", through=["[M+CH4N2O+H]+"]
+                    )
                 },
             )
         ]
         run(rows)
         assert self.detail_of(rows, REASON_SAME_ION_SETTLED) == (
-            "the same ion also reads as C3H4O through +NH4+; C3H7NO is also "
-            "committed through +(CH4N2O)H+, which settles it"
+            "the same ion also reads as C3H4O through [M+NH4]+; C3H7NO is also "
+            "committed through [M+CH4N2O+H]+, which settles it"
         )
 
     def test_the_target_library_says_its_curation_chose(self):
@@ -1022,7 +1034,7 @@ class TestAReadingOfTheSameIonThatSomethingSettled:
         ]
         run(rows)
         assert self.detail_of(rows, REASON_SAME_ION_SETTLED) == (
-            "the same ion also reads as C3H4O through +NH4+; this row is a "
+            "the same ion also reads as C3H4O through [M+NH4]+; this row is a "
             "compound of the target library, whose curation chose the reading"
         )
 
@@ -1030,7 +1042,7 @@ class TestAReadingOfTheSameIonThatSomethingSettled:
         rows = [row("pa-1", "C3H7NO", provenance={"cross_channel": settled("radical")})]
         run(rows)
         assert self.detail_of(rows, REASON_SAME_ION_SETTLED) == (
-            "the same ion also reads as C3H4O through +NH4+, a radical rather "
+            "the same ion also reads as C3H4O through [M+NH4]+, a radical rather "
             "than a molecule, so it is no rival"
         )
 
@@ -1058,7 +1070,9 @@ class TestAReadingOfTheSameIonThatSomethingSettled:
                 "pa-1",
                 "C3H7NO",
                 provenance={
-                    "cross_channel": settled("second_channel", through=["+(CH4N2O)H+"])
+                    "cross_channel": settled(
+                        "second_channel", through=["[M+CH4N2O+H]+"]
+                    )
                 },
             )
         ]
@@ -1399,7 +1413,10 @@ class TestReadingALineAsTheNeighbours:
         assert [claim.row_id for claim in claims] == ["pa-child"]
 
     def test_a_neutral_another_channel_committed_stays(self):
-        rows = [claiming_owner(), on_the_line("pa-child", channels=["+H+", "+NH4+"])]
+        rows = [
+            claiming_owner(),
+            on_the_line("pa-child", channels=["[M+H]+", "[M+NH4]+"]),
+        ]
         assert claims_in(rows) == ([], {HELD_CORROBORATED: 1})
 
     def test_a_line_the_neighbour_already_holds_is_not_taken_twice(self):

@@ -22,23 +22,24 @@ rewrite of history.
 Kept secret-free and import-light, like ``roles``.
 """
 
-# Mechanism name -> the polarity of the ion it yields. The name is Mascope's
-# own adduct notation, operation sign included: "+Br-" adds a bromide adduct,
-# "-H+" removes a proton and leaves an anion, "-H-" removes a hydride and
-# leaves a cation, and a bare "+" or "-" is charge with no adduct.
+# Mechanism name -> the polarity of the ion it yields. The name is the
+# standard adduct notation, the ion's charge last: "[M+Br]-" adds a bromide,
+# "[M-H]-" removes a proton and leaves an anion, "[M-H]+" removes a hydride and
+# leaves a cation, and "[M]+." / "[M]-." are electron transfer. A row stored in
+# the legacy spelling ("+Br-") reads as the same mechanism.
 MECHANISM_POLARITIES: dict[str, str] = {
-    "+": "+",
-    "-": "-",
-    "+H+": "+",
-    "-H+": "-",
-    "-H-": "+",
-    "+NO3-": "-",
-    "+^NO3-": "-",
-    "+Br-": "-",
-    "+I-": "-",
-    "+NH4+": "+",
-    "+^NH4+": "+",
-    "+(CH4N2O)H+": "+",
+    "[M]+.": "+",
+    "[M]-.": "-",
+    "[M+H]+": "+",
+    "[M-H]-": "-",
+    "[M-H]+": "+",
+    "[M+NO3]-": "-",
+    "[M+^NO3]-": "-",
+    "[M+Br]-": "-",
+    "[M+I]-": "-",
+    "[M+NH4]+": "+",
+    "[M+^NH4]+": "+",
+    "[M+CH4N2O+H]+": "+",
 }
 
 # (system_key, ionization_mode_id, name, polarity, mechanism names).
@@ -55,77 +56,77 @@ SYSTEM_MODES: tuple[tuple[str, str, str, str, tuple[str, ...]], ...] = (
         "sysNitrate",
         "Nitrate, negative",
         "-",
-        ("+NO3-", "-H+"),
+        ("[M+NO3]-", "[M-H]-"),
     ),
     (
         "nitrate-15n",
         "sysNitrate15N",
         "Nitrate 15N, negative",
         "-",
-        ("+^NO3-", "-H+"),
+        ("[M+^NO3]-", "[M-H]-"),
     ),
     (
         "bromide",
         "sysBromide",
         "Bromide, negative",
         "-",
-        ("+Br-", "-H+"),
+        ("[M+Br]-", "[M-H]-"),
     ),
     (
         "iodide",
         "sysIodide",
         "Iodide, negative",
         "-",
-        ("+I-", "-H+"),
+        ("[M+I]-", "[M-H]-"),
     ),
     (
         "deprotonation",
         "sysDeprotonate",
         "Deprotonation, negative",
         "-",
-        ("-H+",),
+        ("[M-H]-",),
     ),
     (
         "ambient-negative",
         "sysAmbientNeg",
         "Ambient, negative",
         "-",
-        ("-",),
+        ("[M]-.",),
     ),
     (
         "uronium",
         "sysUronium",
         "Uronium, positive",
         "+",
-        ("+(CH4N2O)H+", "+H+"),
+        ("[M+CH4N2O+H]+", "[M+H]+"),
     ),
     (
         "ammonium",
         "sysAmmonium",
         "Ammonium, positive",
         "+",
-        ("+NH4+", "+H+"),
+        ("[M+NH4]+", "[M+H]+"),
     ),
     (
         "ammonium-15n",
         "sysAmmonium15N",
         "Ammonium 15N, positive",
         "+",
-        ("+^NH4+", "+H+"),
+        ("[M+^NH4]+", "[M+H]+"),
     ),
     (
         "protonation",
         "sysProtonate",
         "Protonation, positive",
         "+",
-        ("+H+",),
+        ("[M+H]+",),
     ),
     (
         "ambient-positive",
         "sysAmbientPos",
         "Ambient, positive",
         "+",
-        ("+",),
+        ("[M]+.",),
     ),
 )
 

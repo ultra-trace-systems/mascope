@@ -39,6 +39,7 @@ from mascope_backend.socket.records.service import (
     emit_record_created,
     emit_record_deleted,
 )
+from mascope_tools.composition.mechanism_notation import mechanism_spellings
 
 
 #: Mechanisms already reported as unwritable, so a stored row does not log on
@@ -130,8 +131,12 @@ async def get_ionization_mechanisms(
                 == ionization_mechanism_polarity
             )
         if ionization_mechanism:
+            # A row not yet rewritten to the standard notation holds the
+            # legacy spelling, and has to be found by either.
             stmt = stmt.where(
-                IonizationMechanism.ionization_mechanism.in_(ionization_mechanism)
+                IonizationMechanism.ionization_mechanism.in_(
+                    mechanism_spellings(ionization_mechanism)
+                )
             )
 
         # Step 3: Apply sorting

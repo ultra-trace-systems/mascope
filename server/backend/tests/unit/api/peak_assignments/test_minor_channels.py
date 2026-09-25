@@ -30,8 +30,8 @@ from mascope_backend.api.new.peak_assignments.tiers import (
 )
 
 
-MECHANISM_IDS = {"+H+": "im-h", "+NH4+": "im-nh4"}
-UREA = ["+H+", "+(CH4N2O)H+"]
+MECHANISM_IDS = {"[M+H]+": "im-h", "[M+NH4]+": "im-nh4"}
+UREA = ["[M+H]+", "[M+CH4N2O+H]+"]
 
 
 def _peaks(*specs):
@@ -57,7 +57,7 @@ def _match(mz, formula, ion, mechanism, score, isotope_label="M0"):
     }
 
 
-def _assign(matches, peaks, minor=frozenset({"+NH4+"})):
+def _assign(matches, peaks, minor=frozenset({"[M+NH4]+"})):
     return untargeted_matches_to_peak_assignments(
         pd.DataFrame(matches),
         peaks_df=peaks,
@@ -83,8 +83,8 @@ class TestTheCrossCompositionContest:
         peaks = _peaks(("p1", 200.0, 1.0e6))
         rows = _assign(
             [
-                _match(200.0, "C9H14O3", "C9H13O3+", "+NH4+", 0.9),
-                _match(200.0, "C6H9NO2", "C6H10NO2+", "+H+", 0.9),
+                _match(200.0, "C9H14O3", "C9H13O3+", "[M+NH4]+", 0.9),
+                _match(200.0, "C6H9NO2", "C6H10NO2+", "[M+H]+", 0.9),
             ],
             peaks,
         )
@@ -96,8 +96,8 @@ class TestTheCrossCompositionContest:
         peaks = _peaks(("p1", 200.0, 1.0e6))
         rows = _assign(
             [
-                _match(200.0, "C9H14O3", "C9H13O3+", "+NH4+", 0.95),
-                _match(200.0, "C6H9NO2", "C6H10NO2+", "+H+", 0.60),
+                _match(200.0, "C9H14O3", "C9H13O3+", "[M+NH4]+", 0.95),
+                _match(200.0, "C6H9NO2", "C6H10NO2+", "[M+H]+", 0.60),
             ],
             peaks,
         )
@@ -107,8 +107,8 @@ class TestTheCrossCompositionContest:
         peaks = _peaks(("p1", 200.0, 1.0e6))
         rows = _assign(
             [
-                _match(200.0, "C9H14O3", "C9H13O3+", "+NH4+", 0.9),
-                _match(200.0, "C6H9NO2", "C6H10NO2+", "+H+", 0.9),
+                _match(200.0, "C9H14O3", "C9H13O3+", "[M+NH4]+", 0.9),
+                _match(200.0, "C6H9NO2", "C6H10NO2+", "[M+H]+", 0.9),
             ],
             peaks,
             minor=frozenset(),
@@ -119,7 +119,7 @@ class TestTheCrossCompositionContest:
 class TestTheCorroborationCap:
     def test_an_uncorroborated_secondary_winner_is_capped(self):
         peaks = _peaks(("p1", 200.0, 1.0e6))
-        rows = _assign([_match(200.0, "C9H14O3", "C9H13O3+", "+NH4+", 0.99)], peaks)
+        rows = _assign([_match(200.0, "C9H14O3", "C9H13O3+", "[M+NH4]+", 0.99)], peaks)
         assert rows[0]["tier"] == TIER_CANDIDATE
         assert rows[0]["provenance"]["minor_channel"] == {
             "corroborated_by": None,
@@ -130,8 +130,8 @@ class TestTheCorroborationCap:
         peaks = _peaks(("p1", 200.0, 1.0e6), ("p2", 201.0034, 1.0e5))
         rows = _assign(
             [
-                _match(200.0, "C9H14O3", "C9H13O3+", "+NH4+", 0.99),
-                _match(201.0034, "C9H14O3", "C9H13O3+", "+NH4+", 0.99, "13C"),
+                _match(200.0, "C9H14O3", "C9H13O3+", "[M+NH4]+", 0.99),
+                _match(201.0034, "C9H14O3", "C9H13O3+", "[M+NH4]+", 0.99, "13C"),
             ],
             peaks,
         )
@@ -141,12 +141,12 @@ class TestTheCorroborationCap:
 
     def test_the_same_neutral_on_a_primary_channel_corroborates(self):
         # Two different peaks: the secondary channel owns one that no primary
-        # contender reached, and the same neutral won another through +H+.
+        # contender reached, and the same neutral won another through [M+H]+.
         peaks = _peaks(("p1", 200.0, 1.0e6), ("p2", 300.0, 5.0e5))
         rows = _assign(
             [
-                _match(200.0, "C9H14O3", "C9H13O3+", "+NH4+", 0.99),
-                _match(300.0, "C9H14O3", "C9H15O3+", "+H+", 0.99),
+                _match(200.0, "C9H14O3", "C9H13O3+", "[M+NH4]+", 0.99),
+                _match(300.0, "C9H14O3", "C9H15O3+", "[M+H]+", 0.99),
             ],
             peaks,
         )
@@ -158,7 +158,7 @@ class TestTheCorroborationCap:
 
     def test_a_primary_channel_row_carries_no_minor_verdict(self):
         peaks = _peaks(("p1", 200.0, 1.0e6))
-        rows = _assign([_match(200.0, "C6H9NO2", "C6H10NO2+", "+H+", 0.99)], peaks)
+        rows = _assign([_match(200.0, "C6H9NO2", "C6H10NO2+", "[M+H]+", 0.99)], peaks)
         assert rows[0]["tier"] == TIER_ASSIGNED
         assert "minor_channel" not in rows[0]["provenance"]
 
@@ -166,7 +166,7 @@ class TestTheCorroborationCap:
         # A row that was already below the assigned band stays where it is; the
         # rule only demotes.
         peaks = _peaks(("p1", 200.0, 1.0e6))
-        rows = _assign([_match(200.0, "C9H14O3", "C9H13O3+", "+NH4+", 0.50)], peaks)
+        rows = _assign([_match(200.0, "C9H14O3", "C9H13O3+", "[M+NH4]+", 0.50)], peaks)
         assert rows[0]["tier"] == TIER_CANDIDATE
         assert rows[0]["provenance"]["minor_channel"]["capped"] is False
 
@@ -181,8 +181,8 @@ class TestThePartnerGate:
     toluene less a hydride, is whether the sample shows the neutral elsewhere.
     """
 
-    IDS = {"+NO3-": "im-no3", "-H+": "im-deprot", "+HCOO-": "im-formate"}
-    CT_IDS = {"+": "im-ct", "+H+": "im-h", "-H-": "im-hydride"}
+    IDS = {"[M+NO3]-": "im-no3", "[M-H]-": "im-deprot", "[M+HCOO]-": "im-formate"}
+    CT_IDS = {"+": "im-ct", "[M+H]+": "im-h", "[M-H]+": "im-hydride"}
 
     BANDS = {TIER_ASSIGNED: 0.75, TIER_CANDIDATE: 0.45}
 
@@ -231,16 +231,16 @@ class TestThePartnerGate:
         rows = self._assign(
             [
                 {
-                    **_match(263.1136, "C10H18O5", "C11H19O7-", "+HCOO-", 0.99),
+                    **_match(263.1136, "C10H18O5", "C11H19O7-", "[M+HCOO]-", 0.99),
                     "same_ion_alternatives": self._family(
-                        ("C11H20O7", "C11H19O7-", "-H+")
+                        ("C11H20O7", "C11H19O7-", "[M-H]-")
                     ),
                 }
             ],
             peaks,
             self.IDS,
-            minor={"+HCOO-"},
-            gated={"+HCOO-"},
+            minor={"[M+HCOO]-"},
+            gated={"[M+HCOO]-"},
         )
         [row] = rows
         assert row["assigned_formula"] == "C11H20O7"
@@ -249,7 +249,7 @@ class TestThePartnerGate:
         assert "minor_channel" not in row["provenance"]
         gate = row["provenance"]["partner_gate"]
         assert gate["partner"] is False
-        assert gate["displaced"] == "C10H18O5" and gate["through"] == "-H+"
+        assert gate["displaced"] == "C10H18O5" and gate["through"] == "[M-H]-"
         first = row["alternatives"][0]
         assert first["assigned_formula"] == "C10H18O5"
         assert first["same_ion"] is True and first["partner_gate"] == "unmet"
@@ -259,23 +259,23 @@ class TestThePartnerGate:
         rows = self._assign(
             [
                 {
-                    **_match(263.1136, "C10H18O5", "C11H19O7-", "+HCOO-", 0.99),
+                    **_match(263.1136, "C10H18O5", "C11H19O7-", "[M+HCOO]-", 0.99),
                     "same_ion_alternatives": self._family(
-                        ("C11H20O7", "C11H19O7-", "-H+")
+                        ("C11H20O7", "C11H19O7-", "[M-H]-")
                     ),
                 },
-                _match(280.1032, "C10H18O5", "C10H18NO8-", "+NO3-", 0.99),
+                _match(280.1032, "C10H18O5", "C10H18NO8-", "[M+NO3]-", 0.99),
             ],
             peaks,
             self.IDS,
-            minor={"+HCOO-"},
-            gated={"+HCOO-"},
+            minor={"[M+HCOO]-"},
+            gated={"[M+HCOO]-"},
         )
         formate = [r for r in rows if r["ionization_mechanism_id"] == "im-formate"][0]
         assert formate["assigned_formula"] == "C10H18O5"
         assert formate["tier"] == TIER_ASSIGNED
         assert formate["provenance"]["partner_gate"] == {
-            "channel": "+HCOO-",
+            "channel": "[M+HCOO]-",
             "partner": True,
         }
         assert (
@@ -286,11 +286,11 @@ class TestThePartnerGate:
     def test_a_reading_with_no_other_reading_is_left_to_the_cap(self):
         peaks = _peaks(("p1", 263.1136, 1.0e6))
         [row] = self._assign(
-            [_match(263.1136, "C10H18O5", "C11H19O7-", "+HCOO-", 0.99)],
+            [_match(263.1136, "C10H18O5", "C11H19O7-", "[M+HCOO]-", 0.99)],
             peaks,
             self.IDS,
-            minor={"+HCOO-"},
-            gated={"+HCOO-"},
+            minor={"[M+HCOO]-"},
+            gated={"[M+HCOO]-"},
         )
         assert row["assigned_formula"] == "C10H18O5"
         assert row["tier"] == TIER_CANDIDATE
@@ -307,25 +307,25 @@ class TestThePartnerGate:
         rows = self._assign(
             [
                 {
-                    **_match(263.1136, "C10H18O5", "C11H19O7-", "+HCOO-", 0.99),
+                    **_match(263.1136, "C10H18O5", "C11H19O7-", "[M+HCOO]-", 0.99),
                     "same_ion_alternatives": self._family(
-                        ("C11H20O7", "C11H19O7-", "-H+")
+                        ("C11H20O7", "C11H19O7-", "[M-H]-")
                     ),
                 },
                 {
-                    **_match(217.1081, "C9H16O3", "C10H17O5-", "+HCOO-", 0.99),
+                    **_match(217.1081, "C9H16O3", "C10H17O5-", "[M+HCOO]-", 0.99),
                     "same_ion_alternatives": self._family(
-                        ("C10H18O5", "C10H17O5-", "-H+")
+                        ("C10H18O5", "C10H17O5-", "[M-H]-")
                     ),
                 },
             ],
             peaks,
             self.IDS,
-            minor={"+HCOO-"},
-            gated={"+HCOO-"},
+            minor={"[M+HCOO]-"},
+            gated={"[M+HCOO]-"},
         )
         by_peak = {r["sample_peak_id"]: r for r in rows}
-        # C9H16O3 has no partner, so p2 is the C10 acid through -H+ ...
+        # C9H16O3 has no partner, so p2 is the C10 acid through [M-H]- ...
         assert by_peak["p2"]["assigned_formula"] == "C10H18O5"
         assert by_peak["p2"]["ionization_mechanism_id"] == "im-deprot"
         # ... which is exactly the partner p1's formate reading needed.
@@ -361,16 +361,16 @@ class TestThePartnerGate:
         rows = self._assign(
             [
                 {
-                    **_match(263.1136, "C10H18O5", "C11H19O7-", "+HCOO-", 0.99),
+                    **_match(263.1136, "C10H18O5", "C11H19O7-", "[M+HCOO]-", 0.99),
                     "same_ion_alternatives": self._family(
-                        ("C11H20O7", "C11H19O7-", "-H+")
+                        ("C11H20O7", "C11H19O7-", "[M-H]-")
                     ),
                 }
             ],
             peaks,
             self.IDS,
-            minor={"+HCOO-"},
-            gated={"+HCOO-"},
+            minor={"[M+HCOO]-"},
+            gated={"[M+HCOO]-"},
             stage_a=stage_a,
         )
         formate = [r for r in rows if r.get("ionization_mechanism_id") == "im-formate"]
@@ -403,7 +403,7 @@ class TestThePartnerGate:
             ],
             "provenance": {},
         }
-        [row] = self._gate([mirror], self.IDS, minor={"+HCOO-"}, gated={"+HCOO-"})
+        [row] = self._gate([mirror], self.IDS, minor={"[M+HCOO]-"}, gated={"[M+HCOO]-"})
         assert row["alternatives"][0]["partner_gate"] == "unmet"
         assert row["tier"] == TIER_ASSIGNED
 
@@ -415,23 +415,23 @@ class TestThePartnerGate:
         rows = self._assign(
             [
                 {
-                    **_match(91.0542, "C7H6", "C7H7+", "+H+", 0.99),
+                    **_match(91.0542, "C7H6", "C7H7+", "[M+H]+", 0.99),
                     "same_ion_alternatives": self._family(
-                        ("C7H8", "C7H7+", "-H-"), ("C7H7", "C7H7+", "+")
+                        ("C7H8", "C7H7+", "[M-H]+"), ("C7H7", "C7H7+", "+")
                     ),
                 },
                 _match(92.0621, "C7H8", "C7H8+", "+", 0.99),
             ],
             peaks,
             self.CT_IDS,
-            minor={"+H+", "-H-"},
-            gated={"+H+", "-H-"},
+            minor={"[M+H]+", "[M-H]+"},
+            gated={"[M+H]+", "[M-H]+"},
         )
         tropylium = [r for r in rows if r["sample_peak_id"] == "p1"][0]
         assert tropylium["assigned_formula"] == "C7H8"
         assert tropylium["ionization_mechanism_id"] == "im-hydride"
         assert tropylium["tier"] == TIER_ASSIGNED
-        assert tropylium["provenance"]["partner_gate"]["through"] == "-H-"
+        assert tropylium["provenance"]["partner_gate"]["through"] == "[M-H]+"
         assert (
             tropylium["provenance"]["minor_channel"]["corroborated_by"]
             == "second_channel"
@@ -442,17 +442,17 @@ class TestThePartnerGate:
         rows = self._assign(
             [
                 {
-                    **_match(263.1136, "C10H18O5", "C11H19O7-", "+HCOO-", 0.99),
+                    **_match(263.1136, "C10H18O5", "C11H19O7-", "[M+HCOO]-", 0.99),
                     "same_ion_alternatives": self._family(
-                        ("C11H20O7", "C11H19O7-", "-H+")
+                        ("C11H20O7", "C11H19O7-", "[M-H]-")
                     ),
                 },
-                _match(264.1170, "C10H18O5", "C11H19O7-", "+HCOO-", 0.99, "13C"),
+                _match(264.1170, "C10H18O5", "C11H19O7-", "[M+HCOO]-", 0.99, "13C"),
             ],
             peaks,
             self.IDS,
-            minor={"+HCOO-"},
-            gated={"+HCOO-"},
+            minor={"[M+HCOO]-"},
+            gated={"[M+HCOO]-"},
         )
         child = [r for r in rows if r["role"] == "iso_child"][0]
         assert child["assigned_formula"] == "C11H20O7"
@@ -512,13 +512,13 @@ class TestThePartnerGate:
         # r1's partner, and r1 is judged again.
         r1 = self._formate("r1", "C10H18O5")
         r2 = self._formate("r2", "C9H16O3", acid="C10H18O5")
-        self._gate([r1, r2], self.IDS, minor={"+HCOO-"}, gated={"+HCOO-"})
+        self._gate([r1, r2], self.IDS, minor={"[M+HCOO]-"}, gated={"[M+HCOO]-"})
         assert (r2["assigned_formula"], r2["ionization_mechanism_id"]) == (
             "C10H18O5",
             "im-deprot",
         )
         assert r1["provenance"]["partner_gate"] == {
-            "channel": "+HCOO-",
+            "channel": "[M+HCOO]-",
             "partner": True,
             "uncapped": True,
         }
@@ -535,8 +535,8 @@ class TestThePartnerGate:
         summary = apply_partner_gates(
             [r1, r2],
             notation_by_id={mid: n for n, mid in self.IDS.items()},
-            minor_channels=frozenset({"+HCOO-"}),
-            partner_gated_channels=frozenset({"+HCOO-"}),
+            minor_channels=frozenset({"[M+HCOO]-"}),
+            partner_gated_channels=frozenset({"[M+HCOO]-"}),
             tier_bands=self.BANDS,
         )
         assert summary["settled"] is False and summary["rounds"] == 1
@@ -554,8 +554,8 @@ class TestThePartnerGate:
         summary = apply_partner_gates(
             [r, s, t],
             notation_by_id={mid: n for n, mid in self.IDS.items()},
-            minor_channels=frozenset({"+HCOO-"}),
-            partner_gated_channels=frozenset({"+HCOO-"}),
+            minor_channels=frozenset({"[M+HCOO]-"}),
+            partner_gated_channels=frozenset({"[M+HCOO]-"}),
             tier_bands=self.BANDS,
         )
         assert (r["assigned_formula"], r["ionization_mechanism_id"]) == (
@@ -563,7 +563,7 @@ class TestThePartnerGate:
             "im-formate",
         )
         assert r["provenance"]["partner_gate"] == {
-            "channel": "+HCOO-",
+            "channel": "[M+HCOO]-",
             "partner": True,
             "returned": True,
         }
@@ -589,7 +589,7 @@ class TestThePartnerGate:
             "corroborated_by": "second_channel",
             "capped": False,
         }
-        self._gate([below, formate], self.IDS, minor={"+HCOO-"}, gated={"+HCOO-"})
+        self._gate([below, formate], self.IDS, minor={"[M+HCOO]-"}, gated={"[M+HCOO]-"})
         assert formate["tier"] == TIER_CANDIDATE
         assert formate["provenance"]["minor_channel"] == {
             "corroborated_by": None,
@@ -602,7 +602,9 @@ class TestThePartnerGate:
         # the composition it is.
         library = self._row("a1", "CH3COOH", "im-deprot", source="database")
         formate = self._formate("f1", "C2H4O2")
-        self._gate([library, formate], self.IDS, minor={"+HCOO-"}, gated={"+HCOO-"})
+        self._gate(
+            [library, formate], self.IDS, minor={"[M+HCOO]-"}, gated={"[M+HCOO]-"}
+        )
         assert formate["provenance"]["partner_gate"]["partner"] is True
         assert formate["tier"] == TIER_ASSIGNED
 
@@ -616,7 +618,7 @@ class TestThePartnerGate:
             "ceiling": TIER_CANDIDATE,
             "reason": "off_calibration",
         }
-        self._gate([row], self.IDS, minor={"+HCOO-"}, gated={"+HCOO-"})
+        self._gate([row], self.IDS, minor={"[M+HCOO]-"}, gated={"[M+HCOO]-"})
         assert row["assigned_formula"] == "C11H20O7"
         assert row["tier"] == TIER_CANDIDATE
         # ...and the row now says the mass gate holds it there.
@@ -633,8 +635,8 @@ class TestThePartnerGate:
         summary = apply_partner_gates(
             [partner, formate],
             notation_by_id={mid: n for n, mid in self.IDS.items()},
-            minor_channels=frozenset({"+HCOO-"}),
-            partner_gated_channels=frozenset({"+HCOO-"}),
+            minor_channels=frozenset({"[M+HCOO]-"}),
+            partner_gated_channels=frozenset({"[M+HCOO]-"}),
             tier_bands=self.BANDS,
         )
         assert formate["provenance"]["partner_gate"]["uncapped"] is True
@@ -655,14 +657,14 @@ class TestResolution:
             self._resolved(),
             [100.0, 138.0986],
             [1.0e6, 1.0e4],
-            ["+NH4+"],
+            ["[M+NH4]+"],
         )
-        assert resolved.minor_channels == frozenset({"+NH4+"})
+        assert resolved.minor_channels == frozenset({"[M+NH4]+"})
         assert resolved.unavailable_channels == ()
 
     def test_a_channel_the_spectrum_does_not_show_is_not_searched(self):
         resolved = with_secondary_channels(
-            self._resolved(), [100.0, 200.0], [1.0e6, 1.0e4], ["+NH4+"]
+            self._resolved(), [100.0, 200.0], [1.0e6, 1.0e4], ["[M+NH4]+"]
         )
         assert resolved.minor_channels == frozenset()
 
@@ -673,7 +675,7 @@ class TestResolution:
             self._resolved(), [100.0, 138.0986], [1.0e6, 1.0e4], []
         )
         assert resolved.minor_channels == frozenset()
-        assert resolved.unavailable_channels == ("+NH4+",)
+        assert resolved.unavailable_channels == ("[M+NH4]+",)
 
     def test_a_channel_the_mode_declares_is_still_secondary(self):
         # Declaring a channel lets the run search and match through it; it does
@@ -683,17 +685,17 @@ class TestResolution:
         resolved = with_secondary_channels(
             resolve_profile(
                 PeakAssignmentConfig(),
-                UREA + ["+NH4+"],
+                UREA + ["[M+NH4]+"],
                 instrument_type="orbi",
                 polarity="+",
             ),
             [100.0, 138.0986],
             [1.0e6, 1.0e4],
-            ["+NH4+"],
+            ["[M+NH4]+"],
         )
-        assert resolved.minor_channels == frozenset({"+NH4+"})
+        assert resolved.minor_channels == frozenset({"[M+NH4]+"})
         assert resolved.added_channels == frozenset()
-        assert resolved.snapshot()["secondary_channels"] == ["+NH4+"]
+        assert resolved.snapshot()["secondary_channels"] == ["[M+NH4]+"]
 
     def test_so_is_one_whose_carrier_the_spectrum_does_not_show(self):
         # The mode searches it either way, so the spectrum's silence cannot make
@@ -701,22 +703,22 @@ class TestResolution:
         resolved = with_secondary_channels(
             resolve_profile(
                 PeakAssignmentConfig(),
-                UREA + ["+NH4+"],
+                UREA + ["[M+NH4]+"],
                 instrument_type="orbi",
                 polarity="+",
             ),
             [50.0, 100.0, 400.0],
             [1.0e6, 1.0e5, 1.0e4],
-            ["+NH4+"],
+            ["[M+NH4]+"],
         )
         assert resolved.channel_evidence[0].present is False
-        assert resolved.minor_channels == frozenset({"+NH4+"})
+        assert resolved.minor_channels == frozenset({"[M+NH4]+"})
         assert resolved.added_channels == frozenset()
 
     def test_carbonate_on_a_labelled_nitrate_mode_that_declares_it(self):
         # A window starting above every carbonate line cannot show the channel,
         # and the nitrate profiles take that silence as no evidence either way.
-        declared = ["+^NO3-", "-H+", "+CO3-"]
+        declared = ["[M+^NO3]-", "[M-H]-", "[M+CO3]-"]
         resolved = with_secondary_channels(
             resolve_profile(
                 PeakAssignmentConfig(profile="NO3_15N"),
@@ -726,35 +728,35 @@ class TestResolution:
             ),
             [131.0, 210.0898, 300.0],
             [1.0e4, 1.0e6, 1.0e5],
-            ["+CO3-"],
+            ["[M+CO3]-"],
         )
         assert resolved.channel_evidence[0].status == "unobservable"
-        assert resolved.minor_channels == frozenset({"+CO3-"})
+        assert resolved.minor_channels == frozenset({"[M+CO3]-"})
         assert resolved.added_channels == frozenset()
 
     def test_a_declared_channel_the_profile_does_not_name_is_the_modes_own(self):
         resolved = with_secondary_channels(
-            self._resolved(), [100.0, 138.0986], [1.0e6, 1.0e4], ["+NH4+"]
+            self._resolved(), [100.0, 138.0986], [1.0e6, 1.0e4], ["[M+NH4]+"]
         )
-        assert resolved.minor_channels == frozenset({"+NH4+"})
-        assert resolved.added_channels == frozenset({"+NH4+"})
+        assert resolved.minor_channels == frozenset({"[M+NH4]+"})
+        assert resolved.added_channels == frozenset({"[M+NH4]+"})
 
     def test_a_profile_with_no_secondary_channels_is_untouched(self):
         resolved = resolve_profile(
             PeakAssignmentConfig(profile="none"), UREA, instrument_type="orbi"
         )
         extended = with_secondary_channels(
-            resolved, [100.0, 138.0986], [1.0e6, 1.0e4], ["+NH4+"]
+            resolved, [100.0, 138.0986], [1.0e6, 1.0e4], ["[M+NH4]+"]
         )
         assert extended is resolved
         assert extended.minor_channels == frozenset()
 
     def test_the_snapshot_records_every_channel_considered(self):
         snapshot = with_secondary_channels(
-            self._resolved(), [100.0, 138.0986], [1.0e6, 1.0e4], ["+NH4+"]
+            self._resolved(), [100.0, 138.0986], [1.0e6, 1.0e4], ["[M+NH4]+"]
         ).snapshot()
-        assert snapshot["secondary_channels"] == ["+NH4+"]
-        assert snapshot["channel_evidence"][0]["channel"] == "+NH4+"
+        assert snapshot["secondary_channels"] == ["[M+NH4]+"]
+        assert snapshot["channel_evidence"][0]["channel"] == "[M+NH4]+"
         assert snapshot["channel_evidence"][0]["present"] is True
         assert snapshot["unavailable_channels"] == []
 
@@ -762,21 +764,21 @@ class TestResolution:
         # A spectrum that spans the probes and does not carry them: the source
         # is not running the channel, which is a real answer.
         snapshot = with_secondary_channels(
-            self._resolved(), [50.0, 100.0, 400.0], [1.0e6, 1.0e5, 1.0e4], ["+NH4+"]
+            self._resolved(), [50.0, 100.0, 400.0], [1.0e6, 1.0e5, 1.0e4], ["[M+NH4]+"]
         ).snapshot()
         assert snapshot["secondary_channels"] == []
         assert snapshot["channel_evidence"] == [
-            {"channel": "+NH4+", "present": False, "status": "not_found"}
+            {"channel": "[M+NH4]+", "present": False, "status": "not_found"}
         ]
 
     def test_a_channel_the_window_could_not_show_is_recorded_as_such(self):
         # And is not searched, because the urea profile does not default it on.
         snapshot = with_secondary_channels(
-            self._resolved(), [300.0, 400.0], [1.0e6, 1.0e4], ["+NH4+"]
+            self._resolved(), [300.0, 400.0], [1.0e6, 1.0e4], ["[M+NH4]+"]
         ).snapshot()
         assert snapshot["secondary_channels"] == []
         assert snapshot["channel_evidence"] == [
-            {"channel": "+NH4+", "present": False, "status": "unobservable"}
+            {"channel": "[M+NH4]+", "present": False, "status": "unobservable"}
         ]
 
 
@@ -796,10 +798,10 @@ def _mechanism(mechanism_id: str, notation: str) -> SimpleNamespace:
 
 
 class TestTheChannelsASampleIsSearchedThrough:
-    PROTON = _mechanism("im-h", "+H+")
-    UREA_ADDUCT = _mechanism("im-urea", "+(CH4N2O)H+")
-    AMMONIUM = _mechanism("im-nh4", "+NH4+")
-    #: The ammonium carrier beside a base line, so the urea profile opens +NH4+.
+    PROTON = _mechanism("im-h", "[M+H]+")
+    UREA_ADDUCT = _mechanism("im-urea", "[M+CH4N2O+H]+")
+    AMMONIUM = _mechanism("im-nh4", "[M+NH4]+")
+    #: The ammonium carrier beside a base line, so the urea profile opens [M+NH4]+.
     SHOWS_AMMONIUM = ([100.0, 138.0986], [1.0e6, 1.0e4])
 
     def _resolved(self, declared: list[str], spectrum=SHOWS_AMMONIUM):
@@ -808,7 +810,7 @@ class TestTheChannelsASampleIsSearchedThrough:
                 PeakAssignmentConfig(), declared, instrument_type="orbi", polarity="+"
             ),
             *spectrum,
-            ["+NH4+"],
+            ["[M+NH4]+"],
         )
 
     def test_a_secondary_channel_the_source_runs_is_added(self):
@@ -827,7 +829,7 @@ class TestTheChannelsASampleIsSearchedThrough:
         searched = _searched_mechanisms(
             [self.PROTON, self.UREA_ADDUCT, self.AMMONIUM],
             [self.AMMONIUM],
-            self._resolved(UREA + ["+NH4+"]),
+            self._resolved(UREA + ["[M+NH4]+"]),
         )
         assert [m.ionization_mechanism_id for m in searched] == [
             "im-h",

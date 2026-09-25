@@ -218,7 +218,10 @@ async def test_stage_a_is_told_where_the_reagent_lines_put_the_axis():
                 ionization_mechanism=notation,
                 ionization_mechanism_polarity="+",
             )
-            for mechanism_id, notation in (("m-h", "+H+"), ("m-urea", "+(CH4N2O)H+"))
+            for mechanism_id, notation in (
+                ("m-h", "[M+H]+"),
+                ("m-urea", "[M+CH4N2O+H]+"),
+            )
         ],
     )
     with stack:
@@ -357,7 +360,7 @@ async def test_the_fold_asks_a_mirror_rows_nitrogen_count_as_a_run_does(
 ):
     """A reference-list row whose ion reads as well another way is capped here too.
 
-    Dimethylformamide through +H+ is acrolein through the ammonium adduct, the
+    Dimethylformamide through [M+H]+ is acrolein through the ammonium adduct, the
     uronium profile's secondary channel. Where the spectrum shows that channel's
     carrier a run reads the row through it and caps it at candidate, so the
     fold does as well. Where it does not, no run reads that channel and the row
@@ -392,9 +395,9 @@ async def test_the_fold_asks_a_mirror_rows_nitrogen_count_as_a_run_does(
     mocks["peaks"].return_value = pd.DataFrame(peaks)
     mocks["mechanisms"].return_value = (
         ["m-h", "m-urea"],
-        [mechanism("m-h", "+H+"), mechanism("m-urea", "+(CH4N2O)H+")],
+        [mechanism("m-h", "[M+H]+"), mechanism("m-urea", "[M+CH4N2O+H]+")],
     )
-    mocks["secondary"].return_value = [mechanism("m-nh4", "+NH4+")]
+    mocks["secondary"].return_value = [mechanism("m-nh4", "[M+NH4]+")]
     with stack:
         assert await fold_sample_peaks_without_run("si-1") == "batch-1"
 

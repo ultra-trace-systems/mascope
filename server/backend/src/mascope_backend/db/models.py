@@ -1212,6 +1212,36 @@ class TargetIon(Base):
     )
 
 
+class StandardMechanism(TypeDecorator):
+    """``IonizationMechanism.ionization_mechanism``: read in the standard adduct
+    notation, whichever notation the row holds.
+
+    A mechanism is stored as ``[M-H]-``, the spelling the write validator
+    answers, but a row written before that holds the legacy ``-H+`` until a
+    migration rewrites it. Every reader goes through the column type, so the
+    listing, the engine's channel tables, the match records and the exports see
+    one spelling for one mechanism either way; text that reads as neither
+    notation is read as it is, so a row the write rules refuse is still
+    reported for what it is.
+
+    Writes and comparisons pass through unconverted: the validator has already
+    answered the standard spelling, and a lookup by spelling has to reach the
+    row as it is stored, which is what ``mechanism_spellings`` is for.
+    """
+
+    impl = String
+    cache_ok = True
+
+    def process_result_value(self, value, dialect):
+        if value is None:
+            return value
+        # Imported here: the composition package pulls in the finder's
+        # dependencies, which nothing else that loads the models needs.
+        from mascope_tools.composition.mechanism_notation import mechanism_key
+
+        return mechanism_key(value)
+
+
 class IonizationMechanism(Base):
     """Ionization mechanism table."""
 
@@ -1219,7 +1249,9 @@ class IonizationMechanism(Base):
 
     ionization_mechanism_id: Mapped[str] = mapped_column(String(16), primary_key=True)
     ionization_mechanism_polarity: Mapped[str] = mapped_column(String(1))
-    ionization_mechanism: Mapped[str] = mapped_column(String(256), unique=True)
+    ionization_mechanism: Mapped[str] = mapped_column(
+        StandardMechanism(256), unique=True
+    )
 
     # Relationships
     target_ion = relationship(
@@ -2396,7 +2428,7 @@ class AssignmentCalibration(Base):
     Moves the assignment-confidence calibration out of the in-code registry so a curve can be
     (re)fit per deployment -- e.g. a user runs known standards + near-mass decoys on their
     instrument -- without a code change. Holds the Platt parameters ``a``/``b`` plus the
-    per-adduct corroboration log-odds (keyed by adduct notation, e.g. ``{"+Br-": 2.28}``) and the
+    per-adduct corroboration log-odds (keyed by adduct notation, e.g. ``{"[M+Br]-": 2.28}``) and the
     provenance mirrored from :class:`mascope_tools.composition.calibration.Calibration`.
 
     Keyed by ``(instrument, score_version)`` because a curve is only valid for the fit-score

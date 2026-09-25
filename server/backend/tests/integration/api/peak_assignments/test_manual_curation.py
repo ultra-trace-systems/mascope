@@ -143,7 +143,7 @@ async def curated_run(async_session_factory, pa_test_data):
                     "calibrated": True,
                     "p_correct": 0.93,
                     "calibration": {"provisional": True},
-                    "corroboration": {"n_adducts": 2, "adducts": ["+H+", "+Na+"]},
+                    "corroboration": {"n_adducts": 2, "adducts": ["[M+H]+", "[M+Na]+"]},
                 },
             )
         )

@@ -35,7 +35,7 @@ CANDIDATE = 0.45
 ASSIGNED = 0.75
 ORBI_ACCURACY = INSTRUMENT_FALLBACK_SIGMA_PPM["orbi"]
 TOF_ACCURACY = INSTRUMENT_FALLBACK_SIGMA_PPM["tof"]
-MECHANISMS = {"+H+": "mech-h", "+NH4+": "mech-nh4"}
+MECHANISMS = {"[M+H]+": "mech-h", "[M+NH4]+": "mech-nh4"}
 
 #: The lines the reagent pre-pass claims on a labelled-nitrate sample of the
 #: gate, in ppm: the core ion and its first rung, then five isotopologue lines
@@ -55,7 +55,7 @@ def _row(**overrides) -> dict:
         "formula": "C5H10O2",
         "ion": "C5H11O2+",
         "isotope_label": "M0",
-        "ionization_mechanism": "+H+",
+        "ionization_mechanism": "[M+H]+",
         "isotopic_pattern_score": 0.92,
         "mz_error_ppm": 0.4,
         "intensity_error": 0.02,
@@ -426,7 +426,7 @@ class TestWhichReadingsAreMeasuredAgain:
                 [
                     _row(),
                     _row(mz=101.1, isotope_label="13C"),
-                    _row(mz=118.1, ionization_mechanism="+NH4+"),
+                    _row(mz=118.1, ionization_mechanism="[M+NH4]+"),
                 ]
             ),
             MECHANISMS,

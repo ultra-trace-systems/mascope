@@ -24,6 +24,11 @@ from mascope_tools.composition.config import ELECTRON_MASS
 from mascope_tools.composition.custom_elements import CUSTOM_ELEMENTS
 from mascope_tools.composition.finder import replace_atom_with_isotope
 from mascope_tools.composition.heuristic_filter import extract_isotope_labels
+from mascope_tools.composition.mechanism_notation import (
+    MechanismNotationError,
+    MechanismParts,
+    parse_mechanism,
+)
 from mascope_tools.composition.utils import (
     assert_valid_formula,
     parse_composition,
@@ -187,41 +192,56 @@ def generate_target_ions_from_composition(
     return target_ions, target_isotopes
 
 
+def _read_mechanism(ionization_mechanism: str) -> MechanismParts:
+    """Read a stored mechanism in either notation.
+
+    :raises UnknownIonizationMechanism: The text is neither notation - a row
+        older validation let through, such as ``"++"``.
+    """
+    try:
+        return parse_mechanism(ionization_mechanism)
+    except MechanismNotationError as e:
+        raise UnknownIonizationMechanism(str(e)) from e
+
+
 def _mechanism_parts(ionization_mechanism: str) -> tuple[str, str, int]:
     """Split an ionization mechanism into (body, operation, mechanism_charge).
 
-    The mechanism format is ``<operation><formula><modification polarity>``, e.g.
-    ``+H+``, ``+Br-``, ``-H+`` (deprotonation), or the single-character electron
-    transfer mechanisms ``+`` / ``-``.
+    Either notation is read: ``[M+H]+`` or ``+H+``, ``[M-H]-`` or ``-H+``
+    (deprotonation), ``[M+Br]-`` or ``+Br-``, and electron transfer ``[M]+.`` /
+    ``[M]-.`` or ``+`` / ``-``.
 
-    - ``body`` is the modification formula with the leading operation and trailing
-      polarity stripped (empty for electron transfer).
+    - ``body`` is the moiety added or removed (empty for electron transfer).
     - ``operation`` is ``"+"`` (addition) or ``"-"`` (subtraction). Electron
       transfer is treated as an addition of the electron mechanism.
-    - ``mechanism_charge`` is the charge of the modification (+1 / -1), taken from
-      the trailing polarity; for electron transfer it is +1 (``+``) or -1 (``-``).
+    - ``mechanism_charge`` is the charge of the moiety (+1 / -1): the ion's
+      charge where it is added, the opposite where it is removed. For electron
+      transfer it is the ion's charge.
 
     Examples
     --------
-    >>> _mechanism_parts("+H+")
+    >>> _mechanism_parts("[M+H]+")
     ('H', '+', 1)
-    >>> _mechanism_parts("+Br-")
+    >>> _mechanism_parts("[M+Br]-")
     ('Br', '+', -1)
+    >>> _mechanism_parts("[M-H]-")
+    ('H', '-', 1)
     >>> _mechanism_parts("-H+")
     ('H', '-', 1)
-    >>> _mechanism_parts("+")
+    >>> _mechanism_parts("[M+CH4N2O+H]+")
+    ('(CH4N2O)H', '+', 1)
+    >>> _mechanism_parts("[M]+.")
     ('', '+', 1)
     >>> _mechanism_parts("-")
     ('', '+', -1)
+
+    :raises UnknownIonizationMechanism: The text is neither notation.
     """
-    if len(ionization_mechanism) == 1:
-        # Electron transfer: "+" abstracts an electron, "-" adds one.
-        return "", "+", (1 if ionization_mechanism == "+" else -1)
-    operation = ionization_mechanism[0]
-    trailing_polarity = ionization_mechanism[-1]
-    body = ionization_mechanism[1:-1]
-    mechanism_charge = 1 if trailing_polarity == "+" else -1
-    return body, operation, mechanism_charge
+    parts = _read_mechanism(ionization_mechanism)
+    if parts.electron_transfer:
+        # "[M]+." abstracts an electron, "[M]-." attaches one.
+        return "", "+", parts.charge
+    return parts.moiety, "+" if parts.addition else "-", parts.moiety_charge
 
 
 def _composition_counts(formula: str) -> dict[str, int]:
@@ -256,20 +276,24 @@ def _get_compound_composition(
         - Electron transfer on empty formula
         - Abstraction from empty formula
         - Not enough atoms of a subtracted element
+    :raises UnknownIonizationMechanism: The mechanism is neither notation.
     :return: Compound composition as ``{symbol: count}``, or None for empty "()"
     :rtype: dict[str, int] | None
     """
     runtime.logger.debug(
         f"Processing compound formula '{target_compound_formula}' with ionization mechanism '{ionization_mechanism}'"
     )
+    parts = _read_mechanism(ionization_mechanism)
+    subtraction = not parts.addition and not parts.electron_transfer
+
     # Handle the special case when generating ions for empty formula "()"
     if target_compound_formula == "()":
-        if ionization_mechanism == "-" or ionization_mechanism == "+":
+        if parts.electron_transfer:
             # Electron transfer does not apply
             raise SkipIonizationMechanism(
                 "Electron transfer does not apply to empty formula"
             )
-        if ionization_mechanism.startswith("-"):
+        if subtraction:
             # Cannot subtract from empty formula
             raise SkipIonizationMechanism(
                 "Subtraction mechanisms do not apply to empty formula"
@@ -278,10 +302,9 @@ def _get_compound_composition(
 
     compound_composition = _composition_counts(target_compound_formula)
 
-    if ionization_mechanism.startswith("-") and len(ionization_mechanism) > 1:
+    if subtraction:
         # For subtraction mechanisms, ensure the compound composition can support it
-        body, _, _ = _mechanism_parts(ionization_mechanism)
-        mechanism_composition = _composition_counts(body)
+        mechanism_composition = _composition_counts(parts.moiety)
         for element, mech_count in mechanism_composition.items():
             # Check if element to be subtracted exists in compound composition
             if element not in compound_composition:
