@@ -76,7 +76,7 @@ async def learn_method_bindings(
     sample_file: SampleFile,
     bound_modes: list[IonizationMode],
     source: str,
-    streams: list[dict] | None = None,
+    streams: list[dict] | None,
     recorded: set[str] | None = None,
 ) -> dict[str, int]:
     """Record what the modes this file bound to say about its method.
@@ -92,7 +92,11 @@ async def learn_method_bindings(
     :param sample_file: The file that just bound.
     :param bound_modes: The modes it bound to, one per polarity.
     :param source: The rung that bound it, one of :data:`LEARNING_SOURCES`.
-    :param streams: The file's scan-stream census, when it has one.
+    :param streams: The file's scan-stream census from
+        :func:`~...process.status.read_scan_streams`: the streams, ``[]`` when
+        the file records none, or ``None`` when its ``.props`` could not be
+        read. Required, because the difference between the last two decides
+        whether a file that teaches nothing is routine or a fault.
     :param recorded: The binding keys this pipeline run has already taught,
         added to here. The pipeline shares one set across the attempts of a
         run, so a file whose later stages fail and retry - tens of seconds
@@ -125,16 +129,14 @@ async def learn_method_bindings(
                 # anything else would split this method's history between the
                 # guess and the census later files carry.
                 #
-                # WARNING, not a silent skip: the converter has written a
-                # census for every file since it existed, so one missing at
-                # ingest is an anomaly - an unreadable .props, or a reader
-                # that failed - and this line is the only sign of it. The
-                # file processes normally; only its method learns nothing.
-                runtime.logger.warning(
-                    f"No scan-stream census for {sample_file.filename} on "
-                    f"{sample_file.instrument}, whose reader records one, so "
-                    "its acquisition method learned nothing from this file. "
-                    "Check that the file's .props is readable."
+                # WARNING only when the .props could not be READ, which is a
+                # fault. A file that simply records no census is ordinary -
+                # every Orbitrap file predating the census does, and
+                # re-processing those in bulk is routine - and warning on each
+                # would open a monitoring event per file telling someone to
+                # check a .props that is fine.
+                _report_no_signature(
+                    sample_file, unreadable=streams is None, recorded=recorded
                 )
                 counts["no_signature"] += 1
                 continue
@@ -147,6 +149,7 @@ async def learn_method_bindings(
         # is dropped, and the one thing this must never do is cost a file
         # anything.
         observations.sort(key=lambda observation: observation[0])
+        written: list[str] = []
         async with async_session() as session:
             for digest, signature, mode in observations:
                 if recorded is not None and digest in recorded:
@@ -164,9 +167,14 @@ async def learn_method_bindings(
                     sample_file_id=sample_file.sample_file_id,
                 )
                 counts[outcome] = counts.get(outcome, 0) + 1
-                if recorded is not None:
-                    recorded.add(digest)
+                written.append(digest)
             await session.commit()
+        # Only after the commit. A failure here - the commit itself, or the
+        # second _observe of a dual-polarity file - rolls the session back,
+        # and a digest already in the set would make the retry skip a binding
+        # that was never written, so the run would never teach its method.
+        if recorded is not None:
+            recorded.update(written)
     except Exception as e:  # noqa: BLE001 - a recording is never worth a file
         runtime.logger.opt(exception=True).warning(
             f"Could not record a method binding for {sample_file.filename}: {e}"
@@ -174,6 +182,39 @@ async def learn_method_bindings(
         return dict(_NOTHING_LEARNED)
 
     return counts
+
+
+def _report_no_signature(
+    sample_file: SampleFile, unreadable: bool, recorded: set[str] | None
+) -> None:
+    """Say why a file taught nothing, at the level the reason deserves.
+
+    Once per run: the marker goes in the same set the observations use, under
+    a name no digest can take, so a retried run does not repeat the line three
+    more times.
+
+    :param sample_file: The file that taught nothing.
+    :param unreadable: True when its ``.props`` could not be read, which is a
+        fault; False when it simply records no census, which is ordinary.
+    :param recorded: The run's recorded keys, or None outside a pipeline run.
+    """
+    marker = f"no-signature:{sample_file.sample_file_id}"
+    if recorded is not None:
+        if marker in recorded:
+            return
+        recorded.add(marker)
+    if unreadable:
+        runtime.logger.warning(
+            f"Could not read the .props of {sample_file.filename} on "
+            f"{sample_file.instrument}, so its acquisition method learned "
+            "nothing from this file. The file itself processes normally."
+        )
+        return
+    runtime.logger.debug(
+        f"{sample_file.filename} records no scan-stream census, so its "
+        "acquisition method learned nothing from it. Ordinary for a file "
+        "converted before the census existed."
+    )
 
 
 async def _observe(

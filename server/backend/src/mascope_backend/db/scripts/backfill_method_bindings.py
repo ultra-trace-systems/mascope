@@ -93,11 +93,14 @@ _PREVIEW_LIMIT = 20
 #: one: the two share a filename and a timestamp, so this order puts them
 #: next to each other.
 #:
-#: Paged by the last row read, not by OFFSET. OFFSET re-runs this five-way
-#: join and its sort for every page - about sixty of them on the largest
-#: production server - and shifts under the cursor when a re-process deletes
-#: items ahead of it, which silently skips a row. The row-value comparison
-#: matches the ORDER BY exactly, so each page starts where the last ended.
+#: Paged by the last row read, not by OFFSET. The gain is STABILITY, not
+#: speed: with OFFSET, a re-process deleting items ahead of the cursor shifts
+#: the rows under it and a page boundary silently skips one. Both forms still
+#: re-run this five-way join and a top-N sort for every page, because nothing
+#: indexes sample_file.datetime_utc and so neither can walk the order - which
+#: does not matter for a script that runs by hand, and is not worth an index.
+#: The row-value comparison matches the ORDER BY exactly, so each page starts
+#: where the last ended.
 _HISTORY_SQL = """
     SELECT
         sf.filename                     AS filename,

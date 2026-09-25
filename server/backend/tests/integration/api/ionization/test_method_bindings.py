@@ -13,6 +13,9 @@ import pytest_asyncio
 from sqlalchemy import delete, select
 from test_utils import captured_logs
 
+from mascope_backend.api.controllers.sample.files.process import (
+    bindings as bindings_module,
+)
 from mascope_backend.api.controllers.sample.files.process.bindings import (
     learn_method_bindings,
 )
@@ -231,19 +234,57 @@ async def test_a_census_less_file_of_a_census_bearing_reader_is_logged(
 ):
     """The converter always writes one, so a missing census is an anomaly.
 
-    An unreadable `.props` or a reader failure is the only way to get here,
-    the file's method learns nothing from it, and this line is the only sign.
+    An unreadable `.props` is a fault, and the method learns nothing from the
+    file, so this line is the only sign of it.
     """
     sample_file = _File(instrument, method_file="nitrate.meth", instrument_type="orbi")
-    with captured_logs("WARNING") as records:
+    with captured_logs("DEBUG") as records:
         counts = await learn_method_bindings(
-            sample_file, [modes["nitrate"]], source="token"
+            sample_file, [modes["nitrate"]], source="token", streams=None
         )
 
     assert counts["no_signature"] == 1
     warned = [r["message"] for r in records if r["level"].name == "WARNING"]
-    assert any("scan-stream census" in message for message in warned), warned
+    assert any(".props" in message for message in warned), warned
     assert any(sample_file.filename in message for message in warned), warned
+
+
+@pytest.mark.asyncio
+async def test_a_file_that_simply_records_no_census_does_not_warn(modes, instrument):
+    """Every Orbitrap file predating the census does, and they get re-processed.
+
+    Warning on each would open a monitoring event per file - this logger
+    forwards WARNING and above - telling someone to check a `.props` that is
+    perfectly fine.
+    """
+    sample_file = _File(instrument, method_file="nitrate.meth", instrument_type="orbi")
+    with captured_logs("DEBUG") as records:
+        counts = await learn_method_bindings(
+            sample_file, [modes["nitrate"]], source="token", streams=[]
+        )
+
+    assert counts["no_signature"] == 1
+    assert [r["message"] for r in records if r["level"].name == "WARNING"] == []
+    assert any("no scan-stream census" in r["message"] for r in records)
+
+
+@pytest.mark.asyncio
+async def test_a_retried_run_reports_an_unreadable_props_once(modes, instrument):
+    """Not once per attempt: the marker rides in the run's recorded set."""
+    sample_file = _File(instrument, method_file="nitrate.meth", instrument_type="orbi")
+    recorded: set[str] = set()
+    with captured_logs("DEBUG") as records:
+        for _ in range(4):
+            await learn_method_bindings(
+                sample_file,
+                [modes["nitrate"]],
+                source="token",
+                streams=None,
+                recorded=recorded,
+            )
+
+    warned = [r["message"] for r in records if r["level"].name == "WARNING"]
+    assert len(warned) == 1, warned
 
 
 @pytest.mark.asyncio
@@ -328,7 +369,9 @@ async def test_a_constant_method_name_keys_on_the_signature_alone(
     sample_file = _File(
         instrument, method_file="currentacquisition.ini", instrument_type="tof"
     )
-    await learn_method_bindings(sample_file, [modes["nitrate"]], source="token")
+    await learn_method_bindings(
+        sample_file, [modes["nitrate"]], source="token", streams=[]
+    )
 
     row = await binding_of(sample_file)
     assert row is not None
@@ -453,6 +496,67 @@ async def test_off_records_nothing(modes, binding_of, monkeypatch, instrument):
 
 
 @pytest.mark.asyncio
+async def test_a_failed_commit_does_not_stop_the_retry_recording(
+    modes, binding_of, instrument, monkeypatch
+):
+    """The set must only remember what was actually written.
+
+    Marking a digest recorded before the commit means a rolled-back attempt
+    still poisons the run's set, and the retry skips it as a repeat - so the
+    run never teaches its method at all.
+    """
+    sample_file = _File(instrument)
+    recorded: set[str] = set()
+
+    real_session = bindings_module.async_session
+    failing = {"on": True}
+
+    class _FailingCommit:
+        def __init__(self, inner):
+            self._inner = inner
+
+        async def __aenter__(self):
+            self._session = await self._inner.__aenter__()
+            outer = self
+
+            async def commit():
+                if failing["on"]:
+                    raise RuntimeError("the transaction went away")
+                await type(outer._session).commit(outer._session)
+
+            self._session.commit = commit
+            return self._session
+
+        async def __aexit__(self, *exc):
+            return await self._inner.__aexit__(*exc)
+
+    monkeypatch.setattr(
+        bindings_module, "async_session", lambda: _FailingCommit(real_session())
+    )
+
+    first = await learn_method_bindings(
+        sample_file,
+        [modes["nitrate"]],
+        source="token",
+        streams=_streams(),
+        recorded=recorded,
+    )
+    assert not any(first.values()), first
+
+    failing["on"] = False
+    again = await learn_method_bindings(
+        sample_file,
+        [modes["nitrate"]],
+        source="token",
+        streams=_streams(),
+        recorded=recorded,
+    )
+
+    assert again["created"] == 1, again
+    assert (await binding_of(sample_file, streams=_streams())) is not None
+
+
+@pytest.mark.asyncio
 async def test_a_failure_never_costs_the_file_its_processing(
     modes, monkeypatch, instrument
 ):
@@ -493,6 +597,7 @@ async def test_a_reader_that_takes_no_census_keys_on_polarity(
             _File(instrument, method_file="a.meth", instrument_type="tof"),
             [mode],
             source="token",
+            streams=[],
         )
 
     row = await binding_of(
@@ -527,7 +632,7 @@ async def test_a_census_less_file_of_a_census_bearing_reader_teaches_nothing(
     """
     sample_file = _File(instrument, method_file="nitrate.meth", instrument_type="orbi")
     counts = await learn_method_bindings(
-        sample_file, [modes["nitrate"]], source="token"
+        sample_file, [modes["nitrate"]], source="token", streams=[]
     )
 
     assert counts["no_signature"] == 1

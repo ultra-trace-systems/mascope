@@ -921,7 +921,7 @@ async def _auto_process_sample_file(
     # Describes the file rather than a stage, so every status this run
     # records carries it.
     scan_streams = await read_scan_streams(sample_file.filename)
-    streams_note = pooled_streams_note(scan_streams)
+    streams_note = pooled_streams_note(scan_streams or [])
 
     # --- Get ACQUISITION dataset for the instrument --- #
     # The year-dataset and the daily batch inside it must be dated off the SAME
