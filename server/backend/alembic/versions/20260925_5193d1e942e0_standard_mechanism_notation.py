@@ -23,15 +23,18 @@ peak_assignment.provenance and peak_assignment_run.config. They are a record of
 what that run did, the server reads them only to count or quote them, and the
 frontend shows a legacy spelling in the standard one.
 
-The map is exact in the direction a row travels: every legacy spelling converts
-to a standard one and back to itself. A leading parenthesised group that
-something follows becomes a term of its own (``+(CH4N2O)H+`` is
-``[M+CH4N2O+H]+``), a group with a multiplier stays in its term
-(``+(CH4N2O)2H+`` is ``[M+(CH4N2O)2H]+``), and a bare ``+`` or ``-`` is
-electron transfer, ``[M]+.`` or ``[M]-.``. So downgrade() is the inverse and a
-round trip leaves every row as it was. The downgrade rewrites every standard
-row, including those written natively after the upgrade: the code a downgrade
-restores reads the legacy notation only.
+A row is written as the application reads it: stripped, and with its terms in
+alphabetical order, which is the one spelling a mechanism has. A leading
+parenthesised group that something follows is a term of its own
+(``+(CH4N2O)H+`` is ``[M+CH4N2O+H]+``), a group with a multiplier stays in its
+term (``+(CH4N2O)2H+`` is ``[M+(CH4N2O)2H]+``), and a bare ``+`` or ``-`` is
+electron transfer, ``[M]+.`` or ``[M]-.``. Every legacy spelling the fleet
+stores is already written that way, and on those the map is exact: each
+converts to a standard spelling and back to itself, so a round trip leaves the
+row as it was. Any other row comes back as the one legacy spelling of its
+mechanism, which is the same mechanism to the code a downgrade restores. The
+downgrade rewrites every standard row, including those written natively after
+the upgrade: that code reads the legacy notation only.
 
 The map is restated here rather than imported from mascope_tools, where it
 also lives (``composition.mechanism_notation``): a migration describes the
@@ -40,9 +43,12 @@ notation as it was when it ran, and the library's legacy grammar is retired at
 
 A row that reads as neither notation - a free-text label an older validator let
 through - is left as it is and reported, and so is a row whose rewrite would
-take a spelling another row already holds: the column is unique, and merging
-two mechanism rows means re-pointing everything that references them, which is
-not a rewrite of notation.
+take a spelling another row already holds: two rows of one mechanism, stored
+before a mechanism had one spelling. The column is unique, and merging two
+mechanism rows means moving everything that references one onto the other,
+which is not a rewrite of notation; the report names both rows for an operator
+to merge. Until then the application reads both as the one mechanism and
+searches it once.
 
 Revision ID: 5193d1e942e0
 Revises: 4f8b2e6d9c17
@@ -79,12 +85,29 @@ _STANDARD = re.compile(r"\[M((?:[+-][^+-]+)*)\]([+-])(\.?)")
 #: One signed term of a standard spelling's inside.
 _SIGNED_TERM = re.compile(r"([+-])([^+-]+)")
 
+#: A mechanism read: the operation (``"+"`` adds, ``"-"`` removes; empty for
+#: electron transfer), its terms in order, and the ion's charge.
+Mechanism = tuple[str, list[str], str]
+
+
+def _nests(text_: str, opening: str, closing: str) -> bool:
+    """Whether every ``closing`` in ``text_`` closes an ``opening`` before it."""
+    depth = 0
+    for char in text_:
+        if char == opening:
+            depth += 1
+        elif char == closing:
+            depth -= 1
+            if depth < 0:
+                return False
+    return depth == 0
+
 
 def _is_formula_text(text_: str) -> bool:
     return (
         _FORMULA_TEXT.fullmatch(text_) is not None
-        and text_.count("(") == text_.count(")")
-        and text_.count("[") == text_.count("]")
+        and _nests(text_, "(", ")")
+        and _nests(text_, "[", "]")
     )
 
 
@@ -125,71 +148,102 @@ def _join(terms: list[str]) -> str:
     return "".join(f"({term})" for term in terms[:-1]) + terms[-1]
 
 
+def _ordered(terms: list[str]) -> list[str]:
+    """The terms in alphabetical order, each as a legacy moiety splits it,
+    settled where joining them in order would split the last one further."""
+    ordered = sorted(_split(_join(terms)))
+    while (again := _split(_join(ordered))) != ordered:
+        ordered = sorted(again)
+    return ordered
+
+
 def _flip(sign: str) -> str:
     return "-" if sign == "+" else "+"
 
 
-def to_standard(mechanism: str) -> str | None:
-    """The standard spelling of a legacy mechanism; None where it is not one.
-
-    :param mechanism: A stored mechanism.
-    :return: ``[M-H]-`` for ``-H+``, or None for anything not legacy.
-    """
-    if mechanism in ("+", "-"):
-        return f"[M]{mechanism}."
-    if len(mechanism) < 3 or mechanism[0] not in "+-" or mechanism[-1] not in "+-":
+def _read(mechanism: str) -> Mechanism | None:
+    """A stored mechanism in either notation; None where it is in neither."""
+    text_ = mechanism.strip()
+    match = _STANDARD.fullmatch(text_)
+    if match is not None:
+        inside, charge, radical = match.groups()
+        if not inside:
+            return ("", [], charge) if radical else None
+        if radical:
+            return None
+        signed = _SIGNED_TERM.findall(inside)
+        operations = {operation for operation, _ in signed}
+        terms = [term for _, term in signed]
+        if len(operations) != 1 or not all(
+            _is_formula_text(term) and not term[0].isdigit() for term in terms
+        ):
+            return None
+        return operations.pop(), _ordered(terms), charge
+    if text_ in ("+", "-"):
+        return "", [], text_
+    if len(text_) < 3 or text_[0] not in "+-" or text_[-1] not in "+-":
         return None
-    moiety = mechanism[1:-1]
+    moiety = text_[1:-1]
     if not _is_formula_text(moiety):
         return None
-    operation, moiety_charge = mechanism[0], mechanism[-1]
+    operation, moiety_charge = text_[0], text_[-1]
     # The ion's charge: the moiety's where it is added, the opposite where it
     # is removed - removing a proton leaves an anion.
     charge = moiety_charge if operation == "+" else _flip(moiety_charge)
-    inside = "".join(operation + term for term in _split(moiety))
-    return f"[M{inside}]{charge}"
+    return operation, _ordered(_split(moiety)), charge
+
+
+def to_standard(mechanism: str) -> str | None:
+    """A stored mechanism in the standard notation; None where it reads as
+    neither notation.
+
+    :param mechanism: A stored mechanism, in either notation.
+    :return: ``[M-H]-`` for ``-H+``.
+    """
+    read = _read(mechanism)
+    if read is None:
+        return None
+    operation, terms, charge = read
+    if not terms:
+        return f"[M]{charge}."
+    return "[M" + "".join(operation + term for term in terms) + f"]{charge}"
 
 
 def to_legacy(mechanism: str) -> str | None:
-    """The legacy spelling of a standard mechanism; None where it is not one.
+    """A stored mechanism in the legacy notation; None where it reads as
+    neither notation.
 
-    :param mechanism: A stored mechanism.
-    :return: ``-H+`` for ``[M-H]-``, or None for anything not standard.
+    :param mechanism: A stored mechanism, in either notation.
+    :return: ``-H+`` for ``[M-H]-``.
     """
-    match = _STANDARD.fullmatch(mechanism)
-    if match is None:
+    read = _read(mechanism)
+    if read is None:
         return None
-    inside, charge, radical = match.groups()
-    if not inside:
-        return charge if radical else None
-    if radical:
-        return None
-    signed = _SIGNED_TERM.findall(inside)
-    operations = {operation for operation, _ in signed}
-    terms = [term for _, term in signed]
-    if len(operations) != 1 or not all(
-        _is_formula_text(term) and not term[0].isdigit() for term in terms
-    ):
-        return None
-    operation = operations.pop()
+    operation, terms, charge = read
+    if not terms:
+        return charge
     moiety_charge = charge if operation == "+" else _flip(charge)
     return operation + _join(terms) + moiety_charge
+
+
+def _written_standard(mechanism: str) -> bool:
+    return mechanism.strip().startswith("[")
+
+
+def _written_legacy(mechanism: str) -> bool:
+    return not _written_standard(mechanism)
 
 
 # --- The rewrite ----------------------------------------------------------------
 
 
 def _rewrite_mechanisms(
-    connection: Connection,
-    convert: Callable[[str], str | None],
-    back: Callable[[str], str | None],
+    connection: Connection, convert: Callable[[str], str | None]
 ) -> tuple[int, list[str]]:
-    """Rewrite every mechanism row ``convert`` reads.
+    """Rewrite every mechanism row ``convert`` writes otherwise than it is.
 
     :param connection: The migration's connection.
     :param convert: The map in this direction.
-    :param back: The map in the other direction, telling a row that is already
-        in the destination notation from one that is in neither.
     :return: How many rows were rewritten, and a line per row left as it is
         for a reason worth reporting.
     """
@@ -199,19 +253,24 @@ def _rewrite_mechanisms(
             "FROM ionization_mechanism ORDER BY ionization_mechanism_id"
         )
     ).all()
-    taken = {mechanism for _, mechanism in rows}
+    held = {mechanism: mechanism_id for mechanism_id, mechanism in rows}
     rewritten = 0
     left: list[str] = []
     for mechanism_id, mechanism in rows:
         new = convert(mechanism)
         if new is None:
-            if back(mechanism) is None:
-                left.append(f"'{mechanism}' ({mechanism_id}) reads as neither notation")
-            continue
-        if new in taken:
             left.append(
-                f"'{mechanism}' ({mechanism_id}) would become '{new}', which "
-                "another row already holds"
+                f"'{mechanism}' ({mechanism_id}) reads as neither notation; "
+                "correct or remove it"
+            )
+            continue
+        if new == mechanism:
+            continue
+        if new in held:
+            left.append(
+                f"'{mechanism}' ({mechanism_id}) is the mechanism '{new}' that "
+                f"{held[new]} holds, and the column is unique; merge the two, "
+                f"moving what references {mechanism_id} onto {held[new]}"
             )
             continue
         connection.execute(
@@ -221,31 +280,44 @@ def _rewrite_mechanisms(
             ),
             {"new": new, "id": mechanism_id},
         )
-        taken.discard(mechanism)
-        taken.add(new)
+        del held[mechanism]
+        held[new] = mechanism_id
         rewritten += 1
     return rewritten, left
 
 
-def _rekey(weights: dict, convert: Callable[[str], str | None]) -> dict:
+def _rekey(
+    weights: dict,
+    convert: Callable[[str], str | None],
+    written_in_destination: Callable[[str], bool],
+) -> dict:
     """The weights with their keys in the destination notation.
 
-    A key already in it wins over another that converts onto it: the two name
-    one adduct, and the one written in the current notation is the later word.
+    Two keys may name one adduct. The first written in the destination
+    notation wins, and the first otherwise, which in the standard direction is
+    the library's own rule (``corroboration_by_mechanism``), so a calibration
+    scores the same after the upgrade as before it. A key that reads as
+    neither notation is kept as it is.
     """
-    kept = {key for key in weights if convert(key) is None}
     rekeyed: dict = {}
+    settled: set = set()
     for key, weight in weights.items():
         new = convert(key)
         if new is None:
-            rekeyed[key] = weight
-        elif new not in kept and new not in rekeyed:
-            rekeyed[new] = weight
+            new = key
+        written = written_in_destination(key)
+        if new in rekeyed and (new in settled or not written):
+            continue
+        rekeyed[new] = weight
+        if written:
+            settled.add(new)
     return rekeyed
 
 
 def _rewrite_weights(
-    connection: Connection, convert: Callable[[str], str | None]
+    connection: Connection,
+    convert: Callable[[str], str | None],
+    written_in_destination: Callable[[str], bool],
 ) -> int:
     """Rewrite the mechanism keys of every calibration's weights.
 
@@ -263,7 +335,7 @@ def _rewrite_weights(
             weights = json.loads(weights)
         if not isinstance(weights, dict):
             continue
-        rekeyed = _rekey(weights, convert)
+        rekeyed = _rekey(weights, convert, written_in_destination)
         if rekeyed == weights and list(rekeyed) == list(weights):
             continue
         connection.execute(
@@ -286,29 +358,18 @@ def _report(direction: str, mechanisms: int, left: list[str], weights: int) -> N
             f"{weights} calibration(s) in the {direction} notation"
         )
     for line in left:
-        print(f"Left an ionization mechanism as it is: {line}")
-
-
-def _standard_round_trips(mechanism: str) -> str | None:
-    """``to_standard``, held to what makes the downgrade exact: a spelling that
-    would not come back as itself is not rewritten. None does not arise for a
-    legacy spelling - the map is exact by construction - but a migration that
-    cannot be undone must not rely on that."""
-    new = to_standard(mechanism)
-    if new is None or to_legacy(new) != mechanism:
-        return None
-    return new
+        print(f"WARNING: left an ionization mechanism as it is: {line}")
 
 
 def upgrade() -> None:
     connection = op.get_bind()
-    mechanisms, left = _rewrite_mechanisms(connection, _standard_round_trips, to_legacy)
-    weights = _rewrite_weights(connection, _standard_round_trips)
+    mechanisms, left = _rewrite_mechanisms(connection, to_standard)
+    weights = _rewrite_weights(connection, to_standard, _written_standard)
     _report("standard adduct", mechanisms, left, weights)
 
 
 def downgrade() -> None:
     connection = op.get_bind()
-    mechanisms, left = _rewrite_mechanisms(connection, to_legacy, to_standard)
-    weights = _rewrite_weights(connection, to_legacy)
+    mechanisms, left = _rewrite_mechanisms(connection, to_legacy)
+    weights = _rewrite_weights(connection, to_legacy, _written_legacy)
     _report("legacy", mechanisms, left, weights)

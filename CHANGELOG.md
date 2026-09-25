@@ -411,13 +411,17 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   the two.
 - **Upgrading rewrites every stored mechanism in the standard adduct
   notation**, and the keys of a stored calibration's corroboration weights
-  with them; a downgrade writes them back in the older spelling. The map is
-  exact both ways, so a round trip leaves every row as it was. A mechanism
-  that reads as neither spelling, or whose rewrite would take a spelling
-  another row already holds, is left as it is and named in the migration's
-  output. What a run recorded about itself keeps the spelling it was
-  recorded in and is shown in the standard one (assignment quality plan,
-  step 3.3b).
+  with them; a downgrade writes them back in the older spelling. A row is
+  written as the application reads it, stripped and with its terms in order,
+  and every spelling deployments store is already written that way, so a
+  round trip leaves those rows as they were. A mechanism that reads as
+  neither spelling, and two rows of one mechanism, are left as they are and
+  named in the migration's output with what to do; until two such rows are
+  merged, a peak assignment run searches the mechanism once. Where a
+  calibration holds both spellings of one adduct, the standard one is kept,
+  as it is the one that applies. What a run recorded about itself keeps the
+  spelling it was recorded in and is shown in the standard one (assignment
+  quality plan, step 3.3b).
 - **The peak inspector is more compact and has a column of its own, and the
   tier chip names the tier alone.**
   - **Find more**, the composition search, starts from the focused sample's
