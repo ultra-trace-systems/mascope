@@ -112,7 +112,9 @@ settle it. Where another reading of the row's ion is settled - by a second
 channel, by the stronger partner, by the target library, or by being a
 radical - the row says so among what it stands on (``same_ion_settled``), and
 its ``no_close_rival`` says the evidence separates the ion from the peak's other
-candidates, not the readings of the ion from each other.
+candidates, not the readings of the ion from each other. A second channel that
+settled the mode's own reading against a rival the sample shows too, short of
+the margin, says so.
 """
 
 from __future__ import annotations
@@ -178,7 +180,7 @@ from mascope_tools.composition.implausibility import implausible_signatures
 #: run, because a tier is only comparable across runs together with the rules
 #: that produced it - the same statement the tier BANDS carry, for the same
 #: reason.
-TIERING_RULES_VERSION = 7
+TIERING_RULES_VERSION = 8
 
 #: The row's evidence is under the band its tier would need. Not a rule of
 #: this pass: the band is the floor every rule here lowers from, and naming it
@@ -464,7 +466,9 @@ def settled_detail(row: dict, settled: dict) -> str:
     :param row: A committed monoisotopic row.
     :param settled: The cross-channel pass's record: the other reading, its
         channel, what settled it and, for a second channel, which; for the
-        stronger partner, the ratio of the two molecules' partners.
+        stronger partner, and for a second channel that settled the mode's own
+        reading against a rival the sample shows too, the ratio of the two
+        molecules' partners.
     :return: The reason's sentence.
     """
     other = settled.get("alternative") or "another neutral"
@@ -493,9 +497,30 @@ def settled_detail(row: dict, settled: dict) -> str:
         )
     through = ", ".join(settled.get("through") or []) or "another channel"
     if by == SETTLED_BY_SECOND_CHANNEL:
+        formula = row.get("assigned_formula")
+        channel = f"{reading}; {formula} is also committed through {through}"
+        if "ratio" not in settled:
+            return f"{channel}, which settles it"
+        # The mode's own reading, against a rival the sample shows too. The
+        # ratio is the row's over the rival's, rounded down, and is not
+        # inverted into a number here: the margin was read from the rival's
+        # side, and an inverted rounded ratio could read as the margin.
+        ratio = settled.get("ratio")
+        rival = f"the sample commits {other} through one of the mode's own channels"
+        if isinstance(ratio, (int, float)) and ratio >= 1:
+            return (
+                f"{channel}, which settles it: {rival} too, on a peak no brighter "
+                f"than {formula}'s"
+            )
+        peak = (
+            "on a brighter peak but not one"
+            if isinstance(ratio, (int, float))
+            else "but not on a peak"
+        )
         return (
-            f"{reading}; {row.get('assigned_formula')} is also committed through "
-            f"{through}, which settles it"
+            f"{channel}, which settles it: {rival} too, {peak} "
+            f"{PARTNER_MARGIN:g} times as bright as {formula}'s, which it would "
+            "take to doubt the mode's own reading"
         )
     return reading
 
