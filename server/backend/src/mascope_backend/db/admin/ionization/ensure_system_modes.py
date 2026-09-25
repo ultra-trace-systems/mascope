@@ -12,7 +12,9 @@ compound imported afterwards gains ions for it - cost a deployment that does
 not run the chemistry should not pay, and work a bare INSERT would skip,
 leaving an adopted mode unable to match anything in an existing library. So a
 chemistry is seeded only where the mechanisms it names are already present,
-matched on name *and* the polarity they are stored under. The rest are left
+matched on name *and* the polarity they are stored under. The name is compared
+in the standard adduct notation the column reads it in, so a row still holding
+the legacy spelling (``+Br-`` for ``[M+Br]-``) counts. The rest are left
 alone; a deployment that adds the mechanism properly gets its mode at the next
 start.
 

@@ -27,7 +27,7 @@ the one reading the flag's ABSENCE leaves resting on a prior, below.
 The same-ion rule
 -----------------
 
-``+NH4+`` on a neutral M and ``+H+`` on the neutral M+NH3 are the same ion
+``[M+NH4]+`` on a neutral M and ``[M+H]+`` on the neutral M+NH3 are the same ion
 formula. Not similar - the same, so the same exact mass, the same isotope
 envelope, and the same fit score at every width. Nothing measured separates
 them, and the engine does not pretend otherwise: the finder collapses the two
@@ -67,7 +67,7 @@ Three things settle it, and a row that one of them settles records which
   the measurement (``tiering.odd_electron_reason``: the reference engine confirms
   none of 1,794). A reading whose ion reads otherwise only as a radical has no
   rival. The carbonate radical anion's families are the common case - C5H8O5
-  through ``-H+`` is the radical C4H7O2 through ``+CO3-`` - and exactly one
+  through ``[M-H]-`` is the radical C4H7O2 through ``[M+CO3]-`` - and exactly one
   reading of every such family is a radical.
 
 The rule reaches every reagent, not only the ones that donate nitrogen. The
@@ -83,13 +83,13 @@ A reference mirror's row
 
 A Stage A row is matched rather than elected. A reference mirror's row is a
 list's formula matched against every sample, and the same arithmetic reaches
-it - dimethylformamide through ``+H+`` is the same ion as acrolein through
-``+NH4+``. Such a row is given the readings the untargeted search would have held
+it - dimethylformamide through ``[M+H]+`` is the same ion as acrolein through
+``[M+NH4]+``. Such a row is given the readings the untargeted search would have held
 in its ion's family (``engine.record_mirror_same_ion_readings``) and asked what
 an election is asked.
 
 A labelled reagent donates no nitrogen, and that is the whole reason to run
-one: the 15N of a ``+[15N]O3-`` reagent is 0.997 Da from an analyte's own
+one: the 15N of a ``[M+[15N]O3]-`` reagent is 0.997 Da from an analyte's own
 nitrogen, so the two readings are two ions at two masses and the spectrum
 chooses between them. The finder never proposes the labelled neutral, and a
 reading whose neutral carries a labelled atom is not weighed if one ever
@@ -160,7 +160,7 @@ def donates_nitrogen(notation: str | None) -> bool:
     of the two readings' neutrals, which says the same thing for a pair of
     channels and also covers two donors against each other.
 
-    A LABELLED moiety answers False. ``+[15N]O3-`` carries a nitrogen no analyte
+    A LABELLED moiety answers False. ``[M+[15N]O3]-`` carries a nitrogen no analyte
     has - 0.997 Da from the ordinary one - so the deprotonated nitrate ester is
     a different ion at a different mass, and the spectrum, not a prior, chooses
     between them. That is the whole point of running a labelled reagent. The
@@ -170,7 +170,8 @@ def donates_nitrogen(notation: str | None) -> bool:
     anyway - but for a reason that reads like an accident and would go silently
     wrong the day either of those two behaviours changed.
 
-    :param notation: A mechanism's Mascope notation (``"+NH4+"``, ``"-H+"``).
+    :param notation: A mechanism, in either notation (``"[M+NH4]+"``,
+        ``"[M-H]-"``).
     :return: Whether a reported analyte nitrogen could be this channel's instead.
     """
     if not notation:

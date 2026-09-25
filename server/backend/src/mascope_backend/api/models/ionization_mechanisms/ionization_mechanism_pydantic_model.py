@@ -5,7 +5,6 @@ Defines data models for ionization mechanism related requests and responses
 with validation rules and business logic constraints.
 """
 
-import re
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -14,7 +13,11 @@ from mascope_backend.api.models.base_pydantic_model import QueryParamsModel
 from mascope_backend.api.models.ionization_mechanisms.config import (
     ionization_mechanism_config,
 )
-from mascope_tools.composition.utils import assert_valid_formula
+from mascope_tools.composition.mechanism_notation import (
+    MechanismNotationError,
+    parse_mechanism,
+)
+from mascope_tools.composition.utils import assert_valid_formula, parse_composition
 
 
 class IonizationMechanismBaseValidator:
@@ -23,50 +26,37 @@ class IonizationMechanismBaseValidator:
     @field_validator("ionization_mechanism")
     @classmethod
     def validate_ionization_mechanism(cls, value: str) -> str:
-        """Validate ionization mechanism format and structure."""
+        """Validate a mechanism and answer it in the standard adduct notation.
+
+        Either notation is accepted - ``[M-H]-`` or its legacy spelling ``-H+``
+        - and the standard one is what is stored (see
+        :mod:`mascope_tools.composition.mechanism_notation`). Each term must be
+        a formula of real elements: an unknown element or a stray character is
+        refused rather than skipped.
+        """
         if not value.strip():
             raise ValueError("ionization_mechanism cannot be empty or just whitespace.")
-
-        # Check if it starts with + or -
-        if not re.match(r"^[\+\-]", value):
-            raise ValueError(
-                "The ionization mechanism must start with '+' (addition) or '-' (abstraction)."
-            )
-
-        # Check if it ends with + or -
-        if not re.match(r".*[\+\-]$", value):
-            raise ValueError(
-                "The ionization mechanism must end with '+' or '-' to indicate the ion charge."
-            )
-
-        # Prevent invalid sequences like "+-" or "-+"
-        if "+-" in value or "-+" in value:
-            raise ValueError(
-                "Invalid ionization mechanism: it cannot contain a combination of '+' and '-' in the middle."
-            )
-
-        # A multi-character mechanism must have a modification formula between
-        # the operation and charge signs: "++" / "--" denote an empty
-        # modification, which produces atomless ions downstream. Electron
-        # transfer is written as plain "+" or "-".
-        if len(value) > 1 and not value[1:-1]:
-            raise ValueError(
-                f"Invalid ionization mechanism '{value}': missing modification "
-                "formula; use '+' or '-' alone for electron transfer."
-            )
-
-        # Validate the modification formula (the mechanism body, without the
-        # leading operation and trailing charge sign). Raises on invalid
-        # characters or unknown elements. Electron transfer ("+"/"-") has no body.
-        formula_body = value[1:-1] if len(value) > 1 else ""
         try:
-            assert_valid_formula(formula_body)
-        except ValueError as e:
-            raise ValueError(
-                f"Invalid ionization mechanism formula '{value}': {str(e)}"
-            ) from e
+            parts = parse_mechanism(value)
+        except MechanismNotationError as e:
+            raise ValueError(str(e)) from e
 
-        return value
+        for term in parts.terms:
+            try:
+                assert_valid_formula(term)
+            except ValueError as e:
+                raise ValueError(
+                    f"Invalid ionization mechanism formula '{value}': {str(e)}"
+                ) from e
+            if not parse_composition(term):
+                # "()" passes as a formula, and a mechanism that adds nothing
+                # makes an atomless ion.
+                raise ValueError(
+                    f"Invalid ionization mechanism '{value}': the term '{term}' "
+                    "holds no atoms."
+                )
+
+        return parts.standard
 
     @field_validator("ionization_mechanism_polarity")
     @classmethod
@@ -81,32 +71,13 @@ class IonizationMechanismBaseValidator:
 
     @model_validator(mode="after")
     def validate_ionization_mechanism_and_polarity(self):
-        """Validate ionization mechanism polarity matches ending charge."""
+        """Validate the polarity is the charge of the ion the mechanism makes."""
         polarity = self.ionization_mechanism_polarity
         ionization_mechanism = self.ionization_mechanism
-
-        # Match the polarity with the final ion charge
-        if len(ionization_mechanism) == 1:
-            # Electron addition/abstraction case
-            if ionization_mechanism != polarity:
-                raise ValueError(
-                    f"Ionization mechanism {ionization_mechanism}: polarity {polarity} is inconsistent with the mechanism."
-                )
-            return self
-
-        if polarity == "+" and not (
-            ionization_mechanism[0] == ionization_mechanism[-1]
-        ):
+        if parse_mechanism(ionization_mechanism).polarity != polarity:
             raise ValueError(
                 f"Ionization mechanism {ionization_mechanism}: polarity {polarity} is inconsistent with the mechanism."
             )
-        if polarity == "-" and not (
-            ionization_mechanism[0] != ionization_mechanism[-1]
-        ):
-            raise ValueError(
-                f"Ionization mechanism {ionization_mechanism}: polarity {polarity} is inconsistent with the mechanism."
-            )
-
         return self
 
 
@@ -123,7 +94,12 @@ class IonizationMechanismBase(BaseModel):
     )
     ionization_mechanism: str = Field(
         ...,
-        description="Chemical formula modification (addition/abstraction) representing the ionized form.",
+        description=(
+            "The ionization mechanism in the standard adduct notation: '[M+H]+', "
+            "'[M-H]-', '[M+Br]-', '[M]+.' for electron transfer. The legacy "
+            "spelling ('+H+', '-H+', '+Br-', '+') is accepted on input and "
+            "stored in the standard one."
+        ),
     )
 
     model_config = ConfigDict(from_attributes=True)
@@ -150,33 +126,18 @@ class IonizationMechanismCreate(
             return values
         mechanism = values.get("ionization_mechanism")
         polarity = values.get("ionization_mechanism_polarity")
-        if not isinstance(mechanism, str) or not mechanism:
+        if not isinstance(mechanism, str) or not mechanism.strip():
             return values
 
-        # Auto-derive polarity from the last character if not provided
+        # The polarity is the charge of the ion the mechanism makes: the
+        # trailing sign of "[M-H]-", the reverse of the trailing one of "-H+".
         if polarity is None:
-            if len(mechanism) > 1:
-                if mechanism[0] == "+":
-                    polarity = mechanism[-1]
-                elif mechanism[0] == "-":
-                    # Reverse polarity for abstraction
-                    if mechanism[-1] == "+":
-                        polarity = "-"
-                    elif mechanism[-1] == "-":
-                        polarity = "+"
-                    else:
-                        raise ValueError(
-                            f"Invalid ionization mechanism {mechanism}: must end with '+' or '-'"
-                        )
-                else:
-                    raise ValueError(
-                        f"Invalid ionization mechanism {mechanism}: must start with '+' or '-'"
-                    )
-            else:
-                # Electron addition/abstraction case
-                polarity = mechanism[0]
-
-            values["ionization_mechanism_polarity"] = polarity
+            try:
+                values["ionization_mechanism_polarity"] = parse_mechanism(
+                    mechanism
+                ).polarity
+            except MechanismNotationError as e:
+                raise ValueError(str(e)) from e
 
         return values
 
@@ -185,11 +146,13 @@ class IonizationMechanismRead(IonizationMechanismBase):
     """
     Model used for reading ionization mechanisms, includes database fields.
 
-    Not validated: a stored row is reported as it is. The create validators
-    have tightened over time and nothing rewrites existing rows to match, so
-    re-running them here would turn one row written under older rules into a
-    400 for the whole listing - including for the frontend, which loads it.
-    What may be written is enforced where it is written.
+    Not validated: a stored row is reported as it is, in the standard adduct
+    notation where it reads as a mechanism in either (the column type reads it
+    so). The create validators have tightened over time and nothing rewrites
+    existing rows to match, so re-running them here would turn one row written
+    under older rules into a 400 for the whole listing - including for the
+    frontend, which loads it. What may be written is enforced where it is
+    written.
     """
 
     ionization_mechanism_id: str = Field(

@@ -13,6 +13,7 @@ from mascope_backend.db import (
     TargetIon,
     TargetIsotope,
 )
+from mascope_tools.composition.mechanism_notation import parse_mechanism
 
 
 HERE = os.path.dirname(__file__)
@@ -132,15 +133,38 @@ def test_empty_modification_mechanism_yields_no_atomless_ions(compound_formula):
         compound, [mechanism]
     )
 
-    if compound_formula == "()":
-        # "++" adds nothing to an empty compound: no atoms, no ion
-        assert target_ions == []
-        assert target_isotopes == []
-    else:
-        # For a real compound "++" degenerates to electron abstraction and
-        # must still terminate and yield a well-formed ion
-        assert [ion.target_ion_formula for ion in target_ions] == ["H2O+"]
-        assert target_isotopes
+    # "++" is a mechanism in neither notation, so it yields no ion for any
+    # compound - and generation still terminates.
+    assert target_ions == []
+    assert target_isotopes == []
+
+
+@pytest.mark.parametrize(
+    ("legacy", "standard"),
+    [("+H+", "[M+H]+"), ("-H+", "[M-H]-"), ("-H-", "[M-H]+"), ("+", "[M]+.")],
+)
+def test_a_row_still_holding_the_legacy_spelling_makes_the_same_ions(legacy, standard):
+    """A row the migration has not rewritten yet is the same mechanism."""
+    compound = TargetCompound(
+        target_compound_id="unit-legacy", target_compound_formula="C7H8"
+    )
+
+    def ions(notation):
+        mechanism = IonizationMechanism(
+            ionization_mechanism_id="unit-mech",
+            ionization_mechanism_polarity=parse_mechanism(standard).polarity,
+            ionization_mechanism=notation,
+        )
+        target_ions, target_isotopes = generate_target_ions_from_composition(
+            compound, [mechanism]
+        )
+        return (
+            [ion.target_ion_formula for ion in target_ions],
+            sorted(isotope.mz for isotope in target_isotopes),
+        )
+
+    assert ions(legacy) == ions(standard)
+    assert ions(standard)[0]
 
 
 def test_group_target_isotopes_terminates_on_nonpositive_mz():
@@ -166,7 +190,7 @@ def test_invalid_compound_formula_yields_no_ions(bad_formula):
     mechanism = IonizationMechanism(
         ionization_mechanism_id="unit-mech",
         ionization_mechanism_polarity="+",
-        ionization_mechanism="+H+",
+        ionization_mechanism="[M+H]+",
     )
 
     target_ions, target_isotopes = generate_target_ions_from_composition(
@@ -184,25 +208,25 @@ def test_invalid_compound_formula_yields_no_ions(bad_formula):
         # envelope to its parent.
         (
             "C8H24O4Si4",
-            "+H+",
+            "[M+H]+",
             "C8H25O4Si4+",
             297.08244,
             {"[29Si]C8H25O4Si3+": 298.08201, "[30Si]C8H25O4Si3+": 299.07929},
         ),
         # Triethyl phosphate: phosphorus is monoisotopic, so only carbon's line.
-        ("C6H15O4P", "+H+", "C6H16O4P+", 183.07807, {"[13C]C5H16O4P+": 184.08143}),
+        ("C6H15O4P", "[M+H]+", "C6H16O4P+", 183.07807, {"[13C]C5H16O4P+": 184.08143}),
         # Chlorpyrifos: three chlorines and a sulfur.
         (
             "C9H11Cl3NO3PS",
-            "+H+",
+            "[M+H]+",
             "C9H12Cl3NO3PS+",
             349.93356,
             {"[37Cl]C9H12Cl2NO3PS+": 351.93061, "[34S]C9H12Cl3NO3P+": 351.92936},
         ),
         # Trifluoroacetic acid through the bromide channel.
-        ("C2HF3O2", "+Br-", "C2HBrF3O2-", 192.91175, {"[81Br]C2HF3O2-": 194.90970}),
+        ("C2HF3O2", "[M+Br]-", "C2HBrF3O2-", 192.91175, {"[81Br]C2HF3O2-": 194.90970}),
         # Iodic acid: iodine is monoisotopic too.
-        ("HIO3", "-H+", "IO3-", 174.88977, {}),
+        ("HIO3", "[M-H]-", "IO3-", 174.88977, {}),
     ],
     ids=["D4", "triethyl-phosphate", "chlorpyrifos", "TFA", "iodic-acid"],
 )

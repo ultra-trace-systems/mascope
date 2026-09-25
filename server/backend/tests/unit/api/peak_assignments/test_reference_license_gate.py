@@ -45,7 +45,7 @@ from mascope_reference import KnownComposition, KnownIdentity
 _MOD = "mascope_backend.api.new.peak_assignments.service"
 
 
-def _mechanism(mech_id="m-deprot", notation="-H+", polarity="-"):
+def _mechanism(mech_id="m-deprot", notation="[M-H]-", polarity="-"):
     return SimpleNamespace(
         ionization_mechanism_id=mech_id,
         ionization_mechanism=notation,

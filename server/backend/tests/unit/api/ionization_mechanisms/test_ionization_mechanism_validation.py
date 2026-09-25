@@ -1,8 +1,10 @@
-"""Ionization mechanism formula validation.
+"""Ionization mechanism validation.
 
-The mechanism modification formula is validated (strictly) via
-mascope_tools.composition.utils.assert_valid_formula, which raises on invalid
-characters and unknown elements rather than silently ignoring them.
+A mechanism is accepted in the standard adduct notation (``[M-H]-``) or the
+legacy one (``-H+``), and stored in the standard one. Each term's formula is
+validated (strictly) via mascope_tools.composition.utils.assert_valid_formula,
+which raises on invalid characters and unknown elements rather than silently
+ignoring them.
 """
 
 from types import SimpleNamespace
@@ -21,20 +23,33 @@ from mascope_backend.api.models.ionization_mechanisms.ionization_mechanism_pydan
 
 
 @pytest.mark.parametrize(
-    "mechanism",
+    ("mechanism", "stored", "polarity"),
     [
-        "+H+",  # protonation
-        "-H+",  # deprotonation
-        "+Br-",  # bromide adduct
-        "+NO3-",  # nitrate adduct
-        "+^NO3-",  # 15N-labelled nitrate adduct (custom element)
-        "+(CH4N2O)H+",  # parenthesised adduct
-        "+",  # electron abstraction
-        "-",  # electron capture
+        ("[M+H]+", "[M+H]+", "+"),  # protonation
+        ("+H+", "[M+H]+", "+"),
+        ("[M-H]-", "[M-H]-", "-"),  # deprotonation
+        ("-H+", "[M-H]-", "-"),
+        ("[M-H]+", "[M-H]+", "+"),  # hydride abstraction
+        ("-H-", "[M-H]+", "+"),
+        ("[M+Br]-", "[M+Br]-", "-"),  # bromide adduct
+        ("+Br-", "[M+Br]-", "-"),
+        ("+NO3-", "[M+NO3]-", "-"),  # nitrate adduct
+        ("[M+^NO3]-", "[M+^NO3]-", "-"),  # 15N-labelled nitrate (custom element)
+        ("+^NO3-", "[M+^NO3]-", "-"),
+        ("[M+CH4N2O+H]+", "[M+CH4N2O+H]+", "+"),  # urea cluster
+        ("+(CH4N2O)H+", "[M+CH4N2O+H]+", "+"),
+        ("[M]+.", "[M]+.", "+"),  # electron abstraction
+        ("+", "[M]+.", "+"),
+        ("[M]-.", "[M]-.", "-"),  # electron capture
+        ("-", "[M]-.", "-"),
     ],
 )
-def test_valid_mechanisms_accepted(mechanism):
-    assert IonizationMechanismCreate(ionization_mechanism=mechanism)
+def test_either_notation_is_accepted_and_stored_in_the_standard_one(
+    mechanism, stored, polarity
+):
+    created = IonizationMechanismCreate(ionization_mechanism=mechanism)
+    assert created.ionization_mechanism == stored
+    assert created.ionization_mechanism_polarity == polarity
 
 
 @pytest.mark.parametrize(
@@ -48,11 +63,30 @@ def test_valid_mechanisms_accepted(mechanism):
         "+-",  # invalid sign combination
         "++",  # empty modification formula (used to hang ion generation)
         "--",  # empty modification formula
+        "+()+",  # a group with no atoms
+        "[M+Zz]+",  # unknown element
+        "[M]+",  # electron transfer without its radical dot
+        "[M+H]+.",  # a radical dot on a closed-shell ion
+        "[2M+H]+",  # a dimer
+        "[M+2H]2+",  # a doubly charged ion
+        "[M+Na-2H]-",  # terms added and removed at once
+        "[M+()]+",  # a term with no atoms
     ],
 )
 def test_invalid_mechanisms_rejected(mechanism):
     with pytest.raises(ValidationError):
         IonizationMechanismCreate(ionization_mechanism=mechanism)
+
+
+@pytest.mark.parametrize(
+    ("polarity", "mechanism"),
+    [("-", "[M-H]+"), ("+", "[M-H]-"), ("-", "-H-"), ("+", "[M]-.")],
+)
+def test_a_polarity_the_ion_does_not_carry_is_rejected(polarity, mechanism):
+    with pytest.raises(ValidationError, match="inconsistent"):
+        IonizationMechanismCreate(
+            ionization_mechanism_polarity=polarity, ionization_mechanism=mechanism
+        )
 
 
 #: Rows a create would refuse today, as older rules or direct inserts left them.

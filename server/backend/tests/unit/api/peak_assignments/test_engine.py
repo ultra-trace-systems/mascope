@@ -59,7 +59,7 @@ def _isotope_row(
     match_score: float = 0.9,
     match_mz_error: float = 1.0,
     match_abundance_error: float = 0.05,
-    ionization: str = "+H+",
+    ionization: str = "[M+H]+",
     ionization_mechanism_id: str | None = None,
 ) -> dict:
     """One row of the targeted matcher's output enriched with target metadata.
@@ -289,7 +289,7 @@ class TestInvertMatches:
                     relative_abundance=1.0,
                     sample_peak_id="p1",
                     match_score=0.95,
-                    ionization="+H+",
+                    ionization="[M+H]+",
                     ionization_mechanism_id="mech-h",
                 ),
                 _isotope_row(
@@ -302,7 +302,7 @@ class TestInvertMatches:
                     relative_abundance=1.0,
                     sample_peak_id="p1",
                     match_score=0.75,
-                    ionization="+Na+",
+                    ionization="[M+Na]+",
                     ionization_mechanism_id="mech-na",
                 ),
             ]
@@ -334,7 +334,7 @@ class TestInvertMatches:
         # A formula without its mechanism is half an assignment: promoting one by
         # hand would put an adductless claim on the ledger, and a verification's
         # identity (peak + formula + mechanism) could not be formed from it. The
-        # id is a column of its own - the notation ("+Na+") must not stand in.
+        # id is a column of its own - the notation ("[M+Na]+") must not stand in.
         assert winner["ionization_mechanism_id"] == "mech-h"
         assert alternative["ionization_mechanism_id"] == "mech-na"
         # Both candidates are their ion's most abundant isotope, so the runner-up
@@ -375,7 +375,7 @@ class TestInvertMatches:
                     relative_abundance=1.0,
                     sample_peak_id="p0",
                     match_score=0.60,
-                    ionization="+Na+",
+                    ionization="[M+Na]+",
                     ionization_mechanism_id="mech-na",
                 ),
                 _isotope_row(  # ion2's M+1, contesting p1 and losing it
@@ -390,7 +390,7 @@ class TestInvertMatches:
                     sample_peak_mz=181.0707,
                     match_score=0.60,
                     match_mz_error=23.0,
-                    ionization="+Na+",
+                    ionization="[M+Na]+",
                     ionization_mechanism_id="mech-na",
                 ),
             ]
@@ -425,7 +425,7 @@ class TestInvertMatches:
             mz=183.1027,
             relative_abundance=1.0,
             sample_peak_id="p1",
-            ionization="-H+",
+            ionization="[M-H]-",
         )
         df = pd.DataFrame(
             [
@@ -453,7 +453,7 @@ class TestInvertMatches:
                     relative_abundance=1.0,
                     sample_peak_id="p1",
                     match_score=0.60,
-                    ionization="-H+",
+                    ionization="[M-H]-",
                 ),
             ]
         )
@@ -480,7 +480,7 @@ class TestInvertMatches:
             mz=183.1027,
             relative_abundance=1.0,
             sample_peak_id="p1",
-            ionization="-H+",
+            ionization="[M-H]-",
         )
         df = pd.DataFrame(
             [
@@ -526,7 +526,7 @@ class TestInvertMatches:
                     relative_abundance=1.0,
                     sample_peak_id="p1",
                     match_score=0.95,
-                    ionization="-H+",
+                    ionization="[M-H]-",
                 ),
                 _isotope_row(
                     target_isotope_id="iso2",
@@ -538,7 +538,7 @@ class TestInvertMatches:
                     relative_abundance=1.0,
                     sample_peak_id="p1",
                     match_score=0.70,
-                    ionization="+Cl-",
+                    ionization="[M+Cl]-",
                 ),
             ]
         )
@@ -561,7 +561,7 @@ class TestInvertMatches:
             mz=183.1027,
             relative_abundance=1.0,
             sample_peak_id="p1",
-            ionization="-H+",
+            ionization="[M-H]-",
         )
         df = pd.DataFrame(
             [
@@ -863,9 +863,9 @@ class TestInvertMatches:
         assert calibration_meta(None) is None
 
     def test_adduct_corroboration_lifts_p_correct(self):
-        # Same compound assigned via two adducts (+H+ and the distinctive +Br-): the +H+
-        # winner is corroborated by the +Br- (weight ~2.28) and should get a p_correct boost
-        # + corroboration provenance; the +Br- winner is corroborated only by the generic +H+
+        # Same compound assigned via two adducts ([M+H]+ and the distinctive [M+Br]-): the [M+H]+
+        # winner is corroborated by the [M+Br]- (weight ~2.28) and should get a p_correct boost
+        # + corroboration provenance; the [M+Br]- winner is corroborated only by the generic [M+H]+
         # (weight 0), so it gets no lift. Both share evidence (same fit + formula).
         match_df = pd.DataFrame(
             [
@@ -879,7 +879,7 @@ class TestInvertMatches:
                     relative_abundance=1.0,
                     sample_peak_id="p1",
                     match_score=0.9,
-                    ionization="+H+",
+                    ionization="[M+H]+",
                 ),
                 _isotope_row(
                     target_isotope_id="isoB",
@@ -891,7 +891,7 @@ class TestInvertMatches:
                     relative_abundance=1.0,
                     sample_peak_id="p2",
                     match_score=0.9,
-                    ionization="+Br-",
+                    ionization="[M+Br]-",
                 ),
             ]
         )
@@ -902,7 +902,10 @@ class TestInvertMatches:
         prot, brom = by_peak["p1"], by_peak["p2"]
         # the protonated winner is lifted by the co-occurring bromide
         assert prot["provenance"]["corroboration"]["n_adducts"] == 2
-        assert set(prot["provenance"]["corroboration"]["adducts"]) == {"+H+", "+Br-"}
+        assert set(prot["provenance"]["corroboration"]["adducts"]) == {
+            "[M+H]+",
+            "[M+Br]-",
+        }
         assert prot["provenance"]["corroboration"]["boost"] > 0
         assert prot["provenance"]["p_correct"] > brom["provenance"]["p_correct"]
         json.dumps(prot["provenance"])  # still serializable
@@ -920,7 +923,7 @@ class TestInvertMatches:
                     relative_abundance=1.0,
                     sample_peak_id="p1",
                     match_score=0.9,
-                    ionization="+H+",
+                    ionization="[M+H]+",
                 )
             ]
         )
@@ -1443,7 +1446,7 @@ class TestUntargetedMatches:
                     "formula": "C5H10O2",
                     "ion": "C5H11O2+",
                     "isotope_label": "M0",
-                    "ionization_mechanism": "+H+",
+                    "ionization_mechanism": "[M+H]+",
                     "mz_error_ppm": 2.0,
                     "intensity_error": 0.1,
                     "other_candidates": "C4H8N2O, C6H14N",
@@ -1455,7 +1458,7 @@ class TestUntargetedMatches:
                     "formula": "C5H10O2",
                     "ion": "[13C]C4H11O2+",
                     "isotope_label": "13C",
-                    "ionization_mechanism": "+H+",
+                    "ionization_mechanism": "[M+H]+",
                     "mz_error_ppm": 3.0,
                     "intensity_error": 0.2,
                     "other_candidates": "",
@@ -1495,7 +1498,7 @@ class TestUntargetedMatches:
             "formula": "C5H10O2",
             "ion": "C5H11O2+",
             "isotope_label": "M0",
-            "ionization_mechanism": "+H+",
+            "ionization_mechanism": "[M+H]+",
             "mz_error_ppm": 2.0,
             "intensity_error": 0.1,
             "other_candidates": "",
@@ -1574,7 +1577,7 @@ class TestUntargetedMatches:
                     self._untargeted_row(),
                     self._untargeted_row(
                         ion="C5H10NaO2+",
-                        ionization_mechanism="+Na+",
+                        ionization_mechanism="[M+Na]+",
                         mz_error_ppm=5.0,
                         intensity_error=0.3,
                     ),
@@ -1599,7 +1602,7 @@ class TestUntargetedMatches:
             "run1",
             CANDIDATE,
             ASSIGNED,
-            mechanism_id_by_notation={"+H+": "mech1"},
+            mechanism_id_by_notation={"[M+H]+": "mech1"},
         )
 
         assert len(assignments) == 2
@@ -1651,7 +1654,7 @@ class TestUntargetedMatches:
                     "formula": "C5H10O2",
                     "ion": "C5H11O2+",
                     "isotope_label": "M0",
-                    "ionization_mechanism": "+H+",
+                    "ionization_mechanism": "[M+H]+",
                     "mz_error_ppm": 1.0,
                     "intensity_error": 0.05,
                     "other_candidates": "",
@@ -1663,7 +1666,7 @@ class TestUntargetedMatches:
                     "formula": "C4H8N2O",
                     "ion": "[13C]C3H8N2NaO+",
                     "isotope_label": "13C",
-                    "ionization_mechanism": "+Na+",
+                    "ionization_mechanism": "[M+Na]+",
                     "mz_error_ppm": 12.0,
                     "intensity_error": 0.4,
                     "other_candidates": "",
@@ -1677,7 +1680,7 @@ class TestUntargetedMatches:
             "run1",
             CANDIDATE,
             ASSIGNED,
-            mechanism_id_by_notation={"+H+": "mech1", "+Na+": "mech2"},
+            mechanism_id_by_notation={"[M+H]+": "mech1", "[M+Na]+": "mech2"},
         )
 
         assert assignment["assigned_formula"] == "C5H10O2"
@@ -1700,7 +1703,7 @@ class TestUntargetedMatches:
                     "formula": "C5H10O2",
                     "ion": "C5H11O2+",
                     "isotope_label": "M0",
-                    "ionization_mechanism": "+H+",
+                    "ionization_mechanism": "[M+H]+",
                     "mz_error_ppm": 2.0,
                     "intensity_error": 0.1,
                     "isotopic_pattern_score": 0.42,
@@ -1715,7 +1718,7 @@ class TestUntargetedMatches:
             "run1",
             CANDIDATE,
             ASSIGNED,
-            mechanism_id_by_notation={"+H+": "mech1"},
+            mechanism_id_by_notation={"[M+H]+": "mech1"},
         )
         assert len(assignments) == 1
         # uses the envelope fit (0.42), not the inline 0.9 * 0.98
@@ -1735,7 +1738,7 @@ class TestUntargetedMatches:
                     "formula": "C5H10O2",
                     "ion": "C5H11O2+",
                     "isotope_label": "M0",
-                    "ionization_mechanism": "+H+",
+                    "ionization_mechanism": "[M+H]+",
                     "mz_error_ppm": 2.0,
                     "intensity_error": -0.3,
                     "other_candidates": "",
@@ -1749,7 +1752,7 @@ class TestUntargetedMatches:
             "run1",
             CANDIDATE,
             ASSIGNED,
-            mechanism_id_by_notation={"+H+": "mech1"},
+            mechanism_id_by_notation={"[M+H]+": "mech1"},
         )
         assert len(assignments) == 1
         assert assignments[0]["abundance_error"] == pytest.approx(-0.3)
@@ -1769,7 +1772,7 @@ class TestUntargetedMatches:
                     "formula": "C5H10O2",
                     "ion": "C5H11O2+",
                     "isotope_label": "M0",
-                    "ionization_mechanism": "+H+",
+                    "ionization_mechanism": "[M+H]+",
                     "mz_error_ppm": -2.0,
                     "intensity_error": 0.1,
                     "other_candidates": "",
@@ -1783,7 +1786,7 @@ class TestUntargetedMatches:
             "run1",
             CANDIDATE,
             ASSIGNED,
-            mechanism_id_by_notation={"+H+": "mech1"},
+            mechanism_id_by_notation={"[M+H]+": "mech1"},
         )
         assert len(assignments) == 1
         assert assignments[0]["mz_error_ppm"] == pytest.approx(-2.0)
@@ -1800,7 +1803,7 @@ class TestUntargetedMatches:
                     "formula": "C5H10O2",
                     "ion": "C5H11O2+",
                     "isotope_label": "M0",
-                    "ionization_mechanism": "+H+",
+                    "ionization_mechanism": "[M+H]+",
                     "mz_error_ppm": float("nan"),
                     "composition_error_ppm": -2.0,
                     "intensity_error": 0.1,
@@ -1815,7 +1818,7 @@ class TestUntargetedMatches:
             "run1",
             CANDIDATE,
             ASSIGNED,
-            mechanism_id_by_notation={"+H+": "mech1"},
+            mechanism_id_by_notation={"[M+H]+": "mech1"},
         )
         assert len(assignments) == 1
         assert assignments[0]["mz_error_ppm"] == pytest.approx(-2.0)
@@ -1872,7 +1875,7 @@ class TestUntargetedMatches:
                     "formula": "C5H10O2",
                     "ion": "C5H11O2+",
                     "isotope_label": "M0",
-                    "ionization_mechanism": "+H+",
+                    "ionization_mechanism": "[M+H]+",
                     "mz_error_ppm": float("nan"),
                     "composition_error_ppm": 2.0,
                     "intensity_error": 0.1,
@@ -1887,7 +1890,7 @@ class TestUntargetedMatches:
             "run1",
             CANDIDATE,
             ASSIGNED,
-            mechanism_id_by_notation={"+H+": "mech1"},
+            mechanism_id_by_notation={"[M+H]+": "mech1"},
         )
         assert len(assignments) == 1
         # score = (1 - 0.1) * (1 - 2.0/100), not 0 from a collapsed mz term.
@@ -1904,7 +1907,7 @@ class TestUntargetedMatches:
                     "formula": "()",
                     "ion": "H3O+",
                     "isotope_label": "M0",
-                    "ionization_mechanism": "+H+",
+                    "ionization_mechanism": "[M+H]+",
                     "mz_error_ppm": 1.0,
                     "intensity_error": 0.0,
                     "other_candidates": "",
@@ -1940,7 +1943,7 @@ class TestAnIsotopologueBelongsToAnM0:
                     "formula": m0_formula,
                     "ion": "C5H11O2+",
                     "isotope_label": "M0",
-                    "ionization_mechanism": "+H+",
+                    "ionization_mechanism": "[M+H]+",
                     "mz_error_ppm": 1.0,
                     "intensity_error": 0.05,
                     "other_candidates": "",
@@ -1950,7 +1953,7 @@ class TestAnIsotopologueBelongsToAnM0:
                     "formula": m0_formula,
                     "ion": "[13C]C4H11O2+",
                     "isotope_label": "13C",
-                    "ionization_mechanism": "+H+",
+                    "ionization_mechanism": "[M+H]+",
                     "mz_error_ppm": 1.5,
                     "intensity_error": 0.1,
                     "other_candidates": "",
@@ -2107,7 +2110,7 @@ class TestReferenceStageAInversion:
                     relative_abundance=1.0,
                     sample_peak_id="p1",
                     match_score=0.95,
-                    ionization="-H+",
+                    ionization="[M-H]-",
                 )
             ]
         )
@@ -2141,7 +2144,7 @@ class TestReferenceStageAInversion:
                     relative_abundance=1.0,
                     sample_peak_id="p1",
                     match_score=0.9,
-                    ionization="-H+",
+                    ionization="[M-H]-",
                 )
             ]
         )
@@ -2168,7 +2171,7 @@ class TestReferenceStageAInversion:
                     relative_abundance=1.0,
                     sample_peak_id="p1",
                     match_score=0.95,
-                    ionization="-H+",
+                    ionization="[M-H]-",
                     ionization_mechanism_id="mech-deprot",
                 ),
                 _isotope_row(
@@ -2181,7 +2184,7 @@ class TestReferenceStageAInversion:
                     relative_abundance=1.0,
                     sample_peak_id="p1",
                     match_score=0.60,
-                    ionization="-H+",
+                    ionization="[M-H]-",
                     ionization_mechanism_id="mech-deprot",
                 ),
             ]
@@ -2202,7 +2205,7 @@ class TestReferenceStageAInversion:
         assert alt["assigned_formula"] == "C9H12N2O2"
         assert alt["target_ion_id"] == "ion2"
         # Both candidates were scored deprotonated, and the alternative says so:
-        # the id comes off the mechanism column, not the "-H+" notation beside it.
+        # the id comes off the mechanism column, not the "[M-H]-" notation beside it.
         assert alt["ionization_mechanism_id"] == "mech-deprot"
         # Each is its ion's only isotope, so the runner-up is a main peak too.
         assert alt["isotope_label"] == "M0"
@@ -2223,7 +2226,7 @@ class TestReferenceStageAInversion:
                     relative_abundance=1.0,
                     sample_peak_id="p1",
                     match_score=0.95,
-                    ionization="-H+",
+                    ionization="[M-H]-",
                 ),
                 _reference_row(
                     target_isotope_id="refiso1",
@@ -2234,7 +2237,7 @@ class TestReferenceStageAInversion:
                     relative_abundance=1.0,
                     sample_peak_id="p1",
                     match_score=0.80,
-                    ionization="-H+",
+                    ionization="[M-H]-",
                 ),
             ]
         )
@@ -2283,7 +2286,7 @@ class TestALibraryEntryKeepsItsLineHoweverItIsSpelled:
         *,
         library_score: float = 0.9,
         copy_score: float = 0.9,
-        copy_mechanism: str = "-H+",
+        copy_mechanism: str = "[M-H]-",
         library_first: bool = False,
         library_formula: str = "CH3COOH",
         copy_formula: str = "C2H4O2",
@@ -2298,7 +2301,7 @@ class TestALibraryEntryKeepsItsLineHoweverItIsSpelled:
             relative_abundance=1.0,
             sample_peak_id="p1",
             match_score=library_score,
-            ionization="-H+",
+            ionization="[M-H]-",
         )
         copy = _reference_row(
             target_isotope_id="refiso1",
@@ -2397,7 +2400,7 @@ class TestALibraryEntryKeepsItsLineHoweverItIsSpelled:
         # Another mechanism makes another ion, so the list's row is a reading of
         # its own and competes on its evidence as before.
         assignment = self._invert(
-            self._frame(library_score=0.90, copy_score=0.95, copy_mechanism="+NO3-")
+            self._frame(library_score=0.90, copy_score=0.95, copy_mechanism="[M+NO3]-")
         )
 
         assert assignment["target_compound_id"] is None
@@ -2428,7 +2431,7 @@ class TestALabelledIonCountsFromItsLabel:
                 relative_abundance=abundance,
                 sample_peak_id=peak_id,
                 sample_peak_intensity=1000.0 if peak_id else 0.0,
-                ionization="+[15N]O3-",
+                ionization="[M+[15N]O3]-",
             ),
             "target_isotope_formula": isotope_formula,
         }

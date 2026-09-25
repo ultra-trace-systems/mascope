@@ -85,7 +85,7 @@ def _rivals(*formulas: str, held_against: dict | None = None) -> ReadingRivals:
             {
                 "formula": formula,
                 "ion": f"{formula}H+",
-                "ionization_mechanism": "+H+",
+                "ionization_mechanism": "[M+H]+",
                 "fit_score": 0.9,
                 "mz_error_ppm": 0.2,
             }
@@ -102,7 +102,7 @@ def _held(why: str) -> dict:
     return {
         "formula": "C7H16O5",
         "ion": "C7H17O5+",
-        "ionization_mechanism": "+H+",
+        "ionization_mechanism": "[M+H]+",
         "fit_score": 0.912345,
         "prior": 2.0,
         "why": why,
@@ -115,7 +115,7 @@ def _weighing(peak_mz: float) -> dict:
         "peak_mz": peak_mz,
         "formula": "C6H12O6",
         "ion": "C6H13O6+",
-        "ionization_mechanism": "+H+",
+        "ionization_mechanism": "[M+H]+",
         "fit_score": 0.312345,
         "evidence": 0.312345,
         "rival_evidence": 0.954321,
@@ -124,7 +124,7 @@ def _weighing(peak_mz: float) -> dict:
 
 
 def _reading(mz: float) -> ListReading:
-    return ListReading(mz, "C6H12O6", "+H+", 1.0)
+    return ListReading(mz, "C6H12O6", "[M+H]+", 1.0)
 
 
 class TestTheReadingsAsked:
@@ -134,10 +134,10 @@ class TestTheReadingsAsked:
             _child("a-13c", "p2", "a"),
             _list_hit("b", "p3", assigned_formula="C6H12O6Na", mz_error_ppm=None),
         ]
-        readings = list_readings(rows, _frame(), {"im-1": "+H+"})
+        readings = list_readings(rows, _frame(), {"im-1": "[M+H]+"})
         assert readings == {
-            "a": ListReading(181.0707, "C6H12O6", "+H+", -0.7, keeps_peak=True),
-            "b": ListReading(203.0526, "C6H12O6Na", "+H+", None, keeps_peak=True),
+            "a": ListReading(181.0707, "C6H12O6", "[M+H]+", -0.7, keeps_peak=True),
+            "b": ListReading(203.0526, "C6H12O6Na", "[M+H]+", None, keeps_peak=True),
         }
 
     def test_a_target_library_reading_keeps_its_peak_and_a_list_s_does_not(self):
@@ -147,31 +147,31 @@ class TestTheReadingsAsked:
             # A pass's row with a compound id is no Stage A library hit.
             _list_hit("c", "p4", source="untargeted"),
         ]
-        readings = list_readings(rows, _frame(), {"im-1": "+H+"})
+        readings = list_readings(rows, _frame(), {"im-1": "[M+H]+"})
         assert (readings["a"].keeps_peak, readings["b"].keeps_peak) == (True, False)
         assert readings["c"].keeps_peak is False
 
     def test_a_channel_the_search_does_not_run_is_not_asked(self):
         rows = [_list_hit("a", "p1", ionization_mechanism_id="im-2")]
-        assert list_readings(rows, _frame(), {"im-1": "+H+"}) == {}
+        assert list_readings(rows, _frame(), {"im-1": "[M+H]+"}) == {}
 
     def test_a_row_the_frame_does_not_hold_is_not_asked(self):
         rows = [_list_hit("a", "p9")]
-        assert list_readings(rows, _frame(), {"im-1": "+H+"}) == {}
+        assert list_readings(rows, _frame(), {"im-1": "[M+H]+"}) == {}
 
     def test_a_row_without_a_formula_is_not_asked(self):
         rows = [_list_hit("a", "p1", assigned_formula=None)]
-        assert list_readings(rows, _frame(), {"im-1": "+H+"}) == {}
+        assert list_readings(rows, _frame(), {"im-1": "[M+H]+"}) == {}
 
     def test_a_missing_mass_error_is_none(self):
         rows = [_list_hit("a", "p1", mz_error_ppm=float("nan"))]
-        (reading,) = list_readings(rows, _frame(), {"im-1": "+H+"}).values()
+        (reading,) = list_readings(rows, _frame(), {"im-1": "[M+H]+"}).values()
         assert reading.mz_error_ppm is None
 
     def test_the_mz_is_the_frames_own_value(self):
         frame = _frame().astype({"mz": np.float32})
         (reading,) = list_readings(
-            [_list_hit("a", "p1")], frame, {"im-1": "+H+"}
+            [_list_hit("a", "p1")], frame, {"im-1": "[M+H]+"}
         ).values()
         assert reading.mz == float(np.float32(181.0707))
 
@@ -194,7 +194,7 @@ def _search_row(mz: float, label: str = "M0", **fields) -> dict:
         "formula": "C7H16O5",
         "ion": "C7H17O5+",
         "isotope_label": label,
-        "ionization_mechanism": "+H+",
+        "ionization_mechanism": "[M+H]+",
         "other_candidates": "",
         **fields,
     }
@@ -244,7 +244,7 @@ class TestAKeptReading:
         assert rows[0]["provenance"][GRID_RIVALS]["held_against"] == {
             "formula": "C7H16O5",
             "ion_formula": "C7H17O5+",
-            "ionization_mechanism": "+H+",
+            "ionization_mechanism": "[M+H]+",
             "fit_score": 0.9123,
             "prior": 2.0,
             "why": "unexplained_lines",

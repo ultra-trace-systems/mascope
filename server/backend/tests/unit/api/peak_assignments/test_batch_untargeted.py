@@ -158,7 +158,7 @@ def test_the_search_config_is_the_orchestrators():
     # Both paths configure the finder from one resolved profile, which is what
     # makes a batch search comparable with a per-sample run.
     resolved = resolve_profile(
-        PeakAssignmentConfig(), ["+Br-"], instrument_type="orbi", polarity="-"
+        PeakAssignmentConfig(), ["[M+Br]-"], instrument_type="orbi", polarity="-"
     )
     built = search_config(resolved, ["H+", "Na+"])
     assert built.ionizations == "H+,Na+"
@@ -277,15 +277,15 @@ def test_the_search_reads_the_partner_gate_over_its_own_rows():
     # tropylium ion reads as toluene less a hydride here as in a run of the
     # sample, not as the protonated C7H6 the election prefers.
     config = PeakAssignmentConfig()
-    resolved = resolve_profile(config, ["+"], instrument_type="orbi", polarity="+")
+    resolved = resolve_profile(config, ["[M]+."], instrument_type="orbi", polarity="+")
     resolved = with_secondary_channels(
         resolved,
         [91.0542, 92.0621, 202.0777],
         [1.0e6, 3.0e6, 5.0e6],
-        ["+H+", "-H-"],
+        ["[M+H]+", "[M-H]+"],
     )
-    assert {"+H+", "-H-"} <= resolved.partner_gated_channels
-    ids = {"+": "im-ct", "+H+": "im-h", "-H-": "im-hydride"}
+    assert {"[M+H]+", "[M-H]+"} <= resolved.partner_gated_channels
+    ids = {"+": "im-ct", "[M+H]+": "im-h", "[M-H]+": "im-hydride"}
     peaks = pd.DataFrame(
         [
             {"sample_peak_id": "p1", "mz": 91.0542, "intensity": 1.0e6},
@@ -299,8 +299,8 @@ def test_the_search_reads_the_partner_gate_over_its_own_rows():
                     91.0542,
                     "C7H6",
                     "C7H7+",
-                    "+H+",
-                    family=[("C7H8", "C7H7+", "-H-")],
+                    "[M+H]+",
+                    family=[("C7H8", "C7H7+", "[M-H]+")],
                 ),
                 _match(92.0621, "C7H8", "C7H8+", "+"),
             ]
@@ -323,4 +323,4 @@ def test_the_search_reads_the_partner_gate_over_its_own_rows():
     tropylium = next(row for row in gated if row["sample_peak_id"] == "p1")
     assert tropylium["assigned_formula"] == "C7H8"
     assert tropylium["ionization_mechanism_id"] == "im-hydride"
-    assert tropylium["provenance"]["partner_gate"]["through"] == "-H-"
+    assert tropylium["provenance"]["partner_gate"]["through"] == "[M-H]+"

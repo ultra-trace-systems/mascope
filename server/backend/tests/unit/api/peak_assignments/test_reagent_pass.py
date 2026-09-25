@@ -155,7 +155,7 @@ def _run_pre_pass(peaks: pd.DataFrame, profile: str, instrument_type: str | None
 
     resolved = resolve_profile(
         PeakAssignmentConfig(profile=profile),
-        mechanism_notations=["+H+"],
+        mechanism_notations=["[M+H]+"],
         instrument_type=instrument_type,
         polarity="+",
     )

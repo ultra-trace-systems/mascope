@@ -22,16 +22,19 @@ from mascope_backend.db.admin.ionization.ensure_system_modes import (
 )
 from mascope_backend.db.id import gen_id
 from mascope_backend.ionization_catalogue import SYSTEM_MODES
+from mascope_tools.composition.mechanism_notation import mechanism_spellings
 
 
-# "Ambient, negative" is the catalogue's simplest entry: one mechanism, "-".
+# "Ambient, negative" is the catalogue's simplest entry: one mechanism,
+# electron capture - "[M]-.", or "-" on a row still holding the legacy spelling.
 _AMBIENT = next(entry for entry in SYSTEM_MODES if entry[0] == "ambient-negative")
 _KEY, _MODE_ID, _NAME, _POLARITY, _MECHANISMS = _AMBIENT
+_SPELLINGS = mechanism_spellings(_MECHANISMS)
 
 
 @pytest_asyncio.fixture
 async def clean_slate(async_session_factory):
-    """No seeded modes and no '-' mechanism, restored afterwards."""
+    """No seeded modes and no electron-capture mechanism, restored afterwards."""
 
     async def _clear():
         async with async_session_factory() as session:
@@ -40,7 +43,7 @@ async def clean_slate(async_session_factory):
             )
             await session.execute(
                 delete(IonizationMechanism).where(
-                    IonizationMechanism.ionization_mechanism == "-"
+                    IonizationMechanism.ionization_mechanism.in_(_SPELLINGS)
                 )
             )
             await session.commit()
@@ -104,10 +107,13 @@ async def test_the_seeder_creates_no_mechanisms(async_session_factory, clean_sla
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("notation", _SPELLINGS)
 async def test_the_chemistry_is_seeded_once_its_mechanism_exists(
-    async_session_factory, clean_slate
+    async_session_factory, clean_slate, notation
 ):
-    mechanism_id = await _add_mechanism(async_session_factory, "-", "-")
+    """In either spelling: a row the migration has not rewritten yet is the
+    same mechanism the catalogue names."""
+    mechanism_id = await _add_mechanism(async_session_factory, notation, "-")
 
     await ensure_system_ionization_modes()
 
@@ -124,7 +130,7 @@ async def test_a_mechanism_stored_under_the_wrong_polarity_is_not_used(
     async_session_factory, clean_slate
 ):
     """A mismatch would make the mode uneditable: every PATCH revalidates it."""
-    await _add_mechanism(async_session_factory, "-", "+")
+    await _add_mechanism(async_session_factory, "[M]-.", "+")
 
     await ensure_system_ionization_modes()
 
@@ -133,7 +139,7 @@ async def test_a_mechanism_stored_under_the_wrong_polarity_is_not_used(
 
 @pytest.mark.asyncio
 async def test_running_twice_changes_nothing(async_session_factory, clean_slate):
-    await _add_mechanism(async_session_factory, "-", "-")
+    await _add_mechanism(async_session_factory, "[M]-.", "-")
     await ensure_system_ionization_modes()
     first = await _mode(async_session_factory, _KEY)
 
@@ -149,7 +155,7 @@ async def test_a_row_left_by_a_downgrade_is_claimed_not_duplicated(
     async_session_factory, clean_slate
 ):
     """A downgrade drops the key but keeps the row, under its own id."""
-    mechanism_id = await _add_mechanism(async_session_factory, "-", "-")
+    mechanism_id = await _add_mechanism(async_session_factory, "[M]-.", "-")
     async with async_session_factory() as session:
         session.add(
             IonizationMode(
@@ -186,7 +192,7 @@ async def test_a_name_the_deployment_already_uses_is_left_alone(
     async_session_factory, clean_slate
 ):
     """Two rows under one name turn a later create into a 500."""
-    mechanism_id = await _add_mechanism(async_session_factory, "-", "-")
+    mechanism_id = await _add_mechanism(async_session_factory, "[M]-.", "-")
     theirs = gen_id()
     async with async_session_factory() as session:
         session.add(
@@ -232,7 +238,7 @@ async def test_a_leftover_row_that_was_edited_is_not_claimed(
     The guard then refuses to undo that edit, token included, so the row
     would read as Mascope's while saying something else.
     """
-    mechanism_id = await _add_mechanism(async_session_factory, "-", "-")
+    mechanism_id = await _add_mechanism(async_session_factory, "[M]-.", "-")
     async with async_session_factory() as session:
         session.add(
             IonizationMode(

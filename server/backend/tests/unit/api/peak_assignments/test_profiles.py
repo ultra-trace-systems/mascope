@@ -26,8 +26,8 @@ from mascope_backend.api.new.peak_assignments.schemas import ProfilePreviewQuery
 from mascope_tools.composition import profiles as presets
 
 
-UREA = ["+H+", "+(CH4N2O)H+"]
-BROMIDE = ["+Br-", "-H+"]
+UREA = ["[M+H]+", "[M+CH4N2O+H]+"]
+BROMIDE = ["[M+Br]-", "[M-H]-"]
 
 
 class TestResolution:
@@ -75,43 +75,49 @@ class TestResolution:
 
     def test_a_sample_with_nothing_diagnostic_falls_back_to_polarity(self):
         resolved = resolve_profile(
-            PeakAssignmentConfig(), ["+H+"], instrument_type="orbi", polarity="+"
+            PeakAssignmentConfig(), ["[M+H]+"], instrument_type="orbi", polarity="+"
         )
         assert resolved.profile is presets.ESI_POS
 
-    def test_a_bare_sign_resolves_to_the_charge_transfer_source(self):
+    def test_electron_transfer_resolves_to_the_charge_transfer_source(self):
         # The way an Orbitrap's EASY-IC source is declared: electron transfer
         # and nothing else. It takes the ambient prior, never the ESI preset's
         # absence of one, and its own channels are opened as secondary ones.
         positive = resolve_profile(
-            PeakAssignmentConfig(), ["+"], instrument_type="orbi", polarity="+"
+            PeakAssignmentConfig(), ["[M]+."], instrument_type="orbi", polarity="+"
         )
         assert positive.profile is presets.EASYIC_POS
         assert positive.context is presets.AMBIENT_AIR
         assert positive.heuristics_config().context_ratio_windows == (
             presets.AMBIENT_AIR.ratio_windows()
         )
-        assert positive.mode_channels == ("+",)
+        assert positive.mode_channels == ("[M]+.",)
         assert positive.minor_channels == frozenset()
         negative = resolve_profile(
-            PeakAssignmentConfig(), ["-"], instrument_type="orbi", polarity="-"
+            PeakAssignmentConfig(), ["[M]-."], instrument_type="orbi", polarity="-"
         )
         assert negative.profile is presets.EASYIC_NEG
         assert negative.context is presets.AMBIENT_AIR
 
     def test_a_declared_charge_transfer_channel_is_the_modes_own(self):
-        # A mode that declares proton transfer beside the bare sign has said
+        # A mode that declares proton transfer beside electron transfer has said
         # the source runs it: the channel is searched as the mode's own, not
         # capped as an opportunistic one, and only the profile's other channel
         # is opportunistic. APCI and APPI modes declare both signs routinely.
         resolved = resolve_profile(
-            PeakAssignmentConfig(), ["+", "+H+"], instrument_type="orbi", polarity="+"
+            PeakAssignmentConfig(),
+            ["[M]+.", "[M+H]+"],
+            instrument_type="orbi",
+            polarity="+",
         )
         assert resolved.profile is presets.EASYIC_POS
         assert resolved.minor_channels == frozenset()
         assert resolved.added_channels == frozenset()
         negative = resolve_profile(
-            PeakAssignmentConfig(), ["-", "-H+"], instrument_type="orbi", polarity="-"
+            PeakAssignmentConfig(),
+            ["[M]-.", "[M-H]-"],
+            instrument_type="orbi",
+            polarity="-",
         )
         assert negative.profile is presets.EASYIC_NEG
         assert negative.minor_channels == frozenset()
@@ -123,20 +129,20 @@ class TestResolution:
         resolved = with_secondary_channels(
             resolve_profile(
                 PeakAssignmentConfig(),
-                ["+", "+H+"],
+                ["[M]+.", "[M+H]+"],
                 instrument_type="orbi",
                 polarity="+",
             ),
             [19.0178, 200.0],
             [1.0e4, 1.0e6],
-            ["+H+", "-H-"],
+            ["[M+H]+", "[M-H]+"],
         )
         assert [e.notation for e in resolved.channel_evidence if e.present] == [
-            "-H-",
-            "+H+",
+            "[M-H]+",
+            "[M+H]+",
         ]
-        assert resolved.minor_channels == frozenset({"-H-"})
-        assert resolved.added_channels == frozenset({"-H-"})
+        assert resolved.minor_channels == frozenset({"[M-H]+"})
+        assert resolved.added_channels == frozenset({"[M-H]+"})
 
     def test_formate_is_partner_gated_and_carbonate_is_not(self):
         # A nitrate acquisition starting at m/z 130: both channels stay on
@@ -144,35 +150,35 @@ class TestResolution:
         resolved = with_secondary_channels(
             resolve_profile(
                 PeakAssignmentConfig(),
-                ["+^NO3-", "-H+"],
+                ["[M+^NO3]-", "[M-H]-"],
                 instrument_type="orbi",
                 polarity="-",
             ),
             [130.0, 700.0],
             [1.0e6, 1.0e4],
-            ["+CO3-", "+HCOO-"],
+            ["[M+CO3]-", "[M+HCOO]-"],
         )
-        assert resolved.minor_channels == frozenset({"+CO3-", "+HCOO-"})
-        assert resolved.partner_gated_channels == frozenset({"+HCOO-"})
+        assert resolved.minor_channels == frozenset({"[M+CO3]-", "[M+HCOO]-"})
+        assert resolved.partner_gated_channels == frozenset({"[M+HCOO]-"})
 
     def test_the_charge_transfer_channels_are_partner_gated(self):
         resolved = with_secondary_channels(
             resolve_profile(
-                PeakAssignmentConfig(), ["+"], instrument_type="orbi", polarity="+"
+                PeakAssignmentConfig(), ["[M]+."], instrument_type="orbi", polarity="+"
             ),
             [42.0, 160.0],
             [1.0e6, 1.0e4],
-            ["+H+", "-H-"],
+            ["[M+H]+", "[M-H]+"],
         )
-        assert resolved.minor_channels == frozenset({"+H+", "-H-"})
-        assert resolved.partner_gated_channels == frozenset({"+H+", "-H-"})
-        assert resolved.snapshot()["partner_gated_channels"] == ["+H+", "-H-"]
+        assert resolved.minor_channels == frozenset({"[M+H]+", "[M-H]+"})
+        assert resolved.partner_gated_channels == frozenset({"[M+H]+", "[M-H]+"})
+        assert resolved.snapshot()["partner_gated_channels"] == ["[M+H]+", "[M-H]+"]
 
-    def test_the_bare_sign_on_a_tof_keeps_the_esi_profile(self):
+    def test_electron_transfer_on_a_tof_keeps_the_esi_profile(self):
         # An ambient-ion mode on an APi-TOF is declared the same way and is
         # not a fluoranthene beam.
         resolved = resolve_profile(
-            PeakAssignmentConfig(), ["-"], instrument_type="tof", polarity="-"
+            PeakAssignmentConfig(), ["[M]-."], instrument_type="tof", polarity="-"
         )
         assert resolved.profile is presets.ESI_NEG
         assert resolved.context is presets.NO_CONTEXT
@@ -230,7 +236,7 @@ class TestTheIdentityProfile:
             instrument_type="orbi",
             polarity="-",
         )
-        search = resolved.search_config(["+Br-"])
+        search = resolved.search_config(["[M+Br]-"])
         assert search.element_count_ranges == "C0-100 H0-100 O0-100 N0-100"
         assert search.mass_range_ppm == 10.0
         assert resolved.heuristics_config().context_ratio_windows == {}
@@ -270,7 +276,10 @@ class TestSearchConfiguration:
 
     def test_the_notations_are_joined_for_the_finder(self):
         resolved = resolve_profile(PeakAssignmentConfig(), [], instrument_type="orbi")
-        assert resolved.search_config(["+H+", "+Na+"]).ionizations == "+H+,+Na+"
+        assert (
+            resolved.search_config(["[M+H]+", "[M+Na]+"]).ionizations
+            == "[M+H]+,[M+Na]+"
+        )
 
 
 class TestSnapshot:
@@ -350,7 +359,7 @@ class TestPreview:
             [
                 SampleChemistry(tuple(UREA), "+", samples=3),
                 # Another mode carrying the same fingerprint is the same answer.
-                SampleChemistry(("+(CH4N2O)H+",), "+", samples=2),
+                SampleChemistry(("[M+CH4N2O+H]+",), "+", samples=2),
             ],
         )
         assert [(p["profile"], p["context"], p["samples"]) for p in previews] == [

@@ -32,9 +32,9 @@ _NOW = datetime(2026, 9, 17, tzinfo=timezone.utc)
 #: The notations the fingerprint reads. Exact, since detection matches them as
 #: stored, so they are looked up before being created: another test may have
 #: seeded the same row, and the column is unique.
-_UREA = ("+(CH4N2O)H+", "+")
+_UREA = ("[M+CH4N2O+H]+", "+")
 _PROTON = ("+H+ (profile preview test)", "+")
-_BROMIDE = ("+Br-", "-")
+_BROMIDE = ("[M+Br]-", "-")
 
 
 async def _mechanism_id(session, notation: str, polarity: str) -> str:

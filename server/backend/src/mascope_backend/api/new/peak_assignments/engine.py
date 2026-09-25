@@ -2582,7 +2582,7 @@ def apply_partner_gates(
     fact only - whether the C10 product is seen through one of the mode's own
     channels. Tropylium is the same case in positive mode: protonated C7H6
     outweighs toluene less a hydride in the election, and toluene is what the
-    sample shows through the bare sign.
+    sample shows through electron transfer.
 
     Runs over the judged ledger, both stages' rows together, because the
     partner is as often a reference list's row as the search's: on the

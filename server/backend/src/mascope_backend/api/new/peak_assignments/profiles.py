@@ -8,8 +8,8 @@ run so the answer is reproducible.
 
 Why resolution rather than configuration (decision 1 of the assignment quality
 plan): the reagent chemistry is already recorded in the deployment, as the
-mechanism panel of the sample's ionization mode. A mode carrying ``+Br-`` is a
-bromide source whatever anyone types, so the engine reads the panel instead of
+mechanism panel of the sample's ionization mode. A mode carrying ``[M+Br]-`` is
+a bromide source whatever anyone types, so the engine reads the panel instead of
 asking. A run may still name a profile explicitly, and naming ``none`` is what
 turns the whole layer off - the identity profile reproduces the grid and window
 the engine used before profiles existed.
@@ -28,6 +28,7 @@ from mascope_backend.api.new.peak_assignments.config import (
     DEFAULT_PROFILE,
     PeakAssignmentConfig,
 )
+from mascope_tools.composition.mechanism_notation import mechanism_key
 from mascope_tools.composition.models import (
     CompositionSearchConfig,
     HeuristicFilterConfig,
@@ -125,8 +126,8 @@ class ResolvedProfile:
         opportunistic reagent the mode's own. So an uncorroborated winner
         through it is still capped at candidate, a tie still goes to the mode's
         other channels, and the snapshot still lists it. Where the profile says
-        otherwise - proton transfer declared beside the bare sign of a
-        charge-transfer source - the declared channel is the mode's own and
+        otherwise - proton transfer declared beside the electron transfer of
+        a charge-transfer source - the declared channel is the mode's own and
         stays out of this set, whatever the spectrum said.
         """
         unavailable = set(self.unavailable_channels)
@@ -267,7 +268,7 @@ def with_secondary_channels(
     :param mz: The sample's peak m/z values.
     :param intensity: Their intensities, in the same order.
     :param available_notations: Mechanism notations the deployment holds for
-        this sample's polarity.
+        this sample's polarity, in either notation.
     :return: A new resolution carrying the channel evidence.
     """
     channels = secondary_channels(resolved.profile.name)
@@ -277,7 +278,7 @@ def with_secondary_channels(
     # window: a cluster ion's mass is known and uncontested, and the acquisitions
     # this runs on put those ions several ppm out.
     evidence = detect_channels(channels, mz, intensity)
-    available = set(available_notations or ())
+    available = {mechanism_key(notation) for notation in available_notations or ()}
     unavailable = tuple(
         notation
         for notation in present_notations(evidence)
@@ -304,12 +305,12 @@ def resolve_profile(
 
     :param config: The run configuration.
     :param mechanism_notations: The sample's ionization mechanism notations, as
-        the mechanism table stores them (``"+Br-"``), not in the finder's
-        explicit-isotope form - the fingerprint is written in the stored
-        notation.
+        the mechanism table stores them (``"[M+Br]-"``, a legacy ``"+Br-"``
+        reading the same), not in the finder's explicit-isotope form - the
+        fingerprint is written in the stored notation.
     :param instrument_type: ``"orbi"`` or ``"tof"``, deciding the default m/z
-        window and whether a bare-sign mode is read as the charge-transfer
-        source, which is Orbitrap hardware.
+        window and whether an electron-transfer mode is read as the
+        charge-transfer source, which is Orbitrap hardware.
     :param polarity: The sample's polarity: a profile it contradicts is never
         chosen, and it decides alone when no mechanism is diagnostic.
     :raises KeyError: The config names a profile or context that does not exist.
@@ -354,7 +355,9 @@ def resolve_profile(
         requested_context=requested_context,
         element_ranges_source=element_ranges_source,
         mz_precision_source=mz_precision_source,
-        mode_channels=tuple(mechanism_notations),
+        mode_channels=tuple(
+            mechanism_key(notation) for notation in mechanism_notations
+        ),
     )
 
 

@@ -20,7 +20,7 @@ from mascope_tools.composition.models import (
 )
 
 
-MECHANISM_IDS = {"+H+": "im-h", "+NH4+": "im-nh4"}
+MECHANISM_IDS = {"[M+H]+": "im-h", "[M+NH4]+": "im-nh4"}
 
 #: The ammonium adduct of glucose, which is the same ion as the protonated
 #: amide one ammonia heavier. The finder commits the adduct reading and hands
@@ -28,7 +28,7 @@ MECHANISM_IDS = {"+H+": "im-h", "+NH4+": "im-nh4"}
 GLUCOSE_AMMONIUM = {
     "formula": "C6H15NO6",
     "ion": "C6H16NO6+",
-    "ionization_mechanism": "+H+",
+    "ionization_mechanism": "[M+H]+",
     "neutral_mass": 197.0899,
     "unsaturation": None,
 }
@@ -91,7 +91,7 @@ class TestTheDisplacedReadingIsRecorded:
                     198.0972,
                     "C6H12O6",
                     "C6H16NO6+",
-                    "+NH4+",
+                    "[M+NH4]+",
                     0.95,
                     same_ion=[GLUCOSE_AMMONIUM],
                 )
@@ -118,7 +118,7 @@ class TestTheDisplacedReadingIsRecorded:
                     198.0972,
                     "C6H12O6",
                     "C6H16NO6+",
-                    "+NH4+",
+                    "[M+NH4]+",
                     0.95,
                     same_ion=[GLUCOSE_AMMONIUM],
                 )
@@ -147,11 +147,11 @@ class TestTheDisplacedReadingIsRecorded:
                     198.0972,
                     "C6H12O6",
                     "C6H16NO6+",
-                    "+NH4+",
+                    "[M+NH4]+",
                     0.95,
                     same_ion=[GLUCOSE_AMMONIUM],
                 ),
-                _match(198.0972, "C5H12N3O5", "C5H13N3O5+", "+H+", 0.60),
+                _match(198.0972, "C5H12N3O5", "C5H13N3O5+", "[M+H]+", 0.60),
             ],
             peaks,
             max_alternatives=1,
@@ -173,7 +173,7 @@ class TestTheDisplacedReadingIsRecorded:
                     198.0972,
                     "C6H12O6",
                     "C6H16NO6+",
-                    "+NH4+",
+                    "[M+NH4]+",
                     0.95,
                     other_candidates="C6H15NO6, C2H16N7O3",
                     same_ion=[GLUCOSE_AMMONIUM],
@@ -199,11 +199,11 @@ class TestARowWithoutAFamily:
                     198.0972,
                     "C6H12O6",
                     "C6H16NO6+",
-                    "+NH4+",
+                    "[M+NH4]+",
                     0.95,
                     same_ion=[GLUCOSE_AMMONIUM],
                 ),
-                _match(300.1, "C12H21NO8", "C12H22NO8+", "+H+", 0.9),
+                _match(300.1, "C12H21NO8", "C12H22NO8+", "[M+H]+", 0.9),
             ],
             peaks,
         )
@@ -212,7 +212,7 @@ class TestARowWithoutAFamily:
         assert lone["alternatives"] is None
 
 
-URONIUM_IDS = {"+H+": "im-h", "+NH4+": "im-nh4", "+(CH4N2O)H+": "im-urea"}
+URONIUM_IDS = {"[M+H]+": "im-h", "[M+NH4]+": "im-nh4", "[M+CH4N2O+H]+": "im-urea"}
 SEARCH = CompositionSearchConfig(
     ionizations=",".join(URONIUM_IDS),
     element_count_ranges="C1-40 H0-90 N0-5 O0-15 S0-2",
@@ -260,7 +260,7 @@ class TestAReferenceMirrorsRow:
     """A list's formula arrives matched, and is given its ion's family."""
 
     def test_it_carries_the_reading_an_election_would_have_displaced(self):
-        # Dimethylformamide through +H+ is acrolein through +NH4+.
+        # Dimethylformamide through [M+H]+ is acrolein through [M+NH4]+.
         rows = [_stage_a()]
         assert _record(rows) == 1
 
@@ -327,7 +327,7 @@ class TestAReferenceMirrorsRow:
         assert _record(rows) == 0
 
     def test_an_ion_with_one_reading_is_left_as_it_came(self):
-        # Carbon dioxide through +H+ has no neutral one ammonia or one urea
+        # Carbon dioxide through [M+H]+ has no neutral one ammonia or one urea
         # lighter, so there is no family and nothing is written.
         rows = [_stage_a(formula="C1O2")]
         assert _record(rows) == 0
