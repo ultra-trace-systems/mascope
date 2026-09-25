@@ -47,14 +47,15 @@ dataset's sets G to J, the chemist's reading of 2026-09-24 (decision 21).
 | 3.1c - the stronger partner decides | #2205 | built: the partner gate keeps each neutral's partners (rows committing it at candidate or better through a mode channel) with their peak heights, current through every swap; after its walk, read once against the settled partners, a reading through a gated channel that stands on a partner is weighed against every other reading of its ion through a gated channel that has one, and the brighter partner takes the ion (`took_from`), a tie leaving the row its reading, with what it weighed recorded (`partner_gate.contest`: reading, channel, peak ratio, decisive). Where the brighter partner is at least `PARTNER_MARGIN` (10) times the other's, the other reading is marked `outweighed` and the cross-channel pass settles the ion by the partner (`same_ion_settled` by `partner`); within the margin it stays a rival and the row is held at candidate. A reading through a mode channel is not contested; where a reading has no partner and the family's mode reading is no molecule, the gate takes the opportunistic reading with the brightest partner rather than the first. The cross-channel pass weighs a rival whose molecule the sample commits through a mode channel the same way against the row's own molecule, leaving out the rows through either reading's own channel, on every row: decisively weaker it is settled, otherwise a second channel does not settle it (`shown`, counted as `shown_rival`); a typed formula such as `C6H4(CH3)2` is keyed as the molecule it spells. The run records the gate's summary and margin (`config.partner_gate`). Tiering rule set 7. The tier as a bar rather than a weight, the contest after the walk and the weighed shown rival are the review's (the step's as-built note). Measured on the testbed 2026-09-25 (develop `fb529440c`, rule set 7, margin 10): set K the benzyl cation as toluene less a hydride at assigned in 6 of 6 files, the methylbenzyl cation as xylene less a hydride in 6 (4 assigned, 2 candidate as before), C5H7+ as isoprene less a hydride in 6 (candidate in 5, assigned in the one file where isoprene's row is ten times the C5H6 row's); the gate contested 14 to 20 ions per file, swapped 7 to 12, outweighed 5 to 12 and held 7 to 12 within the margin; assigned rows per file 67 to 60 and assigned intensity 76 to 46% of the M0 total, almost all of it one ion: m/z 69.008, read as C2N2O through proton transfer and now as C2H2N2O less a hydride within the margin, 36% of the assigned intensity in every file and the air-plasma family of 3.3 and 3.6; C5H7+ is 1.5%. Set L keeps every formula and 200 rows, a third of its assigned rows and a quarter of its assigned intensity, fall to candidate on the shown hydride rival: the declared proton transfer is doubted wherever the hydride reading's molecule is seen through electron transfer. Set G, the wider reach: 158 deprotonated acids and 18 formate rows of the no-reagent-ion half fall to candidate, 42% of its assigned intensity, pinonic acid at 183.103 first, because the formate reading's molecule (nopinone) is seen through the nitrate adduct at about twice the acid's own; with reagent ion 59 rows and 8%. G11 unchanged at 5.6% of assigned-plus-candidate intensity, 7.1 to 0.3% of assigned. Set I+ 14 rows, I- none, set C 10 rows (assigned 613 to 603, the reference's confirmation 87.1 to 86.9%), set C2 unchanged |
 | 3.1d - the declared channel's prior | - | planned (decision 26), step section written 2026-09-25; the need measured on pass 8: 176 acids of set G and 200 rows of set L held at candidate on a shown rival, most of them where the rival's molecule is not even brighter than the row's own; 63 of G's and 155 of L's return under one margin read both ways, pinonic acid among them |
 | 3.2 - formate as an opportunistic channel | #2198, stacked on #2197 | built: `+HCOO-` is a secondary channel of the nitrate, 15N-nitrate, bromide and iodide profiles, probed on formate, its dimer with formic acid and (nitrate) its cluster with the reagent's acid, built from the reagent so the labelled profile probes `[HCOO+H^NO3]-`; the nitrate profiles keep it on where the window cannot show a probe, as they do carbonate, because the batch carrying the C11 pseudo-acids is acquired from m/z 130 and the source makes no formate carrier above 127 (the two-acid cluster absent, the two-formic-acid cluster at 0.01-0.05% of base on the wide-window sister batch); the halide profiles claim only what they show. The election alone is not enough: measured with the channel open, it read every deprotonated acid as the molecule 46 Da lighter with formate (1,239 acid rows of six no-reagent-ion samples moved to formate and were capped; set C's same-formula agreement with the reference fell from 89.6% to 62.6%), so formate takes the partner gate of step 3.1 (`engine.apply_partner_gates`): the formate reading is the row's only where the lighter neutral is committed through a mode channel, otherwise the acid stands and the formate reading is set aside. Measured on the testbed with the partner gate judging every row against the ledger as it stands: set G without reagent ion G11 24.4 -> 5.6% of assigned-plus-candidate intensity (assigned-only 32.9 -> 7.1%), the deprotonated C11 rows 195 -> 79 (51 assigned), 104 of them now their C10 formate reading at assigned, each corroborated by the C10 neutral through a mode channel, 51 standing because no reading of the C10 neutral exists through a mode channel, 28 held at candidate; assigned rows per sample 486 -> 440, assigned intensity 58.4 -> 56.5%, of which 272 list-matched acids drop to candidate because their formate rival's lighter neutral is itself committed (O4 to O8 products; a real ambiguity for the small acids, and for a list's C11 the C10 reading is right). Set G with reagent ion G11 1.2 -> 0.5%. Set C tiers within two rows of before (assigned 615 -> 613), same-formula agreement with the reference 89.6 -> 88.0% where a partnered formate reading replaces an acid the reference reads as an acid; set C2 unchanged (probe absent, channel off). The target of under 1% is met with reagent ion and not without: the remaining 5.6% is C11 acids whose C10 partner is seen through no mode channel, which the rule leaves standing |
-| 3.3 - name the source ions | - | planned |
+| 3.3 - name the source ions | - | planned; the list rewritten 2026-09-25 in four families with a literature reference per family, from the reference engine's reading (its #53) and the pass-8 fragment finding |
 | 3.3b - the standard adduct notation | #2203, #2204 stacked on it | built: both notations are read everywhere, through one reader in the library (`mechanism_notation`) mirrored by the frontend's; a new mechanism is stored in the standard form, and the mechanism column reads every row in it, so the API, exports, SDK and engine show `[M-H]-` before any row is rewritten; the profiles, channels, catalogue and provisional weights are spelled in it. The map is exact both ways on all 24 fleet spellings; #2204 rewrites the stored rows and the calibration weights' keys (alembic `5193d1e942e0`, the downgrade its inverse). Moves no metric. The legacy form is refused at 2.0 |
 | 3.3c - reagent rows read like rows | - | planned, recorded 2026-09-25 from the peak browser by the plan owner: a reagent row shows no formula, and the lines of its cluster's envelope stand beside it as unrelated reagent rows; the ion formula in the column, the envelope's lines under their monoisotopic row |
+| 3.3d - source-solvent clusters | - | planned, from the reference engine's reading (its #55): the proton- and hydride-bound ladders of water, methanol, ethanol and acetone claimed as reagent rows under its ladder rules |
 | 3.4 - an opportunistic channel needs a second channel | - | planned |
 | 3.4b - one peak is not enough | - | planned (decision 25), step section written 2026-09-25; the need measured on set J: a peak at m/z 455.0 assigned as C11H11N3O11S at fit 76% on one line at the noise floor, read as three formulas across the set's six files; 44% of J's assigned rows and 13 to 35% of the chamber Orbitrap sets' stand on one peak, under 5% of assigned intensity everywhere |
 | 3.5 - calibrants below the brightest lines, an offset term, and the low-mass bend (calibration node) | - | planned |
 | 3.6 - priors and the dataset's context | - | planned |
-| 3.7 - stage 3 gate, engine 0.6.0 | - | planned |
+| 3.7 - stage 3 gate, engine 0.6.0 | - | planned; read against the literature and chemical reasoning, not the reference engine's formulas (decision 27) |
 | 4.1 - series detection on the batch ledger | - | planned |
 | 4.2 - time-series coherence | - | planned |
 | 4.3 - calibration from verdicts, per profile | - | planned |
@@ -1704,32 +1705,94 @@ bump.
 
 ### 3.3 Name the source ions
 
-- **What.** The reagent and artifact pass claims the small ions a source
-  makes and a chemist recognises at sight, per polarity and profile: formate,
-  nitrite and its 15N form, the ozone anion, carbonate with its water and
-  hydroxide clusters, bicarbonate and peroxybicarbonate, CF3- and CF3O- (the
-  fluorinated fragments that ride with trifluoroacetic acid), bromide with
-  its water and peroxide clusters where a mode declares bromide, and
-  nitronium, NO+ and O2+ on a charge-transfer source. A claimed row carries
-  role `reagent` or `artifact` and names its ion, as decision 10 requires.
-  Formate and nitrite double as low-mass calibrants for step 3.5. The
-  fragment ladder of the brightest analyte on a charge-transfer or
-  proton-transfer source joins the list where the source shows it: on the
-  proton-transfer cylinder set alpha-pinene's fragments at 79.054 and
-  80.062 are read as protonated benzene and as a C6H8 the bottle does not
-  hold, and the second doubts the first (pass 8). A fragment named is a
-  partner of the wrong kind removed, and the reading the fragment displaced
-  can stand.
+- **What.** The reagent and artifact pass claims the ions a source makes of
+  itself and a chemist recognises at sight, per polarity and profile, in
+  four families, each with the literature that names it, so that a claimed
+  row names its ion (decision 10) and the how-it-works page cites where the
+  ion comes from:
+  - **The discharge's own ions in air.** Positive: N2+., N4+., O2+., NO+,
+    NO2+, the hydronium ladder H3O+(H2O)n and the ammonium ladder
+    NH4+(H2O)n [good70, sun88, pfe20]. Negative: O2-, O3-, CO3- with its
+    water and hydroxide clusters, HCO3-, CO4-, NO2-, NO3- and their water
+    clusters, OH-(H2O)n [ska04, nag06, sek10]. On a charge-transfer source
+    these are the source; on a reagent source, its background.
+  - **The reagent's own ladder and companions.** Nitrate: NO3-, HNO3.NO3-,
+    (HNO3)2.NO3-, nitrite, and the 15N form of each [eis93, jok12, riv19];
+    iodide: I-, I-(H2O), I2-, I3- [lee14]; bromide: Br-, Br-(H2O),
+    Br-(HO2), Br2-, Br3- [san16, ris19]; formate and acetate with their
+    dimers [ver08]; the protonated water and ammonium clusters of a
+    water-cluster source [pfe20, han95]. Formate and nitrite double as
+    low-mass calibrants for step 3.5.
+  - **The calibrant beam of an Orbitrap's internal-calibration source.**
+    Fluoranthene C16H10+. at 202.0777, its anion at 202.0788, its C2H2-loss
+    fragments C14H8+. and C12H6+., and the PAH rungs the beam carries
+    (C13H8, C14H10, C15H12), claimed as reagent where the beam is on
+    [easyic]; the cylinder sets K3 and L show the beam and its ladder in
+    every file.
+  - **Contaminant and fragment families.** The cyclic siloxanes D3 to D6 as
+    [M+H]+ and as their methyl-loss ions [M-CH3]+ at 281.051, 355.070 and
+    429.089 [sch03, kel08], the methyl-loss channel joining the
+    charge-transfer profile as a secondary channel gated as hydride
+    abstraction is; CF3- and CF3O-, the fluorinated fragments that ride with
+    trifluoroacetic acid (reference to find); and the fragment ladders of
+    the brightest analytes on a charge-transfer or proton-transfer source,
+    the monoterpenes' at 93.070, 80.062, 79.054, 77.039 and 67.054 [tan03,
+    nist, mcl93]. On the proton-transfer cylinder set alpha-pinene's
+    fragments at 79.054 and 80.062 are read as protonated benzene and as a
+    C6H8 the bottle does not hold, and the second doubts the first (pass
+    8): a fragment named is a partner of the wrong kind removed, and the
+    reading the fragment displaced can stand. A fragment row is claimed
+    only where its parent is committed in the sample and the ladder's
+    ratios hold, because a fragment's mass is often a component's ion too:
+    C5H7+ at 67.054 is isoprene less a hydride and a rung of alpha-pinene's
+    ladder at once, and the ratios say which.
+  The nitrogen-rich C2 family of the cylinder sets (C2HN3, C2N2O, C2H3N3,
+  C2H2N2O; 36% of set K's assigned intensity at m/z 69.008) is not an ion
+  the literature names. It is held by 3.6's odd-nitrogen prior and 4.2's
+  flat-series rule, and reported here as what the pass leaves.
+- **References.** Each goes into the how-it-works page's list with its
+  DOI, resolved by the implementing agent before the page cites it: good70
+  Good, Durden, Kebarle (1970) J. Chem. Phys. 52, 212; sun88 Sunner,
+  Nicol, Kebarle (1988) Anal. Chem. 60, 1300; ska04 Skalny, Mikoviny,
+  Matejcik, Mason (2004) Int. J. Mass Spectrom. 233, 317; nag06 Nagato,
+  Matsui, Miyata, Yamauchi (2006) Int. J. Mass Spectrom. 248, 142; sek10
+  Sekimoto, Takayama (2010) Eur. Phys. J. D 60, 589; eis93 Eisele, Tanner
+  (1993) J. Geophys. Res. 98, 9001; jok12 Jokinen et al. (2012) Atmos.
+  Chem. Phys. 12, 4117; riv19 Riva et al. (2019) Anal. Chem. 91, 9419;
+  lee14 Lee et al. (2014) Environ. Sci. Technol. 48, 6309; san16 Sanchez et
+  al. (2016) Atmos. Meas. Tech. 9, 3851; ris19 Rissanen et al. (2019)
+  Atmos. Meas. Tech. 12, 6635; ver08 Veres et al. (2008) Int. J. Mass
+  Spectrom. 274, 48; pfe20 Pfeifer et al. (2020) Atmos. Meas. Tech. 13,
+  2501; han95 Hansel et al. (1995) Int. J. Mass Spectrom. Ion Processes
+  149/150, 609; sch03 Schlosser, Volkmer-Engert (2003) J. Mass Spectrom.
+  38, 523; kel08 Keller, Sui, Young, Whittal (2008) Anal. Chim. Acta 627,
+  71; tan03 Tani, Hayward, Hewitt (2003) Int. J. Mass Spectrom. 223-224,
+  561; mcl93 McLafferty, Turecek (1993) Interpretation of Mass Spectra, 4th
+  ed.; nist NIST Chemistry WebBook, SRD 69, the mass spectra; easyic the
+  instrument vendor's documentation of the internal-calibration source
+  (fluoranthene at 202.0777 and 202.0788).
 - **Why.** These ions are honestly left unassigned today, which is the right
   failure, but they carry 15% of the summed intensity of the 15N-nitrate
   batch with reagent ion (formate alone 5.5%) and 63% of the mixed-reagent
   TOF batch's, and every reading counts them as unassigned intensity. The
   engine already names the reagent's own ladder; this is the rest of the
-  source.
-- **Where.** `reagent_pass.py`'s library and the profiles' reagent lines.
-- **Verify.** G10 on sets G to J at or above target; G4 unchanged or better;
-  no analyte row claimed (the stage-1 guard).
-- **Size.** S. The union of two reagent libraries on a mixed-reagent mode is
+  source. The reference engine's reading of the same sources (its #53)
+  parks the air-plasma cations, the hydronium clusters and the fluoranthene
+  fragments as ions that are never an analyte, and its cylinder run names
+  every PAH rung; pass 8 showed what an unnamed fragment costs on set L. A
+  reference per family is what lets an operator reading the list check it
+  against the literature rather than against the engine's word.
+- **Where.** `reagent_pass.py`'s library, per profile and polarity, each
+  entry carrying its reference key; the profiles' reagent lines; the
+  `[M-CH3]+` secondary channel on the charge-transfer profile
+  (`profiles.py`, gated as `[M-H]+` is); the how-it-works page's reference
+  list; `CHANGELOG.md`; a test per family in `test_reagent_pass.py`.
+- **Verify.** G10 on sets G to L at or above 95%; G4 unchanged or better;
+  no analyte row claimed (the stage-1 guard, read on the cylinder's
+  certified components); on L the pinene fragments claimed and the
+  protonated-benzene row settled by the shown-rival rule; on K3 the beam's
+  fragments claimed.
+- **Size.** M. The union of two reagent libraries on a mixed-reagent mode is
   not in this step (decision 22).
 
 ### 3.3b The standard adduct notation
@@ -1818,6 +1881,26 @@ bump.
   under its monoisotopic row when the ledger is folded; the reagent counts
   and G4 unchanged on every set.
 - **Size.** S.
+
+### 3.3d Source-solvent clusters
+
+- **What.** The proton-bound and hydride-bound ladders of the source's
+  solvent vapours, water, methanol, ethanol and acetone, as (S)nH+,
+  (S)n.H3O+ and [S-H]+.S, claimed as reagent rows under the reference
+  engine's ladder rules (its #55): the monomer ion is present, the ladder is
+  contiguous from it, every rung's mass fits at the run's precision, the
+  intensities fall along the ladder, and a rung displaces an analyte reading
+  only where its ladder evidence outweighs the analyte's by a bar; the water
+  rung never displaces [good70, sun88].
+- **Why.** On set I+ the acetone dimer at 117.091 sits in three of six
+  samples and reads as an analyte, and the reference engine's chamber run
+  finds ethanol ladders in the positive charge-transfer batch. A source's
+  solvent is not the sample.
+- **Where.** `reagent_pass.py`, a ladder claim beside the cluster claim; the
+  profiles' solvent lists per source.
+- **Verify.** G10 on I+ and K at or above target; no certified component of
+  the cylinder claimed; the dimer rows on I+ claimed.
+- **Size.** S-M.
 
 ### 3.4 An opportunistic channel needs a second channel
 
@@ -1946,7 +2029,15 @@ bump.
   mass fit to reach "assigned". A dataset or batch can name its context
   once, and a run on `auto` takes it before the profile's default. On a TOF
   the untargeted grid is bounded by the sample's fitted width rather than the
-  instrument class's 10 ppm.
+  instrument class's 10 ppm. Chlorine is allowed where the context or a
+  reference list shows it: the certified cylinder holds chlorobenzene,
+  which a grid with no chlorine cannot read (the reference engine's #53
+  found the same gap), and a chlorine formula takes the 37Cl line at a
+  third of M0 as the second observation 3.4b asks for, which the batch
+  fold predicts (4.2). The odd-nitrogen prior's first target is the
+  nitrogen-rich C2 family of the cylinder sets, 21 to 34% of their
+  assigned rows and 36% of set K's assigned intensity, in a nitrogen-free
+  mixture.
 - **Why.** Sulfur formulas are 5% of the assigned neutrals in the nitrate
   batches, 2% in uronium and 22% on the TOF, in an alpha-pinene system with
   no sulfur source; the chamber context, run by hand on the nitrate
@@ -1962,11 +2053,24 @@ bump.
 
 ### 3.7 Stage 3 gate, engine 0.6.0
 
-- Protocol run over sets A to J, status table, version bump, changelog.
-  Expected: G9 at or below 2% and G10 at or above 95% on every gated set,
-  G11 at 0 on set G, G12 at 0 on every set; G1 and G2 unchanged within
-  noise on sets A to F. Set J
-  is measured and reported, not gated (decision 22).
+- Protocol run over sets A to L, status table, version bump, changelog.
+  The verdict is read against the literature and chemical reasoning, not
+  the reference engine's formulas (decision 27). Expected: G9 at or below
+  2% and G10 at or above 95% on every gated set, G11 at 0 on set G, G12 at
+  0 on every set; on the cylinder sets every certified component at
+  assigned through its right reading and nothing the bottle does not hold
+  at assigned; and a chemist's reading of the fifty brightest assigned
+  rows of each chamber set against the known products of alpha-pinene
+  oxidation [yu99, gla00, ehn14, bia19] and the source chemistry (the
+  references under 3.3), every row either in the literature, argued from
+  it, or reported as neither. G1 and G2 are reported beside the rest as
+  readings of where the two engines differ, each difference explained by
+  one side's chemistry or listed as open; they are no longer a target.
+  Set J is measured and reported, not gated (decision 22). References:
+  yu99 Yu, Cocker, Griffin, Flagan, Seinfeld (1999) J. Atmos. Chem. 34,
+  207; gla00 Glasius et al. (2000) Environ. Sci. Technol. 34, 1001; ehn14
+  Ehn et al. (2014) Nature 506, 476; bia19 Bianchi et al. (2019) Chem.
+  Rev. 119, 3472.
 
 ## Stage 4 - use the batch (engine 0.7.0)
 
@@ -2018,6 +2122,12 @@ Corroboration that only a batch can give, on the batch ledger.
     two-stage file-count vote - which ion, then which label - with a
     curated exemption (peaky #43); Mascope's fold weights by intensity.
     The two are compared on one batch before either is called right.
+  - **A flat series is background** (peaky #53). A formula whose batch
+    time series holds a constant ratio to the batch's normaliser, varying
+    in fewer files than a floor share, is background rather than an
+    analyte: capped at candidate with the reason, and read as a source ion
+    where 3.3's list names it. The nitrogen-rich C2 family of the cylinder
+    sets, flat in every file, is its first target.
 - **Verify.** On the two 400-600-sample testbed batches; compare with
   peaky's pass-7 skips.
 - **Size.** M. Depends on 2.3 and 2.4.
@@ -4965,6 +5075,21 @@ is within 0.4 ppm interquartile wherever the calibration is good.
     to assigned is the failure the tiers exist to prevent. The rows that
     stay candidate under both are the lopsided ones, with the rival named,
     until the fragments are named (3.3).
+27. **The stage 3 gate is read against the literature and chemical
+    reasoning, not the reference engine's formulas** (taken 2026-09-25 by
+    the plan owner). By the end of stage 3 the engine is expected to read
+    a source better than the reference engine does today, so agreement
+    with its formulas stops being a target and becomes a reading reported
+    beside the others, as decision 20 already says of its tiers. The
+    gate's verdict rests on the certified cylinder, which is ground truth
+    by construction (decision 24); on the intrinsic metrics G9 to G12; and
+    on a chemist's reading of each set's brightest assigned rows against
+    the literature of that chemistry, the known oxidation products on the
+    chamber sets and the source ions of 3.3, with the references cited in
+    the plan and on the how-it-works page. Every disagreement with the
+    reference engine is explained by one side's chemistry or reported as
+    open, and the comparison tool keeps reporting G1 and G2 so that the
+    reference's own progress can be read.
 
 ## Risks
 
