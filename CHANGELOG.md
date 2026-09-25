@@ -399,7 +399,8 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   a mechanism that both adds and removes (`[M+Na-2H]-`). The shipped
   chemistries, the chemistry profiles' fingerprints and secondary channels and
   the provisional corroboration weights are spelled in it, and a weight keyed
-  in either spelling applies to an adduct written in the other
+  in either spelling applies to an adduct written in the other; where a
+  calibration holds both spellings of one adduct, the standard one applies
   (assignment quality plan, step 3.3b). **For callers of
   `mascope_tools`:** `parse_ionization` reads both notations and refuses a
   string in neither, such as `H+` with no leading sign, which it used to read as

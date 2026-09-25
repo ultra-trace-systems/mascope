@@ -75,6 +75,29 @@ class Calibration:
 DEFAULT_CORROBORATION_CAP = 3.0
 
 
+def corroboration_by_mechanism(
+    weights: Mapping[str, float] | None,
+) -> dict[str, float]:
+    """The weights keyed by mechanism (:func:`mechanism_key`) rather than by spelling.
+
+    Two keys may name one adduct, ``"+Br-"`` beside ``"[M+Br]-"``. The first key
+    written in the standard notation wins, and the first key otherwise: that is the one
+    the notation migration keeps, so a calibration scores the same before the migration
+    and after it. Weights already keyed come back as they were, so a caller applying one
+    calibration many times keys it once."""
+    by_mechanism: dict[str, float] = {}
+    written_standard: set[str] = set()
+    for adduct, weight in (weights or {}).items():
+        key = mechanism_key(adduct)
+        standard = adduct.strip().startswith("[")
+        if key in by_mechanism and (key in written_standard or not standard):
+            continue
+        by_mechanism[key] = weight
+        if standard:
+            written_standard.add(key)
+    return by_mechanism
+
+
 def apply_corroboration(
     p_correct: float | None,
     observed_adducts: Sequence[str],
@@ -91,10 +114,11 @@ def apply_corroboration(
     corroborator lifts a weak assignment while a generic one barely moves a strong one. Returns
     ``p_correct`` unchanged when it is ``None`` (uncalibrated), or when there are no weights or no
     observed corroborating adducts. An adduct and a weight are matched by mechanism, not by
-    spelling, so weights keyed ``"+Br-"`` apply to ``"[M+Br]-"``."""
+    spelling, so weights keyed ``"+Br-"`` apply to ``"[M+Br]-"``
+    (:func:`corroboration_by_mechanism`)."""
     if p_correct is None or not weights or not observed_adducts:
         return p_correct
-    by_mechanism = {mechanism_key(adduct): weight for adduct, weight in weights.items()}
+    by_mechanism = corroboration_by_mechanism(weights)
     delta = float(
         sum(by_mechanism.get(mechanism_key(a), 0.0) for a in observed_adducts)
     )

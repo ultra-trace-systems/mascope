@@ -42,6 +42,7 @@ from mascope_tools.composition.calibration import (
     apply_calibration,
     apply_corroboration,
     calibration_for,
+    corroboration_by_mechanism,
 )
 from mascope_tools.composition.custom_elements import CUSTOM_ELEMENTS
 from mascope_tools.composition.finder import (
@@ -1507,6 +1508,8 @@ def _fold_adduct_corroboration(
     calibration carries no weights. Records the co-occurrence + boost in provenance for the UI."""
     if not weights or not m0_items:
         return
+    # Keyed by mechanism once for the fold rather than once per winner.
+    weights = corroboration_by_mechanism(weights)
     adducts_by_compound: dict[str, set[str]] = {}
     for assignment, compound_id, notation in m0_items:
         if assignment["tier"] in (TIER_ASSIGNED, TIER_CANDIDATE):

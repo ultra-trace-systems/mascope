@@ -24,6 +24,7 @@ from mascope_tools.composition.calibration import (
     apply_corroboration,
     calibration_error,
     calibration_for,
+    corroboration_by_mechanism,
     discrimination_auc,
     fit_calibration,
     holdout_split,
@@ -196,6 +197,33 @@ def test_corroboration_matches_an_adduct_to_its_weight_by_mechanism():
         apply_corroboration(0.6, ["[M+Br]-"], WEIGHTS)
     )
     assert apply_corroboration(0.6, ["+Br-"], WEIGHTS) > 0.6
+    # A mechanism of several terms, whichever order they are written in.
+    assert apply_corroboration(0.6, ["[M+H+CH4N2O]+"], WEIGHTS) == pytest.approx(
+        apply_corroboration(0.6, ["[M+CH4N2O+H]+"], WEIGHTS)
+    )
+
+
+@pytest.mark.parametrize(
+    "weights",
+    [
+        {"[M+Br]-": 2.0, "+Br-": 1.0},
+        {"+Br-": 1.0, "[M+Br]-": 2.0},
+        {"+Br-": 1.0, "[M+Br]-": 2.0, "[M+Br]- ": 3.0},
+    ],
+)
+def test_a_weight_in_the_standard_notation_wins_over_a_legacy_one(weights):
+    # Both spellings of one adduct in one calibration: the standard one decides,
+    # whichever comes first, as it does once the migration has kept it alone.
+    assert corroboration_by_mechanism(weights) == {"[M+Br]-": 2.0}
+    assert apply_corroboration(0.5, ["[M+Br]-"], weights) == pytest.approx(
+        apply_corroboration(0.5, ["[M+Br]-"], {"[M+Br]-": 2.0})
+    )
+
+
+def test_weights_already_keyed_come_back_as_they_were():
+    keyed = corroboration_by_mechanism({"+Br-": 2.28, "-H+": 0.0, "unknown": 1.0})
+    assert keyed == {"[M+Br]-": 2.28, "[M-H]-": 0.0, "unknown": 1.0}
+    assert corroboration_by_mechanism(keyed) == keyed
 
 
 def test_corroboration_sums_multiple_adducts():
