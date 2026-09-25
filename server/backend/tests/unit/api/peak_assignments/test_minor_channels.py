@@ -25,9 +25,11 @@ from mascope_backend.api.new.peak_assignments.profiles import (
     with_secondary_channels,
 )
 from mascope_backend.api.new.peak_assignments.service import (
+    _notation_by_id,
     _readable,
     _searched_mechanisms,
     _untargeted_ionization_notations,
+    _without_unreadable,
 )
 from mascope_backend.api.new.peak_assignments.tiers import (
     TIER_ASSIGNED,
@@ -886,3 +888,30 @@ class TestEachMechanismIsSearchedOnce:
         assert _readable(self.PROTON)
         assert len(warnings) == 1
         assert "im-label" in warnings[0]
+
+    def test_the_second_row_of_a_pair_reads_as_the_same_channel(self):
+        # Its own target ions still reach Stage A: a reading through them has
+        # to count as, and be questioned as, a reading through that channel.
+        assert _notation_by_id(
+            [
+                _mechanism("im-nh4-a", "[M+NH4]+"),
+                self.PROTON,
+                _mechanism("im-nh4-b", "[M+NH4]+"),
+            ]
+        ) == {"im-nh4-a": "[M+NH4]+", "im-h": "[M+H]+", "im-nh4-b": "[M+NH4]+"}
+
+    def test_a_row_in_neither_notation_leaves_with_its_id(self, monkeypatch):
+        # Stage A fetches target ions by these ids, and ions an older version
+        # generated for the row read its text as some other mechanism. The
+        # other polarity's ids stay: Stage A fetches by polarity too.
+        monkeypatch.setattr(service_module.runtime.logger, "warning", lambda _: None)
+        monkeypatch.setattr(service_module, "_reported_unreadable", set())
+
+        mechanism_ids, mechanisms = _without_unreadable(
+            ["im-h", "im-label", "im-other-polarity"],
+            [self.PROTON, _mechanism("im-label", "+H+ (a free-text label)")],
+        )
+
+        assert mechanism_ids == ["im-h", "im-other-polarity"]
+        assert [m.ionization_mechanism_id for m in mechanisms] == ["im-h"]
+        assert mechanisms[0] is not self.PROTON
