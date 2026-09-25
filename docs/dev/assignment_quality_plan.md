@@ -48,6 +48,7 @@ dataset's sets G to J, the chemist's reading of 2026-09-24 (decision 21).
 | 3.2 - formate as an opportunistic channel | #2198, stacked on #2197 | built: `+HCOO-` is a secondary channel of the nitrate, 15N-nitrate, bromide and iodide profiles, probed on formate, its dimer with formic acid and (nitrate) its cluster with the reagent's acid, built from the reagent so the labelled profile probes `[HCOO+H^NO3]-`; the nitrate profiles keep it on where the window cannot show a probe, as they do carbonate, because the batch carrying the C11 pseudo-acids is acquired from m/z 130 and the source makes no formate carrier above 127 (the two-acid cluster absent, the two-formic-acid cluster at 0.01-0.05% of base on the wide-window sister batch); the halide profiles claim only what they show. The election alone is not enough: measured with the channel open, it read every deprotonated acid as the molecule 46 Da lighter with formate (1,239 acid rows of six no-reagent-ion samples moved to formate and were capped; set C's same-formula agreement with the reference fell from 89.6% to 62.6%), so formate takes the partner gate of step 3.1 (`engine.apply_partner_gates`): the formate reading is the row's only where the lighter neutral is committed through a mode channel, otherwise the acid stands and the formate reading is set aside. Measured on the testbed with the partner gate judging every row against the ledger as it stands: set G without reagent ion G11 24.4 -> 5.6% of assigned-plus-candidate intensity (assigned-only 32.9 -> 7.1%), the deprotonated C11 rows 195 -> 79 (51 assigned), 104 of them now their C10 formate reading at assigned, each corroborated by the C10 neutral through a mode channel, 51 standing because no reading of the C10 neutral exists through a mode channel, 28 held at candidate; assigned rows per sample 486 -> 440, assigned intensity 58.4 -> 56.5%, of which 272 list-matched acids drop to candidate because their formate rival's lighter neutral is itself committed (O4 to O8 products; a real ambiguity for the small acids, and for a list's C11 the C10 reading is right). Set G with reagent ion G11 1.2 -> 0.5%. Set C tiers within two rows of before (assigned 615 -> 613), same-formula agreement with the reference 89.6 -> 88.0% where a partnered formate reading replaces an acid the reference reads as an acid; set C2 unchanged (probe absent, channel off). The target of under 1% is met with reagent ion and not without: the remaining 5.6% is C11 acids whose C10 partner is seen through no mode channel, which the rule leaves standing |
 | 3.3 - name the source ions | - | planned |
 | 3.3b - the standard adduct notation | #2203, #2204 stacked on it | built: both notations are read everywhere, through one reader in the library (`mechanism_notation`) mirrored by the frontend's; a new mechanism is stored in the standard form, and the mechanism column reads every row in it, so the API, exports, SDK and engine show `[M-H]-` before any row is rewritten; the profiles, channels, catalogue and provisional weights are spelled in it. The map is exact both ways on all 24 fleet spellings; #2204 rewrites the stored rows and the calibration weights' keys (alembic `5193d1e942e0`, the downgrade its inverse). Moves no metric. The legacy form is refused at 2.0 |
+| 3.3c - reagent rows read like rows | - | planned, recorded 2026-09-25 from the peak browser by the plan owner: a reagent row shows no formula, and the lines of its cluster's envelope stand beside it as unrelated reagent rows; the ion formula in the column, the envelope's lines under their monoisotopic row |
 | 3.4 - an opportunistic channel needs a second channel | - | planned |
 | 3.4b - one peak is not enough | - | planned (decision 25), step section written 2026-09-25; the need measured on set J: a peak at m/z 455.0 assigned as C11H11N3O11S at fit 76% on one line at the noise floor, read as three formulas across the set's six files; 44% of J's assigned rows and 13 to 35% of the chamber Orbitrap sets' stand on one peak, under 5% of assigned intensity everywhere |
 | 3.5 - calibrants below the brightest lines, an offset term, and the low-mass bend (calibration node) | - | planned |
@@ -1721,6 +1722,47 @@ bump.
   changes; the reference engine reads a run's mechanisms without its adapter.
 - **Size.** M, in two PRs (accept and show; migrate). Not a stage-3 gate
   item: it moves no metric, and it lands whenever it is ready before 2.0.
+
+### 3.3c Reagent rows read like rows
+
+- **What.** A reagent row shows its ion, and a reagent cluster's isotopologues
+  are its family. The reagent pre-pass writes the cluster's ion formula on
+  the row (`ion_formula`) and no analyte formula, rightly, since the ion is
+  the source's and not the sample's; but the browser's formula column reads
+  the analyte formula, so a reagent row shows nothing where the reader looks
+  first. The column shows the ion formula on a reagent or artifact row, as
+  the ion it is (the role chip already says whose), and the inspector's
+  header does the same. And the pre-pass claims each line of a cluster's
+  envelope as a reagent row of its own, with an isotope label and no owner,
+  so the fold that groups an analyte's isotopologues under its monoisotopic
+  row leaves the reagent lines flat among the parents. The pre-pass writes
+  the cluster's monoisotopic row as the owner of its other lines
+  (`owner_peak_assignment_id`, the role staying reagent; a line whose
+  monoisotopic peak the pass did not claim stays its own row), the browser
+  folds them as it folds an analyte's, and the inspector's isotopologue
+  table lists them with the predicted share each row already carries. No
+  tier and no metric moves: the rows are the same rows, read.
+- **Why.** Reported by the plan owner from the peak browser on 2026-09-25: a
+  reagent row with no formula, and its heavier lines standing beside it as
+  unrelated reagent rows, reads as a peak the run failed to explain twice
+  rather than one ion it explained fully. The reagent pass is what made G4
+  measurable; its rows should be legible in the ledger it feeds.
+- **Where.** `reagent_pass.build_reagent_assignments` (the owner on the
+  envelope's lines, from the hit's cluster and isotope label);
+  `PaneBrowserAssignment.vue` (the formula cell of a row with an ion and no
+  analyte, the family fold reading the owner on reagent rows) and the
+  batch-peaks ledger, which shares the tier module and should read the same;
+  the inspector's header and isotopologue table (`PanePeakAssign.vue`);
+  `docs/user/how-it-works/peak-assignment.md` where the reagent rows are
+  described; `CHANGELOG.md`. Tests: `test_reagent_pass.py` (an owner on
+  every claimed line but the monoisotopic one, none where that line was not
+  claimed), `paneBrowserAssignment.spec.js` (a reagent family folds, the
+  formula cell shows the ion).
+- **Verify.** On sets C, D and I every reagent row in the browser shows its
+  ion formula, and every claimed line of a reagent cluster's envelope sits
+  under its monoisotopic row when the ledger is folded; the reagent counts
+  and G4 unchanged on every set.
+- **Size.** S.
 
 ### 3.4 An opportunistic channel needs a second channel
 
