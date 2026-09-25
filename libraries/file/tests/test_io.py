@@ -7,6 +7,7 @@ import os
 import shutil
 import subprocess
 import sys
+import threading
 from contextlib import contextmanager
 from unittest.mock import patch
 
@@ -1096,6 +1097,14 @@ class TestUpdateProps:
         with open(os.path.join(sample_file_path, ".props"), "r") as f:
             return json.load(f)
 
+    def _temporaries(self, sample_file_path):
+        """Leftover temporary props.
+
+        Not the whole listing: the filestore fixture is session-scoped, so
+        what else is in the directory depends on which tests ran first.
+        """
+        return [n for n in os.listdir(sample_file_path) if n.endswith(".tmp")]
+
     def test_updates_the_named_fields_and_keeps_the_rest(self, sample_file_path):
         self._write(sample_file_path, {"range": [1, 2], "mz_calibration": {"a": 1}})
 
@@ -1112,33 +1121,43 @@ class TestUpdateProps:
 
         .props carries a sample's calibration fit, so a half-written file
         costs a refit rather than a reread. Writing in place truncated it
-        before the new content was known to be complete.
+        before the new content was known to be complete. The rename's own
+        details are tested in libraries/runtime/tests/test_atomic.py.
         """
         before = {"range": [1, 2], "mz_calibration": {"a": 1}}
         self._write(sample_file_path, before)
 
-        with patch("mascope_file.io.json.dump", side_effect=OSError("disk full")):
+        with patch(
+            "mascope_runtime.atomic.json.dump", side_effect=OSError("disk full")
+        ):
             with pytest.raises(OSError):
                 m_io.update_props(TEST_FILENAME, {"scan_streams": [{"key": "s"}]})
 
         assert self._read(sample_file_path) == before
+        assert self._temporaries(sample_file_path) == []
 
-    def test_a_failed_write_leaves_no_temporary_behind(self, sample_file_path):
+    def test_a_reader_does_not_cost_an_update_its_write(self, sample_file_path):
+        """Mascope reads .props often; a read must not fail a calibration write.
+
+        On Windows the rename raises PermissionError while another handle
+        holds the destination open, where the in-place write this replaced
+        succeeded.
+        """
         self._write(sample_file_path, {"range": [1, 2]})
+        holder = open(os.path.join(sample_file_path, ".props"), "r")
+        threading.Timer(0.05, holder.close).start()
+        try:
+            m_io.update_props(TEST_FILENAME, {"scan_streams": [{"key": "s"}]})
+        finally:
+            if not holder.closed:
+                holder.close()
 
-        with patch("mascope_file.io.json.dump", side_effect=OSError("disk full")):
-            with pytest.raises(OSError):
-                m_io.update_props(TEST_FILENAME, {"scan_streams": []})
+        assert self._read(sample_file_path)["scan_streams"] == [{"key": "s"}]
 
-        assert [
-            n for n in os.listdir(sample_file_path) if n.startswith(".props.")
-        ] == []
+    def test_write_props_replaces_the_whole_document(self, sample_file_path):
+        self._write(sample_file_path, {"range": [1, 2], "gone": True})
 
-    def test_a_successful_write_leaves_no_temporary_behind(self, sample_file_path):
-        self._write(sample_file_path, {"range": [1, 2]})
+        m_io.write_props(TEST_FILENAME, {"range": [3, 4]})
 
-        m_io.update_props(TEST_FILENAME, {"scan_streams": []})
-
-        assert [
-            n for n in os.listdir(sample_file_path) if n.startswith(".props.")
-        ] == []
+        assert self._read(sample_file_path) == {"range": [3, 4]}
+        assert self._temporaries(sample_file_path) == []

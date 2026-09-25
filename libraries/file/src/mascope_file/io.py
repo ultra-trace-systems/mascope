@@ -17,6 +17,7 @@ import zarr
 
 import mascope_file.name as m_name
 from mascope_file.runtime import runtime
+from mascope_runtime.atomic import write_json
 
 
 # Keep writing zarr v2 stores. The filestore is full of v2 data written by
@@ -428,18 +429,17 @@ def write_props(base_filename, props):
     sample_data_path = m_name.parse_path_from_item_filename(base_filename)
     # Write properties
     prop_path = os.path.join(sample_data_path, ".props")
-    with open(prop_path, "w") as f:
-        json.dump(props, f, indent=4)
+    write_json(prop_path, props, indent=4)
 
 
 def update_props(base_filename, props_to_update):
     """Update sample file properties and write to file. Properties given are updated, rest (if any) remain as is.
 
-    The new props are written to a temporary file beside the old one and
-    renamed over it, so a process that dies mid-write leaves the previous
-    props intact. Overwriting in place would leave a truncated .props, and it
-    holds a sample's calibration fit - losing it costs a refit, not just a
-    reread.
+    The new props are written beside the old ones and renamed over them
+    (:func:`mascope_runtime.atomic.write_json`), so a process that dies
+    mid-write leaves the previous props intact. Overwriting in place would
+    leave a truncated .props, and it holds a sample's calibration fit - losing
+    it costs a refit, not just a reread.
 
     :param base_filename: Sample file filename
     :type base_filename: str
@@ -452,16 +452,7 @@ def update_props(base_filename, props_to_update):
     with open(prop_path, "r") as f:
         props = json.load(f)
     props.update(props_to_update)
-    # Named per process, so two writers cannot share a half-written temporary;
-    # the rename itself stays last-writer-wins, as an in-place write was.
-    temp_path = f"{prop_path}.{os.getpid()}.tmp"
-    try:
-        with open(temp_path, "w") as f:
-            json.dump(props, f, indent=4)
-        os.replace(temp_path, prop_path)
-    finally:
-        if os.path.exists(temp_path):
-            os.remove(temp_path)
+    write_json(prop_path, props, indent=4)
 
 
 def update_zarr_array_coord(base_filename, var, dim, coord):

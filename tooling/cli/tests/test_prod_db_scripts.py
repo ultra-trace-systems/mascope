@@ -410,6 +410,50 @@ def test_uses_the_current_dockerfile_path_first():
     )
 
 
+def test_every_db_script_exposes_the_entry_point_both_runners_need():
+    # `mascope dev db script run` lists only modules with a callable main(),
+    # so a script without one is "Unknown script". `mascope prod db script
+    # run` finds it anyway - its probe lists the package with pkgutil - then
+    # takes a pg_dump and runs `python -m`, which imports the module and exits
+    # 0. The operator is told "Script completed" and nothing was done.
+    #
+    # Checked by source rather than by importing, so this test needs none of
+    # the backend's dependencies: `python -m` runs `main()` through the
+    # `if __name__ == "__main__"` guard, and the dev runner looks up the
+    # attribute, so both spellings have to be there.
+    script_dir = (
+        Path(__file__).resolve().parents[3]
+        / "server"
+        / "backend"
+        / "src"
+        / "mascope_backend"
+        / "db"
+        / "scripts"
+    )
+    if not script_dir.is_dir():
+        pytest.skip("backend sources not present in this checkout")
+
+    without_main = []
+    without_guard = []
+    for source in sorted(script_dir.glob("*.py")):
+        if source.stem.startswith("_"):
+            continue
+        text = source.read_text(encoding="utf-8")
+        if not re.search(r"^def main\(", text, re.MULTILINE):
+            without_main.append(source.name)
+        if '__name__ == "__main__"' not in text:
+            without_guard.append(source.name)
+
+    assert not without_main, (
+        f"{without_main} have no main(), so `mascope dev db script run` "
+        "cannot find them"
+    )
+    assert not without_guard, (
+        f"{without_guard} have no __main__ guard, so `mascope prod db script "
+        "run` imports them and exits 0 without running anything"
+    )
+
+
 def test_every_env_var_the_db_scripts_read_is_forwarded():
     # The prod runner only passes allowlisted env vars through `docker exec -e`;
     # a var missing from the list is silently unset inside the container. For
