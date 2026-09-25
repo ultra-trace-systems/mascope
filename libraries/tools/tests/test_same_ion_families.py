@@ -55,23 +55,23 @@ class TestTheFormateAdductAndTheAcid:
     """
 
     def test_the_formate_reading_is_elected_and_the_acid_kept(self):
-        acid = _candidate("C11H20O7", "-H+", "C11H19O7-")
-        adduct = _candidate("C10H18O5", "+HCOO-", "C11H19O7-")
+        acid = _candidate("C11H20O7", "[M-H]-", "C11H19O7-")
+        adduct = _candidate("C10H18O5", "[M+HCOO]-", "C11H19O7-")
         assert neutral_is_closed_shell("C11H20O7")
         assert neutral_is_closed_shell("C10H18O5")
-        assert mechanism_mass_contribution("+HCOO-") > mechanism_mass_contribution(
-            "-H+"
+        assert mechanism_mass_contribution("[M+HCOO]-") > mechanism_mass_contribution(
+            "[M-H]-"
         )
         for order in ((acid, adduct), (adduct, acid)):
             [winner] = elect_same_ion_families(list(order))
             assert winner["formula"] == "C10H18O5"
-            assert winner["ionization_mechanism"] == "+HCOO-"
+            assert winner["ionization_mechanism"] == "[M+HCOO]-"
             assert [a["formula"] for a in winner[SAME_ION_ALTERNATIVES]] == ["C11H20O7"]
 
     def test_the_two_readings_are_one_ion_to_the_finder(self):
         # 263.1136: what the chamber batch's strongest assigned peak reads as.
-        target = calculate_mass(formula="C10H18O5") + parse_ionization("+HCOO-").mass
-        acid = calculate_mass(formula="C11H20O7") - parse_ionization("-H+").mass
+        target = calculate_mass(formula="C10H18O5") + parse_ionization("[M+HCOO]-").mass
+        acid = calculate_mass(formula="C11H20O7") - parse_ionization("[M-H]-").mass
         assert target == pytest.approx(acid, abs=1e-9)
         assert target == pytest.approx(263.1136, abs=5e-4)
 
@@ -96,10 +96,10 @@ class TestTheNeutralIsAMolecule:
         # key says nothing and the mechanism's mass decides alone. That is most
         # of the gate.
         for molecule, heavier in (
-            ("C6H12O6", "C6H15NO6"),  # +NH4+ against +H+, differing by NH3
-            ("C8H16", "C9H20N2O"),  # +(CH4N2O)H+ against +H+, by urea
-            ("C6H10O5", "C6H11NO8"),  # +NO3- against -H+, by HNO3
-            ("C6H12O6", "C6H13BrO6"),  # +Br- against -H+, by HBr
+            ("C6H12O6", "C6H15NO6"),  # [M+NH4]+ against [M+H]+, differing by NH3
+            ("C8H16", "C9H20N2O"),  # [M+CH4N2O+H]+ against [M+H]+, by urea
+            ("C6H10O5", "C6H11NO8"),  # [M+NO3]- against [M-H]-, by HNO3
+            ("C6H12O6", "C6H13BrO6"),  # [M+Br]- against [M-H]-, by HBr
         ):
             assert neutral_is_closed_shell(molecule)
             assert neutral_is_closed_shell(heavier)
@@ -114,8 +114,10 @@ class TestTheMechanismCarryingTheMass:
     """The second key, on the mechanisms the profiles actually declare."""
 
     def test_an_addition_contributes_positive_mass_and_a_subtraction_negative(self):
-        assert mechanism_mass_contribution("+NH4+") == pytest.approx(18.034, abs=1e-3)
-        assert mechanism_mass_contribution("-H+") == pytest.approx(-1.007, abs=1e-3)
+        assert mechanism_mass_contribution("[M+NH4]+") == pytest.approx(
+            18.034, abs=1e-3
+        )
+        assert mechanism_mass_contribution("[M-H]-") == pytest.approx(-1.007, abs=1e-3)
 
     def test_the_reagent_adduct_outranks_the_deprotonation(self):
         # The three readings the nitrate chemistry offers for one anion, in the
@@ -123,17 +125,17 @@ class TestTheMechanismCarryingTheMass:
         # the source also runs, and last the covalent reading that asks the
         # analyte to have carried the reagent's own atoms all along.
         assert (
-            mechanism_mass_contribution("+NO3-")
-            > mechanism_mass_contribution("+CO3-")
-            > mechanism_mass_contribution("-H+")
+            mechanism_mass_contribution("[M+NO3]-")
+            > mechanism_mass_contribution("[M+CO3]-")
+            > mechanism_mass_contribution("[M-H]-")
         )
 
     def test_an_unreadable_mechanism_does_not_decide_a_family(self):
         # Fail-open: a notation whose moiety has no mass at all ranks below
         # every addition and above every subtraction, rather than raising in the
-        # middle of a ranking or winning a family by accident. "+Xx+" names an
+        # middle of a ranking or winning a family by accident. "[M+Xx]+" names an
         # element the mass tables do not have.
-        assert mechanism_mass_contribution("+Xx+") == 0.0
+        assert mechanism_mass_contribution("[M+Xx]+") == 0.0
         assert mechanism_mass_contribution(None) == 0.0
 
 
@@ -148,18 +150,18 @@ class TestTheFamilyElection:
         # most mass. The carbonate reading is last because its neutral is a
         # radical, not because its mechanism is the lightest.
         members = [
-            _candidate("C6H11NO8", "-H+", "C6H10NO8-"),
-            _candidate("C5H10NO5", "+CO3-", "C6H10NO8-"),
-            _candidate("C6H10O5", "+NO3-", "C6H10NO8-"),
+            _candidate("C6H11NO8", "[M-H]-", "C6H10NO8-"),
+            _candidate("C5H10NO5", "[M+CO3]-", "C6H10NO8-"),
+            _candidate("C6H10O5", "[M+NO3]-", "C6H10NO8-"),
         ]
         (elected,) = elect_same_ion_families(members)
 
         assert elected["formula"] == "C6H10O5"
-        assert elected["ionization_mechanism"] == "+NO3-"
+        assert elected["ionization_mechanism"] == "[M+NO3]-"
         assert [
             (member["formula"], member["ionization_mechanism"])
             for member in elected[SAME_ION_ALTERNATIVES]
-        ] == [("C6H11NO8", "-H+"), ("C5H10NO5", "+CO3-")]
+        ] == [("C6H11NO8", "[M-H]-"), ("C5H10NO5", "[M+CO3]-")]
 
     def test_a_molecule_outranks_a_radical_however_the_mass_falls(self):
         # The measured case: C17H23O4- is a deprotonated acid or a carbonate
@@ -168,38 +170,38 @@ class TestTheFamilyElection:
         # set and read every one as an adduct of something that is not a
         # molecule.
         members = [
-            _candidate("C16H23O", "+CO3-", "C17H23O4-"),
-            _candidate("C17H24O4", "-H+", "C17H23O4-"),
+            _candidate("C16H23O", "[M+CO3]-", "C17H23O4-"),
+            _candidate("C17H24O4", "[M-H]-", "C17H23O4-"),
         ]
         (elected,) = elect_same_ion_families(members)
 
         assert elected["formula"] == "C17H24O4"
-        assert elected["ionization_mechanism"] == "-H+"
+        assert elected["ionization_mechanism"] == "[M-H]-"
 
     def test_a_radical_still_wins_when_it_is_the_only_reading(self):
         # A tie-break, not a filter. A nitrate source measuring RO2 must keep
         # committing the radical where nothing else explains the ion.
-        lone = _candidate("C16H23O", "+CO3-", "C17H23O4-")
+        lone = _candidate("C16H23O", "[M+CO3]-", "C17H23O4-")
         (elected,) = elect_same_ion_families([lone])
 
         assert elected is lone
 
     def test_the_election_does_not_depend_on_the_order_they_arrive_in(self):
         members = [
-            _candidate("C6H10O5", "+NO3-", "C6H10NO8-"),
-            _candidate("C5H10NO5", "+CO3-", "C6H10NO8-"),
-            _candidate("C6H11NO8", "-H+", "C6H10NO8-"),
+            _candidate("C6H10O5", "[M+NO3]-", "C6H10NO8-"),
+            _candidate("C5H10NO5", "[M+CO3]-", "C6H10NO8-"),
+            _candidate("C6H11NO8", "[M-H]-", "C6H10NO8-"),
         ]
         for rotation in range(len(members)):
             rotated = members[rotation:] + members[:rotation]
             (elected,) = elect_same_ion_families(rotated)
-            assert elected["ionization_mechanism"] == "+NO3-"
+            assert elected["ionization_mechanism"] == "[M+NO3]-"
 
     def test_different_ions_are_different_families(self):
         elected = elect_same_ion_families(
             [
-                _candidate("C6H12O6", "+H+", "C6H13O6+"),
-                _candidate("C6H10O5", "+NO3-", "C6H10NO8-"),
+                _candidate("C6H12O6", "[M+H]+", "C6H13O6+"),
+                _candidate("C6H10O5", "[M+NO3]-", "C6H10NO8-"),
             ]
         )
         assert len(elected) == 2
@@ -207,7 +209,7 @@ class TestTheFamilyElection:
     def test_a_family_of_one_is_left_exactly_as_it_came(self):
         # The common case must add nothing to the row: no key, no copy of a list
         # nobody will read.
-        lone = _candidate("C6H12O6", "+H+", "C6H13O6+")
+        lone = _candidate("C6H12O6", "[M+H]+", "C6H13O6+")
         (elected,) = elect_same_ion_families([lone])
         assert elected is lone
         assert SAME_ION_ALTERNATIVES not in elected
@@ -217,8 +219,8 @@ class TestTheFamilyElection:
         # and must never be collapsed into the unlabelled family.
         elected = elect_same_ion_families(
             [
-                _candidate("C6H10O5", "+NO3-", "C6H10NO8-"),
-                _candidate("C6H10O5", "+^NO3-", "C6H10^NO8-"),
+                _candidate("C6H10O5", "[M+NO3]-", "C6H10NO8-"),
+                _candidate("C6H10O5", "[M+^NO3]-", "C6H10^NO8-"),
             ]
         )
         assert len(elected) == 2
@@ -229,7 +231,7 @@ class TestTheFinderCommitsTheElectedReading:
 
     #: The ammonium adduct of glucose, which is also the protonated form of the
     #: amide one ammonia heavier.
-    MZ = calculate_mass(formula="C6H12O6") + parse_ionization("+NH4+").mass
+    MZ = calculate_mass(formula="C6H12O6") + parse_ionization("[M+NH4]+").mass
 
     def _search(self, ionizations):
         config = CompositionSearchConfig(
@@ -245,7 +247,7 @@ class TestTheFinderCommitsTheElectedReading:
 
     @pytest.mark.parametrize(
         "ionizations",
-        ["+H+,+NH4+", "+NH4+,+H+"],
+        ["[M+H]+,[M+NH4]+", "[M+NH4]+,[M+H]+"],
         ids=["proton first", "ammonium first"],
     )
     def test_the_ammonium_reading_wins_either_enumeration_order(self, ionizations):
@@ -253,21 +255,21 @@ class TestTheFinderCommitsTheElectedReading:
         m0 = matches[matches["isotope_label"] == "M0"].iloc[0]
 
         assert m0["formula"] == "C6H12O6"
-        assert m0["ionization_mechanism"] == "+NH4+"
+        assert m0["ionization_mechanism"] == "[M+NH4]+"
 
     def test_the_displaced_reading_is_carried_on_the_committed_row(self):
-        matches = self._search("+H+,+NH4+")
+        matches = self._search("[M+H]+,[M+NH4]+")
         m0 = matches[matches["isotope_label"] == "M0"].iloc[0]
 
         (displaced,) = m0[SAME_ION_ALTERNATIVES]
         assert displaced["formula"] == "C6H15NO6"
-        assert displaced["ionization_mechanism"] == "+H+"
+        assert displaced["ionization_mechanism"] == "[M+H]+"
         assert displaced["ion"] == m0["ion"]
 
     def test_the_isotopologues_do_not_restate_it(self):
         # The family is a statement about how the ion was read; the M0 row is
         # where that reading is committed and the isotopologues are owned by it.
-        matches = self._search("+H+,+NH4+")
+        matches = self._search("[M+H]+,[M+NH4]+")
         children = matches[matches["isotope_label"] != "M0"]
 
         assert not children.empty
@@ -277,7 +279,7 @@ class TestTheFinderCommitsTheElectedReading:
 class TestTheFamilyAMatchedReadingWouldHave:
     """A reading the finder did not make, given the family its ion would have had."""
 
-    MECHANISMS = ["+H+", "+NH4+", "+(CH4N2O)H+"]
+    MECHANISMS = ["[M+H]+", "[M+NH4]+", "[M+CH4N2O+H]+"]
     CONFIG = CompositionSearchConfig(
         ionizations=",".join(MECHANISMS),
         element_count_ranges="C1-20 H0-40 N0-3 O0-10",
@@ -295,7 +297,7 @@ class TestTheFamilyAMatchedReadingWouldHave:
 
     @pytest.mark.parametrize(
         "formula, mechanism",
-        [("C3H7NO", "+H+"), ("C10H14O7", "+(CH4N2O)H+"), ("C6H12O6", "+NH4+")],
+        [("C3H7NO", "[M+H]+"), ("C10H14O7", "[M+CH4N2O+H]+"), ("C6H12O6", "[M+NH4]+")],
     )
     def test_it_is_the_family_the_finder_holds_for_that_ion(self, formula, mechanism):
         # The finder's own path for the ion's mass - the grid, every mechanism,
@@ -332,43 +334,47 @@ class TestTheFamilyAMatchedReadingWouldHave:
     def test_a_protonated_amide_is_an_ammoniated_aldehyde(self):
         # The case the rule is for: a list names dimethylformamide, and its
         # protonated ion is acrolein's ammonium adduct to the last electron.
-        (family,) = self._propose([("C3H7N1O1", "+H+")])
+        (family,) = self._propose([("C3H7N1O1", "[M+H]+")])
         assert family == [
-            {"formula": "C3H4O", "ion": "C3H8NO+", "ionization_mechanism": "+NH4+"}
+            {"formula": "C3H4O", "ion": "C3H8NO+", "ionization_mechanism": "[M+NH4]+"}
         ]
 
     def test_each_reading_gets_its_own_family_in_order(self):
-        families = self._propose([("C3H7NO", "+H+"), ("CO2", "+H+")])
+        families = self._propose([("C3H7NO", "[M+H]+"), ("CO2", "[M+H]+")])
         assert [len(family) for family in families] == [1, 0]
 
     def test_a_mechanism_of_the_other_charge_makes_no_reading(self):
-        (family,) = self._propose([("C3H7NO", "+H+")], notations=["+H+", "-H+"])
+        (family,) = self._propose(
+            [("C3H7NO", "[M+H]+")], notations=["[M+H]+", "[M-H]-"]
+        )
         assert family == []
 
     def test_a_labelled_mechanism_makes_no_reading_either_way(self):
         # The finder never proposes the labelled neutral, so a family through
         # the 15N reagent is one it never holds.
-        notations = ["-H+", "+[15N]O3-", "+NO3-"]
+        notations = ["[M-H]-", "[M+[15N]O3]-", "[M+NO3]-"]
         config = CompositionSearchConfig(
             ionizations=",".join(notations),
             element_count_ranges="C1-20 H0-40 N0-3 O0-15",
         )
         through_label, from_label = self._propose(
-            [("C5H9NO7", "-H+"), ("C5H8O4", "+[15N]O3-")],
+            [("C5H9NO7", "[M-H]-"), ("C5H8O4", "[M+[15N]O3]-")],
             notations=notations,
             config=config,
         )
-        assert [member["ionization_mechanism"] for member in through_label] == ["+NO3-"]
+        assert [member["ionization_mechanism"] for member in through_label] == [
+            "[M+NO3]-"
+        ]
         assert from_label == []
 
     def test_the_element_box_cuts_a_reading_as_it_cuts_a_candidate(self):
-        # Through +H+, the ammonium adduct of C6H12O6 is C6H15NO6 - one nitrogen
+        # Through [M+H]+, the ammonium adduct of C6H12O6 is C6H15NO6 - one nitrogen
         # more than a box that holds none.
         narrow = CompositionSearchConfig(
             ionizations=",".join(self.MECHANISMS),
             element_count_ranges="C1-20 H0-40 O0-10",
         )
-        (family,) = self._propose([("C6H12O6", "+NH4+")], config=narrow)
+        (family,) = self._propose([("C6H12O6", "[M+NH4]+")], config=narrow)
         assert family == []
 
     def test_the_heuristic_rules_cut_a_reading_as_they_cut_a_candidate(self):
@@ -377,7 +383,7 @@ class TestTheFamilyAMatchedReadingWouldHave:
         strict = HeuristicFilterConfig(
             use_senior=True, context_ratio_windows={"H/C": (2.0, 3.0)}
         )
-        (family,) = self._propose([("C3H7NO", "+H+")], heuristics=strict)
+        (family,) = self._propose([("C3H7NO", "[M+H]+")], heuristics=strict)
         assert family == []
 
     def test_the_reagent_ion_itself_is_no_reading(self):
@@ -388,11 +394,11 @@ class TestTheFamilyAMatchedReadingWouldHave:
             ionizations=",".join(self.MECHANISMS),
             element_count_ranges="C0-20 H0-40 N0-3 O0-10",
         )
-        (family,) = self._propose([("NH3", "+H+")], config=floorless)
+        (family,) = self._propose([("NH3", "[M+H]+")], config=floorless)
         assert family == []
 
     def test_an_unreadable_reading_has_no_family(self):
-        assert self._propose([("not a formula", "+H+"), ("C3H7NO", "+Xx+")]) == [
+        assert self._propose([("not a formula", "[M+H]+"), ("C3H7NO", "[M+Xx]+")]) == [
             [],
             [],
         ]
@@ -412,9 +418,9 @@ class TestTheFamilyIsOneScoringUnit:
 
         monkeypatch.setattr(heuristic_filter, "predict_isotopes", counting)
         candidates = [
-            _candidate("C6H11NO8", "-H+", "C6H10NO8-"),
-            _candidate("C5H10NO5", "+CO3-", "C6H10NO8-"),
-            _candidate("C6H10O5", "+NO3-", "C6H10NO8-"),
+            _candidate("C6H11NO8", "[M-H]-", "C6H10NO8-"),
+            _candidate("C5H10NO5", "[M+CO3]-", "C6H10NO8-"),
+            _candidate("C6H10O5", "[M+NO3]-", "C6H10NO8-"),
         ]
         peaks = pl.DataFrame({"mz": [1.0], "intensity": [1.0]})
         match_isotopic_pattern(candidates, peaks)
@@ -431,9 +437,9 @@ class TestTheRankingBetweenDifferentIons:
         # envelope misses, so every score is exactly 0.0 and only the tie-break
         # remains. Distinct masses, so the |ppm| key bites before the rest.
         return [
-            _candidate("C6H12O6", "+H+", "C6H13O6+", error_ppm=-2.0),
-            _candidate("C5H8N2O5", "+H+", "C5H9N2O5+", error_ppm=0.5),
-            _candidate("C4H10N4O4", "+H+", "C4H11N4O4+", error_ppm=1.0),
+            _candidate("C6H12O6", "[M+H]+", "C6H13O6+", error_ppm=-2.0),
+            _candidate("C5H8N2O5", "[M+H]+", "C5H9N2O5+", error_ppm=0.5),
+            _candidate("C4H10N4O4", "[M+H]+", "C4H11N4O4+", error_ppm=1.0),
         ]
 
     @staticmethod
@@ -465,8 +471,8 @@ class TestTheRankingBetweenDifferentIons:
         # Same score and the same distance from the peak: what remains is which
         # formula is the more ordinary chemistry.
         candidates = [
-            _candidate("C2H7N5O", "+H+", "C2H8N5O+", error_ppm=1.0),
-            _candidate("C6H12O6", "+H+", "C6H13O6+", error_ppm=-1.0),
+            _candidate("C2H7N5O", "[M+H]+", "C2H8N5O+", error_ppm=1.0),
+            _candidate("C6H12O6", "[M+H]+", "C6H13O6+", error_ppm=-1.0),
         ]
         ranked, _ = match_isotopic_pattern(candidates, self._empty_spectrum())
         assert [c["formula"] for c in ranked] == ["C6H12O6", "C2H7N5O"]

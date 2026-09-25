@@ -141,8 +141,9 @@ UNOBSERVABLE_ON = "on"
 class SecondaryChannel:
     """An adduct channel a source can produce, and the evidence that it does.
 
-    :param notation: The ionization mechanism notation the channel is searched
-        under, as the mechanism table stores it (``"+NH4+"``).
+    :param notation: The ionization mechanism the channel is searched under,
+        in the standard adduct notation the mechanism table stores
+        (``"[M+NH4]+"``).
     :param label: Display label.
     :param probes: Cluster ions of the channel's own carrier. One hit above the
         floor switches the channel on; a channel with no probes never switches
@@ -160,9 +161,9 @@ class SecondaryChannel:
         carbonate: an opportunistic side channel is capped without
         corroboration whoever declares it. False where declaring the channel
         is the operator saying the source runs it as its own - proton transfer
-        or deprotonation beside the bare sign of a charge-transfer source - so
-        the declared channel is searched as the mode's own and only the ones
-        the profile adds are opportunistic.
+        or deprotonation beside the electron transfer of a charge-transfer
+        source - so the declared channel is searched as the mode's own and
+        only the ones the profile adds are opportunistic.
     :param needs_partner: Whether a reading through this channel stands only
         where the sample commits the neutral it proposes through one of the
         mode's own channels. An ion the mode's channel also reads as a
@@ -410,7 +411,7 @@ _NITRATE_CARBONATE_NOTE = (
 SECONDARY_CHANNELS: dict[str, tuple[SecondaryChannel, ...]] = {
     "UR": (
         SecondaryChannel(
-            notation="+NH4+",
+            notation="[M+NH4]+",
             label="Ammonium adduct",
             probes=_urea_ammonium_clusters(),
             note=(
@@ -421,7 +422,7 @@ SECONDARY_CHANNELS: dict[str, tuple[SecondaryChannel, ...]] = {
     ),
     "BR": (
         SecondaryChannel(
-            notation="+CO3-",
+            notation="[M+CO3]-",
             label="Carbonate adduct",
             # The bare ions only. The reagent-acid cluster is measured for
             # nitrate and not for bromide, and on the bromide gate set the
@@ -435,13 +436,13 @@ SECONDARY_CHANNELS: dict[str, tuple[SecondaryChannel, ...]] = {
             note="the source's own carbonate ions",
         ),
         SecondaryChannel(
-            notation="+Br2-",
+            notation="[M+Br2]-",
             label="Dibromide cluster",
             probes=_DIBROMIDE_PROBES,
             note="the reagent's own second cluster rung",
         ),
         SecondaryChannel(
-            notation="+HCOO-",
+            notation="[M+HCOO]-",
             label="Formate adduct",
             needs_partner=True,
             probes=_formate_probes(None),
@@ -450,14 +451,14 @@ SECONDARY_CHANNELS: dict[str, tuple[SecondaryChannel, ...]] = {
     ),
     "NO3": (
         SecondaryChannel(
-            notation="+CO3-",
+            notation="[M+CO3]-",
             label="Carbonate adduct",
             probes=_carbonate_probes("NO3"),
             when_unobservable=UNOBSERVABLE_ON,
             note=_NITRATE_CARBONATE_NOTE,
         ),
         SecondaryChannel(
-            notation="+HCOO-",
+            notation="[M+HCOO]-",
             label="Formate adduct",
             needs_partner=True,
             probes=_formate_probes("NO3"),
@@ -467,7 +468,7 @@ SECONDARY_CHANNELS: dict[str, tuple[SecondaryChannel, ...]] = {
     ),
     "NO3_15N": (
         SecondaryChannel(
-            notation="+CO3-",
+            notation="[M+CO3]-",
             label="Carbonate adduct",
             # Built from the labelled reagent, so the clusters land 0.997 Da
             # above the unlabelled ones. Carbonate itself carries no reagent
@@ -477,7 +478,7 @@ SECONDARY_CHANNELS: dict[str, tuple[SecondaryChannel, ...]] = {
             note=_NITRATE_CARBONATE_NOTE,
         ),
         SecondaryChannel(
-            notation="+HCOO-",
+            notation="[M+HCOO]-",
             label="Formate adduct",
             needs_partner=True,
             probes=_formate_probes("^NO3"),
@@ -487,13 +488,13 @@ SECONDARY_CHANNELS: dict[str, tuple[SecondaryChannel, ...]] = {
     ),
     "IODIDE": (
         SecondaryChannel(
-            notation="+I2-",
+            notation="[M+I2]-",
             label="Diiodide cluster",
             probes=_DIIODIDE_PROBES,
             note="the reagent's own second cluster rung",
         ),
         SecondaryChannel(
-            notation="+HCOO-",
+            notation="[M+HCOO]-",
             label="Formate adduct",
             needs_partner=True,
             probes=_formate_probes(None),
@@ -502,7 +503,7 @@ SECONDARY_CHANNELS: dict[str, tuple[SecondaryChannel, ...]] = {
     ),
     "EASYIC_POS": (
         SecondaryChannel(
-            notation="-H-",
+            notation="[M-H]+",
             label="Hydride abstraction",
             probes=_FLUORANTHENE_CATION_PROBES,
             when_unobservable=UNOBSERVABLE_ON,
@@ -511,7 +512,7 @@ SECONDARY_CHANNELS: dict[str, tuple[SecondaryChannel, ...]] = {
             note=_CHARGE_TRANSFER_NOTE,
         ),
         SecondaryChannel(
-            notation="+H+",
+            notation="[M+H]+",
             label="Proton transfer",
             probes=_PROTON_TRANSFER_PROBES,
             when_unobservable=UNOBSERVABLE_ON,
@@ -526,7 +527,7 @@ SECONDARY_CHANNELS: dict[str, tuple[SecondaryChannel, ...]] = {
     ),
     "EASYIC_NEG": (
         SecondaryChannel(
-            notation="-H+",
+            notation="[M-H]-",
             label="Deprotonation",
             probes=_DEPROTONATED_ACID_PROBES,
             when_unobservable=UNOBSERVABLE_ON,
@@ -541,19 +542,19 @@ SECONDARY_CHANNELS: dict[str, tuple[SecondaryChannel, ...]] = {
     ),
     "ESI_POS": (
         SecondaryChannel(
-            notation="+NH4+",
+            notation="[M+NH4]+",
             label="Ammonium adduct",
             probes=_solvated("N1H4", "NH4"),
             note="solvated ammonium from the sprayed solution",
         ),
         SecondaryChannel(
-            notation="+Na+",
+            notation="[M+Na]+",
             label="Sodium adduct",
             probes=_solvated("Na", "Na"),
             note="solvated sodium from residual salt",
         ),
         SecondaryChannel(
-            notation="+K+",
+            notation="[M+K]+",
             label="Potassium adduct",
             probes=_solvated("K", "K"),
             note="solvated potassium from residual salt",

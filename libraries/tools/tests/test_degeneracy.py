@@ -23,7 +23,7 @@ from mascope_tools.composition.models import CompositionSearchConfig
 
 def config(**overrides) -> CompositionSearchConfig:
     base = {
-        "ionizations": "+H+",
+        "ionizations": "[M+H]+",
         "element_count_ranges": "C0-6 H0-14 N0-2 O0-6",
         "mass_range_ppm": 5.0,
         "max_result_rows": 50,
@@ -86,7 +86,7 @@ class TestTheBoxIsWhatUniqueMeans:
     def test_a_tight_window_over_a_narrow_box_reads_unique(self):
         readings = measure_degeneracy([GLUCOSE_H], config=config())
         assert readings[GLUCOSE_H].density == 1
-        assert readings[GLUCOSE_H].competitors == ("C6H12O6 +H+",)
+        assert readings[GLUCOSE_H].competitors == ("C6H12O6 [M+H]+",)
 
 
 class TestOneIonIsOneCandidate:
@@ -99,7 +99,7 @@ class TestOneIonIsOneCandidate:
         readings = measure_degeneracy(
             [ammoniated_glucose],
             config=config(
-                ionizations="+H+, +NH4+",
+                ionizations="[M+H]+, [M+NH4]+",
                 element_count_ranges="C0-6 H0-16 N0-1 O0-6",
             ),
         )
@@ -116,7 +116,9 @@ class TestOneIonIsOneCandidate:
         both = measure_degeneracy(
             [GLUCOSE_H],
             config=config(
-                ionizations="+H+, +NH4+", mass_range_ppm=30.0, element_count_ranges=box
+                ionizations="[M+H]+, [M+NH4]+",
+                mass_range_ppm=30.0,
+                element_count_ranges=box,
             ),
         )
         assert both[GLUCOSE_H].density > one[GLUCOSE_H].density
@@ -185,7 +187,7 @@ class TestSayingWhenItDoesNotKnow:
         readings = measure_degeneracy(
             [GLUCOSE_H],
             config=config(
-                ionizations="+H+, +NH4+",
+                ionizations="[M+H]+, [M+NH4]+",
                 mass_range_ppm=30.0,
                 max_result_rows=2,
                 element_count_ranges="C0-6 H0-16 N0-2 O0-6",
@@ -232,7 +234,7 @@ class TestTheCompetitorsNamed:
         reading = readings[GLUCOSE_H]
         assert len(reading.competitors) == min(3, reading.density)
         for competitor in reading.competitors:
-            assert "+H+" in competitor
+            assert "[M+H]+" in competitor
 
     @pytest.mark.parametrize("max_competitors", [0, 1])
     def test_naming_none_still_counts(self, max_competitors):
@@ -350,7 +352,7 @@ class TestWhenTheBoxWillNotFit:
         # Whatever the other channels found is a lower bound, not a count.
         self.refusing_to_band(monkeypatch)
         readings = measure_degeneracy(
-            [GLUCOSE_H], config=config(ionizations="+H+, +NH4+")
+            [GLUCOSE_H], config=config(ionizations="[M+H]+, [M+NH4]+")
         )
         assert readings[GLUCOSE_H].measured is False
 
@@ -359,7 +361,7 @@ class TestWhenTheBoxWillNotFit:
         # cannot explain it - which is an answer, not a hole. Reporting it as
         # unmeasured would mark every light peak of a bromide run unanswered.
         self.refusing_to_band(monkeypatch)
-        readings = measure_degeneracy([100.0], config=config(ionizations="+Br2-"))
+        readings = measure_degeneracy([100.0], config=config(ionizations="[M+Br2]-"))
         assert readings[100.0].measured is True
         assert readings[100.0].density == 0
 
@@ -394,7 +396,7 @@ class TestWhenTheBoxWillNotFit:
         # from the one it gets alone.
         self.a_row_bound_the_union_overflows(monkeypatch)
         wide = config(
-            ionizations="+H+, +NH4+",
+            ionizations="[M+H]+, [M+NH4]+",
             element_count_ranges="C1-20 H0-36 N0-3 O0-12 S0-1 F0-17",
             mass_range_ppm=2.0,
             max_result_rows=200,
@@ -423,7 +425,7 @@ class TestWhenTheBoxWillNotFit:
         )
 
         wide = config(
-            ionizations="+H+, +NH4+",
+            ionizations="[M+H]+, [M+NH4]+",
             element_count_ranges="C1-20 H0-36 N0-3 O0-12 S0-1 F0-17",
             mass_range_ppm=2.0,
             max_result_rows=200,
@@ -455,7 +457,7 @@ class TestWhenTheBoxWillNotFit:
         # counts instead of the silent nothing the union walk left them.
         self.a_row_bound_the_union_overflows(monkeypatch)
         wide = config(
-            ionizations="+H+, +NH4+",
+            ionizations="[M+H]+, [M+NH4]+",
             element_count_ranges="C1-20 H0-36 N0-3 O0-12 S0-1 F0-17",
             mass_range_ppm=2.0,
             max_result_rows=200,

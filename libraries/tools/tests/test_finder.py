@@ -88,7 +88,7 @@ def test_assign_compositions_no_matches():
     # Use m/z values far outside what C0-2 H0-2 can produce with H+ ionization
     peaks = pd.DataFrame({"mz": [9999.0, 9998.0], "intensity": [100.0, 100.0]})
     config = CompositionSearchConfig(
-        ionizations="H+",
+        ionizations="[M+H]+",
         element_count_ranges="C0-2 H0-2",
         mass_range_ppm=5.0,
     )
@@ -133,7 +133,7 @@ def test_combine_formula_and_ionization_accepts_isotope_formula():
 def _protonated_glucose_search(shift_ppm: float):
     """Search a peak sitting `shift_ppm` off protonated glucose's exact m/z."""
     config = CompositionSearchConfig(
-        ionizations="+H+",
+        ionizations="[M+H]+",
         element_count_ranges="C0-10 H0-20 O0-10",
         mass_range_ppm=5.0,
     )
@@ -142,7 +142,7 @@ def _protonated_glucose_search(shift_ppm: float):
         r for r in find_compositions(target_mz, config) if r["formula"] == "C6H12O6"
     ]
     assert len(results) == 1
-    predicted_mz = results[0]["neutral_mass"] + parse_ionization("+H+").mass
+    predicted_mz = results[0]["neutral_mass"] + parse_ionization("[M+H]+").mass
     return target_mz, predicted_mz, results[0]
 
 
@@ -175,11 +175,11 @@ def test_a_shared_grid_answers_a_peak_the_same_as_its_own_window_does():
     # for a box too wide to hold - so a disagreement between them would be a
     # spectrum answered differently for a reason that is not chemistry.
     config = CompositionSearchConfig(
-        ionizations="+H+,+Na+",
+        ionizations="[M+H]+,[M+Na]+",
         element_count_ranges="C0-20 H0-40 N0-3 O0-10",
         mass_range_ppm=10.0,
     )
-    mechanisms = [parse_ionization(name) for name in ("+H+", "+Na+")]
+    mechanisms = [parse_ionization(name) for name in ("[M+H]+", "[M+Na]+")]
     targets = [181.0707, 203.0526, 301.1414, 365.1054]
     shared = build_neutral_grid(
         config, *neutral_mass_bounds(targets, mechanisms, config.mass_range_ppm)
@@ -199,7 +199,7 @@ def test_the_row_cap_keeps_the_closest_readings():
     # ranks on mass error, so a cap that kept an arbitrary slice would hand the
     # ranking a set the ranking cannot repair.
     config = CompositionSearchConfig(
-        ionizations="-H+",
+        ionizations="[M-H]-",
         element_count_ranges="C1-40 H0-80 N0-3 O0-18 S0-1 Cl0-2 Br0-2",
         mass_range_ppm=10.0,
         max_result_rows=25,
@@ -217,7 +217,7 @@ def test_composition_results_are_ranked_by_error_magnitude():
     # find_compositions returns best-first, and "best" is the smallest deviation
     # in either direction - not the most negative one.
     config = CompositionSearchConfig(
-        ionizations="+H+",
+        ionizations="[M+H]+",
         element_count_ranges="C0-40 H0-80 N0-10 O0-20",
         mass_range_ppm=20.0,
     )
@@ -281,7 +281,7 @@ def test_assign_compositions_enumerates_only_the_targets(monkeypatch):
         {"mz": [100.0, 200.0, 300.0], "intensity": [100.0, 100.0, 100.0]}
     )
     config = CompositionSearchConfig(
-        ionizations="H+", element_count_ranges="C0-2 H0-2", mass_range_ppm=5.0
+        ionizations="[M+H]+", element_count_ranges="C0-2 H0-2", mass_range_ppm=5.0
     )
 
     matches, _ = finder.assign_compositions(peaks, config, targets=[200.0])
@@ -428,7 +428,7 @@ def test_a_monoisotopic_row_outranks_another_candidates_isotopologue(monkeypatch
         }
     )
     config = CompositionSearchConfig(
-        ionizations="H+", element_count_ranges="C0-2 H0-2", mass_range_ppm=5.0
+        ionizations="[M+H]+", element_count_ranges="C0-2 H0-2", mass_range_ppm=5.0
     )
 
     matches, _ = assign_compositions(peaks, config, targets=[100.0, 105.0])
@@ -496,7 +496,7 @@ def test_the_best_reading_that_is_evidence_wins_the_peak(monkeypatch):
     )
     peaks = pd.DataFrame({"mz": [100.0, 101.0], "intensity": [1000.0, 30.0]})
     config = CompositionSearchConfig(
-        ionizations="H+", element_count_ranges="C0-3 H0-4", mass_range_ppm=5.0
+        ionizations="[M+H]+", element_count_ranges="C0-3 H0-4", mass_range_ppm=5.0
     )
 
     matches, _ = assign_compositions(peaks, config, targets=[100.0])
@@ -519,7 +519,7 @@ def test_a_peak_whose_best_reading_has_no_envelope_is_left_alone(monkeypatch):
     by that fit, so a failing candidate at the top means no reading of this peak
     has an envelope - and the row can always be written anyway, because the
     candidate's monoisotopic line IS the peak. On a bromide grid this is what
-    keeps a `+Br2-` reading whose 79Br81Br line is missing from taking the peak
+    keeps a `[M+Br2]-` reading whose 79Br81Br line is missing from taking the peak
     it used to swallow.
     """
     from mascope_tools.composition import finder
@@ -550,7 +550,7 @@ def test_a_peak_whose_best_reading_has_no_envelope_is_left_alone(monkeypatch):
     )
     peaks = pd.DataFrame({"mz": [100.0], "intensity": [1000.0]})
     config = CompositionSearchConfig(
-        ionizations="H+", element_count_ranges="C0-2 H0-2", mass_range_ppm=5.0
+        ionizations="[M+H]+", element_count_ranges="C0-2 H0-2", mass_range_ppm=5.0
     )
 
     matches, _ = assign_compositions(peaks, config, targets=[100.0])
@@ -568,7 +568,7 @@ class TestTheDensityOnACommittedRow:
     @staticmethod
     def _search(peaks: pd.DataFrame) -> pd.DataFrame:
         config = CompositionSearchConfig(
-            ionizations="+H+",
+            ionizations="[M+H]+",
             element_count_ranges="C0-10 H0-20 N0-2 O0-10",
             mass_range_ppm=5.0,
         )

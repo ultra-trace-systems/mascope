@@ -94,7 +94,7 @@ class ListReading:
     :param mz: The peak's m/z.
     :param formula: The list's neutral formula.
     :param ionization_mechanism: The channel it was matched through, in the
-        finder's notation (``"+[15N]O3-"``).
+        finder's explicit-isotope notation (``"[M+[15N]O3]-"``).
     :param mz_error_ppm: Its mass error, signed as the matcher signs it; it
         orders the reading among the grid's candidates as theirs orders them.
     :param keeps_peak: Whether the reading keeps its peak whatever the grid
@@ -313,7 +313,7 @@ def assign_compositions(
             # (`heuristic_filter.match_isotopic_pattern` reports whether they
             # are there). Ranking orders good readings and impossible ones
             # alike, so the test is a filter and not a tie-break: committing the
-            # top candidate regardless is how a `+Br2-` phantom takes a peak
+            # top candidate regardless is how a `[M+Br2]-` phantom takes a peak
             # with no envelope at all, and refusing the peak because the top
             # candidate failed throws away the reading below it that did not.
             has_envelope = any(

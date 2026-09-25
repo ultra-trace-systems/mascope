@@ -17,7 +17,7 @@ from mascope_tools.composition.models import CompositionSearchConfig
 
 def grid_for(ranges: str, mass_min: float, mass_max: float, **kwargs) -> NeutralGrid:
     config = CompositionSearchConfig(
-        ionizations="+H+", element_count_ranges=ranges, **kwargs
+        ionizations="[M+H]+", element_count_ranges=ranges, **kwargs
     )
     grid = build_neutral_grid(config, mass_min, mass_max)
     assert grid is not None
@@ -86,20 +86,20 @@ class TestTheRowBound:
         # Half an answer is worse than none: the caller falls back to a grid per
         # peak, which is bounded by the peak's own window.
         config = CompositionSearchConfig(
-            ionizations="+H+", element_count_ranges="C0-60 H0-120 N0-10 O0-20"
+            ionizations="[M+H]+", element_count_ranges="C0-60 H0-120 N0-10 O0-20"
         )
         assert build_neutral_grid(config, 0.0, 1000.0, max_rows=1000) is None
 
     def test_a_box_that_fits_is_returned_whole(self):
         config = CompositionSearchConfig(
-            ionizations="+H+", element_count_ranges="C0-3 H0-4"
+            ionizations="[M+H]+", element_count_ranges="C0-3 H0-4"
         )
         grid = build_neutral_grid(config, 0.0, 60.0, max_rows=1000)
         assert grid is not None and len(grid) <= 1000
 
     def test_an_empty_range_holds_nothing(self):
         config = CompositionSearchConfig(
-            ionizations="+H+", element_count_ranges="C0-3 H0-4"
+            ionizations="[M+H]+", element_count_ranges="C0-3 H0-4"
         )
         assert build_neutral_grid(config, 500.0, 10.0) is None
 
@@ -107,7 +107,7 @@ class TestTheRowBound:
 class TestUnsaturation:
     def test_a_composition_outside_the_window_is_left_out(self):
         config = CompositionSearchConfig(
-            ionizations="+H+",
+            ionizations="[M+H]+",
             element_count_ranges="C0-6 H0-14 O0-2",
             use_unsaturation=True,
             min_unsaturation=0.0,
@@ -120,7 +120,7 @@ class TestUnsaturation:
 
     def test_the_value_rides_along_on_the_row_that_kept_it(self):
         config = CompositionSearchConfig(
-            ionizations="+H+",
+            ionizations="[M+H]+",
             element_count_ranges="C0-6 H0-14 O0-2",
             use_unsaturation=True,
             min_unsaturation=-10.0,
@@ -147,7 +147,7 @@ class TestWhatTheGridAdmits:
 
     def test_every_row_a_grid_holds_is_admitted(self):
         config = CompositionSearchConfig(
-            ionizations="+H+",
+            ionizations="[M+H]+",
             element_count_ranges="C1-6 H0-14 N0-1 O0-3",
             use_unsaturation=True,
             min_unsaturation=0.0,
@@ -163,7 +163,7 @@ class TestWhatTheGridAdmits:
         # The walk's complement over the same box: every composition of these
         # counts that the grid does not hold, whatever the reason, is refused.
         config = CompositionSearchConfig(
-            ionizations="+H+",
+            ionizations="[M+H]+",
             element_count_ranges="C1-3 H0-4 O0-2",
             use_unsaturation=True,
             min_unsaturation=0.0,
@@ -192,7 +192,7 @@ class TestWhatTheGridAdmits:
 
     def test_an_element_the_box_does_not_hold_is_refused(self):
         config = CompositionSearchConfig(
-            ionizations="+H+", element_count_ranges="C1-10 H0-20 O0-5"
+            ionizations="[M+H]+", element_count_ranges="C1-10 H0-20 O0-5"
         )
         assert admits(config, {"C": 3, "H": 4, "O": 1})
         assert not admits(config, {"C": 3, "H": 7, "N": 1, "O": 1})
@@ -200,9 +200,9 @@ class TestWhatTheGridAdmits:
     def test_the_unsaturation_window_applies_only_where_the_search_uses_it(self):
         # C2H6O has an unsaturation of 0, under a minimum of 1.
         box = "C1-10 H0-20 O0-5"
-        kept = CompositionSearchConfig(ionizations="+H+", element_count_ranges=box)
+        kept = CompositionSearchConfig(ionizations="[M+H]+", element_count_ranges=box)
         cut = CompositionSearchConfig(
-            ionizations="+H+",
+            ionizations="[M+H]+",
             element_count_ranges=box,
             use_unsaturation=True,
             min_unsaturation=1.0,

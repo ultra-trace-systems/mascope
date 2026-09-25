@@ -9,6 +9,12 @@ from .mass_accuracy import (
     mass_accuracy_anchors,
     scoring_sigma_ppm,
 )
+from .mechanism_notation import (
+    legacy_notation,
+    mechanism_key,
+    parse_mechanism,
+    standard_notation,
+)
 from .models import CompositionSearchConfig, HeuristicFilterConfig, PatternScoring
 from .profiles import resolve_fallback_sigma_ppm, resolve_match_tolerance_ppm
 
@@ -46,6 +52,12 @@ from .profiles import resolve_fallback_sigma_ppm, resolve_match_tolerance_ppm
 # must judge a mass error at the width Mascope judges it at, and a second
 # implementation of the fit would make every difference between the two
 # engines partly a difference in how each measured the ruler.
+#
+# The mechanism notation readers are exported for the same kind of caller: a
+# mechanism is the one string an engine publishing into Mascope and Mascope
+# itself must spell alike. Mascope stores and shows the standard adduct notation
+# (`[M-H]-`), and an engine that still writes the legacy `-H+` converts with
+# these rather than restating a grammar that has been read wrong once already.
 __all__ = [
     "assign_compositions",
     "CompositionSearchConfig",
@@ -53,12 +65,16 @@ __all__ = [
     "fit_sample_mass_accuracy",
     "formula_plausibility",
     "HeuristicFilterConfig",
+    "legacy_notation",
     "mass_accuracy_anchors",
     "MASS_ACCURACY_MIN_ANCHORS",
     "MASS_OFFSET_MIN_ANCHORS",
+    "mechanism_key",
+    "parse_mechanism",
     "PatternScoring",
     "PRED_SIGMA_PPM",
     "resolve_fallback_sigma_ppm",
     "resolve_match_tolerance_ppm",
     "scoring_sigma_ppm",
+    "standard_notation",
 ]

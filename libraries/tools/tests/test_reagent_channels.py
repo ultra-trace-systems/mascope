@@ -71,7 +71,7 @@ class TestTheProbes:
         probe = R.secondary_channels("UR")[0].probes[1]
         mz, intensity = _spectrum((probe.mz * (1 + 7e-6), 0.01))
         evidence = R.detect_channels(R.secondary_channels("UR"), mz, intensity)
-        assert R.present_notations(evidence) == ["+NH4+"]
+        assert R.present_notations(evidence) == ["[M+NH4]+"]
         assert evidence[0].probe == probe.label
         assert evidence[0].mz_error_ppm == pytest.approx(7.0, abs=0.1)
 
@@ -81,12 +81,14 @@ class TestTheProbes:
                 assert channel.needs_partner, channel.notation
                 assert not channel.declared_stays_secondary, channel.notation
         for name in ("NO3", "NO3_15N", "BR", "IODIDE"):
-            formate = [c for c in R.secondary_channels(name) if c.notation == "+HCOO-"][
-                0
-            ]
+            formate = [
+                c for c in R.secondary_channels(name) if c.notation == "[M+HCOO]-"
+            ][0]
             assert formate.needs_partner, name
             assert formate.declared_stays_secondary, name
-        carbonate = [c for c in R.secondary_channels("NO3") if c.notation == "+CO3-"][0]
+        carbonate = [
+            c for c in R.secondary_channels("NO3") if c.notation == "[M+CO3]-"
+        ][0]
         assert not carbonate.needs_partner and carbonate.declared_stays_secondary
 
     def test_the_charge_transfer_probes_land_on_the_fluoranthene_beam(self):
@@ -113,13 +115,13 @@ class TestTheProbes:
         light = {
             probe.label: probe
             for channel in R.secondary_channels("NO3")
-            if channel.notation == "+HCOO-"
+            if channel.notation == "[M+HCOO]-"
             for probe in channel.probes
         }
         heavy = {
             probe.label: probe
             for channel in R.secondary_channels("NO3_15N")
-            if channel.notation == "+HCOO-"
+            if channel.notation == "[M+HCOO]-"
             for probe in channel.probes
         }
         assert light["[HCOO]-"].mz == pytest.approx(FORMATE, abs=5e-4)
@@ -138,13 +140,13 @@ class TestTheProbes:
         bromide = [
             probe.label
             for channel in R.secondary_channels("BR")
-            if channel.notation == "+HCOO-"
+            if channel.notation == "[M+HCOO]-"
             for probe in channel.probes
         ]
         assert bromide == ["[HCOO]-", "[HCOO+HCOOH]-"]
 
     def test_a_channel_with_no_probes_can_never_switch_on(self):
-        channel = R.SecondaryChannel(notation="+Xx+", label="Unprovable")
+        channel = R.SecondaryChannel(notation="[M+Xx]+", label="Unprovable")
         mz, intensity = _spectrum((150.0, 1.0))
         evidence = R.detect_channels([channel], mz, intensity, ppm=5.0)
         assert evidence[0].present is False
@@ -154,7 +156,7 @@ class TestDetection:
     def test_the_ammonium_channel_switches_on_where_its_cluster_is(self):
         mz, intensity = _spectrum((UREA_AMMONIUM, 0.01))
         evidence = R.detect_channels(R.secondary_channels("UR"), mz, intensity, ppm=3.0)
-        assert R.present_notations(evidence) == ["+NH4+"]
+        assert R.present_notations(evidence) == ["[M+NH4]+"]
         assert evidence[0].probe == "[(CH4N2O)2+NH4]+"
 
     def test_a_trace_below_the_floor_does_not_switch_a_channel_on(self):
@@ -178,8 +180,12 @@ class TestDetection:
     def test_channels_are_decided_independently(self):
         mz, intensity = _spectrum((CARBONATE, 0.01))
         evidence = R.detect_channels(R.secondary_channels("BR"), mz, intensity, ppm=5.0)
-        assert R.present_notations(evidence) == ["+CO3-"]
-        assert [item.notation for item in evidence] == ["+CO3-", "+Br2-", "+HCOO-"]
+        assert R.present_notations(evidence) == ["[M+CO3]-"]
+        assert [item.notation for item in evidence] == [
+            "[M+CO3]-",
+            "[M+Br2]-",
+            "[M+HCOO]-",
+        ]
 
     def test_the_brightest_qualifying_probe_is_the_one_recorded(self):
         mz, intensity = _spectrum((CARBONATE, 0.01), (60.9931, 0.2))
@@ -190,7 +196,7 @@ class TestDetection:
     def test_the_dibromide_rung_switches_its_cluster_channel_on(self):
         mz, intensity = _spectrum((DIBROMIDE, 0.05))
         evidence = R.detect_channels(R.secondary_channels("BR"), mz, intensity, ppm=5.0)
-        assert R.present_notations(evidence) == ["+Br2-"]
+        assert R.present_notations(evidence) == ["[M+Br2]-"]
 
     def test_the_fluoranthene_ion_switches_hydride_abstraction_on(self):
         # The reagent cation is the hydride acceptor: where the beam is, the
@@ -202,7 +208,7 @@ class TestDetection:
         evidence = R.detect_channels(
             R.secondary_channels("EASYIC_POS"), mz, intensity, ppm=5.0
         )
-        assert R.present_notations(evidence) == ["-H-"]
+        assert R.present_notations(evidence) == ["[M-H]+"]
         assert evidence[0].probe == "[C16H10]+"
 
     def test_the_beams_own_13c_line_does_not_switch_proton_transfer_on(self):
@@ -218,8 +224,8 @@ class TestDetection:
         evidence = R.detect_channels(
             R.secondary_channels("EASYIC_POS"), mz, intensity, ppm=20.0
         )
-        assert R.present_notations(evidence) == ["-H-"]
-        proton = [item for item in evidence if item.notation == "+H+"][0]
+        assert R.present_notations(evidence) == ["[M-H]+"]
+        proton = [item for item in evidence if item.notation == "[M+H]+"][0]
         assert proton.status == R.STATUS_NOT_FOUND
 
     def test_a_narrow_window_leaves_the_charge_transfer_channels_on(self):
@@ -231,7 +237,7 @@ class TestDetection:
         evidence = R.detect_channels(
             R.secondary_channels("EASYIC_POS"), mz, intensity, ppm=5.0
         )
-        assert R.present_notations(evidence) == ["-H-", "+H+"]
+        assert R.present_notations(evidence) == ["[M-H]+", "[M+H]+"]
         assert {item.status for item in evidence} == {R.STATUS_UNOBSERVABLE}
 
     def test_a_dry_source_still_shows_its_hydronium(self):
@@ -245,7 +251,7 @@ class TestDetection:
         evidence = R.detect_channels(
             R.secondary_channels("EASYIC_POS"), mz, intensity, ppm=5.0
         )
-        proton = [item for item in evidence if item.notation == "+H+"][0]
+        proton = [item for item in evidence if item.notation == "[M+H]+"][0]
         assert proton.present is True
         assert proton.probe == "[H3O+H2O]+"
 
@@ -261,7 +267,7 @@ class TestDetection:
     def test_formate_switches_its_channel_on_where_the_window_shows_it(self):
         mz, intensity = _spectrum((FORMATE, 0.2), (300.0, 0.01))
         evidence = R.detect_channels(R.secondary_channels("BR"), mz, intensity, ppm=5.0)
-        assert R.present_notations(evidence) == ["+HCOO-"]
+        assert R.present_notations(evidence) == ["[M+HCOO]-"]
         assert evidence[-1].probe == "[HCOO]-"
 
     def test_a_nitrate_window_starting_above_formate_leaves_the_channel_on(self):
@@ -276,8 +282,8 @@ class TestDetection:
         evidence = R.detect_channels(
             R.secondary_channels("NO3_15N"), mz, intensity, ppm=5.0
         )
-        assert R.present_notations(evidence) == ["+CO3-", "+HCOO-"]
-        formate = [item for item in evidence if item.notation == "+HCOO-"][0]
+        assert R.present_notations(evidence) == ["[M+CO3]-", "[M+HCOO]-"]
+        formate = [item for item in evidence if item.notation == "[M+HCOO]-"][0]
         assert formate.status == R.STATUS_UNOBSERVABLE
 
     def test_a_nitrate_window_that_reaches_the_hydrate_answers_for_itself(self):
@@ -288,9 +294,9 @@ class TestDetection:
         evidence = R.detect_channels(
             R.secondary_channels("NO3"), mz, intensity, ppm=5.0
         )
-        formate = [item for item in evidence if item.notation == "+HCOO-"][0]
+        formate = [item for item in evidence if item.notation == "[M+HCOO]-"][0]
         assert formate.status == R.STATUS_NOT_FOUND
-        assert "+HCOO-" not in R.present_notations(evidence)
+        assert "[M+HCOO]-" not in R.present_notations(evidence)
         # ...and where the hydrate is there, the channel is on.
         mz, intensity = (
             np.array([115.0, FORMATE_NITRIC + WATER, 150.0, 600.0]),
@@ -299,7 +305,7 @@ class TestDetection:
         evidence = R.detect_channels(
             R.secondary_channels("NO3"), mz, intensity, ppm=5.0
         )
-        formate = [item for item in evidence if item.notation == "+HCOO-"][0]
+        formate = [item for item in evidence if item.notation == "[M+HCOO]-"][0]
         assert formate.status == R.STATUS_FOUND
         assert formate.probe == "[HCOO+HNO3+H2O]-"
 
@@ -308,14 +314,14 @@ class TestDetection:
         # they can show.
         mz, intensity = np.array([150.0, 600.0]), np.array([1.0e6, 1.0e4])
         evidence = R.detect_channels(R.secondary_channels("BR"), mz, intensity, ppm=5.0)
-        assert "+HCOO-" not in R.present_notations(evidence)
+        assert "[M+HCOO]-" not in R.present_notations(evidence)
 
     def test_a_wide_nitrate_window_without_formate_switches_it_off(self):
         mz, intensity = _spectrum((42.0, 0.01), (600.0, 0.01))
         evidence = R.detect_channels(
             R.secondary_channels("NO3"), mz, intensity, ppm=5.0
         )
-        formate = [item for item in evidence if item.notation == "+HCOO-"][0]
+        formate = [item for item in evidence if item.notation == "[M+HCOO]-"][0]
         assert formate.present is False
         assert formate.status == R.STATUS_NOT_FOUND
 
@@ -324,7 +330,7 @@ class TestDetection:
         evidence = R.detect_channels(
             R.secondary_channels("EASYIC_NEG"), mz, intensity, ppm=5.0
         )
-        assert R.present_notations(evidence) == ["-H+"]
+        assert R.present_notations(evidence) == ["[M-H]-"]
         assert evidence[0].probe == "[HCO3]-"
 
 
@@ -339,9 +345,9 @@ class TestTheRecord:
             R.detect_channels(R.secondary_channels("BR"), mz, intensity, ppm=5.0)
         )
         assert records == [
-            {"channel": "+CO3-", "present": False, "status": "not_found"},
-            {"channel": "+Br2-", "present": False, "status": "not_found"},
-            {"channel": "+HCOO-", "present": False, "status": "not_found"},
+            {"channel": "[M+CO3]-", "present": False, "status": "not_found"},
+            {"channel": "[M+Br2]-", "present": False, "status": "not_found"},
+            {"channel": "[M+HCOO]-", "present": False, "status": "not_found"},
         ]
 
     def test_a_present_channel_records_what_it_was_found_on(self):
@@ -350,7 +356,7 @@ class TestTheRecord:
             R.detect_channels(
                 [
                     R.SecondaryChannel(
-                        notation="+Na+",
+                        notation="[M+Na]+",
                         label="Sodium",
                         probes=(R.ProbeIon("CH4N2ONa", 1, "[(CH4N2O)+Na]+"),),
                     )
@@ -360,7 +366,7 @@ class TestTheRecord:
                 ppm=5.0,
             )
         )[0]
-        assert record["channel"] == "+Na+"
+        assert record["channel"] == "[M+Na]+"
         assert record["present"] is True
         assert record["probe"] == "[(CH4N2O)+Na]+"
         assert record["relative_intensity"] == pytest.approx(0.02, rel=1e-2)
@@ -452,7 +458,7 @@ class TestUnobservableIsNotAbsent:
     def test_the_default_is_off(self):
         # Silence is not evidence unless a profile has a reason to say so.
         channel = R.SecondaryChannel(
-            notation="+Xx-",
+            notation="[M+Xx]-",
             label="Unmeasured",
             probes=(R.ProbeIon("CO3", -1, "[CO3]-"),),
         )
@@ -471,7 +477,7 @@ class TestUnobservableIsNotAbsent:
         assert evidence[0].status == R.STATUS_NOT_FOUND
 
     def test_a_channel_with_no_probes_is_not_called_unobservable(self):
-        channel = R.SecondaryChannel(notation="+Xx+", label="Unprovable")
+        channel = R.SecondaryChannel(notation="[M+Xx]+", label="Unprovable")
         mz, intensity = self._narrow_nitrate()
         evidence = R.detect_channels([channel], mz, intensity)
         assert evidence[0].present is False

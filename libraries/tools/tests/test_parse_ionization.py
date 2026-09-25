@@ -1,8 +1,10 @@
 """The charge and the mass a mechanism notation resolves to.
 
-Two things went wrong here before and both are pinned:
+A mechanism reads the same in the standard adduct notation (``[M-H]-``) as in
+the legacy one (``-H+``). Three things went wrong in the legacy reading before
+and all are pinned:
 
-- the trailing sign of a mechanism is the charge of the moiety added or
+- the trailing sign of a legacy mechanism is the charge of the moiety added or
   removed, not of the ion, so ``-H+`` (deprotonation) leaves an anion. It used
   to be read as a cation, which put every deprotonated candidate's predicted M0
   two electron masses light;
@@ -64,6 +66,40 @@ def test_ion_charge_follows_the_moiety_and_the_direction(
     assert mechanism.addition is addition
     assert mechanism.charge == charge
     assert mechanism.mass == pytest.approx(moiety_mass, abs=1e-9)
+
+
+@pytest.mark.parametrize(
+    ("standard", "legacy"),
+    [
+        ("[M+H]+", "+H+"),
+        ("[M-H]-", "-H+"),
+        ("[M-H]+", "-H-"),
+        ("[M+Br]-", "+Br-"),
+        ("[M+NO3]-", "+NO3-"),
+        ("[M+^NO3]-", "+^NO3-"),
+        ("[M+[15N]O3]-", "+[15N]O3-"),
+        ("[M+CH4N2O+H]+", "+(CH4N2O)H+"),
+        ("[M-CH3]+", "-CH3-"),
+        ("[M]+.", "+"),
+        ("[M]-.", "-"),
+    ],
+)
+def test_the_standard_spelling_reads_as_the_legacy_one(standard, legacy):
+    mechanism = parse_ionization(standard)
+    assert mechanism.mascope_notation == standard
+    other = parse_ionization(legacy)
+    assert (mechanism.addition, mechanism.formula, mechanism.charge) == (
+        other.addition,
+        other.formula,
+        other.charge,
+    )
+    assert mechanism.mass == pytest.approx(other.mass, abs=1e-12)
+
+
+@pytest.mark.parametrize("notation", ["[M]+", "[M+Na-2H]-", "H+", "+H"])
+def test_a_mechanism_in_neither_notation_is_refused(notation):
+    with pytest.raises(CompositionFinderException):
+        parse_ionization(notation)
 
 
 def test_deprotonation_leaves_the_anion_mass():

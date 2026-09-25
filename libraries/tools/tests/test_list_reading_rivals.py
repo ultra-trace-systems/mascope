@@ -39,7 +39,7 @@ from mascope_tools.composition.models import (
 from mascope_tools.composition.utils import calculate_mass, parse_ionization
 
 
-def _box(ionizations="+H+", ppm=30.0):
+def _box(ionizations="[M+H]+", ppm=30.0):
     return CompositionSearchConfig(
         ionizations=ionizations,
         element_count_ranges="C1-30 H0-60 N0-4 O0-12 S0-1",
@@ -54,7 +54,7 @@ HEURISTICS = HeuristicFilterConfig(use_senior=True)
 
 #: C11H16O5 through a proton. Its box holds four other formulas within 12 ppm:
 #: C12H12N4O and C15H16S, closed-shell, and C9H14N3O4 and C14H14NO2, radicals.
-MZ = calculate_mass(formula="C11H16O5") + parse_ionization("+H+").mass
+MZ = calculate_mass(formula="C11H16O5") + parse_ionization("[M+H]+").mass
 
 #: A faint lone peak judged at a width as wide as the window: nothing the
 #: spectrum shows separates the formulas the box holds for its mass.
@@ -72,7 +72,7 @@ def _measure(scoring, *, readings=None, closed_shell_only=False, config=None):
     return rivals_of_readings(
         _peak(),
         config or _box(),
-        readings or [ListReading(MZ, "C11H16O5", "+H+", 0.0)],
+        readings or [ListReading(MZ, "C11H16O5", "[M+H]+", 0.0)],
         HEURISTICS,
         scoring,
         closed_shell_only=closed_shell_only,
@@ -100,7 +100,7 @@ class TestTheCount:
         fits = [rival["fit_score"] for rival in found.rivals]
         assert fits == sorted(fits, reverse=True)
         first = found.rivals[0]
-        assert first["ionization_mechanism"] == "+H+"
+        assert first["ionization_mechanism"] == "[M+H]+"
         assert first["ion"].endswith("+")
         assert first["mz_error_ppm"] is not None
 
@@ -124,11 +124,11 @@ class TestWhatIsNoRival:
         # C11H19NO5 through a proton is the ion C11H16O5 makes with ammonium:
         # one hypothesis split two ways, which an election collapses before
         # anything is ranked, and never a rival.
-        mz = calculate_mass(formula="C11H19NO5") + parse_ionization("+H+").mass
+        mz = calculate_mass(formula="C11H19NO5") + parse_ionization("[M+H]+").mass
         (found,) = rivals_of_readings(
             pd.DataFrame({"mz": [mz], "intensity": [100.0], "signal_to_noise": [2.0]}),
-            _box(ionizations="+H+,+NH4+"),
-            [ListReading(mz, "C11H19NO5", "+H+", 0.0)],
+            _box(ionizations="[M+H]+,[M+NH4]+"),
+            [ListReading(mz, "C11H19NO5", "[M+H]+", 0.0)],
             HEURISTICS,
             UNRESOLVED,
         )
@@ -145,20 +145,20 @@ class TestTheReadings:
     def test_a_list_spelling_is_read_as_its_composition(self):
         # A library writes what a person typed; the reading is the same neutral.
         (spelled,) = _measure(
-            UNRESOLVED, readings=[ListReading(MZ, "C11H16O5", "+H+", 0.0)]
+            UNRESOLVED, readings=[ListReading(MZ, "C11H16O5", "[M+H]+", 0.0)]
         )
         (hill,) = _measure(
-            UNRESOLVED, readings=[ListReading(MZ, "O5C11H16", "+H+", 0.0)]
+            UNRESOLVED, readings=[ListReading(MZ, "O5C11H16", "[M+H]+", 0.0)]
         )
         assert spelled == hill
 
     def test_a_formula_outside_the_box_says_so(self):
         silicon = "C4H14Si2O"
-        mz = calculate_mass(formula=silicon) + parse_ionization("+H+").mass
+        mz = calculate_mass(formula=silicon) + parse_ionization("[M+H]+").mass
         (found,) = rivals_of_readings(
             pd.DataFrame({"mz": [mz], "intensity": [100.0]}),
             _box(),
-            [ListReading(mz, silicon, "+H+", 0.0)],
+            [ListReading(mz, silicon, "[M+H]+", 0.0)],
             HEURISTICS,
             UNRESOLVED,
         )
@@ -171,8 +171,8 @@ class TestTheReadings:
     @pytest.mark.parametrize(
         "reading",
         [
-            ListReading(MZ, "Xx3", "+H+", 0.0),
-            ListReading(MZ, "C11H16O5", "+Xx-", 0.0),
+            ListReading(MZ, "Xx3", "[M+H]+", 0.0),
+            ListReading(MZ, "C11H16O5", "[M+Xx]-", 0.0),
         ],
     )
     def test_a_reading_nobody_can_parse_is_not_measured(self, reading):
@@ -181,8 +181,8 @@ class TestTheReadings:
     def test_the_results_keep_the_readings_order(self):
         # Given in neither ascending nor descending m/z: the grid is walked in
         # ascending m/z whatever order the readings arrive in.
-        low = calculate_mass(formula="C10H16O4") + parse_ionization("+H+").mass
-        high = calculate_mass(formula="C12H18O6") + parse_ionization("+H+").mass
+        low = calculate_mass(formula="C10H16O4") + parse_ionization("[M+H]+").mass
+        high = calculate_mass(formula="C12H18O6") + parse_ionization("[M+H]+").mass
         peaks = pd.DataFrame(
             {
                 "mz": [low, MZ, high],
@@ -191,9 +191,9 @@ class TestTheReadings:
             }
         )
         readings = [
-            ListReading(MZ, "C11H16O5", "+H+", 0.0),
-            ListReading(low, "C10H16O4", "+H+", 0.0),
-            ListReading(high, "C12H18O6", "+H+", 0.0),
+            ListReading(MZ, "C11H16O5", "[M+H]+", 0.0),
+            ListReading(low, "C10H16O4", "[M+H]+", 0.0),
+            ListReading(high, "C12H18O6", "[M+H]+", 0.0),
         ]
         together = rivals_of_readings(peaks, _box(), readings, HEURISTICS, UNRESOLVED)
         alone = [
@@ -247,7 +247,7 @@ def _kept(row) -> bool:
     return bool(value) if pd.notna(value) else False
 
 
-PROTON = parse_ionization("+H+").mass
+PROTON = parse_ionization("[M+H]+").mass
 
 #: C12H12N4O through a proton, where a list reads C11H16O5 5.8 ppm off.
 TAKEN_MZ = calculate_mass(formula="C12H12N4O") + PROTON
@@ -274,7 +274,7 @@ def _elect(scoring, *, prior=2.0, formula="C11H16O5", keeps_peak=False):
         HEURISTICS,
         targets=[TAKEN_MZ],
         scoring=scoring,
-        known={TAKEN_MZ: ListReading(TAKEN_MZ, formula, "+H+", 5.8, keeps_peak)},
+        known={TAKEN_MZ: ListReading(TAKEN_MZ, formula, "[M+H]+", 5.8, keeps_peak)},
         known_prior=prior,
         closed_shell_rivals=True,
     )
@@ -289,7 +289,7 @@ class TestTheElection:
         weighing = taken[KNOWN_DISPLACED]
         assert weighing["peak_mz"] == TAKEN_MZ
         assert (weighing["formula"], weighing["ion"]) == ("C11H16O5", "C11H17O5+")
-        assert weighing["ionization_mechanism"] == "+H+"
+        assert weighing["ionization_mechanism"] == "[M+H]+"
         assert weighing["prior"] == 2.0
         assert weighing["rival_evidence"] > 2.0 * weighing["evidence"]
         assert weighing["fit_score"] == taken[KNOWN_RIVALS].fit_score
@@ -343,7 +343,7 @@ class TestTheElection:
                 HEURISTICS,
                 targets=[radical],
                 scoring=PatternScoring(sigma_ppm=0.5, mz_tolerance_ppm=30.0),
-                known={radical: ListReading(radical, "C11H16O5", "+H+", -5.9)},
+                known={radical: ListReading(radical, "C11H16O5", "[M+H]+", -5.9)},
                 known_prior=2.0,
                 closed_shell_rivals=closed,
             )
@@ -419,7 +419,7 @@ class TestAListPeakAnEarlierEnvelopeReached:
         rows = self._search(
             peaks,
             targets,
-            {LISTED_MZ: ListReading(LISTED_MZ, "C9H15N3O4", "+H+", 0.0)},
+            {LISTED_MZ: ListReading(LISTED_MZ, "C9H15N3O4", "[M+H]+", 0.0)},
         )
         assert len(rows) == 2
         listed = rows[round(LISTED_MZ, 4)]
@@ -444,7 +444,7 @@ class TestAListPeakAnEarlierEnvelopeReached:
         rows = self._search(
             peaks,
             targets,
-            {TAKEN_MZ: ListReading(TAKEN_MZ, "C11H16O5", "+H+", 5.8)},
+            {TAKEN_MZ: ListReading(TAKEN_MZ, "C11H16O5", "[M+H]+", 5.8)},
         )
         assert len(rows) == 3
         taken = rows[round(TAKEN_MZ, 4)]
@@ -667,11 +667,13 @@ class TestADistinctiveEnvelope:
         mz = float(SILOXANE["mz"][0])
         matches, _ = assign_compositions(
             SILOXANE,
-            _box(ionizations="+H+,+(CH4N2O)H+", ppm=3.0),
+            _box(ionizations="[M+H]+,[M+CH4N2O+H]+", ppm=3.0),
             HEURISTICS,
             targets=[mz],
             scoring=SILOXANE_SCORING,
-            known={mz: ListReading(mz, "C10H30O5Si5", "+(CH4N2O)H+", 0.36, keeps_peak)},
+            known={
+                mz: ListReading(mz, "C10H30O5Si5", "[M+CH4N2O+H]+", 0.36, keeps_peak)
+            },
             known_prior=2.0,
             closed_shell_rivals=True,
         )
@@ -723,12 +725,12 @@ class TestTheTargetLibrary:
                 {
                     "formula": "C15H16S",
                     "ion": "C15H16S+",
-                    "ionization_mechanism": "+H+",
+                    "ionization_mechanism": "[M+H]+",
                 },
                 {
                     "formula": "C12H12N4O",
                     "ion": "C12H12N4O+",
-                    "ionization_mechanism": "+H+",
+                    "ionization_mechanism": "[M+H]+",
                     "isotopic_pattern_score": 0.9,
                 },
             ],
@@ -743,7 +745,7 @@ class TestTheTargetLibrary:
         assert held == {
             "formula": "C12H12N4O",
             "ion": "C12H12N4O+",
-            "ionization_mechanism": "+H+",
+            "ionization_mechanism": "[M+H]+",
             "fit_score": 0.9,
             "prior": 2.0,
             "why": HELD_BY_LIBRARY,
