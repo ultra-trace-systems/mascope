@@ -16,7 +16,7 @@ high count means for a row's tier is the tiering's judgement; a corroborated
 reading is not made doubtful by having neighbours, and an uncorroborated one is.
 
 Readings of the same ION are one candidate, not several. A covalent and a
-cluster reading of one m/z (``+NH4+`` on M, ``+H+`` on M+NH3) are the same
+cluster reading of one m/z (``[M+NH4]+`` on M, ``[M+H]+`` on M+NH3) are the same
 physical ion arriving under two names, so they are collapsed on the ion formula
 before anything is counted - the same collapse
 :func:`heuristic_filter.elect_same_ion_families` makes inside the run, for the

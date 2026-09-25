@@ -49,74 +49,92 @@ class TestPresets:
 
 class TestFingerprint:
     def test_the_urea_adduct_identifies_the_uronium_profile(self):
-        assert P.detect_reagent_profile(["+H+", "+(CH4N2O)H+"], "+") is P.UR
+        assert P.detect_reagent_profile(["[M+H]+", "[M+CH4N2O+H]+"], "+") is P.UR
 
     def test_bromide_identifies_the_bromide_profile(self):
-        assert P.detect_reagent_profile(["+Br-", "-H+"], "-") is P.BR
+        assert P.detect_reagent_profile(["[M+Br]-", "[M-H]-"], "-") is P.BR
 
     def test_iodide_identifies_the_iodide_profile(self):
-        assert P.detect_reagent_profile(["+I-", "-H+"], "-") is P.IODIDE
+        assert P.detect_reagent_profile(["[M+I]-", "[M-H]-"], "-") is P.IODIDE
 
     def test_the_labelled_nitrate_wins_over_the_unlabelled_one(self):
         # A 15N deployment usually keeps both mechanisms on the mode, and the
         # labelled one is the more specific statement.
-        assert P.detect_reagent_profile(["+NO3-", "+^NO3-"], "-") is P.NO3_15N
-        assert P.detect_reagent_profile(["+^NO3-", "+NO3-"], "-") is P.NO3_15N
+        assert P.detect_reagent_profile(["[M+NO3]-", "[M+^NO3]-"], "-") is P.NO3_15N
+        assert P.detect_reagent_profile(["[M+^NO3]-", "[M+NO3]-"], "-") is P.NO3_15N
 
     def test_unlabelled_nitrate_alone_is_the_unlabelled_profile(self):
-        assert P.detect_reagent_profile(["+NO3-"], "-") is P.NO3
+        assert P.detect_reagent_profile(["[M+NO3]-"], "-") is P.NO3
 
     def test_resolution_does_not_depend_on_mechanism_order(self):
-        forwards = P.detect_reagent_profile(["+Br-", "+(CH4N2O)H+"], "-")
-        backwards = P.detect_reagent_profile(["+(CH4N2O)H+", "+Br-"], "-")
+        forwards = P.detect_reagent_profile(["[M+Br]-", "[M+CH4N2O+H]+"], "-")
+        backwards = P.detect_reagent_profile(["[M+CH4N2O+H]+", "[M+Br]-"], "-")
         assert forwards is backwards
+
+    def test_a_legacy_spelling_identifies_the_same_profile(self):
+        # A row the mechanism table has not rewritten yet is the same
+        # mechanism, and the fingerprint is read off the mechanism.
+        assert P.detect_reagent_profile(["+H+", "+(CH4N2O)H+"], "+") is P.UR
+        assert P.detect_reagent_profile(["+Br-", "-H+"], "-") is P.BR
+        assert P.detect_reagent_profile(["+"], "+", "orbi") is P.EASYIC_POS
 
     def test_nothing_diagnostic_falls_back_to_the_polarity(self):
         # Protonation or deprotonation alone is how an electrospray or APCI
-        # mode is written: no reagent, no bare sign.
-        assert P.detect_reagent_profile(["+H+"], "+") is P.ESI_POS
-        assert P.detect_reagent_profile(["-H+"], "-") is P.ESI_NEG
+        # mode is written: no reagent, no electron transfer.
+        assert P.detect_reagent_profile(["[M+H]+"], "+") is P.ESI_POS
+        assert P.detect_reagent_profile(["[M-H]-"], "-") is P.ESI_NEG
 
-    def test_the_bare_sign_on_an_orbitrap_is_the_charge_transfer_source(self):
+    def test_electron_transfer_on_an_orbitrap_is_the_charge_transfer_source(self):
         # An Orbitrap's EASY-IC source is declared as electron transfer and
         # nothing else. Before the profile existed such a mode fell to the ESI
         # preset - a C60 grid with no matrix prior - and committed formulas no
         # atmosphere makes.
-        assert P.detect_reagent_profile(["+"], "+", "orbi") is P.EASYIC_POS
-        assert P.detect_reagent_profile(["-"], "-", "orbi") is P.EASYIC_NEG
+        assert P.detect_reagent_profile(["[M]+."], "+", "orbi") is P.EASYIC_POS
+        assert P.detect_reagent_profile(["[M]-."], "-", "orbi") is P.EASYIC_NEG
 
-    def test_the_bare_sign_elsewhere_keeps_the_path_it_had(self):
+    def test_electron_transfer_elsewhere_keeps_the_path_it_had(self):
         # An ambient-ion mode on an APi-TOF - the air's own ions, no reagent -
-        # is declared with the same bare sign and is not a fluoranthene beam.
-        # The fleet holds such streams; they keep the ESI preset, as does a
-        # sample whose instrument nobody could read.
-        assert P.detect_reagent_profile(["+"], "+", "tof") is P.ESI_POS
-        assert P.detect_reagent_profile(["-"], "-", "tof") is P.ESI_NEG
-        assert P.detect_reagent_profile(["-"], "-", None) is P.ESI_NEG
-        assert P.detect_reagent_profile(["-"], "-") is P.ESI_NEG
+        # is declared with the same electron transfer and is not a
+        # fluoranthene beam. The fleet holds such streams; they keep the ESI
+        # preset, as does a sample whose instrument nobody could read.
+        assert P.detect_reagent_profile(["[M]+."], "+", "tof") is P.ESI_POS
+        assert P.detect_reagent_profile(["[M]-."], "-", "tof") is P.ESI_NEG
+        assert P.detect_reagent_profile(["[M]-."], "-", None) is P.ESI_NEG
+        assert P.detect_reagent_profile(["[M]-."], "-") is P.ESI_NEG
 
     def test_a_declared_secondary_channel_does_not_unmake_the_source(self):
         # A charge-transfer mode that also declares proton transfer or
-        # deprotonation is still the charge-transfer source: the bare sign is
-        # what says so, and the declared channel is searched as the mode's own.
-        assert P.detect_reagent_profile(["+", "+H+"], "+", "orbi") is P.EASYIC_POS
-        assert P.detect_reagent_profile(["-", "-H+"], "-", "orbi") is P.EASYIC_NEG
+        # deprotonation is still the charge-transfer source: electron transfer
+        # is what says so, and the declared channel is searched as the mode's
+        # own.
+        assert (
+            P.detect_reagent_profile(["[M]+.", "[M+H]+"], "+", "orbi") is P.EASYIC_POS
+        )
+        assert (
+            P.detect_reagent_profile(["[M]-.", "[M-H]-"], "-", "orbi") is P.EASYIC_NEG
+        )
 
-    def test_a_reagent_wins_over_the_bare_sign(self):
+    def test_a_reagent_wins_over_electron_transfer(self):
         # A reagent mode that also declares electron transfer is that reagent's
-        # source; the bare sign only decides where no reagent does.
-        assert P.detect_reagent_profile(["+NO3-", "-", "-H+"], "-", "orbi") is P.NO3
-        assert P.detect_reagent_profile(["+", "+(CH4N2O)H+"], "+", "orbi") is P.UR
-        assert P.detect_reagent_profile(["+Br-", "-"], "-", "orbi") is P.BR
+        # source; electron transfer only decides where no reagent does.
+        assert (
+            P.detect_reagent_profile(["[M+NO3]-", "[M]-.", "[M-H]-"], "-", "orbi")
+            is P.NO3
+        )
+        assert P.detect_reagent_profile(["[M]+.", "[M+CH4N2O+H]+"], "+", "orbi") is P.UR
+        assert P.detect_reagent_profile(["[M+Br]-", "[M]-."], "-", "orbi") is P.BR
 
     def test_a_profile_of_the_wrong_polarity_is_never_the_answer(self):
         # A row stored under the wrong polarity, or a caller that did not
         # filter the panel, must not turn a negative sample into a positive
         # source. The polarity is read however it is spelled.
-        assert P.detect_reagent_profile(["+", "-"], "-", "orbi") is P.EASYIC_NEG
-        assert P.detect_reagent_profile(["-", "+"], "positive", "orbi") is P.EASYIC_POS
-        assert P.detect_reagent_profile(["+(CH4N2O)H+", "+Br-"], "+") is P.UR
-        assert P.detect_reagent_profile(["+(CH4N2O)H+"], "neg") is P.ESI_NEG
+        assert P.detect_reagent_profile(["[M]+.", "[M]-."], "-", "orbi") is P.EASYIC_NEG
+        assert (
+            P.detect_reagent_profile(["[M]-.", "[M]+."], "positive", "orbi")
+            is P.EASYIC_POS
+        )
+        assert P.detect_reagent_profile(["[M+CH4N2O+H]+", "[M+Br]-"], "+") is P.UR
+        assert P.detect_reagent_profile(["[M+CH4N2O+H]+"], "neg") is P.ESI_NEG
 
     def test_the_charge_transfer_profiles_take_the_ambient_prior(self):
         # Never the ESI profiles' absence of a context: the ambient windows are
@@ -137,13 +155,13 @@ class TestFingerprint:
         # any air sample, so every negative reagent profile may see it; no
         # positive profile and no electrospray does.
         for profile in (P.NO3, P.NO3_15N, P.BR, P.IODIDE):
-            assert "+HCOO-" in profile.secondary_adducts, profile.name
+            assert "[M+HCOO]-" in profile.secondary_adducts, profile.name
         for profile in (P.UR, P.ESI_POS, P.ESI_NEG, P.EASYIC_POS, P.EASYIC_NEG):
-            assert "+HCOO-" not in profile.secondary_adducts, profile.name
+            assert "[M+HCOO]-" not in profile.secondary_adducts, profile.name
 
     def test_the_charge_transfer_channels_are_secondary_not_declared(self):
-        assert P.EASYIC_POS.secondary_adducts == ("-H-", "+H+")
-        assert P.EASYIC_NEG.secondary_adducts == ("-H+",)
+        assert P.EASYIC_POS.secondary_adducts == ("[M-H]+", "[M+H]+")
+        assert P.EASYIC_NEG.secondary_adducts == ("[M-H]-",)
         assert P.get_reagent_profile("charge-transfer") is P.EASYIC_POS
         assert P.get_reagent_profile("ct-") is P.EASYIC_NEG
 

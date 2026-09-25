@@ -42,6 +42,7 @@ from dataclasses import dataclass, field
 from typing import Mapping
 
 from mascope_tools.composition.known_window import KnownWindow
+from mascope_tools.composition.mechanism_notation import mechanism_key
 
 
 #: Ratio-window keys. ``C`` is the carbon-equivalent count (C + Si: silicon is a
@@ -131,7 +132,7 @@ class ReagentProfile:
         species, as an electrospray does not.
     :param detection: Ionization-mechanism notations whose presence on a
         sample's mode identifies this profile. The fingerprint, in the
-        notation the mechanism table stores.
+        standard adduct notation the mechanism table stores (``"[M+Br]-"``).
     :param secondary_adducts: Channels the source also produces but that a
         mode is rarely configured with. Searched opportunistically by step 1.2
         of the assignment plan; carried here because the panel is a fact about
@@ -450,12 +451,12 @@ BR = ReagentProfile(
     polarity="-",
     element_ranges="C0-40 H0-80 N0-3 O0-18 S0-2 Cl0-2 Br0-2",
     reagent_formula="Br",
-    detection=("+Br-",),
+    detection=("[M+Br]-",),
     # Carbonate and the dibromide cluster: channels a bromide source produces
     # that a mode is seldom configured with. 145 of the reference engine's main
     # peaks on the nitrate gate set are read through the carbonate channel.
     # Formate: see the nitrate profile.
-    secondary_adducts=("+CO3-", "+Br2-", "+HCOO-"),
+    secondary_adducts=("[M+CO3]-", "[M+Br2]-", "[M+HCOO]-"),
     default_context=AMBIENT_AIR.name,
     aliases=("br", "bromide", "br-cims"),
 )
@@ -466,7 +467,7 @@ UR = ReagentProfile(
     polarity="+",
     element_ranges="C0-40 H0-90 N0-8 O0-15 S0-2",
     reagent_formula="CH4N2O",
-    detection=("+(CH4N2O)H+",),
+    detection=("[M+CH4N2O+H]+",),
     # Ammonium only. It is a real channel on this source - 1,648 [M+NH4]+ main
     # peaks on one Orbitrap that the engine could otherwise only read as
     # heavier N-free neutrals, the urea-NH4+ cluster present in every spectrum,
@@ -475,7 +476,7 @@ UR = ReagentProfile(
     # present in these spectra, and the reference engine's [M+Na]+ readings
     # there are mostly dim uncorroborated candidates - a channel that absorbs
     # unexplained mass rather than one the source produces.
-    secondary_adducts=("+NH4+",),
+    secondary_adducts=("[M+NH4]+",),
     default_context=URONIUM.name,
     aliases=("ur", "uronium", "urea", "urea-cims"),
 )
@@ -486,7 +487,7 @@ NO3 = ReagentProfile(
     polarity="-",
     element_ranges="C0-40 H0-60 N0-3 O0-25 S0-2",
     reagent_formula="NO3",
-    detection=("+NO3-",),
+    detection=("[M+NO3]-",),
     # Carbonate, the channel the nitrate sets need most: the reference engine
     # reads 145 and 212 main peaks through it on those sets, and the mode does
     # not offer it, so every one of them can only be read here as some heavier
@@ -503,7 +504,7 @@ NO3 = ReagentProfile(
     # row's only where the C10 neutral is itself seen through one of the
     # mode's own channels (the engine's partner gate), and otherwise the acid
     # is the row's reading, with the formate one set aside on it.
-    secondary_adducts=("+CO3-", "+HCOO-"),
+    secondary_adducts=("[M+CO3]-", "[M+HCOO]-"),
     default_context=AMBIENT_AIR.name,
     aliases=("no3", "nitrate", "nitrate-cims"),
 )
@@ -514,10 +515,10 @@ NO3_15N = ReagentProfile(
     polarity="-",
     element_ranges="C0-40 H0-60 N0-3 O0-25 S0-2",
     reagent_formula="^NO3",
-    detection=("+^NO3-",),
+    detection=("[M+^NO3]-",),
     # Carbonate carries no reagent nitrogen, so it is the same channel here as
     # on the unlabelled profile; formate likewise.
-    secondary_adducts=("+CO3-", "+HCOO-"),
+    secondary_adducts=("[M+CO3]-", "[M+HCOO]-"),
     default_context=AMBIENT_AIR.name,
     label_isotope="^N",
     label_purity=0.98,
@@ -533,9 +534,9 @@ IODIDE = ReagentProfile(
     # adduct or a curated list, never through a mass fit.
     element_ranges="C0-40 H0-80 N0-3 O0-20 S0-2 Cl0-1",
     reagent_formula="I",
-    detection=("+I-",),
+    detection=("[M+I]-",),
     # Formate: see the nitrate profile.
-    secondary_adducts=("+I2-", "+HCOO-"),
+    secondary_adducts=("[M+I2]-", "[M+HCOO]-"),
     default_context=AMBIENT_AIR.name,
     aliases=("i", "iodide", "iodide-cims"),
 )
@@ -552,7 +553,7 @@ ESI_POS = ReagentProfile(
     # The alkali adducts belong here and only here: an electrospray source
     # really does produce them from residual salt, where a CIMS source's
     # spectra show no such cluster at all.
-    secondary_adducts=("+NH4+", "+Na+", "+K+"),
+    secondary_adducts=("[M+NH4]+", "[M+Na]+", "[M+K]+"),
     default_context=NO_CONTEXT.name,
     aliases=("esi+", "esi-pos", "positive"),
 )
@@ -569,8 +570,8 @@ ESI_NEG = ReagentProfile(
 #: The charge-transfer source. An Orbitrap's EASY-IC internal-calibration
 #: source is a fluoranthene ion beam, and run as a low-pressure chemical
 #: ionization source it ionizes the sample by charge transfer: a mode built on
-#: it declares the bare sign - electron transfer, ``[M]+.`` or ``[M]-.`` - and
-#: nothing else. Before this profile existed such a mode fell to the ESI
+#: it declares electron transfer, ``[M]+.`` or ``[M]-.``, and nothing else.
+#: Before this profile existed such a mode fell to the ESI
 #: preset of its polarity, a C60 grid with no matrix prior, and on a chamber
 #: dataset that read 357 of the 373 neutrals it committed on the negative
 #: batch as formulas no atmosphere makes (C4H2N5-, C3N2O-, C3HN4-) while the
@@ -590,32 +591,33 @@ ESI_NEG = ReagentProfile(
 #: channel, and the tropylium ion of toluene) and protonates where a proton is
 #: to be had (``[M+H]+``, protonated acetone). In negative mode the anions the
 #: discharge makes deprotonate acids (``[M-H]-``). A mode that declares only
-#: the bare sign has those channels searched as secondary ones - switched on
-#: by the source's own fingerprint and capped at candidate without
+#: electron transfer has those channels searched as secondary ones - switched
+#: on by the source's own fingerprint and capped at candidate without
 #: corroboration - and a same-ion family that reads one peak both as a radical
-#: through the bare sign and as a closed-shell molecule through one of them
-#: elects the molecule. A mode that declares proton transfer or deprotonation
-#: beside the bare sign has said the source runs it: that channel is the
-#: mode's own and is searched as one (``reagents.SECONDARY_CHANNELS``).
+#: through electron transfer and as a closed-shell molecule through one of
+#: them elects the molecule. A mode that declares proton transfer or
+#: deprotonation beside electron transfer has said the source runs it: that
+#: channel is the mode's own and is searched as one
+#: (``reagents.SECONDARY_CHANNELS``).
 #:
-#: The bare sign alone is not enough to name this source. An ambient-ion
+#: Electron transfer alone is not enough to name this source. An ambient-ion
 #: mode on an APi-TOF - the air's own ions, no reagent - is declared the same
 #: way, and the fleet holds such streams. The EASY-IC source is an Orbitrap's,
 #: so the fingerprint is read only on that instrument class
-#: (:data:`CHARGE_TRANSFER_INSTRUMENTS`); a bare-sign mode anywhere else keeps
-#: the path it had, the ESI preset of its polarity.
+#: (:data:`CHARGE_TRANSFER_INSTRUMENTS`); an electron-transfer mode anywhere
+#: else keeps the path it had, the ESI preset of its polarity.
 EASYIC_POS = ReagentProfile(
     name="EASYIC_POS",
     label="Charge transfer (EASY-IC), positive",
     polarity="+",
     element_ranges="C0-40 H0-80 N0-5 O0-15 S0-2",
     reagent_formula="C16H10",
-    detection=("+",),
-    # Hydride abstraction (``-H-``: a hydride removed leaves a cation) and
+    detection=("[M]+.",),
+    # Hydride abstraction (``[M-H]+``: a hydride removed leaves a cation) and
     # proton transfer. Both are real channels of this source and neither is
     # what a mode declares; see ``reagents.SECONDARY_CHANNELS`` for what
     # switches each on.
-    secondary_adducts=("-H-", "+H+"),
+    secondary_adducts=("[M-H]+", "[M+H]+"),
     default_context=AMBIENT_AIR.name,
     aliases=(
         "easyic",
@@ -637,10 +639,10 @@ EASYIC_NEG = ReagentProfile(
     # carries more oxygen than the hydrocarbons the positive one keeps intact.
     element_ranges="C0-40 H0-80 N0-5 O0-20 S0-2",
     reagent_formula="C16H10",
-    detection=("-",),
+    detection=("[M]-.",),
     # Deprotonation, opened where the spectrum shows the source's anions
     # deprotonating acids of their own.
-    secondary_adducts=("-H+",),
+    secondary_adducts=("[M-H]-",),
     default_context=AMBIENT_AIR.name,
     aliases=("easyic-", "easy-ic-", "charge-transfer-", "ct-"),
 )
@@ -661,10 +663,10 @@ REAGENT_PROFILES: dict[str, ReagentProfile] = {
     )
 }
 
-#: The instrument classes on which a bare-sign mode is read as the
+#: The instrument classes on which an electron-transfer mode is read as the
 #: charge-transfer source, keyed by ``mascope_file.name.get_instrument_type``
 #: values. The EASY-IC source is Orbitrap hardware; an ambient-ion mode on a
-#: TOF declares the same bare sign and is not this source.
+#: TOF declares the same electron transfer and is not this source.
 CHARGE_TRANSFER_INSTRUMENTS: frozenset[str] = frozenset({"orbi"})
 
 #: The profiles that fingerprint is read for.
@@ -680,10 +682,10 @@ _PROFILE_ALIASES: dict[str, str] = {
 
 #: Fingerprint order. A mode carrying several diagnostic mechanisms resolves the
 #: same way every time, and the labelled nitrate is tested before the unlabelled
-#: one because a 15N deployment often keeps both mechanisms on the mode. The
-#: bare sign comes after every reagent: a reagent mode that also declares
-#: electron transfer is still that reagent's source, and only a mode with no
-#: reagent at all is read as the charge-transfer one.
+#: one because a 15N deployment often keeps both mechanisms on the mode.
+#: Electron transfer comes after every reagent: a reagent mode that also
+#: declares it is still that reagent's source, and only a mode with no reagent
+#: at all is read as the charge-transfer one.
 _DETECTION_ORDER: tuple[ReagentProfile, ...] = (
     UR,
     NO3_15N,
@@ -695,9 +697,10 @@ _DETECTION_ORDER: tuple[ReagentProfile, ...] = (
 )
 
 #: The generic profile per polarity, used when no mechanism is diagnostic and
-#: the mode declares no bare sign an Orbitrap could read as charge transfer -
-#: protonation or deprotonation alone, which is how an electrospray or APCI
-#: mode is written, or the bare sign on any other instrument.
+#: the mode declares no electron transfer an Orbitrap could read as the
+#: charge-transfer source - protonation or deprotonation alone, which is how an
+#: electrospray or APCI mode is written, or electron transfer on any other
+#: instrument.
 #: Keyed by the single-character form the sample row carries, with the spelled-out
 #: words accepted too - the same polarity is written both ways across the codebase
 #: (a sample is "+", a batch "pos"), and a fallback that silently missed on the
@@ -756,32 +759,34 @@ def detect_reagent_profile(
     """The profile a sample's ionization mechanisms identify.
 
     The mechanism panel is the fingerprint the deployment already maintains:
-    a mode carrying ``+(CH4N2O)H+`` is a urea source whatever it is named, and
-    one carrying ``+Br-`` is a bromide source. On an Orbitrap, a mode with no
-    reagent whose panel carries the bare sign - electron transfer, which is
-    how that instrument's EASY-IC charge-transfer source is declared - is that
-    source; on any other instrument the bare sign names an ambient-ion mode as
-    readily, and is not read. Only when nothing is diagnostic does the polarity
-    decide, and then the answer is the generic ESI preset - a broad grid and
-    no matrix prior, because nothing was learned.
+    a mode carrying ``[M+CH4N2O+H]+`` is a urea source whatever it is named,
+    and one carrying ``[M+Br]-`` is a bromide source. On an Orbitrap, a mode
+    with no reagent whose panel carries electron transfer (``[M]+.``, which is
+    how that instrument's EASY-IC charge-transfer source is declared) is that
+    source; on any other instrument electron transfer names an ambient-ion
+    mode as readily, and is not read. Only when nothing is diagnostic does the
+    polarity decide, and then the answer is the generic ESI preset - a broad
+    grid and no matrix prior, because nothing was learned.
 
     A profile of the opposite polarity to the sample's is never the answer: a
     row stored under the wrong polarity, or a caller that did not filter the
     panel, must not turn a negative sample into a positive source.
 
-    :param mechanism_notations: The mode's mechanism notations, in the form the
-        mechanism table stores (``"+Br-"``, ``"+(CH4N2O)H+"``).
+    :param mechanism_notations: The mode's mechanism notations as the
+        mechanism table stores them (``"[M+Br]-"``, ``"[M+CH4N2O+H]+"``). A
+        legacy spelling (``"+Br-"``) is read as the same mechanism.
     :param polarity: The sample's polarity, ``"+"`` or ``"-"`` (the spelled-out
         forms are read too). A profile it contradicts is skipped, and it
         decides alone when no mechanism is diagnostic.
     :param instrument_type: The sample's instrument class (``"orbi"``,
-        ``"tof"``), deciding whether the bare sign is read as charge transfer.
+        ``"tof"``), deciding whether electron transfer is read as the
+        charge-transfer source.
     :return: The resolved profile; :data:`NO_PROFILE` when neither the
         mechanisms nor the polarity say anything, so an unrecognisable sample
         keeps the engine's historical behaviour rather than acquiring a grid
         nothing justifies.
     """
-    seen = {notation.strip() for notation in mechanism_notations or ()}
+    seen = {mechanism_key(notation) for notation in mechanism_notations or ()}
     sign = _POLARITY_SIGN.get((polarity or "").strip().lower())
     charge_transfer = (
         instrument_type or ""

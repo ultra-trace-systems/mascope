@@ -1,6 +1,6 @@
 """Single source of truth for labelled custom elements ('^X' notation).
 
-A labelled reagent atom (e.g. the ``15N`` in the 15N-nitrate reagent ``+^NO3-``)
+A labelled reagent atom (e.g. the ``15N`` in the 15N-nitrate reagent ``[M+^NO3]-``)
 is modelled as a custom element ``^X`` whose isotope distribution is the
 *labelled* distribution rather than natural abundance. This module is the one
 place that knows about these elements; both ``mascope_tools`` (mass computation,

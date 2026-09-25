@@ -37,6 +37,8 @@ from typing import Mapping, Sequence
 
 import numpy as np
 
+from mascope_tools.composition.mechanism_notation import mechanism_key
+
 
 @dataclass(frozen=True)
 class Calibration:
@@ -61,7 +63,7 @@ class Calibration:
     fit_utc: str | None = None  # when it was fit (ISO-8601)
     source: str | None = None  # dataset / reference provenance it was fit from
     provisional: bool = True  # True until fit on a curated, sufficient dataset
-    # {adduct notation -> log-odds boost}; e.g. {"+Br-": 2.28, "+NH4+": 0.83}
+    # {adduct notation -> log-odds boost}; e.g. {"[M+Br]-": 2.28, "[M+NH4]+": 0.83}
     corroboration_weights: Mapping[str, float] | None = field(default=None)
 
     def params(self) -> tuple[float, float]:
@@ -88,10 +90,14 @@ def apply_corroboration(
     (protonation/deprotonation) carry ~0, distinctive ones (e.g. bromide) carry more, so a strong
     corroborator lifts a weak assignment while a generic one barely moves a strong one. Returns
     ``p_correct`` unchanged when it is ``None`` (uncalibrated), or when there are no weights or no
-    observed corroborating adducts."""
+    observed corroborating adducts. An adduct and a weight are matched by mechanism, not by
+    spelling, so weights keyed ``"+Br-"`` apply to ``"[M+Br]-"``."""
     if p_correct is None or not weights or not observed_adducts:
         return p_correct
-    delta = float(sum(weights.get(a, 0.0) for a in observed_adducts))
+    by_mechanism = {mechanism_key(adduct): weight for adduct, weight in weights.items()}
+    delta = float(
+        sum(by_mechanism.get(mechanism_key(a), 0.0) for a in observed_adducts)
+    )
     if delta == 0.0:
         return p_correct
     delta = max(-cap, min(cap, delta))
@@ -490,11 +496,11 @@ def recalibrate(
 # and _corroboration_metrics.json). Distinctive reagent adducts corroborate strongly, generic
 # protonation/deprotonation ~0. PROVISIONAL, instrument+library specific -- refit per deployment.
 PROVISIONAL_ORBITRAP_CORROBORATION = {
-    "+Br-": 2.28,
-    "+NH4+": 0.83,
-    "+(CH4N2O)H+": 0.70,
-    "+H+": 0.0,
-    "-H+": 0.0,
+    "[M+Br]-": 2.28,
+    "[M+NH4]+": 0.83,
+    "[M+CH4N2O+H]+": 0.70,
+    "[M+H]+": 0.0,
+    "[M-H]-": 0.0,
 }
 
 PROVISIONAL_ORBITRAP = Calibration(

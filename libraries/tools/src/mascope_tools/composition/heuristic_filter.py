@@ -755,7 +755,8 @@ def mechanism_mass_contribution(notation: str | None) -> float:
     :func:`finder.find_compositions`, restated on the notation because a scored
     candidate carries the notation rather than the parsed mechanism.
 
-    :param notation: A mechanism's Mascope notation (``"+NH4+"``, ``"-H+"``).
+    :param notation: A mechanism, in either notation (``"[M+NH4]+"``,
+        ``"[M-H]-"``).
     :return: The contribution in Da. 0.0 when the notation is missing or
         unparseable, which ranks it below every addition and above every
         subtraction rather than letting an unreadable mechanism decide a family.
@@ -817,10 +818,11 @@ def clusters_on_oxygen(notation: str | None) -> bool:
 
     Read off the mechanism, as :func:`mechanism_mass_contribution` is, so every
     spelling of the cluster a deployment may hold is recognised: the anion alone
-    (``+NO3-``), with its conjugate acid (``+(HNO3)NO3-``), and with a labelled
-    reagent's atom in place of the ordinary one (``+[15N]O3-``, ``+^NO3-``).
+    (``[M+NO3]-``), with its conjugate acid (``[M+HNO3+NO3]-``), and with a
+    labelled reagent's atom in place of the ordinary one (``[M+[15N]O3]-``,
+    ``[M+^NO3]-``).
 
-    :param notation: A mechanism's Mascope notation.
+    :param notation: A mechanism, in either notation.
     :return: True for such a cluster. False for any other channel, and for a
         notation nobody can parse, so an unreadable mechanism is never judged.
     """
@@ -885,12 +887,12 @@ HALOGENS: frozenset[str] = frozenset({"F", "Cl", "Br", "I"})
 def attaches_halogens_only(notation: str | None) -> bool:
     """Whether a channel attaches an anion made of halogens and nothing else.
 
-    A halide (``+Br-``, ``+I-``, ``+Cl-``) or a dihalide (``+Br2-``), read off the
-    mechanism as :func:`clusters_on_oxygen` reads its channel, so a hydrate, an
-    acid cluster or an oxyanion of a halogen (``+H2O+Br-``, ``+(HBr)Br-``,
-    ``+BrO-``) is not one.
+    A halide (``[M+Br]-``, ``[M+I]-``, ``[M+Cl]-``) or a dihalide
+    (``[M+Br2]-``), read off the mechanism as :func:`clusters_on_oxygen` reads
+    its channel, so a hydrate, an acid cluster or an oxyanion of a halogen
+    (``[M+H2O+Br]-``, ``[M+HBr+Br]-``, ``[M+BrO]-``) is not one.
 
-    :param notation: A mechanism's Mascope notation.
+    :param notation: A mechanism, in either notation.
     :return: True for such a channel. False for any other, and for a notation
         nobody can parse, so an unreadable mechanism is never judged.
     """
@@ -914,7 +916,7 @@ def attaches_halogens_only(notation: str | None) -> bool:
 def polyhalide_cluster(formula: str | None, notation: str | None) -> bool:
     """Whether a reading attaches a halide to a neutral made of halogens only.
 
-    IBr read through ``+Br-`` is the polyhalide anion IBr2-, and a halide source
+    IBr read through ``[M+Br]-`` is the polyhalide anion IBr2-, and a halide source
     makes such anions from the halogen molecules that reach it - those of the air
     it samples, which is how a bromide instrument measures I2, IBr and ICl, and
     those of the source itself, where impurities of a halogen supply make ICl
@@ -1128,7 +1130,7 @@ def anchor_on_monoisotopic(
     the most abundant configuration IS the monoisotopic one - and false exactly
     where it costs most.
 
-    On a bromide source it cost bright peaks outright. A ``+Br2-`` candidate is
+    On a bromide source it cost bright peaks outright. A ``[M+Br2]-`` candidate is
     enumerated for a peak, its envelope is anchored on the 79Br81Br line two
     mass units above, that line is matched to whatever small peak sits there,
     and the target then measures thousands of percent too bright for its own
@@ -1725,7 +1727,7 @@ def score_pattern(
     first and this function required index 0. Anchoring the envelope on the
     monoisotopic line (`anchor_on_monoisotopic`) separated the two, and without
     stating it again the anchoring would have traded one phantom for another -
-    on a bromide grid, `+Br2-` readings winning peaks with no envelope at all.
+    on a bromide grid, `[M+Br2]-` readings winning peaks with no envelope at all.
 
     No longer ranks anything in the composition finder: `match_isotopic_pattern`
     scores with `score_pattern_v2` (see it, and the block below for what the two
