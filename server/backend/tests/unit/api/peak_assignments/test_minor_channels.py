@@ -181,7 +181,7 @@ class TestTheCorroborationCap:
 
 #: A charge-transfer source: electron transfer, and proton transfer and hydride
 #: abstraction beside it.
-CT_IDS = {"+": "im-ct", "[M+H]+": "im-h", "[M-H]+": "im-hydride"}
+CT_IDS = {"[M]+.": "im-ct", "[M+H]+": "im-h", "[M-H]+": "im-hydride"}
 
 BANDS = {TIER_ASSIGNED: 0.75, TIER_CANDIDATE: 0.45}
 
@@ -460,18 +460,18 @@ class TestThePartnerGate:
 
     def test_tropylium_is_toluene_less_a_hydride_where_toluene_is_seen(self):
         # C7H7+ reads as protonated C7H6 or as toluene less a hydride; the
-        # election takes the proton, the sample shows toluene through the bare
-        # sign, and only the hydride reading has that partner.
+        # election takes the proton, the sample shows toluene through electron
+        # transfer, and only the hydride reading has that partner.
         peaks = _peaks(("p1", 91.0542, 1.0e6), ("p2", 92.0621, 3.0e6))
         rows = self._assign(
             [
                 {
                     **_match(91.0542, "C7H6", "C7H7+", "[M+H]+", 0.99),
                     "same_ion_alternatives": self._family(
-                        ("C7H8", "C7H7+", "[M-H]+"), ("C7H7", "C7H7+", "+")
+                        ("C7H8", "C7H7+", "[M-H]+"), ("C7H7", "C7H7+", "[M]+.")
                     ),
                 },
-                _match(92.0621, "C7H8", "C7H8+", "+", 0.99),
+                _match(92.0621, "C7H8", "C7H8+", "[M]+.", 0.99),
             ],
             peaks,
             CT_IDS,
@@ -990,7 +990,7 @@ class TestTheStrongerPartnerDecides:
             "channel": "[M+H]+",
             "partner": False,
             "displaced": "C7H7",
-            "through": "+",
+            "through": "[M]+.",
         }
         partner["alternatives"] = [
             {

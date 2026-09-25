@@ -521,7 +521,7 @@ class TestTheSameIonRule:
 CT = "ct"
 PROTON_TRANSFER = "pt"
 HYDRIDE = "hyd"
-CHARGE_TRANSFER = {CT: "+", PROTON_TRANSFER: "[M+H]+", HYDRIDE: "[M-H]+"}
+CHARGE_TRANSFER = {CT: "[M]+.", PROTON_TRANSFER: "[M+H]+", HYDRIDE: "[M-H]+"}
 
 
 def benzyl(formula: str, mechanism: str, other, **kwargs) -> dict:

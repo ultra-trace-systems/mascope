@@ -285,7 +285,7 @@ def test_the_search_reads_the_partner_gate_over_its_own_rows():
         ["[M+H]+", "[M-H]+"],
     )
     assert {"[M+H]+", "[M-H]+"} <= resolved.partner_gated_channels
-    ids = {"+": "im-ct", "[M+H]+": "im-h", "[M-H]+": "im-hydride"}
+    ids = {"[M]+.": "im-ct", "[M+H]+": "im-h", "[M-H]+": "im-hydride"}
     peaks = pd.DataFrame(
         [
             {"sample_peak_id": "p1", "mz": 91.0542, "intensity": 1.0e6},
@@ -302,7 +302,7 @@ def test_the_search_reads_the_partner_gate_over_its_own_rows():
                     "[M+H]+",
                     family=[("C7H8", "C7H7+", "[M-H]+")],
                 ),
-                _match(92.0621, "C7H8", "C7H8+", "+"),
+                _match(92.0621, "C7H8", "C7H8+", "[M]+."),
             ]
         ),
         peaks_df=peaks,
