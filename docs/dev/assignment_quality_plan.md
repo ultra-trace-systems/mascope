@@ -49,6 +49,7 @@ dataset's sets G to J, the chemist's reading of 2026-09-24 (decision 21).
 | 3.3 - name the source ions | - | planned |
 | 3.3b - the standard adduct notation | - | planned (decision 23); before 2.0, as its own change |
 | 3.4 - an opportunistic channel needs a second channel | - | planned |
+| 3.4b - one peak is not enough | - | planned (decision 25), step section written 2026-09-25; the need measured on set J: a peak at m/z 455.0 assigned as C11H11N3O11S at fit 76% on one line at the noise floor, read as three formulas across the set's six files; 44% of J's assigned rows and 13 to 35% of the chamber Orbitrap sets' stand on one peak, under 5% of assigned intensity everywhere |
 | 3.5 - calibrants below the brightest lines, an offset term, and the low-mass bend (calibration node) | - | planned |
 | 3.6 - priors and the dataset's context | - | planned |
 | 3.7 - stage 3 gate, engine 0.6.0 | - | planned |
@@ -1705,6 +1706,63 @@ bump.
   those with a second channel or a list; G7 stays 0; no other set moves.
 - **Size.** S.
 
+### 3.4b One peak is not enough
+
+- **What.** A demote rule of the tiering pass (`tiering.py`, beside
+  candidate density): a monoisotopic row from the search whose evidence is
+  one peak is capped at candidate, with the reason `lone_peak`. Three things
+  are a second observation, and each is an escape: a committed isotopologue
+  row of the row's own, one the run matched under the detectability gate; a
+  second channel of the run committing the same neutral, read off the
+  cross-channel pass's record as the density rule reads it; a reference list
+  naming it, so a Stage A row is exempt the way the mass gate exempts a
+  curated row. A row that keeps its tier says which of the three it stands
+  on, so every assigned row from the search names a second line, a second
+  channel or a list. The batch's series membership joins the escapes when
+  step 4.2 exists; until then nothing outside the sample lifts the cap. The
+  rule demotes only, like every rule of the pass, and the batch search reads
+  it through the same pass.
+- **Why.** Decision 18 reserves assigned for near-certainty. The bands put a
+  row at assigned on fit times plausibility, and no rule then asks whether
+  anything but the one peak was measured: candidate density fires only where
+  rivals were left unseparated, and the rivals of a lone peak are as often
+  implausible as separated. On set J a peak at m/z 454.999 is assigned as
+  C11H11N3O11S at fit 76% and plausibility 100%: one line at the noise
+  floor with no isotopologue in reach, the abundance error 0 because only M0
+  was matched, the mass error 1.0 ppm scored against the TOF's 3 ppm sigma.
+  Across the set's six files the same peak reads as C11H11N3O11S at
+  assigned twice, C13H13O12S at candidate twice and C9H18N3O13 below
+  assignability once, each with no close rival in its own file. Counted on
+  the latest ledgers, an assigned M0 row from the search with no committed
+  isotopologue row, fewer than two channels and no list is 44% of set J's
+  assigned rows and 5% of its assigned intensity; on set G 34% and 3%
+  without reagent ion, 35% and 4% with; on I+ 13% and 2%; on I- 14 rows of
+  16; on K 5%, K3 19% and L 22% of the rows, each under 1% of the intensity.
+  The rows the rule takes are the dim ones, which is why the intensity
+  barely moves, and why an isotopologue counts here where the density rule
+  refuses it: density asks whether the envelope can break a tie the fit
+  left, which it cannot, and this asks whether a second line was seen at
+  all, which the envelope is. Of the 45 assigned rows on set J under one
+  count per second, 30 stand on one peak and 15 on a second channel or an
+  isotopologue.
+- **Where.** `tiering.py`: the reason constant, a `lone_peak_reason` after
+  `density_reason` in `apply_tiering`, the owners with a committed
+  isotopologue row computed once over the committed rows as the
+  minor-channel policy computes them, and the standing reason that names the
+  second observation; `tierReasons.js` gains the label;
+  `docs/user/how-it-works/peak-assignment.md`, the list of what caps a row
+  at candidate and the paragraph on what a row keeps its tier on;
+  `CHANGELOG.md`; `test_tiering.py` (a lone peak capped, each of the three
+  escapes, the standing reason, an isotopologue row following its owner
+  down). Metric G12 joins the intrinsic metrics.
+- **Verify.** G12 at 0 on every set: no assigned M0 row from the search
+  without an isotopologue row, a second channel or a list. Assigned
+  intensity within 5% of before on every set, the assigned row count
+  reported per set. G1 and G2 read on the rows that remain on sets A to F,
+  expected unchanged or higher, since the rows taken are the ones the
+  reference confirms least. Set J reported, not gated.
+- **Size.** S.
+
 ### 3.5 Calibrants below the brightest lines, an offset term, and the low-mass bend
 
 - **What.** The m/z calibration node leaves out a calibrant line brighter
@@ -1777,7 +1835,8 @@ bump.
 
 - Protocol run over sets A to J, status table, version bump, changelog.
   Expected: G9 at or below 2% and G10 at or above 95% on every gated set,
-  G11 at 0 on set G; G1 and G2 unchanged within noise on sets A to F. Set J
+  G11 at 0 on set G, G12 at 0 on every set; G1 and G2 unchanged within
+  noise on sets A to F. Set J
   is measured and reported, not gated (decision 22).
 
 ## Stage 4 - use the batch (engine 0.7.0)
@@ -4021,7 +4080,7 @@ belongs in the fitted axis once anchors reach below m/z 100, which is step
 ### Baselines on the chamber dataset (2026-09-24)
 
 Sets G to J, read on chemical plausibility with no reference run (decision
-21). Three intrinsic metrics join the gate:
+21). Three intrinsic metrics join the gate, and a fourth with step 3.4b:
 
 - **G9, implausible assigned neutrals:** the share of assigned M0 neutrals
   that carry sulfur in a sulfur-free system, or two or more nitrogens with
@@ -4033,6 +4092,9 @@ Sets G to J, read on chemical plausibility with no reference run (decision
 - **G11, formate pseudo-acids:** the share of assigned-plus-candidate M0
   intensity on assigned rows read as a C(n+1) acid whose C(n) formate reading
   has a partner assigned in the sample. Target 0 at "assigned".
+- **G12, lone peaks:** the count of assigned M0 rows from the search with no
+  committed isotopologue row, no second channel committing the neutral and
+  no reference list naming it. Target 0 on every set.
 
 | set | samples | peaks per sample | intensity assigned / candidate / reagent / unassigned | G9 | G10 | G11 | mass error, assigned rows |
 |---|---|---|---|---|---|---|---|
@@ -4686,6 +4748,15 @@ is within 0.4 ppm interquartile wherever the calibration is good.
     toluene less a hydride, since toluene is 3% of the signal and C7H6 a
     trace); and a window that holds no calibrant is not assigned until it
     has one, so K2 waits on step 3.5 rather than on a relaxed rule.
+25. **The assigned tier needs a second observation** (taken 2026-09-25 by
+    the plan owner). A row whose evidence is one peak is a candidate at
+    most, whatever its fit: a committed isotopologue row, a second channel
+    committing the same neutral, or a reference list naming it is what
+    lifts it, and the batch's series membership joins them with step 4.2.
+    Taken on a TOF row assigned at fit 76% on one line at the noise floor
+    that its own batch reads three ways (step 3.4b). It restates decision
+    18 as a rule the ledger can show: a row at assigned names what saw it
+    twice.
 
 ## Risks
 
