@@ -830,7 +830,8 @@ const sameIonReadings = computed(() => {
 })
 const SAME_ION_TOOLTIP =
   'The same ion read as another neutral with another adduct. The two readings share their ' +
-  'mass and isotope pattern, so only a second ionization channel can tell them apart.'
+  'mass and isotope pattern, so only a second ionization channel, or the sample showing one ' +
+  'of the molecules far more strongly, can tell them apart.'
 
 // --- How the ion was made, and what a list calls it ----------------------------
 // The mechanism is half of an assignment: the neutral and the ion formula imply

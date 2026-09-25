@@ -8,6 +8,7 @@ from mascope_backend.api.new.peak_assignments.cross_channel import (
     REASON_AMBIGUOUS_ADDUCT,
     REASON_AMBIGUOUS_NITROGEN,
     SAME_ION_SETTLED,
+    SETTLED_BY_PARTNER,
     SETTLED_BY_RADICAL,
     SETTLED_BY_SECOND_CHANNEL,
     SETTLED_BY_TARGET_LIBRARY,
@@ -17,6 +18,7 @@ from mascope_backend.api.new.peak_assignments.cross_channel import (
     neutral_key,
     nitrogen_donating_channels,
     partner_tier,
+    same_ion_readings,
 )
 from mascope_backend.api.new.peak_assignments.cross_channel import (
     same_ion_question as _same_ion_question,
@@ -510,6 +512,241 @@ class TestTheSameIonRule:
         assert rows[1]["provenance"]["cross_channel"]["reason"] == (
             REASON_AMBIGUOUS_ADDUCT
         )
+
+
+#: A charge-transfer source: electron transfer, proton transfer and hydride
+#: abstraction.
+CT = "ct"
+PROTON_TRANSFER = "pt"
+HYDRIDE = "hyd"
+CHARGE_TRANSFER = {CT: "+", PROTON_TRANSFER: "[M+H]+", HYDRIDE: "[M-H]+"}
+
+
+def benzyl(formula: str, mechanism: str, other: tuple[str, str], **kwargs) -> dict:
+    """The benzyl cation at 91.054: protonated C7H6 or toluene less a hydride."""
+    return row("benzyl", formula, mechanism, displaced=other, **kwargs)
+
+
+def through_electron_transfer(row_id: str, formula: str, **kwargs) -> dict:
+    """A molecule the sample commits through the charge-transfer source's own
+    channel."""
+    return row(row_id, formula, CT, **kwargs)
+
+
+class TestARivalTheSampleShows:
+    """A second channel settles which reading an ion is only where the sample
+    does not show the other reading's molecule as well."""
+
+    def gate(self, rows: list[dict], opportunistic=("[M-H]+",)) -> dict:
+        return apply_cross_channel(
+            rows,
+            notation_by_id=dict(CHARGE_TRANSFER),
+            minor_channels=frozenset(opportunistic),
+        )
+
+    def test_a_second_channel_does_not_settle_a_rival_the_sample_shows(self):
+        # A proton-transfer source declares protonation, so C7H6 through [M+H]+
+        # is the mode's own reading, and C7H6 is also seen through electron
+        # transfer. So is toluene: the hydride reading has a second observation
+        # of its own.
+        rows = [
+            benzyl("C7H6", PROTON_TRANSFER, ("C7H8", HYDRIDE)),
+            through_electron_transfer("c7h6", "C7H6"),
+            through_electron_transfer("toluene", "C7H8"),
+        ]
+        summary = self.gate(rows)
+        assert rows[0]["tier"] == "candidate"
+        assert rows[0]["assigned_formula"] == "C7H6"
+        record = rows[0]["provenance"]["cross_channel"]
+        assert record["corroborated"] is True
+        assert record["reason"] == REASON_AMBIGUOUS_ADDUCT
+        assert record[REASON_AMBIGUOUS_ADDUCT] == {
+            "alternative": "C7H8",
+            "via": "[M-H]+",
+            "shown": True,
+        }
+        assert (summary["shown_rival"], summary["capped"]) == (1, 1)
+
+    def test_where_the_sample_does_not_show_it_the_second_channel_settles(self):
+        rows = [
+            benzyl("C7H6", PROTON_TRANSFER, ("C7H8", HYDRIDE)),
+            through_electron_transfer("c7h6", "C7H6"),
+        ]
+        summary = self.gate(rows)
+        assert rows[0]["tier"] == "assigned"
+        assert rows[0]["provenance"]["cross_channel"][SAME_ION_SETTLED]["by"] == (
+            SETTLED_BY_SECOND_CHANNEL
+        )
+        assert summary["shown_rival"] == 0
+
+    def test_a_molecule_seen_only_through_an_opportunistic_channel_is_not_shown(self):
+        # Toluene less a hydride on another peak is the channel's own reading
+        # again, not the sample showing toluene.
+        rows = [
+            benzyl("C7H6", PROTON_TRANSFER, ("C7H8", HYDRIDE)),
+            through_electron_transfer("c7h6", "C7H6"),
+            row("toluene", "C7H8", HYDRIDE),
+        ]
+        self.gate(rows)
+        assert rows[0]["tier"] == "assigned"
+
+    def test_a_molecule_seen_only_below_assignability_is_not_shown(self):
+        rows = [
+            benzyl("C7H6", PROTON_TRANSFER, ("C7H8", HYDRIDE)),
+            through_electron_transfer("c7h6", "C7H6"),
+            through_electron_transfer("toluene", "C7H8", tier="below_assignability"),
+        ]
+        self.gate(rows)
+        assert rows[0]["tier"] == "assigned"
+
+    def test_every_channel_is_the_modes_own_unless_the_run_says_otherwise(self):
+        rows = [
+            benzyl("C7H6", PROTON_TRANSFER, ("C7H8", HYDRIDE)),
+            through_electron_transfer("c7h6", "C7H6"),
+            row("toluene", "C7H8", HYDRIDE),
+        ]
+        apply_cross_channel(rows, notation_by_id=dict(CHARGE_TRANSFER))
+        assert rows[0]["tier"] == "candidate"
+
+    #: Dimethylformamide clustered with hydronium: C3H9NO2 through a proton
+    #: (the same nitrogen) and C3H6O2 through ammonium (one fewer).
+    DMF_HYDRONIUM = [("C3H9NO2", PROTON), ("C3H6O2", AMMONIUM)]
+
+    def test_a_shown_rival_is_named_before_a_sharper_one_the_sample_does_not_show(
+        self,
+    ):
+        # The nitrogen doubt is the sharper one, but the second channel
+        # settles it; the rival the sample shows is the doubt that stands.
+        rows = [
+            row("a", "C3H7NO", "h3o", displaced=self.DMF_HYDRONIUM),
+            row("b", "C3H7NO", PROTON),
+            row("c", "C3H9NO2", AMMONIUM),
+        ]
+        apply_cross_channel(rows, notation_by_id={**POSITIVE, "h3o": "[M+H3O]+"})
+        record = rows[0]["provenance"]["cross_channel"]
+        assert record["reason"] == REASON_AMBIGUOUS_ADDUCT
+        assert record[REASON_AMBIGUOUS_ADDUCT] == {
+            "alternative": "C3H9NO2",
+            "via": "[M+H]+",
+            "shown": True,
+        }
+
+    def test_a_row_nothing_corroborates_names_the_sharper_doubt_as_before(self):
+        rows = [
+            row("a", "C3H7NO", "h3o", displaced=self.DMF_HYDRONIUM),
+            row("c", "C3H9NO2", AMMONIUM),
+        ]
+        apply_cross_channel(rows, notation_by_id={**POSITIVE, "h3o": "[M+H3O]+"})
+        assert rows[0]["provenance"]["cross_channel"][REASON_AMBIGUOUS_NITROGEN] == {
+            "alternative": "C3H6O2",
+            "via": "[M+NH4]+",
+        }
+
+    def test_the_target_library_still_settles_a_shown_rival(self):
+        rows = [
+            benzyl(
+                "C7H6",
+                PROTON_TRANSFER,
+                ("C7H8", HYDRIDE),
+                source="database",
+                compound="tc-1",
+            ),
+            through_electron_transfer("toluene", "C7H8"),
+        ]
+        self.gate(rows)
+        assert rows[0]["tier"] == "assigned"
+        assert rows[0]["provenance"]["cross_channel"][SAME_ION_SETTLED]["by"] == (
+            SETTLED_BY_TARGET_LIBRARY
+        )
+
+
+class TestTheStrongerPartner:
+    """What the partner gate's contest leaves the cross-channel pass to read."""
+
+    OPENED = frozenset({"[M+H]+", "[M-H]+"})
+
+    def contested(
+        self, winner: str, loser: str, radical: str, *, decisive: bool, ratio: float
+    ):
+        """A row the partner gate gave the stronger reading, with the other on
+        it, marked outweighed where the margin was decisive, and electron
+        transfer's reading of the ion, a radical."""
+        committed = benzyl(winner, HYDRIDE, [(loser, PROTON_TRANSFER), (radical, CT)])
+        if decisive:
+            committed["alternatives"][0]["partner_gate"] = "outweighed"
+        committed["provenance"] = {
+            "partner_gate": {
+                "channel": "[M-H]+",
+                "partner": True,
+                "took_from": loser,
+                "contest": [
+                    {
+                        "reading": loser,
+                        "via": "[M+H]+",
+                        "on": "intensity",
+                        "tiers": ["assigned", "assigned"],
+                        "ratio": ratio,
+                        "decisive": decisive,
+                    }
+                ],
+            }
+        }
+        return committed
+
+    def gate(self, rows: list[dict]) -> dict:
+        return apply_cross_channel(
+            rows, notation_by_id=dict(CHARGE_TRANSFER), minor_channels=self.OPENED
+        )
+
+    def test_an_outweighed_reading_is_settled_by_the_stronger_partner(self):
+        rows = [
+            self.contested("C7H8", "C7H6", "C7H7", decisive=True, ratio=30.0),
+            through_electron_transfer("c7h6", "C7H6"),
+            through_electron_transfer("toluene", "C7H8"),
+        ]
+        summary = self.gate(rows)
+        assert rows[0]["tier"] == "assigned"
+        # The radical beside it is no rival either, and it is not what the
+        # row says settled the ion.
+        assert rows[0]["provenance"]["cross_channel"][SAME_ION_SETTLED] == {
+            "alternative": "C7H6",
+            "via": "[M+H]+",
+            "by": SETTLED_BY_PARTNER,
+            "on": "intensity",
+            "tiers": ["assigned", "assigned"],
+            "ratio": 30.0,
+        }
+        assert summary["settled"][SETTLED_BY_PARTNER] == 1
+        assert summary["capped"] == 0
+
+    def test_within_the_margin_the_rival_the_sample_shows_is_a_doubt(self):
+        rows = [
+            self.contested("C5H8", "C5H6", "C5H7", decisive=False, ratio=7.0),
+            through_electron_transfer("c5h6", "C5H6"),
+            through_electron_transfer("isoprene", "C5H8"),
+        ]
+        summary = self.gate(rows)
+        assert rows[0]["tier"] == "candidate"
+        assert rows[0]["assigned_formula"] == "C5H8"
+        assert rows[0]["provenance"]["cross_channel"][REASON_AMBIGUOUS_ADDUCT] == {
+            "alternative": "C5H6",
+            "via": "[M+H]+",
+            "shown": True,
+            "on": "intensity",
+            "tiers": ["assigned", "assigned"],
+            "ratio": 7.0,
+        }
+        assert (summary["shown_rival"], summary["capped"]) == (1, 1)
+
+    def test_an_outweighed_reading_is_one_the_sample_bore_out(self):
+        # Unlike a reading the gate set aside as unmet, it is still a reading
+        # of the ion, and the row says what settled it.
+        committed = self.contested("C7H8", "C7H6", "C7H7", decisive=True, ratio=30.0)
+        readings = same_ion_readings(committed, dict(CHARGE_TRANSFER))
+        assert [r["assigned_formula"] for r in readings] == ["C7H6", "C7H7"]
+        committed["alternatives"][0]["partner_gate"] = "unmet"
+        readings = same_ion_readings(committed, dict(CHARGE_TRANSFER))
+        assert [r["assigned_formula"] for r in readings] == ["C7H7"]
 
 
 class TestWhatHappensToTheIsotopologues:

@@ -135,10 +135,20 @@ proton. So an opportunistic reading stands only where the sample commits its mol
 through one of the mode's own channels; otherwise the mode's reading is the row's, and
 between two opportunistic readings the one whose molecule the sample shows wins. Toluene
 is seen through electron transfer, so tropylium reads as toluene. The reading set aside stays
-on the row, marked as not borne out, and does not count against the one that was. The rule
-is read after the run's mass gate, so a partner is a reading that gate left committed and a
-reading it lifts stays under that gate's ceiling, and a batch search reads it over its own
-rows. On any other instrument electron transfer names an
+on the row, marked as not borne out, and does not count against the one that was. Where the
+sample shows both molecules, the one it shows more strongly wins, whichever mechanism
+carries more mass: committed at the higher tier, or at the same tier on the brighter peak.
+On a certified mixture holding toluene and not C7H6, electron transfer sees both, toluene 27
+to 31 times as strongly, and tropylium reads as toluene less a hydride. The weaker reading
+stays on the row as well. Where its molecule is committed at a lower tier, or on a peak
+under a tenth as bright, it is marked as outweighed and the row counts the question as
+settled; closer than that, it is still a rival the sample shows, and the row is held at
+*candidate* with it named (*ambiguous adduct*, below): a reading the sample shows seven
+times as strongly is the better one, not a certain one. A reading through one of the
+mode's own channels is never outweighed this way, only doubted where the sample shows the
+other molecule. The rule is read after the run's mass gate, so a partner is a reading that
+gate left committed and a reading it lifts stays under that gate's ceiling, and a batch
+search reads it over its own rows. On any other instrument electron transfer names an
 ambient-ion mode as readily, and such a mode keeps the ESI profile of its polarity; so does
 a mode with only protonation or deprotonation and no reagent. A secondary channel is
 searched only where the deployment holds its mechanism: hydride abstraction needs a `[M-H]+`
@@ -422,7 +432,10 @@ What caps a row at candidate:
   holds the hydrogen bromide, or a formate adduct against the deprotonated acid that holds
   the formic acid. The row keeps its formula. A radical reading is no rival,
   since the run never holds a radical at *assigned*, and a compound of your own target
-  library is exempt, since your curation chose the reading. A formula from a loaded
+  library is exempt, since your curation chose the reading. A second channel settles the
+  question only where the sample does not also commit the other molecule through one of
+  the mode's own channels: where it does, each reading has an observation of its own, and
+  the sentence says the sample shows the other molecule too. A formula from a loaded
   reference list is asked too: the run gives it the other readings of its ion that the
   formula search would have considered, shown with its close alternatives.
 - **off calibration** and **minor channel only** — caps the run applied earlier, restated
@@ -444,8 +457,9 @@ What caps a row at candidate:
 
 What a row that keeps its tier kept it on: **second channel** (the same neutral committed
 through two or more of the run's ionization channels), **same ion, settled** (the ion
-reads as another molecule too, and something settled which: a second channel, your target
-library, or the other reading being a radical - the sentence says which), **no close
+reads as another molecule too, and something settled which: a second channel, the sample
+showing this molecule decisively more strongly than the other (see *Auto* above), your
+target library, or the other reading being a radical - the sentence says which), **no close
 rival** (the evidence separated the formula from every other candidate the run competed
 for the peak; where the ion reads another way, it separated the ion from every other ion,
 since two readings of one ion are one measurement), or **not measured** (nothing the pass

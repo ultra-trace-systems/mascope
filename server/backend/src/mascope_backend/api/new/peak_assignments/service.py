@@ -1340,7 +1340,11 @@ def _read_other_readings(
         partner_gated_channels=resolved_profile.partner_gated_channels,
         tier_bands=tier_bands,
     )
-    cross_channel = apply_cross_channel(rows, notation_by_id=notation_by_id)
+    cross_channel = apply_cross_channel(
+        rows,
+        notation_by_id=notation_by_id,
+        minor_channels=resolved_profile.minor_channels,
+    )
     return mirror_families, cross_channel
 
 
@@ -1450,7 +1454,9 @@ def judge_commits(
     :param lines: The sample's peaks, read for how well each places its line.
     :param tier_bands: The run's evidence bands, which a row under the top one
         names first among its reasons.
-    :param minor_channels: The run's opportunistic channels.
+    :param minor_channels: The run's opportunistic channels. A molecule the
+        sample commits through any other channel is one it shows, which the
+        cross-channel pass does not let a second channel settle against.
     :param partner_gated_channels: Those of them held to a partner
         (``engine.apply_partner_gates``), read over both stages' rows after
         the mass gate, so a partner is a reading it left committed, and
@@ -1477,7 +1483,9 @@ def judge_commits(
             partner_gated_channels=partner_gated_channels,
             tier_bands=tier_bands,
         )
-        cross_channel = apply_cross_channel(judged, notation_by_id=notation_by_id)
+        cross_channel = apply_cross_channel(
+            judged, notation_by_id=notation_by_id, minor_channels=minor_channels
+        )
         tiering = apply_tiering(
             judged,
             mz_tolerance_ppm=mz_tolerance_ppm,
