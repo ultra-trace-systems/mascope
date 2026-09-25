@@ -130,10 +130,11 @@ def generate_target_ions_from_composition(
         mechanism = ionization_mechanism.ionization_mechanism
 
         try:
+            parts = _read_mechanism(mechanism)
             compound_composition = _get_compound_composition(
-                target_compound_formula, mechanism
+                target_compound_formula, parts
             )
-            ion_composition, ion_charge = _get_raw_ion(mechanism, compound_composition)
+            ion_composition, ion_charge = _get_raw_ion(parts, compound_composition)
         except (SkipIonizationMechanism, ValueError) as e:
             runtime.logger.debug(
                 f"Skipping ionization mechanism {mechanism} for compound {target_compound_formula}: {e}"
@@ -193,7 +194,9 @@ def generate_target_ions_from_composition(
 
 
 def _read_mechanism(ionization_mechanism: str) -> MechanismParts:
-    """Read a stored mechanism in either notation.
+    """Read a stored mechanism in either notation: ``[M+H]+`` or ``+H+``,
+    ``[M-H]-`` or ``-H+`` (deprotonation), ``[M+Br]-`` or ``+Br-``, and
+    electron transfer, ``[M]+.`` / ``[M]-.`` or ``+`` / ``-``.
 
     :raises UnknownIonizationMechanism: The text is neither notation - a row
         older validation let through, such as ``"++"``.
@@ -202,46 +205,6 @@ def _read_mechanism(ionization_mechanism: str) -> MechanismParts:
         return parse_mechanism(ionization_mechanism)
     except MechanismNotationError as e:
         raise UnknownIonizationMechanism(str(e)) from e
-
-
-def _mechanism_parts(ionization_mechanism: str) -> tuple[str, str, int]:
-    """Split an ionization mechanism into (body, operation, mechanism_charge).
-
-    Either notation is read: ``[M+H]+`` or ``+H+``, ``[M-H]-`` or ``-H+``
-    (deprotonation), ``[M+Br]-`` or ``+Br-``, and electron transfer ``[M]+.`` /
-    ``[M]-.`` or ``+`` / ``-``.
-
-    - ``body`` is the moiety added or removed (empty for electron transfer).
-    - ``operation`` is ``"+"`` (addition) or ``"-"`` (subtraction). Electron
-      transfer is treated as an addition of the electron mechanism.
-    - ``mechanism_charge`` is the charge of the moiety (+1 / -1): the ion's
-      charge where it is added, the opposite where it is removed. For electron
-      transfer it is the ion's charge.
-
-    Examples
-    --------
-    >>> _mechanism_parts("[M+H]+")
-    ('H', '+', 1)
-    >>> _mechanism_parts("[M+Br]-")
-    ('Br', '+', -1)
-    >>> _mechanism_parts("[M-H]-")
-    ('H', '-', 1)
-    >>> _mechanism_parts("-H+")
-    ('H', '-', 1)
-    >>> _mechanism_parts("[M+CH4N2O+H]+")
-    ('(CH4N2O)H', '+', 1)
-    >>> _mechanism_parts("[M]+.")
-    ('', '+', 1)
-    >>> _mechanism_parts("-")
-    ('', '+', -1)
-
-    :raises UnknownIonizationMechanism: The text is neither notation.
-    """
-    parts = _read_mechanism(ionization_mechanism)
-    if parts.electron_transfer:
-        # "[M]+." abstracts an electron, "[M]-." attaches one.
-        return "", "+", parts.charge
-    return parts.moiety, "+" if parts.addition else "-", parts.moiety_charge
 
 
 def _composition_counts(formula: str) -> dict[str, int]:
@@ -264,26 +227,24 @@ def _combine_counts(
 
 
 def _get_compound_composition(
-    target_compound_formula: str, ionization_mechanism: str
+    target_compound_formula: str, parts: MechanismParts
 ) -> dict[str, int] | None:
     """Get the neutral compound composition, handling special cases.
 
     :param target_compound_formula: Target compound formula string
     :type target_compound_formula: str
-    :param ionization_mechanism: Ionization mechanism string
-    :type ionization_mechanism: str
+    :param parts: The ionization mechanism, read (:func:`_read_mechanism`)
+    :type parts: MechanismParts
     :raises SkipIonizationMechanism: If the ionization mechanism cannot be applied:
         - Electron transfer on empty formula
         - Abstraction from empty formula
         - Not enough atoms of a subtracted element
-    :raises UnknownIonizationMechanism: The mechanism is neither notation.
     :return: Compound composition as ``{symbol: count}``, or None for empty "()"
     :rtype: dict[str, int] | None
     """
     runtime.logger.debug(
-        f"Processing compound formula '{target_compound_formula}' with ionization mechanism '{ionization_mechanism}'"
+        f"Processing compound formula '{target_compound_formula}' with ionization mechanism '{parts.standard}'"
     )
-    parts = _read_mechanism(ionization_mechanism)
     subtraction = not parts.addition and not parts.electron_transfer
 
     # Handle the special case when generating ions for empty formula "()"
@@ -323,24 +284,24 @@ def _get_compound_composition(
 
 
 def _get_raw_ion(
-    ionization_mechanism: str, compound_composition: dict[str, int] | None
+    parts: MechanismParts, compound_composition: dict[str, int] | None
 ) -> tuple[dict[str, int], int]:
     """Get the ion composition and charge for a mechanism and compound composition.
 
-    :param ionization_mechanism: Ionization mechanism string
-    :type ionization_mechanism: str
+    :param parts: The ionization mechanism, read (:func:`_read_mechanism`)
+    :type parts: MechanismParts
     :param compound_composition: Neutral compound composition (None for empty "()")
     :type compound_composition: dict[str, int] | None
-    :raises UnknownIonizationMechanism: If the ionization mechanism is unknown.
     :raises SkipIonizationMechanism: If the resulting ion has no atoms.
-    :return: 2-tuple of (ion composition as ``{symbol: count}``, ion charge)
+    :return: 2-tuple of (ion composition as ``{symbol: count}``, the ion's
+        charge, which the mechanism states)
     :rtype: tuple[dict[str, int], int]
     """
-    body, operation, mechanism_charge = _mechanism_parts(ionization_mechanism)
-    mechanism_composition = _composition_counts(body)
+    mechanism_composition = _composition_counts(parts.moiety)
 
-    if operation == "+":
-        # Addition mechanism (also electron transfer, body empty)
+    if parts.addition or parts.electron_transfer:
+        # The moiety is added; electron transfer moves nothing but an electron,
+        # so the ion keeps the compound's atoms whichever way it went.
         if compound_composition is None:
             # Special case: empty formula "()"
             ion_composition = mechanism_composition
@@ -348,26 +309,20 @@ def _get_raw_ion(
             ion_composition = _combine_counts(
                 compound_composition, mechanism_composition, add=True
             )
-        ion_charge = mechanism_charge
-    elif operation == "-":
-        # Subtraction mechanism; the resulting ion charge is the opposite of the
-        # subtracted modification's charge (e.g. removing H+ yields an anion).
+    else:
         ion_composition = _combine_counts(
             compound_composition, mechanism_composition, add=False
         )
-        ion_charge = -mechanism_charge
-    else:
-        raise UnknownIonizationMechanism(ionization_mechanism)
 
     if not ion_composition:
         # E.g. an empty-modification mechanism on the empty compound "()", or a
         # subtraction that removes every atom. An atomless ion has no meaningful
         # formula or isotope pattern (its mass would be the electron mass alone).
         raise SkipIonizationMechanism(
-            f"Mechanism {ionization_mechanism} yields an ion with no atoms"
+            f"Mechanism {parts.standard} yields an ion with no atoms"
         )
 
-    return ion_composition, ion_charge
+    return ion_composition, parts.charge
 
 
 def predict_isotopes(
