@@ -368,10 +368,14 @@ class PeakAssignmentsResource(BaseResource):
         a reason that would take the top tier - a radical neutral, a nitrate
         cluster around a neutral with no oxygen (rule ``oxygen_free_cluster``),
         a peak whose evidence left rivals standing with nothing else
-        corroborating it, a formula shaped like a mass fit, a peak a committed
-        neighbour's envelope already predicts, an isotopologue whose mass error
-        does not follow its monoisotopic row's, or a demote an earlier pass
-        made. A row with no such reason lists what it kept its tier ON instead.
+        corroborating it, a formula the search found on one peak that nothing
+        else in the run saw (rule ``lone_peak``), a formula shaped like a mass
+        fit, a peak a committed neighbour's envelope already predicts, an
+        isotopologue whose mass error does not follow its monoisotopic row's, or
+        a demote an earlier pass made. A row with no such reason lists what it
+        kept its tier ON instead, what saw it a second time first: a second
+        channel (``corroborated``), a line of its own isotope pattern
+        (``second_line``) or the list it was matched from (``on_a_list``).
         A row whose evidence is under the top band names that band first (rule
         ``evidence_band``, with the ``band`` its evidence reaches). It is where
         the row stands before any rule, not a rule, so it never ``caps``.

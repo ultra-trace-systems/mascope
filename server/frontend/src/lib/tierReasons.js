@@ -24,6 +24,7 @@ export const TIER_REASON_LABELS = Object.freeze({
   oxygen_free_cluster: 'no oxygen to cluster on',
   polyhalide_cluster: 'polyhalide: air or source',
   candidate_density: 'rivals left standing',
+  lone_peak: 'one peak only',
   envelope_neighbour: "a neighbour's isotope line",
   oxygen_lattice: 'oxygen lattice',
   carbon_free: 'carbon-free formula',
@@ -34,6 +35,8 @@ export const TIER_REASON_LABELS = Object.freeze({
   minor_channel: 'minor channel only',
   // What a row that kept its tier kept it on.
   corroborated: 'second channel',
+  second_line: 'second line',
+  on_a_list: 'on a list',
   same_ion_settled: 'same ion, settled',
   no_close_rival: 'no close rival',
   not_measured: 'not measured',

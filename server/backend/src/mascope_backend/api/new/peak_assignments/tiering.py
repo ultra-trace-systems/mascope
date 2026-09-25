@@ -92,6 +92,19 @@ already holds a line there, or where the peak's mass error does not follow the
 neighbour's even allowing for what the line can deliver; the row then stays as
 it was and its envelope reason says which.
 
+``lone_peak`` - decision 25: the assigned tier needs a second observation. A row
+the formula search elected on one peak, with no line of its own isotope pattern
+committed beside it, no second channel committing its neutral and no list it
+was matched from, is a candidate at most, whatever its fit
+(:func:`lone_peak_reason`). The bands cannot ask this: a lone line at the noise
+floor scores a perfect abundance error, because M0 is the only line the pattern
+had to match, and on a TOF the mass error is judged against a width of
+several ppm. Measured on the chamber sets before the rule, such rows were 5 to
+44% of a set's assigned rows and under 5% of its assigned intensity, the dim
+ones. A row that keeps its tier names the observation it stands on
+(``second_line``, ``corroborated``, ``on_a_list``), so every assigned row says
+what saw it twice.
+
 Rules the earlier passes already applied
 ----------------------------------------
 
@@ -122,7 +135,7 @@ from __future__ import annotations
 import bisect
 import math
 from collections import Counter, defaultdict
-from typing import Any, Iterable
+from typing import Any, Iterable, Sequence
 
 import numpy as np
 
@@ -144,6 +157,7 @@ from mascope_backend.api.new.peak_assignments.engine import (
     ROLE_ISO_CHILD,
     ROLE_M0,
     SOURCE_DATABASE,
+    SOURCE_UNTARGETED,
     is_target_library_row,
 )
 from mascope_backend.api.new.peak_assignments.envelope_claims import (
@@ -180,7 +194,7 @@ from mascope_tools.composition.implausibility import implausible_signatures
 #: run, because a tier is only comparable across runs together with the rules
 #: that produced it - the same statement the tier BANDS carry, for the same
 #: reason.
-TIERING_RULES_VERSION = 8
+TIERING_RULES_VERSION = 9
 
 #: The row's evidence is under the band its tier would need. Not a rule of
 #: this pass: the band is the floor every rule here lowers from, and naming it
@@ -229,6 +243,11 @@ _HELD_SENTENCES = {
 #: and no second channel saw the neutral.
 REASON_CANDIDATE_DENSITY = "candidate_density"
 
+#: The formula search elected the row on one peak, and nothing else in the run
+#: saw its neutral: no line of its own isotope pattern, no second channel, no
+#: list.
+REASON_LONE_PEAK = "lone_peak"
+
 #: Reasons a row KEEPS its tier, so that every committed row carries one.
 #: ``no_close_rival`` and not "unique": a density of 1 says the evidence
 #: SEPARATED the winner from the peak's other candidates, not that the run's
@@ -238,6 +257,12 @@ REASON_CANDIDATE_DENSITY = "candidate_density"
 REASON_NO_CLOSE_RIVAL = "no_close_rival"
 REASON_CORROBORATED = "corroborated"
 REASON_INHERITED = "inherited_from_owner"
+
+#: The second observations a row keeps the top tier on besides a second
+#: channel, which ``corroborated`` names: a line of its own isotope pattern
+#: committed with it, and the list it was matched from.
+REASON_SECOND_LINE = "second_line"
+REASON_ON_A_LIST = "on_a_list"
 
 #: A row whose ion reads another way, where something settled which reading it
 #: is (the cross-channel pass's record of the same name).
@@ -729,6 +754,162 @@ def density_reason(row: dict) -> dict | None:
     )
 
 
+def isotope_lines(committed: Iterable[dict]) -> dict[str, list[dict]]:
+    """Each monoisotopic row's committed isotopologue rows, by the row's id.
+
+    Read off the ledger as it stands, as the minor-channel cap reads it
+    (``engine._apply_minor_channel_policy``): a line the run committed as the
+    row's own is one the fit expected the spectrum to show and found there.
+
+    :param committed: The run's committed rows.
+    :return: Owner id -> its isotopologue rows, in ledger order.
+    """
+    lines: dict[str, list[dict]] = defaultdict(list)
+    for row in committed:
+        owner_id = row.get("owner_peak_assignment_id")
+        if row.get("role") == ROLE_ISO_CHILD and owner_id:
+            lines[str(owner_id)].append(row)
+    return lines
+
+
+def follows_its_owner(line: dict) -> bool:
+    """Whether an isotopologue row is a second observation of its owner's ion.
+
+    Every committed line is, unless the mass gate found its error does not
+    follow its owner's even allowing for its own noise and the peaks beside it
+    (``mass_gate.TRACKING_UNTRACKED``). The gate's word for such a line is that
+    it corroborates nothing, including itself: a peak inside the matching window
+    by coincidence, which on a TOF's window is common. A line in doubt still
+    counts - a faint line placed as well as its noise lets it be is still a line
+    - and so does one no gate has read.
+    """
+    gate = _provenance(line).get("mass_gate") or {}
+    return gate.get("tracking") != TRACKING_UNTRACKED
+
+
+def lone_peak_reason(row: dict, lines: Sequence[dict]) -> dict | None:
+    """One peak is all that saw the row's neutral (decision 25).
+
+    Three things are a second observation, and each is an escape: a line of the
+    row's own isotope pattern the run committed with it; a second channel of
+    the run committing the same neutral, read off the cross-channel pass's
+    record as the density rule reads it; and a list, so a row Stage A matched
+    from the target library or a reference list is not asked. Unlike the density
+    rule this one counts an isotopologue, because it asks a different question:
+    density asks whether the envelope can break a tie the fit left, which it
+    cannot, and this asks whether anything besides the one line was seen at all,
+    which a second line of the envelope is.
+
+    Asks only the formula search's rows, and fails open on a row whose channels
+    were never recorded, since without that record the rule cannot tell a lone
+    peak from one a second channel saw.
+
+    :param row: A committed monoisotopic row.
+    :param lines: Its committed isotopologue rows (:func:`isotope_lines`).
+    :return: The reason, or None where the row has a second observation or is
+        not the search's.
+    """
+    if row.get("source") != SOURCE_UNTARGETED:
+        return None
+    cross_channel = _provenance(row).get("cross_channel")
+    if not isinstance(cross_channel, dict) or not isinstance(
+        cross_channel.get("channels"), list
+    ):
+        return None
+    if is_corroborated(row) or any(follows_its_owner(line) for line in lines):
+        return None
+    if lines:
+        one = len(lines) == 1
+        seen = (
+            f"the {'line' if one else f'{_count_word(len(lines))} lines'} of its "
+            f"isotope pattern committed with it {'does' if one else 'do'} not "
+            "follow its mass error, even allowing for the line's own noise and the "
+            "peaks close beside it"
+        )
+    else:
+        seen = "no other line of its isotope pattern is committed"
+    return _reason(
+        REASON_LONE_PEAK,
+        f"one peak is all that saw {row.get('assigned_formula')}: {seen}, no "
+        "second channel of this run committed the same neutral, and it was not "
+        "matched from a list",
+        caps=True,
+    )
+
+
+def held_for_its_one_peak(row: dict) -> bool:
+    """Whether one peak being all that saw a row is all that holds it at candidate.
+
+    Read off the reasons :func:`apply_tiering` left: every pass that lowers a
+    tier leaves one that caps, and a row its evidence put under the top band
+    names the band. A neighbour held so is one whose line may be committed as a
+    compound of its own, which is exactly what a claim reads back as its line.
+
+    :param row: A committed monoisotopic row, after :func:`apply_tiering`.
+    :return: True where the lone-peak rule is the only thing holding the row
+        under ``assigned``.
+    """
+    if row.get("tier") != TIER_CANDIDATE:
+        return False
+    holding = {
+        reason.get("rule")
+        for reason in _provenance(row).get("tier_reasons") or []
+        if reason.get("caps") or reason.get("rule") == REASON_EVIDENCE_BAND
+    }
+    return holding == {REASON_LONE_PEAK}
+
+
+def second_line_reason(lines: Sequence[dict]) -> dict | None:
+    """The lines of its own isotope pattern a row keeps its tier on.
+
+    :param lines: The row's committed isotopologue rows.
+    :return: The reason naming them, or None where none counts.
+    """
+    seen = [line for line in lines if follows_its_owner(line)]
+    if not seen:
+        return None
+    named = [
+        f"{line.get('isotope_label') or 'an isotope'} at m/z {_mz(line):.4f}"
+        for line in seen[:3]
+    ]
+    if len(seen) == 1:
+        detail = (
+            f"a second line of its isotope pattern is committed with it, {named[0]}"
+        )
+    else:
+        more = ", ..." if len(seen) > 3 else ""
+        detail = (
+            f"{_count_word(len(seen))} other lines of its isotope pattern are "
+            f"committed with it ({', '.join(named)}{more})"
+        )
+    return _reason(REASON_SECOND_LINE, detail, caps=False)
+
+
+def on_a_list_reason(row: dict) -> dict | None:
+    """The list a Stage A row was matched from, which the search did not elect.
+
+    :param row: A committed monoisotopic row.
+    :return: The reason, or None for a row Stage A did not match.
+    """
+    if row.get("source") != SOURCE_DATABASE:
+        return None
+    if is_target_library_row(row):
+        detail = "matched from the target library, which somebody named for this data"
+    else:
+        names = [
+            str(identity.get("name"))
+            for identity in _provenance(row).get("reference_identities") or []
+            if isinstance(identity, dict) and identity.get("name")
+        ]
+        named = ""
+        if len(names) == 1:
+            named = f", as {names[0]}"
+        elif names:
+            named = f", as {names[0]} and {len(names) - 1} more"
+        detail = f"matched from a reference list{named}"
+    return _reason(REASON_ON_A_LIST, detail, caps=False)
+
+
 def envelope_neighbours(
     m0_rows: list[dict],
     *,
@@ -894,11 +1075,16 @@ def implausibility_reasons(row: dict) -> list[dict]:
     ]
 
 
-def standing_reasons(row: dict) -> list[dict]:
+def standing_reasons(row: dict, lines: Sequence[dict] = ()) -> list[dict]:
     """Why a row that nothing capped holds the tier it holds.
 
     Never empty for a committed row, which is what makes "every committed row
-    carries a reason" true rather than nearly true.
+    carries a reason" true rather than nearly true. The second observations come
+    first - a second channel, a second line, a list - so a row at assigned
+    names what saw it twice before what separated it from its rivals.
+
+    :param row: A committed monoisotopic row.
+    :param lines: Its committed isotopologue rows (:func:`isotope_lines`).
     """
     reasons: list[dict] = []
     channels = corroborating_channels(row)
@@ -911,6 +1097,9 @@ def standing_reasons(row: dict) -> list[dict]:
                 caps=False,
             )
         )
+    for reason in (second_line_reason(lines), on_a_list_reason(row)):
+        if reason:
+            reasons.append(reason)
     settled = (_provenance(row).get("cross_channel") or {}).get(SAME_ION_SETTLED)
     if isinstance(settled, dict):
         reasons.append(
@@ -990,6 +1179,7 @@ def apply_tiering(
     on_a_neighbours_line = envelope_neighbours(
         m0, mz_tolerance_ppm=mz_tolerance_ppm, abundance_floor=abundance_floor
     )
+    lines_of = isotope_lines(committed)
 
     capped_by_rule: dict[str, int] = {}
     # Owners whose tier THIS pass took, and owners an earlier pass had already
@@ -1001,12 +1191,14 @@ def apply_tiering(
     under_band = 0
 
     for row in m0:
+        lines = lines_of.get(str(row.get("peak_assignment_id")), [])
         reasons = earlier_reasons(row)
         for reason in (
             odd_electron_reason(row),
             oxygen_free_cluster_reason(row, notation_by_id),
             polyhalide_cluster_reason(row, notation_by_id),
             density_reason(row),
+            lone_peak_reason(row, lines),
             envelope_reason(row, on_a_neighbours_line),
         ):
             if reason:
@@ -1019,7 +1211,7 @@ def apply_tiering(
         ]
         held_down = any(reason["caps"] for reason in reasons)
         if not held_down:
-            reasons.extend(standing_reasons(row))
+            reasons.extend(standing_reasons(row, lines))
         # The band leads, and it is not a rule: it is the floor the rules lower
         # from, so it is no cap and does not hide what the row stands on - a
         # row the band holds low still says what it has.
@@ -1166,7 +1358,10 @@ def find_envelope_claims(
     after that pass, over the same rows.
 
     A row is read as the neighbour's line when the neighbour holds ``assigned``
-    and none of these holds it back: the row is a compound of the workspace's
+    - or would but for its one peak (:func:`held_for_its_one_peak`), since the
+    line the claim reads is the second observation it lacked, which the next
+    round's passes find on it - and none of these holds it back: the row is a
+    compound of the workspace's
     own target library, which somebody named for this data; a second channel of
     the run committed its neutral, which is evidence from outside the peak; the
     neighbour already holds a line within the window of the predicted one; or
@@ -1221,7 +1416,7 @@ def find_envelope_claims(
         owner_id = str(owner.get("peak_assignment_id"))
         why = None
         line = None
-        if owner.get("tier") != TIER_ASSIGNED:
+        if owner.get("tier") != TIER_ASSIGNED and not held_for_its_one_peak(owner):
             why = HELD_NEIGHBOUR_NOT_ASSIGNED
         elif is_target_library_row(row):
             why = HELD_TARGET_LIBRARY

@@ -394,7 +394,7 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 - **Peak assignment still ships off, and the assignment work in these notes
   stays dark until a deployment opts in.** The engine at 0.5.0 with tiering
-  rule set 8, the chemistry profiles, the reference seed lists and the
+  rule set 9, the chemistry profiles, the reference seed lists and the
   inspector are all behind `peak_assignment`, which has been `false` since
   1.8.0: with it off the assignment views stay hidden, the write routes answer
   403 and nothing is assigned on ingest, so an upgrade changes nothing here by
@@ -491,6 +491,23 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   through no other channel of the mode's own is still held however faint the
   rival. `config.tiering` records rule set 8 (assignment quality plan, step
   3.1d).
+
+- **A formula the search found on one peak is a candidate at most.** The top
+  tier now needs something besides the formula's one peak to have seen it: a
+  line of its own isotope pattern committed with it, a second ionization
+  channel committing the same molecule, or a list it was matched from. A row
+  the formula search elected with none of the three is held at candidate with
+  the reason `lone_peak` (*one peak only* in the inspector), whatever its fit:
+  a faint line matches its isotope pattern perfectly by having no other line to
+  match, and on a TOF its mass error is judged against a width of several ppm.
+  An isotope line whose mass error does not follow the row's does not count,
+  since the mass gate already reads it as another peak inside the matching
+  window. A row that keeps the top tier says what it stands on, `second_line`
+  naming the line, `corroborated` the channels or `on_a_list` the list's
+  compound, so every assigned row names its second observation. The rows it
+  takes are the dim ones: on a customer chamber dataset they were 5 to 44% of a
+  batch's assigned rows and under 5% of its assigned intensity.
+  `config.tiering` records rule set 9 (assignment quality plan, step 3.4b).
 
 - **The peak inspector is more compact and has a column of its own, and the
   tier chip names the tier alone.**

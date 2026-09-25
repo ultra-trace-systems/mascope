@@ -1974,6 +1974,35 @@ bump.
   expected unchanged or higher, since the rows taken are the ones the
   reference confirms least. Set J reported, not gated.
 - **Size.** S.
+- **As built.** Two readings of the text above, and one interaction it did
+  not name:
+  - *A line the mass gate reads as a coincidence is no second observation.*
+    The isotopologue escape counts every committed line of the row's own, a
+    line in doubt included, except one whose mass error the mass gate found
+    does not follow the row's even allowing for its noise and neighbours
+    (`untracked`). The gate's word for such a line is that it corroborates
+    nothing, and a reason calling it the row's second observation would
+    contradict the gate on the same ledger; on a TOF's matching window such
+    lines are common, and set J is where the step's trigger sits. A line a
+    claim read as the row's counts: a claim reads a line only where it tracks.
+  - *What a standing row names.* A row that keeps its tier names its second
+    observation first: `corroborated` (a second channel, as before),
+    `second_line` (the line or lines, with their m/z) or `on_a_list` (the
+    target library, or a reference list with its compound's name). A Stage A
+    row is not asked and names its list. The rule asks only the search's rows
+    (`source` untargeted), and fails open on a row with no cross-channel
+    record, as the other rules do on what they cannot read.
+  - *A neighbour held for its one peak still has its line claimed.* A claim
+    (step 2.4e) reads a row on a neighbour's predicted line as that line only
+    under a neighbour held at assigned, and the tiering pass runs first. A
+    neighbour whose only other line was committed as a compound of its own
+    would be held at candidate by this rule and the claim refused, although
+    the claim is what gives it the line. So a neighbour that nothing but
+    `lone_peak` holds at candidate counts as assigned for the claim
+    (`tiering.held_for_its_one_peak`), the next round finds the line on it,
+    and it stands. A neighbour its band or any other rule holds lower does
+    not.
+  - Tiering rule set 9, after step 3.1d's 8.
 
 ### 3.5 Calibrants below the brightest lines, an offset term, and the low-mass bend
 

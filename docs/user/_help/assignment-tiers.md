@@ -5,7 +5,9 @@ molecule does not reach the top tier on the match alone.
 
 - **assigned** &mdash; strong evidence: the formula is the call for the peak. It
   is a *composition*, not a confirmed compound: isomers share it, and telling
-  them apart needs MS/MS or a reference standard.
+  them apart needs MS/MS or a reference standard. Something besides the one
+  peak has seen it too: a line of its isotope pattern, a second ionization
+  channel, or a list it was matched from.
 - **candidate** &mdash; a plausible formula with weaker support.
 - **below assignability** (*below*) &mdash; a formula was found, but the
   evidence is too weak to trust.
