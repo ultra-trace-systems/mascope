@@ -606,17 +606,42 @@ class TestThePartnerGate:
         assert formate["provenance"]["partner_gate"]["partner"] is True
         assert formate["tier"] == TIER_ASSIGNED
 
-    def test_a_swapped_reading_keeps_the_mass_gates_cap_on_its_ion(self):
+    def test_a_swapped_reading_stays_under_the_mass_gates_ceiling(self):
         # The mass gate judged the ion's line, which the acid reading shares.
+        # The policy held the row at candidate, so the gate recorded the
+        # ceiling it would have held the row to, and lowered nothing.
         row = self._formate("r", "C10H18O5", acid="C11H20O7")
         row["provenance"]["mass_gate"] = {
             "corroborated_by": None,
-            "capped": TIER_CANDIDATE,
+            "ceiling": TIER_CANDIDATE,
             "reason": "off_calibration",
         }
         self._gate([row], self.IDS, minor={"+HCOO-"}, gated={"+HCOO-"})
         assert row["assigned_formula"] == "C11H20O7"
         assert row["tier"] == TIER_CANDIDATE
+        # ...and the row now says the mass gate holds it there.
+        assert row["provenance"]["mass_gate"]["capped"] == TIER_CANDIDATE
+
+    def test_a_lifted_cap_stays_under_the_mass_gates_ceiling(self):
+        partner = self._row("p", "C10H18O5", "im-deprot")
+        formate = self._formate("f", "C10H18O5")
+        formate["provenance"]["mass_gate"] = {
+            "corroborated_by": None,
+            "ceiling": TIER_CANDIDATE,
+            "reason": "off_calibration",
+        }
+        summary = apply_partner_gates(
+            [partner, formate],
+            notation_by_id={mid: n for n, mid in self.IDS.items()},
+            minor_channels=frozenset({"+HCOO-"}),
+            partner_gated_channels=frozenset({"+HCOO-"}),
+            tier_bands=self.BANDS,
+        )
+        assert formate["provenance"]["partner_gate"]["uncapped"] is True
+        assert formate["provenance"]["minor_channel"]["capped"] is False
+        assert formate["tier"] == TIER_CANDIDATE
+        assert formate["provenance"]["mass_gate"]["capped"] == TIER_CANDIDATE
+        assert summary["held"] == 1
 
 
 class TestResolution:

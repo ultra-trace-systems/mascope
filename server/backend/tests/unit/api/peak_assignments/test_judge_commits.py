@@ -412,3 +412,39 @@ class TestThePartnerGateReadsTheJudgedLedger:
         assert rows["pa-p"]["tier"] == "assigned"
         assert rows["pa-f"]["assigned_formula"] == "C10H18O5"
         assert rows["pa-f"]["provenance"]["partner_gate"]["partner"] is True
+
+    def _capped_formate(self, ppm: float) -> dict:
+        """A formate reading the policy held at candidate, at this offset."""
+        row = self._formate()
+        row["mz_error_ppm"] = ppm
+        row["tier"] = "candidate"
+        row["provenance"]["minor_channel"] = {"corroborated_by": None, "capped": True}
+        return row
+
+    @pytest.mark.parametrize("ppm", [2.0, 2.5, 3.0])
+    def test_a_lifted_reading_stays_under_the_mass_gates_ceiling(self, ppm):
+        # The policy held the formate reading at candidate, so the mass gate
+        # lowered nothing and recorded only the ceiling; the partner gate then
+        # lifts the policy's cap, and the reading stays where a mode-channel
+        # row at the same offset is held.
+        partner = commit("pa-p", "C10H18O5", "C10H17O5-", 217.1081, 800.0)
+        control = commit("pa-c", "C8H14O4", "C8H13O4-", 173.0819, 700.0, ppm=ppm)
+        rows = by_id(
+            self._judge(anchors() + [partner, control, self._capped_formate(ppm)]).rows
+        )
+        assert rows["pa-c"]["tier"] == "candidate"
+        assert rows["pa-c"]["provenance"]["mass_gate"]["reason"] == "off_calibration"
+        formate = rows["pa-f"]
+        assert formate["provenance"]["partner_gate"]["uncapped"] is True
+        assert formate["tier"] == "candidate"
+        assert formate["provenance"]["mass_gate"]["ceiling"] == "candidate"
+        assert formate["provenance"]["mass_gate"]["capped"] == "candidate"
+
+    def test_a_swapped_reading_stays_under_the_mass_gates_ceiling(self):
+        # No partner, so the formate reading swaps to its acid: the acid is
+        # the same ion on the same line, and the line is off calibration.
+        rows = by_id(self._judge(anchors() + [self._capped_formate(2.5)]).rows)
+        formate = rows["pa-f"]
+        assert formate["assigned_formula"] == "C11H20O7"
+        assert formate["tier"] == "candidate"
+        assert formate["provenance"]["mass_gate"]["capped"] == "candidate"
