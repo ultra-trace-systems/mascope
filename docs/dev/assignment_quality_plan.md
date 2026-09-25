@@ -44,10 +44,10 @@ dataset's sets G to J, the chemist's reading of 2026-09-24 (decision 21).
 | 2.7a - reference refresh: peaky's branch rebased on main 0.8.0, re-pinned, the 43 runs re-published | #2151, peaky `epic/v2-fit-reference` at `26e0ff3` | measured: the branch is rebased on peaky's main, pinned to this epic's head and green in CI for the first time since 2.1b, and all 43 runs are re-published at `26e0ff3`, the batch sets pinned to the gate's samples because main's `batch` now picks its own. Against the refreshed reference G1 is 6.1 on A, 10.9 on C, 7.9 on D and 32.7 on B, where the reference is silent on 23.7 points, and G1 conditioned meets 20% on the TOF sets for the first time (E 13.0, F1 7.8, F2 17.1). C2's refreshed reference scores at no offset: step 2.5d's list edits left it four anchors, and peaky skips the labelled reagent's own lines, so C2 is read against the frozen reference until it is recalibrated. `compare_runs.py --engine-b-before` reads the frozen reference from the store |
 | 2.8 - the band first, one reading per ion, the inspector's ionization and list names | #2154 | measured: every row under the top band names it first (14,855 of the round's monoisotopic rows); a row whose ion also reads as a closed-shell molecule through another channel is held at candidate unless a second channel committed its neutral (decision 20), which takes 75 rows from assigned - 70 urea adducts against an ammonium reading the nitrogen rule did not ask and 5 bromide clusters - and returns 12 nitrate clusters on F2 whose only other reading is a carbonate radical; a channel the mode and its profile both name is searched once, so no row lists its own reading as another one (265 on C before), and stays secondary: C's declared carbonate channel keeps the minor-channel cap, on the plan owner's call (decision 20); no owner changes; G2 identical, G7 0; the inspector names the ionization and the reference lists' compounds, looked up on the detail read as Stage A matches |
 | 3.1 - a profile for the charge-transfer source | #2197 | built: `EASYIC_POS` and `EASYIC_NEG` resolve from the bare sign on an Orbitrap after every reagent (a reagent mode that also declares electron transfer keeps its reagent; a mode with only protonation or deprotonation stays ESI; a bare-sign mode on a TOF, an ambient-ion stream, keeps the ESI path it had; a declared proton transfer or deprotonation beside the bare sign is the mode's own channel, not an opportunistic one), both under the ambient context; the fluoranthene beam is the reagent ladder (the air-plasma cations wait for 3.3); hydride abstraction `-H-` and proton transfer (positive) and deprotonation (negative) are secondary channels switched on by the beam, hydronium, and the source's own deprotonated acids, and left on where a narrow window cannot show them; their reading of an ion the bare sign also reads stands only where the sample commits the neutral through a mode channel (the partner gate, `engine.apply_partner_gates`, read over both stages' rows; carbonate is not gated until re-measured), so tropylium is toluene less a hydride rather than protonated C7H6; `parse_ionization` now reads `-H-` as the grammar and the validator do (a hydride removed, a cation) instead of as deprotonation - a breaking change for library callers: peaky rewrites `-H+` to `-H-` on the way in (a workaround from before `-H+` parsed as an anion, itself unreleased until the same library release), so peaky drops both rewrites and requires that release. The `-H-` mechanism row is an operator step, since seeding never creates mechanisms. Measured on the testbed (six representatives per set, `-H-` and `+HCOO-` rows added): set I- assigned rows per sample 66 -> 3 and assigned intensity 22.9 -> 1.7%, the 16 survivors all C2 nitrogen-rich formulas through the bare sign below the ratio windows' carbon floor (3.6's prior), so G9 reads 100% of a set 23 times smaller; set I+ assigned per sample 42 -> 43 with the bare sign 243 -> 111 rows and proton transfer 83 and hydride abstraction 37 opened (65 of the proton-transfer commits corroborated by the same neutral on the bare sign), tropylium read as toluene less a hydride at assigned in 5 of 6 samples, G9 51 -> 31% (71 of 231, all C2 or smaller); G10 stays 0 on both, the beam sits above both windows and the air-plasma cations are 3.3's. Sets C and C2 unchanged in tiers |
+| 3.1c - the stronger partner decides | - | planned (decision 24), step section written 2026-09-25; the need measured on set K: the benzyl cation as protonated C7H6 at assigned in 6 of 6 files with toluene less a hydride on the row |
 | 3.2 - formate as an opportunistic channel | #2198, stacked on #2197 | built: `+HCOO-` is a secondary channel of the nitrate, 15N-nitrate, bromide and iodide profiles, probed on formate, its dimer with formic acid and (nitrate) its cluster with the reagent's acid, built from the reagent so the labelled profile probes `[HCOO+H^NO3]-`; the nitrate profiles keep it on where the window cannot show a probe, as they do carbonate, because the batch carrying the C11 pseudo-acids is acquired from m/z 130 and the source makes no formate carrier above 127 (the two-acid cluster absent, the two-formic-acid cluster at 0.01-0.05% of base on the wide-window sister batch); the halide profiles claim only what they show. The election alone is not enough: measured with the channel open, it read every deprotonated acid as the molecule 46 Da lighter with formate (1,239 acid rows of six no-reagent-ion samples moved to formate and were capped; set C's same-formula agreement with the reference fell from 89.6% to 62.6%), so formate takes the partner gate of step 3.1 (`engine.apply_partner_gates`): the formate reading is the row's only where the lighter neutral is committed through a mode channel, otherwise the acid stands and the formate reading is set aside. Measured on the testbed with the partner gate judging every row against the ledger as it stands: set G without reagent ion G11 24.4 -> 5.6% of assigned-plus-candidate intensity (assigned-only 32.9 -> 7.1%), the deprotonated C11 rows 195 -> 79 (51 assigned), 104 of them now their C10 formate reading at assigned, each corroborated by the C10 neutral through a mode channel, 51 standing because no reading of the C10 neutral exists through a mode channel, 28 held at candidate; assigned rows per sample 486 -> 440, assigned intensity 58.4 -> 56.5%, of which 272 list-matched acids drop to candidate because their formate rival's lighter neutral is itself committed (O4 to O8 products; a real ambiguity for the small acids, and for a list's C11 the C10 reading is right). Set G with reagent ion G11 1.2 -> 0.5%. Set C tiers within two rows of before (assigned 615 -> 613), same-formula agreement with the reference 89.6 -> 88.0% where a partnered formate reading replaces an acid the reference reads as an acid; set C2 unchanged (probe absent, channel off). The target of under 1% is met with reagent ion and not without: the remaining 5.6% is C11 acids whose C10 partner is seen through no mode channel, which the rule leaves standing |
 | 3.3 - name the source ions | - | planned |
 | 3.3b - the standard adduct notation | - | planned (decision 23); before 2.0, as its own change |
-| 3.1c - the stronger partner decides | - | planned (decision 24); the need measured on set K: the benzyl cation as protonated C7H6 at assigned in 6 of 6 files with toluene less a hydride on the row |
 | 3.4 - an opportunistic channel needs a second channel | - | planned |
 | 3.5 - calibrants below the brightest lines, an offset term, and the low-mass bend (calibration node) | - | planned |
 | 3.6 - priors and the dataset's context | - | planned |
@@ -1511,6 +1511,84 @@ bump.
 - **Verify.** Sets I+ and I-: G9 from 51% and 96% to the target; G10 from
   0. No change on any other set.
 - **Size.** M.
+
+### 3.1c The stronger partner decides
+
+- **What.** The partner gate (`engine.apply_partner_gates`) judges a contest
+  it does not judge today. A monoisotopic row read through a partner-gated
+  channel whose family holds another reading through a gated channel, both
+  with a partner, takes the reading whose partner is the stronger: the
+  partner committed at the higher tier, and at equal tier the brighter row.
+  The partner ledger records, per neutral, the strongest row that commits it
+  through a mode channel (tier, then peak intensity) and stays current
+  through every swap, as the count does today. The reading it takes is
+  swapped in the way the gate swaps now (the ion's fit and mass error stay,
+  the tier is read off the reading's own plausibility under the mass gate's
+  ceiling) and the record names the reading it outweighed and by what. The
+  outweighed reading stays on the row as a same-ion alternative and is not
+  marked as unmet, because the sample did bear it out. The margin decides
+  what the cross-channel pass makes of it: where the partners' tiers differ,
+  or the stronger partner's row is at least ten times the weaker's
+  (`PARTNER_MARGIN`, a named constant beside the round cap), the reading is
+  marked outweighed and the pass reads the ion as settled by the stronger
+  partner (`SETTLED_BY_PARTNER` beside `second_channel`, `target_library`
+  and `radical`); within the margin nothing marks it, and the pass reads a
+  rival the sample also shows as the doubt it is, `ambiguous_adduct`, so the
+  row is candidate with the rival named. That last rule is the pass's, not
+  the gate's, and it reaches every row: a corroborated reading whose rival's
+  molecule the sample commits through a mode channel is no longer settled by
+  its own corroboration alone. Nothing else moves. A reading whose neutral
+  has no partner still goes through the fresh branch, and the mode's own
+  reading of an ion is not contested by an opportunistic one (decision 24
+  keeps a declared channel's formula), only doubted where its rival is
+  shown.
+- **Why.** The how-it-works page already promises that between two
+  opportunistic readings the one whose molecule the sample shows wins. The
+  cylinder shows the promise is kept only where one of them is shown. On set
+  K the benzyl cation at 91.054 reads as protonated C7H6 at assigned in six
+  of six files, because C7H6 is seen through the bare sign at 90.046 in every
+  file, at assigned, at 200 to 2,900 counts, while toluene is seen the same
+  way at 92.062, at assigned, at 27 to 31 times that. The election's prior
+  for the heavier mechanism decides, and the gate, finding a partner for the
+  proton's reading, never looks at the hydride's. The methylbenzyl cation at
+  105.070 is the same case with xylene against styrene, at 22 to 41 times,
+  and C5H7+ at 67.054 with isoprene against C5H6, at seven to ten times. A
+  certified mixture holds toluene, xylene and isoprene and none of C7H6,
+  protonated styrene's neutral or cyclopentadiene as analytes; the rows are
+  wrong, and they are wrong by a rule the sample could have overturned. The
+  margin is where decision 18 enters: the benzyl and methylbenzyl contests
+  are decided by more than an order of magnitude, the C5H7+ contest by less,
+  and a reading the sample shows seven times more strongly than its rival is
+  the better reading but not a certain one.
+- **Where.** `engine.py`: the partnered branch of `apply_partner_gates`, the
+  partner ledger it keeps, `swap`'s record for a contest, the outweighed mark
+  on the alternative, and `PARTNER_MARGIN`; `cross_channel.py`: the settled
+  reason and the rule that a shown rival is a doubt (`same_ion_question`,
+  `same_ion_readings`); the batch path reads it through
+  `batch_untargeted.gate_search_rows` unchanged. Tests: `TestThePartnerGate`
+  in `test_minor_channels.py` (a contest decided by tier, one by intensity,
+  one within the margin, the ledger kept current through a swap, a mode's
+  own reading left uncontested), `test_cross_channel.py` (a shown rival
+  doubts a corroborated row, an outweighed one does not), and one judged
+  ledger in `test_judge_commits.py`. `docs/user/how-it-works/peak-assignment.md`
+  gains the margin in the paragraph that already states the rule;
+  `CHANGELOG.md`. `tierReasons.js` labels the reason, not the settled-by
+  value; if the inspector shows what settled an ion, the new value needs its
+  word there.
+- **Verify.** Set K, six files: the benzyl cation as toluene less a hydride
+  at assigned in six, the methylbenzyl cation as xylene less a hydride at
+  assigned in six, C5H7+ as isoprene less a hydride in six, at candidate
+  wherever isoprene's row is under ten times the C5H6 row's; the certified
+  components' own rows through the bare sign unchanged, G9 unchanged or
+  lower. Set L, the control for the scope: every formula stays the declared
+  channel's; the rows whose hydride rival's molecule is seen through the bare
+  sign fall from assigned to candidate with the rival named, which is the
+  tier the other four files of the set already carry. Set I+: the same
+  contests between proton transfer and hydride abstraction, reported as a
+  reading, G9 not higher. Sets C, C2 and G: report every row a contest or
+  the shown-rival rule moves (formate against carbonate is the only pair that
+  can contest there), G11 not higher.
+- **Size.** S to M.
 
 ### 3.2 Formate as an opportunistic channel
 
