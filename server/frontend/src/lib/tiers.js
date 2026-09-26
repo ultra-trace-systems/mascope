@@ -109,6 +109,38 @@ export const tierBucket = (tier) => (isTier(tier) ? tier : FALLBACK_TIER)
 export const tierRank = (tier) => TIER_RANK[tierBucket(tier)]
 
 /**
+ * The roles that account for a peak without a formula, each a bucket of its
+ * own after the tiers: a reagent peak is the source's own ion, an artifact the
+ * instrument's ringing. Their rows sit at tier `unassigned`, which is true - no
+ * compound was assigned - so without buckets of their own they were filtered,
+ * counted and sorted among the peaks nothing explained. Shared by the sample
+ * ledger, whose rows carry a `role`, and the batch ledger, whose anchors carry
+ * a `consensus_role`, in the order the strips show them.
+ */
+export const ROLE_BUCKETS = ['reagent', 'artifact']
+
+/**
+ * The bucket a row is filtered and counted in: its role where one accounts
+ * for it, else its tier.
+ *
+ * @param {string} tier the tier as stored on the record
+ * @param {string|null} role the role, or null
+ * @returns {string} one of `TIERS` or `ROLE_BUCKETS`
+ */
+export const bucketOf = (tier, role) => (ROLE_BUCKETS.includes(role) ? role : tierBucket(tier))
+
+/**
+ * Sort rank for a row: the tiers in confidence order, then the roles in the
+ * strips' order, so the tier column groups the rows by the chip they show.
+ *
+ * @param {string} tier the tier as stored on the record
+ * @param {string|null} role the role, or null
+ * @returns {number}
+ */
+export const bucketRank = (tier, role) =>
+  ROLE_BUCKETS.includes(role) ? TIERS.length + ROLE_BUCKETS.indexOf(role) : tierRank(tier)
+
+/**
  * Chip presentation for a tier.
  *
  * @param {string} tier the tier as stored on the record

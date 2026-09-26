@@ -26,6 +26,9 @@ This module holds the PURE logic (no DB, no I/O) behind the batch overview:
   members rather than of the formula: the brightest member
   (:func:`max_intensity`) and the isotopologue family link
   (:func:`resolve_isotopologue_of`), which an anchor has no way to carry itself.
+  An anchor most of whose members a pre-pass claimed is read by the role they
+  carry instead - the source's ion, the detector's ringing - with that ion, as
+  the per-sample ledger reads such a peak.
 
 The DB controller (fold-in on arrival, backfill, consensus persistence) calls into
 these functions. Design: ``docs/dev/peak_assignment_batch.md``.
@@ -74,6 +77,12 @@ ROLE_M0 = "M0"
 ROLE_UNASSIGNED = "unassigned"
 ROLE_REAGENT = "reagent"
 ROLE_ARTIFACT = "artifact"
+
+#: The roles a pre-pass claims a peak for, in the order a tie between them is
+#: settled: the source's own ion and the detector's ringing. A member carrying
+#: one carries no formula, and an anchor whose members are such rows is read by
+#: the role (:func:`compute_consensus`) rather than as a peak nothing explained.
+SOURCE_ROLES = (ROLE_REAGENT, ROLE_ARTIFACT)
 
 
 # --- the member row's codes -----------------------------------------------------
@@ -353,6 +362,10 @@ class Consensus:
     consensus_ion_formula: Optional[str] = None
     ionization_mechanism_id: Optional[str] = None
     consensus_tier: str = TIER_UNASSIGNED
+    #: The role accounting for an anchor most of whose members a pre-pass
+    #: claimed (``reagent``, ``artifact``), or None; the tier stays
+    #: ``unassigned`` beside it.
+    consensus_role: Optional[str] = None
     best_fit_score: Optional[float] = None
     support_fraction: Optional[float] = None
     n_present: int = 0
@@ -395,25 +408,59 @@ def max_intensity(members: Iterable[Any]) -> Optional[float]:
     return max(values) if values else None
 
 
+def _claimed(members: list) -> list:
+    """The members a pre-pass claimed: a source role, and no formula."""
+    return [
+        m
+        for m in members
+        if _member(m, "role") in SOURCE_ROLES and not _member(m, "assigned_formula")
+    ]
+
+
+def _reading_population(members: list) -> list:
+    """The members an anchor's reading is decided over: those a pre-pass
+    claimed where they outnumber the members that carry a formula, else the
+    members that carry a formula.
+
+    A member is either assigned a formula, claimed for the source or the
+    instrument, or neither, and the two readings compete for the anchor on how
+    many members each holds. The claim is the pre-pass's and a formula the
+    stages', so they never meet in one sample's row; they meet across samples -
+    a dim file where the claim missed and the stages read the reagent's ion as
+    a neutral through the reagent's own adduct, or a batch folded from runs of
+    two engine versions - and the side most of the batch took is the anchor's.
+    A tie stays with the formula, which is how the anchor read before a claim
+    could be counted.
+    """
+    assigned = [m for m in members if _member(m, "assigned_formula")]
+    claimed = _claimed(members)
+    return claimed if len(claimed) > len(assigned) else assigned
+
+
 def resolve_isotopologue_of(
     members: Iterable[Any], batch_peak_id: Optional[str] = None
 ) -> Optional[str]:
     """The batch peak this one is an isotopologue of, or ``None``.
 
     Batch peaks are bare m/z anchors and carry no family link of their own, so
-    the link is derived from the members' per-sample assignments: a member whose
-    role is ``iso_child`` names the assignment that owns it, and the anchor that
-    owning assignment folded into in the same sample is the owner anchor. The
-    caller resolves that hop and hands each member an ``owner_batch_peak_id``.
+    the link is derived from the members' per-sample assignments: a member that
+    is a line of another row's isotope pattern names the row that owns it, and
+    the anchor that owning row folded into in the same sample is the owner
+    anchor. The caller resolves that hop and hands each member an
+    ``owner_batch_peak_id``. Two kinds of row are lines, as in the sample
+    ledger: an analyte's isotopologue (``iso_child``), and a source ion's
+    isotope line, which keeps the ``reagent`` role and names its ion's row.
 
     The members span samples and need not agree - one sample's isotopologue is
     another's M0, and an ownerless isotopologue names no anchor at all - so this is
-    a vote. It is counted over the **assigned** members, the same population
-    :func:`compute_consensus` measures agreement over, and prevalence is again
-    kept out of it: an isotopologue detected in six of ten samples and assigned in
-    none of the other four is still an isotopologue. A strict majority is required,
-    which is also what makes the winner unique - two owners cannot each hold
-    more than half of one set of votes - so no tie-break is needed.
+    a vote. It is counted over the population :func:`compute_consensus` reads the
+    anchor from (:func:`_reading_population`): the **assigned** members, or the
+    members a pre-pass claimed where they outnumber them. Prevalence is
+    again kept out of it: an isotopologue detected in six of ten samples and
+    assigned in none of the other four is still an isotopologue. A strict
+    majority is required, which is also what makes the winner unique - two owners
+    cannot each hold more than half of one set of votes - so no tie-break is
+    needed.
 
     One hop only. An isotopologue whose owner anchor is itself an isotopologue is left
     as it was observed; flattening the chain needs the whole ledger and belongs
@@ -425,13 +472,10 @@ def resolve_isotopologue_of(
         names it cannot make it its own parent.
     :return: The owner's ``batch_peak_id``, or None.
     """
+    population = _reading_population(list(members))
     votes: dict[str, int] = defaultdict(int)
-    n_assigned = 0
-    for m in members:
-        if not _member(m, "assigned_formula"):
-            continue
-        n_assigned += 1
-        if _member(m, "role") != ROLE_ISO_CHILD:
+    for m in population:
+        if _member(m, "role") not in (ROLE_ISO_CHILD, ROLE_REAGENT):
             continue
         owner = _member(m, "owner_batch_peak_id")
         if not owner or owner == batch_peak_id:
@@ -440,7 +484,7 @@ def resolve_isotopologue_of(
     if not votes:
         return None
     owner, n_votes = max(votes.items(), key=lambda kv: kv[1])
-    return owner if 2 * n_votes > n_assigned else None
+    return owner if 2 * n_votes > len(population) else None
 
 
 def manual_pin_of(anchor: Any) -> Optional[dict]:
@@ -500,6 +544,43 @@ def _pinned_without_support(
     )
 
 
+def _source_consensus(
+    members: list,
+    batch_peak_id: Optional[str],
+    n_present: int,
+    brightest: Optional[float],
+) -> Consensus:
+    """The consensus of an anchor most of whose members a pre-pass claimed.
+
+    The anchor takes the role - the one most of the claimed members carry, the
+    reagent on a tie - with the ion formula and the mechanism most of that
+    role's members name, so the batch ledger reads the source's ion as the
+    per-sample ledger does rather than as a peak nothing explained, or as the
+    neutral a few samples' stages read it as. As the formula is voted over the
+    members that carry one, the role is taken over the members that carry a
+    role, and prevalence stays ``n_present``: a reagent ion claimed in four
+    samples and below the claim in the other six is still the reagent's. The
+    tier stays ``unassigned``.
+
+    :param members: The anchor's members, at least one of them claimed.
+    """
+    claimed = _claimed(members)
+    counts = Counter(_member(m, "role") for m in claimed)
+    role = max(SOURCE_ROLES, key=lambda candidate: counts[candidate])
+    holding = [m for m in claimed if _member(m, "role") == role]
+    return Consensus(
+        consensus_ion_formula=_mode(_member(m, "ion_formula") for m in holding),
+        ionization_mechanism_id=_mode(
+            _member(m, "ionization_mechanism_id") for m in holding
+        ),
+        consensus_role=role,
+        n_present=n_present,
+        max_intensity=brightest,
+        isotopologue_of=resolve_isotopologue_of(members, batch_peak_id),
+        provenance={"n_role": len(holding)},
+    )
+
+
 def compute_consensus(
     members: Iterable[Any],
     batch_peak_id: Optional[str] = None,
@@ -512,7 +593,10 @@ def compute_consensus(
     ``ionization_mechanism_id``, ``tier``, ``fit_score``, ``intensity``,
     ``p_correct``, ``role``, ``owner_batch_peak_id`` (any may be absent/None).
     Members with no ``assigned_formula`` (unassigned peaks) count toward
-    prevalence and intensity only.
+    prevalence and intensity only. Members a pre-pass claimed (a reagent's ion,
+    an artifact) compete with the assigned ones for the anchor: where they
+    outnumber them, the anchor is read by their role, with their ion
+    (:func:`_source_consensus`), unless a pin names a formula.
 
     Confidence (formula, tier, support) is decided over the **assigned** members;
     prevalence (``n_present``) is reported separately. Ties and blend-like
@@ -536,6 +620,8 @@ def compute_consensus(
     assigned = [m for m in members if _member(m, "assigned_formula")]
 
     pin = manual if isinstance(manual, dict) and manual.get("formula") else None
+    if pin is None and len(_claimed(members)) > len(assigned):
+        return _source_consensus(members, batch_peak_id, n_present, brightest)
     if not assigned:
         if pin is not None:
             return _pinned_without_support(pin, n_present, brightest)

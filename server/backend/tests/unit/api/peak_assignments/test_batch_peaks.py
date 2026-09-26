@@ -427,6 +427,154 @@ def test_consensus_carries_the_family_link_alongside_the_formula():
     assert c.max_intensity == pytest.approx(1e4)
 
 
+# --- a formula-less anchor the source accounts for -----------------------------
+#
+# Step 3.3c's follow-up, built in 3.4d: a per-sample row the reagent or artifact
+# pre-pass claims carries a role and no formula, so an anchor of such rows had
+# nothing to vote on and read as unassigned. It reads by the role its members
+# carry, with their ion, and a source ion's isotope lines fold under it.
+
+
+def _source(role="reagent", ion="Br-", mechanism=None, owner=None, **extra):
+    """A member a pre-pass claimed: a role and an ion, no formula."""
+    return {
+        "assigned_formula": None,
+        "ion_formula": ion,
+        "ionization_mechanism_id": mechanism,
+        "role": role,
+        "tier": "unassigned",
+        "owner_batch_peak_id": owner,
+        **extra,
+    }
+
+
+def _bare():
+    return {"assigned_formula": None, "role": "unassigned", "tier": "unassigned"}
+
+
+def test_an_anchor_of_reagent_rows_reads_as_the_reagents_ion():
+    c = compute_consensus([_source(intensity=5e4), _source(intensity=4e4)])
+    assert (c.consensus_role, c.consensus_ion_formula) == ("reagent", "Br-")
+    # No compound was assigned: the tier says so, the role says what it is.
+    assert c.consensus_formula is None
+    assert c.consensus_tier == "unassigned"
+    assert c.n_present == 2
+    assert c.max_intensity == pytest.approx(5e4)
+    assert c.provenance == {"n_role": 2}
+
+
+def test_the_role_is_taken_over_the_members_that_carry_one():
+    """As the formula is voted over the members that carry one: a reagent ion
+    claimed in two samples and below the claim in five is still the reagent's,
+    and prevalence stays the whole count."""
+    c = compute_consensus([_source(), _source(), *[_bare() for _ in range(5)]])
+    assert c.consensus_role == "reagent"
+    assert c.n_present == 7
+
+
+def test_the_ion_and_mechanism_are_those_most_of_the_role_names():
+    c = compute_consensus(
+        [
+            _source(ion="C16H10+", mechanism="m-e"),
+            _source(ion="C16H10+", mechanism="m-e"),
+            _source(ion="C15H12+", mechanism="m-e"),
+        ]
+    )
+    assert (c.consensus_ion_formula, c.ionization_mechanism_id) == (
+        "C16H10+",
+        "m-e",
+    )
+
+
+def test_an_artifact_anchor_reads_as_one_with_no_ion():
+    c = compute_consensus([_source("artifact", ion=None), _bare()])
+    assert (c.consensus_role, c.consensus_ion_formula) == ("artifact", None)
+
+
+def test_a_tie_between_the_roles_goes_to_the_reagent():
+    for members in (
+        [_source("reagent"), _source("artifact", ion=None)],
+        [_source("artifact", ion=None), _source("reagent")],
+    ):
+        assert compute_consensus(members).consensus_role == "reagent"
+
+
+def test_a_few_samples_reading_the_ion_as_a_neutral_do_not_outvote_the_claim():
+    """A dim file the claim missed, whose stages read bromine monoxide's ion as
+    a neutral through the bromide adduct: the anchor is still the reagent's
+    where most of its members were claimed."""
+    c = compute_consensus(
+        [
+            _source(ion="BrO-"),
+            _source(ion="BrO-"),
+            _m0("O", tier="candidate", fit_score=0.4, ion_formula="BrO-"),
+        ]
+    )
+    assert (c.consensus_role, c.consensus_ion_formula) == ("reagent", "BrO-")
+    assert c.consensus_formula is None
+
+
+def test_an_anchor_most_of_whose_members_carry_a_formula_keeps_it():
+    """A batch folded mostly from runs of an engine that read the ion as a
+    neutral: the formula has the anchor, and no role."""
+    c = compute_consensus(
+        [_source(), _m0("Br", fit_score=0.8), _m0("Br", fit_score=0.7)]
+    )
+    assert c.consensus_formula == "Br"
+    assert c.consensus_role is None
+
+
+def test_a_tie_between_a_claim_and_a_formula_stays_with_the_formula():
+    c = compute_consensus([_source(), _m0("Br", fit_score=0.8)])
+    assert c.consensus_formula == "Br"
+    assert c.consensus_role is None
+
+
+def test_an_anchor_nothing_accounts_for_is_unassigned_as_before():
+    c = compute_consensus([_bare(), _bare()])
+    assert (c.consensus_role, c.consensus_ion_formula) == (None, None)
+    assert c.provenance == {}
+
+
+def test_a_pin_outranks_the_role():
+    c = compute_consensus([_source()], manual={"formula": "CH2Br2"})
+    assert c.consensus_formula == "CH2Br2"
+    assert c.consensus_role is None
+
+
+def test_a_source_ions_lines_fold_under_its_anchor():
+    """A reagent row with an owner is a line of its ion's envelope (step 3.3c),
+    and the anchor it folds into follows its ion's as an isotopologue does."""
+    members = [_source(owner="bp-ion"), _source(owner="bp-ion"), _bare()]
+    assert resolve_isotopologue_of(members) == "bp-ion"
+    assert compute_consensus(members, batch_peak_id="bp-81br").isotopologue_of == (
+        "bp-ion"
+    )
+
+
+def test_the_line_vote_is_a_majority_of_the_claimed_members():
+    # A line in one sample, the ion's own monoisotopic row in two others: no
+    # majority, so the anchor stands on its own.
+    members = [_source(owner="bp-ion"), _source(), _source()]
+    assert resolve_isotopologue_of(members) is None
+
+
+def test_an_artifact_is_never_a_line():
+    members = [_source("artifact", ion=None, owner="bp-parent")]
+    assert resolve_isotopologue_of(members) is None
+
+
+def test_a_reagent_line_does_not_vote_where_the_formula_has_the_anchor():
+    """Where most members carry a formula, the vote is theirs, as before."""
+    members = [_source(owner="bp-ion"), _m0(), _m0()]
+    assert resolve_isotopologue_of(members) is None
+
+
+def test_the_lines_vote_where_the_claim_has_the_anchor():
+    members = [_source(owner="bp-ion"), _source(owner="bp-ion"), _m0()]
+    assert resolve_isotopologue_of(members) == "bp-ion"
+
+
 # --- candidates ---------------------------------------------------------------
 
 

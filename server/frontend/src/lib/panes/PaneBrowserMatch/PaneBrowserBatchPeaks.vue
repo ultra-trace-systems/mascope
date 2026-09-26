@@ -27,7 +27,7 @@ import {
   listingTags,
   listingTooltip
 } from '@/lib/referenceListings'
-import { TIERS, TIER_META, countTiers, tierRank } from '@/lib/tiers'
+import { ROLE_BUCKETS, TIERS, TIER_META, bucketOf, bucketRank } from '@/lib/tiers'
 import { VERDICT_META } from '@/lib/verification'
 import { prettyTrim } from '@/lib/utils'
 import { useApp } from '@/stores'
@@ -180,9 +180,19 @@ const rootParentId = (row, index) => {
   return null
 }
 
+// What the formula column shows: the consensus formula, or on an anchor a
+// source role accounts for, the ion the peak is - written with its charge, as
+// the sample ledger shows a reagent row's - since the role chip beside it says
+// whose ion it is.
+const formulaOf = (row) =>
+  row.consensus_formula || (row.consensus_role ? row.consensus_ion_formula : null) || null
+const ION_TOOLTIP = 'Ion formula: the peak names an ion, and no compound of the sample'
+
 // The ledger's records with the tier's confidence rank attached, which is what
 // the tier column sorts on: the raw tier string sorts alphabetically, and
 // "below_assignability" before "candidate" is not an ordering anyone asked for.
+// An anchor a source role accounts for ranks and counts under its role, after
+// the tiers, as the sample ledger's reagent and artifact rows do.
 const decorated = computed(() => {
   const index = byId.value
   return ledger.value.list.map((batchPeak) => {
@@ -191,7 +201,8 @@ const decorated = computed(() => {
     const listing = ledgerListing(batchPeak.reference_listing)
     return {
       ...batchPeak,
-      tierRank: tierRank(batchPeak.consensus_tier),
+      tierRank: bucketRank(batchPeak.consensus_tier, batchPeak.consensus_role),
+      bucket: bucketOf(batchPeak.consensus_tier, batchPeak.consensus_role),
       verdictRank: verdictRank(batchPeak),
       parentId: rootParentId(batchPeak, index),
       listing,
@@ -302,11 +313,23 @@ const collator = new Intl.Collator(undefined, { numeric: true })
 // missing, which is what PrimeVue's isEmpty() did.
 const isBlank = (value) => value == null || value === ''
 
+// What a column sorts and filters on, where that is not the field it is named
+// by: the formula column shows a source ion's formula on an anchor with no
+// consensus formula, and sorts and searches what it shows; the tier column's
+// filter - the one the chips write - reads the bucket, so a role chip narrows
+// to its role.
+const VALUES = {
+  consensus_formula: (row) => formulaOf(row),
+  consensus_tier: (row) => row.bucket
+}
+const valueOf = (field) => VALUES[field] ?? ((row) => row[field])
+
 function compareBy(field, order) {
   const dir = order === -1 ? -1 : 1
+  const read = valueOf(field)
   return (a, b) => {
-    const av = a[field]
-    const bv = b[field]
+    const av = read(a)
+    const bv = read(b)
     if (isBlank(av) && isBlank(bv)) return 0
     if (isBlank(av)) return 1
     if (isBlank(bv)) return -1
@@ -338,9 +361,10 @@ const passesFilters = (row) => {
       (constraint) => constraint.value !== null
     )
     if (!constraints.length) continue
+    const value = valueOf(field)(row)
     const matches = (constraint) =>
       FilterService.filters[constraint.matchMode ?? FilterMatchMode.STARTS_WITH](
-        row[field],
+        value,
         constraint.value
       )
     const passed =
@@ -530,15 +554,22 @@ const toggleTier = (tier) => {
 //
 // Counted over the whole ledger rather than the filtered rows, as the sample
 // pane's are: a histogram that reacted to its own filter would collapse to one
-// non-zero bucket the moment it was used.
-const tierCounts = computed(() => countTiers(parents.value, (bp) => bp.consensus_tier))
+// non-zero bucket the moment it was used. An anchor a source role accounts for
+// counts under its role rather than as unassigned.
+const BUCKETS = [...TIERS, ...ROLE_BUCKETS]
+const tierCounts = computed(() => {
+  const counts = Object.fromEntries(BUCKETS.map((bucket) => [bucket, 0]))
+  for (const row of parents.value) counts[row.bucket] += 1
+  return counts
+})
 
-// One chip per tier in confidence order, counts included.
+// One chip per tier in confidence order, then one per role, counts included.
 const tierChips = computed(() =>
-  TIERS.map((tier) => ({
-    key: tier,
-    label: TIER_META[tier].label,
-    count: tierCounts.value[tier] ?? 0
+  BUCKETS.map((bucket) => ({
+    key: bucket,
+    label: TIER_META[bucket]?.label ?? bucket,
+    count: tierCounts.value[bucket] ?? 0,
+    role: ROLE_BUCKETS.includes(bucket)
   }))
 )
 
@@ -671,7 +702,11 @@ watch(
           class="tier-stat"
           :class="[
             chip.key,
-            { active: activeTier === chip.key, dim: activeTier && activeTier !== chip.key }
+            {
+              'roles-start': chip.key === ROLE_BUCKETS[0],
+              active: activeTier === chip.key,
+              dim: activeTier && activeTier !== chip.key
+            }
           ]"
           v-tooltip.top="
             activeTier === chip.key ? `Showing only ${chip.label}` : `Filter to ${chip.label}`
@@ -869,9 +904,10 @@ watch(
             <!-- The isotopologue count rides in the slot, outside what gets
                  copied, as the sample ledger's does. -->
             <BaseCopyableField
-              v-else-if="data.consensus_formula"
+              v-else-if="formulaOf(data)"
               class="formula"
-              :field="data.consensus_formula"
+              :field="formulaOf(data)"
+              :tooltip="data.consensus_formula ? null : ION_TOOLTIP"
             >
               <span
                 v-if="data.curated"
@@ -889,6 +925,9 @@ watch(
                 >+{{ isotopologueCount(data) }}</span
               >
             </BaseCopyableField>
+            <!-- An artifact's ringing names no ion: its role chip says what
+                 the peak is, and "unassigned" here would contradict it. -->
+            <span v-else-if="data.consensus_role" class="unassigned">&mdash;</span>
             <span v-else class="unassigned">unassigned</span>
           </template>
           <template #filter="{ filterModel, filterCallback }">
@@ -968,13 +1007,15 @@ watch(
                  `best_fit_score` is the best member's fit and is still served and
                  sorted on; showing it here would read as the number the tier came
                  from, which it never was. -->
-            <BaseTierTag :tier="data.consensus_tier" />
+            <!-- The role is the chip on an anchor a source role accounts
+                 for, as on the sample ledger's reagent and artifact rows. -->
+            <BaseTierTag :tier="data.consensus_tier" :role="data.consensus_role" />
           </template>
           <template #filter="{ filterModel, filterCallback }">
             <Select
               v-model="filterModel.value"
               @change="filterCallback()"
-              :options="TIERS"
+              :options="BUCKETS"
               placeholder="Any tier"
               size="small"
               :showClear="true"
@@ -1227,6 +1268,15 @@ watch(
 .tier-stat.below_assignability b,
 .tier-stat.unassigned b {
   color: var(--p-surface-500, #6f7889);
+}
+/* The source's and the instrument's peaks, in the colour their chips wear, and
+   set off from the tiers: what follows is not a confidence. */
+.tier-stat.reagent b,
+.tier-stat.artifact b {
+  color: #8a5ed0;
+}
+.tier-stat.roles-start {
+  margin-left: 0.4rem;
 }
 
 /* The panel body is a column: the launch-error banner and the tier strip take

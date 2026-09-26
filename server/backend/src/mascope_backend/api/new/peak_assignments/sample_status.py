@@ -15,9 +15,13 @@ from __future__ import annotations
 
 from typing import Any, Optional
 
-from sqlalchemy import and_, func, select
+from sqlalchemy import and_, func, or_, select
 
 from mascope_backend.api.lib.api_features import api_controller
+from mascope_backend.api.new.peak_assignments.batch_peaks import (
+    SOURCE_ROLES,
+    role_code,
+)
 from mascope_backend.db import (
     BatchPeak,
     BatchPeakOccurrence,
@@ -28,6 +32,9 @@ from mascope_backend.db import (
 
 
 RUN_COMPLETED = "completed"
+
+#: The stored codes of the roles a pre-pass claims a peak for.
+_CLAIMED_ROLE_CODES = tuple(role_code(role) for role in SOURCE_ROLES)
 
 
 def sample_status_record(
@@ -72,8 +79,10 @@ async def get_batch_sample_assignment_status(sample_batch_id: str) -> dict:
             .scalars()
             .all()
         )
-        # A member's candidate index is null exactly when it carries no
-        # assignment, so counting the column counts the assigned members.
+        # A member's candidate index is null when it carries no assignment,
+        # and a member a pre-pass claimed names its ion's entry, which carries
+        # no formula - so the members counted as assigned are those with an
+        # index and no claimed role.
         counts = {
             sample_item_id: (members, assigned)
             for sample_item_id, members, assigned in (
@@ -81,7 +90,12 @@ async def get_batch_sample_assignment_status(sample_batch_id: str) -> dict:
                     select(
                         BatchPeakOccurrence.sample_item_id,
                         func.count(),
-                        func.count(BatchPeakOccurrence.candidate),
+                        func.count(BatchPeakOccurrence.candidate).filter(
+                            or_(
+                                BatchPeakOccurrence.role.is_(None),
+                                BatchPeakOccurrence.role.not_in(_CLAIMED_ROLE_CODES),
+                            )
+                        ),
                     )
                     .join(
                         BatchPeak,

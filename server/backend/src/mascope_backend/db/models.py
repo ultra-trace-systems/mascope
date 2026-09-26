@@ -2137,6 +2137,12 @@ class BatchPeak(Base):
     consensus_tier: Mapped[str] = mapped_column(
         String(24), server_default=text("'unassigned'")
     )
+    # The role that accounts for the anchor: ``reagent`` or ``artifact`` where
+    # more of its members were claimed for one than were assigned a formula
+    # (see ``compute_consensus``), NULL otherwise. The tier stays
+    # ``unassigned``, as the per-sample row's does: no compound was assigned,
+    # and the role says what the peak is instead.
+    consensus_role: Mapped[Optional[str]] = mapped_column(String(16))
     best_fit_score: Mapped[Optional[float]] = mapped_column(Float)
     # Fraction of DETECTED members whose assignment agrees with consensus_formula.
     support_fraction: Mapped[Optional[float]] = mapped_column(Float)
@@ -2560,6 +2566,7 @@ class BatchPeakRunAnchor(Base):
     consensus_ion_formula: Mapped[Optional[str]] = mapped_column(String(4096))
     ionization_mechanism_id: Mapped[Optional[str]] = mapped_column(String(16))
     consensus_tier: Mapped[str] = mapped_column(String(24))
+    consensus_role: Mapped[Optional[str]] = mapped_column(String(16))
     best_fit_score: Mapped[Optional[float]] = mapped_column(Float)
     support_fraction: Mapped[Optional[float]] = mapped_column(Float)
     n_present: Mapped[int] = mapped_column(Integer)

@@ -33,6 +33,8 @@ from mascope_backend.api.lib.api_features import api_controller_background_task
 from mascope_backend.api.new.instrument_configs.lib import read_instrument_functions
 from mascope_backend.api.new.peak_assignments.batch_peaks import (
     ROLE_ISO_CHILD,
+    ROLE_REAGENT,
+    SOURCE_ROLES,
     Anchor,
     AnchorSet,
     Consensus,
@@ -357,22 +359,27 @@ async def fold_sample_into_batch_peaks(
             rows_by_id[bp_id] = bp
 
         # The family link, resolved while this sample's fold is in hand: an
-        # iso_child names the assignment that owns it, and the owner's own peak
-        # folded into some anchor in this same pass - or lost a same-anchor
-        # contest and folded nowhere, in which case the child names no owner
-        # and abstains from the vote (see resolve_isotopologue_of).
+        # iso_child names the assignment that owns it, and so does a reagent
+        # row that is a line of its ion's envelope (step 3.3c); the owner's own
+        # peak folded into some anchor in this same pass - or lost a same-anchor
+        # contest and folded nowhere, in which case the line names no owner and
+        # abstains from the vote (see resolve_isotopologue_of).
         anchor_of_assignment = {
             f.peak["row"].peak_assignment_id: f.batch_peak_id for f in folded
         }
         # Each touched anchor's candidate registry, extended as members bring
         # identities it has not seen. Copied out and reassigned rather than
-        # mutated in place, which a JSON column would not notice.
+        # mutated in place, which a JSON column would not notice. A row a
+        # pre-pass claimed brings its ion with no formula - the source's ion is
+        # known exactly and is no compound of the sample - so the batch can say
+        # which ion the anchor is where most of its members were claimed
+        # (compute_consensus).
         registries: dict[str, list] = {}
         for f in folded:
             r = f.peak["row"]
             provenance = r.provenance if isinstance(r.provenance, dict) else {}
             candidate = None
-            if r.assigned_formula:
+            if r.assigned_formula or (r.role in SOURCE_ROLES and r.ion_formula):
                 registry = registries.get(f.batch_peak_id)
                 if registry is None:
                     registry = list(rows_by_id[f.batch_peak_id].candidates or [])
@@ -401,7 +408,8 @@ async def fold_sample_into_batch_peaks(
                     role=role_code(r.role),
                     owner_batch_peak_id=(
                         anchor_of_assignment.get(r.owner_peak_assignment_id)
-                        if r.role == ROLE_ISO_CHILD and r.owner_peak_assignment_id
+                        if r.role in (ROLE_ISO_CHILD, ROLE_REAGENT)
+                        and r.owner_peak_assignment_id
                         else None
                     ),
                     p_correct=provenance.get("p_correct"),
@@ -572,6 +580,7 @@ def _apply_consensus(bp: BatchPeak, consensus: Consensus, now: datetime) -> bool
         "consensus_ion_formula": consensus.consensus_ion_formula,
         "ionization_mechanism_id": consensus.ionization_mechanism_id,
         "consensus_tier": consensus.consensus_tier,
+        "consensus_role": consensus.consensus_role,
         "best_fit_score": consensus.best_fit_score,
         "support_fraction": consensus.support_fraction,
         "n_present": consensus.n_present,
