@@ -86,9 +86,12 @@ class BatchPeaksResource(BaseResource):
                  ``best_fit_score``, ``support_fraction``, ``n_present``,
                  ``is_ambiguous``, ``max_intensity`` (in
                  ``intensity_variable``), ``isotopologue_of`` (the batch peak
-                 this one is an isotopologue of, or null) and ``curated``
-                 (pinned by hand for the whole batch). None when the batch has
-                 no ledger yet.
+                 this one is an isotopologue of, or null), ``curated``
+                 (pinned by hand for the whole batch) and
+                 ``reference_listing`` (what a reference list calls the
+                 consensus formula where a member matched it from one:
+                 ``name``, ``source``, ``tags``, ``total``; null otherwise).
+                 None when the batch has no ledger yet.
         :rtype: pd.DataFrame | None
         """
         params: dict[str, Any] = {"min_n_present": min_n_present}

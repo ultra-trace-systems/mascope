@@ -150,7 +150,8 @@ class PeakAssignmentsResource(BaseResource):
         Rows are the slim ledger projection: per-peak scalars plus the
         flattened provenance scalars (``evidence``, ``p_correct``,
         ``p_correct_provisional``, ``corroboration_adducts``,
-        ``corroboration_channels``, ``candidate_density``, ``mass_z``). The
+        ``corroboration_channels``, ``candidate_density``, ``mass_z``,
+        ``reference_listing``). The
         inspector-detail JSON (``alternatives``, ``provenance``) of a single
         assignment is served by :meth:`detail`.
 
@@ -244,6 +245,13 @@ class PeakAssignmentsResource(BaseResource):
                    and any ``trend``; a row beyond three widths with nothing
                    but the mass fit behind it is capped, and says so in its
                    detail provenance.
+                 - ``reference_listing``: what a reference list calls the
+                   formula, where the run matched it from one - a dict with
+                   the first compound's ``name``, the list it comes from
+                   (``source``), the ``tags`` the lists carry (``background``)
+                   and the ``total`` of names matched; null on a row no list
+                   names. The full list is ``provenance.reference_identities``
+                   in :meth:`detail`.
                  - ``target_compound_id``, ``target_ion_id`` (set for
                    database-sourced assignments)
                  - ``owner_peak_assignment_id`` (for isotope children, the

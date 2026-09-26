@@ -51,6 +51,16 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   moves to 2026.09.3, so the next `mascope reference seed` loads the tag
   (assignment quality plan, step 3.3).
 
+- **The peak browser shows what a reference list calls each formula.** A
+  *listed as* column beside the formula names the compound the run matched
+  from a list, the list it comes from and the list's tags (*background* on
+  the cyclic siloxanes), with how many more names the run matched - what the
+  inspector's reference-list field says, without opening the inspector. The
+  batch ledger shows the same for its consensus formula, where a sample's run
+  matched it from a list; a ledger folded before this shows it once rebuilt.
+  Ledger rows carry it as `reference_listing` in the API (assignment quality
+  plan, step 3.4d).
+
 - **A reference list is read through the channels a run opens.** Stage A
   matched a list's compounds only through the ionization mechanisms the
   sample's mode declares, so on a charge-transfer source, whose mode declares

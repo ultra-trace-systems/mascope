@@ -25,6 +25,7 @@ from mascope_backend.api.new.peak_assignments.batch_runs import (
     snapshot_rows,
     snapshot_series,
 )
+from mascope_backend.api.new.peak_assignments.listing import consensus_listing
 from mascope_backend.db import (
     BatchPeak,
     BatchPeakOccurrence,
@@ -50,7 +51,9 @@ def _batch_peak_meta(bp) -> dict:
     isotopologues under their M0 without joining the occurrence table
     it is defined by not joining. ``intensity_variable`` rides along because it
     is what names the unit ``max_intensity`` is in (heights or areas, per
-    instrument type).
+    instrument type). ``reference_listing`` is what a list calls the consensus
+    formula, read off the registry entries the members brought
+    (:func:`~mascope_backend.api.new.peak_assignments.listing.consensus_listing`).
     """
     return {
         "batch_peak_id": bp.batch_peak_id,
@@ -70,6 +73,12 @@ def _batch_peak_meta(bp) -> dict:
         "isotopologue_of": bp.isotopologue_of,
         # Pinned by hand for the whole batch (batch_curation.py).
         "curated": manual_pin_of(bp) is not None,
+        "reference_listing": consensus_listing(
+            bp.candidates,
+            bp.consensus_formula,
+            bp.consensus_ion_formula,
+            bp.ionization_mechanism_id,
+        ),
     }
 
 

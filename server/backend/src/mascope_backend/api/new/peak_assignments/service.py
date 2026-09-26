@@ -125,6 +125,7 @@ from mascope_backend.api.new.peak_assignments.fold_view import (
     member_detail,
     verification_target,
 )
+from mascope_backend.api.new.peak_assignments.listing import reference_listing
 from mascope_backend.api.new.peak_assignments.mass_gate import (
     SpectrumLines,
     apply_mass_gate,
@@ -341,10 +342,12 @@ def _provenance_scalars(
 ) -> dict:
     """Collapse a provenance blob into the scalars the ledger renders.
 
-    The ledger table shows the evidence its tier was read off, a calibrated
-    P(correct) column (with its provisional marker) and an adduct-corroboration
-    count on every row; everything else in provenance is per-peak inspector
-    detail served by :func:`get_peak_assignment_detail`.
+    The ledger table shows the evidence its tier was read off, an
+    adduct-corroboration count and what a reference list calls the formula on
+    every row, and the API serves the calibrated P(correct) with its
+    provisional flag beside them (the app does not show it while the curve is
+    provisional); everything else in provenance is per-peak inspector detail
+    served by :func:`get_peak_assignment_detail`.
 
     ``evidence`` is here rather than in the inspector because it is what the tier
     chip displays. The chip used to show ``fit_score``, which stopped being the
@@ -374,6 +377,13 @@ def _provenance_scalars(
     not separate, and nothing else on the ledger says so - the stored
     ``alternatives`` are capped, so counting those counts the cap.
 
+    ``reference_listing`` is here because what a list calls the formula is the
+    reading a reader asks of a row first, and without it the ledger took the
+    inspector to answer: the first name the run matched from a list, that
+    list, the lists' tags and how many names there are
+    (:func:`~mascope_backend.api.new.peak_assignments.listing.reference_listing`),
+    None on a row no list names.
+
     ``run_calibration`` is the run's ``confidence_calibration``: the curve a
     calibrated row's ``p_correct`` was read off, recorded once per run rather
     than in every row. Which curve applies to this row is
@@ -391,6 +401,7 @@ def _provenance_scalars(
         "corroboration_channels": len(channels) if channels else None,
         "candidate_density": provenance.get(CANDIDATE_DENSITY),
         "mass_z": provenance.get("mass_z"),
+        "reference_listing": reference_listing(provenance.get("reference_identities")),
     }
 
 

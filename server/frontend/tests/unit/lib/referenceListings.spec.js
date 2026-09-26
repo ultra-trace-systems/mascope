@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest'
 
 import {
+  ledgerListing,
   listingName,
   listingOf,
   listingSource,
@@ -155,5 +156,46 @@ describe('a listing past the names it carries', () => {
     const listing = listingOf({ known_compounds: [DMF, ACROLEIN], known_compounds_total: 1 })
     expect(listing.total).toBe(2)
     expect(listingTooltip(listing)).not.toContain('more the lists hold')
+  })
+})
+
+// A ledger row carries what the inspector reads off the row's provenance
+// flattened into one field (step 3.4d); read back into a listing, the same
+// helpers say the same thing of it.
+describe('ledgerListing', () => {
+  const FLAT = {
+    name: 'decamethylcyclopentasiloxane',
+    source: 'cyclic-siloxanes',
+    tags: ['background'],
+    total: 2
+  }
+
+  it('reads a flattened listing as the match it is', () => {
+    const listing = ledgerListing(FLAT)
+
+    expect(listing.matched).toBe(true)
+    expect(listingName(listing)).toBe('decamethylcyclopentasiloxane +1')
+    expect(listingSource(listing)).toBe('cyclic-siloxanes')
+    expect(listingTags(listing)).toEqual(['background'])
+  })
+
+  it('says in the tooltip what the tag means and how many more names there are', () => {
+    const tooltip = listingTooltip(ledgerListing(FLAT))
+
+    expect(tooltip).toContain('The run matched this formula from a reference list.')
+    expect(tooltip).toContain('decamethylcyclopentasiloxane (cyclic-siloxanes)')
+    expect(tooltip).toContain('and 1 more')
+    expect(tooltip).toContain('The cyclic-siloxanes list tags it background')
+  })
+
+  it('reads a listing with no tags or count as one untagged name', () => {
+    const listing = ledgerListing({ name: 'alpha-pinene', source: 'monoterpenes' })
+
+    expect(listingName(listing)).toBe('alpha-pinene')
+    expect(listingTags(listing)).toEqual([])
+  })
+
+  it.each([null, undefined, 'D5', 3])('reads %s as no listing', (flat) => {
+    expect(ledgerListing(flat)).toBeNull()
   })
 })

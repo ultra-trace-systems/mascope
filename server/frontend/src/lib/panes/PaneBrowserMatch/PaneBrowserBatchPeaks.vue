@@ -20,6 +20,13 @@ import {
   BaseVerdictBadge
 } from '@/lib/base'
 import { num } from '@/lib/formatters'
+import {
+  ledgerListing,
+  listingName,
+  listingSource,
+  listingTags,
+  listingTooltip
+} from '@/lib/referenceListings'
 import { TIERS, TIER_META, countTiers, tierRank } from '@/lib/tiers'
 import { VERDICT_META } from '@/lib/verification'
 import { prettyTrim } from '@/lib/utils'
@@ -178,12 +185,19 @@ const rootParentId = (row, index) => {
 // "below_assignability" before "candidate" is not an ordering anyone asked for.
 const decorated = computed(() => {
   const index = byId.value
-  return ledger.value.list.map((batchPeak) => ({
-    ...batchPeak,
-    tierRank: tierRank(batchPeak.consensus_tier),
-    verdictRank: verdictRank(batchPeak),
-    parentId: rootParentId(batchPeak, index)
-  }))
+  return ledger.value.list.map((batchPeak) => {
+    // What a list calls the consensus formula, where a member matched it from
+    // one; `listingName` is what the column sorts on.
+    const listing = ledgerListing(batchPeak.reference_listing)
+    return {
+      ...batchPeak,
+      tierRank: tierRank(batchPeak.consensus_tier),
+      verdictRank: verdictRank(batchPeak),
+      parentId: rootParentId(batchPeak, index),
+      listing,
+      listingName: listing ? listingName(listing) : null
+    }
+  })
 })
 
 // Isotopologues by the row they fold under, ordered by m/z among themselves -
@@ -559,6 +573,9 @@ const HEADER_TOOLTIPS = {
   formula:
     "Consensus formula: an evidence-weighted vote over the members' per-sample assignments, " +
     'so a bright, well-fitting member outweighs weak ones',
+  listing:
+    'What a reference list calls the consensus formula: the first name a member matched ' +
+    "from a list, that list, and the list's tags",
   tier:
     "Consensus tier: an evidence-weighted vote over the members' per-sample tiers, " +
     'assigned only when a weighted majority reach it',
@@ -884,6 +901,35 @@ watch(
           </template>
         </Column>
 
+        <!-- What a reference list calls the consensus formula, as the sample
+             ledger shows it; an isotopologue anchor is its family's formula
+             again, so it shows none of its own. -->
+        <Column field="listingName" sortable style="min-width: 8rem">
+          <template #header>
+            <span v-tooltip.top="HEADER_TOOLTIPS.listing">Listed as</span>
+          </template>
+          <template #body="{ data }">
+            <span
+              v-if="data.listing && !data.parentId"
+              class="listing"
+              data-testid="listed-as"
+              v-tooltip.top="listingTooltip(data.listing)"
+            >
+              <span class="listing-name">{{ listingName(data.listing) }}</span>
+              <span v-if="listingSource(data.listing)" class="listing-source">{{
+                listingSource(data.listing)
+              }}</span>
+              <span
+                v-for="tag in listingTags(data.listing)"
+                :key="tag"
+                class="listing-tag"
+                :data-testid="`list-tag-${tag}`"
+                >{{ tag }}</span
+              >
+            </span>
+          </template>
+        </Column>
+
         <!-- `field` stays the tier so the filter menu keeps its constraint;
              `sortField` is what the header click sorts on, which is how the
              column orders by confidence without the filter losing its binding.
@@ -994,6 +1040,32 @@ watch(
 </template>
 
 <style scoped>
+/* The listing: one line, cut short rather than wrapped, as the sample
+   ledger's is. */
+.listing {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.35rem;
+  max-width: 18rem;
+  white-space: nowrap;
+}
+.listing-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+.listing-source {
+  font-size: 0.72rem;
+  opacity: 0.6;
+}
+.listing-tag {
+  padding: 0 0.3rem;
+  border: 1px dashed var(--p-content-border-color, #e3e6ec);
+  border-radius: 0.25rem;
+  font-size: 0.7rem;
+  opacity: 0.8;
+}
+
 /* The verdict cell is a button so an unjudged cell opens the popover too; the
    badge - or the faint seal for "none yet" - is its whole content. Named
    `unjudged` rather than `empty`, which is the browser panes' empty-state

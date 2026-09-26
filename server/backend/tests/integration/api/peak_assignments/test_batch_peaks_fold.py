@@ -942,6 +942,67 @@ async def test_members_name_their_identity_in_the_anchors_registry(
     assert bare_member.owner_batch_peak_id is None
 
 
+async def test_a_list_match_names_its_list_on_the_registry_and_the_ledger(
+    async_session_factory, seeded
+):
+    """Step 3.4d: the batch ledger shows what a list calls the consensus
+    formula, off the registry entry a member that matched it from a list
+    brought. Sample A's glucose row names no list; B's matched the same identity
+    from one, so the entry A made gains B's listing - written back although the
+    registry did not grow - and the ledger row shows it."""
+    batch, samples = seeded
+    await fold_sample_into_batch_peaks(samples["A"])
+
+    identity = {
+        "name": "D-glucose",
+        "source": "sugars",
+        "license": "CC0-1.0",
+        "inchikey": None,
+        "source_native_id": "glc",
+        "xrefs": {"tags": ["background"]},
+    }
+    async with async_session_factory() as s:
+        row = (
+            await s.execute(
+                select(PeakAssignment).where(
+                    PeakAssignment.sample_item_id == samples["B"],
+                    PeakAssignment.sample_peak_id == "B1",
+                )
+            )
+        ).scalar_one()
+        row.provenance = {"reference_identities": [identity]}
+        await s.commit()
+    await fold_sample_into_batch_peaks(samples["B"])
+
+    listing = {
+        "name": "D-glucose",
+        "source": "sugars",
+        "tags": ["background"],
+        "total": 1,
+    }
+    shared = next(
+        p for p in await _batch_peaks(async_session_factory, batch) if p.n_present == 2
+    )
+    assert shared.candidates == [
+        {
+            "formula": "C6H12O6",
+            "ion_formula": "C6H13O6+",
+            "ionization_mechanism_id": None,
+            "source": "database",
+            "listing": listing,
+        }
+    ]
+    (record,) = (await get_batch_peak_ledger(sample_batch_id=batch))["data"]
+    assert record["reference_listing"] == listing
+
+    # An anchor no member matched from a list shows none.
+    everything = await get_batch_peak_ledger(sample_batch_id=batch, min_n_present=1)
+    unlisted = [
+        r for r in everything["data"] if r["batch_peak_id"] != shared.batch_peak_id
+    ]
+    assert unlisted and all(r["reference_listing"] is None for r in unlisted)
+
+
 # --- the run-less ingest path -----------------------------------------------------
 
 
