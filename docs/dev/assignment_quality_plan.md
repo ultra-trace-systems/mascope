@@ -51,6 +51,7 @@ dataset's sets G to J, the chemist's reading of 2026-09-24 (decision 21).
 | 3.3b - the standard adduct notation | #2203, #2204 stacked on it | built: both notations are read everywhere, through one reader in the library (`mechanism_notation`) mirrored by the frontend's; a new mechanism is stored in the standard form, and the mechanism column reads every row in it, so the API, exports, SDK and engine show `[M-H]-` before any row is rewritten; the profiles, channels, catalogue and provisional weights are spelled in it. The map is exact both ways on all 24 fleet spellings; #2204 rewrites the stored rows and the calibration weights' keys (alembic `5193d1e942e0`, the downgrade its inverse). Moves no metric. The legacy form is refused at 2.0 |
 | 3.3c - reagent rows read like rows | - | planned, recorded 2026-09-25 from the peak browser by the plan owner: a reagent row shows no formula, and the lines of its cluster's envelope stand beside it as unrelated reagent rows; the ion formula in the column, the envelope's lines under their monoisotopic row |
 | 3.3d - source-solvent clusters | - | planned, from the reference engine's reading (its #55): the proton- and hydride-bound ladders of water, methanol, ethanol and acetone claimed as reagent rows under its ladder rules |
+| 3.3e - the chemistry a run searches under is shipped | - | planned, from the plan owner's provisioning of a fresh instance on 2026-09-26: the nineteen mechanisms the shipped modes declare and the profiles can open are seeded at every start with the target ions of the library's compounds, and a mechanism's identity across instances is its notation (decision 28); measured on the fleet, the seed builds at most 17,600 ions on the largest library, about a minute and a half at one start |
 | 3.4 - an opportunistic channel needs a second channel | - | planned |
 | 3.4b - one peak is not enough | #2212 | measured 2026-09-25 (pass 9, develop `ecbceb593`, rule set 9): G12 at 0 on every set, and every assigned row from the search names a second channel, a second line or a list. What the rule took, as assigned rows per file and as intensity of the rows that fell, of the set's monoisotopic total: G without reagent ion 324 to 232 and 1.7%, with reagent ion 116 to 87 and 0.8%, I+ 36 to 31 and 0.4%, I- 3 to 0 and 10.6% (14 of its 16 assigned rows, the nitrogen-rich C2 formulas through the bare sign on one line each, the one set outside the 5% line and 3.6's first target), K 60 to 54 and 0.5%, K3 27 to 21 and 0.1%, L 119 to 113 and 0.1%, C 121 to 73 and 4.9%, C2 52 to 28 and 4.8%; J reported: 108 to 61 per file and 30.2 to 28.7% of intensity at assigned, the trigger row at m/z 455.0 now candidate in both files that had it assigned. G2 read on C: the reference's unconfirmed share of assigned rows 13.1 to 8.8%; on C2 19.8 to 4.8%. Eight rows on G without reagent ion lost their monoisotopic row to a neighbour's claim under the lone-neighbour allowance. The untracked-line reading cost 11 rows across every set (5, 1, 2, 2, 1 on G, G with reagent ion, J, K, L) against some 9,000 rows with no line at all, so the call the build raised is moot |
 | 3.4c - measure an alternative before committing | - | planned, from the plan owner's reading of 2026-09-25: a close alternative from the batch ledger shows no fit, plausibility or tier before "use this" pins it |
@@ -1499,6 +1500,9 @@ parallel nor in one PR), then 3.5b and 3.5 together, since both re-base
 the score and one pass measures them, and only then 3.4, 3.6 and the 3.7
 gate, so that the tier rules and the gate are read on a fit that says what
 the evidence is. 3.4c is the inspector's and lands beside any of them.
+3.3e, the shipped chemistry, is built beside 3.3 and is on develop before
+the pass that measures 3.3, so that from pass 10 on every measurement runs
+on chemistry any instance reproduces.
 
 ### 3.1 A profile for the charge-transfer source
 
@@ -1917,6 +1921,66 @@ the evidence is. 3.4c is the inspector's and lands beside any of them.
 - **Verify.** G10 on I+ and K at or above target; no certified component of
   the cylinder claimed; the dimer rows on I+ claimed.
 - **Size.** S-M.
+
+### 3.3e The chemistry a run searches under is shipped
+
+- **What.** The ionization mechanisms the engine's chemistry needs are
+  seeded at every start, the way the shipped ionization modes already
+  are: every mechanism a shipped mode declares, every secondary channel a
+  profile can open (hydride abstraction, proton transfer, deprotonation,
+  carbonate, formate, the dibromide and diiodide clusters, ammonium,
+  sodium, potassium) and the methyl-loss channel of 3.3, nineteen in all,
+  held in one list in the catalogue that is derived from the profiles'
+  channel tables so it cannot drift from them, and pinned by a test. A row
+  whose notation is missing is created with a fixed id, through the path
+  the API takes, so the target ions of every compound already in the
+  library are built with it; a row the deployment already holds under that
+  notation, in either spelling, is adopted as it is. A shipped mechanism is
+  never attached to a shipped mode: hydride abstraction declared on a mode
+  is the mode's own channel (3.1), and a row on its own only makes the
+  channel searchable. With the mechanisms present, every shipped mode is
+  created at the same start, so a fresh instance searches under the same
+  chemistry as any other from its first run; the run snapshot's list of
+  unavailable channels is empty on a current instance and stays as the
+  record where it is not.
+- **Why.** Reported by the plan owner on 2026-09-26 while provisioning a
+  fresh instance: it holds no mechanisms and no modes, the start-up seed
+  creates a mode only where its mechanisms exist, so it creates none, and
+  every channel a profile opens is unavailable until an operator has typed
+  nineteen notations with the right polarity and restarted. The chemistry
+  a run searches under then depends on what an operator created; the
+  testbed itself carries rows added by hand for the 3.1 measurement that
+  no production server has. Measured across the fleet on 2026-09-26
+  (eight servers, read-only): the libraries hold 99 to 1,466 compounds,
+  each server lacks 4 to 13 of the nineteen, and the seed would build at
+  most 49,300 target ions across the fleet, 17,600 of them on the largest
+  library. On the testbed, creating the methyl-loss mechanism against
+  1,343 compounds built 1,229 ions and 30,539 isotope lines in 6 seconds,
+  so the largest library's seed is about a minute and a half at one start
+  and the whole fleet's under five minutes.
+- **Where.** `ionization_catalogue` (the mechanism list, each polarity
+  read from the notation); `db.admin.ionization.ensure_system_modes` (a
+  mechanism pass before the mode pass, one transaction per mechanism and
+  a log line with its count and time, after which the mode pass finds
+  every mechanism it needs); the target-ion build shared with the API's
+  `create_ionization_mechanism`; the mechanism delete route, which refuses
+  a shipped row the way the mode route refuses a shipped mode;
+  `docs/user/how-it-works/peak-assignment.md` (the two sentences saying no
+  deployment holds hydride abstraction or formate by default and an
+  operator adds them); `docs/dev/ingest_routing_and_splitting.md` (the
+  paragraph saying the seed never creates a mechanism); `CHANGELOG.md`.
+  Tests: the list equals the union of the shipped modes' mechanisms and
+  the profiles' channels; a fresh database holds nineteen mechanisms and
+  eleven modes after one start; a row in the legacy spelling is adopted,
+  not duplicated; an existing compound gets its ions; a second start
+  changes nothing.
+- **Verify.** A fresh instance lists nineteen mechanisms and eleven shipped
+  modes after its first start with no operator step; the testbed's
+  hand-made rows are adopted under their ids; pass 10 on the testbed runs
+  with no channel unavailable on any set; the seed's time on the largest
+  fleet library is logged and under two minutes.
+- **Size.** S-M. Built beside 3.3 in its own PR, and on develop before the
+  pass that measures 3.3 (decision 28).
 
 ### 3.4 An opportunistic channel needs a second channel
 
@@ -5241,6 +5305,21 @@ is within 0.4 ppm interquartile wherever the calibration is good.
     reference engine is explained by one side's chemistry or reported as
     open, and the comparison tool keeps reporting G1 and G2 so that the
     reference's own progress can be read.
+28. **A mechanism's identity across instances is its notation, and the
+    chemistry the engine can search under is shipped** (taken 2026-09-26
+    by the plan owner, provisioning a fresh instance). The nineteen
+    mechanisms the shipped modes declare and the profiles can open are
+    seeded at every start, with the target ions of the compounds already
+    in the library, so a fresh instance searches under the same chemistry
+    as any other and no channel waits on an operator (step 3.3e). The
+    identity a mechanism carries across instances is its standard
+    notation, unique and canonical since 3.3b; the id is the instance's
+    own, fixed where the seed creates the row and kept where it adopts
+    one, because the ion, assignment and verification tables reference it
+    and nothing that crosses instances needs it equal. Ions are built when
+    the row is, as the API builds them, so a library never carries a
+    compound with ions for some mechanisms and not others; measured on
+    the fleet, that is at most a minute and a half at one start.
 
 ## Risks
 
