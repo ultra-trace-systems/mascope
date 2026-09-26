@@ -29,10 +29,8 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   under that gate's ceiling, and a batch search reads it over its own rows. An
   electron-transfer mode on any other instrument, an ambient-ion stream, keeps
   the ESI profile, as does a mode with
-  only protonation or deprotonation. A secondary channel is searched only where
-  the deployment holds its mechanism: no deployment has `[M-H]+` by default, so an
-  operator adds it once under Ionization mechanisms, and until then the run's
-  snapshot lists the channel as unavailable. Read on a chamber dataset measured
+  only protonation or deprotonation. Mascope ships the mechanism of each such
+  channel, `[M-H]+` included. Read on a chamber dataset measured
   on that source, where the ESI grid with no prior had committed formulas no
   atmosphere makes on 357 of the negative batch's 373 assigned neutrals
   (assignment quality plan, step 3.1).
@@ -51,11 +49,8 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   chamber dataset the engine had committed a
   series of C11 acids at the top tier, a quarter of one batch's assigned
   intensity, every one of them a C10 oxidation product plus formic acid
-  (assignment quality plan, step 3.2). The channel is searched only where the
-  deployment holds the `[M+HCOO]-` mechanism, which no deployment has by
-  default: an operator adds it once under Ionization mechanisms, polarity
-  negative, and until then the run's snapshot lists the channel as
-  unavailable.
+  (assignment quality plan, step 3.2). Mascope ships the channel's `[M+HCOO]-`
+  mechanism.
 
 - **Mascope now ships curated atmospheric CIMS reference lists, and
   `mascope reference seed` loads them.** The lists:
@@ -324,12 +319,8 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   protonation and ambient for positive. Routing a file by the acquisition
   method it was measured under needs one such identity to route to.
 
-  They are created at start, from the ionization mechanisms the deployment
-  already has: a chemistry whose mechanisms are not configured here is left
-  out, and appears once they are. Nothing creates a mechanism on its own,
-  because a new mechanism gives every compound in the library another set of
-  ions and does the same for every compound imported afterwards - a cost only
-  a deployment that runs the chemistry should pay.
+  They are created at start, after the ionization mechanisms they declare,
+  which Mascope ships too.
 
   A seeded mode changes nothing on its own. It carries no filename token, so
   no file name routes to one, and no target collections, so none calibrates or
@@ -337,11 +328,36 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   adopts it by giving it a calibration collection, after which it is listed
   like any other mode. Its name, token, polarity and mechanisms are what say
   which chemistry it is and cannot be edited, and it cannot be deleted; its
-  collections are the deployment's own. Deleting an ionization mechanism a
-  seeded mode holds releases that mode when nothing has been done with it, so
-  a mechanism never becomes undeletable for carrying one. Modes a deployment
-  made are untouched,
+  collections are the deployment's own. Modes a deployment made are untouched,
   keep their names, and are still listed, edited and deleted as before.
+
+- **Mascope ships the ionization mechanisms its chemistry needs.** A run
+  searches a channel only where the server holds its mechanism, and a fresh
+  server held none: it searched nothing an operator had not typed in, and
+  seeded none of the shipped ionization modes either, since a mode is seeded
+  only where its mechanisms exist. Every server now creates at start each
+  mechanism the shipped modes declare and every secondary channel an
+  assignment profile can open - hydride abstraction, proton transfer,
+  deprotonation, carbonate, formate, the dibromide and diiodide clusters,
+  ammonium, sodium and potassium - and then all eleven shipped modes, so a
+  fresh server searches under the same chemistry as any other from its first
+  run (assignment quality plan, step 3.3e).
+
+  A mechanism is created the way one added under Ionization mechanisms is,
+  with the target ions of every compound already in the library, so the first
+  start after the upgrade takes longer on a server with a large library, once:
+  about a minute and a half on the largest library measured, and each
+  mechanism logs its count and time. The backend's healthcheck gives a start
+  five minutes before a failed probe counts, where it gave thirty seconds,
+  so that a slow first start is not reported unhealthy and the services that
+  wait on it are not stopped. A mechanism the server already holds, in either
+  spelling, keeps its own row and id.
+
+  The shipped mechanisms cannot be deleted, since the next start would only
+  create them again, and the ionization settings show a lock in place of
+  their delete button. A row of a shipped mechanism stored under the wrong
+  polarity, which no mode can hold, is reported at start and can be deleted,
+  after which the next start creates the mechanism as shipped.
 
 - **Mascope now learns which chemistry each acquisition method runs.** Every
   file that routes - by its filename token, or because someone chose its mode -

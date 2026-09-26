@@ -8,7 +8,8 @@ race conditions on shared state.
 Tasks:
 - File system cleanup and setup
 - Application state reset (stuck batch recovery, interrupted file processing)
-- Idempotent data initialization (acquisition datasets)
+- Idempotent data initialization (acquisition datasets, the ionization
+  mechanisms and modes Mascope ships)
 """
 
 import os
@@ -25,7 +26,7 @@ from mascope_backend.db.admin.batch.reset_processing_status import (
     reset_stuck_processing_batches,
 )
 from mascope_backend.db.admin.ionization.ensure_system_modes import (
-    ensure_system_ionization_modes,
+    ensure_system_ionization,
 )
 from mascope_backend.db.admin.peak_assignments.reset_running_runs import (
     reset_running_batch_peak_runs,
@@ -51,6 +52,8 @@ async def init_main_process() -> None:
       keep a notification of it for the people answerable for each
     - Purge notifications read long ago
     - Auto-create missing acquisition datasets for all instruments
+    - Seed the ionization mechanisms and modes Mascope ships, building the
+      target ions of the library's compounds for a mechanism it lacked
     - Dispose the engine — each worker initialises its own independently
 
     :raises Exception: If any critical initialization step fails
@@ -93,16 +96,18 @@ async def init_main_process() -> None:
         runtime.logger.info("Main process: initializing acquisition datasets")
         await create_acquisition_datasets()
 
-        # Logged and carried, not raised: these rows are inert until a
-        # deployment adopts one, so nothing about a start depends on them.
-        # The steps above are different - a reset left undone would leave
-        # work looking like it is still running.
-        runtime.logger.info("Main process: seeding system ionization modes")
+        # Logged and carried, not raised: without them a server still serves,
+        # its runs recording each channel they could not search, and the next
+        # start tries again. The steps above are different - a reset left
+        # undone would leave work looking like it is still running.
+        runtime.logger.info(
+            "Main process: seeding the ionization mechanisms and modes Mascope ships"
+        )
         try:
-            await ensure_system_ionization_modes()
+            await ensure_system_ionization()
         except Exception as e:
             runtime.logger.error(
-                f"Main process: could not seed the system ionization modes: {e}"
+                f"Main process: could not seed the system ionization chemistry: {e}"
             )
     finally:
         # Dispose engine regardless of task outcome; catch disposal errors

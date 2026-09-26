@@ -156,11 +156,10 @@ reading it lifts stays under that gate's ceiling, and a batch search reads it ov
 rows. On any other instrument electron transfer names an
 ambient-ion mode as readily, and such a mode keeps the ESI profile of its polarity; so does
 a mode with only protonation or deprotonation and no reagent. A secondary channel is
-searched only where the deployment holds its mechanism: hydride abstraction needs a `[M-H]+`
-mechanism, which no deployment has by default, so an operator who wants toluene's
-tropylium ion read adds it under Ionization mechanisms once; until then the run's snapshot
-lists the channel as unavailable. The context is the one the profile is normally used
-with.
+searched only where the deployment holds its mechanism, so Mascope ships the mechanism of
+every channel a profile can open, hydride abstraction's `[M-H]+` among them (*The
+chemistry every deployment holds*, below). The context is the one the profile is normally
+used with.
 
 **Formate.** Every negative reagent profile (nitrate, 15N-nitrate, bromide, iodide) can
 open a formate adduct channel, `[M+HCOO]-`, the way it opens carbonate: where the spectrum
@@ -172,10 +171,26 @@ deprotonated acid and as the formate adduct of a molecule 46 Da lighter is one i
 two ways, and every acid reads that way. The formate reading is the row's only where the
 lighter molecule is itself committed through one of the mode's own channels, which also
 corroborates it; otherwise the acid reading stands, and the formate reading stays on the
-row as one the sample did not bear out. The channel is searched only where the
-deployment holds the `[M+HCOO]-` mechanism, which none has by default: an operator adds it
-once under Ionization mechanisms, polarity negative, and until then the run's snapshot
-lists the channel as unavailable.
+row as one the sample did not bear out. The channel is searched through the `[M+HCOO]-`
+mechanism, which Mascope ships with the rest.
+
+**The chemistry every deployment holds.** A run searches a channel only where the
+deployment holds its ionization mechanism, since an assignment names the mechanism it was
+read through. So Mascope ships every mechanism its chemistry needs, and a server creates
+the ones it lacks when it starts: those the ionization modes Mascope ships declare (the
+nitrate, 15N-nitrate, bromide, iodide, urea, ammonium and 15N-ammonium reagents,
+protonation, deprotonation, and electron transfer in either polarity), and every
+secondary channel a profile can open (hydride abstraction, proton transfer,
+deprotonation, carbonate, formate, the dibromide and diiodide clusters, ammonium, sodium
+and potassium). A fresh server searches under the same chemistry as any other from its
+first run, so a run on one set of samples reads the same wherever it is repeated. Each
+mechanism is created the way one added under Ionization mechanisms is, with an ion for
+every compound already in the library, so the start that first creates them takes longer
+on a large library, once. A mechanism the server already holds, in either spelling, keeps
+its own row. These mechanisms cannot be deleted, since the next start would only create
+them again. The run's snapshot lists a channel as unavailable where its mechanism is
+missing all the same, which on a current server means the start could not create it, and
+its log says why.
 
 **No profile and No context.** *No profile* switches the layer off: the run searches
 the engine's original wide grid at a fixed 10 ppm window. *No context* applies no

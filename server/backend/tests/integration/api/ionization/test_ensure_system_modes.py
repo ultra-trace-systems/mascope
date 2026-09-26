@@ -1,15 +1,14 @@
 """
-Tests: seeding the ionization modes Mascope ships.
+Tests: seeding the ionization modes Mascope ships, the mode pass on its own.
 
 The seeder runs at every start, so what it does on a server that already has
 data matters more than what it does on an empty one.
 
-It never creates an ionization mechanism. Creating one through the API also
-builds the target ions of every compound in the library, and every compound
-imported afterwards gains ions for it; a bare INSERT would skip the first and
-still cause the second, leaving an adopted mode unable to match anything in an
-existing library while enlarging every later import. So a chemistry is seeded
-only where its mechanisms are already present, under the right polarity.
+A start creates the shipped mechanisms first (``test_ensure_system_mechanisms``),
+so this pass finds them. What these pin is the pass itself: a chemistry is
+seeded only where its mechanisms are present, under the right polarity, and
+the pass creates none. Creating a mechanism is the other pass's work, with the
+target ions it has to build for every compound in the library.
 """
 
 import pytest
@@ -86,8 +85,8 @@ async def test_a_chemistry_without_its_mechanism_is_not_seeded(
 
 
 @pytest.mark.asyncio
-async def test_the_seeder_creates_no_mechanisms(async_session_factory, clean_slate):
-    """The cost of a mechanism falls on every later compound import."""
+async def test_the_mode_pass_creates_no_mechanisms(async_session_factory, clean_slate):
+    """A mechanism is created with its target ions, by the mechanism pass."""
     async with async_session_factory() as session:
         before = (
             (await session.execute(select(IonizationMechanism.ionization_mechanism_id)))

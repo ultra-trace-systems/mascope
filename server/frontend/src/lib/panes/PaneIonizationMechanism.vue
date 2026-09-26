@@ -5,7 +5,8 @@
  * Allows adding and removing mechanisms with validation. A mechanism is typed
  * in the standard adduct notation (`[M+H]+`, `[M-H]-`, `[M]+.`); the legacy
  * spelling (`+H+`, `-H+`, `+`) is accepted too, and the server stores either
- * in the standard one.
+ * in the standard one. The mechanisms Mascope ships are on every server from
+ * its first start and are not offered for deletion (`shipped` on the row).
  */
 import { reactive, computed, watch } from 'vue'
 
@@ -118,7 +119,19 @@ defineExpose({
       <Column field="ionization_mechanism" header="Mechanism" width="40%" sortable />
       <Column field="ionization_mechanism_id" width="2rem">
         <template #body="{ data }">
+          <i
+            v-if="data.shipped"
+            class="pi pi-lock"
+            style="opacity: 0.4"
+            role="img"
+            aria-label="Shipped with Mascope"
+            v-tooltip="{
+              value: 'Mascope ships this mechanism, so it cannot be deleted',
+              showDelay: 500
+            }"
+          />
           <Button
+            v-else
             v-tooltip="'Delete mechanism'"
             label="Delete mechanism"
             class="hiddenlabel"

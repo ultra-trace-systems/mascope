@@ -110,7 +110,9 @@ def test_stored_row_is_read_as_it_is(polarity, mechanism):
         "ionization_mechanism": mechanism,
     }
     read = IonizationMechanismRead.model_validate(row)
-    assert read.model_dump() == row
+    # None of them is a mechanism Mascope ships: "-H-" is hydride abstraction,
+    # which makes a cation, stored here under the anion's polarity.
+    assert read.model_dump() == {**row, "shipped": False}
 
     with pytest.raises(ValidationError):
         IonizationMechanismCreate(
@@ -200,5 +202,6 @@ def test_reading_a_row_reports_it_and_returns_it(monkeypatch):
         "ionization_mechanism_id": "00112233445566aa",
         "ionization_mechanism_polarity": "+",
         "ionization_mechanism": "++",
+        "shipped": False,
     }
     assert len(warnings) == 1
