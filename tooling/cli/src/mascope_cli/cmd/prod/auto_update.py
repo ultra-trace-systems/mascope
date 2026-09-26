@@ -436,7 +436,19 @@ def health_status(container: str) -> Optional[str]:
     return result.stdout.strip() or None
 
 
-def wait_healthy(container: str, timeout: int = 180, interval: int = 5) -> bool:
+#: How long to wait for the backend to report healthy: as long as its compose
+#: healthcheck lets a start take before calling it unhealthy, the start period
+#: and then five failed probes ten seconds apart. A start seeds what Mascope
+#: ships before the backend listens, and the first start that lacks an
+#: ionization mechanism builds its ions for the whole library, so waiting less
+#: would report a start that is only slow as one needing intervention. Pinned
+#: against the compose file by the tests.
+HEALTHY_TIMEOUT_S = 360
+
+
+def wait_healthy(
+    container: str, timeout: int = HEALTHY_TIMEOUT_S, interval: int = 5
+) -> bool:
     """
     Poll ``container`` until it reports healthy or ``timeout`` seconds elapse.
 

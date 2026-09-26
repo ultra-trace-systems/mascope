@@ -314,6 +314,18 @@ async def test_a_second_start_changes_nothing(fresh_db):
 
 
 @pytest.mark.asyncio
+async def test_a_start_that_creates_nothing_says_so(fresh_db, monkeypatch):
+    """One line per start, so the log shows the pass ran and found everything."""
+    await ensure_system_ionization()
+    lines = []
+    monkeypatch.setattr(seed_module.runtime.logger, "info", lines.append)
+
+    await ensure_system_ionization()
+
+    assert f"System ionization mechanisms: 0 created, {len(_SHIPPED)} held" in lines
+
+
+@pytest.mark.asyncio
 async def test_a_mode_the_deployment_made_is_left_as_it_is(fresh_db):
     """A shipped mechanism is never added to a mode: declared on one, a
     secondary channel is that mode's own and is searched differently."""

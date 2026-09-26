@@ -168,6 +168,20 @@ async def ensure_system_ionization_mechanisms() -> dict[str, int]:
         )
         counts["created"] += 1
 
+    # Every start, so the log says the pass ran on a server that needed nothing.
+    exceptions = "".join(
+        f", {counts[key]} {what}"
+        for key, what in (
+            ("wrong_polarity", "stored under the wrong polarity"),
+            ("id_taken", "blocked by another row on their id"),
+            ("failed", "failed"),
+        )
+        if counts[key]
+    )
+    runtime.logger.info(
+        f"System ionization mechanisms: {counts['created']} created, "
+        f"{counts['held']} held{exceptions}"
+    )
     return counts
 
 
