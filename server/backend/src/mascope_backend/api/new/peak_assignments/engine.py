@@ -2580,6 +2580,12 @@ PARTNER_GATE_OUTWEIGHED = "outweighed"
 #: the minor-channel policy's cap holds.
 PARTNER_GATE_KEPT = "no other reading of the ion"
 
+#: The verdict a reference list's gated reading carries where the gate would
+#: have made another reading of its ion the row's: the list named the compound,
+#: so its reading stays the row's, under the minor-channel policy's cap, and
+#: the other reading stays on the row for the cross-channel pass to weigh.
+PARTNER_GATE_LIST = "a list names the compound"
+
 #: How many times as bright the brighter of two partners' peaks has to be for
 #: its reading to settle the ion. The brighter partner takes the ion at any
 #: margin, since the sample shows that molecule more strongly; the margin
@@ -2687,6 +2693,15 @@ def apply_partner_gates(
       tier the row's evidence earns and held under the mass gate's ceiling
       as the policy's own cap was, not as the lifted reading was.
 
+    A reference list's row through a gated channel, which Stage A reads through
+    the channels the run opened, is held to the same bar and never moved: the
+    list named the compound, and taking another reading of the ion would put
+    the list's name on a formula it does not hold. Where it stands on a
+    partner its cap is lifted as above; otherwise it keeps its reading under
+    the policy's cap (:data:`PARTNER_GATE_LIST` where the gate would have
+    taken another reading), and the reading the gate would have taken stays
+    on the row for the cross-channel pass to weigh.
+
     The ledger is walked to a fixed point: every round judges every row
     against the partners the ledger holds at that moment, a swap changes the
     partners the next row sees at once, a row swapped to the mode's reading
@@ -2706,7 +2721,7 @@ def apply_partner_gates(
     partner, so it changes nothing the walk decided and the contest does not
     depend on the order of the rows. Only an opportunistic reading is
     contested: a reading through one of the mode's own channels keeps its
-    formula.
+    formula, and so does a list's.
 
     The row records every reading the contest weighed (``contest``: the
     reading, its channel, the ratio of the partners' peaks and whether it is
@@ -2742,8 +2757,9 @@ def apply_partner_gates(
         caps re-imposed, rows held under the mass gate's ceiling, readings
         set aside, rows that weighed another partnered reading and of them
         the ones the contest moved, the readings outweighed and those within
-        the margin, the margin itself, the rounds the walk took, and whether
-        a round changed nothing before the cap.
+        the margin, the list rows kept on the list's reading where the walk
+        or the contest would have moved them, the margin itself, the rounds
+        the walk took, and whether a round changed nothing before the cap.
     :raises ValueError: Where a gated channel is not one of the minor ones.
     """
     summary = {
@@ -2759,6 +2775,7 @@ def apply_partner_gates(
         "contest_swapped": 0,
         "outweighed": 0,
         "within_margin": 0,
+        "list_kept": 0,
         "margin": PARTNER_MARGIN,
         "rounds": 0,
         "settled": True,
@@ -3052,8 +3069,12 @@ def apply_partner_gates(
                 key=lambda alt: strongest(alt["assigned_formula"]),
                 default=None,
             )
-            if chosen is None:
-                record = {"channel": own, "partner": False, "kept": PARTNER_GATE_KEPT}
+            if chosen is None or row.get("source") == SOURCE_DATABASE:
+                record = {
+                    "channel": own,
+                    "partner": False,
+                    "kept": PARTNER_GATE_KEPT if chosen is None else PARTNER_GATE_LIST,
+                }
                 if gate.get("recapped"):
                     record["recapped"] = True
                 if verdict is not None and verdict.get("corroborated_by") == (
@@ -3109,17 +3130,27 @@ def apply_partner_gates(
         if stronger is not None and strongest(stronger["assigned_formula"]) > strongest(
             row["assigned_formula"]
         ):
-            swap(
-                row,
-                stronger,
-                provenance,
-                {
-                    "channel": notation_by_id.get(stronger["ionization_mechanism_id"]),
-                    "partner": True,
-                    "took_from": row["assigned_formula"],
-                },
-            )
-            summary["contest_swapped"] += 1
+            if row.get("source") == SOURCE_DATABASE:
+                # The list's reading stays, and the stronger one is weighed
+                # below and by the cross-channel pass as the rival it is.
+                provenance["partner_gate"] = {
+                    **(provenance.get("partner_gate") or {}),
+                    "kept": PARTNER_GATE_LIST,
+                }
+            else:
+                swap(
+                    row,
+                    stronger,
+                    provenance,
+                    {
+                        "channel": notation_by_id.get(
+                            stronger["ionization_mechanism_id"]
+                        ),
+                        "partner": True,
+                        "took_from": row["assigned_formula"],
+                    },
+                )
+                summary["contest_swapped"] += 1
         contest = []
         for alternative in row.get("alternatives") or []:
             if not contends(row, alternative):
@@ -3155,6 +3186,7 @@ def apply_partner_gates(
             elif gate.get("kept"):
                 summary["kept"] += 1
                 summary["recapped"] += bool(gate.get("recapped"))
+            summary["list_kept"] += gate.get("kept") == PARTNER_GATE_LIST
         if gate.get("displaced") and gate.get("partner") is False:
             summary["swapped"] += 1
         for alternative in row.get("alternatives") or []:
@@ -3196,7 +3228,9 @@ def _apply_minor_channel_policy(
     317 committed readings on a source with no sodium cluster in it.
 
     Every secondary-channel row records the verdict either way, so a run says
-    which of its rows leaned on a channel it opened for itself.
+    which of its rows leaned on a channel it opened for itself. A reference
+    list's reading through a channel the run opened is held the same way
+    (:func:`hold_opened_channel_readings`).
 
     :param assignments: The rows built for this sample, modified in place.
     :param mechanism_id_by_notation: Notation to mechanism id, to recognise a
@@ -3208,27 +3242,82 @@ def _apply_minor_channel_policy(
         for notation in minor_channels
         if mechanism_id_by_notation.get(notation)
     }
-    if not minor_ids:
-        return
+    _hold_minor_readings(assignments, minor_ids=minor_ids, judged_ids=minor_ids)
+
+
+def hold_opened_channel_readings(
+    assignments: list[dict],
+    *,
+    notation_by_id: dict[str, str],
+    minor_channels: frozenset[str],
+    opened_channels: frozenset[str],
+) -> dict:
+    """Hold a list's readings through the channels the run opened, in place.
+
+    Stage A reads a reference list through the mode's mechanisms and through
+    the secondary channels the run opened for itself, since a list names a
+    compound and not the channel it is seen through: the siloxanes' base peak
+    on a charge-transfer source is their methyl-loss ion, which the mode does
+    not declare. A reading through an opened channel is held as the search's
+    readings through it are (:func:`_apply_minor_channel_policy`): capped at
+    ``candidate`` unless an isotopologue of its own or the same neutral on one
+    of the mode's own channels corroborates it, each read off Stage A's own
+    rows as the search's are read off the search's. The partner gate and the
+    cross-channel pass read the rows after this, over both stages.
+
+    A reading through a secondary channel the mode declares is left as it
+    was: the list was read through it before any channel was opened.
+
+    :param assignments: Stage A's rows, modified in place.
+    :param notation_by_id: The mechanisms Stage A read, by the id the rows
+        carry.
+    :param minor_channels: The run's secondary channels, none of which is a
+        second channel for another.
+    :param opened_channels: The ones the run added to the mode's mechanisms
+        (``ResolvedProfile.added_channels``), whose readings are held here.
+    :return: How many monoisotopic rows were read through an opened channel
+        (``read``), and how many of them the cap lowered (``capped``).
+    """
+    minor_ids = {
+        mid for mid, notation in notation_by_id.items() if notation in minor_channels
+    }
+    opened_ids = {mid for mid in minor_ids if notation_by_id[mid] in opened_channels}
+    return _hold_minor_readings(assignments, minor_ids=minor_ids, judged_ids=opened_ids)
+
+
+def _hold_minor_readings(
+    assignments: list[dict], *, minor_ids: set[str], judged_ids: set[str]
+) -> dict:
+    """Cap each uncorroborated monoisotopic row through ``judged_ids``, in place.
+
+    :param assignments: The rows, modified in place.
+    :param minor_ids: The mechanism ids of every secondary channel. A row
+        through one is no second channel for another.
+    :param judged_ids: The ones whose rows are judged.
+    :return: How many rows were judged, and how many the cap lowered.
+    """
+    summary = {"read": 0, "capped": 0}
+    if not judged_ids:
+        return summary
     owners_with_children = {
         row["owner_peak_assignment_id"]
         for row in assignments
         if row["role"] == ROLE_ISO_CHILD and row["owner_peak_assignment_id"]
     }
     primary_formulas = {
-        row["assigned_formula"]
+        formula_identity(row["assigned_formula"])
         for row in assignments
         if row["role"] == ROLE_M0
         and row["ionization_mechanism_id"] not in minor_ids
         and row["assigned_formula"]
     }
     for row in assignments:
-        if row["role"] != ROLE_M0 or row["ionization_mechanism_id"] not in minor_ids:
+        if row["role"] != ROLE_M0 or row["ionization_mechanism_id"] not in judged_ids:
             continue
         corroboration = None
         if row["peak_assignment_id"] in owners_with_children:
             corroboration = "isotopologue"
-        elif row["assigned_formula"] in primary_formulas:
+        elif formula_identity(row["assigned_formula"]) in primary_formulas:
             corroboration = "second_channel"
         capped = corroboration is None and row["tier"] == TIER_ASSIGNED
         provenance = row.setdefault("provenance", {})
@@ -3238,6 +3327,9 @@ def _apply_minor_channel_policy(
         }
         if capped:
             row["tier"] = TIER_CANDIDATE
+        summary["read"] += 1
+        summary["capped"] += capped
+    return summary
 
 
 def build_unassigned_assignments(

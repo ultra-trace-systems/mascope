@@ -96,6 +96,7 @@ from mascope_backend.api.new.peak_assignments.engine import (
     build_unassigned_assignments,
     calibration_meta,
     drop_ions_claimed_elsewhere,
+    hold_opened_channel_readings,
     invert_matches_to_peak_assignments,
     list_readings,
     pattern_scoring_for,
@@ -1346,6 +1347,42 @@ def _read_other_readings(
     )
 
 
+def _hold_opened_channel_readings(
+    stage_a_assignments: list[dict],
+    *,
+    searched_mechanisms: list[SimpleNamespace],
+    resolved_profile: ResolvedProfile,
+    sample_name: str,
+) -> dict:
+    """Hold a list's readings through the channels the run opened.
+
+    Shared by a run, on the rows the list election left, and the run-less
+    ingest fold, on Stage A's rows, before any pass reads them as partners or
+    rivals (``engine.hold_opened_channel_readings``).
+
+    :param stage_a_assignments: Stage A's rows, modified in place.
+    :param searched_mechanisms: :func:`_searched_mechanisms`.
+    :param resolved_profile: The sample's resolved chemistry.
+    :param sample_name: For the log line.
+    :return: How many rows were read through an opened channel, and how many
+        of them the cap lowered.
+    """
+    held = hold_opened_channel_readings(
+        stage_a_assignments,
+        notation_by_id=_notation_by_id(searched_mechanisms),
+        minor_channels=resolved_profile.minor_channels,
+        opened_channels=resolved_profile.added_channels,
+    )
+    if held["read"]:
+        runtime.logger.info(
+            f"Sample '{sample_name}': {held['read']} reference-list peaks read "
+            f"through {', '.join(sorted(resolved_profile.added_channels))}, the "
+            f"channels the run opened; {held['capped']} held at candidate for "
+            "want of an isotopologue or a second channel"
+        )
+    return held
+
+
 def _claim_fragments(
     rows: list[dict],
     *,
@@ -2525,8 +2562,14 @@ async def _stage_a_assignments(
     :param sample: The sample view row.
     :param config: The run configuration (thresholds, alternatives cap).
     :param match_params: The sample's match parameters (gating, abundance floor).
-    :param mechanism_ids: The sample's ionization mechanism ids.
-    :param mechanisms: The mechanisms themselves, for the reference mirror.
+    :param mechanism_ids: The sample's ionization mechanism ids, which the
+        target library is read through: the workspace named its compounds for
+        the modes its collection is attached to.
+    :param mechanisms: The mechanisms the reference lists are read through:
+        the mode's own and the secondary channels the run opened
+        (:func:`_searched_mechanisms`), since a list names a compound and not
+        the channel it is seen through. A reading through an opened channel is
+        held as the search's are (:func:`_hold_opened_channel_readings`).
     :param peak_assignment_run_id: The id stamped on every row.
     :param excluded_peak_ids: Peaks the reagent pre-pass has already claimed.
         Dropped before arbitration rather than after it: a reagent peak left in
@@ -2748,6 +2791,12 @@ async def _run_sample_assignment(
         await _record_resolved_profile(
             run.peak_assignment_run_id, config, resolved_profile
         )
+        # The mechanisms a sample's channels are searched and read through:
+        # Stage A reads the reference lists through them, the untargeted
+        # search enumerates through them, and the passes after both read them.
+        searched_mechanisms = _searched_mechanisms(
+            mechanisms, secondary_mechanisms, resolved_profile
+        )
 
         # -- The reagent pre-pass, ahead of both stages: the source's own
         # cluster ions are the brightest peaks in the spectrum and none of them
@@ -2796,7 +2845,7 @@ async def _run_sample_assignment(
             config,
             match_params,
             mechanism_ids,
-            mechanisms,
+            searched_mechanisms,
             run.peak_assignment_run_id,
             excluded_peak_ids=claimed_peak_ids,
             fallback_sigma_ppm=resolved_profile.fallback_sigma_ppm,
@@ -2826,11 +2875,6 @@ async def _run_sample_assignment(
         # peaks a neighbour's envelope may already predict.
         scoring = pattern_scoring_for(
             match_params, mass_accuracy, resolved_profile.fallback_sigma_ppm
-        )
-        # Resolved here rather than inside the untargeted branch because the
-        # cross-channel pass below reads the same set.
-        searched_mechanisms = _searched_mechanisms(
-            mechanisms, secondary_mechanisms, resolved_profile
         )
         if config.run_untargeted:
             eligible_df = peaks_df[
@@ -2999,6 +3043,15 @@ async def _run_sample_assignment(
                     f"lost it to one ({held} held by the search) "
                     f"({time.perf_counter() - started:.1f} s)"
                 )
+        # -- A list's readings through the channels the run opened are held as
+        # the search's readings through them are, on the rows the election
+        # left, before any pass reads them as partners or rivals.
+        _hold_opened_channel_readings(
+            stage_a_assignments,
+            searched_mechanisms=searched_mechanisms,
+            resolved_profile=resolved_profile,
+            sample_name=sample.sample_item_name,
+        )
         # -- A reference list's matches carry the other readings of their ion.
         # Written before the passes below, since it reads no tier and they may
         # run more than once.
@@ -3412,24 +3465,31 @@ async def _fold_sample_peaks_without_run(
         peaks_df, instrument_type, sample_item_id, run_id, reagent_peak_ids
     )
     claimed_peak_ids = reagent_peak_ids | artifact_peak_ids
+    # The channels a run would read: Stage A reads the reference lists through
+    # them, and the passes below read them.
+    resolved_profile, secondary_mechanisms = await _resolve_secondary_channels(
+        sample, resolved_profile, peaks_df
+    )
+    searched_mechanisms = _searched_mechanisms(
+        mechanisms, secondary_mechanisms, resolved_profile
+    )
     stage_a, _, mass_accuracy = await _stage_a_assignments(
         sample,
         config,
         match_params,
         mechanism_ids,
-        mechanisms,
+        searched_mechanisms,
         run_id,
         excluded_peak_ids=claimed_peak_ids,
         fallback_sigma_ppm=resolved_profile.fallback_sigma_ppm,
         known_window=resolved_profile.context.known_window,
         reagent_offset=reagent_offset,
     )
-    # The channels a run would read, for the passes below that read them.
-    resolved_profile, secondary_mechanisms = await _resolve_secondary_channels(
-        sample, resolved_profile, peaks_df
-    )
-    searched_mechanisms = _searched_mechanisms(
-        mechanisms, secondary_mechanisms, resolved_profile
+    _hold_opened_channel_readings(
+        stage_a,
+        searched_mechanisms=searched_mechanisms,
+        resolved_profile=resolved_profile,
+        sample_name=sample.sample_item_name,
     )
     # The fragments of what Stage A committed, read at the point a run reads
     # them: after the mirror rows carry their families, before any pass that

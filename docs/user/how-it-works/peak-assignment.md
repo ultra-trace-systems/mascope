@@ -50,6 +50,9 @@ Every peak is assigned in a two-stage engine:
   composition wins the peak. A reference list is matched only within its own element,
   carbon and mass window, under a ceiling the sample's chemistry context sets; only in
   the polarity it is detected in; and it contributes radicals only if it allows them.
+  The target library is read through the ionization mechanisms of the sample's mode; a
+  reference list also through the channels the run opens for itself (*A list through
+  the channels a run opens*, below).
 - **Stage B — untargeted.** Peaks that Stage A left unexplained are run through a
   bounded composition search that enumerates every elemental formula whose ion lands
   within the mass tolerance — the classic mass-decomposition problem
@@ -198,6 +201,26 @@ them again. The run's snapshot lists a channel as unavailable where its mechanis
 missing all the same, which on a current server means the start could not create it, and
 its log says why.
 
+**A list through the channels a run opens.** A reference list names a compound, not the
+channel it is seen through, so Stage A reads a list through the channels the run opened
+for itself as well as through the mode's own mechanisms. On a charge-transfer source,
+whose mode declares electron transfer alone, a cyclic siloxane's methyl-loss ion, its
+base peak there, and its protonated molecule beside it are named from the list. A
+reading through an opened channel is held to the rules the search's readings through
+that channel are: it is capped at *candidate* unless its own isotope lines or the same
+compound through one of the mode's own channels corroborate it, and through a channel
+that needs the compound shown elsewhere (hydride abstraction, proton transfer, methyl
+loss, deprotonation on the charge-transfer source, formate on a reagent source), it
+stands only where the sample commits the compound through one of the mode's own
+channels. The list's compound stays the row's either way: where another reading of the
+ion would have taken a search's row, the list keeps its compound on the row, and the
+other reading stays on it as a rival that holds it at *candidate* where nothing settles
+which. Your own target library is read through the mode's mechanisms alone, since its
+compounds were named for the modes its collection is attached to; to read it through
+another channel, declare that channel in the mode. A secondary channel the mode
+declares, such as carbonate, is part of the mode's mechanisms, and a list read through
+it keeps its tier as before.
+
 **No profile and No context.** *No profile* switches the layer off: the run searches
 the engine's original wide grid at a fixed 10 ppm window. *No context* applies no
 matrix prior.
@@ -315,9 +338,10 @@ test spectra do not show:
   named from the shipped cyclic-siloxane list, which reads them as background: the row
   shows the list's *background* tag beside the name, the tier does not weigh it, and
   whether they are background in a dataset is for the batch and its blanks to say. A list
-  is read through the mechanisms the mode declares, so on a charge-transfer source a
-  siloxane's methyl-loss ion, its brightest there, is named where the mode declares
-  methyl loss;
+  is read through the mechanisms the mode declares and the channels the run opens, so on
+  a charge-transfer source a siloxane's methyl-loss ion, its brightest there, and its
+  protonated molecule are named from the list, each held to the rules of the channel it
+  is read through (*A list through the channels a run opens*, above);
 - the rest of what the ladders' grammar would enumerate: the higher bromide and iodide
   clusters and their hydrates, the iodine oxide clusters, a bromide precursor's anion, the
   urea multimers above the trimer and those carrying ammonium, the fluoranthene dimer,

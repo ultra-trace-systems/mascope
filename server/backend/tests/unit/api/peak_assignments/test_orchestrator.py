@@ -1041,6 +1041,134 @@ class TestAReferenceMirrorsNitrogenCount:
         assert (cross_channel["capped"], cross_channel["capped_mirror"]) == (1, 1)
 
 
+class TestTheListsAreReadThroughTheOpenedChannels:
+    """A charge-transfer source declares electron transfer alone and opens
+    methyl loss and proton transfer for itself. The reference lists are read
+    through all three; the target library through the mode's alone."""
+
+    CT = SimpleNamespace(
+        ionization_mechanism_id="im-ct",
+        ionization_mechanism="[M]+.",
+        ionization_mechanism_polarity="+",
+    )
+    METHYL_LOSS = SimpleNamespace(
+        ionization_mechanism_id="im-me",
+        ionization_mechanism="[M-CH3]+",
+        ionization_mechanism_polarity="+",
+    )
+    PROTON = SimpleNamespace(
+        ionization_mechanism_id="im-h",
+        ionization_mechanism="[M+H]+",
+        ionization_mechanism_polarity="+",
+    )
+
+    @staticmethod
+    def _d4(sample_peak_id, mz, relative_abundance, intensity):
+        """D4's methyl-loss ion, the siloxane's base peak on this source,
+        matched from the shipped cyclic-siloxane list."""
+        row = _isotope_row(
+            target_isotope_id=f"ref-iso-{sample_peak_id}",
+            target_ion_id="ref-ion-1",
+            target_compound_id=None,
+            compound_formula="C8H24O4Si4",
+            ion_formula="C7H21O4Si4+",
+            mz=mz,
+            relative_abundance=relative_abundance,
+            sample_peak_id=sample_peak_id,
+            sample_peak_intensity=intensity,
+            match_score=0.95,
+            match_mz_error=0.2,
+            ionization="[M-CH3]+",
+            ionization_mechanism_id="im-me",
+        )
+        row["reference_identities"] = [
+            {"name": "octamethylcyclotetrasiloxane", "source": "cyclic-siloxanes"}
+        ]
+        return row
+
+    def _start_with(self, recorder, peaks, match_rows):
+        patches = _patches(recorder, peaks, match_rows)
+        patches["mechanisms"] = patch(
+            f"{_MOD}.fetch_sample_mechanisms",
+            new_callable=AsyncMock,
+            return_value=(["im-ct"], [self.CT]),
+        )
+        # The deployment's rows for the profile's secondary channels. The
+        # spectrum starts above every probe, so the source's silence there is
+        # the window's and both channels are opened.
+        patches["secondary"] = patch(
+            f"{_MOD}.fetch_mechanisms_by_notation",
+            new_callable=AsyncMock,
+            return_value=[self.METHYL_LOSS, self.PROTON],
+        )
+        patches["ionizations"] = patch(
+            f"{_MOD}._untargeted_ionization_notations",
+            return_value=(
+                ["[M]+.", "[M-CH3]+", "[M+H]+"],
+                {"[M]+.": "im-ct", "[M-CH3]+": "im-me", "[M+H]+": "im-h"},
+            ),
+        )
+        return _start(patches)
+
+    @pytest.mark.asyncio
+    async def test_the_lists_are_read_through_them_and_the_library_is_not(self):
+        from mascope_backend.api.new.peak_assignments.config import (
+            PeakAssignmentConfig,
+        )
+
+        peaks = _peaks_df([("p1", 281.0512, 1.0e6)])
+        recorder = _Recorder()
+        mocks = self._start_with(
+            recorder, peaks, [self._d4("p1", 281.0512, 1.0, 1.0e6)]
+        )
+
+        await _run(PeakAssignmentConfig(run_untargeted=False))
+
+        snapshot = recorder.recorded_configs()[0]["resolved_profile"]
+        assert snapshot["profile"] == "EASYIC_POS"
+        # The workspace named its compounds for the mode it attached them to.
+        assert mocks["known"].await_args.args[2] == ["im-ct"]
+        # A list names a compound, not the channel it is seen through.
+        assert [
+            mechanism.ionization_mechanism_id
+            for mechanism in mocks["reference"].await_args.args[2]
+        ] == ["im-ct", "im-me", "im-h"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "silicon_line, tier", [(False, "candidate"), (True, "assigned")]
+    )
+    async def test_a_reading_through_one_is_held_as_the_search_s_are(
+        self, silicon_line, tier
+    ):
+        from mascope_backend.api.new.peak_assignments.config import (
+            PeakAssignmentConfig,
+        )
+
+        specs = [("p1", 281.0512, 1.0e6)]
+        rows = [self._d4("p1", 281.0512, 1.0, 1.0e6)]
+        if silicon_line:
+            # The 29Si line of its envelope, an isotopologue of its own.
+            specs.append(("p2", 282.0508, 2.0e5))
+            rows.append(self._d4("p2", 282.0508, 0.2, 2.0e5))
+        recorder = _Recorder()
+        self._start_with(recorder, _peaks_df(specs), rows)
+
+        await _run(PeakAssignmentConfig(run_untargeted=False))
+
+        (row,) = [r for r in recorder.rows if r["sample_peak_id"] == "p1"]
+        assert row["assigned_formula"] == "C8H24O4Si4"
+        assert row["ionization_mechanism_id"] == "im-me"
+        assert row["tier"] == tier
+        assert row["provenance"]["minor_channel"] == {
+            "corroborated_by": "isotopologue" if silicon_line else None,
+            "capped": not silicon_line,
+        }
+        # The siloxane's ion reads no other way the run searches, so the gate
+        # keeps it as it keeps any such row.
+        assert row["provenance"]["partner_gate"]["partner"] is False
+
+
 class TestTheRunRow:
     @pytest.mark.asyncio
     async def test_it_names_this_engine_and_its_version(self):

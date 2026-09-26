@@ -407,6 +407,60 @@ async def test_the_fold_asks_a_mirror_rows_nitrogen_count_as_a_run_does(
 
 
 @pytest.mark.asyncio
+async def test_the_fold_reads_a_list_through_the_channels_a_run_opens():
+    """The fold resolves a run's channels before its Stage A, so a reference
+    list is read through them on this ledger as in a run, and a reading
+    through one is held as a run holds it.
+
+    A charge-transfer source declares electron transfer alone; methyl loss,
+    the siloxanes' base peak there, is a channel the run opens for itself.
+    """
+    from mascope_backend.api.new.peak_assignments.service import (
+        fold_sample_peaks_without_run,
+    )
+
+    def mechanism(mechanism_id, notation):
+        return SimpleNamespace(
+            ionization_mechanism_id=mechanism_id,
+            ionization_mechanism=notation,
+            ionization_mechanism_polarity="+",
+        )
+
+    d4 = _stage_a_row("si-1", fold_run_id("si-1")) | {
+        "sample_peak_mz": 281.0512,
+        "assigned_formula": "C8H24O4Si4",
+        "ion_formula": "C7H21O4Si4+",
+        "ionization_mechanism_id": "m-me",
+    }
+    stack, mocks = _patched()
+    mocks["stage_a"].return_value = ([d4], None, SampleMassAccuracy())
+    # The window starts above every probe of the source's channels, so its
+    # silence there is the window's and the channels are opened.
+    mocks["peaks"].return_value = pd.DataFrame(
+        {"sample_peak_id": ["p1"], "mz": [281.0512], "intensity": [5000.0]}
+    )
+    mocks["mechanisms"].return_value = (["m-ct"], [mechanism("m-ct", "[M]+.")])
+    mocks["secondary"].return_value = [
+        mechanism("m-me", "[M-CH3]+"),
+        mechanism("m-h", "[M+H]+"),
+    ]
+    with stack:
+        stack.enter_context(patch(f"{_SVC}.get_instrument_type", return_value="orbi"))
+        assert await fold_sample_peaks_without_run("si-1") == "batch-1"
+
+    args = mocks["stage_a"].call_args.args
+    assert args[3] == ["m-ct"]
+    assert [m.ionization_mechanism_id for m in args[4]] == ["m-ct", "m-me", "m-h"]
+    folded = {row.sample_peak_id: row for row in mocks["fold"].call_args.kwargs["rows"]}
+    assert folded["p1"].assigned_formula == "C8H24O4Si4"
+    assert folded["p1"].tier == "candidate"
+    assert folded["p1"].provenance["minor_channel"] == {
+        "corroborated_by": None,
+        "capped": True,
+    }
+
+
+@pytest.mark.asyncio
 async def test_an_ineligible_sample_is_skipped_and_nothing_is_written():
     """A blank, or a sample whose calibration is unverified, is refused a run;
     it is refused a fold on the same grounds, and nothing reaches the batch."""

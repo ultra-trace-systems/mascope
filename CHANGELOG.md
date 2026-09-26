@@ -51,6 +51,25 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   moves to 2026.09.3, so the next `mascope reference seed` loads the tag
   (assignment quality plan, step 3.3).
 
+- **A reference list is read through the channels a run opens.** Stage A
+  matched a list's compounds only through the ionization mechanisms the
+  sample's mode declares, so on a charge-transfer source, whose mode declares
+  electron transfer alone, nothing named the cyclic siloxanes' methyl-loss
+  ions, their base peaks there, or their protonated molecules beside them. A
+  list is now also read through the secondary channels the run opened for
+  itself, and a reading through one is held to the rules the untargeted
+  search's readings through it are: capped at candidate unless its own
+  isotope lines or the same compound through one of the mode's own channels
+  corroborate it, and, through a channel that needs its compound shown
+  elsewhere, standing only where the sample commits the compound through one
+  of the mode's own channels. The list's compound stays the row's where the
+  partner gate would have moved a search's row to another reading of the ion;
+  that reading stays on the row as a rival, and the run's partner-gate summary
+  counts such rows (`list_kept`). The target library is still read through the
+  mode's mechanisms alone, and a list read through a secondary channel the
+  mode declares keeps its tier. The run-less ingest fold reads the same
+  channels (assignment quality plan, step 3.3f).
+
 - **Peak assignment reads a charge-transfer source.** On an Orbitrap, a mode
   with no reagent whose mechanisms include electron transfer, `[M]+.` or
   `[M]-.`, the way that instrument's EASY-IC source is declared, resolves to a
