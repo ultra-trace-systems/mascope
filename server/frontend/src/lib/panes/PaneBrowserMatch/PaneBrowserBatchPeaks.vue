@@ -12,7 +12,13 @@ import Select from 'primevue/select'
 import ToggleSwitch from 'primevue/toggleswitch'
 import { FilterMatchMode, FilterOperator, FilterService } from '@primevue/core/api'
 
-import { BaseTabbedPanel, BaseTierTag, BaseCopyableField, BaseVerdictBadge } from '@/lib/base'
+import {
+  BaseCopyableField,
+  BaseProvisionalMark,
+  BaseTabbedPanel,
+  BaseTierTag,
+  BaseVerdictBadge
+} from '@/lib/base'
 import { num } from '@/lib/formatters'
 import { TIERS, TIER_META, countTiers, tierRank } from '@/lib/tiers'
 import { VERDICT_META } from '@/lib/verification'
@@ -907,6 +913,7 @@ watch(
               }"
               >Tier</span
             >
+            <BaseProvisionalMark />
           </template>
           <template #body="{ data }">
             <!-- No number beside this one. A batch peak's consensus tier is a

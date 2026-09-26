@@ -10,8 +10,7 @@ an assignment without its adduct could not be verified; search the peak with
 The peak's row is edited in place and marked as assigned by hand, and the
 assignment it replaced becomes its first close alternative, so *use this* on it
 puts it back. The tier is recalculated from the new formula's own evidence under
-the run's thresholds, and **P(correct)** is dropped, since nothing has
-calibrated a formula chosen by hand. The replaced compound's isotopologues are
+the run's thresholds. The replaced compound's isotopologues are
 unassigned with it and come back with it, except any assigned by hand since.
 
 A hand assignment lasts until the sample is next assigned, which recomputes the

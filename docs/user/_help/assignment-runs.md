@@ -21,8 +21,7 @@ or named for the run.
 A published run calibrates on its own side rather than passing the m/z
 verification this deployment applies, so it must declare what it calibrated
 against &mdash; that declaration is the **calibration** chip, and hovering it
-shows the disclosure. Such a run also shows no calibrated P(correct): that
-number is this server's own judgement and an import cannot write it.
+shows the disclosure.
 
 Tiers are only comparable between engines when the evidence thresholds behind
 them match, so each run records the bands it tiered with; hover the engine chip

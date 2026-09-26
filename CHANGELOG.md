@@ -481,6 +481,20 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   itself. Targeted matching is unchanged either way. A deployment that wants
   the feature sets `peak_assignment = true` under `[meta]` in its env config;
   the shipped reference lists load only when `reference seed` is run.
+
+- **The app no longer shows the calibrated probability, and it says the tiers
+  are provisional.** The peak browser's P(correct) column and the peak
+  inspector's P(correct) row are gone while the calibration curve behind them
+  is provisional: a probability read off a curve nobody has verified is the
+  one number on the page a reader would take at its word. The engine still
+  computes it, and the API and the SDK still serve `p_correct` and
+  `p_correct_provisional`. The channel count that sat beside it moves beside
+  the ionization, whose channels it counts. The tier column of both ledgers
+  and the inspector's tier row carry a *provisional* mark saying the tiering
+  rules are still being developed and a peak's tier can change between engine
+  versions; it goes when those rules are settled (assignment quality plan,
+  step 3.4d).
+
 - **Ionization mechanisms are written in the standard adduct notation.**
   `[M+H]+`, `[M-H]-`, `[M+Br]-`, `[M-H]+`, `[M+CH4N2O+H]+`, `[M]+.`: what is
   added to or removed from the molecule inside the brackets, and the ion's own

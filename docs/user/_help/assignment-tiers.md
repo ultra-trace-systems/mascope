@@ -13,6 +13,11 @@ molecule does not reach the top tier on the match alone.
   evidence is too weak to trust.
 - **unassigned** &mdash; no composition explained the peak.
 
+The tiering is **provisional**, and the tier column and the inspector's tier row
+say so: its rules are still being developed, and a peak's tier can change between
+engine versions, so read a tier as the engine's current reading of the evidence
+rather than a settled verdict. The mark goes when the rules are settled.
+
 A tier chip names the tier alone; hovering it gives the evidence, which says how
 well the formula explains the peak, not the chance it is right. A *batch peak*'s
 tier is a vote across the samples it appears in, so its chip names no evidence.

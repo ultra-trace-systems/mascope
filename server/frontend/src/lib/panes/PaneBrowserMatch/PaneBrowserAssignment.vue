@@ -14,6 +14,7 @@ import { getApiErrorMessage, isRefusedRequest } from '@/api/utils'
 import {
   BaseCopyableField,
   BaseLoadError,
+  BaseProvisionalMark,
   BaseTabbedPanel,
   BaseTierTag,
   BaseVerdictBadge
@@ -23,11 +24,6 @@ import { usePeakAssignParams } from '@/lib/peakAssignParams'
 import { num } from '@/lib/formatters'
 import { formatIsotopeFormula, formatIsotopeLabel } from '@/lib/chem'
 import { isIsotopeLine } from '@/lib/isotopeLines'
-import {
-  LEDGER_P_CORRECT_TOOLTIP,
-  P_CORRECT_TOOLTIP,
-  uncalibratedReason as reasonForNoPCorrect
-} from '@/lib/pCorrect'
 import { TIERS, tierBucket, tierRank } from '@/lib/tiers'
 import { prettyTrim } from '@/lib/utils'
 import { scrollVirtualRowIntoView } from '@/lib/virtualScroll'
@@ -340,12 +336,6 @@ const rows = computed(() => {
       // tierRank(null) would answer with the 'unassigned' rank and put every
       // in-app row at one end of a column it has no opinion in.
       engineTierRank: row.engine_tier != null ? tierRank(row.engine_tier) : null,
-      // The calibrated probability for the sortable P(correct) column; null for
-      // untargeted / uncalibrated (rendered as "-", never 0%). The ledger rows
-      // carry it flattened (`p_correct`); the `provenance` fallback covers rows
-      // from a backend that predates the slim ledger projection.
-      pCorrect: row.p_correct ?? row.provenance?.p_correct ?? null,
-      pProvisional: row.p_correct_provisional ?? row.provenance?.calibration?.provisional ?? false,
       // The ledger-measured channel count first: it reaches every committed
       // row, where the curated per-compound count reaches only what Stage A
       // claimed - a handful of rows on most samples and none at all on many.
@@ -357,11 +347,6 @@ const rows = computed(() => {
         row.corroboration_adducts ??
         row.provenance?.corroboration?.n_adducts ??
         0,
-      // Whether that count is the one folded into p_correct. Only the curated
-      // count is; the channel count is evidence the run recorded, not a score
-      // it applied, and the marker's tooltip must not claim otherwise.
-      corrobScored:
-        (row.corroboration_channels ?? row.provenance?.cross_channel?.channels?.length) == null,
       corrobInherited: false,
       mech: mechById.value.get(row.ionization_mechanism_id) ?? null,
       isChild: false
@@ -397,11 +382,7 @@ const rows = computed(() => {
           // one derived from the child's OWN tier would contradict the line
           // above it, which exists precisely so a family sorts as one block.
           // The chip in the column body renders `engine_tier` directly.
-          pCorrect: child.p_correct ?? child.provenance?.p_correct ?? null,
-          pProvisional:
-            child.p_correct_provisional ?? child.provenance?.calibration?.provisional ?? false,
           corrobAdducts: own ?? parent.corrobAdducts,
-          corrobScored: parent.corrobScored,
           // True whenever the count on this row is the parent's, independent of
           // whether it clears the marker's threshold, so the row stays
           // self-describing to anything that reads it below that threshold.
@@ -428,46 +409,23 @@ const childLabel = (row) =>
       )
     : formatIsotopeLabel(row.isotope_label) || 'iso'
 
-// Calibrated probability formatter for the P(correct) column.
-const pctFmt = new Intl.NumberFormat('en-US', { style: 'percent', maximumFractionDigits: 0 })
-
 // A borrowed count is parenthesised, so an isotopologue does not read at a glance as
 // a peak seen through several adducts in its own right.
 const corrobLabel = (row) =>
   row.corrobInherited ? `(${row.corrobAdducts})` : `${row.corrobAdducts}`
 
-// Why a row shows no calibrated probability, and what one served from the batch
-// ledger is: shared with the inspector through @/lib/pCorrect, so the ledger's
-// cells and the inspector's row cannot drift apart on the same fact. A sample
-// with no run of its own is served from the batch ledger (run engine 'batch'):
-// its P(correct) is the one recorded when the sample was folded in, and a
-// missing one is the ledger's to explain rather than the instrument's.
-const fromLedger = computed(() => assignments.value.run?.engine === 'batch')
-const uncalibratedReason = (row) => reasonForNoPCorrect(row, { fromLedger: fromLedger.value })
-const pCorrectTooltip = (row) =>
-  row.pCorrect != null && fromLedger.value ? LEDGER_P_CORRECT_TOOLTIP : ''
-
-// The header says what the column is, in one line. What a dash means is on the
-// dash, where the reason can be the row's own.
-const pCorrectHeaderTooltip = P_CORRECT_TOOLTIP
-
-// Tooltip for the corroboration marker. It has two things to be careful about.
-// An isotopologue shows the count its M0 was corroborated by, so it must say the
-// evidence is the family's. And whether the number beside it accounts for the
-// corroboration depends on WHICH count this is: the curated per-compound one is
-// folded into p_correct (into the record carrying it, never into a child's), the
-// ledger-measured channel count is not folded into anything.
-const corrobTooltip = (row) => {
-  const scoring = row.corrobScored
-    ? row.corrobInherited
-      ? "folded into the M0's P(correct), not into this row's"
-      : 'already folded into P(correct)'
-    : 'not included in the P(correct) beside it'
-  return row.corrobInherited
-    ? `Supported by ${row.corrobAdducts} channels, via the M0 of this isotopologue family ` +
-        `(${scoring})`
-    : `Supported by ${row.corrobAdducts} channels (${scoring})`
-}
+// Tooltip for the corroboration marker, beside the ionization it counts
+// channels of. An isotopologue shows the count its M0 was corroborated by, so
+// it says the evidence is the family's.
+//
+// The marker sat beside the P(correct) column until that column was taken out
+// of the app (step 3.4d of the assignment quality plan): the calibrated
+// probability is read off a curve nobody has verified yet, and the tooltip no
+// longer names a number the page does not show.
+const corrobTooltip = (row) =>
+  row.corrobInherited
+    ? `Supported by ${row.corrobAdducts} channels, via the M0 of this isotopologue family`
+    : `Supported by ${row.corrobAdducts} channels`
 
 // Two-way selection tied to the focused peak: clicking a row focuses its peak,
 // and focusing a peak elsewhere (spectrum click, inspector) highlights its row.
@@ -621,8 +579,8 @@ const breadcrumb = computed(() => {
         <h1>Assignments</h1>
         <p>
         Every peak in the selected sample with its committed assignment from the
-        selected run: formula, ionization, confidence tier and calibrated
-        P(correct).
+        selected run: formula, ionization and confidence tier. The tiering is
+        still being developed, and the tier column says so.
         </p>
         <p>
         Click a row to focus the peak in the spectrum and inspector. Use the
@@ -926,9 +884,22 @@ const breadcrumb = computed(() => {
           </template>
           <template #body="{ data }">
             <span class="mech">{{ data.mech || '—' }}</span>
+            <!-- How many of the run's channels committed the row's neutral:
+                 evidence for the formula, beside the channel it was read
+                 through. -->
+            <span
+              v-if="data.corrobAdducts > 1"
+              class="corrob-mark"
+              v-tooltip.top="corrobTooltip(data)"
+              ><span class="pi ph ph-link-simple" />{{ corrobLabel(data) }}</span
+            >
           </template>
         </Column>
-        <Column field="tierRank" header="tier" sortable style="min-width: 7rem">
+        <Column field="tierRank" sortable style="min-width: 7rem">
+          <template #header>
+            <span>tier</span>
+            <BaseProvisionalMark />
+          </template>
           <template #body="{ data }">
             <BaseTierTag
               :tier="data.tier"
@@ -958,45 +929,6 @@ const breadcrumb = computed(() => {
               :tooltip="engineTierTooltip(data)"
             />
             <span v-else class="no-engine-tier">&mdash;</span>
-          </template>
-        </Column>
-        <Column field="pCorrect" sortable style="min-width: 6.5rem">
-          <template #header>
-            <span
-              v-tooltip.top="pCorrectHeaderTooltip"
-              v-help.top="{
-                title: 'P(correct)',
-                helpKey: 'assignment-p-correct',
-                doc: app.ui.help.docUrl(
-                  'how-it-works/peak-assignment/#calibrated-confidence-probability-of-being-correct'
-                )
-              }"
-              >P(correct)</span
-            >
-          </template>
-          <template #body="{ data }">
-            <span
-              v-if="data.pCorrect != null"
-              class="pcorrect"
-              v-tooltip.top="pCorrectTooltip(data)"
-            >
-              {{ pctFmt.format(data.pCorrect)
-              }}<span
-                v-if="data.pProvisional"
-                class="prov"
-                v-tooltip.top="'Provisional calibration curve'"
-                >*</span
-              >
-            </span>
-            <span v-else class="pcorrect uncal" v-tooltip.top="uncalibratedReason(data)"
-              >&mdash;</span
-            >
-            <span
-              v-if="data.corrobAdducts > 1"
-              class="corrob-mark"
-              v-tooltip.top="corrobTooltip(data)"
-              ><span class="pi ph ph-link-simple" />{{ corrobLabel(data) }}</span
-            >
           </template>
         </Column>
         <Column style="min-width: 3rem">
@@ -1189,17 +1121,7 @@ const breadcrumb = computed(() => {
   order: 1;
 }
 
-.pcorrect {
-  font-variant-numeric: tabular-nums;
-}
-.pcorrect.uncal {
-  opacity: 0.45;
-}
-.pcorrect .prov {
-  color: var(--state-warning);
-  margin-left: 0.05rem;
-}
-/* Adduct-corroboration marker beside P(correct). */
+/* Channel-corroboration marker beside the ionization. */
 .corrob-mark {
   display: inline-flex;
   align-items: center;
