@@ -388,3 +388,34 @@ export function formatIsotopeFormula(formula, ionFormula) {
     .map((name) => substitutionOf(name, labels))
     .join('/')
 }
+
+// One heavy isotope in a line label, as the isotope prediction writes it: mass
+// number, element, count ("81Br2").
+const LABEL_PART = /^(\d+)([A-Z][a-z]?)(\d*)$/
+
+/**
+ * A line's isotope label in the bracket spelling a line's isotope formula reads
+ * in (see formatIsotopeFormula).
+ *
+ * A reagent ion's lines are labelled by the envelope prediction itself, which
+ * names the heavy isotopes bare and joins several with "+" ("81Br", "81Br2",
+ * "81Br+18O"); an analyte's isotopologue beside it reads "[13C]". Spelled the
+ * same way, the two families read alike. Any other label - an offset such as
+ * "M+1", or "M0" - is returned as it is.
+ *
+ * @param {string|null|undefined} label the line's isotope label
+ * @returns {string} the label in bracket spelling, or an empty string for none
+ *
+ * Examples:
+ * - "81Br" -> "[81Br]"
+ * - "81Br2" -> "[81Br]2"
+ * - "81Br+18O" -> "[81Br][18O]"
+ * - "M+1" -> "M+1"
+ */
+export function formatIsotopeLabel(label) {
+  if (!label) return ''
+  const parts = String(label).split('+')
+  const matches = parts.map((part) => LABEL_PART.exec(part))
+  if (matches.some((match) => !match)) return String(label)
+  return matches.map(([, mass, element, count]) => `[${mass}${element}]${count}`).join('')
+}

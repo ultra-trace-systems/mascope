@@ -78,12 +78,14 @@ class TestTheReagentRow:
     def test_it_names_the_ion_and_no_analyte(self):
         """The composition is known exactly, and it is the source's, not the
         sample's. An `assigned_formula` here would put a reagent cluster into
-        every cross-sample formula vote it touches."""
+        every cross-sample formula vote it touches. The ion is written with its
+        charge, as an analyte row writes its ion, so it reads as the ion it is
+        rather than as a neutral."""
         row = _rows()[0]
 
         assert row["role"] == ROLE_REAGENT
         assert row["source"] == SOURCE_REAGENT
-        assert row["ion_formula"] == "Br"
+        assert row["ion_formula"] == "Br-"
         assert row["assigned_formula"] is None
         assert row["ionization_mechanism_id"] is None
 
@@ -155,28 +157,76 @@ class TestTheIsotopologueRows:
         counts it: the reference engine labels these reagent as well."""
         assert {row["role"] for row in _rows()} == {ROLE_REAGENT}
 
-    def test_no_reagent_row_names_an_owner(self):
-        """Owner linkage models one thing in this ledger - an isotopologue
-        naming the M0 analyte it belongs to - and the import path enforces it,
-        so the engine must not write a shape it would then refuse. The parent is
-        recorded as provenance instead.
-        """
+    def test_every_line_names_its_ions_monoisotopic_row_as_owner(self):
+        """So a ledger folds an ion's lines under it as it folds an analyte's
+        isotopologues under its M0, rather than listing them beside it as more
+        peaks of the source."""
         rows = _rows("BR", ("Br", -1, 1e6), ("Br2", -1, 3e5))
+        by_id = {row["peak_assignment_id"]: row for row in rows}
+        lines = [row for row in rows if row["isotope_label"]]
+
+        assert sorted(row["isotope_label"] for row in lines) == [
+            "81Br",
+            "81Br",
+            "81Br2",
+        ]
+        for line in lines:
+            owner = by_id[line["owner_peak_assignment_id"]]
+            assert owner["isotope_label"] is None
+            assert owner["owner_peak_assignment_id"] is None
+            assert (
+                owner["provenance"]["reagent"]["ion"]
+                == line["provenance"]["reagent"]["ion"]
+            )
+        assert all(
+            row["owner_peak_assignment_id"] is None
+            for row in rows
+            if not row["isotope_label"]
+        )
+
+    def test_a_line_whose_monoisotopic_peak_is_not_claimed_stays_its_own_row(self):
+        peaks = _peaks(("Br2", -1, 3e5))
+        hits, _ = claim_reagent_peaks(
+            peaks, reagent_library_for("BR"), claim_ppm=ORBI_PPM
+        )
+        lines = [hit for hit in hits if hit.is_isotopologue]
+        assert lines, "the dimer's heavier lines must be claimed"
+
+        rows = build_reagent_assignments(lines, peaks, "sample1", "run1")
 
         assert all(row["owner_peak_assignment_id"] is None for row in rows)
-        assert (
-            owner_link_errors(
-                [
-                    SimpleNamespace(
-                        sample_peak_id=row["sample_peak_id"],
-                        owner_sample_peak_id=None,
-                        role=row["role"],
-                    )
-                    for row in rows
-                ]
-            )
-            == []
+        assert all(row["abundance_error"] is None for row in rows)
+
+    def test_a_line_reads_against_its_predicted_share(self):
+        """As an analyte's isotopologue does: the observed share of the
+        monoisotopic peak over the predicted one, less one - zero on a line at
+        its predicted height, and a fifth on one a fifth taller."""
+        peaks = _peaks(("Br", -1, 1e6))
+        heavy = peaks["intensity"].idxmin()
+        peaks.loc[heavy, "intensity"] *= 1.2
+        hits, _ = claim_reagent_peaks(
+            peaks, reagent_library_for("BR"), claim_ppm=ORBI_PPM
         )
+        rows = build_reagent_assignments(hits, peaks, "sample1", "run1")
+
+        (monoisotopic,) = [row for row in rows if not row["isotope_label"]]
+        (line,) = [row for row in rows if row["isotope_label"]]
+        assert monoisotopic["abundance_error"] is None
+        assert line["abundance_error"] == pytest.approx(0.2, abs=1e-3)
+
+    def test_an_analytes_owner_link_is_still_only_an_isotopologues(self):
+        """The import path is held to the link an analyte's isotopologue makes;
+        the reagent family is the in-app pass's own shape and is not offered
+        to another engine's publish."""
+        errors = owner_link_errors(
+            [
+                SimpleNamespace(
+                    sample_peak_id="line", owner_sample_peak_id="ion", role="reagent"
+                )
+            ]
+        )
+
+        assert len(errors) == 1
 
 
 def _run_pre_pass(peaks: pd.DataFrame, profile: str, instrument_type: str | None):
@@ -295,7 +345,7 @@ class TestTheChargeTransferBeam:
         rows = _rows("EASYIC_POS", ("C16H10", 1, 1e6))
         assert rows, "the reagent cation must be claimed"
         assert rows[0]["role"] == ROLE_REAGENT
-        assert rows[0]["ion_formula"] == "C16H10"
+        assert rows[0]["ion_formula"] == "C16H10+"
         assert rows[0]["assigned_formula"] is None
         assert rows[0]["provenance"]["reagent"]["ion"] == "[C16H10]+"
 
@@ -586,7 +636,7 @@ class TestTheFragmentClaim:
         assert fragment["role"] == ROLE_REAGENT
         assert fragment["source"] == SOURCE_REAGENT
         assert fragment["assigned_formula"] is None
-        assert fragment["ion_formula"] == "C6H8"
+        assert fragment["ion_formula"] == "C6H8+"
         assert fragment["ionization_mechanism_id"] is None
         assert fragment["tier"] == TIER_UNASSIGNED
         assert fragment["sample_peak_id"] == "peak-c6h8"
@@ -630,13 +680,22 @@ class TestTheFragmentClaim:
             owner="c6h8",
             label="13C",
         )
+        line["abundance_error"] = 0.12
         claims = claim([pinene(), c6h8(), line])
 
         assert [row["peak_assignment_id"] for row in claims.rows] == ["pinene"]
         assert [row["isotope_label"] for row in claims.fragments] == [None, "13C"]
         assert all(row["role"] == ROLE_REAGENT for row in claims.fragments)
-        assert all(row["owner_peak_assignment_id"] is None for row in claims.fragments)
-        assert "read_as" not in claims.fragments[1]["provenance"]["reagent"]
+        fragment, claimed_line = claims.fragments
+        # Folded under the fragment as it was under the reading it replaces,
+        # and read against the envelope the stage measured it on.
+        assert fragment["owner_peak_assignment_id"] is None
+        assert (
+            claimed_line["owner_peak_assignment_id"] == fragment["peak_assignment_id"]
+        )
+        assert claimed_line["abundance_error"] == pytest.approx(0.12)
+        assert fragment["abundance_error"] is None
+        assert "read_as" not in claimed_line["provenance"]["reagent"]
         assert claims.summary["claimed_isotopologues"] == 1
 
     def test_without_its_parent_nothing_is_claimed(self):

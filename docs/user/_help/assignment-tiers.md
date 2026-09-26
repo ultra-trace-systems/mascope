@@ -29,6 +29,8 @@ breaking an analyte), **artifact** (a ringing side lobe of a very intense
 neighbouring peak) or **isotopologue** (a line of another assignment's isotope
 pattern). Reagent and artifact peaks are not the sample's compounds, so each has
 a chip of its own in place of a tier, is counted apart from the tiers above the
-ledger and sorts after them. A tier count counts a compound once, with its
+ledger and sorts after them. A reagent row names its ion, written with its
+charge, where an assignment names its formula, and its isotope lines fold under
+it as a compound's isotopologues do. A tier count counts a compound once, with its
 isotopologues folded in; a role count counts peaks, so a reagent ion's isotope
 lines count with it.

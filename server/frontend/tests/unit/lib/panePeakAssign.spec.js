@@ -3,6 +3,7 @@ import { flushPromises, mount } from '@vue/test-utils'
 import { ref } from 'vue'
 
 import { num } from '@/lib/formatters'
+import { isIsotopeLine } from '@/lib/isotopeLines'
 import { EVIDENCE_LEVELS } from '@/lib/verification'
 
 // The inspector card for a peak with no committed formula. Two states reach it:
@@ -86,7 +87,7 @@ function makeApp() {
           // stores/data/modules/peakAssignment/assignment.spec.js; what matters
           // here is that the inspector asks for it and uses the answer.
           m0Of: (row) =>
-            row?.role === 'iso_child' ? (ledger.get(row.owner_peak_assignment_id) ?? row) : row,
+            isIsotopeLine(row) ? (ledger.get(row.owner_peak_assignment_id) ?? row) : row,
           loadDetail,
           // The scores are keyed by assignment id like the detail is, and the
           // pane must not read another row's measurement onto this one.
@@ -3018,5 +3019,92 @@ describe('PanePeakAssign hover text', () => {
     expect(wrapper.find('[data-testid="same-ion"]').attributes('data-help')).toBe(
       'assignment-tier-reasons'
     )
+  })
+})
+
+// A peak the source made names its ion and no compound. The card is headed by
+// the ion, known exactly, rather than by "Unassigned", and the ion's isotope
+// lines - reagent rows the pass links to its monoisotopic row - are its
+// isotopologue table, read against the prediction each line carries.
+describe('PanePeakAssign a peak the source made', () => {
+  /** A bromide dimer as the reagent pass writes it: the ion, and its lines. */
+  function dimer() {
+    const ion = {
+      peak_assignment_id: 'pa-ion',
+      sample_peak_id: 'p-1',
+      sample_peak_mz: 157.8367,
+      sample_peak_intensity: 2.57e5,
+      assigned_formula: null,
+      ion_formula: 'Br2-',
+      isotope_label: null,
+      role: 'reagent',
+      source: 'reagent',
+      tier: 'unassigned',
+      mz_error_ppm: 0.4,
+      abundance_error: null
+    }
+    ledger.set(ion.peak_assignment_id, ion)
+    const line = (id, mz, height, label, error) => ({
+      ...ion,
+      peak_assignment_id: id,
+      sample_peak_id: `p-${id}`,
+      sample_peak_mz: mz,
+      sample_peak_intensity: height,
+      isotope_label: label,
+      owner_peak_assignment_id: ion.peak_assignment_id,
+      abundance_error: error
+    })
+    // 81Br is predicted at 1.946 of the monoisotopic line and 81Br2 at 0.946;
+    // the first reads 5 % high.
+    return [
+      ion,
+      line('pa-81', 159.8347, 2.57e5 * 1.946 * 1.05, '81Br', 0.05),
+      line('pa-81x2', 161.8326, 2.57e5 * 0.946, '81Br2', 0)
+    ]
+  }
+
+  it('heads the card with the ion, and does not repeat it under the headline', async () => {
+    familyRows = dimer()
+    focusedAssignment = familyRows[0]
+    const wrapper = await mountPane({ recordTooltips: true })
+
+    const headline = wrapper.find('.insp-formula')
+    expect(headline.text()).toBe('Br2-')
+    expect(headline.attributes('data-tooltip')).toMatch(/names an ion, and no compound/)
+    const subs = wrapper.findAll('.insp-sub').map((node) => node.text())
+    expect(subs.at(-1)).toBe('reagent')
+  })
+
+  it("names a line's isotope in brackets beside where it came from", async () => {
+    familyRows = dimer()
+    focusedAssignment = familyRows[1]
+    const wrapper = await mountPane()
+
+    expect(wrapper.find('.insp-formula').text()).toBe('Br2-')
+    expect(wrapper.findAll('.insp-sub').at(-1).text()).toMatch(/^\[81Br\]\s*·\s*reagent$/)
+  })
+
+  it("lists the ion's lines as its isotopologues, against their predictions", async () => {
+    familyRows = dimer()
+    focusedAssignment = familyRows[0]
+    const wrapper = await mountPane()
+
+    const labels = wrapper.findAll('.isotopologues .iso-label').map((cell) => cell.text())
+    expect(labels).toEqual(['M0', '[81Br]', '[81Br]2'])
+    // Fractions of the most abundant line, here the first heavy one.
+    const shares = wrapper.findAll('.isotopologues .iso-rel').map((cell) => cell.text())
+    expect(shares).toEqual(['51.4%', '100%', '48.6%'])
+  })
+
+  it('still names an analyte by its formula, the ion under it', async () => {
+    focusedAssignment = {
+      ...assignment({ formula: 'C3H7NO', tier: 'assigned' }),
+      ion_formula: 'C3H8NO+',
+      source: 'database'
+    }
+    const wrapper = await mountPane()
+
+    expect(wrapper.find('.insp-formula').text()).toBe('C3H7NO')
+    expect(wrapper.findAll('.insp-sub').at(-1).text()).toMatch(/^C3H8NO\+\s*·\s*database$/)
   })
 })

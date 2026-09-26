@@ -376,6 +376,19 @@ component all of whose ions sat on the ladder would have nothing left to be show
 row names the fragment's ion, the parent it was read against and what the stages had read
 the peak as; a compound of your own target library keeps its peak.
 
+**How the rows read.** A reagent row names no compound, so the sample's assignment ledger
+shows its ion in the formula column instead, written with its charge (`Br-`, `C16H10+`),
+and the inspector heads the card with it; the *reagent* chip beside it says the source
+made it. An ion's isotope lines are claimed with it and are its family, as an analyte's
+isotopologues are the analyte's: they fold under the ion's monoisotopic row, counted in
+its **+N** marker, and the inspector lists them in the ion's isotopologue table against
+the abundances its isotope pattern predicts. A fragment's lines fold under the fragment
+the same way. The *reagent* count above the ledger still counts every peak the source
+accounts for, the lines included. If you assign a compound to an ion's peak by hand, its
+lines are unassigned with it, as an analyte's isotopologues are when their compound is
+replaced. A run made before Mascope linked the lines to their ion lists them as rows of
+their own and writes the ion without its charge; running the assignment again links them.
+
 ## The fit score — a pure measurement
 
 The **fit score** measures exactly one thing: *how well does the observed data fit the
