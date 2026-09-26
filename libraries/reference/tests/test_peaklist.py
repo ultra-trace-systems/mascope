@@ -202,6 +202,15 @@ def test_unknown_keys_are_named(tmp_path):
     ]
 
 
+def test_a_tag_is_one_the_vocabulary_names(tmp_path):
+    """A tag is shown on every row the list names, so a misspelt one would put
+    a word no reader has been told the meaning of on each of them."""
+    assert _problems(tmp_path, _good(tags=["background"])) == []
+    assert _problems(tmp_path, _good(tags=["background", "noise"])) == [
+        "tag 'noise' is not one of background"
+    ]
+
+
 def test_a_per_row_reference_is_a_doi(tmp_path):
     data = _good(species=[{"formula": "C10H16O7", "reference": "Author 2020"}])
     assert _problems(tmp_path, data) == [
@@ -302,6 +311,21 @@ def test_a_record_carries_only_facts_of_its_own(tmp_path):
     # Conditions, evidence and everything list-level stay in the file.
     assert second.xrefs == {}
     assert second.name is None
+
+
+def test_a_lists_tags_reach_every_record(tmp_path):
+    # The one list-level fact a record carries: the row it is copied onto
+    # shows it.
+    data = _good(
+        tags=["background"],
+        species=[
+            {"formula": "C10H16O7", "name": "A HOM", "reference": "10.1234/row.1"},
+            {"formula": "C10H15NO8"},
+        ],
+    )
+    first, second = PeakListAdapter().parse(_write(tmp_path, data))
+    assert first.xrefs == {"reference": "10.1234/row.1", "tags": ["background"]}
+    assert second.xrefs == {"tags": ["background"]}
 
 
 def test_a_row_is_identified_by_its_formula_and_name(tmp_path):

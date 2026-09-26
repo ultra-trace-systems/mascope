@@ -1,6 +1,12 @@
 import { describe, it, expect } from 'vitest'
 
-import { listingName, listingOf, listingSource, listingTooltip } from '@/lib/referenceListings'
+import {
+  listingName,
+  listingOf,
+  listingSource,
+  listingTags,
+  listingTooltip
+} from '@/lib/referenceListings'
 
 const DMF = { name: 'N,N-Dimethylformamide', source: 'contaminants-list' }
 const ACROLEIN = { name: 'Acrolein', source: 'organics-list' }
@@ -86,6 +92,41 @@ describe('listingTooltip', () => {
 
   it('is empty for no listing', () => {
     expect(listingTooltip(null)).toBe('')
+  })
+})
+
+// A list may say how it reads its compounds: the cyclic siloxanes are a
+// background of most inlets and an analyte of indoor air, and their list says
+// the first on every row it names.
+describe('a tagged listing', () => {
+  const D4 = {
+    name: 'Octamethylcyclotetrasiloxane (D4)',
+    source: 'cyclic-siloxanes',
+    xrefs: { reference: '10.1021/es200301j', tags: ['background'] }
+  }
+  const PUBCHEM_D4 = { name: 'Octamethylcyclotetrasiloxane', source: 'pubchem', xrefs: {} }
+
+  it('carries the tags of the lists that name the formula, each once', () => {
+    expect(listingTags(listingOf({ reference_identities: [D4, D4] }))).toEqual(['background'])
+    expect(listingTags(listingOf({ reference_identities: [PUBCHEM_D4, D4] }))).toEqual([
+      'background'
+    ])
+  })
+
+  it('carries none where no list tags it', () => {
+    expect(listingTags(listingOf({ reference_identities: [DMF, PUBCHEM_D4] }))).toEqual([])
+    expect(listingTags(listingOf({ reference_identities: [{ xrefs: { tags: 'x' } }] }))).toEqual([])
+    expect(listingTags(null)).toEqual([])
+  })
+
+  it('says on hover which list reads it as background, and that the tier does not', () => {
+    const lines = listingTooltip(listingOf({ reference_identities: [PUBCHEM_D4, D4] })).split('\n')
+    const reading = lines.find((line) => line.startsWith('The cyclic-siloxanes list tags it'))
+    expect(reading).toContain('background of laboratory air or of the instrument')
+    expect(reading).toContain('the tier does not weigh it')
+    expect(lines.at(-1)).toBe(
+      'A formula match names candidate compounds; it is not an identification.'
+    )
   })
 })
 

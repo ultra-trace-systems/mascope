@@ -80,6 +80,15 @@ def test_every_formula_a_shipped_list_holds_is_inside_the_context_ceiling(peak_l
     assert outside == expected
 
 
+def test_the_cyclic_siloxanes_are_read_as_background():
+    """They are a background of most inlets and an analyte of indoor air, so
+    they are named from their list rather than claimed before the sample is
+    asked, and the list says on each row it names that it reads them as
+    background. No other shipped list says so."""
+    assert BY_ID["cyclic-siloxanes"].tags == ("background",)
+    assert [pl.id for pl in SHIPPED if pl.tags] == ["cyclic-siloxanes"]
+
+
 def test_the_radical_list_is_opt_in():
     ro2 = BY_ID["monoterpene-ro2-kang2021"]
     assert ro2.allow_radicals and not ro2.load_by_default

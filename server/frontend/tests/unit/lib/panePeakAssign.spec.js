@@ -2670,6 +2670,28 @@ describe('PanePeakAssign ionization and reference lists', () => {
     )
   })
 
+  it('shows the tag a list reads its compounds by, beside the name', async () => {
+    const d4 = {
+      name: 'Octamethylcyclotetrasiloxane (D4)',
+      source: 'cyclic-siloxanes',
+      xrefs: { tags: ['background'] }
+    }
+    detailRecord = { provenance: { reference_identities: [d4] }, known_compounds: [] }
+    const wrapper = await mountPane({ recordTooltips: true })
+    const listed = field(wrapper, 'listed-as')
+
+    expect(listed.find('[data-testid="list-tag-background"]').text()).toBe('background')
+    expect(listed.attributes('data-tooltip')).toContain(
+      'The cyclic-siloxanes list tags it background'
+    )
+  })
+
+  it('shows no tag where the list carries none', async () => {
+    detailRecord = { provenance: { reference_identities: [LISTED] }, known_compounds: [] }
+    const wrapper = await mountPane()
+    expect(field(wrapper, 'listed-as').find('.list-tags').exists()).toBe(false)
+  })
+
   it('names a formula a list holds that the run did not match from it as potential', async () => {
     focusedAssignment = { ...DMF, source: 'untargeted' }
     detailRecord = { provenance: {}, known_compounds: [LISTED] }

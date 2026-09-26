@@ -17,7 +17,13 @@ import {
   P_CORRECT_TOOLTIP,
   uncalibratedReason
 } from '@/lib/pCorrect'
-import { listingName, listingOf, listingSource, listingTooltip } from '@/lib/referenceListings'
+import {
+  listingName,
+  listingOf,
+  listingSource,
+  listingTags,
+  listingTooltip
+} from '@/lib/referenceListings'
 import { holdsTierDown, reasonIcon, reasonTooltip, tierReasonsOf } from '@/lib/tierReasons'
 import { EVIDENCE_LEVELS, VERDICT_META } from '@/lib/verification'
 import { useBatchPeakCuration } from './stores/batchPeakCuration.js'
@@ -1219,6 +1225,17 @@ const demotedCount = computed(() => {
           <span v-if="listingSource(listedAs)" class="list-source">{{
             listingSource(listedAs)
           }}</span>
+          <!-- How the list reads its compounds, background for the siloxanes:
+               said beside the name, explained in the tooltip, never weighed. -->
+          <span v-if="listingTags(listedAs).length" class="list-tags">
+            <span
+              v-for="tag in listingTags(listedAs)"
+              :key="tag"
+              class="list-tag"
+              :data-testid="`list-tag-${tag}`"
+              >{{ tag }}</span
+            >
+          </span>
         </div>
       </div>
       <div
@@ -2270,6 +2287,18 @@ const demotedCount = computed(() => {
   font-size: 0.72rem;
   opacity: 0.6;
   overflow-wrap: anywhere;
+}
+.identity .list-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+}
+.identity .list-tag {
+  padding: 0 0.3rem;
+  border: 1px dashed var(--p-content-border-color, #e3e6ec);
+  border-radius: 0.25rem;
+  font-size: 0.7rem;
+  opacity: 0.8;
 }
 .alts-list {
   display: flex;

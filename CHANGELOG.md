@@ -6,6 +6,16 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 ### Added
 
+- **A reference list can say how it reads its compounds, and the shipped
+  cyclic-siloxane list reads them as background.** A list's header may carry
+  `tags`; the one tag, `background`, reaches every compound the list loads,
+  and the peak pane shows it beside the list's name, with what it means on
+  hover. The tier does not weigh it: the siloxanes are a background of most
+  instruments and the analytes of an indoor-air study, and whether they are
+  background in a dataset is the batch's question. The list's data version
+  moves to 2026.09.3, so the next `mascope reference seed` loads the tag
+  (assignment quality plan, step 3.3).
+
 - **Peak assignment reads a charge-transfer source.** On an Orbitrap, a mode
   with no reagent whose mechanisms include electron transfer, `[M]+.` or
   `[M]-.`, the way that instrument's EASY-IC source is declared, resolves to a
