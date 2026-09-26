@@ -1492,6 +1492,14 @@ on the chamber dataset" below. Each step is small and lands as its own PR
 into `develop`; the stage ends with a gate over sets A to J and the 0.6.0
 bump.
 
+The build order, agreed 2026-09-26 with 3.1, 3.2, 3.3b, 3.1c, 3.1d and
+3.4b on develop: 3.3, then 3.3c as its own PR once 3.3 has merged (the two
+rewrite the reagent pass's one row builder and its tests, so neither in
+parallel nor in one PR), then 3.5b and 3.5 together, since both re-base
+the score and one pass measures them, and only then 3.4, 3.6 and the 3.7
+gate, so that the tier rules and the gate are read on a fit that says what
+the evidence is. 3.4c is the inspector's and lands beside any of them.
+
 ### 3.1 A profile for the charge-transfer source
 
 - **What.** The library gains the EasyIC profile, pulled forward from step
@@ -1883,6 +1891,12 @@ bump.
   under its monoisotopic row when the ledger is folded; the reagent counts
   and G4 unchanged on every set.
 - **Size.** S.
+- **Order.** Its own PR after 3.3 has merged. Both rewrite the reagent
+  pass's row builder and its tests, so a parallel build would collide
+  there and one PR would bloat the stage's largest step; and since the
+  row's shape lives in that one builder, this reaches 3.3's new families
+  without rework. It moves no tier, so it is read in the browser rather
+  than measured.
 
 ### 3.3d Source-solvent clusters
 
@@ -2149,6 +2163,14 @@ bump.
   (decision 27).
 - **Size.** M. The score is the library's, so the library and the backend
   release together.
+- **Order.** Built with 3.5, right after 3.3c, before 3.4 and 3.6 (agreed
+  2026-09-26). Every step after it is read on the fit, and the two steps
+  are the same fix on the score's two axes: on the cylinder Orbitrap the
+  intensity term explains 21 of the 34 points of committed envelopes
+  under the assigned band and the mass term on the brightest lines the
+  rest, which is the cylinder's own certified components. Both re-base
+  every set, so one pass measures them. Landing it next also makes the
+  open call above moot: the band is left as it is.
 
 ### 3.6 Priors and the dataset's context
 
