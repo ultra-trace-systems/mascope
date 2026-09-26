@@ -567,7 +567,7 @@ class TestTheJudgedLedger:
         assert by_peak["p1"]["role"] == "M0"
         claimed = by_peak["p3"]
         assert (claimed["role"], claimed["assigned_formula"]) == ("reagent", None)
-        assert claimed["ion_formula"] == "C3H7O3"
+        assert claimed["ion_formula"] == "C3H7O3+"
         assert claimed["provenance"]["reagent"]["family"] == "fragment"
         assert claimed["provenance"]["reagent"]["parent"]["formula"] == "C6H12O6"
         recorded = recorder.recorded_configs()[-1][FRAGMENTS_KEY]

@@ -73,7 +73,7 @@ def _alternative(mechanism_id: str, **overrides) -> dict:
 
 #: The peaks ``curated_run`` seeds on the shared sample. Named once because the
 #: teardown has to reach rows keyed on them rather than on the run.
-PEAK_IDS = ("cur-1", "cur-2", "cur-3")
+PEAK_IDS = ("cur-1", "cur-2", "cur-3", "cur-4", "cur-5")
 
 
 @pytest_asyncio.fixture
@@ -936,6 +936,71 @@ async def test_a_searched_composition_lands_on_an_unassigned_peak(
     assert row.provenance["manual"]["scored_by"] == "composition_search"
     # There was no winner to displace, so nothing was archived as one.
     assert row.provenance["manual"].get("previous") is None
+
+
+@pytest.mark.asyncio
+async def test_a_source_ions_lines_go_with_it_when_its_peak_is_read_as_a_compound(
+    editor_client, curated_run, async_session_factory
+):
+    """The reagent pass makes a source ion's isotope lines its family: each
+    names the ion's row as its owner. A person reading the ion's peak as a
+    compound takes the ion away, so its lines are demoted with it as an
+    analyte's isotopologues are, and what they were is archived on the row
+    that owned them."""
+    ion_id, line_id = gen_id(32), gen_id(32)
+    rows = {
+        ion_id: {"sample_peak_id": "cur-4", "sample_peak_mz": 157.8367},
+        line_id: {
+            "sample_peak_id": "cur-5",
+            "sample_peak_mz": 159.8347,
+            "isotope_label": "81Br",
+            "abundance_error": 0.02,
+            "owner_peak_assignment_id": ion_id,
+        },
+    }
+    async with async_session_factory() as session:
+        for row_id, fields in rows.items():
+            session.add(
+                PeakAssignment(
+                    peak_assignment_id=row_id,
+                    peak_assignment_run_id=curated_run["run_id"],
+                    sample_item_id=curated_run["sample_item_id"],
+                    sample_peak_intensity=2.6e5,
+                    role="reagent",
+                    ion_formula="Br2-",
+                    source="reagent",
+                    tier="unassigned",
+                    provenance={"reagent": {"ion": "[Br2]-", "family": "reagent"}},
+                    **fields,
+                )
+            )
+            # The owner first: the link is a foreign key checked per row.
+            await session.flush()
+        await session.commit()
+
+    response = await editor_client.patch(
+        _url(curated_run, ion_id),
+        json={
+            "action": "set_assignment",
+            "assigned_formula": "C12H22O11",
+            "ionization_mechanism_id": curated_run["mechanism_id"],
+            "ion_formula": "C12H23O11+",
+            "fit_score": 0.93,
+            "mz_error_ppm": -0.8,
+        },
+    )
+
+    assert response.status_code == 200
+    assert line_id in {row["peak_assignment_id"] for row in response.json()["data"]}
+    line = await _row(async_session_factory, line_id)
+    assert (line.role, line.tier, line.source) == ("unassigned", "unassigned", "manual")
+    assert line.ion_formula is None
+    assert line.owner_peak_assignment_id is None
+    assert line.provenance["manual"]["action"] == "demote_isotopologue"
+    owner = await _row(async_session_factory, ion_id)
+    (entry,) = owner.provenance["manual"]["demoted"]
+    assert entry["peak_assignment_id"] == line_id
+    assert entry["provenance"]["reagent"]["ion"] == "[Br2]-"
 
 
 @pytest.mark.asyncio

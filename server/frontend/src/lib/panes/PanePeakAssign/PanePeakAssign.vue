@@ -9,7 +9,8 @@ import RadioButton from 'primevue/radiobutton'
 import { useApp } from '@/stores'
 import { BaseTierTag, BaseVerdictBadge } from '@/lib/base'
 import { num } from '@/lib/formatters'
-import { formatIsotopeFormula, neutralKey } from '@/lib/chem'
+import { formatIsotopeFormula, formatIsotopeLabel, neutralKey } from '@/lib/chem'
+import { isIsotopeLine } from '@/lib/isotopeLines'
 import { standardMechanism } from '@/lib/mechanism'
 import {
   LEDGER_CONFIDENCE_TOOLTIP,
@@ -71,6 +72,13 @@ watch(
     if (assignment) app.data.peakAssignment.peak.loadDetail(assignment).catch(() => {})
   },
   { immediate: true }
+)
+
+// A row that names an ion and no compound - a peak the source made - is headed
+// by its ion, known exactly, rather than by the word "Unassigned": the role chip
+// beside it says whose the ion is.
+const headlineIsIon = computed(
+  () => !focusedAssignment.value?.assigned_formula && Boolean(focusedAssignment.value?.ion_formula)
 )
 
 // What the card is about when there is no formula to name it by: an unassigned
@@ -382,9 +390,17 @@ const formatFit = (value) =>
 const family = computed(() => app.data.peakAssignment.peak.familyOf(focusedAssignment.value))
 
 // Main isotope (M0) of the family; theoretical abundances are relative to it.
+// A source ion's monoisotopic row is a reagent row that is no other row's line
+// (isIsotopeLine), and heads its lines as an analyte's M0 heads its own.
 const m0 = computed(
-  () => family.value.find((f) => f.role === 'M0' || f.isotope_label === 'M0') ?? null
+  () =>
+    family.value.find(
+      (f) =>
+        f.role === 'M0' || f.isotope_label === 'M0' || (f.role === 'reagent' && !isIsotopeLine(f))
+    ) ?? null
 )
+const isFamilyHead = (iso) =>
+  m0.value != null && iso.peak_assignment_id === m0.value.peak_assignment_id
 
 // Corroboration signal: present only when the same neutral was committed through
 // more than one ionization channel, which is independent evidence for the
@@ -483,7 +499,9 @@ const corroborationTooltip = computed(() => {
 })
 
 // Compact substitution label (e.g. "[13C]", "[81Br]2") from the full
-// isotopologue formula; falls back to the M0/M+1 offset label.
+// isotopologue formula; falls back to the M0/M+1 offset label. A source ion's
+// lines name their heavy isotopes in the label alone ("81Br2"), which reads in
+// the same brackets, and its monoisotopic row, which carries no label, is M0.
 //
 // Counted from the family's M0, which for a labelled ion is a bracketed line
 // itself: the ion formula names the labels, so the 15N-nitrate ion's labelled
@@ -497,7 +515,7 @@ const isoLabel = (iso) =>
         iso.isotope_formula,
         iso.ion_formula ?? m0.value?.ion_formula ?? measured.value?.ion_formula
       )
-    : iso.isotope_label || '-'
+    : formatIsotopeLabel(iso.isotope_label) || (isFamilyHead(iso) ? 'M0' : '-')
 
 // Theoretical (predicted) relative abundance of an isotopologue, as a fraction
 // of the family's most abundant isotopologue - the way an isotope table gives
@@ -540,7 +558,7 @@ const focusIsotopePeak = (iso) => {
 
 // Per-isotopologue match quality; M0 is the reference and never "poor".
 const isPoorMatch = (iso) => {
-  if (iso.role === 'M0' || iso.isotope_label === 'M0') return false
+  if (iso.role === 'M0' || iso.isotope_label === 'M0' || isFamilyHead(iso)) return false
   const ab = iso.abundance_error != null ? 1 - Math.min(1, Math.abs(iso.abundance_error)) : 1
   const mz = iso.mz_error_ppm != null ? Math.max(0, 1 - 0.01 * Math.abs(iso.mz_error_ppm)) : 1
   return ab * mz < 0.5
@@ -765,6 +783,30 @@ const SOURCE_TOOLTIPS = Object.freeze({
 })
 const sourceTooltip = (source) =>
   Object.prototype.hasOwnProperty.call(SOURCE_TOOLTIPS, source) ? SOURCE_TOOLTIPS[source] : null
+
+// The line under the headline: the ion (unless it is the headline), the isotope
+// line the peak is, and where the row came from, each saying what it is on
+// hover.
+const subParts = computed(() => {
+  const row = focusedAssignment.value
+  if (!row) return []
+  const isotope = evidenceRow.value?.isotope_label
+  return [
+    row.ion_formula && !headlineIsIon.value
+      ? { key: 'ion', text: row.ion_formula, tooltip: 'Ion formula' }
+      : null,
+    isotope
+      ? {
+          key: 'isotope',
+          text: formatIsotopeLabel(isotope),
+          tooltip: 'The isotope line of the ion this peak is; M0 is the monoisotopic line'
+        }
+      : null,
+    row.source
+      ? { key: 'source', text: row.source, tooltip: sourceTooltip(row.source), class: 'src' }
+      : null
+  ].filter(Boolean)
+})
 
 // An isotopologue row's hover text: its full isotope formula, how it matched,
 // and what a click does.
@@ -1136,8 +1178,16 @@ const demotedCount = computed(() => {
         <div class="insp-title">
           <span
             class="insp-formula"
-            v-tooltip.top="focusedAssignment.assigned_formula ? 'Neutral formula' : null"
-            >{{ focusedAssignment.assigned_formula || 'Unassigned' }}</span
+            v-tooltip.top="
+              focusedAssignment.assigned_formula
+                ? 'Neutral formula'
+                : headlineIsIon
+                  ? 'Ion formula: the peak names an ion, and no compound of the sample'
+                  : null
+            "
+            >{{
+              focusedAssignment.assigned_formula || focusedAssignment.ion_formula || 'Unassigned'
+            }}</span
           >
           <span
             v-if="ionization"
@@ -1176,35 +1226,21 @@ const demotedCount = computed(() => {
           />
         </div>
       </div>
-      <!-- With no formula the headline is the word "Unassigned" and the
-           evidence grid below is empty, so the peak itself has to name the
-           card. -->
+      <!-- With no formula the headline is the word "Unassigned", or the ion a
+           peak the source made is, and the evidence grid below is empty, so
+           the peak itself has to name the card. -->
       <div class="insp-sub" v-if="!focusedAssignment.assigned_formula">{{ peakSummary }}</div>
       <!-- The one place the card names the row's isotope, beside the ion it is
            a line of; the isotopologue table below marks the same row. Read off
            the measured row, which labels a derived row's isotope where the row
-           itself names none. -->
-      <div
-        class="insp-sub"
-        v-if="
-          focusedAssignment.ion_formula || evidenceRow.isotope_label || focusedAssignment.source
-        "
-      >
-        <span v-if="focusedAssignment.ion_formula" v-tooltip.top="'Ion formula'">{{
-          focusedAssignment.ion_formula
-        }}</span>
+           itself names none. An ion that heads the card is not repeated here. -->
+      <div class="insp-sub" v-if="subParts.length">
         <span
-          v-if="evidenceRow.isotope_label"
-          v-tooltip.top="'The isotope line of the ion this peak is; M0 is the monoisotopic line'"
-        >
-          &middot; {{ evidenceRow.isotope_label }}</span
-        >
-        <span
-          v-if="focusedAssignment.source"
-          class="src"
-          v-tooltip.top="sourceTooltip(focusedAssignment.source)"
-        >
-          &middot; {{ focusedAssignment.source }}</span
+          v-for="(part, index) in subParts"
+          :key="part.key"
+          :class="part.class"
+          v-tooltip.top="part.tooltip"
+          ><template v-if="index"> &middot; </template>{{ part.text }}</span
         >
       </div>
       <!-- A list's name for the formula is the first thing a reader checks the

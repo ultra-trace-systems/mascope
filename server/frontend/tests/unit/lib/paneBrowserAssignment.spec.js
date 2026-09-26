@@ -11,6 +11,7 @@ import BaseVerdictBadge from '@/lib/base/BaseVerdictBadge.vue'
 // button in the switch bar and the dialog this pane owns.
 import { useAssignmentLauncher } from '@/lib/panes/PaneBrowserMatch/stores'
 import { usePeakAssignParams } from '@/lib/peakAssignParams'
+import { isIsotopeLine } from '@/lib/isotopeLines'
 import { tierRank } from '@/lib/tiers'
 
 // The per-sample launcher's job after the assign endpoint became synchronous:
@@ -108,8 +109,9 @@ function makeApp() {
           // pinned against the real implementation in
           // stores/data/modules/peakAssignment/assignment.spec.js.
           m0Of: (row) =>
-            row?.role === 'iso_child' ? (byId.get(row.owner_peak_assignment_id) ?? row) : row,
-          forPeak: () => null,
+            isIsotopeLine(row) ? (byId.get(row.owner_peak_assignment_id) ?? row) : row,
+          forPeak: (peakId) =>
+            assignmentList.find((row) => String(row.sample_peak_id) === String(peakId)) ?? null,
           run: runRecord
         },
         verification: { forAssignment },
@@ -124,7 +126,12 @@ vi.mock('@/stores', () => ({ useApp: () => makeApp() }))
 
 vi.mock('@/lib/base', async () => ({
   BaseTabbedPanel: { template: '<div><slot name="menu" /><slot /></div>' },
-  BaseCopyableField: true,
+  // Renders what it would copy, so a test that renders the cells can read the
+  // formula column.
+  BaseCopyableField: {
+    props: ['field', 'tooltip'],
+    template: '<span class="copyable" :data-tooltip="tooltip">{{ field }}<slot /></span>'
+  },
   BaseLoadError: true,
   BaseTierTag: true,
   BaseVerdictBadge: true,
@@ -1846,5 +1853,124 @@ describe('PaneBrowserAssignment reagent and artifact peaks', () => {
     expect(order[1]).toBe('u')
     expect(order.slice(2, 4).sort()).toEqual(['r', 'rr'])
     expect(order[4]).toBe('x')
+  })
+})
+
+// A source ion's isotope lines are one ion, as an analyte's are one compound:
+// the reagent pass names the ion's monoisotopic row as their owner, and the
+// ledger folds them under it. The row names the ion and no compound, so the
+// formula column shows the ion.
+describe('PaneBrowserAssignment reagent families', () => {
+  /** A bromide dimer as the pass writes it: the ion, and two lines it owns. */
+  const DIMER = () => {
+    const fam = family({
+      id: 'br2',
+      mz: 157.8367,
+      intensity: 2.6e5,
+      formula: null,
+      tier: 'unassigned',
+      fit: null,
+      role: 'reagent',
+      children: [
+        { sample_peak_mz: 159.8347, sample_peak_intensity: 5.0e5, isotope_label: '81Br' },
+        { sample_peak_mz: 161.8326, sample_peak_intensity: 2.4e5, isotope_label: '81Br2' }
+      ].map((child) => ({
+        ...child,
+        role: 'reagent',
+        tier: 'unassigned',
+        assigned_formula: null,
+        ionization_mechanism_id: null,
+        ion_formula: 'Br2-'
+      }))
+    })
+    fam.parent.ion_formula = 'Br2-'
+    return fam
+  }
+  const GLUCOSE = () =>
+    family({ id: 'm', mz: 179.0561, intensity: 1.0e4, formula: 'C6H12O6', tier: 'assigned' })
+
+  beforeEach(() => {
+    runList = [{ peak_assignment_run_id: 'run-1', status: 'completed' }]
+  })
+
+  /** Mounted with the cells rendered, as the isotopologue label tests do. */
+  async function mountWithCells() {
+    const tableRows = ref([])
+    const wrapper = mount(PaneBrowserAssignment, {
+      global: {
+        directives: { tooltip: {}, help: {} },
+        stubs: {
+          ...GLOBAL_STUBS,
+          DataTable: {
+            ...GLOBAL_STUBS.DataTable,
+            watch: {
+              value: { handler: (value) => (tableRows.value = value), immediate: true }
+            }
+          },
+          Column: {
+            setup: () => ({ rows: tableRows }),
+            template:
+              '<div class="col"><template v-for="(row, i) in rows" :key="i">' +
+              '<slot name="body" :data="row" /></template></div>'
+          }
+        }
+      }
+    })
+    await wrapper.vm.$nextTick()
+    return wrapper
+  }
+
+  it('folds the lines under their ion, counted in its marker', async () => {
+    seed(GLUCOSE(), DIMER())
+    const wrapper = await mountPane()
+
+    expect(ids(wrapper)).toEqual(['m', 'br2'])
+    expect(wrapper.vm.isoCount(wrapper.vm.rows[1])).toBe(2)
+  })
+
+  it('lists the lines under their ion when unfolded, in bracket spelling', async () => {
+    seed(GLUCOSE(), DIMER())
+    const wrapper = await mountWithCells()
+    wrapper.vm.showIsotopologues = true
+    await wrapper.vm.$nextTick()
+
+    expect(ids(wrapper)).toEqual(['m', 'br2', 'br2-c0', 'br2-c1'])
+    expect(familyBreak(wrapper.vm.rows)).toBeNull()
+    expect(wrapper.findAll('.child-label').map((cell) => cell.text())).toEqual([
+      '[81Br]',
+      '[81Br]2'
+    ])
+  })
+
+  it('selects the ion when one of its folded lines is focused', async () => {
+    seed(GLUCOSE(), DIMER())
+    focusedPeak = { peak_id: 'p-br2-c0' }
+    const wrapper = await mountPane()
+
+    expect(wrapper.vm.selectedRow?.peak_assignment_id).toBe('br2')
+  })
+
+  it('shows the ion in the formula column of a row with no compound', async () => {
+    seed(GLUCOSE(), DIMER())
+    const wrapper = await mountWithCells()
+
+    const cells = wrapper.findAll('.copyable')
+    expect(cells.map((cell) => cell.text())).toEqual(['C6H12O6', 'Br2-+2'])
+    expect(cells[0].attributes('data-tooltip')).toBeUndefined()
+    expect(cells[1].attributes('data-tooltip')).toMatch(/names an ion, and no compound/)
+  })
+
+  it('sorts the ion by what the column shows', async () => {
+    seed(
+      GLUCOSE(),
+      DIMER(),
+      family({ id: 'u', mz: 99.1, intensity: 5, formula: null, fit: null, tier: 'unassigned' })
+    )
+    const wrapper = await mountPane()
+
+    wrapper.vm.sortField = 'assigned_formula'
+    wrapper.vm.sortOrder = 1
+    await wrapper.vm.$nextTick()
+    expect(ids(wrapper)).toEqual(['br2', 'm', 'u'])
   })
 })

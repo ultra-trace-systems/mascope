@@ -981,6 +981,27 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   allows, the ones kept are now the closest in mass rather than whichever the
   search happened to reach first.
 
+- **A reagent row reads like a row: it shows its ion, and an ion's isotope
+  lines are its family.** A peak the source made names its ion and no
+  compound, and the assignment ledger's formula column read only the compound,
+  so a reagent row showed a dash where a reader looks first, and the inspector
+  headed it "Unassigned". The column and the inspector's headline now show the
+  ion, written with its charge as an analyte's ion is (`Br-`, `C16H10+`; the
+  pre-pass wrote it bare, which read as a neutral). The pass also wrote each
+  line of a claimed ion's isotope pattern as a reagent row of its own, so the
+  ledger listed an ion's heavier lines beside it as more unexplained source
+  peaks. Each line now names the ion's monoisotopic row as its owner, keeping
+  the reagent role, and carries how far its height sits from the pattern's
+  prediction; the ledger folds the lines under the ion, counted in its +N
+  marker, and the inspector lists them in its isotopologue table with their
+  predicted abundances. A fragment's lines fold under the fragment the same
+  way. No tier and no count moves: the reagent chip still counts every peak
+  the source accounts for. Assigning a compound to an ion's peak by hand now
+  unassigns its lines with it, as it does an analyte's isotopologues. An
+  imported run's reagent rows stay rows of their own - the import still
+  accepts an owner only on an isotopologue - and the batch-peaks ledger does
+  not yet read reagent anchors apart from unassigned ones.
+
 ### Fixed
 
 - **A sample's properties survive a write that does not finish.** `.props`

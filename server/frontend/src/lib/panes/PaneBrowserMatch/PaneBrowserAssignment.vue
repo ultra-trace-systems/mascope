@@ -21,7 +21,8 @@ import {
 import { PeakAssignConfigForm } from '@/lib/dialogs'
 import { usePeakAssignParams } from '@/lib/peakAssignParams'
 import { num } from '@/lib/formatters'
-import { formatIsotopeFormula } from '@/lib/chem'
+import { formatIsotopeFormula, formatIsotopeLabel } from '@/lib/chem'
+import { isIsotopeLine } from '@/lib/isotopeLines'
 import {
   LEDGER_P_CORRECT_TOOLTIP,
   P_CORRECT_TOOLTIP,
@@ -282,11 +283,24 @@ const collator = new Intl.Collator(undefined, { numeric: true })
 // as missing, which is what PrimeVue's isEmpty() did.
 const isBlank = (value) => value == null || value === ''
 
+// What the formula column shows: the analyte, or on a row with none, the ion
+// the peak is - a source ion's, written with its charge - since the ion is known
+// exactly and the role chip beside it says whose it is. A row with neither
+// shows a dash.
+const formulaOf = (row) => row.assigned_formula || row.ion_formula || null
+const ION_TOOLTIP = 'Ion formula: the peak names an ion, and no compound of the sample'
+
+// What a column sorts on, where that is not the field it is named by: the
+// formula column shows a source ion's formula on a row with no analyte (see
+// formulaOf), and sorts on what it shows.
+const SORT_VALUES = { assigned_formula: (row) => formulaOf(row) }
+
 function compareBy(field, order) {
   const dir = order === -1 ? -1 : 1
+  const valueOf = SORT_VALUES[field] ?? ((row) => row[field])
   return (a, b) => {
-    const av = a[field]
-    const bv = b[field]
+    const av = valueOf(a)
+    const bv = valueOf(b)
     if (isBlank(av) && isBlank(bv)) return 0
     if (isBlank(av)) return 1
     if (isBlank(bv)) return -1
@@ -304,13 +318,13 @@ const byConfidence = (a, b) => a.tierRank - b.tierRank || (b.fit_score ?? -1) - 
 
 // Table rows. Parents (M0 + unassigned/reagent) are filtered by the active
 // chips, then ordered by the sorted column with confidence breaking ties. When
-// unfolded, each parent's iso_child isotopologues are inserted right after it,
-// ordered by m/z among themselves - a family is one block wherever its parent
-// lands, which is the only arrangement in which the indented child rows can be
-// read at all.
+// unfolded, each parent's isotope lines - an analyte's isotopologues, a source
+// ion's heavier lines (isIsotopeLine) - are inserted right after it, ordered by
+// m/z among themselves - a family is one block wherever its parent lands, which
+// is the only arrangement in which the indented child rows can be read at all.
 const rows = computed(() => {
   const parents = assignments.value.list
-    .filter((row) => row.role !== 'iso_child')
+    .filter((row) => !isIsotopeLine(row))
     .filter((row) => activeTiers.size === 0 || activeTiers.has(bucketOf(row)))
     .filter(
       (row) =>
@@ -404,14 +418,15 @@ const rows = computed(() => {
 // Label for an unfolded isotopologue child row (compact substitution label,
 // falling back to the offset label). Counted from the family's M0, which the ion
 // formula names for a labelled ion (see formatIsotopeFormula): the row's own,
-// or its M0's when the row recorded none.
+// or its M0's when the row recorded none. A source ion's line names its heavy
+// isotopes in its label alone, and reads in the same brackets.
 const childLabel = (row) =>
   row.isotope_formula
     ? formatIsotopeFormula(
         row.isotope_formula,
         row.ion_formula ?? assignments.value.m0Of(row)?.ion_formula
       )
-    : row.isotope_label || 'iso'
+    : formatIsotopeLabel(row.isotope_label) || 'iso'
 
 // Calibrated probability formatter for the P(correct) column.
 const pctFmt = new Intl.NumberFormat('en-US', { style: 'percent', maximumFractionDigits: 0 })
@@ -467,7 +482,7 @@ const selectedRow = computed({
     if (exact) return exact
     // Folded: a focused isotopologue child maps to its M0 row.
     const assignment = assignments.value.forPeak(focused.peak_id)
-    const ownerId = assignment?.role === 'iso_child' ? assignment.owner_peak_assignment_id : null
+    const ownerId = isIsotopeLine(assignment) ? assignment.owner_peak_assignment_id : null
     return ownerId != null
       ? (rows.value.find((r) => r.peak_assignment_id === ownerId) ?? null)
       : null
@@ -888,9 +903,10 @@ const breadcrumb = computed(() => {
                  the same hover-to-copy affordance as the batch ledger's. The
                  isotopologue count rides in the slot, outside what gets copied. -->
             <BaseCopyableField
-              v-else-if="data.assigned_formula"
+              v-else-if="formulaOf(data)"
               class="formula"
-              :field="data.assigned_formula"
+              :field="formulaOf(data)"
+              :tooltip="data.assigned_formula ? null : ION_TOOLTIP"
             >
               <span
                 v-if="isoCount(data)"

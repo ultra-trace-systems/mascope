@@ -5,6 +5,7 @@ import {
   isSameCompound,
   findExistingCompound,
   formatIsotopeFormula,
+  formatIsotopeLabel,
   isMonoisotopicFormula,
   labelledIsotopes,
   neutralKey,
@@ -184,6 +185,27 @@ describe('formatIsotopeFormula', () => {
   it('returns an empty string for empty input', () => {
     expect(formatIsotopeFormula('')).toBe('')
     expect(formatIsotopeFormula(null)).toBe('')
+  })
+})
+
+// A reagent ion's lines are labelled by the envelope prediction, bare; spelled
+// in brackets they read like an analyte's isotopologue beside them.
+describe('formatIsotopeLabel', () => {
+  // Cases documented in the function docstring.
+  it.each([
+    ['81Br', '[81Br]'],
+    ['81Br2', '[81Br]2'],
+    ['81Br+18O', '[81Br][18O]'],
+    ['13C', '[13C]'],
+    ['M+1', 'M+1'],
+    ['M0', 'M0']
+  ])('formats %s as %s', (label, expected) => {
+    expect(formatIsotopeLabel(label)).toBe(expected)
+  })
+
+  it('returns an empty string for no label', () => {
+    expect(formatIsotopeLabel('')).toBe('')
+    expect(formatIsotopeLabel(null)).toBe('')
   })
 })
 

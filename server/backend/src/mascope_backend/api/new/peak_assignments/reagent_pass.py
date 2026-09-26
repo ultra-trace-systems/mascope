@@ -42,6 +42,12 @@ explained by its role. The tier is 'unassigned' for the same reason, and means
 what it says: no analyte was assigned to this peak. The role is what says the
 peak is accounted for.
 
+An ion's isotope lines are one ion, as an analyte's are one compound: each line
+the pass claims beside an ion's monoisotopic peak names that peak's row as its
+owner, so a ledger folds the lines under the ion the way it folds an analyte's
+isotopologues under its M0. The lines keep the reagent role - being owned is
+what makes them a family, not what makes them an analyte's.
+
 The library holds more than the reagent's own ladder: the ions a source makes
 of the air it ionizes and the calibrant beam an Orbitrap's internal-calibration
 source runs, each ion carrying its family and the literature that names it -
@@ -123,17 +129,25 @@ def fragment_ladders_for(profile_name: str) -> tuple[FragmentLadder, ...]:
     return fragment_ladders(profile_name)
 
 
+def _signed_ion(formula: str, charge: int) -> str:
+    """An ion's formula written with its charge, as an analyte row spells its ion.
+
+    The library holds compositions with the charge apart (``"Br"``, -1); a row
+    that showed that bare would read as a neutral atom or molecule, where an
+    analyte row beside it reads ``"CHBr4-"``.
+
+    :param formula: The ion's composition, charge excluded.
+    :param charge: Its charge.
+    :return: The composition followed by one sign per unit of charge.
+    """
+    return formula + ("+" * charge if charge > 0 else "-" * -charge)
+
+
 def _provenance(hit: ReagentHit) -> dict:
     """What a reagent row records about why it was claimed.
 
     The ion's family and the literature that names it travel with every row, so
     a reader checks a claim against a paper rather than against the table.
-
-    The parent of an isotopologue is named here rather than through
-    ``owner_peak_assignment_id``: that link models one thing in this ledger - an
-    isotopologue naming the M0 analyte it belongs to - and the import path
-    enforces it, so a reagent row must not name an owner. The relationship is
-    still recorded, just as provenance rather than as structure.
     """
     record: dict = {
         "reagent": {
@@ -164,6 +178,13 @@ def build_reagent_assignments(
 ) -> list[dict]:
     """Turn claimed peaks into ledger rows.
 
+    An isotope line names its ion's monoisotopic row as its owner, and carries
+    how far its height sits from the envelope's prediction the way an analyte's
+    isotopologue does (``abundance_error``, the observed share of the
+    monoisotopic peak over the predicted one, less one), so the line reads
+    against its prediction wherever an isotopologue is read. A line whose
+    monoisotopic hit is not among ``hits`` stays a row of its own.
+
     :param hits: The claims, from :func:`claim_reagent_peaks`.
     :param peaks_df: The frame the hits' positions index into, positionally.
     :param sample_item_id: The sample these rows belong to.
@@ -171,36 +192,65 @@ def build_reagent_assignments(
     :return: One row per claimed peak.
     """
     peak_ids = peaks_df["sample_peak_id"].to_numpy()
-    return [
-        {
-            "peak_assignment_id": gen_id(32),
-            "peak_assignment_run_id": peak_assignment_run_id,
-            "sample_item_id": sample_item_id,
-            "sample_peak_id": str(peak_ids[hit.index]),
-            "sample_peak_mz": float(hit.mz),
-            "sample_peak_intensity": float(hit.intensity),
-            "sample_peak_tof": None,
-            "role": ROLE_REAGENT,
-            # No analyte was assigned to this peak, and none should be inferred
-            # from the ion formula: the ion is the source's, not the sample's.
-            "assigned_formula": None,
-            "ion_formula": hit.cluster.formula,
-            "ionization_mechanism_id": None,
-            "isotope_label": hit.isotope_label,
-            "isotope_formula": None,
-            "source": SOURCE_REAGENT,
-            "fit_score": None,
-            "mz_error_ppm": round(float(hit.mz_error_ppm), 4),
-            "abundance_error": None,
-            "tier": TIER_UNASSIGNED,
-            "target_compound_id": None,
-            "target_ion_id": None,
-            "owner_peak_assignment_id": None,
-            "alternatives": None,
-            "provenance": _provenance(hit),
-        }
-        for hit in hits
-    ]
+    ids = [gen_id(32) for _ in hits]
+    monoisotopic = {
+        hit.index: (row_id, hit)
+        for row_id, hit in zip(ids, hits, strict=True)
+        if not hit.is_isotopologue
+    }
+    rows = []
+    for row_id, hit in zip(ids, hits, strict=True):
+        owner_id, owner = monoisotopic.get(hit.parent_index, (None, None))
+        rows.append(
+            {
+                "peak_assignment_id": row_id,
+                "peak_assignment_run_id": peak_assignment_run_id,
+                "sample_item_id": sample_item_id,
+                "sample_peak_id": str(peak_ids[hit.index]),
+                "sample_peak_mz": float(hit.mz),
+                "sample_peak_intensity": float(hit.intensity),
+                "sample_peak_tof": None,
+                "role": ROLE_REAGENT,
+                # No analyte was assigned to this peak, and none should be
+                # inferred from the ion formula: the ion is the source's, not
+                # the sample's.
+                "assigned_formula": None,
+                "ion_formula": _signed_ion(hit.cluster.formula, hit.cluster.charge),
+                "ionization_mechanism_id": None,
+                "isotope_label": hit.isotope_label,
+                "isotope_formula": None,
+                "source": SOURCE_REAGENT,
+                "fit_score": None,
+                "mz_error_ppm": round(float(hit.mz_error_ppm), 4),
+                "abundance_error": (
+                    None if owner is None else _abundance_error(hit, owner)
+                ),
+                "tier": TIER_UNASSIGNED,
+                "target_compound_id": None,
+                "target_ion_id": None,
+                "owner_peak_assignment_id": owner_id,
+                "alternatives": None,
+                "provenance": _provenance(hit),
+            }
+        )
+    return rows
+
+
+def _abundance_error(line: ReagentHit, monoisotopic: ReagentHit) -> float | None:
+    """How far an isotope line's height sits from its prediction, as a fraction.
+
+    The matcher's measure for an analyte's isotopologue: the line's observed
+    share of its reference peak over the share predicted for it, less one. The
+    reference here is the monoisotopic peak, which is what the pass predicted
+    the line against (``ReagentHit.predicted_relative``).
+
+    :return: The error, or None where there is no prediction to hold it to.
+    """
+    predicted = line.predicted_relative
+    if not predicted or predicted <= 0.0 or monoisotopic.intensity <= 0.0:
+        return None
+    observed = float(line.intensity) / float(monoisotopic.intensity)
+    return round(observed / predicted - 1.0, 4)
 
 
 def claim_reagent_peaks(
@@ -325,6 +375,7 @@ def _fragment_row(
     parent: dict,
     ratio: float,
     read_as: dict | None,
+    owner_id: str | None = None,
 ) -> dict:
     """The reagent row a claimed fragment's peak becomes.
 
@@ -341,6 +392,8 @@ def _fragment_row(
     :param ratio: The fragment's height over the parent's.
     :param read_as: What the stages had read the peak as; None on an
         isotopologue line, whose reading was its monoisotopic row's.
+    :param owner_id: On an isotopologue line, the fragment's own row, which
+        the line folds under as it did under the reading it replaces.
     """
     mz = float(row.get("sample_peak_mz") or 0.0)
     record: dict = {
@@ -371,25 +424,26 @@ def _fragment_row(
         "role": ROLE_REAGENT,
         # No analyte: the ion is one the source made of the parent.
         "assigned_formula": None,
-        "ion_formula": fragment.formula,
+        "ion_formula": _signed_ion(fragment.formula, fragment.charge),
         "ionization_mechanism_id": None,
         "isotope_label": row.get("isotope_label") if isotopologue else None,
         "isotope_formula": None,
         "source": SOURCE_REAGENT,
         "fit_score": None,
         # The fragment's own line is measured against the fragment's mass, as a
-        # reagent row is against its ion's. An isotopologue line keeps the error
-        # the stage measured it at, against that line's own mass.
+        # reagent row is against its ion's. An isotopologue line keeps the errors
+        # the stage measured it at, against that line's own mass and height: the
+        # stage read the same ion, so its envelope is the fragment's.
         "mz_error_ppm": (
             row.get("mz_error_ppm")
             if isotopologue
             else round((mz - fragment.mz) / fragment.mz * 1e6, 4)
         ),
-        "abundance_error": None,
+        "abundance_error": row.get("abundance_error") if isotopologue else None,
         "tier": TIER_UNASSIGNED,
         "target_compound_id": None,
         "target_ion_id": None,
-        "owner_peak_assignment_id": None,
+        "owner_peak_assignment_id": owner_id if isotopologue else None,
         "alternatives": None,
         "provenance": {"reagent": record},
     }
@@ -430,7 +484,8 @@ def claim_fragments(
 
     A row of the target library is not taken: the workspace named that compound
     for the peak. A claimed row's isotopologue lines go with it, as reagent rows
-    of the fragment.
+    of the fragment owned by the fragment's row, as they were owned by the
+    reading it replaces.
 
     :param rows: Both stages' committed rows, as built.
     :param ladders: The profile's fragment ladders.
@@ -514,20 +569,20 @@ def claim_fragments(
     fragments: list[dict] = []
     for claim in claimed.values():
         row = claim["row"]
-        fragments.append(
-            _fragment_row(
-                row,
-                claim["fragment"],
-                claim["ladder"],
-                parent=claim["parent"],
-                ratio=claim["ratio"],
-                read_as={
-                    "formula": row.get("assigned_formula"),
-                    "ionization": _channel(row, notation_by_id),
-                    "tier": row.get("tier"),
-                },
-            )
+        fragment_row = _fragment_row(
+            row,
+            claim["fragment"],
+            claim["ladder"],
+            parent=claim["parent"],
+            ratio=claim["ratio"],
+            read_as={
+                "formula": row.get("assigned_formula"),
+                "ionization": _channel(row, notation_by_id),
+                "tier": row.get("tier"),
+            },
         )
+        claim["fragment_row_id"] = fragment_row["peak_assignment_id"]
+        fragments.append(fragment_row)
         summary["claimed"] += 1
         summary["claims"].append(
             {
@@ -550,6 +605,7 @@ def claim_fragments(
                 parent=claim["parent"],
                 ratio=claim["ratio"],
                 read_as=None,
+                owner_id=claim["fragment_row_id"],
             )
         )
         summary["claimed_isotopologues"] += 1
