@@ -262,7 +262,8 @@ that ion.
       its hydrates [Skalný et al. 2007][ska07], [Ewing & Waltman 2009][ewi09], [Matas et
       al. 2023][mat23]; nitrate, its hydrates and its cluster with nitric acid [Skalný et
       al. 2004][ska04], [Nagato et al. 2006][nag06], [Ewing & Waltman 2009][ewi09]; and
-      bicarbonate's cluster with nitric acid [Nagato et al. 2006][nag06].
+      bicarbonate's cluster with nitric acid [Nagato et al. 2006][nag06]. On an iodide
+      source nitrite and nitrate are left to the stages (below).
     - On a 15N-nitrate source the plain nitrate ions are left to the reagent's own
       envelope, whose 14N remainder they are first: the envelope claims them where their
       height fits the label's purity.
@@ -273,14 +274,18 @@ that ion.
   protonated ion and the ions two and three hydrogens heavier where the source is humid
   [Shcherbinin et al. 2024][shc24], [West et al. 2018][wes18], and the cation's own
   fragments, less H2 and less one and two acetylenes, which its electron-ionization
-  spectrum shows [NIST WebBook][nist].
+  spectrum shows [NIST WebBook][nist]. It also carries two polycyclic aromatic ions one
+  CH2 apart, C14H10+. and C15H12+., claimed on what the test spectra show (below). C14H10
+  is anthracene's and phenanthrene's ion, so on this source a PAH of these compositions
+  is not read as an analyte.
 
-Five rungs of the reagents' ladders are named by no work found. They are claimed on what
-Mascope's test spectra show instead, and each row says so: bromide's trimer Br3-, in all
-15 files of the three bromide sets at 1.5 to 35% of the base peak; its oxide BrO-, in 11
-of the 15 at up to 1.8%; bromate, BrO3-, and bromide's cluster with HBr, in every file of
-one set at 0.6% and 0.06%; and protonated urea's trimer, in every file of one of the two
-uronium sets at 0.08%.
+Seven of these ions are named by no work found. They are claimed on what Mascope's test
+spectra show instead, and each row says so: bromide's trimer Br3-, in all 15 files of the
+three bromide sets at 1.5 to 35% of the base peak; its oxide BrO-, in 11 of the 15 at up
+to 1.8%; bromate, BrO3-, and bromide's cluster with HBr, in every file of one set at 0.6%
+and 0.06%; protonated urea's trimer, in every file of one of the two uronium sets at
+0.08%; and the beam's C14H10+. and C15H12+., in all 19 files of the three
+certified-cylinder sets, zero air among them, at up to 4.3% and 6%.
 
 **What is left to the stages.** An ion a work reads as an analyte's is not claimed,
 however much it looks like the source's, and neither is an ion no work names that the
@@ -290,6 +295,11 @@ test spectra do not show:
   [Pfeifer et al. 2020][pfe20]; ammonia with urea is the urea source's reading of it
   [Shcherbinin et al. 2025][shc25];
 - bromide with HO2, the HO2 radical's own reading [Sanchez et al. 2016][san16];
+- on an iodide source, nitrate and nitrite, their hydrates and nitric acid on nitrate
+  and on bicarbonate: bare nitrate at m/z 62 is how an iodide source shows nitric acid,
+  and N2O5, the nitrate radical and the halogen nitrates beside it [Dörich et al.
+  2021][dor21], and nitrite goes with it as its pair. On a bromide source no work found
+  reads either as an analyte's, so there they are the air's;
 - formate, acetate and their clusters with their acids: formic and acetic acid
   deprotonated, which is how an acetate source measures them [Veres et al. 2008][ver08],
   [Bertram et al. 2011][ber11]. On a chamber's nitrate source they are the chamber's acids,
@@ -310,7 +320,9 @@ test spectra do not show:
   methyl loss;
 - the rest of what the ladders' grammar would enumerate: the higher bromide and iodide
   clusters and their hydrates, the iodine oxide clusters, a bromide precursor's anion, the
-  urea multimers above the trimer and those carrying ammonium, and the fluoranthene dimer.
+  urea multimers above the trimer and those carrying ammonium, the fluoranthene dimer,
+  and C13H8+., the PAH rung below the beam's two, which the test spectra show in one
+  file of nineteen.
 
 **Fragments of an analyte.** A charge-transfer or proton-transfer source breaks some of
 what it ionizes, and a fragment has an ordinary composition, so the formula search reads it

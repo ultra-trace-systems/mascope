@@ -179,26 +179,47 @@ class TestWhatTheLibraryRefusesToClaim:
                 assert "C" not in cluster.formula, f"{profile}: {cluster.label}"
 
     @pytest.mark.parametrize(
-        "profile, named, observed",
+        "profile, family, named, observed",
         [
             (
                 "BR",
+                FAMILY_REAGENT,
                 {"[Br]-", "[Br+H2O]-", "[Br+2xH2O]-", "[Br2]-"},
                 {"[Br3]-", "[Br+HBr]-", "[BrO]-", "[BrO3]-"},
             ),
-            ("IODIDE", {"[I]-", "[I+H2O]-", "[I2]-", "[I3]-"}, set()),
-            ("UR", {"[CH4N2O+H]+", "[(CH4N2O)2+H]+"}, {"[(CH4N2O)3+H]+"}),
+            ("IODIDE", FAMILY_REAGENT, {"[I]-", "[I+H2O]-", "[I2]-", "[I3]-"}, set()),
+            (
+                "UR",
+                FAMILY_REAGENT,
+                {"[CH4N2O+H]+", "[(CH4N2O)2+H]+"},
+                {"[(CH4N2O)3+H]+"},
+            ),
+            (
+                "EASYIC_POS",
+                FAMILY_CALIBRANT,
+                {
+                    "[C16H10]+",
+                    "[C16H10-H]+",
+                    "[C16H10-H2]+",
+                    "[C16H10+H]+",
+                    "[C16H12]+",
+                    "[C16H13]+",
+                    "[C16H10-C2H2]+",
+                    "[C16H10-2xC2H2]+",
+                },
+                {"[C14H10]+.", "[C15H12]+."},
+            ),
         ],
     )
     def test_a_ladder_is_what_a_work_names_or_the_test_spectra_show(
-        self, profile, named, observed
+        self, profile, family, named, observed
     ):
-        """Being reagent all the way through is not enough: a rung is claimed
-        where a work names it, or where the test spectra show it in every file
-        of a set, which it then says. The rest of a grammar's rungs - higher
-        clusters and their hydrates, oxide clusters, a precursor's anion - are
-        left to the stages."""
-        ladder = [c for c in reagent_library(profile) if c.family == FAMILY_REAGENT]
+        """Being the source's own is not enough: an ion is claimed where a
+        work names it, or where the test spectra show it in every file of a
+        set, which it then says. The rest of a grammar's rungs - higher
+        clusters and their hydrates, oxide clusters, a precursor's anion, the
+        beam's dimer and the PAH rung below C14H10 - are left to the stages."""
+        ladder = [c for c in reagent_library(profile) if c.family == family]
         assert {c.label for c in ladder if c.references} == named
         assert {c.label for c in ladder if c.observed} == observed
         for cluster in ladder:
@@ -269,12 +290,51 @@ class TestWhatTheLibraryRefusesToClaim:
             assert work.doi or work.url or "ISBN" in work.citation, key
             assert work.doi is None or work.doi.startswith("10."), key
 
+    def test_an_iodide_source_leaves_the_nitrogen_oxides_to_the_stages(self):
+        """Bare nitrate at m/z 62 is how an iodide source shows nitric acid
+        (Dorich et al. 2021), and nitrite goes with it as its pair, so the
+        iodide library claims none of the air's nitrogen oxide anions. On a
+        bromide source no work reads either as an analyte's, and there they
+        stay the air's."""
+        nitrogen_oxides = {
+            "[NO2]-",
+            "[NO2+H2O]-",
+            "[NO2+2xH2O]-",
+            "[NO3]-",
+            "[NO3+H2O]-",
+            "[NO3+2xH2O]-",
+            "[NO3+HNO3]-",
+            "[HCO3+HNO3]-",
+        }
+        assert not nitrogen_oxides & set(_by_label("IODIDE"))
+        for profile in ("BR", "EASYIC_NEG"):
+            labels = _by_label(profile)
+            assert nitrogen_oxides <= set(labels), profile
+            assert {labels[label].family for label in nitrogen_oxides} == {FAMILY_AIR}
+
+    def test_the_beams_pah_ions_are_claimed_on_what_shows_them(self):
+        """C14H10 and C15H12 stand in every file of the certified-cylinder
+        sets, zero air among them, so they are claimed as the beam's, saying
+        so; C13H8 stands in one file of nineteen and is not. None anchors the
+        pass, which the beam's own cation alone does."""
+        labels = _by_label("EASYIC_POS")
+        for label, expected in (("[C14H10]+.", 178.0777), ("[C15H12]+.", 192.0934)):
+            ion = labels[label]
+            assert ion.mz == pytest.approx(expected, abs=5e-4), label
+            assert (ion.family, ion.references, ion.anchor) == (
+                FAMILY_CALIBRANT,
+                (),
+                False,
+            )
+            assert "all 19 files" in ion.observed, label
+        assert "[C13H8]+." not in labels
+
     def test_the_air_family_is_the_same_on_every_source_of_a_polarity(self):
         """The air's ions are the air's whatever the reagent, but where the
         reagent's own ladder holds one it is the reagent's there."""
         for profile in ("BR", "IODIDE", "NO3", "EASYIC_NEG"):
             labels = {c.label for c in reagent_library(profile)}
-            assert {"[O2]-", "[CO3]-", "[HCO3]-", "[NO2]-"} <= labels, profile
+            assert {"[O2]-", "[CO3]-", "[HCO3]-"} <= labels, profile
         for profile in ("UR", "EASYIC_POS"):
             labels = {c.label for c in reagent_library(profile)}
             assert {"[N3]+", "[N4]+.", "[NO2]+", "[H3O+2xH2O]+"} <= labels, profile
