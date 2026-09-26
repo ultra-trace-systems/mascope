@@ -83,6 +83,9 @@ class BatchPeaksResource(BaseResource):
         :return: A DataFrame with one row per batch peak: ``batch_peak_id``,
                  ``mz``, ``consensus_formula``, ``consensus_ion_formula``,
                  ``ionization_mechanism_id``, ``consensus_tier``,
+                 ``consensus_role`` (``reagent`` or ``artifact`` on a peak the
+                 source accounts for, whose ion ``consensus_ion_formula`` then
+                 names; null otherwise),
                  ``best_fit_score``, ``support_fraction``, ``n_present``,
                  ``is_ambiguous``, ``max_intensity`` (in
                  ``intensity_variable``), ``isotopologue_of`` (the batch peak
@@ -120,7 +123,8 @@ class BatchPeaksResource(BaseResource):
         :type sample_id: str, optional
         :return: A DataFrame with one row per member. Anchor columns:
                  ``batch_peak_id``, ``batch_mz``, ``consensus_formula``,
-                 ``consensus_ion_formula``, ``consensus_ionization_mechanism_id``,
+                 ``consensus_ion_formula``, ``consensus_role``,
+                 ``consensus_ionization_mechanism_id``,
                  ``consensus_tier``, ``support_fraction``, ``n_present``,
                  ``is_ambiguous``, ``max_intensity``, ``isotopologue_of``,
                  ``curated``. Member columns: ``sample_item_id``,

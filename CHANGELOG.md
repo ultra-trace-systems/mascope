@@ -1023,8 +1023,23 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   the source accounts for. Assigning a compound to an ion's peak by hand now
   unassigns its lines with it, as it does an analyte's isotopologues. An
   imported run's reagent rows stay rows of their own - the import still
-  accepts an owner only on an isotopologue - and the batch-peaks ledger does
-  not yet read reagent anchors apart from unassigned ones.
+  accepts an owner only on an isotopologue. The batch-peaks ledger reads a
+  reagent peak the same way (below).
+
+- **The batch-peaks ledger reads a peak the source made as the ion it is.**
+  A batch peak whose members the reagent or artifact pass claimed carried no
+  formula to vote on, so it read as unassigned. Where more of its members were
+  claimed than assigned a formula, its consensus now takes the role they
+  carry, with their ion: the Formula column shows the ion
+  (`Br-`), the tier column the *reagent* or *artifact* chip, the strip above
+  the ledger counts it under that chip, the tier filter narrows to it, and an
+  ion's isotope lines fold under it as an isotopologue folds under its
+  compound. The ledger's CSV export and the API's ledger rows carry the role
+  as `consensus_role`. A sample's count of assigned members in the sample
+  browser still counts formulas alone, and the batch untargeted search no
+  longer writes over a reagent member. A ledger folded before this reads its
+  reagent peaks once rebuilt, since the fold did not record their ions
+  (assignment quality plan, step 3.4d).
 
 ### Fixed
 

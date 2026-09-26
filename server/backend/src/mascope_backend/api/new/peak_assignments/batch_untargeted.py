@@ -506,7 +506,9 @@ async def _propagate_to_sample(
     The seeded chain scores each (formula, mechanism) as an ion against the
     sample's own peaks. A member whose peak the ion's envelope paired to takes
     the ion's fit, tiered under the search's own bands; a member the envelope
-    did not reach stays unassigned. Runs outside the fold lock, writes inside.
+    did not reach stays unassigned. A reagent member names its ion's registry
+    entry, so it is not an unassigned member here, and the search does not
+    write over the claim. Runs outside the fold lock, writes inside.
 
     The batch curation measures a pinned identity the same way, over every
     member rather than the unassigned ones (``only_unassigned=False``),

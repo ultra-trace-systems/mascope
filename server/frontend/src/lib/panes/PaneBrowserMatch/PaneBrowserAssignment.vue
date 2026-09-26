@@ -31,7 +31,7 @@ import {
   listingTags,
   listingTooltip
 } from '@/lib/referenceListings'
-import { TIERS, tierBucket, tierRank } from '@/lib/tiers'
+import { ROLE_BUCKETS, bucketOf as bucketFor, bucketRank, tierRank } from '@/lib/tiers'
 import { prettyTrim } from '@/lib/utils'
 import { scrollVirtualRowIntoView } from '@/lib/virtualScroll'
 import { useApp } from '@/stores'
@@ -215,23 +215,13 @@ function focusPeak(assignment) {
 // batch-peaks pane, which is the point of sharing it - two ledgers side by side
 // that ranked tiers differently would be worse than either being wrong alone.
 
-// The roles that account for a peak without a formula, each its own bucket
-// beside the tiers: a reagent peak is the source's own ion, an artifact the
-// instrument's ringing. Their rows are written at tier `unassigned`, so without
-// this they would be filtered, counted and sorted among the peaks nothing
-// explained. Tier ranking itself lives in @/lib/tiers so this ledger and the
-// batch-peak ledger cannot drift.
-const ROLE_BUCKETS = ['reagent', 'artifact']
-function bucketOf(row) {
-  if (ROLE_BUCKETS.includes(row.role)) return row.role
-  return tierBucket(row.tier)
-}
-// Sorted after every tier, in the strip's order, so the tier column groups the
-// rows by the chip they show.
-function rankOf(row) {
-  const role = ROLE_BUCKETS.indexOf(row.role)
-  return role === -1 ? tierRank(row.tier) : TIERS.length + role
-}
+// The roles that account for a peak without a formula (a reagent's ion, an
+// artifact's ringing) are buckets of their own after the tiers, filtered,
+// counted and sorted apart from the peaks nothing explained. The buckets and
+// their ranks live in @/lib/tiers so this ledger and the batch-peak ledger
+// cannot drift.
+const bucketOf = (row) => bucketFor(row.tier, row.role)
+const rankOf = (row) => bucketRank(row.tier, row.role)
 
 // Active tier filters (empty = show all); clicking a histogram chip toggles it.
 const activeTiers = reactive(new Set())

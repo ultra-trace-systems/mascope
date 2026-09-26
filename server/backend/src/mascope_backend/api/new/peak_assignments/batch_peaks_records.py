@@ -64,6 +64,9 @@ def _batch_peak_meta(bp) -> dict:
         "consensus_ion_formula": bp.consensus_ion_formula,
         "ionization_mechanism_id": bp.ionization_mechanism_id,
         "consensus_tier": bp.consensus_tier,
+        # The role that accounts for an anchor most of whose members were
+        # claimed, whose ion is then consensus_ion_formula; None otherwise.
+        "consensus_role": bp.consensus_role,
         "best_fit_score": bp.best_fit_score,
         "support_fraction": bp.support_fraction,
         "n_present": bp.n_present,

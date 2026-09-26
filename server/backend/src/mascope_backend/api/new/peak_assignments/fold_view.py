@@ -193,7 +193,13 @@ def member_detail(member: Any, anchor: Any) -> dict:
     }
     alternatives = []
     for index, entry in enumerate(anchor.candidates or []):
-        if index == member.candidate or not isinstance(entry, dict):
+        # A source ion's entry names no formula: it is what a claimed member
+        # was, not a reading this peak could take.
+        if (
+            index == member.candidate
+            or not isinstance(entry, dict)
+            or not entry.get("formula")
+        ):
             continue
         share = shares.get(entry.get("formula"), {})
         alternatives.append(
@@ -218,6 +224,7 @@ def member_detail(member: Any, anchor: Any) -> dict:
             "consensus_formula": anchor.consensus_formula,
             "consensus_ion_formula": anchor.consensus_ion_formula,
             "consensus_tier": anchor.consensus_tier,
+            "consensus_role": anchor.consensus_role,
             "support_fraction": anchor.support_fraction,
             "n_present": anchor.n_present,
             "is_ambiguous": bool(anchor.is_ambiguous),

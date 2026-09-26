@@ -913,6 +913,18 @@ when it is ready. The same rows are one call away in the SDK
 (`mascope.load_batch_ledger(...)`, or `mascope.batch_peaks.members(batch_id)` per
 batch), which is the shortest way from a batch's assignment to any other format.
 
+A batch peak the source accounts for reads as the sample ledger reads it. Where more
+of its members are peaks the reagent or artifact pass claimed - the reagent's ions, the
+air's, the calibrant beam's, or an intense peak's ringing - than peaks a formula was
+assigned to, the row shows the ion in the Formula column, written with its charge, and
+the *reagent* or *artifact* chip in place of a tier; it counts under that chip in the strip above the
+ledger, after the tiers, rather than as unassigned. An ion's isotope lines fold under it
+as a compound's isotopologues do. A few samples reading the ion as a neutral - a dim
+file the claim missed, or a sample assigned by an older engine - do not outvote the rest,
+and a tie stays with the formula. The untargeted search leaves these peaks alone, as a
+run does. A batch ledger folded before the ledger learned this reads its reagent peaks
+as unassigned until its samples are folded again (*Rebuild batch ledger*).
+
 The *Verdict* column, last in the ledger, records and shows a
 [batch-level verdict](#batch-level-verdicts) on the species: one judgment that covers
 every sample in the batch without a verdict of its own.

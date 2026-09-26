@@ -32,6 +32,9 @@ from mascope_backend.api.new.peak_assignments.batch_peaks_records import (
     get_batch_peak_ledger,
     get_batch_peak_series,
 )
+from mascope_backend.api.new.peak_assignments.sample_status import (
+    get_batch_sample_assignment_status,
+)
 from mascope_backend.db import (
     BatchPeak,
     BatchPeakOccurrence,
@@ -1001,6 +1004,85 @@ async def test_a_list_match_names_its_list_on_the_registry_and_the_ledger(
         r for r in everything["data"] if r["batch_peak_id"] != shared.batch_peak_id
     ]
     assert unlisted and all(r["reference_listing"] is None for r in unlisted)
+
+
+async def test_a_reagent_anchor_reads_as_its_ion_with_its_lines_folded_under_it(
+    async_session_factory, seeded
+):
+    """Step 3.3c's follow-up, built in 3.4d. The reagent pre-pass writes an ion's
+    row with its ion and no formula, and each isotope line of its envelope as a
+    reagent row owned by the ion's. The fold registers the ion on the anchor, the
+    consensus reads the anchor as the reagent's ion rather than as a peak nothing
+    explained, and the line's anchor folds under the ion's - while the sample's
+    count of assigned members still counts the formulas alone."""
+    batch, samples = seeded
+    async with async_session_factory() as s:
+        run_id = (
+            await s.execute(
+                select(PeakAssignmentRun.peak_assignment_run_id).where(
+                    PeakAssignmentRun.sample_item_id == samples["A"]
+                )
+            )
+        ).scalar_one()
+        ion_id, line_id = gen_id(32), gen_id(32)
+        for assignment_id, peak_id, mz, intensity, owner, label in (
+            (ion_id, "A-br79", 78.9189, 9000.0, None, None),
+            (line_id, "A-br81", 80.9168, 8700.0, ion_id, "81Br"),
+        ):
+            s.add(
+                PeakAssignment(
+                    peak_assignment_id=assignment_id,
+                    peak_assignment_run_id=run_id,
+                    sample_item_id=samples["A"],
+                    sample_peak_id=peak_id,
+                    sample_peak_mz=mz,
+                    sample_peak_intensity=intensity,
+                    role="reagent",
+                    assigned_formula=None,
+                    ion_formula="Br-",
+                    isotope_label=label,
+                    owner_peak_assignment_id=owner,
+                    tier="unassigned",
+                )
+            )
+        await s.commit()
+
+    await fold_sample_into_batch_peaks(samples["A"])
+
+    anchors = await _batch_peaks(async_session_factory, batch)
+
+    def at(mz):
+        return next(p for p in anchors if abs(p.mz - mz) < 1e-3)
+
+    ion, line = at(78.9189), at(80.9168)
+    assert (ion.consensus_role, ion.consensus_ion_formula) == ("reagent", "Br-")
+    assert (ion.consensus_formula, ion.consensus_tier) == (None, "unassigned")
+    assert ion.isotopologue_of is None
+    # The ion's registry names it with no formula - which is also why batch
+    # curation can never pin it.
+    assert ion.candidates == [
+        {"formula": None, "ion_formula": "Br-", "ionization_mechanism_id": None}
+    ]
+    assert line.consensus_role == "reagent"
+    assert line.isotopologue_of == ion.batch_peak_id
+
+    # The ledger row says the same; an anchor nothing accounts for says nothing.
+    ledger = {
+        r["batch_peak_id"]: r
+        for r in (await get_batch_peak_ledger(sample_batch_id=batch, min_n_present=1))[
+            "data"
+        ]
+    }
+    assert ledger[ion.batch_peak_id]["consensus_role"] == "reagent"
+    assert ledger[line.batch_peak_id]["isotopologue_of"] == ion.batch_peak_id
+    bare = at(250.1)
+    assert ledger[bare.batch_peak_id]["consensus_role"] is None
+
+    # Two formulas assigned among five members: the claimed ones name an entry
+    # but carry no assignment.
+    status = await get_batch_sample_assignment_status(sample_batch_id=batch)
+    record = next(r for r in status["data"] if r["sample_item_id"] == samples["A"])
+    assert (record["n_members"], record["n_assigned"]) == (5, 2)
 
 
 # --- the run-less ingest path -----------------------------------------------------
