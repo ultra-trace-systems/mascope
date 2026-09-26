@@ -1148,6 +1148,104 @@ describe('PaneBrowserAssignment a tiering still in progress', () => {
   })
 })
 
+// What a reference list calls the formula, beside it (step 3.4d): the name,
+// the list and its tag, off the flattened field the ledger row carries.
+describe('PaneBrowserAssignment reference-list column', () => {
+  const LISTING = {
+    name: 'decamethylcyclopentasiloxane',
+    source: 'cyclic-siloxanes',
+    tags: ['background'],
+    total: 2
+  }
+
+  beforeEach(() => {
+    runList = [{ peak_assignment_run_id: 'run-1', status: 'completed' }]
+  })
+  afterEach(() => vi.clearAllMocks())
+
+  async function renderedListing(...families) {
+    const tableRows = ref([])
+    seed(...families)
+    const wrapper = mount(PaneBrowserAssignment, {
+      global: {
+        directives: { tooltip: {}, help: {} },
+        stubs: {
+          ...GLOBAL_STUBS,
+          DataTable: {
+            ...GLOBAL_STUBS.DataTable,
+            watch: {
+              value: { handler: (value) => (tableRows.value = value), immediate: true }
+            }
+          },
+          Column: {
+            props: ['field'],
+            setup: () => ({ rows: tableRows }),
+            template:
+              '<div class="stub-col" :data-field="field"><slot name="header" />' +
+              '<template v-for="(row, i) in rows" :key="i">' +
+              '<div class="stub-cell"><slot name="body" :data="row" /></div></template></div>'
+          }
+        }
+      }
+    })
+    wrapper.vm.showIsotopologues = true
+    await wrapper.vm.$nextTick()
+    return wrapper
+  }
+
+  const listedFamily = () => {
+    const fam = family({
+      id: 'd5',
+      mz: 355.07,
+      intensity: 900,
+      formula: 'C10H30O5Si5',
+      children: [{ sample_peak_mz: 356.07 }]
+    })
+    fam.parent.reference_listing = LISTING
+    return fam
+  }
+  const listingColumn = (wrapper) =>
+    wrapper.findAll('.stub-col').find((col) => col.attributes('data-field') === 'listing')
+
+  it('shows the name, the list and its tag beside the formula', async () => {
+    const wrapper = await renderedListing(listedFamily())
+    const column = listingColumn(wrapper)
+    const cells = column.findAll('.stub-cell')
+
+    // The column comes right after the formula's.
+    const fields = wrapper.findAll('.stub-col').map((col) => col.attributes('data-field'))
+    expect(fields.indexOf('listing')).toBe(fields.indexOf('assigned_formula') + 1)
+    expect(column.text()).toContain('listed as')
+
+    const listed = cells[0].find('[data-testid="listed-as"]')
+    expect(listed.find('.listing-name').text()).toBe('decamethylcyclopentasiloxane +1')
+    expect(listed.find('.listing-source').text()).toBe('cyclic-siloxanes')
+    expect(listed.find('[data-testid="list-tag-background"]').exists()).toBe(true)
+    // The isotopologue line under it is the same formula again, and shows nothing.
+    expect(cells[1].text()).toBe('')
+  })
+
+  it('marks a row no list names with a recessive dash', async () => {
+    const wrapper = await renderedListing(FAMILY_B)
+    const cell = listingColumn(wrapper).find('.stub-cell')
+
+    expect(cell.find('[data-testid="listed-as"]').exists()).toBe(false)
+    expect(cell.find('.no-listing').exists()).toBe(true)
+  })
+
+  it('sorts on the name, the rows no list names last', async () => {
+    const pinene = family({ id: 'p', mz: 137.13, intensity: 10, formula: 'C10H16' })
+    pinene.parent.reference_listing = { name: 'alpha-pinene', source: 'monoterpenes' }
+    seed(listedFamily(), FAMILY_B, pinene)
+    const wrapper = await mountPane()
+
+    wrapper.vm.sortField = 'listing'
+    wrapper.vm.sortOrder = 1
+    await wrapper.vm.$nextTick()
+    expect(wrapper.vm.rows.map((row) => row.peak_assignment_id)).toEqual(['p', 'd5', 'b'])
+  })
+})
+
 describe('PaneBrowserAssignment header and controls', () => {
   beforeEach(() => {
     runList = [{ peak_assignment_run_id: 'run-1', status: 'completed' }]

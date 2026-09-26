@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { mount } from '@vue/test-utils'
-import { reactive } from 'vue'
+import { reactive, ref } from 'vue'
 import { createPinia, setActivePinia } from 'pinia'
 
 import { MAX_SELECTED_BATCH_PEAKS } from '@/stores/data/modules/batchPeak/ledger'
@@ -458,6 +458,7 @@ describe('PaneBrowserBatchPeaks tier ordering', () => {
       'm/z',
       'Intensity',
       'Formula',
+      'Listed as',
       'Tier',
       // The tiering is still being built, and the tier header says so.
       TIERING_PROVISIONAL.label,
@@ -537,6 +538,80 @@ describe('PaneBrowserBatchPeaks tier ordering', () => {
 // the write into the selection is where the size has to be settled - and every
 // route into it has to land in the same place, or the ones that do not become
 // the way to get an unbounded selection anyway.
+// What a reference list calls the consensus formula (step 3.4d), off the
+// flattened field the ledger row carries.
+describe('PaneBrowserBatchPeaks reference-list column', () => {
+  const LISTING = {
+    name: 'decamethylcyclopentasiloxane',
+    source: 'cyclic-siloxanes',
+    tags: ['background'],
+    total: 2
+  }
+
+  // Renders the cells: the stub table hands its rows to every column through a
+  // ref, as the sample ledger's spec does.
+  async function renderedCells(peaks) {
+    const tableRows = ref([])
+    app = makeApp({ peaks })
+    localStorage.clear()
+    setActivePinia(createPinia())
+    const rendered = mount(PaneBrowserBatchPeaks, {
+      global: {
+        stubs: {
+          ...GLOBAL_STUBS,
+          DataTable: {
+            ...DataTableStub,
+            watch: {
+              value: { handler: (value) => (tableRows.value = value), immediate: true }
+            }
+          },
+          Column: {
+            ...ColumnStub,
+            setup: () => ({ rows: tableRows }),
+            template:
+              '<div class="column-stub" :data-field="field">' +
+              '<template v-for="(row, i) in rows" :key="i">' +
+              '<div class="stub-cell"><slot name="body" :data="row" /></div></template></div>'
+          }
+        },
+        directives: { tooltip: {}, help: {} }
+      }
+    })
+    await rendered.vm.$nextTick()
+    return rendered
+  }
+
+  it('shows the name, the list and its tag on a listed batch peak', async () => {
+    wrapper = await renderedCells([
+      peak('bp-1', 'assigned', 0.9, { reference_listing: LISTING }),
+      peak('bp-2', 'assigned', 0.8, { mz: 200.1 })
+    ])
+    const column = wrapper
+      .findAll('.column-stub')
+      .find((col) => col.attributes('data-field') === 'listingName')
+    const [listed, unlisted] = column.findAll('.stub-cell')
+
+    expect(listed.find('.listing-name').text()).toBe('decamethylcyclopentasiloxane +1')
+    expect(listed.find('.listing-source').text()).toBe('cyclic-siloxanes')
+    expect(listed.find('[data-testid="list-tag-background"]').exists()).toBe(true)
+    expect(unlisted.text()).toBe('')
+  })
+
+  it('reads the listing onto the row, and sorts on its name', async () => {
+    wrapper = await mountPane({
+      peaks: [
+        peak('bp-1', 'assigned', 0.9, { reference_listing: LISTING }),
+        peak('bp-2', 'assigned', 0.8, { mz: 200.1 })
+      ]
+    })
+    const rows = new Map(wrapper.vm.rows.map((row) => [row.batch_peak_id, row]))
+
+    expect(rows.get('bp-1').listingName).toBe('decamethylcyclopentasiloxane +1')
+    expect(rows.get('bp-2').listingName).toBeNull()
+    expect(columnFor('listingName').props('sortable')).toBe(true)
+  })
+})
+
 describe('PaneBrowserBatchPeaks selection cap', () => {
   const many = (n) => Array.from({ length: n }, (_, i) => peak(`bp-${i}`, 'assigned', 0.9))
 

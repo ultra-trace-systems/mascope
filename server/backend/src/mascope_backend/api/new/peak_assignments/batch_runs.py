@@ -53,6 +53,7 @@ from mascope_backend.api.new.peak_assignments.config import (
     IN_APP_ENGINE,
     PEAK_ASSIGNMENT_ENGINE_VERSION,
 )
+from mascope_backend.api.new.peak_assignments.listing import consensus_listing
 from mascope_backend.db import (
     BatchPeak,
     BatchPeakOccurrence,
@@ -185,6 +186,12 @@ def snapshot_anchor_meta(row: Any, sample_batch_id: str) -> dict:
         "max_intensity": row.max_intensity,
         "isotopologue_of": row.isotopologue_of,
         "curated": bool(row.curated),
+        "reference_listing": consensus_listing(
+            row.candidates,
+            row.consensus_formula,
+            row.consensus_ion_formula,
+            row.ionization_mechanism_id,
+        ),
         "batch_peak_run_id": row.batch_peak_run_id,
     }
 

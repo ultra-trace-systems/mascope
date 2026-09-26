@@ -24,6 +24,13 @@ import { usePeakAssignParams } from '@/lib/peakAssignParams'
 import { num } from '@/lib/formatters'
 import { formatIsotopeFormula, formatIsotopeLabel } from '@/lib/chem'
 import { isIsotopeLine } from '@/lib/isotopeLines'
+import {
+  ledgerListing,
+  listingName,
+  listingSource,
+  listingTags,
+  listingTooltip
+} from '@/lib/referenceListings'
 import { TIERS, tierBucket, tierRank } from '@/lib/tiers'
 import { prettyTrim } from '@/lib/utils'
 import { scrollVirtualRowIntoView } from '@/lib/virtualScroll'
@@ -286,10 +293,23 @@ const isBlank = (value) => value == null || value === ''
 const formulaOf = (row) => row.assigned_formula || row.ion_formula || null
 const ION_TOOLTIP = 'Ion formula: the peak names an ion, and no compound of the sample'
 
+// What a reference list calls the formula, beside it: the first name the run
+// matched from a list, that list and the list's tags, as the inspector's
+// "listed as" field reads it. It is the reading a reader asks of a row first,
+// and it used to take the inspector to see. The row carries it flattened
+// (`reference_listing`), since a ledger row serves no provenance.
+const LISTING_HEADER_TOOLTIP =
+  'What a reference list calls the formula: the first name the run matched from a list, ' +
+  "that list, and the list's tags. A formula match names candidate compounds; it is not an " +
+  'identification.'
+
 // What a column sorts on, where that is not the field it is named by: the
 // formula column shows a source ion's formula on a row with no analyte (see
-// formulaOf), and sorts on what it shows.
-const SORT_VALUES = { assigned_formula: (row) => formulaOf(row) }
+// formulaOf), and sorts on what it shows; the listing sorts on its name.
+const SORT_VALUES = {
+  assigned_formula: (row) => formulaOf(row),
+  listing: (row) => (row.listing ? listingName(row.listing) : null)
+}
 
 function compareBy(field, order) {
   const dir = order === -1 ? -1 : 1
@@ -336,6 +356,7 @@ const rows = computed(() => {
       // tierRank(null) would answer with the 'unassigned' rank and put every
       // in-app row at one end of a column it has no opinion in.
       engineTierRank: row.engine_tier != null ? tierRank(row.engine_tier) : null,
+      listing: ledgerListing(row.reference_listing),
       // The ledger-measured channel count first: it reaches every committed
       // row, where the curated per-compound count reaches only what Stage A
       // claimed - a handful of rows on most samples and none at all on many.
@@ -382,6 +403,9 @@ const rows = computed(() => {
           // one derived from the child's OWN tier would contradict the line
           // above it, which exists precisely so a family sorts as one block.
           // The chip in the column body renders `engine_tier` directly.
+          // An isotopologue is its M0's formula measured again; the listing is
+          // on the M0's row, not repeated on each line.
+          listing: null,
           corrobAdducts: own ?? parent.corrobAdducts,
           // True whenever the count on this row is the parent's, independent of
           // whether it clears the marker's threshold, so the row stays
@@ -878,6 +902,36 @@ const breadcrumb = computed(() => {
             <span v-else class="formula">&mdash;</span>
           </template>
         </Column>
+        <!-- What a reference list calls the formula: the name, its list, and
+             the list's tags (background for the siloxanes), all in one line so
+             the row keeps its height. The tooltip names every name the run
+             matched, as the inspector's does. -->
+        <Column field="listing" sortable style="min-width: 8rem">
+          <template #header>
+            <span v-tooltip.top="LISTING_HEADER_TOOLTIP">listed as</span>
+          </template>
+          <template #body="{ data }">
+            <span
+              v-if="data.listing"
+              class="listing"
+              data-testid="listed-as"
+              v-tooltip.top="listingTooltip(data.listing)"
+            >
+              <span class="listing-name">{{ listingName(data.listing) }}</span>
+              <span v-if="listingSource(data.listing)" class="listing-source">{{
+                listingSource(data.listing)
+              }}</span>
+              <span
+                v-for="tag in listingTags(data.listing)"
+                :key="tag"
+                class="listing-tag"
+                :data-testid="`list-tag-${tag}`"
+                >{{ tag }}</span
+              >
+            </span>
+            <span v-else-if="!data.isChild" class="no-listing">&mdash;</span>
+          </template>
+        </Column>
         <Column field="mech" sortable style="min-width: 5rem">
           <template #header>
             <span v-tooltip.top="'Ionization mechanism (adduct)'">ionization</span>
@@ -997,9 +1051,38 @@ const breadcrumb = computed(() => {
 /* A row the producing engine stated no tier on. Recessive, because it is the
    majority of the column on most runs - an engine typically tiers only the
    peaks it committed a formula to - and a column of full-strength dashes would
-   read as missing data rather than as "no opinion here". */
-.no-engine-tier {
+   read as missing data rather than as "no opinion here". A row no list names
+   is the same case in the listing column. */
+.no-engine-tier,
+.no-listing {
   opacity: 0.4;
+}
+
+/* The listing: one line, the name first and cut short rather than wrapped, so
+   the virtual scroller's fixed row height holds; the list and its tags after
+   it, recessive, as the inspector shows them. */
+.listing {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.35rem;
+  max-width: 18rem;
+  white-space: nowrap;
+}
+.listing-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+.listing-source {
+  font-size: 0.72rem;
+  opacity: 0.6;
+}
+.listing-tag {
+  padding: 0 0.3rem;
+  border: 1px dashed var(--p-content-border-color, #e3e6ec);
+  border-radius: 0.25rem;
+  font-size: 0.7rem;
+  opacity: 0.8;
 }
 
 /* The panel body is a column: the launch-error banner and the tier strip take

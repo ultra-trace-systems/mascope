@@ -55,6 +55,7 @@ from mascope_backend.api.new.peak_assignments.batch_runs import (
     fail_run,
     start_run,
 )
+from mascope_backend.api.new.peak_assignments.listing import reference_listing
 from mascope_backend.db import (
     BatchPeak,
     BatchPeakOccurrence,
@@ -369,6 +370,7 @@ async def fold_sample_into_batch_peaks(
         registries: dict[str, list] = {}
         for f in folded:
             r = f.peak["row"]
+            provenance = r.provenance if isinstance(r.provenance, dict) else {}
             candidate = None
             if r.assigned_formula:
                 registry = registries.get(f.batch_peak_id)
@@ -381,8 +383,8 @@ async def fold_sample_into_batch_peaks(
                     r.ion_formula,
                     r.ionization_mechanism_id,
                     source=getattr(r, "source", None),
+                    listing=reference_listing(provenance.get("reference_identities")),
                 )
-            provenance = r.provenance if isinstance(r.provenance, dict) else {}
             session.add(
                 BatchPeakOccurrence(
                     batch_peak_id=f.batch_peak_id,
@@ -406,9 +408,11 @@ async def fold_sample_into_batch_peaks(
                 )
             )
             touched.add(f.batch_peak_id)
+        # Compared whole, not by length: a member that matched from a list an
+        # identity the registry already held adds its listing to that entry.
         for bp_id, registry in registries.items():
             bp = rows_by_id[bp_id]
-            if len(registry) != len(bp.candidates or []):
+            if registry != (bp.candidates or []):
                 bp.candidates = registry
 
         await session.flush()  # make occurrences visible to the consensus recompute

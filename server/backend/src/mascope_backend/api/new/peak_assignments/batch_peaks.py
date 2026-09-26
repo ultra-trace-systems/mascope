@@ -262,7 +262,10 @@ def fold_in_sample(
 
 #: Keys of one entry in ``BatchPeak.candidates``: the identity of an assignment
 #: a member can point at, and nothing that varies per member (fit, tier and
-#: intensity stay on the member row, where the vote reads them).
+#: intensity stay on the member row, where the vote reads them). An entry may
+#: also say where the identity came from (``source``) and what a reference
+#: list calls its formula (``listing``, ``listing.reference_listing``); neither
+#: is part of the match.
 CANDIDATE_KEYS = ("formula", "ion_formula", "ionization_mechanism_id")
 
 
@@ -272,6 +275,7 @@ def candidate_index(
     ion_formula: Optional[str],
     ionization_mechanism_id: Optional[str],
     source: Optional[str] = None,
+    listing: Optional[dict] = None,
 ) -> int:
     """Index of the candidate (``formula``, ``ion_formula``, mechanism) in
     ``candidates``, appending it when absent.
@@ -290,6 +294,15 @@ def candidate_index(
         ``manual``), recorded on a NEW entry only - the first member to bring
         an identity names its source, and a later member with the same
         identity from elsewhere does not rewrite it. Not part of the match.
+    :param listing: What a reference list calls the formula, where the member
+        matched it from one (``listing.reference_listing``). Recorded on a new
+        entry, and on an existing entry that has none - a member of the search
+        may have brought the identity first, and a later member matching it
+        from a list says the list holds it. An entry that has one keeps it, as
+        it keeps its source. Such an entry is replaced by a copy rather than
+        written into, so a registry copied out of a loaded row leaves the
+        row's own value alone and compares unequal to it. Not part of the
+        match.
     :return: The position the member's row should name.
     """
     for index, entry in enumerate(candidates):
@@ -298,6 +311,8 @@ def candidate_index(
             and entry.get("ion_formula") == ion_formula
             and entry.get("ionization_mechanism_id") == ionization_mechanism_id
         ):
+            if listing is not None and not entry.get("listing"):
+                candidates[index] = {**entry, "listing": listing}
             return index
     entry = {
         "formula": formula,
@@ -306,6 +321,8 @@ def candidate_index(
     }
     if source is not None:
         entry["source"] = source
+    if listing is not None:
+        entry["listing"] = listing
     candidates.append(entry)
     return len(candidates) - 1
 

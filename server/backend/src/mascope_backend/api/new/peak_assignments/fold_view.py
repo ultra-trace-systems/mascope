@@ -165,6 +165,9 @@ def member_row(member: Any, anchor: Any) -> dict:
         "corroboration_adducts": None,
         "corroboration_channels": None,
         "candidate_density": None,
+        # What a list calls the formula, as the member's registry entry
+        # recorded it when a member matched it from one.
+        "reference_listing": identity.get("listing"),
         "batch_peak_id": member.batch_peak_id,
     }
 

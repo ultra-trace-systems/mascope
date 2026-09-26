@@ -727,7 +727,10 @@ measurements the reasons read.
   a list that allows radicals. A formula match names candidate compounds, not an
   identification. Hovering lists the compounds by name, up to 25, and says how many more
   the lists hold. The same names appear beside the other readings of the ion and beside
-  the close alternatives.
+  the close alternatives. The ledger shows the run's own match in its **listed as**
+  column, beside the formula: the first name, its list and the list's tags, with how
+  many more names the run matched, so a row's list reading is there without opening
+  the inspector. A lead is not shown there - it is looked up when a row is inspected.
 - ***mass z*** sits beside the m/z error. It is the row's distance from the run's own
   mass calibration at its m/z, counted in the calibration's widths. Hovering it gives
   the run's centre and width, and the distances at which *off calibration* caps a row.
@@ -939,7 +942,11 @@ the batch that nothing was assigned to.
 
 Hover a column header for a one-line reminder of what the column holds at batch level:
 the m/z is the anchor's bin, the intensity the brightest sample's, the formula and tier a
-consensus over the members. The column a ledger is sorted by is kept per ledger - it
+consensus over the members. *Listed as* is what a reference list calls the consensus
+formula, where a sample's run matched it from a list: the ledger keeps the listing of each
+identity a member brought matched from a list, through whichever channel, and shows the
+consensus formula's. A batch ledger folded before this column existed shows it once its
+samples are folded again (*Rebuild batch ledger*). The column a ledger is sorted by is kept per ledger - it
 survives the switch between the *Batch peaks* ledger and a sample's ledger, and a reload.
 
 Because a batch peak is one identity for a species across the batch, the focused peak

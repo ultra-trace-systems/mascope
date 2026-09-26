@@ -145,7 +145,9 @@ class PeakAssignmentRecord(BaseModel):
     #: flattened because the tier chip displays it beside the tier it produced.
     evidence: float | None = None
     #: Calibrated probability the assignment is correct (provenance.p_correct),
-    #: flattened for the ledger's sortable P(correct) column.
+    #: flattened for the API's and the SDK's readers. The app does not show it
+    #: while the curve behind it is provisional (assignment quality plan, step
+    #: 3.4d).
     p_correct: float | None = None
     #: Whether the calibration curve behind p_correct is provisional.
     p_correct_provisional: bool | None = None
@@ -180,6 +182,15 @@ class PeakAssignmentRecord(BaseModel):
     #: derive: the ppm error beside it means nothing without the calibration the
     #: run recorded, and a gated row's tier cannot be audited without it.
     mass_z: float | None = None
+    #: What a reference list calls this row's formula, as the inspector's
+    #: "listed as" field shows it: ``name`` and ``source`` of the first identity
+    #: the run matched from a list, the ``tags`` its lists carry (``background``)
+    #: and the ``total`` of names matched (``listing.reference_listing``, off
+    #: provenance.reference_identities). None on a row no list names; the
+    #: target library's rows carry no identities and so none either. A row
+    #: derived from the batch ledger carries the listing its member's registry
+    #: entry recorded.
+    reference_listing: dict | None = None
     #: The batch peak this row's peak is a member of: carried by a row derived
     #: from the batch ledger (``fold_view``), looked up on read for a run's own
     #: row; None when the peak is not in the ledger. What the sample ledger
