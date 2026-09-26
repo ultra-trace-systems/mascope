@@ -47,11 +47,12 @@ dataset's sets G to J, the chemist's reading of 2026-09-24 (decision 21).
 | 3.1c - the stronger partner decides | #2205 | built: the partner gate keeps each neutral's partners (rows committing it at candidate or better through a mode channel) with their peak heights, current through every swap; after its walk, read once against the settled partners, a reading through a gated channel that stands on a partner is weighed against every other reading of its ion through a gated channel that has one, and the brighter partner takes the ion (`took_from`), a tie leaving the row its reading, with what it weighed recorded (`partner_gate.contest`: reading, channel, peak ratio, decisive). Where the brighter partner is at least `PARTNER_MARGIN` (10) times the other's, the other reading is marked `outweighed` and the cross-channel pass settles the ion by the partner (`same_ion_settled` by `partner`); within the margin it stays a rival and the row is held at candidate. A reading through a mode channel is not contested; where a reading has no partner and the family's mode reading is no molecule, the gate takes the opportunistic reading with the brightest partner rather than the first. The cross-channel pass weighs a rival whose molecule the sample commits through a mode channel the same way against the row's own molecule, leaving out the rows through either reading's own channel, on every row: decisively weaker it is settled, otherwise a second channel does not settle it (`shown`, counted as `shown_rival`); a typed formula such as `C6H4(CH3)2` is keyed as the molecule it spells. The run records the gate's summary and margin (`config.partner_gate`). Tiering rule set 7. The tier as a bar rather than a weight, the contest after the walk and the weighed shown rival are the review's (the step's as-built note). Measured on the testbed 2026-09-25 (develop `fb529440c`, rule set 7, margin 10): set K the benzyl cation as toluene less a hydride at assigned in 6 of 6 files, the methylbenzyl cation as xylene less a hydride in 6 (4 assigned, 2 candidate as before), C5H7+ as isoprene less a hydride in 6 (candidate in 5, assigned in the one file where isoprene's row is ten times the C5H6 row's); the gate contested 14 to 20 ions per file, swapped 7 to 12, outweighed 5 to 12 and held 7 to 12 within the margin; assigned rows per file 67 to 60 and assigned intensity 76 to 46% of the M0 total, almost all of it one ion: m/z 69.008, read as C2N2O through proton transfer and now as C2H2N2O less a hydride within the margin, 36% of the assigned intensity in every file and the air-plasma family of 3.3 and 3.6; C5H7+ is 1.5%. Set L keeps every formula and 200 rows, a third of its assigned rows and a quarter of its assigned intensity, fall to candidate on the shown hydride rival: the declared proton transfer is doubted wherever the hydride reading's molecule is seen through electron transfer. Set G, the wider reach: 158 deprotonated acids and 18 formate rows of the no-reagent-ion half fall to candidate, 42% of its assigned intensity, pinonic acid at 183.103 first, because the formate reading's molecule (nopinone) is seen through the nitrate adduct at about twice the acid's own; with reagent ion 59 rows and 8%. G11 unchanged at 5.6% of assigned-plus-candidate intensity, 7.1 to 0.3% of assigned. Set I+ 14 rows, I- none, set C 10 rows (assigned 613 to 603, the reference's confirmation 87.1 to 86.9%), set C2 unchanged |
 | 3.1d - the declared channel's prior | #2211 | measured 2026-09-25 (pass 9, develop `ecbceb593`, rule set 9, read together with 3.4b): on the proton-transfer cylinder set L the 155 rows the pass-8 buckets named return to assigned, 57 more are settled by the second channel but stay under their own band, and 65 stay held on the shown rival (38 where the rival's molecule is ten times as bright or more, 27 where the row's own molecule is shown through no other of the mode's channels); C5H7+ stays candidate in 5 of 6 files (ratios 0.01 to 0.09) and protonated benzene, predicted to stay, is assigned in 4 of 6, its C6H8 rival shown at only 0.95 to 1.3 times its own showing. On set G without reagent ion 45 acids return (the buckets said 63: 18 of those are settled by the second channel and held by their band, which the buckets did not read), pinonic acid assigned in 6 of 6 with nopinone recorded at about twice its showing, glycolic acid candidate in 6 of 6; 154 acids stay held (102 on a rival ten times as bright, 52 with no showing of their own beyond deprotonation) and the 20 formate rows stay, as opportunistic readings; with reagent ion 14 return. Set C's 10 rows return, C2 unchanged; K, K3 and I+ unchanged by the step, their moves being contests; G11 5.58% unchanged. The run's `shown_rival_weighed` reads 10 to 17 per file on G without reagent ion |
 | 3.2 - formate as an opportunistic channel | #2198, stacked on #2197 | built: `+HCOO-` is a secondary channel of the nitrate, 15N-nitrate, bromide and iodide profiles, probed on formate, its dimer with formic acid and (nitrate) its cluster with the reagent's acid, built from the reagent so the labelled profile probes `[HCOO+H^NO3]-`; the nitrate profiles keep it on where the window cannot show a probe, as they do carbonate, because the batch carrying the C11 pseudo-acids is acquired from m/z 130 and the source makes no formate carrier above 127 (the two-acid cluster absent, the two-formic-acid cluster at 0.01-0.05% of base on the wide-window sister batch); the halide profiles claim only what they show. The election alone is not enough: measured with the channel open, it read every deprotonated acid as the molecule 46 Da lighter with formate (1,239 acid rows of six no-reagent-ion samples moved to formate and were capped; set C's same-formula agreement with the reference fell from 89.6% to 62.6%), so formate takes the partner gate of step 3.1 (`engine.apply_partner_gates`): the formate reading is the row's only where the lighter neutral is committed through a mode channel, otherwise the acid stands and the formate reading is set aside. Measured on the testbed with the partner gate judging every row against the ledger as it stands: set G without reagent ion G11 24.4 -> 5.6% of assigned-plus-candidate intensity (assigned-only 32.9 -> 7.1%), the deprotonated C11 rows 195 -> 79 (51 assigned), 104 of them now their C10 formate reading at assigned, each corroborated by the C10 neutral through a mode channel, 51 standing because no reading of the C10 neutral exists through a mode channel, 28 held at candidate; assigned rows per sample 486 -> 440, assigned intensity 58.4 -> 56.5%, of which 272 list-matched acids drop to candidate because their formate rival's lighter neutral is itself committed (O4 to O8 products; a real ambiguity for the small acids, and for a list's C11 the C10 reading is right). Set G with reagent ion G11 1.2 -> 0.5%. Set C tiers within two rows of before (assigned 615 -> 613), same-formula agreement with the reference 89.6 -> 88.0% where a partnered formate reading replaces an acid the reference reads as an acid; set C2 unchanged (probe absent, channel off). The target of under 1% is met with reagent ion and not without: the remaining 5.6% is C11 acids whose C10 partner is seen through no mode channel, which the rule leaves standing |
-| 3.3 - name the source ions | - | planned; the list rewritten 2026-09-25 in four families with a literature reference per family, from the reference engine's reading (its #53) and the pass-8 fragment finding |
+| 3.3 - name the source ions | - | planned; the list rewritten 2026-09-25 in four families with a literature reference per family, from the reference engine's reading (its #53) and the pass-8 fragment finding; on 2026-09-26, from the implementing agent's question, the siloxanes moved from a claim to the shipped list with a background tag (they are analytes on an indoor-air deployment), the methyl-loss channel kept and read from the list by 3.3f |
 | 3.3b - the standard adduct notation | #2203, #2204 stacked on it | built: both notations are read everywhere, through one reader in the library (`mechanism_notation`) mirrored by the frontend's; a new mechanism is stored in the standard form, and the mechanism column reads every row in it, so the API, exports, SDK and engine show `[M-H]-` before any row is rewritten; the profiles, channels, catalogue and provisional weights are spelled in it. The map is exact both ways on all 24 fleet spellings; #2204 rewrites the stored rows and the calibration weights' keys (alembic `5193d1e942e0`, the downgrade its inverse). Moves no metric. The legacy form is refused at 2.0 |
 | 3.3c - reagent rows read like rows | - | planned, recorded 2026-09-25 from the peak browser by the plan owner: a reagent row shows no formula, and the lines of its cluster's envelope stand beside it as unrelated reagent rows; the ion formula in the column, the envelope's lines under their monoisotopic row |
 | 3.3d - source-solvent clusters | - | planned, from the reference engine's reading (its #55): the proton- and hydride-bound ladders of water, methanol, ethanol and acetone claimed as reagent rows under its ladder rules |
 | 3.3e - the chemistry a run searches under is shipped | - | planned, from the plan owner's provisioning of a fresh instance on 2026-09-26: the nineteen mechanisms the shipped modes declare and the profiles can open are seeded at every start with the target ions of the library's compounds, and a mechanism's identity across instances is its notation (decision 28); measured on the fleet, the seed builds at most 17,600 ions on the largest library, about a minute and a half at one start |
+| 3.3f - a list is read through the channels the run opened | - | planned, from the implementing agent's question on 3.3 (2026-09-26): Stage A reads a list compound through the run's opened secondary channels as well as the mode's, under the partner and corroboration rules, so the siloxanes are named on the charge-transfer source from the shipped list rather than claimed; G10 counts a source ion assigned from a list as named |
 | 3.4 - an opportunistic channel needs a second channel | - | planned |
 | 3.4b - one peak is not enough | #2212 | measured 2026-09-25 (pass 9, develop `ecbceb593`, rule set 9): G12 at 0 on every set, and every assigned row from the search names a second channel, a second line or a list. What the rule took, as assigned rows per file and as intensity of the rows that fell, of the set's monoisotopic total: G without reagent ion 324 to 232 and 1.7%, with reagent ion 116 to 87 and 0.8%, I+ 36 to 31 and 0.4%, I- 3 to 0 and 10.6% (14 of its 16 assigned rows, the nitrogen-rich C2 formulas through the bare sign on one line each, the one set outside the 5% line and 3.6's first target), K 60 to 54 and 0.5%, K3 27 to 21 and 0.1%, L 119 to 113 and 0.1%, C 121 to 73 and 4.9%, C2 52 to 28 and 4.8%; J reported: 108 to 61 per file and 30.2 to 28.7% of intensity at assigned, the trigger row at m/z 455.0 now candidate in both files that had it assigned. G2 read on C: the reference's unconfirmed share of assigned rows 13.1 to 8.8%; on C2 19.8 to 4.8%. Eight rows on G without reagent ion lost their monoisotopic row to a neighbour's claim under the lone-neighbour allowance. The untracked-line reading cost 11 rows across every set (5, 1, 2, 2, 1 on G, G with reagent ion, J, K, L) against some 9,000 rows with no line at all, so the call the build raised is moot |
 | 3.4c - measure an alternative before committing | - | planned, from the plan owner's reading of 2026-09-25: a close alternative from the batch ledger shows no fit, plausibility or tier before "use this" pins it |
@@ -1502,7 +1503,9 @@ gate, so that the tier rules and the gate are read on a fit that says what
 the evidence is. 3.4c is the inspector's and lands beside any of them.
 3.3e, the shipped chemistry, is built beside 3.3 and is on develop before
 the pass that measures 3.3, so that from pass 10 on every measurement runs
-on chemistry any instance reproduces.
+on chemistry any instance reproduces. 3.3f, the list read through the
+opened channels, follows 3.3 and 3.3e and can run beside 3.3c, since it
+touches Stage A and neither the reagent pass nor the browser.
 
 ### 3.1 A profile for the charge-transfer source
 
@@ -1743,15 +1746,27 @@ on chemistry any instance reproduces.
     (C13H8, C14H10, C15H12), claimed as reagent where the beam is on
     [easyic]; the cylinder sets K3 and L show the beam and its ladder in
     every file.
-  - **Contaminant and fragment families.** The cyclic siloxanes D3 to D6 as
-    [M+H]+ and as their methyl-loss ions [M-CH3]+ at 281.051, 355.070 and
-    429.089 [sch03, kel08], the methyl-loss channel joining the
-    charge-transfer profile as a secondary channel gated as hydride
-    abstraction is; CF3- and CF3O-, the fluorinated fragments that ride with
-    trifluoroacetic acid (reference to find); and the fragment ladders of
-    the brightest analytes on a charge-transfer or proton-transfer source,
-    the monoterpenes' at 93.070, 80.062, 79.054, 77.039 and 67.054 [tan03,
-    nist, mcl93]. On the proton-transfer cylinder set alpha-pinene's
+  - **Contaminant and fragment families.** The cyclic siloxanes D3 to D6
+    are not claimed. They are lab-air and instrument background on most
+    instruments [sch03, kel08] and analytes on an indoor-air or urban
+    deployment, and the plan owner's own D4 row on the uronium batch,
+    three lines, two channels and a list, is what a claim would erase: a
+    pre-pass claim is made before the stages see the peak and cannot ask
+    the sample. They stay list analytes, named by the shipped
+    cyclic-siloxane list; the list carries their background reading as a
+    tag the row shows and the tier ignores, and whether they are
+    background in a dataset is the batch's question (4.2's flat series,
+    the blanks). What this step adds for them is the methyl-loss channel
+    `[M-CH3]+`, joining the charge-transfer profile as a secondary channel
+    gated as hydride abstraction is, since the methyl-loss ion is the
+    siloxane's base peak on that source (D4 to D6 at 281.051, 355.070 and
+    429.089 [nist]); reading the list through it is step 3.3f's. CF3- and
+    CF3O- ride with trifluoroacetic acid, which a nitrate or iodide source
+    measures as an analyte, so they are fragments of a committed parent
+    under the rule below, not library entries. The pass claims the
+    fragment ladders of the brightest analytes on a charge-transfer or
+    proton-transfer source, the monoterpenes' at 93.070, 80.062, 79.054,
+    77.039 and 67.054 [tan03, nist, mcl93]. On the proton-transfer cylinder set alpha-pinene's
     fragments at 79.054 and 80.062 are read as protonated benzene and as a
     C6H8 the bottle does not hold, and the second doubts the first (pass
     8): a fragment named is a partner of the wrong kind removed, and the
@@ -1796,16 +1811,23 @@ on chemistry any instance reproduces.
   every PAH rung; pass 8 showed what an unnamed fragment costs on set L. A
   reference per family is what lets an operator reading the list check it
   against the literature rather than against the engine's word.
-- **Where.** `reagent_pass.py`'s library, per profile and polarity, each
-  entry carrying its reference key; the profiles' reagent lines; the
-  `[M-CH3]+` secondary channel on the charge-transfer profile
-  (`profiles.py`, gated as `[M-H]+` is); the how-it-works page's reference
-  list; `CHANGELOG.md`; a test per family in `test_reagent_pass.py`.
+- **Where.** The cluster library in `mascope_tools.composition.reagents`
+  (`REAGENT_CLUSTERS`, per profile and polarity, each entry carrying its
+  reference key), which `reagent_pass.py` passes through; the fragment
+  claim after the stages, on the judged ledger, since its parent has to
+  be committed first and the pre-pass claims only what needs no parent;
+  the `[M-CH3]+` secondary channel on the charge-transfer profile
+  (`reagents.SECONDARY_CHANNELS`, gated as `[M-H]+` is); the shipped
+  cyclic-siloxane list's background tag (`mascope_reference`, shown on
+  the row); the how-it-works page's reference list; `CHANGELOG.md`; a
+  test per family in `test_reagent_library.py` and the pass's in
+  `test_reagent_pass.py`.
 - **Verify.** G10 on sets G to L at or above 95%; G4 unchanged or better;
   no analyte row claimed (the stage-1 guard, read on the cylinder's
-  certified components); on L the pinene fragments claimed and the
-  protonated-benzene row settled by the shown-rival rule; on K3 the beam's
-  fragments claimed.
+  certified components); on the uronium sets the D4 and D5 rows keep
+  their list reading and their tier; on L the pinene fragments claimed
+  and the protonated-benzene row settled by the shown-rival rule; on K3
+  the beam's fragments claimed.
 - **Size.** M. The union of two reagent libraries on a mixed-reagent mode is
   not in this step (decision 22).
 
@@ -1981,6 +2003,51 @@ on chemistry any instance reproduces.
   fleet library is logged and under two minutes.
 - **Size.** S-M. Built beside 3.3 in its own PR, and on develop before the
   pass that measures 3.3 (decision 28).
+
+### 3.3f A list is read through the channels the run opened
+
+- **What.** Stage A matches a list compound only through the mechanisms
+  the sample's mode declares. A run that opens a secondary channel
+  (hydride abstraction, proton transfer and methyl loss on the
+  charge-transfer source, formate and carbonate on a reagent source)
+  searches the grid through it but never the list, so a list compound
+  whose ion on that source is the channel's is never named: on the
+  charge-transfer windows the mode declares electron transfer alone, the
+  siloxanes' methyl-loss ions are the brightest thing in the 210 to 500
+  window and their protonated parents sit beside them, and nothing reads
+  either, while no grid holds silicon. Stage A reads a list compound
+  through the run's opened channels as well as the mode's, with the ions
+  the compound already carries for them (3.3e ships every channel's
+  mechanism, so the ions exist), under the rules the untargeted stage's
+  readings obey: a reading through a partner-gated channel stands where
+  the sample commits the compound through another channel, and a list
+  row through an opportunistic channel is corroborated by its second
+  channel as any row is. D5 on the charge-transfer source then reads
+  through methyl loss and proton transfer at once, with its silicon
+  envelope and its list, and the tier says what that evidence is; the
+  row's background tag says what the compound usually is.
+- **Why.** From the implementing agent's question on 3.3 (2026-09-26): a
+  pre-pass claim of the siloxanes would erase the D4 row the plan owner
+  inspected and every siloxane on an indoor-air deployment, and without
+  the claim nothing names them on the charge-transfer source. G10 counts
+  a source ion of 3.3's list as named whether the run parks it as reagent
+  or artifact or assigns it from a list, so this step is what lets the
+  contaminant family reach the gate's target without a claim.
+- **Where.** The Stage A mechanism set in `service.py`
+  (`fetch_sample_ionization_mechanism_ids` joined by the resolved
+  profile's `minor_channels`, for list rows); the partner gate and the
+  cross-channel pass, which already read every row;
+  `docs/user/how-it-works/peak-assignment.md` (the sentence that Stage A
+  is untouched by the channels); `CHANGELOG.md`; the peak-assignment unit
+  tests: a list compound matched through an opened channel, not through
+  one the run did not open, gated as the untargeted reading is.
+- **Verify.** On K3 the D4 and D5 methyl-loss ions and their protonated
+  parents read as the siloxanes from the list, corroborated by two
+  channels; the uronium sets' D4 and D5 rows unchanged; G10 on K3 at or
+  above 95% with the family counted as named; no certified component of
+  the cylinder moves.
+- **Size.** S. After 3.3 and 3.3e; beside 3.3c, since it touches Stage A
+  and neither the reagent pass nor the browser.
 
 ### 3.4 An opportunistic channel needs a second channel
 
@@ -4541,8 +4608,9 @@ Sets G to J, read on chemical plausibility with no reference run (decision
   fewer than two oxygens per nitrogen, or H/C above 2.4, or a negative
   double-bond equivalent. Target at or below 2% on every set.
 - **G10, source ions named:** the share of the summed intensity on the source
-  and reagent ions of step 3.3's list that a run parks as reagent or
-  artifact. Target at or above 95%.
+  and reagent ions of step 3.3's list that a run names: parked as reagent
+  or artifact, or, for the contaminant family, assigned from a list
+  (3.3f). Target at or above 95%.
 - **G11, formate pseudo-acids:** the share of assigned-plus-candidate M0
   intensity on assigned rows read as a C(n+1) acid whose C(n) formate reading
   has a partner assigned in the sample. Target 0 at "assigned".
