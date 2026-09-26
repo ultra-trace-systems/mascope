@@ -57,7 +57,7 @@ const ROLE_CHIPS = Object.freeze({
   reagent: {
     label: 'reagent',
     icon: 'ph ph-flask',
-    line: 'Reagent: an ion the ionization source makes of itself'
+    line: 'Reagent: an ion the ionization source made, of its reagent, the air or its calibrant, or by breaking an analyte'
   },
   artifact: {
     label: 'artifact',

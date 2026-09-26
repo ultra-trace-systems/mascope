@@ -15,15 +15,24 @@ import pytest
 from mascope_tools.composition.heuristic_filter import predict_isotopes
 from mascope_tools.composition.reagents import (
     DEFAULT_ANCHOR_PPM,
+    DEFAULT_FRAGMENT_MAX_EXCESS,
     DEFAULT_ISOTOPOLOGUE_MIN_RELATIVE,
-    KIND_BACKGROUND,
+    FAMILIES,
+    FAMILY_AIR,
+    FAMILY_CALIBRANT,
+    FAMILY_REAGENT,
+    FRAGMENT_LADDERS,
     KIND_OXIDE,
+    REAGENT_CLUSTERS,
+    SOURCE_ION_REFERENCES,
     ReagentCluster,
+    fragment_ladders,
     ion_mz,
     match_reagent_clusters,
     reagent_library,
     secondary_channels,
 )
+from mascope_tools.composition.utils import parse_composition
 
 
 #: The instrument window an Orbitrap run claims in, as the profiles resolve it.
@@ -53,7 +62,7 @@ class TestTheLibraryMasses:
             ("BR", "[Br2]-", 157.8372),
             ("BR", "[BrO3]-", 126.9036),
             ("IODIDE", "[I]-", 126.9050),
-            ("IODIDE", "[I2O]-", 269.8044),
+            ("IODIDE", "[I3]-", 380.7140),
             ("UR", "[CH4N2O+H]+", 61.0396),
             ("UR", "[(CH4N2O)2+H]+", 121.0720),
             ("UR", "[(CH4N2O)3+H]+", 181.1044),
@@ -103,17 +112,21 @@ class TestWhatTheLibraryRefusesToClaim:
         assert reagent_library("ESI_NEG") == ()
         assert reagent_library("none") == ()
 
-    def test_the_charge_transfer_library_is_the_reagent_beam_alone(self):
-        """Every atom is fluoranthene's. The air-plasma cations the discharge
-        throws are the source's but not the reagent's, and the anions a
-        negative source makes from air carry sample oxygen; both belong to
-        the source-ion step, not here."""
+    def test_the_charge_transfer_library_is_its_beam_and_the_air(self):
+        """Every atom of the calibrant family is fluoranthene's, and the rest is
+        the air's: the discharge's cations and protonated water in positive
+        mode, the anions it makes of oxygen, water, carbon dioxide and the
+        nitrogen oxides in negative. The beam alone anchors the pass."""
         for profile in ("EASYIC_POS", "EASYIC_NEG"):
             for cluster in reagent_library(profile):
-                assert set(cluster.formula) <= set("CH0123456789"), cluster.label
+                if cluster.family == FAMILY_CALIBRANT:
+                    assert set(cluster.formula) <= set("CH0123456789"), cluster.label
+                else:
+                    assert cluster.family == FAMILY_AIR, cluster.label
         anchors = [c.label for c in reagent_library("EASYIC_POS") if c.anchor]
         assert anchors == ["[C16H10]+"]
-        assert [c.label for c in reagent_library("EASYIC_NEG")] == ["[C16H10]-"]
+        anchors = [c.label for c in reagent_library("EASYIC_NEG") if c.anchor]
+        assert anchors == ["[C16H10]-"]
 
     def test_the_urea_monomer_ammonium_is_a_probe_but_not_a_claim(self):
         """``[(CH4N2O)+NH4]+`` is ``[NH3+(CH4N2O)H]+``: ambient ammonia.
@@ -131,35 +144,67 @@ class TestWhatTheLibraryRefusesToClaim:
         assert monomer in probes
         assert monomer not in {c.formula for c in reagent_library("UR")}
 
-    def test_the_ammonium_series_starts_at_the_dimer(self):
-        labels = set(_by_label("UR"))
-        assert "[(CH4N2O)2+NH4]+" in labels
-        assert "[CH4N2O+NH4]+" not in labels
+    def test_no_urea_rung_carries_an_ammonium(self):
+        """The monomer's is ammonia's reading. The multimers' are named by no
+        work found and absent from the test spectra, so they are left to the
+        stages rather than claimed on a grammar's say-so."""
+        assert not any("NH4" in label for label in _by_label("UR"))
 
     def test_no_organic_acid_clusters_anywhere(self):
         """``[Br+HCOOH]-`` is ``[formic acid+Br]-``: the [M+Br]- channel.
 
         Carbon in a halide or nitrate reagent ion is the tell - none of those
         reagents contains any - so a carbon-bearing entry would be a cluster
-        with something the sample supplied. The bromide source's own precursors
-        are the one exception, and they are named rather than pattern-matched so
-        that adding a third needs a deliberate edit here.
+        with something the sample supplied. One exception, named rather than
+        pattern-matched so that adding a second needs a deliberate edit here:
+        the air's carbonate family, whose one carbon is the carbon dioxide of
+        the gas the source ionizes.
         """
-        allowed = {"[CH2Br2-H]-", "[CHBr3-H]-"}
-        for profile in ("BR", "IODIDE", "NO3", "NO3_15N"):
+        carbonates = {
+            "[CO3]-",
+            "[CO3+H2O]-",
+            "[CO3+2xH2O]-",
+            "[HCO3]-",
+            "[HCO3+HNO3]-",
+            "[O2+CO2]-",
+        }
+        for profile in ("BR", "IODIDE", "NO3", "NO3_15N", "EASYIC_NEG"):
             for cluster in reagent_library(profile):
-                if cluster.label in allowed:
-                    assert cluster.kind == KIND_BACKGROUND
+                if cluster.label in carbonates:
+                    assert cluster.family == FAMILY_AIR
+                    assert parse_composition(cluster.formula)["C"] == 1
+                    continue
+                if cluster.family == FAMILY_CALIBRANT:
                     continue
                 assert "C" not in cluster.formula, f"{profile}: {cluster.label}"
 
-    def test_the_bromide_precursors_are_claimed(self):
-        """Dibromomethane and bromoform are what the source is dosed with, so
-        their deprotonated ions are the reagent's rather than the sample's."""
-        labels = _by_label("BR")
-
-        assert labels["[CH2Br2-H]-"].mz == pytest.approx(170.84506, abs=5e-4)
-        assert labels["[CHBr3-H]-"].mz == pytest.approx(248.75556, abs=5e-4)
+    @pytest.mark.parametrize(
+        "profile, named, observed",
+        [
+            (
+                "BR",
+                {"[Br]-", "[Br+H2O]-", "[Br+2xH2O]-", "[Br2]-"},
+                {"[Br3]-", "[Br+HBr]-", "[BrO]-", "[BrO3]-"},
+            ),
+            ("IODIDE", {"[I]-", "[I+H2O]-", "[I2]-", "[I3]-"}, set()),
+            ("UR", {"[CH4N2O+H]+", "[(CH4N2O)2+H]+"}, {"[(CH4N2O)3+H]+"}),
+        ],
+    )
+    def test_a_ladder_is_what_a_work_names_or_the_test_spectra_show(
+        self, profile, named, observed
+    ):
+        """Being reagent all the way through is not enough: a rung is claimed
+        where a work names it, or where the test spectra show it in every file
+        of a set, which it then says. The rest of a grammar's rungs - higher
+        clusters and their hydrates, oxide clusters, a precursor's anion - are
+        left to the stages."""
+        ladder = [c for c in reagent_library(profile) if c.family == FAMILY_REAGENT]
+        assert {c.label for c in ladder if c.references} == named
+        assert {c.label for c in ladder if c.observed} == observed
+        for cluster in ladder:
+            if cluster.observed:
+                assert cluster.observed.startswith("no work found names it; ")
+                assert "test spectra show it" in cluster.observed
 
     def test_bromide_claims_its_oxides_and_iodide_does_not(self):
         """IO3- is iodate: deprotonated iodic acid, and the signature analyte of
@@ -170,6 +215,170 @@ class TestWhatTheLibraryRefusesToClaim:
     def test_the_iodide_library_carries_no_other_halogen(self):
         """The shed acid is the reagent's own - HI here, never a phantom HBr."""
         assert not any("Br" in c.formula for c in reagent_library("IODIDE"))
+
+    def test_an_ion_two_families_name_is_the_first_familys(self):
+        """Nitrate is an ion of the air and a nitrate source's reagent. On that
+        source it is the reagent, and anchors the pass as the reagent does."""
+        nitrate = _by_label("NO3")["[NO3]-"]
+        assert (nitrate.family, nitrate.anchor) == (FAMILY_REAGENT, True)
+        assert _by_label("BR")["[NO3]-"].family == FAMILY_AIR
+        formulas = [cluster.formula for cluster in reagent_library("NO3")]
+        assert len(formulas) == len(set(formulas))
+
+    def test_a_labelled_source_leaves_its_14n_lines_to_the_reagent(self):
+        """Plain nitrate on a 15N-nitrate source is first the reagent's 14N
+        remainder, which the ladder's envelope claims where its height fits
+        the label's purity. Listed as an air ion it would take the line as a
+        monoisotopic claim before the envelope was asked."""
+        labels = set(_by_label("NO3_15N"))
+        assert "[NO3]-" not in labels
+        assert "[NO3+H2O]-" not in labels
+        assert "[NO3+HNO3]-" not in labels
+        # Nitrite is not on the labelled ladder, so the air's is the air's.
+        assert {"[^NO3]-", "[NO2]-", "[CO3]-", "[HCO3]-"} <= labels
+
+    def test_every_ion_names_its_family_and_its_literature(self):
+        """A reader checks a claim against a paper, not against this table: an
+        ion carries the works that name it, and one no work names says what
+        shows it instead of borrowing a citation that does not name it."""
+        for profile, library in REAGENT_CLUSTERS.items():
+            for cluster in library:
+                assert cluster.family in FAMILIES, f"{profile}: {cluster.label}"
+                assert bool(cluster.references) != bool(cluster.observed), (
+                    f"{profile}: {cluster.label}"
+                )
+                for key in cluster.references:
+                    assert key in SOURCE_ION_REFERENCES, f"{cluster.label}: {key}"
+
+    def test_every_work_cited_resolves_and_is_cited(self):
+        """Each work has a DOI or, where it has none, somewhere to read it or a
+        book's ISBN; and a work no ion cites is not in the table."""
+        cited = {
+            key
+            for library in REAGENT_CLUSTERS.values()
+            for cluster in library
+            for key in cluster.references
+        } | {
+            key
+            for ladders in FRAGMENT_LADDERS.values()
+            for ladder in ladders
+            for key in ladder.references
+        }
+        assert cited == set(SOURCE_ION_REFERENCES)
+        for key, work in SOURCE_ION_REFERENCES.items():
+            assert work.doi or work.url or "ISBN" in work.citation, key
+            assert work.doi is None or work.doi.startswith("10."), key
+
+    def test_the_air_family_is_the_same_on_every_source_of_a_polarity(self):
+        """The air's ions are the air's whatever the reagent, but where the
+        reagent's own ladder holds one it is the reagent's there."""
+        for profile in ("BR", "IODIDE", "NO3", "EASYIC_NEG"):
+            labels = {c.label for c in reagent_library(profile)}
+            assert {"[O2]-", "[CO3]-", "[HCO3]-", "[NO2]-"} <= labels, profile
+        for profile in ("UR", "EASYIC_POS"):
+            labels = {c.label for c in reagent_library(profile)}
+            assert {"[N3]+", "[N4]+.", "[NO2]+", "[H3O+2xH2O]+"} <= labels, profile
+
+    def test_the_air_ions_land_where_they_should(self):
+        by_label = {
+            **_by_label("EASYIC_POS"),
+            **_by_label("EASYIC_NEG"),
+        }
+        for label, expected in (
+            ("[N3]+", 42.0087),
+            ("[N4]+.", 56.0117),
+            ("[NO2]+", 45.9924),
+            ("[H3O+H2O]+", 37.0284),
+            ("[C16H12]+", 204.0934),
+            ("[CO3]-", 59.9853),
+            ("[HCO3]-", 60.9931),
+            ("[CO3+H2O]-", 77.9959),
+            ("[NO3+HNO3]-", 124.9840),
+        ):
+            assert by_label[label].mz == pytest.approx(expected, abs=5e-4), label
+
+
+def _ion(neutral: str, *, add: str = "", remove: str = "") -> str:
+    """An ion's composition: a neutral with a moiety added or removed."""
+    counts = parse_composition(neutral)
+    if add:
+        counts += parse_composition(add)
+    if remove:
+        counts -= parse_composition(remove)
+    return "".join(f"{element}{n}" for element, n in counts.items() if n > 0)
+
+
+#: Ions a source must never claim, by the profile whose spectra they are read
+#: in: a trace species' own reading, which the air, the reagent or the beam
+#: does not make, and the certified cylinder's components through every
+#: channel the charge-transfer source reads them through.
+_ANALYTE_IONS: dict[str, list[tuple[str, str, int]]] = {
+    "positive": [
+        # Ammonia, protonated and hydrated: how a water-cluster source measures
+        # it, and the reason the urea library leaves [urea+NH4]+ alone.
+        ("ammonia", _ion("NH3", add="H"), 1),
+        ("ammonia hydrate", _ion("NH3", add="H3O"), 1),
+        ("ammonia dihydrate", _ion("NH3", add="H5O2"), 1),
+        *[
+            (f"{name} {how}", ion, 1)
+            for name, neutral in (
+                ("benzene", "C6H6"),
+                ("toluene", "C7H8"),
+                ("xylene", "C8H10"),
+                ("styrene", "C8H8"),
+                ("isoprene", "C5H8"),
+                ("acetone", "C3H6O"),
+                ("hexanal", "C6H12O"),
+                ("alpha-pinene", "C10H16"),
+                ("methanol", "CH4O"),
+                ("acetaldehyde", "C2H4O"),
+                ("acetonitrile", "C2H3N"),
+                ("trimethylbenzene", "C9H12"),
+            )
+            for how, ion in (
+                ("radical cation", neutral),
+                ("protonated", _ion(neutral, add="H")),
+                ("less a hydride", _ion(neutral, remove="H")),
+            )
+        ],
+    ],
+    "negative": [
+        ("sulfuric acid", _ion("H2SO4", remove="H"), -1),
+        ("methanesulfonic acid", _ion("CH4O3S", remove="H"), -1),
+        ("iodic acid", _ion("HIO3", remove="H"), -1),
+        ("formic acid", _ion("CH2O2", remove="H"), -1),
+        ("formic acid dimer", _ion("C2H4O4", remove="H"), -1),
+        ("acetic acid", _ion("C2H4O2", remove="H"), -1),
+        ("pyruvic acid", _ion("C3H4O3", remove="H"), -1),
+        ("trifluoroacetic acid", _ion("C2HF3O2", remove="H"), -1),
+        ("pinonic acid", _ion("C10H16O3", remove="H"), -1),
+        ("HO2 with bromide", _ion("HO2", add="Br"), -1),
+        ("nitric acid with bromide", _ion("HNO3", add="Br"), -1),
+        ("nitric acid with iodide", _ion("HNO3", add="I"), -1),
+        ("nitrous acid with iodide", _ion("HNO2", add="I"), -1),
+        ("formic acid with nitrate", _ion("CH2O2", add="NO3"), -1),
+        ("formic acid with bromide", _ion("CH2O2", add="Br"), -1),
+    ],
+}
+
+
+class TestNoAnalyteIsClaimed:
+    """The stage-1 guard, restated for the whole library: a claim takes the
+    peak out of both stages, so a library ion that is an analyte's reading
+    buries the analyte wherever the two are in one spectrum."""
+
+    @pytest.mark.parametrize(
+        "profile",
+        ["BR", "IODIDE", "NO3", "NO3_15N", "UR", "EASYIC_POS", "EASYIC_NEG"],
+    )
+    def test_no_library_ion_sits_on_an_analytes_reading(self, profile):
+        library = reagent_library(profile)
+        polarity = "positive" if library[0].charge > 0 else "negative"
+        for name, formula, charge in _ANALYTE_IONS[polarity]:
+            target = ion_mz(formula, charge)
+            for cluster in library:
+                separation = abs(cluster.mz - target) / target * 1e6
+                assert separation > 5.0, f"{profile}: {cluster.label} on {name}"
 
 
 def _spectrum(*ions: tuple[str, int, float]) -> tuple[np.ndarray, np.ndarray]:
@@ -282,11 +491,12 @@ class TestTheAnchoredWindow:
     reagent's masses, so every other rung can be claimed at the instrument's own
     precision against a corrected mass.
 
-    A single wide window cannot do this job. The gate's uronium set has an
-    ambient compound 21-28 ppm above the urea tetramer and pentamer masses -
-    alone in a 40 ppm window, and within a ppm of its OWN exact mass - while
-    that sample's reagent ions sit within 5 ppm of theirs. Being alone in a wide
-    window is not evidence; being where the anchors say the reagent is, is.
+    A single wide window cannot do this job. An ambient compound can sit 20-30
+    ppm above a rung's mass - alone in a 40 ppm window, and within a ppm of its
+    OWN exact mass - while the sample's reagent ions sit within 5 ppm of theirs;
+    one of the gate's uronium sets has such compounds above the urea tetramer
+    and pentamer masses. Being alone in a wide window is not evidence; being
+    where the anchors say the reagent is, is.
     """
 
     def test_a_uniformly_drifted_ladder_is_still_claimed(self):
@@ -299,31 +509,31 @@ class TestTheAnchoredWindow:
         assert len(hits) == len(mz)
 
     def test_an_analyte_beyond_the_anchors_is_not_claimed(self):
-        """The tetramer mass +27 ppm, with the anchors on their own masses. A
+        """The trimer mass +27 ppm, with the anchors on their own masses. A
         peak that far off is not this ladder's, however alone it sits."""
         mz, intensity = _spectrum(("CH5N2O", 1, 1e7), ("C2H9N4O2", 1, 2e7))
-        tetramer = _by_label("UR")["[(CH4N2O)4+H]+"].mz
-        mz = np.append(mz, tetramer * (1 + 27.5e-6))
-        intensity = np.append(intensity, 3e3)
+        trimer = _by_label("UR")["[(CH4N2O)3+H]+"].mz
+        mz = np.append(mz, trimer * (1 + 27.5e-6))
+        intensity = np.append(intensity, 3e4)
         hits, calibration = claim(reagent_library("UR"), mz, intensity)
 
         assert abs(calibration.offset_ppm) < 1.0
-        assert not any(h.cluster.label == "[(CH4N2O)4+H]+" for h in hits)
+        assert not any(h.cluster.label == "[(CH4N2O)3+H]+" for h in hits)
 
     def test_the_same_peak_is_claimed_when_the_ladder_agrees(self):
         """The identical peak, on a spectrum whose anchors are drifted with it,
-        IS the tetramer. The difference between the two tests is the whole rule:
+        IS the trimer. The difference between the two tests is the whole rule:
         not how far the peak sits from the nominal mass, but whether it sits
         where this spectrum's own reagent ions say the reagent is.
         """
         mz, intensity = _drifted(("CH5N2O", 1, 1e7), ("C2H9N4O2", 1, 2e7), ppm=15.0)
-        tetramer = _by_label("UR")["[(CH4N2O)4+H]+"].mz
-        mz = np.append(mz, tetramer * (1 + 15.0e-6))
-        intensity = np.append(intensity, 3e3)
+        trimer = _by_label("UR")["[(CH4N2O)3+H]+"].mz
+        mz = np.append(mz, trimer * (1 + 15.0e-6))
+        intensity = np.append(intensity, 3e4)
         hits, calibration = claim(reagent_library("UR"), mz, intensity)
 
         assert calibration.offset_ppm == pytest.approx(15.0, abs=0.5)
-        assert any(h.cluster.label == "[(CH4N2O)4+H]+" for h in hits)
+        assert any(h.cluster.label == "[(CH4N2O)3+H]+" for h in hits)
 
     def test_a_ladder_drifted_past_the_anchor_window_claims_nothing(self):
         """The conservative end of the rule, worth stating because it is a
@@ -475,3 +685,56 @@ class TestTheAnchorFloor:
 
         assert [label for label, _ in calibration.anchors] == ["[Br2]-"]
         assert calibration.offset_ppm == pytest.approx(-9.0, abs=0.5)
+
+
+class TestTheFragmentLadders:
+    """The fourth family, which the pass claims after the stages: what the
+    literature says a source breaks an analyte into, and how far."""
+
+    def test_only_the_charge_transfer_source_names_one(self):
+        assert [ladder.label for ladder in fragment_ladders("EASYIC_POS")] == [
+            "monoterpene"
+        ]
+        for profile in ("BR", "IODIDE", "NO3", "NO3_15N", "UR", "EASYIC_NEG", "none"):
+            assert fragment_ladders(profile) == (), profile
+
+    def test_the_monoterpene_fragments_land_where_they_should(self):
+        (ladder,) = fragment_ladders("EASYIC_POS")
+        assert ladder.parent == "C10H16"
+        masses = {fragment.label: fragment.mz for fragment in ladder.fragments}
+        for label, expected in (
+            ("[C7H9]+", 93.0699),
+            ("[C6H8]+.", 80.0621),
+            ("[C6H7]+", 79.0542),
+            ("[C6H5]+", 77.0386),
+            ("[C5H7]+", 67.0542),
+        ):
+            assert masses[label] == pytest.approx(expected, abs=5e-4), label
+
+    def test_the_ratios_are_the_electron_ionization_spectrums(self):
+        """Alpha-pinene's NIST spectrum: m/z 93 is the base peak and the radical
+        cation 7.4% of it, so C7H9+ stands at 13.5 times the parent's ion."""
+        (ladder,) = fragment_ladders("EASYIC_POS")
+        ratios = {fragment.label: fragment for fragment in ladder.fragments}
+        assert ratios["[C7H9]+"].literature_ratio == pytest.approx(13.51, abs=0.01)
+        assert ratios["[C6H8]+."].literature_ratio == pytest.approx(1.35, abs=0.01)
+        assert ratios["[C7H9]+"].max_ratio == pytest.approx(
+            13.51 * DEFAULT_FRAGMENT_MAX_EXCESS, abs=0.05
+        )
+
+    def test_an_aromatics_own_ions_are_not_on_it(self):
+        """Toluene's radical cation and hydride-abstraction ion, xylene's, and
+        benzene's: the ladder must leave a component a peak of its own to be
+        shown on, or the claim buries it whenever the parent is there too."""
+        (ladder,) = fragment_ladders("EASYIC_POS")
+        formulas = {fragment.formula for fragment in ladder.fragments}
+        assert not formulas & {"C7H8", "C7H7", "C8H9", "C8H10", "C6H6"}
+
+    def test_every_fragment_names_its_literature(self):
+        for ladders in FRAGMENT_LADDERS.values():
+            for ladder in ladders:
+                assert ladder.references
+                for fragment in ladder.fragments:
+                    assert fragment.references, fragment.label
+                    assert set(fragment.references) <= set(ladder.references)
+                    assert set(fragment.references) <= set(SOURCE_ION_REFERENCES)

@@ -197,7 +197,7 @@ describe('BaseTierTag reagent and artifact peaks', () => {
     const reagent = mountTag({ tier: 'unassigned', role: 'reagent', source: 'reagent' })
     expect(reagent.vm.autoTooltip).toBe(
       [
-        'Reagent: an ion the ionization source makes of itself',
+        'Reagent: an ion the ionization source made, of its reagent, the air or its calibrant, or by breaking an analyte',
         "Counted apart from the sample's compounds"
       ].join('\n')
     )

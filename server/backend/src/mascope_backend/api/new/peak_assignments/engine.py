@@ -91,11 +91,13 @@ _CALIBRATION_UNSET = object()
 ROLE_M0 = "M0"
 ROLE_ISO_CHILD = "iso_child"
 ROLE_UNASSIGNED = "unassigned"
-# A peak the source made rather than the sample: a reagent cluster ion or one of
-# its isotopologues, claimed by the pre-pass before either stage runs. The role
-# is what takes such a peak out of the analyte ledger - it carries no
-# `assigned_formula`, so it votes on nothing and is counted as explained by its
-# role rather than by a formula it has no business claiming.
+# A peak the source made rather than the sample: an ion of its reagent, of the
+# air it ionizes or of its calibrant beam, or one of their isotopologues,
+# claimed by the pre-pass before either stage runs; or a fragment it made of an
+# analyte the stages committed, claimed after them. The role is what takes such
+# a peak out of the analyte ledger - it carries no `assigned_formula`, so it
+# votes on nothing and is counted as explained by its role rather than by a
+# formula it has no business claiming.
 ROLE_REAGENT = "reagent"
 # An instrument artifact rather than an ion: an FT sidelobe, the ringing a very
 # intense centroid leaves around itself. Like a reagent row it carries no
@@ -176,6 +178,12 @@ TIERING_KEY = "tiering"
 #: the same reason: "searched 300 of 2,577 peaks" and "searched all 2,577" are
 #: different results, and nothing else on the row would ever say which happened.
 SEARCH_SCOPE_KEY = "search_scope"
+
+#: Key under which a run records what its fragment claim took
+#: (``reagent_pass.claim_fragments``): the ladders its profile names, the parents
+#: it found committed, the peaks it read as their fragments and those it left,
+#: by why. Written only by a run whose profile names a ladder.
+FRAGMENTS_KEY = "fragments"
 
 
 def untargeted_targets(

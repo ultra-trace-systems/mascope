@@ -6,6 +6,38 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 ### Added
 
+- **Peak assignment names the ions a source makes of itself, each with the
+  literature that names it.** The reagent pre-pass claims, beside a CIMS
+  reagent's own ladder, the ions a discharge makes of the air it ionizes -
+  N2+, N3+, N4+, O2+, NO+ and NO2+ with their hydrates and the protonated
+  water ladder in positive mode; hydroxide, superoxide, ozonide, carbonate,
+  bicarbonate, nitrite and nitrate with their hydrates, and nitrate and
+  bicarbonate clustered with nitric acid in negative - and the fluoranthene
+  beam's ions on an Orbitrap's EASY-IC source. Every claimed row records the
+  ion's family and the works that name that ion, cited only where a work
+  names it. A reagent's ladder holds what a work names and, where none does,
+  what Mascope's test spectra show in every file of a set, which the row then
+  says: bromide's trimer, BrO-, bromate and Br-(HBr), and urea's protonated
+  trimer. The ladders' other rungs are no longer claimed - the higher halide
+  clusters and their hydrates, the iodine oxide clusters, the bromide
+  precursors' anions, the urea multimers above the trimer and those carrying
+  ammonium, and the fluoranthene dimer. Ions a work reads as an analyte's
+  are left to the stages: ammonia's NH4+ and its hydrates, bromide with HO2,
+  formate and acetate, trifluoroacetate with CF3- and CF3O-, and the cyclic
+  siloxanes. On a wide-window charge-transfer acquisition these ions carry
+  most of the signal, its base peak N3+ among them, which the mode's
+  calibration compounds had matched as an analyte. Fragments of an analyte
+  are claimed after the stages: alpha-pinene's C7H9+, C6H9+, C6H8+., C6H7+,
+  C6H5+ and C5H7+ where a monoterpene is committed, the fragment is no
+  taller than three times the height the literature gives it, and no reading
+  of its ion names a molecule the sample shows on a peak of its own - which
+  keeps protonated benzene benzene's where benzene's radical cation is
+  there. The charge-transfer profile gains a methyl-loss channel,
+  `[M-CH3]+`, gated as hydride abstraction is, whose mechanism Mascope ships
+  with the rest. The offset a thin library is scored at stays read off the
+  reagent's ladder and the beam, not the air's low-mass ions (assignment
+  quality plan, step 3.3).
+
 - **A reference list can say how it reads its compounds, and the shipped
   cyclic-siloxane list reads them as background.** A list's header may carry
   `tags`; the one tag, `background`, reaches every compound the list loads,
@@ -347,11 +379,11 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   seeded none of the shipped ionization modes either, since a mode is seeded
   only where its mechanisms exist. Every server now creates at start each
   mechanism the shipped modes declare and every secondary channel an
-  assignment profile can open - hydride abstraction, proton transfer,
-  deprotonation, carbonate, formate, the dibromide and diiodide clusters,
-  ammonium, sodium and potassium - and then all eleven shipped modes, so a
-  fresh server searches under the same chemistry as any other from its first
-  run (assignment quality plan, step 3.3e).
+  assignment profile can open - hydride abstraction, methyl loss, proton
+  transfer, deprotonation, carbonate, formate, the dibromide and diiodide
+  clusters, ammonium, sodium and potassium - and then all eleven shipped
+  modes, so a fresh server searches under the same chemistry as any other from
+  its first run (assignment quality plan, step 3.3e).
 
   A mechanism is created the way one added under Ionization mechanisms is,
   with the target ions of every compound already in the library, so the first

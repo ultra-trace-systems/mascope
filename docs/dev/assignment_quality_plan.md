@@ -1830,6 +1830,98 @@ touches Stage A and neither the reagent pass nor the browser.
   the beam's fragments claimed.
 - **Size.** M. The union of two reagent libraries on a mixed-reagent mode is
   not in this step (decision 22).
+- **As built.** The references were checked one by one before the page cited
+  them, against the work itself or its abstract where the publisher allows
+  it: every DOI above resolves to the paper named, and twelve of the twenty
+  do not name the ions they were listed for. The plan owner's rule for the
+  build (2026-09-26): a work is cited for an ion only where it names that
+  ion, and an ion is not claimed on a citation that names its family. So:
+  - *Each ion carries its own references,* in the library
+    (`ReagentCluster.references`, keys into `SOURCE_ION_REFERENCES`, 41
+    works) and on the row (`provenance.reagent.references`, with its
+    `family`). Better sources replaced several of the plan's: the
+    discharge's cations [good70, good70b, sha66, kol04, sab12, sab13,
+    dus25], its anions [ska04, ska07, sha69, nag06, sek11, sek12, fuj23,
+    asa23, tak26, mat23, ewi09], the nitrate ladder [jok12] and its 15N form
+    [zha26], iodide and its hydrate [dor21] and its dimer and trimer
+    [gom22], urea's monomer and dimer [shc25], the beam [easyic, leb23,
+    ash26, mar16, shc24, wes18, nist]. O3-, CO4- and OH-(H2O)n turned out to
+    be named, and are claimed. The contaminant family is empty and is not
+    in the library: its two candidates are below.
+  - *Five rungs no work found names are claimed on the test spectra,* the
+    plan owner's call per ion (2026-09-26), and each row says so
+    (`provenance.reagent.observed`): bromide's trimer (all 15 files of sets
+    D, E and F1, 1.5 to 35% of the base peak), BrO- (11 of the 15, up to
+    1.8%), BrO3- and Br-(HBr) (every file of set E, 0.6% and 0.06%), and
+    urea's protonated trimer (every file of set A, 0.08%). The rest of what
+    the pass enumerated from its ladders' grammar goes: the bromide and
+    iodide ladders' other clusters, hydrates and HX clusters, BrO2-, the
+    iodine oxide clusters, the bromide precursors' anions, urea above the
+    trimer and every urea-ammonium multimer, and the fluoranthene dimer. No
+    work names them, and on the gate none was claimed in more than one file
+    (CH2Br2-H and Br-(HBr)2, one file of set D at 2e-4 of the base peak).
+    The halide and urea ladders are written out ion by ion
+    (`_BROMIDE_LADDER`, `_IODIDE_LADDER`, `_UREA_LADDER`) and a builder's
+    ion no work names fails the import (`_cite`).
+  - *Ions a cited work reads as an analyte's are not claimed.* The ammonium
+    ladder NH4+(H2O)n is how pfe20 measures ammonia; Br-(HO2) is san16's HO2
+    signal (decision 15 keeps HO2 an analyte); formate and acetate with their
+    dimers are formic and acetic acid in ver08 and ber11 - on the chamber's
+    nitrate batch with reagent ion the source's own air anions deprotonate
+    the chamber's acids, 15% and 7% of that batch's intensity, through the
+    deprotonation the mode declares. No work found names the PAH rungs the
+    beam carries (C13H8, C14H10, C15H12), and none is claimed.
+  - *CF3- and CF3O- are not claimed,* as the plan reads them: they ride with
+    trifluoroacetic acid, an analyte, so they are not library entries. The
+    fragment claim would take them against the acid committed, but no work
+    found gives either as the acid's fragment, let alone a ratio, and on two
+    of the gate's negative sets CF3O- stands at 1.2 and at 0.04 of
+    trifluoroacetate, so the data cannot supply one either. No ladder is
+    built, and they stay with the stages.
+  - *The siloxanes are named from their list.* A list header may carry
+    `tags` from a vocabulary the shipped-list checks hold it to
+    (`mascope_reference.peaklist.LIST_TAGS`, `background` alone); the
+    cyclic-siloxane list carries `background`. The peak-list adapter copies
+    a list's tags onto every record's `xrefs` - the one list-level fact a
+    record carries, because the row reads it - and the peak pane shows the
+    tag beside the list's name, with its meaning in the listing's tooltip.
+    The tier reads only an identity's name. The list's `data_version` moves
+    to 2026.09.3, so a seeded deployment takes the tag at its next seed. The
+    methyl-loss channel is in; reading the list through it is 3.3f's.
+  - *N3+ joins the discharge's cations* [good70, kol04]: it is the
+    wide-window charge-transfer set's base peak, which the mode's
+    calibration compounds had matched as an analyte through Stage A.
+  - *The fragments are claimed after the stages* (`reagent_pass.
+    claim_fragments`, read by a run and the run-less fold alike, after the
+    mirror rows carry their families and before any pass weighs a row),
+    because "its parent is committed" is a commit, which the pre-pass cannot
+    see. The parent counts at any tier (the claim reads its height, not its
+    fit). The ratio is an upper bound: three times what the literature gives
+    the fragment against the parent's ion - alpha-pinene's NIST
+    electron-ionization spectrum for the ions electron ionization makes, the
+    hardest ionization a monoterpene meets, and for C6H9+, which only proton
+    transfer makes, its share against the protonated molecule at 130 Td
+    [kar18]. The ratios alone do not tell a monoterpene's C6H7+ from
+    protonated benzene - the cylinder shows 79/136 at 2.3 to 2.5, what the
+    EI spectrum gives pinene - so a third test decides: no reading of the
+    fragment's ion may name a molecule the sample shows (candidate or
+    better, a mode channel) on a peak outside the ladder. The ladder leaves
+    out C7H8+., C7H7+ and C8H9+, toluene's and xylene's own ions, which
+    would otherwise leave toluene no peak of its own to be shown on.
+  - *The reagent-line offset* (step 2.5e) stays read off the reagent's ladder
+    and the beam (`REAGENT_LINE_FAMILIES`): the air's ions sit at the
+    low-mass end, where the axis bends.
+  - *A dry run on the pass-9 ledgers* (the library matched over each file's
+    peaks, not a run), as newly claimed shares of each file's total
+    intensity, median: K3 88% (N3+, NO2+, N4+ and C16H12+; N3+ and NO2+ had
+    been matched as the mode's calibration compounds), I+ 84%, I- 12%
+    (carbonate, bicarbonate and nitrate), G with reagent ion 3.8% (ozonide,
+    carbonate, bicarbonate and their hydrates), K 0.02%, L and G without
+    reagent ion none. The fragment claim over the same ledgers, each row
+    read by its own reading alone, which can only claim more than a run
+    (the ledgers carry no alternatives for the third test): C6H8+. in 6 of 6
+    files on K and L and C6H9+ in 6 of 6 on L; on I+ C6H8+. in 6, C6H9+ in
+    5, C5H7+ in 3 and C6H7+ in 1. Pass 10 measures it.
 
 ### 3.3b The standard adduct notation
 

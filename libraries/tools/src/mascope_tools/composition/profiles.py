@@ -613,11 +613,13 @@ EASYIC_POS = ReagentProfile(
     element_ranges="C0-40 H0-80 N0-5 O0-15 S0-2",
     reagent_formula="C16H10",
     detection=("[M]+.",),
-    # Hydride abstraction (``[M-H]+``: a hydride removed leaves a cation) and
-    # proton transfer. Both are real channels of this source and neither is
-    # what a mode declares; see ``reagents.SECONDARY_CHANNELS`` for what
-    # switches each on.
-    secondary_adducts=("[M-H]+", "[M+H]+"),
+    # Hydride abstraction (``[M-H]+``: a hydride removed leaves a cation),
+    # proton transfer, and methyl loss (``[M-CH3]+``: what charge transfer
+    # leaves of a radical cation that sheds a methyl group, alpha-pinene's ion at
+    # m/z 121 and a cyclic siloxane's base peak). All three are real channels of
+    # this source and none is what a mode declares; see
+    # ``reagents.SECONDARY_CHANNELS`` for what switches each on.
+    secondary_adducts=("[M-H]+", "[M+H]+", "[M-CH3]+"),
     default_context=AMBIENT_AIR.name,
     aliases=(
         "easyic",

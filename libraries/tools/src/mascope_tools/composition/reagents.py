@@ -32,11 +32,11 @@ afford to count evidence that would be unsafe to act on.
 The **cluster library** is the wide half: the source's own ion ladder, with
 hydrates and predicted isotopologues, matched against the peak list before
 either assignment stage runs. A library ion CLAIMS the peak it matches - the
-peak becomes a reagent row and leaves the analyte ledger - so it is held to a
-stricter rule: every atom in a library ion comes from the reagent, the solvent
-or the instrument background, and none from the sample. The section comment on
-the library says where the two lists disagree, and why that is deliberate
-rather than an inconsistency.
+peak becomes a reagent row and leaves the analyte ledger - so it is held to
+stricter rules: every atom in a library ion comes from the reagent, the solvent,
+the air or the instrument, and none from the sample; and a work names the ion,
+which it carries. The section comment on the library says where the two lists
+disagree, and why that is deliberate rather than an inconsistency.
 
 Why the library exists at all: on the gate's samples the reagent's own clusters
 are the top ten peaks and most of the total signal, and with nowhere to put them
@@ -46,7 +46,7 @@ to fit.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Iterable, Mapping, Sequence
 
 import numpy as np
@@ -387,6 +387,25 @@ _CHARGE_TRANSFER_NOTE = (
     "cannot show it below m/z 202, so its silence is not evidence"
 )
 
+#: Why the methyl-loss channel is read off the same beam as hydride abstraction.
+#: The channel is not the beam's chemistry: it is what charge transfer leaves of
+#: a radical cation that received more energy than its weakest bond holds, and
+#: a methyl group on a quaternary carbon or on silicon is that bond. The cyclic
+#: siloxanes' spectra carry their methyl-loss ion as the base peak, and
+#: alpha-pinene's carries it at m/z 121 [nist]. So the evidence that the
+#: channel runs is the evidence that the charge-transfer source runs, which is
+#: the beam, and a window that cannot show the beam leaves it on for the same
+#: reason it leaves hydride abstraction on. Like hydride abstraction it reads an
+#: ion the mode's own channel also reads as another molecule (pinene less a
+#: methyl is protonated C9H12), so a reading through it stands only where the
+#: sample commits the molecule it proposes through one of the mode's own
+#: channels.
+_METHYL_LOSS_NOTE = (
+    "charge transfer breaks a methyl group off a radical cation with energy to "
+    "spare; read off the fluoranthene beam, which this acquisition cannot show "
+    "below m/z 202, so its silence is not evidence"
+)
+
 
 #: Why the nitrate profiles default their carbonate channel ON where a spectrum
 #: could not have shown it. Measured on a broad-window (m/z 50-650) run of the
@@ -523,6 +542,15 @@ SECONDARY_CHANNELS: dict[str, tuple[SecondaryChannel, ...]] = {
                 "this source is used for start above it, and its silence there "
                 "is the window's"
             ),
+        ),
+        SecondaryChannel(
+            notation="[M-CH3]+",
+            label="Methyl loss",
+            probes=_FLUORANTHENE_CATION_PROBES,
+            when_unobservable=UNOBSERVABLE_ON,
+            declared_stays_secondary=False,
+            needs_partner=True,
+            note=_METHYL_LOSS_NOTE,
         ),
     ),
     "EASYIC_NEG": (
@@ -737,28 +765,36 @@ def channel_notes(channels: Sequence[SecondaryChannel]) -> Mapping[str, str]:
 # spectrum; a cluster here CLAIMS the peak it matches, so what belongs in this
 # table is a stricter question than what belongs in a fingerprint.
 #
-# The rule is that an entry must be reagent all the way through: every atom in
-# it comes from the reagent, the solvent, or the instrument background, and none
-# from the sample. A cluster of the reagent with something the sample supplied
-# is not a reagent ion at all - it is the analyte, measured through its adduct
-# channel, which is the primary thing this engine is for. So:
+# Two rules decide it. The first is that an entry must be reagent all the way
+# through: every atom in it comes from the reagent, the solvent, the air the
+# source ionizes, or the instrument, and none from the sample. A cluster of the
+# reagent with something the sample supplied is not a reagent ion at all - it
+# is the analyte, measured through its adduct channel, which is the primary
+# thing this engine is for. So:
 #
-# - bare reagent clusters, hydrates, and the hydrogen halide the reagent sheds
-#   are in;
 # - the reagent's clusters with organic acids are OUT. ``[Br+HCOOH]-`` is
 #   ``[formic acid+Br]-``: the [M+Br]- analyte channel, spelled backwards. The
 #   reference engine carried those for a while and they cost it real ambient
 #   acids, formic acid among them, buried as "reagent";
 # - ``[(CH4N2O)+NH4]+`` is OUT for the same reason one level up. It is the same
 #   ion as ``[NH3+(CH4N2O)H]+`` - ambient ammonia read through its urea adduct -
-#   so the analyte is the NH3. The urea MULTIMERS carrying an ammonium are in:
-#   there the ammonium charges a cluster the source built, and no sample atom is
-#   involved. The same ion is a probe above, where claiming nothing makes it
-#   safe evidence; the two lists disagree on purpose, and that is where.
+#   so the analyte is the NH3. The same ion is a probe above, where claiming
+#   nothing makes it safe evidence;
+# - the oxides split by halogen. ``BrO3-`` is reagent; ``IO3-`` is iodate, the
+#   deprotonated iodic acid that an iodide source is usually deployed to
+#   measure, so the iodine oxides are left for the assignment stages.
 #
-# The oxides split by halogen for the same reason. ``BrO3-`` is reagent; ``IO3-``
-# is iodate, the deprotonated iodic acid that an iodide source is usually
-# deployed to measure, so the iodine oxides are left for the assignment stages.
+# The second is that the claim can be checked: a work names the ion
+# (:data:`SOURCE_ION_REFERENCES`), and the ion carries the works that do. Being
+# reagent all the way through is not enough on its own, because a claim takes
+# the peak before either stage sees it. A few rungs no work found names are in
+# on the evidence of Mascope's test spectra, and say so in ``observed``:
+# bromide's trimer, its cluster with HBr and its two oxides, and urea's
+# protonated trimer, each in every file of at least one set. The rest of what a
+# grammar of these ladders would enumerate - the higher bromide and iodide
+# clusters and their hydrates, the urea multimers above the trimer and those
+# carrying ammonium, the iodine oxide clusters, the bromide precursors' anions -
+# no work names and the test spectra do not show, so it is left to the stages.
 
 
 #: A bare cluster of the reagent with itself.
@@ -767,15 +803,341 @@ KIND_CLUSTER = "cluster"
 KIND_ADDUCT = "adduct"
 #: A reagent-halogen oxide anion.
 KIND_OXIDE = "oxide"
-#: A bright ion the source throws that is not a rung of any ladder.
-KIND_BACKGROUND = "background"
 #: A fragment of the reagent ion itself.
 KIND_FRAGMENT = "fragment"
+
+# --- the families -------------------------------------------------------------
+#
+# Where an ion the pass claims comes from, which is what a reader checking a
+# claim against the literature needs first. Three families are claimed before
+# the stages, each with the references that name its ions
+# (:data:`SOURCE_ION_REFERENCES`); the fourth is claimed after them
+# (:class:`FragmentLadder`). A contaminant is not a family here: the ones a
+# chemist recognises at sight, the cyclic siloxanes first, are analytes on an
+# indoor-air deployment, so they are named from their reference list, which
+# reads them as background, rather than claimed before the sample is asked.
+
+#: The reagent's own ladder and the companions it makes: the ion a CIMS source
+#: is dosed with, its clusters, hydrates and oxides.
+FAMILY_REAGENT = "reagent"
+#: The discharge's own ions in air: what an ionizer makes of nitrogen, oxygen,
+#: water and carbon dioxide before any reagent or analyte is involved. On a
+#: charge-transfer source these are the source; on a reagent source, its
+#: background.
+FAMILY_AIR = "air"
+#: The calibrant beam of an Orbitrap's internal-calibration source: the
+#: fluoranthene ion and what the beam does to itself.
+FAMILY_CALIBRANT = "calibrant"
+#: A fragment of an analyte's ion, claimed only where the analyte is committed
+#: (:class:`FragmentLadder`).
+FAMILY_FRAGMENT = "fragment"
+
+#: Every family, in the order a reader meets them.
+FAMILIES = (
+    FAMILY_REAGENT,
+    FAMILY_AIR,
+    FAMILY_CALIBRANT,
+    FAMILY_FRAGMENT,
+)
+
+#: The families whose claimed lines say where a spectrum puts its masses, where
+#: the target library is too thin to (the reagent-line offset). The reagent's
+#: ladder and the calibrant beam are a source's brightest lines and the lines
+#: that offset was measured on. The air's ions sit at the low-mass end, where
+#: an Orbitrap's axis bends away from its centre, so counting them would pull
+#: the offset towards the bend rather than read the axis.
+REAGENT_LINE_FAMILIES = frozenset({FAMILY_REAGENT, FAMILY_CALIBRANT})
+
+
+@dataclass(frozen=True)
+class SourceReference:
+    """A publication that names ions the pass claims.
+
+    :param citation: Authors, year, title, journal, volume and first page.
+    :param doi: Its DOI; None for a work that has none.
+    :param url: Where to read a work that has no DOI.
+    """
+
+    citation: str
+    doi: str | None = None
+    url: str | None = None
+
+
+#: The works that name the library's ions, by the key its entries carry, each
+#: cited for an ion only where it names that ion. The how-it-works page lists
+#: the same works.
+SOURCE_ION_REFERENCES: dict[str, SourceReference] = {
+    "good70": SourceReference(
+        "Good, A.; Durden, D. A.; Kebarle, P. (1970). Ion-molecule reactions in "
+        "pure nitrogen and nitrogen containing traces of water at total "
+        "pressures 0.5-4 torr. Kinetics of clustering reactions forming "
+        "H+(H2O)n. J. Chem. Phys. 52, 212-221.",
+        doi="10.1063/1.1672667",
+    ),
+    "good70b": SourceReference(
+        "Good, A.; Durden, D. A.; Kebarle, P. (1970). Mechanism and rate "
+        "constants of ion-molecule reactions leading to formation of H+(H2O)n "
+        "in moist oxygen and air. J. Chem. Phys. 52, 222-229.",
+        doi="10.1063/1.1672668",
+    ),
+    "sha66": SourceReference(
+        "Shahin, M. M. (1966). Mass-spectrometric studies of corona discharges "
+        "in air at atmospheric pressures. J. Chem. Phys. 45, 2600-2605.",
+        doi="10.1063/1.1727980",
+    ),
+    "sha69": SourceReference(
+        "Shahin, M. M. (1969). Nature of charge carriers in negative coronas. "
+        "Appl. Opt. 8(S1), 106-110.",
+        doi="10.1364/AO.8.S1.000106",
+    ),
+    "sab12": SourceReference(
+        "Sabo, M.; Matejcik, S. (2012). Corona discharge ion mobility "
+        "spectrometry with orthogonal acceleration time of flight mass "
+        "spectrometry for monitoring of volatile organic compounds. Anal. Chem. "
+        "84, 5327-5334.",
+        doi="10.1021/ac300722s",
+    ),
+    "sab13": SourceReference(
+        "Sabo, M.; Matejcik, S. (2013). A corona discharge atmospheric pressure "
+        "chemical ionization source with selective NO+ formation and its "
+        "application for monoaromatic VOC detection. Analyst 138, 6907-6912.",
+        doi="10.1039/c3an00964e",
+    ),
+    "kol04": SourceReference(
+        "Kolakowski, B. M.; Grossert, J. S.; Ramaley, L. (2004). Studies on the "
+        "positive-ion mass spectra from atmospheric pressure chemical "
+        "ionization of gases and solvents used in liquid chromatography and "
+        "direct liquid injection. J. Am. Soc. Mass Spectrom. 15, 311-324.",
+        doi="10.1016/j.jasms.2003.10.019",
+    ),
+    "dus25": SourceReference(
+        "Dusanter, S.; Holzinger, R.; Klein, F.; Salameh, T.; Jamar, M. "
+        "Measurement guidelines for VOC analysis by PTR-MS. ACTRIS.",
+        url="https://actris.eu/sites/default/files/inline-files/PTRMS%20SOP%20(April2025).pdf",
+    ),
+    "han95": SourceReference(
+        "Hansel, A.; Jordan, A.; Holzinger, R.; Prazeller, P.; Vogel, W.; "
+        "Lindinger, W. (1995). Proton transfer reaction mass spectrometry: "
+        "on-line trace gas analysis at the ppb level. Int. J. Mass Spectrom. Ion "
+        "Processes 149-150, 609-619.",
+        doi="10.1016/0168-1176(95)04294-U",
+    ),
+    "pfe20": SourceReference(
+        "Pfeifer, J.; Simon, M.; Heinritzi, M.; Piel, F.; Weitz, L.; Wang, D.; "
+        "Granzin, M.; Muller, T.; Brakling, S.; Kirkby, J.; Curtius, J.; "
+        "Kurten, A. (2020). Measurement of ammonia, amines and iodine compounds "
+        "using protonated water cluster chemical ionization mass spectrometry. "
+        "Atmos. Meas. Tech. 13, 2501-2522.",
+        doi="10.5194/amt-13-2501-2020",
+    ),
+    "ska04": SourceReference(
+        "Skalny, J. D.; Mikoviny, T.; Matejcik, S.; Mason, N. J. (2004). An "
+        "analysis of mass spectrometric study of negative ions extracted from "
+        "negative corona discharge in air. Int. J. Mass Spectrom. 233, 317-324.",
+        doi="10.1016/j.ijms.2004.01.012",
+    ),
+    "ska07": SourceReference(
+        "Skalny, J. D.; Horvath, G.; Mason, N. J. (2007). Mass spectrometric "
+        "analysis of small negative ions (e/m < 100) produced by Trichel pulse "
+        "negative corona discharge fed by ozonised air. J. Optoelectron. Adv. "
+        "Mater. 9, 887-893.",
+        url="https://oro.open.ac.uk/11208/",
+    ),
+    "nag06": SourceReference(
+        "Nagato, K.; Matsui, Y.; Miyata, T.; Yamauchi, T. (2006). An analysis of "
+        "the evolution of negative ions produced by a corona ionizer in air. "
+        "Int. J. Mass Spectrom. 248, 142-147.",
+        doi="10.1016/j.ijms.2005.12.001",
+    ),
+    "sek11": SourceReference(
+        "Sekimoto, K.; Takayama, M. (2011). Observations of different core "
+        "water cluster ions Y-(H2O)n (Y = O2, HOx, NOx, COx) and magic number "
+        "in atmospheric pressure negative corona discharge mass spectrometry. "
+        "J. Mass Spectrom. 46, 50-60.",
+        doi="10.1002/jms.1870",
+    ),
+    "sek12": SourceReference(
+        "Sekimoto, K.; Sakai, M.; Takayama, M. (2012). Specific interaction "
+        "between negative atmospheric ions and organic compounds in atmospheric "
+        "pressure corona discharge ionization mass spectrometry. J. Am. Soc. "
+        "Mass Spectrom. 23, 1109-1119.",
+        doi="10.1007/s13361-012-0363-5",
+    ),
+    "fuj23": SourceReference(
+        "Fujishima, S.; Sekimoto, K.; Takayama, M. (2023). Identification of "
+        "negative ion at m/z 20 produced by atmospheric pressure corona "
+        "discharge ionization under ambient air. Mass Spectrom. 12, A0124.",
+        doi="10.5702/massspectrometry.A0124",
+    ),
+    "asa23": SourceReference(
+        'Asakawa, D.; Hiraoka, K. (2023). Comments on "Identification of '
+        "negative ion at m/z 20 produced by atmospheric pressure corona "
+        'discharge ionization under ambient air". Mass Spectrom. 12, A0140.',
+        doi="10.5702/massspectrometry.A0140",
+    ),
+    "tak26": SourceReference(
+        'Takayama, M. (2026). Reply to comment on "Identification of negative '
+        "ion at m/z 20 produced by atmospheric pressure corona discharge "
+        'ionization under ambient air". Mass Spectrom. 15, A0185.',
+        doi="10.5702/massspectrometry.A0185",
+    ),
+    "mat23": SourceReference(
+        "Matas, E.; Moravsky, L.; Ilbeigi, V.; Matejcik, S. (2023). Negative "
+        "atmospheric pressure chemical ionisation of NO2 by O2-.CO2.(H2O)n "
+        "studied by ion mobility spectrometry. Eur. Phys. J. D 77, 21.",
+        doi="10.1140/epjd/s10053-023-00603-x",
+    ),
+    "ewi09": SourceReference(
+        "Ewing, R. G.; Waltman, M. J. (2009). Mechanisms for negative reactant "
+        "ion formation in an atmospheric pressure corona discharge. Int. J. Ion "
+        "Mobil. Spectrom. 12, 65-72.",
+        doi="10.1007/s12127-009-0019-8",
+    ),
+    "jok12": SourceReference(
+        "Jokinen, T.; Sipila, M.; Junninen, H.; Ehn, M.; Lonn, G.; Hakala, J.; "
+        "Petaja, T.; Mauldin, R. L.; Kulmala, M.; Worsnop, D. R. (2012). "
+        "Atmospheric sulphuric acid and neutral cluster measurements using "
+        "CI-APi-TOF. Atmos. Chem. Phys. 12, 4117-4125.",
+        doi="10.5194/acp-12-4117-2012",
+    ),
+    "zha26": SourceReference(
+        "Zhang, J.; Zhang, Y.; Koskenvaara, H.; Zhao, J.; Ehn, M. (2026). "
+        "Gas-phase products from nitrate radical oxidation of five "
+        "monoterpenes: insights from free-jet flow-tube experiments. Atmos. "
+        "Chem. Phys. 26, 3933-3949.",
+        doi="10.5194/acp-26-3933-2026",
+    ),
+    "san16": SourceReference(
+        "Sanchez, J.; Tanner, D. J.; Chen, D.; Huey, L. G.; Ng, N. L. (2016). A "
+        "new technique for the direct detection of HO2 radicals using bromide "
+        "chemical ionization mass spectrometry (Br-CIMS): initial "
+        "characterization. Atmos. Meas. Tech. 9, 3851-3861.",
+        doi="10.5194/amt-9-3851-2016",
+    ),
+    "ris19": SourceReference(
+        "Rissanen, M. P.; Mikkila, J.; Iyer, S.; Hakala, J. (2019). Multi-scheme "
+        "chemical ionization inlet (MION) for fast switching of reagent ion "
+        "chemistry in atmospheric pressure chemical ionization mass "
+        "spectrometry (CIMS) applications. Atmos. Meas. Tech. 12, 6635-6646.",
+        doi="10.5194/amt-12-6635-2019",
+    ),
+    "wa21": SourceReference(
+        "Wang, M. et al. (2021). Measurement of iodine species and sulfuric acid "
+        "using bromide chemical ionization mass spectrometers. Atmos. Meas. "
+        "Tech. 14, 4187-4202.",
+        doi="10.5194/amt-14-4187-2021",
+    ),
+    "dor21": SourceReference(
+        "Dorich, R.; Eger, P.; Lelieveld, J.; Crowley, J. N. (2021). Iodide CIMS "
+        "and m/z 62: the detection of HNO3 as NO3- in the presence of PAN, "
+        "peroxyacetic acid and ozone. Atmos. Meas. Tech. 14, 5319-5332.",
+        doi="10.5194/amt-14-5319-2021",
+    ),
+    "gom22": SourceReference(
+        "Gomez Martin, J. C.; Lewis, T. R.; James, A. D.; Saiz-Lopez, A.; "
+        "Plane, J. M. C. (2022). Insights into the chemistry of iodine new "
+        "particle formation: the role of iodine oxides and the source of iodic "
+        "acid. J. Am. Chem. Soc. 144, 9240-9253.",
+        doi="10.1021/jacs.1c12957",
+    ),
+    "shc24": SourceReference(
+        "Shcherbinin, A.; Finkenzeller, H.; Mikkila, J.; Kontro, J.; Vinkvist, N.; "
+        "Kangasluoma, J.; Rissanen, M. (2024). From hydrocarbons to highly "
+        "functionalized molecules in a single measurement: comprehensive "
+        "analysis of complex gas mixtures by multi-pressure chemical "
+        "ionization mass spectrometry. Anal. Chem. 96, 19926-19932.",
+        doi="10.1021/acs.analchem.4c03859",
+    ),
+    "shc25": SourceReference(
+        "Shcherbinin, A. et al. (2025). Uronium from X-ray-desorbed urea enables "
+        "sustainable ultrasensitive detection of amines and semivolatiles. "
+        "Anal. Chem. 97, 21282-21290.",
+        doi="10.1021/acs.analchem.5c02239",
+    ),
+    "easyic": SourceReference(
+        "Thermo Fisher Scientific (2018). EASY-ETD and EASY-IC Ion Sources User "
+        "Guide, for the Orbitrap Tribrid series mass spectrometer. Document "
+        "80000-97515, Revision A.",
+        url="https://documents.thermofisher.com/TFS-Assets/CMD/manuals/man-80000-97515-easy-etd-ic-ion-sources-user-man8000097515-en.pdf",
+    ),
+    "leb23": SourceReference(
+        "Leborgne, C.; Meudec, E.; Sommerer, N.; Masson, G.; Mouret, J.-R.; "
+        "Cheynier, V. (2023). Untargeted metabolomics approach using UHPLC-HRMS "
+        "to unravel the impact of fermentation on color and phenolic "
+        "composition of rose wines. Molecules 28, 5748.",
+        doi="10.3390/molecules28155748",
+    ),
+    "ash26": SourceReference(
+        "Ashbacher, S. M.; Xie, D.-Y.; Muddiman, D. C. (2026). Differentiation of "
+        "wild-type and PAP1-overexpressing tobacco by volatile organic compound "
+        "profiling using TP-SESI mass spectrometry. Anal. Bioanal. Chem. 418, "
+        "5577-5585.",
+        doi="10.1007/s00216-026-06630-y",
+    ),
+    "mar16": SourceReference(
+        "Martens, J.; Berden, G.; Oomens, J. (2016). Structures of fluoranthene "
+        "reagent anions used in electron transfer dissociation and proton "
+        "transfer reaction tandem mass spectrometry. Anal. Chem. 88, 6126-6129.",
+        doi="10.1021/acs.analchem.6b01483",
+    ),
+    "wes18": SourceReference(
+        "West, B.; Rodriguez Castillo, S.; Sit, A.; Mohamad, S.; Lowe, B.; "
+        "Joblin, C.; Bodi, A.; Mayer, P. M. (2018). Unimolecular reaction "
+        "energies for polycyclic aromatic hydrocarbon ions. Phys. Chem. Chem. "
+        "Phys. 20, 7195-7205.",
+        doi="10.1039/c7cp07369k",
+    ),
+    "nist": SourceReference(
+        "Linstrom, P. J.; Mallard, W. G. (eds.). NIST Chemistry WebBook, NIST "
+        "Standard Reference Database Number 69; electron-ionization spectra "
+        "from the NIST Mass Spectrometry Data Center.",
+        doi="10.18434/T4D303",
+    ),
+    "wan03": SourceReference(
+        "Wang, T.; Spanel, P.; Smith, D. (2003). Selected ion flow tube, SIFT, "
+        "studies of the reactions of H3O+, NO+ and O2+ with eleven C10H16 "
+        "monoterpenes. Int. J. Mass Spectrom. 228, 117-126.",
+        doi="10.1016/S1387-3806(03)00271-9",
+    ),
+    "scn03": SourceReference(
+        "Schoon, N.; Amelynck, C.; Vereecken, L.; Arijs, E. (2003). A selected "
+        "ion flow tube study of the reactions of H3O+, NO+ and O2+ with a series "
+        "of monoterpenes. Int. J. Mass Spectrom. 229, 231-240.",
+        doi="10.1016/S1387-3806(03)00343-9",
+    ),
+    "mat17": SourceReference(
+        "Materic, D.; Lanza, M.; Sulzer, P.; Herbig, J.; Bruhn, D.; Gauci, V.; "
+        "Mason, N.; Turner, C. (2017). Selective reagent ion-time of flight-mass "
+        "spectrometry study of six common monoterpenes. Int. J. Mass Spectrom. "
+        "421, 40-50.",
+        doi="10.1016/j.ijms.2017.06.003",
+    ),
+    "tan03": SourceReference(
+        "Tani, A.; Hayward, S.; Hewitt, C. N. (2003). Measurement of "
+        "monoterpenes and related compounds by proton transfer reaction-mass "
+        "spectrometry (PTR-MS). Int. J. Mass Spectrom. 223-224, 561-578.",
+        doi="10.1016/S1387-3806(02)00880-1",
+    ),
+    "kar18": SourceReference(
+        "Kari, E.; Miettinen, P.; Yli-Pirila, P.; Virtanen, A.; Faiola, C. L. "
+        "(2018). PTR-ToF-MS product ion distributions and humidity-dependence "
+        "of biogenic volatile organic compounds. Int. J. Mass Spectrom. 430, "
+        "87-97.",
+        doi="10.1016/j.ijms.2018.05.003",
+    ),
+    "ish26": SourceReference(
+        "Ishihara, R.; Fukuyama, D.; Sekimoto, K. (2026). Interpretation of "
+        "alpha-pinene mass spectra in APCI-like ambient mass spectrometry using "
+        "GC-coupled atmospheric pressure corona discharge ionization. Mass "
+        "Spectrom. 15, A0190.",
+        doi="10.5702/massspectrometry.A0190",
+    ),
+}
 
 
 @dataclass(frozen=True)
 class ReagentCluster:
-    """One reagent ion the source makes on its own, and may claim a peak.
+    """One ion the source makes on its own, and may claim a peak.
 
     :param formula: The ion's elemental composition, charge excluded.
     :param charge: The ion's charge, ``+1`` or ``-1``.
@@ -783,12 +1145,19 @@ class ReagentCluster:
     :param kind: Which part of the grammar produced it, for the reader of a
         claim rather than for the matching.
     :param anchor: Whether this ion may be used to calibrate the pass. True for
-        the base ions of a source - the bare halide clusters, the protonated
-        urea monomer and dimer, the nitrate core and its first rung - which are
-        the brightest things the source makes and which nothing else shares a
-        mass with. Those two properties are what let them be found in a wide
+        the base ions of a source - the bare halide monomer and dimer, the
+        protonated urea monomer and dimer, the nitrate core and its first
+        rung - which are the brightest things the source makes and which
+        nothing else shares a mass with. Those two properties are what let them be found in a wide
         window and then say where this spectrum puts the reagent's masses; a
         rung that is neither bright nor unambiguous must not.
+    :param family: Where the ion comes from (``FAMILY_*``).
+    :param references: Keys into :data:`SOURCE_ION_REFERENCES`: the works that
+        name this ion, so a claim can be checked against a paper rather than
+        against this table's word. A work is cited for an ion only where it
+        names that ion, not its family.
+    :param observed: Where no work names the ion: what shows it. Said in so
+        many words rather than covered by a citation that does not name it.
     """
 
     formula: str
@@ -796,6 +1165,9 @@ class ReagentCluster:
     label: str
     kind: str = KIND_CLUSTER
     anchor: bool = False
+    family: str = FAMILY_REAGENT
+    references: tuple[str, ...] = ()
+    observed: str = ""
 
     @property
     def mz(self) -> float:
@@ -817,94 +1189,112 @@ def _ion_formula(*parts: tuple[str, int]) -> str:
     return to_hill_notation(dict(counts))
 
 
-#: How many rungs of a reagent's own cluster ladder to enumerate. Four covers
-#: every rung that carries signal on the gate's halide sets; a fifth would cost
-#: nothing but has never matched.
-DEFAULT_MAX_CLUSTER = 4
+def _rung(
+    formula: str,
+    charge: int,
+    label: str,
+    kind: str,
+    *references: str,
+    anchor: bool = False,
+    observed: str = "",
+) -> ReagentCluster:
+    """A rung of a reagent's own ladder, with the works that name it.
 
-#: How many copies of a clustering neutral to put on each rung. Two, because the
-#: dihydrate of a halide reagent is an ordinary bright ion in a humid source.
+    :param formula: The ion's composition, in any element order.
+    :param references: The works that name it.
+    :param observed: Where no work names it: what shows it.
+    """
+    return ReagentCluster(
+        _ion_formula((formula, 1)),
+        charge,
+        label,
+        kind,
+        anchor=anchor,
+        family=FAMILY_REAGENT,
+        references=references,
+        observed=observed,
+    )
+
+
+def _seen(evidence: str) -> str:
+    """What shows a rung no work found names, said in so many words."""
+    return f"no work found names it; {evidence}"
+
+
+#: How many waters to put on the nitrate core: its mono- and dihydrate, the
+#: rungs the corona-discharge studies name beside the bare anion.
 DEFAULT_MAX_NEUTRAL = 2
 
 
-def _halide_clusters(
-    symbol: str,
-    *,
-    max_n: int = DEFAULT_MAX_CLUSTER,
-    max_neutral: int = DEFAULT_MAX_NEUTRAL,
-    oxides: bool = True,
-) -> tuple[ReagentCluster, ...]:
-    """The ladder of a halide reagent: bare clusters, hydrates, oxides.
-
-    Both parities of the bare ladder are real ions - odd ``n`` are closed-shell
-    anions, even ``n`` are radical anions - and all of them are pure reagent, so
-    the closed-shell preference a same-ion family is ranked by (see
-    ``heuristic_filter``) has no bearing here. Nothing is being chosen between:
-    the composition is known exactly and it contains no sample atom.
-
-    :param symbol: The halogen's symbol.
-    :param max_n: Rungs of the bare ladder.
-    :param max_neutral: Copies of each clustering neutral per rung.
-    :param oxides: Whether the halogen's oxide anions are reagent ions. False
-        for iodine, whose oxides are the iodine oxyacids' analyte channel.
-    """
-    clusters: list[ReagentCluster] = []
-    for n in range(1, max_n + 1):
-        core = _ion_formula((symbol, n))
-        rung = f"{symbol}{n}" if n > 1 else symbol
-        # The bare monomer and dimer anchor the pass: they are the two brightest
-        # ions a halide source makes and no analyte shares their mass.
-        clusters.append(
-            ReagentCluster(core, -1, f"[{rung}]-", KIND_CLUSTER, anchor=n <= 2)
-        )
-        # Water, and the hydrogen halide the reagent itself sheds - HBr on a
-        # bromide source, HI on an iodide one, resolved from the reagent rather
-        # than fixed, so an iodide library carries no phantom [In+HBr]-.
-        for neutral in ("H2O", f"H{symbol}"):
-            for k in range(1, max_neutral + 1):
-                copies = f"{k}x" if k > 1 else ""
-                clusters.append(
-                    ReagentCluster(
-                        _ion_formula((symbol, n), (neutral, k)),
-                        -1,
-                        f"[{rung}+{copies}{neutral}]-",
-                        KIND_ADDUCT,
-                    )
-                )
-    if oxides:
-        for oxygens in (1, 2, 3):
-            clusters.append(
-                ReagentCluster(
-                    _ion_formula((symbol, 1), ("O", oxygens)),
-                    -1,
-                    f"[{symbol}O{oxygens if oxygens > 1 else ''}]-",
-                    KIND_OXIDE,
-                )
-            )
-    return tuple(clusters)
-
-
-#: The pure-iodine oxide clusters an iodide source throws, bright and stable in
-#: time. They are background rather than chemistry anyone measures, so they are
-#: claimed instead of being left to be read as exotic organoiodines.
+#: The bromide reagent's ladder. The bare monomer and dimer anchor the pass:
+#: they are the two brightest ions a bromide source makes and no analyte shares
+#: their mass. Both parities of the bare ladder are real ions - the trimer is a
+#: closed-shell anion, the dimer a radical one - and both are pure reagent, so
+#: the closed-shell preference a same-ion family is ranked by (see
+#: ``heuristic_filter``) has no bearing here.
 #:
-#: HOI2- and I2NO2- are deliberately absent: those are the [M+I]- readings of
-#: HOI and INO2, reactive iodine species that vary in time and are exactly what
-#: an iodide deployment is measuring. The same ruling as the oxides.
-_IODINE_BACKGROUND: tuple[ReagentCluster, ...] = (
-    ReagentCluster("I2O", -1, "[I2O]-", KIND_BACKGROUND),
-    ReagentCluster("I3O", -1, "[I3O]-", KIND_BACKGROUND),
+#: The monomer, its hydrates and the dimer are named in the literature. The
+#: trimer, the monomer's cluster with the HBr the source sheds, and the two
+#: oxides are named by no work found; Mascope's bromide test spectra - fifteen
+#: files, in three sets - show them, and each says how often.
+_BROMIDE_LADDER: tuple[ReagentCluster, ...] = (
+    _rung("Br", -1, "[Br]-", KIND_CLUSTER, "san16", "ris19", "wa21", anchor=True),
+    _rung("BrH2O", -1, "[Br+H2O]-", KIND_ADDUCT, "san16", "ris19", "wa21"),
+    _rung("BrH4O2", -1, "[Br+2xH2O]-", KIND_ADDUCT, "ris19"),
+    _rung("Br2", -1, "[Br2]-", KIND_CLUSTER, "san16", anchor=True),
+    _rung(
+        "Br3",
+        -1,
+        "[Br3]-",
+        KIND_CLUSTER,
+        observed=_seen(
+            "Mascope's bromide test spectra show it in all 15 files, at 1.5 to "
+            "35% of the base peak"
+        ),
+    ),
+    _rung(
+        "Br2H",
+        -1,
+        "[Br+HBr]-",
+        KIND_ADDUCT,
+        observed=_seen(
+            "Mascope's bromide test spectra show it in every file of one of "
+            "their three sets, at 0.06% of the base peak"
+        ),
+    ),
+    _rung(
+        "BrO",
+        -1,
+        "[BrO]-",
+        KIND_OXIDE,
+        observed=_seen(
+            "Mascope's bromide test spectra show it in 11 of their 15 files, at "
+            "0.01 to 1.8% of the base peak"
+        ),
+    ),
+    _rung(
+        "BrO3",
+        -1,
+        "[BrO3]-",
+        KIND_OXIDE,
+        observed=_seen(
+            "Mascope's bromide test spectra show it in every file of one of "
+            "their three sets, at 0.5 to 0.6% of the base peak"
+        ),
+    ),
 )
 
-#: The bromide source's own precursors, deprotonated. These are the only
-#: carbon-bearing ions in a halide library, and they are here for the same
-#: reason everything else is: dibromomethane and bromoform are what the source
-#: is dosed with, so their ions are the reagent's, not the sample's. The carbon
-#: is the precursor's own - it is not a cluster with something the sample
-#: supplied, which is the line the rest of this section draws.
-_BROMIDE_PRECURSORS: tuple[ReagentCluster, ...] = (
-    ReagentCluster("CHBr2", -1, "[CH2Br2-H]-", KIND_BACKGROUND),
-    ReagentCluster("CBr3", -1, "[CHBr3-H]-", KIND_BACKGROUND),
+#: The iodide reagent's ladder: the bare ion, its hydrate, and the dimer and
+#: trimer, the dimer anchoring beside the monomer as bromide's does. The iodine
+#: oxides are not here - they are the iodine oxyacids' analyte channel - and
+#: neither are HOI2- and I2NO2-, which are the [M+I]- readings of HOI and INO2,
+#: reactive iodine species that vary in time and are exactly what an iodide
+#: deployment is measuring.
+_IODIDE_LADDER: tuple[ReagentCluster, ...] = (
+    _rung("I", -1, "[I]-", KIND_CLUSTER, "dor21", anchor=True),
+    _rung("H2IO", -1, "[I+H2O]-", KIND_ADDUCT, "dor21"),
+    _rung("I2", -1, "[I2]-", KIND_CLUSTER, "gom22", anchor=True),
+    _rung("I3", -1, "[I3]-", KIND_CLUSTER, "gom22"),
 )
 
 
@@ -957,42 +1347,26 @@ def _nitrate_clusters(
     return tuple(clusters)
 
 
-def _urea_clusters(
-    unit: str = "CH4N2O", *, max_n: int = 6
-) -> tuple[ReagentCluster, ...]:
-    """The protonated urea ladder, and the ammonium on its multimers.
-
-    ``[(CH4N2O)n+H]+`` at 61.04 / 121.07 / 181.10 / 241.14 are the dominant ions
-    of a uronium source and otherwise sit at the top of the residual.
-
-    The ammonium series starts at ``n = 2`` on purpose; the reason is in the
-    section comment above, and the same ion at ``n = 1`` is a channel probe.
-    """
-    clusters: list[ReagentCluster] = []
-    for n in range(1, max_n + 1):
-        rung = f"({unit}){n}" if n > 1 else unit
-        clusters.append(
-            ReagentCluster(
-                _ion_formula((unit, n), ("H", 1)),
-                1,
-                f"[{rung}+H]+",
-                KIND_CLUSTER,
-                # The protonated monomer and dimer: the base peak of a uronium
-                # spectrum and the ion beside it. The higher rungs are what the
-                # anchors are there to protect, so they cannot anchor.
-                anchor=n <= 2,
-            )
-        )
-        if n >= 2:
-            clusters.append(
-                ReagentCluster(
-                    _ion_formula((unit, n), ("NH4", 1)),
-                    1,
-                    f"[{rung}+NH4]+",
-                    KIND_CLUSTER,
-                )
-            )
-    return tuple(clusters)
+#: The protonated urea ladder, the dominant ions of a uronium source. The
+#: monomer and dimer are the base peak of a uronium spectrum and the ion beside
+#: it, and anchor the pass; the trimer is named by no work found, and Mascope's
+#: uronium test spectra show it. No rung carries an ammonium: the monomer's is
+#: ammonia's reading, the section comment says why, and the multimers' are named
+#: by no work found and absent from the test spectra.
+_UREA_LADDER: tuple[ReagentCluster, ...] = (
+    _rung("CH5N2O", 1, "[CH4N2O+H]+", KIND_CLUSTER, "shc25", anchor=True),
+    _rung("C2H9N4O2", 1, "[(CH4N2O)2+H]+", KIND_CLUSTER, "shc25", anchor=True),
+    _rung(
+        "C3H13N6O3",
+        1,
+        "[(CH4N2O)3+H]+",
+        KIND_CLUSTER,
+        observed=_seen(
+            "Mascope's uronium test spectra show it in every file of one of "
+            "their two sets, at 0.08% of the base peak"
+        ),
+    ),
+)
 
 
 def _fluoranthene_ladder() -> tuple[ReagentCluster, ...]:
@@ -1001,47 +1375,237 @@ def _fluoranthene_ladder() -> tuple[ReagentCluster, ...]:
     The reagent cation ``[C16H10]+`` at m/z 202.078 anchors the pass - the
     brightest thing an EASY-IC source makes in a window that reaches it, and
     an aromatic no chamber or ambient sample shows at that height. Around it
-    sit what the beam does to itself: the hydrogen-loss fragment, the
-    protonated ion, the dimer, and the acetylene-loss fragments that are the
-    canonical PAH cation fragmentation (``-C2H2`` with ``-H``, so a fragment
-    cannot gain hydrogen, which is what makes those two attributable).
+    sit what the beam does to itself: the hydrogen- and dihydrogen-loss ions,
+    the protonated ion and the ions two and three hydrogens heavier that a
+    humid beam carries beside it, and the acetylene-loss fragments, the minor
+    channels of the cation's own fragmentation. The dimer is not here: no work
+    found names it, and no test spectrum's window reaches it.
 
-    Every atom here is the reagent's own. The air-plasma cations the discharge
-    also throws (nitronium, NO+, O2+) are the source's but not the reagent's,
-    and belong to the source-ion step of the plan (3.3) rather than to this
-    ladder.
+    Every atom here is the reagent's own. The ions the discharge makes of the
+    air are the air family's (:data:`_AIR_CATIONS`).
     """
     return (
         ReagentCluster("C16H10", 1, "[C16H10]+", KIND_CLUSTER, anchor=True),
         ReagentCluster("C16H9", 1, "[C16H10-H]+", KIND_FRAGMENT),
+        ReagentCluster("C16H8", 1, "[C16H10-H2]+", KIND_FRAGMENT),
         ReagentCluster("C16H11", 1, "[C16H10+H]+", KIND_ADDUCT),
-        ReagentCluster("C32H20", 1, "[(C16H10)2]+", KIND_CLUSTER),
+        ReagentCluster("C16H12", 1, "[C16H12]+", KIND_ADDUCT),
+        ReagentCluster("C16H13", 1, "[C16H13]+", KIND_ADDUCT),
         ReagentCluster("C14H8", 1, "[C16H10-C2H2]+", KIND_FRAGMENT),
         ReagentCluster("C12H6", 1, "[C16H10-2xC2H2]+", KIND_FRAGMENT),
     )
 
 
 #: The negative source's reagent: the fluoranthene radical anion, the negative
-#: EASY-IC lock mass at m/z 202.079. The anions it goes on to make from air
-#: (the ozone anion, carbonate and its clusters, bicarbonate) carry sample
-#: oxygen and belong to the source-ion step, not to the reagent's own ladder.
+#: EASY-IC lock mass at m/z 202.079. The anions it goes on to make from air are
+#: the air family's (:data:`_AIR_ANIONS`), not the reagent's own ladder.
 _FLUORANTHENE_ANION: tuple[ReagentCluster, ...] = (
     ReagentCluster("C16H10", -1, "[C16H10]-", KIND_CLUSTER, anchor=True),
 )
 
 
-#: The reagent-cluster library per profile, keyed the way
-#: :data:`SECONDARY_CHANNELS` is. A profile with no single reagent species -
-#: an electrospray - has no library, which is not an omission: there is no one
-#: carrier whose clusters could be enumerated.
+# --- the air's ions -----------------------------------------------------------
+#
+# What an ionizer makes of the gas it sits in before any reagent or analyte is
+# involved: nitrogen, oxygen, water and carbon dioxide, and the nitrogen oxides
+# a discharge makes of them. On a charge-transfer source they are the source; on
+# a reagent source they are its background, beside the reagent's own ladder.
+# The library's rule, restated for the air: every atom comes from the bulk gas
+# the source ionizes or what its discharge makes of it, not from a trace species
+# in the sample. Nitrate is the one ion both could make, and on a discharge's
+# source it is the charge's terminal sink whatever the sample holds, so a
+# nitrate peak there is the discharge's before it is anyone's nitric acid.
+#
+# Only ions a work names are here. A discharge makes more - bicarbonate's
+# hydrate among them - that no work found names, and those are left to the
+# stages. What is deliberately not here, each because a work reads the ion as a
+# trace species': the ammonium ladder NH4+(H2O)n, which is ammonia protonated
+# and how a water-cluster source measures it; HSO4-, sulfuric acid deprotonated
+# and the analyte nitrate CIMS was built for; and formate, acetate and every
+# other organic acid's anion.
+
+
+def _ion(formula: str, charge: int, label: str, *references: str) -> ReagentCluster:
+    """An air ion, with the works that name it."""
+    kind = KIND_ADDUCT if "H2O]" in label else KIND_CLUSTER
+    return ReagentCluster(
+        _ion_formula((formula, 1)),
+        charge,
+        label,
+        kind,
+        family=FAMILY_AIR,
+        references=references,
+    )
+
+
+#: The positive ions of air: a discharge's cations and protonated water. N2+ is
+#: a discharge's primary ion and N4+ what it becomes in nitrogen, N3+ its
+#: companion; O2+ and NO+ are where the charge passes next, to the molecules
+#: that give an electron up most easily; NO2+ is the discharge's nitrogen
+#: oxides charged. Water takes the proton from all of them, and the protonated
+#: water ladder is what a humid source's positive ions end as.
+_AIR_CATIONS: tuple[ReagentCluster, ...] = (
+    _ion("N2", 1, "[N2]+.", "good70", "kol04", "shc24"),
+    _ion("N3", 1, "[N3]+", "good70", "kol04"),
+    _ion("N4", 1, "[N4]+.", "good70", "kol04"),
+    _ion("O2", 1, "[O2]+.", "good70b", "shc24", "dus25"),
+    _ion("H2O3", 1, "[O2+H2O]+", "sha66"),
+    _ion("NO", 1, "[NO]+", "sha66", "sab12", "sab13", "dus25"),
+    _ion("H2NO2", 1, "[NO+H2O]+", "sha66", "sab13"),
+    _ion("NO2", 1, "[NO2]+", "sha66", "shc24"),
+    _ion("H2NO3", 1, "[NO2+H2O]+", "sha66"),
+    _ion("H3O", 1, "[H3O]+", "good70", "han95", "kol04", "dus25"),
+    _ion("H5O2", 1, "[H3O+H2O]+", "good70", "pfe20", "shc24", "dus25"),
+    _ion("H7O3", 1, "[H3O+2xH2O]+", "good70", "sha66", "pfe20"),
+    _ion("H9O4", 1, "[H3O+3xH2O]+", "good70", "sha66", "pfe20"),
+    _ion("H11O5", 1, "[H3O+4xH2O]+", "good70", "sha66"),
+)
+
+#: The negative ions of air: the terminal ions of a corona discharge in humid
+#: air, where carbonate and nitrate are the sinks the charge ends in -
+#: hydroxide, superoxide, ozonide, carbonate and bicarbonate, nitrite and
+#: nitrate, their hydrates, superoxide carrying carbon dioxide, and nitrate
+#: clustered with the nitric acid the discharge makes. Hydroxide's water
+#: clusters are read in one ambient corona source and argued in another to
+#: turn into bicarbonate before they could reach the analyser; named, they are
+#: claimed where a spectrum shows them.
+_AIR_ANIONS: tuple[ReagentCluster, ...] = (
+    _ion("HO", -1, "[OH]-", "fuj23"),
+    _ion("H3O2", -1, "[OH+H2O]-", "fuj23", "sek11", "tak26"),
+    _ion("H5O3", -1, "[OH+2xH2O]-", "fuj23", "sek11", "tak26"),
+    _ion("H7O4", -1, "[OH+3xH2O]-", "fuj23", "sek11", "tak26"),
+    _ion("O2", -1, "[O2]-", "ska04", "ska07", "sek12", "asa23"),
+    _ion("H2O3", -1, "[O2+H2O]-", "sek11"),
+    _ion("O3", -1, "[O3]-", "sha69", "asa23"),
+    _ion("H2O4", -1, "[O3+H2O]-", "sha69"),
+    _ion("CO4", -1, "[O2+CO2]-", "mat23"),
+    _ion("CO3", -1, "[CO3]-", "ska04", "ska07", "sha69", "asa23"),
+    _ion("CH2O4", -1, "[CO3+H2O]-", "ska04", "ska07", "sha69", "tak26"),
+    _ion("CH4O5", -1, "[CO3+2xH2O]-", "ska07", "tak26"),
+    _ion("CHO3", -1, "[HCO3]-", "nag06", "sek12", "asa23"),
+    _ion("NO2", -1, "[NO2]-", "ska07", "sek12", "ewi09", "mat23"),
+    _ion("H2NO3", -1, "[NO2+H2O]-", "sek11", "mat23"),
+    _ion("H4NO4", -1, "[NO2+2xH2O]-", "mat23"),
+    _ion("NO3", -1, "[NO3]-", "ska04", "nag06", "sek12", "ewi09"),
+    _ion("H2NO4", -1, "[NO3+H2O]-", "ska04", "ska07", "tak26"),
+    _ion("H4NO5", -1, "[NO3+2xH2O]-", "ska04", "ska07", "tak26"),
+    _ion("HN2O6", -1, "[NO3+HNO3]-", "nag06", "sek12", "ewi09"),
+    _ion("CH2NO6", -1, "[HCO3+HNO3]-", "nag06"),
+)
+
+
+def _relabelled(formula: str, element: str, isotope: str) -> str:
+    """The composition with every atom of one element written as its label."""
+    counts = dict(parse_composition(formula))
+    if counts.get(element):
+        counts[isotope] = counts.get(isotope, 0) + counts.pop(element)
+    return to_hill_notation(counts)
+
+
+def _library(
+    *groups: tuple[ReagentCluster, ...], label_isotope: tuple[str, str] | None = None
+) -> tuple[ReagentCluster, ...]:
+    """One profile's library: its families, each ion once, the first entry winning.
+
+    An ion two families name is the first family's: nitrate on a nitrate source
+    is the reagent, not the air's. On a labelled reagent's source an air ion is
+    left out where the reagent's own ladder already holds it with its label -
+    the 15N-nitrate source's plain nitrate is first the reagent's 14N
+    remainder, which the ladder's envelope claims as that where its height
+    fits the label's purity.
+
+    :param groups: The families, in the order they take an ion.
+    :param label_isotope: ``(element, label)`` for a labelled reagent
+        (``("N", "^N")``).
+    """
+    taken: set[str] = set()
+    library: list[ReagentCluster] = []
+    for group in groups:
+        for cluster in group:
+            if cluster.formula in taken:
+                continue
+            if label_isotope is not None and cluster.family == FAMILY_AIR:
+                if _relabelled(cluster.formula, *label_isotope) in taken:
+                    continue
+            taken.add(cluster.formula)
+            library.append(cluster)
+    return tuple(library)
+
+
+def _cite(
+    clusters: Iterable[ReagentCluster],
+    family: str,
+    named: Mapping[str, tuple[str, ...]],
+) -> tuple[ReagentCluster, ...]:
+    """The clusters as one family, each carrying the works that name it.
+
+    Every ion a builder makes has to be named: one missing from ``named`` is a
+    ``KeyError`` when this module loads, not an uncited claim.
+
+    :param clusters: The ions a builder made.
+    :param family: Their family.
+    :param named: The works that name each ion, by its label.
+    """
+    return tuple(
+        replace(cluster, family=family, references=named[cluster.label])
+        for cluster in clusters
+    )
+
+
+_NITRATE_NAMED = {
+    "[NO3]-": ("jok12",),
+    "[NO3+HNO3]-": ("jok12",),
+    "[NO3+2xHNO3]-": ("jok12",),
+    "[NO3+H2O]-": ("ska04", "ska07"),
+    "[NO3+2xH2O]-": ("ska04", "ska07"),
+}
+# The labelled reagent's ladder is the same ions with its nitrogen labelled;
+# the 15N source's own paper names its core and first rung.
+_NITRATE_15N_NAMED = {
+    "[^NO3]-": ("jok12", "zha26"),
+    "[^NO3+H^NO3]-": ("jok12", "zha26"),
+    "[^NO3+2xH^NO3]-": ("jok12",),
+    "[^NO3+H2O]-": ("ska04", "ska07"),
+    "[^NO3+2xH2O]-": ("ska04", "ska07"),
+}
+_FLUORANTHENE_NAMED = {
+    "[C16H10]+": ("easyic", "shc24", "ash26", "leb23"),
+    "[C16H10-H]+": ("shc24", "wes18", "nist"),
+    "[C16H10-H2]+": ("nist",),
+    "[C16H10+H]+": ("shc24",),
+    "[C16H12]+": ("shc24",),
+    "[C16H13]+": ("shc24",),
+    "[C16H10-C2H2]+": ("nist",),
+    "[C16H10-2xC2H2]+": ("nist",),
+    "[C16H10]-": ("easyic", "mar16", "leb23"),
+}
+
+
+#: The source-ion library per profile, keyed the way :data:`SECONDARY_CHANNELS`
+#: is. A profile with no single reagent species - an electrospray - has no
+#: library, which is not an omission: there is no one carrier whose clusters
+#: could be enumerated, and no discharge whose air ions could be named.
 REAGENT_CLUSTERS: dict[str, tuple[ReagentCluster, ...]] = {
-    "BR": _halide_clusters("Br") + _BROMIDE_PRECURSORS,
-    "IODIDE": _halide_clusters("I", oxides=False) + _IODINE_BACKGROUND,
-    "NO3": _nitrate_clusters("NO3"),
-    "NO3_15N": _nitrate_clusters("^NO3"),
-    "UR": _urea_clusters(),
-    "EASYIC_POS": _fluoranthene_ladder(),
-    "EASYIC_NEG": _FLUORANTHENE_ANION,
+    "BR": _library(_BROMIDE_LADDER, _AIR_ANIONS),
+    "IODIDE": _library(_IODIDE_LADDER, _AIR_ANIONS),
+    "NO3": _library(
+        _cite(_nitrate_clusters("NO3"), FAMILY_REAGENT, _NITRATE_NAMED),
+        _AIR_ANIONS,
+    ),
+    "NO3_15N": _library(
+        _cite(_nitrate_clusters("^NO3"), FAMILY_REAGENT, _NITRATE_15N_NAMED),
+        _AIR_ANIONS,
+        label_isotope=("N", "^N"),
+    ),
+    "UR": _library(_UREA_LADDER, _AIR_CATIONS),
+    "EASYIC_POS": _library(
+        _cite(_fluoranthene_ladder(), FAMILY_CALIBRANT, _FLUORANTHENE_NAMED),
+        _AIR_CATIONS,
+    ),
+    "EASYIC_NEG": _library(
+        _cite(_FLUORANTHENE_ANION, FAMILY_CALIBRANT, _FLUORANTHENE_NAMED),
+        _AIR_ANIONS,
+    ),
 }
 
 
@@ -1426,3 +1990,143 @@ def match_reagent_clusters(
             )
         )
     return hits, calibration
+
+
+# --- fragment ladders ---------------------------------------------------------
+#
+# The fourth family, and the one the pass cannot claim before the stages run. A
+# source that ionizes by charge transfer or proton transfer breaks some of the
+# analytes it ionizes, and the fragments are ions of ordinary composition: the
+# grid reads them as molecules of their own, and a fragment read as a molecule
+# is a partner of the wrong kind - it corroborates, doubts and outweighs other
+# readings on the strength of an analyte that is not there.
+#
+# But a fragment's mass is often a component's ion too. C6H7+ is a monoterpene's
+# fragment and protonated benzene; C5H7+ is one and isoprene less a hydride. So
+# a fragment is claimed only on what a claim before the stages cannot see: its
+# parent committed in the sample, the fragment no taller than the literature
+# lets the parent make it, and no reading of the fragment's ion naming a
+# molecule the sample shows on a peak of its own.
+
+
+#: How far above the literature's ratio a fragment may stand to its parent and
+#: still be claimed as the parent's: the allowance an isotopologue gets over its
+#: prediction (:data:`DEFAULT_ISOTOPOLOGUE_MAX_EXCESS`), for the same reason. A
+#: peak several times taller than the parent can make it carries something else.
+DEFAULT_FRAGMENT_MAX_EXCESS = DEFAULT_ISOTOPOLOGUE_MAX_EXCESS
+
+
+@dataclass(frozen=True)
+class FragmentIon:
+    """One ion a source breaks an analyte's ion into.
+
+    :param formula: The fragment ion's composition, charge excluded.
+    :param charge: Its charge.
+    :param label: How a claim names it.
+    :param literature_ratio: The largest height the references report for this
+        fragment, relative to the parent's own ion. An upper bound: a softer
+        source breaks the parent less, so the fragment may be far weaker than
+        this and never much taller.
+    :param references: Keys into :data:`SOURCE_ION_REFERENCES`: the works that
+        name this fragment of this parent.
+    """
+
+    formula: str
+    charge: int
+    label: str
+    literature_ratio: float
+    references: tuple[str, ...] = ()
+
+    @property
+    def mz(self) -> float:
+        """The fragment's m/z."""
+        return ion_mz(self.formula, self.charge)
+
+    @property
+    def max_ratio(self) -> float:
+        """The tallest the fragment may stand to its parent's ion and be claimed."""
+        return self.literature_ratio * DEFAULT_FRAGMENT_MAX_EXCESS
+
+
+@dataclass(frozen=True)
+class FragmentLadder:
+    """The fragments a source makes of one analyte.
+
+    :param parent: The analyte's neutral formula. A ladder is keyed on the
+        formula, so it reads for every isomer that formula holds, which is
+        right where the isomers break alike, as the monoterpenes do.
+    :param label: The analyte, as a claim names it.
+    :param fragments: Its fragment ions.
+    :param references: Keys into :data:`SOURCE_ION_REFERENCES`.
+    """
+
+    parent: str
+    label: str
+    fragments: tuple[FragmentIon, ...]
+    references: tuple[str, ...]
+
+
+#: Alpha-pinene's radical cation in the NIST electron-ionization spectrum, as a
+#: share of that spectrum's base peak at m/z 93: the parent the monoterpene
+#: ladder's ratios are read against.
+_PINENE_EI_PARENT = 7.4
+
+
+def _ei(share: float) -> float:
+    """A fragment's height over alpha-pinene's radical cation in the NIST
+    electron-ionization spectrum, from its share of the base peak."""
+    return round(share / _PINENE_EI_PARENT, 2)
+
+
+#: Alpha-pinene's C6H9+ over its protonated molecule, the fragment proton
+#: transfer makes most of: 47.7% against 48.3% of the product ions at 130 Td,
+#: the harder of the two drift fields it was measured at (Kari et al. 2018).
+_PINENE_PTR_C6H9 = round(47.7 / 48.3, 2)
+
+#: The monoterpenes' fragments, keyed on C10H16 since the isomers break alike.
+#: Electron ionization is the hardest ionization a monoterpene meets, and its
+#: spectrum bounds what a charge-transfer source makes of one: the ratios are
+#: alpha-pinene's in the NIST spectrum, where the radical cation is 7.4% of the
+#: base peak. Charge transfer from O2+ and NO+ gives the same ions (C7H9+,
+#: C6H8+.). Proton transfer from H3O+ gives C6H9+ beside the protonated
+#: molecule, measured in drift tubes and at atmospheric pressure alike, and its
+#: ratio is proton transfer's.
+#:
+#: Deliberately not on the ladder, though the NIST spectrum has them strong:
+#: C7H8+. (92), C7H7+ (91) and C8H9+ (105), which are toluene's radical cation,
+#: toluene less a hydride and xylene less a hydride. A fragment the claim takes
+#: must leave the molecule it could also be a peak of its own to show on, and
+#: every ion toluene makes through a charge-transfer source's channels would
+#: otherwise sit on the ladder. The methyl-loss ion C9H13+ (121) is read by the
+#: methyl-loss channel instead, as pinene less a methyl, where pinene is shown.
+_MONOTERPENE_LADDER = FragmentLadder(
+    parent="C10H16",
+    label="monoterpene",
+    fragments=(
+        FragmentIon(
+            "C7H9", 1, "[C7H9]+", _ei(100.0), ("nist", "wan03", "mat17", "kar18")
+        ),
+        FragmentIon(
+            "C6H9", 1, "[C6H9]+", _PINENE_PTR_C6H9, ("kar18", "tan03", "mat17", "ish26")
+        ),
+        FragmentIon("C6H8", 1, "[C6H8]+.", _ei(10.0), ("nist", "mat17")),
+        FragmentIon("C6H7", 1, "[C6H7]+", _ei(29.8), ("nist",)),
+        FragmentIon("C6H5", 1, "[C6H5]+", _ei(36.6), ("nist", "mat17")),
+        FragmentIon("C5H7", 1, "[C5H7]+", _ei(11.1), ("nist", "tan03")),
+    ),
+    references=("nist", "wan03", "scn03", "mat17", "tan03", "kar18", "ish26"),
+)
+
+#: The fragment ladders per profile, keyed the way :data:`REAGENT_CLUSTERS` is.
+FRAGMENT_LADDERS: dict[str, tuple[FragmentLadder, ...]] = {
+    "EASYIC_POS": (_MONOTERPENE_LADDER,),
+}
+
+
+def fragment_ladders(profile_name: str) -> tuple[FragmentLadder, ...]:
+    """The analytes a profile's source breaks, and what into.
+
+    :param profile_name: The profile's name.
+    :return: Its fragment ladders, empty when it names none.
+    """
+    return FRAGMENT_LADDERS.get(profile_name, ())
