@@ -233,10 +233,7 @@ const engineTooltip = computed(() => {
     version.value ? `Engine version: ${version.value}` : null,
     tierBandsText.value,
     isCopy.value
-      ? 'The formulas were copied; the fit, mass error and tier were re-measured against this sample. Copied rows carry no Mascope-calibrated P(correct).'
-      : null,
-    isExternal.value
-      ? 'Imported runs carry no Mascope-calibrated P(correct); their rows show it empty.'
+      ? 'The formulas were copied; the fit, mass error and tier were re-measured against this sample.'
       : null
   ]
     .filter(Boolean)

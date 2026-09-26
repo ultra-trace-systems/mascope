@@ -13,8 +13,9 @@ import { FALLBACK_TIER, tierMeta } from '@/lib/tiers'
 // that the assignment is right, and the number the tier is banded on is not
 // one: it is the EVIDENCE, fit x chemical plausibility, a measure of how well
 // the formula explains the peak. The hover text gives it, named as what it is,
-// and the inspector shows it beside its two factors; P(correct) is the
-// calibrated probability, shown apart from the tier.
+// and the inspector shows it beside its two factors. The calibrated
+// probability (P(correct)) is served by the API and not shown while its curve
+// is provisional.
 //
 // Where a tier is not derived from a single number at all - the batch ledger's
 // consensus tier is a weighted vote over member tiers - the caller passes no

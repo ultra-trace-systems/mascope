@@ -473,7 +473,18 @@ established approach for large-scale MS annotation ([Scheubert et al. 2017][sch1
 
 ## Calibrated confidence (probability of being correct)
 
---8<-- "_help/assignment-p-correct.md"
+**P(correct)** is the assignment's evidence calibrated into an actual probability of
+being correct, on a curve fit per instrument class from assignments whose truth is known
+&mdash; so of everything reported at 0.9, about 90% would really be right.
+
+**The app does not show it yet.** The one curve that ships is provisional, fit on a
+preliminary reference set nobody has verified, and a probability read off it would be
+the one number on the page a reader takes at its word. So the peak browser has no
+P(correct) column and the peak inspector no P(correct) row while the curve is
+provisional. The engine still computes it, and the API and the Python SDK still serve it
+on every row that has one (`p_correct`, with `p_correct_provisional` saying the curve
+behind it is provisional), so a script can read it with that caveat in hand. It returns
+to the app when a curated curve replaces the provisional one.
 
 The evidence score ranks assignments, but a raw evidence of 0.85 is not "85% likely
 correct" — the calibration that closes that gap is **Platt scaling** ([Platt
@@ -489,9 +500,11 @@ In practice:
   [Schymanski et al. 2014][sch14]) — versus near-mass decoys. This is why calibration is
   tied to your **reference dataset**, and why you can, in principle, **calibrate your own
   instrument** by running known standards.
-- **An uncalibrated assignment shows the raw evidence** in place of a probability. Today
-  one **provisional** Orbitrap curve ships (fit on a preliminary reference set); it will
-  be replaced by a curated fit, and TOF is uncalibrated until a TOF reference set exists.
+- **An uncalibrated assignment carries no probability**, only its evidence: nothing is
+  made up for an instrument without a curve, or for a formula the formula search or a
+  person chose, which the curve never scored. Today one **provisional** Orbitrap curve
+  ships (fit on a preliminary reference set); it will be replaced by a curated fit, and
+  TOF is uncalibrated until a TOF reference set exists.
 - **The adduct lift is measured, not assumed.** A real compound rarely appears as a single
   ion — it also shows up through other adducts (e.g. `[M+H]⁺` alongside `[M+NH₄]⁺`, or
   `[M−H]⁻` alongside `[M+Br]⁻`), and each adduct's corroborating worth is *measured*: a
@@ -513,7 +526,7 @@ same quantity that won it the peak in the first place, so the tier and the arbit
 cannot disagree.
 
 The chip carries no percentage because the evidence is not a probability: *P(correct)* is
-the calibrated one. The fit score is unchanged — still recorded, still shown in the
+the calibrated one, which the app does not show yet (above). The fit score is unchanged — still recorded, still shown in the
 inspector as the pure measurement, beside the evidence — so the two stay visible apart. A
 *batch peak*'s consensus tier is a weighted vote over what the batch's samples each
 concluded about the peak, not a threshold on any single number.
@@ -528,7 +541,9 @@ confidence, since that is how the field communicates identification certainty.
 > measurement alone, unchanged, which keeps it reproducible while the confidence layers
 > evolve. The current tier thresholds are provisional and will be recalibrated per
 > instrument; tying a tier to a calibrated probability of being correct is still where this
-> is heading, and still waits on calibration coverage across instruments.
+> is heading, and still waits on calibration coverage across instruments. The rules that
+> read a tier are still being built too, which is why the tier column and the inspector's
+> tier row carry a *provisional* mark.
 
 ### Why a row holds its tier
 
@@ -745,7 +760,8 @@ A hand assignment says "this candidate is the better reading of the evidence"; a
 verification says "I have evidence of *this grade* that it is right". Keeping the two
 apart is what keeps the calibration honest: the labelled record that future confidence
 curves are fit on stays a record of stated evidence, not of preferences. It is the same
-reason an override drops the engine's calibrated P(correct) instead of carrying it over
+reason an override drops the engine's calibrated P(correct), which the API serves,
+instead of carrying it over
 &mdash; the curve was fit to score the engine's arbitration, and a probability quoted
 beside a formula it never scored would be a number with nothing behind it.
 
@@ -815,7 +831,7 @@ sample: both live in the same run history, so selecting one and then the other
 switches the ledger between them peak for peak. What an imported run may assert
 stops short of what Mascope presents as its own judgement &mdash; it declares the
 tier bands it used and every row is checked against them, it discloses what it
-calibrated against, and the calibrated P(correct) column stays empty on its rows.
+calibrated against, and it writes no calibrated P(correct) on its rows.
 The in-app engine's name is reserved, so the chip cannot be forged. Verifications
 recorded against an imported run are kept and shown, but stay out of the
 instrument-wide confidence calibration, whose labels come only from runs this
@@ -824,8 +840,8 @@ server computed.
 A sample whose peaks are in the batch ledger but that has no run of its own &mdash; its
 runs were deleted or pruned, or it was folded into the batch without one &mdash; is shown
 from the batch ledger instead. The run selector lists it as **Batch ledger**; the
-ledger carries what the batch knows about each peak (formula, adduct, tier, fit,
-probability and isotopologue family), and the inspector's close alternatives are what
+ledger carries what the batch knows about each peak (formula, adduct, tier, fit and
+isotopologue family), and the inspector's close alternatives are what
 the rest of the batch saw at that m/z. It carries no mass error or isotope label, and
 it cannot be edited by hand &mdash; assign the sample for a ledger of its own. Verdicts
 can still be recorded against it.
@@ -838,12 +854,10 @@ such a peak - the family's composition is scored against the sample's own peaks,
 its M0 - and fills them in a moment later. They are computed for the view and never stored;
 run an assignment on the sample to persist a full ledger of its own.
 
-The inspector's *confidence* and *P(correct)* rows stay in place for such a sample, so the
-card reads the same whichever way a sample is served. The P(correct) shown is the one
-recorded when the sample was folded into the batch ledger - calibrated on the sample's own
-peak at the time, and not re-scored since; hovering it says so - or a dash with the reason
-there is none. The arbitration confidence, which only a run of the sample computes by
-weighing the peak's candidates against each other, reads as a dash with that explanation.
+The inspector's *confidence* row stays in place for such a sample, so the card reads the
+same whichever way a sample is served. The arbitration confidence, which only a run of the
+sample computes by weighing the peak's candidates against each other, reads as a dash with
+that explanation.
 The isotopologue table always lists the main peak, even when the pattern has no other
 peaks, so the focused peak's m/z is read in the same place on every card. Its labels
 count from the monoisotopic peak, the way an isotope table does - a bromine-rich ion reads

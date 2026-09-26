@@ -7,17 +7,11 @@ import Popover from 'primevue/popover'
 import RadioButton from 'primevue/radiobutton'
 
 import { useApp } from '@/stores'
-import { BaseTierTag, BaseVerdictBadge } from '@/lib/base'
+import { BaseProvisionalMark, BaseTierTag, BaseVerdictBadge } from '@/lib/base'
 import { num } from '@/lib/formatters'
 import { formatIsotopeFormula, formatIsotopeLabel, neutralKey } from '@/lib/chem'
 import { isIsotopeLine } from '@/lib/isotopeLines'
 import { standardMechanism } from '@/lib/mechanism'
-import {
-  LEDGER_CONFIDENCE_TOOLTIP,
-  LEDGER_P_CORRECT_TOOLTIP,
-  P_CORRECT_TOOLTIP,
-  uncalibratedReason
-} from '@/lib/pCorrect'
 import {
   listingName,
   listingOf,
@@ -283,7 +277,9 @@ watch(
 )
 
 // Arbitration / chemistry provenance: chemical plausibility (Seven Golden
-// Rules), arbitration confidence, calibrated P(correct), and a tie flag.
+// Rules), arbitration confidence and a tie flag. The calibrated P(correct) is
+// in it too, and is not shown: its curve is provisional (step 3.4d of the
+// assignment quality plan), so the API serves it and the card does not.
 // From the detail fetch; the fallback covers pre-slim rows that carry it.
 const provenance = computed(
   () => focusedDetail.value?.provenance ?? focusedAssignment.value?.provenance ?? null
@@ -412,8 +408,7 @@ const isFamilyHead = (iso) =>
 // per-compound count, which reaches only rows a curated identity claimed and is
 // therefore absent from most of a ledger. Where both exist the first is the
 // second plus whatever the untargeted stage committed of the same neutral, so it
-// is never the smaller number and is preferred. `scored` is the difference that
-// matters on screen: only the curated count is folded into p_correct.
+// is never the smaller number and is preferred.
 //
 // Neither is written onto an isotopologue: it is the same ion measured at
 // another isotope, not a second sighting of the compound. The evidence is about
@@ -428,7 +423,6 @@ const corroboration = computed(() => {
     return {
       n: channels.length,
       names: channels.map(standardMechanism),
-      scored: false,
       inherited: false
     }
   }
@@ -437,25 +431,22 @@ const corroboration = computed(() => {
     return {
       n: own.n_adducts,
       names: (own.adducts ?? []).map(standardMechanism),
-      scored: true,
       inherited: false
     }
   }
   // The slim ledger row carries both counts flattened, so the badge is there
   // before the detail fetch lands - just without the channel names.
   const flatChannels = focusedAssignment.value?.corroboration_channels
-  if (flatChannels != null) {
-    return { n: flatChannels, names: [], scored: false, inherited: false }
-  }
+  if (flatChannels != null) return { n: flatChannels, names: [], inherited: false }
   const flat = focusedAssignment.value?.corroboration_adducts
-  if (flat != null) return { n: flat, names: [], scored: true, inherited: false }
+  if (flat != null) return { n: flat, names: [], inherited: false }
   // Same two-step as the ledger's, so the two panes agree about a family whose
   // rows carry provenance inline (a backend predating the slim projection).
   const m0Channels =
     m0.value?.corroboration_channels ?? m0.value?.provenance?.cross_channel?.channels?.length
-  if (m0Channels != null) return { n: m0Channels, names: [], scored: false, inherited: true }
+  if (m0Channels != null) return { n: m0Channels, names: [], inherited: true }
   const fromM0 = m0.value?.corroboration_adducts ?? m0.value?.provenance?.corroboration?.n_adducts
-  return fromM0 != null ? { n: fromM0, names: [], scored: true, inherited: true } : null
+  return fromM0 != null ? { n: fromM0, names: [], inherited: true } : null
 })
 
 // The badge says "via M0" on its face, not only on hover: the count is the same
@@ -471,30 +462,21 @@ const corroborationLabel = computed(() => {
   return `Supported by ${c.n} channels${c.inherited ? ' via M0' : ''}`
 })
 
-// What the badge must not do is claim the number beside it accounts for this.
-// The P3 boost is folded into the record that carries the corroboration - the
-// M0's p_correct - and never into a child's, which stays calibrated on its own
-// evidence (engine.py::_fold_adduct_corroboration rewrites M0 winners only); and
-// the ledger-measured count is not folded into anything at all, being evidence
-// the run recorded rather than a score it applied. So the sentence about
-// P(correct) is written from `scored` and `inherited` rather than assumed.
+// The tooltip said whether the count was folded into P(correct) while the card
+// showed that probability; it no longer names a number the card does not show.
 const corroborationTooltip = computed(() => {
   const c = corroboration.value
   if (!c) return ''
   if (c.inherited) {
     return (
       `This isotopologue's M0 was seen through ${c.n} ionization channels: ` +
-      'independent evidence for the formula. ' +
-      (c.scored
-        ? "It is in the M0's P(correct), not in this isotopologue's."
-        : 'It is not in P(correct).')
+      'independent evidence for the formula.'
     )
   }
   const channels = (c.names ?? []).join(', ')
   return (
     `Seen through ${c.n} ionization channels${channels ? ` (${channels})` : ''}: ` +
-    'independent evidence for the formula. ' +
-    (c.scored ? 'It is in P(correct).' : 'It is not in P(correct).')
+    'independent evidence for the formula.'
   )
 })
 
@@ -621,17 +603,19 @@ const curateDenied = ref(false) // 403: not an editor on this sample
 // The server answers 409; the control is withheld rather than offered to fail.
 const derivedRun = computed(() => app.data.peakAssignment.peak.run?.engine === 'batch')
 
-// A derived row with a formula. The rows a run fills - arbitration confidence,
-// P(correct) - are kept on the card for it, with what the ledger has or a
-// placeholder that says why not, so the card reads the same for every sample.
+// A derived row with a formula. The row a run fills - arbitration confidence -
+// is kept on the card for it, with a placeholder that says why the ledger has
+// none, so the card reads the same for every sample.
 const ledgerServed = computed(
   () => derivedRun.value && Boolean(focusedAssignment.value?.assigned_formula)
 )
-// The probability itself: in the detail's provenance on a run's row, on the row
-// itself for a derived one (member_row carries it at the top level).
-const pCorrect = computed(
-  () => provenance.value?.p_correct ?? focusedAssignment.value?.p_correct ?? null
-)
+// Why a row served from the batch ledger shows no arbitration confidence: that
+// number is a run's, from weighing a peak's candidates against each other, and
+// a ledger member carries one identity with nothing to weigh it against.
+const LEDGER_CONFIDENCE_TOOLTIP =
+  'Arbitration confidence comes from an assignment run of this sample, which weighs the ' +
+  "peak's candidates against each other; a row served from the batch ledger carries one " +
+  'identity and no such contest'
 
 // --- On-demand evidence for a derived row -----------------------------------
 // A row derived from the batch ledger carries its fit and its tier, but not what
@@ -1224,6 +1208,7 @@ const demotedCount = computed(() => {
             :tier="focusedAssignment.engine_tier"
             :tooltip="engineTierTooltip"
           />
+          <BaseProvisionalMark />
         </div>
       </div>
       <!-- With no formula the headline is the word "Unassigned", or the ion a
@@ -1329,11 +1314,10 @@ const demotedCount = computed(() => {
           <span class="k" v-tooltip.top="EVIDENCE_TOOLTIPS.evidence">evidence</span>
           <span class="v">{{ formatFit(evidenceRow.evidence) }}</span>
         </div>
-        <!-- Arbitration confidence and P(correct) are a run's numbers. A row
-             served from the batch ledger gets both rows all the same, so the
-             card reads the same for every sample: the P(correct) recorded when
-             the sample was folded in, or a dash saying why there is none, and a
-             dash for the confidence, which the ledger has no contest to compute. -->
+        <!-- Arbitration confidence is a run's number. A row served from the
+             batch ledger gets the row all the same, so the card reads the same
+             for every sample: a dash for the confidence, which the ledger has
+             no contest to compute. -->
         <div class="ev" v-if="provenance?.confidence != null || ledgerServed">
           <span class="k" v-tooltip.top="EVIDENCE_TOOLTIPS.confidence">confidence</span>
           <span class="v" v-if="provenance?.confidence != null"
@@ -1346,31 +1330,6 @@ const demotedCount = computed(() => {
             ></span
           >
           <span class="v uncal" v-else v-tooltip.top="LEDGER_CONFIDENCE_TOOLTIP">&mdash;</span>
-        </div>
-        <div class="ev" v-if="(provenance && provenance.calibrated !== undefined) || ledgerServed">
-          <span class="k" v-tooltip.top="P_CORRECT_TOOLTIP">P(correct)</span>
-          <span
-            class="v"
-            v-if="pCorrect != null"
-            v-tooltip.top="ledgerServed ? LEDGER_P_CORRECT_TOOLTIP : ''"
-          >
-            {{ formatFit(pCorrect)
-            }}<span
-              v-if="provenance?.calibration?.provisional"
-              class="prov-flag"
-              v-tooltip.top="'Provisional calibration: directionally right, not yet hardened'"
-              >&nbsp;prov.</span
-            ></span
-          >
-          <span
-            v-else-if="ledgerServed"
-            class="v uncal"
-            v-tooltip.top="uncalibratedReason(focusedAssignment, { fromLedger: true })"
-            >&mdash;</span
-          >
-          <span class="v uncal" v-else v-tooltip.top="uncalibratedReason(focusedAssignment)"
-            >uncalibrated</span
-          >
         </div>
       </div>
       <div
@@ -2162,10 +2121,6 @@ const demotedCount = computed(() => {
   font-weight: 600;
   font-size: 0.72rem;
 }
-.prov-flag {
-  color: var(--state-warning);
-  font-size: 0.66rem;
-}
 /* Adduct-corroboration badge: a real compound seen via several adducts. */
 .corroboration {
   align-self: start;
@@ -2185,7 +2140,7 @@ const demotedCount = computed(() => {
 }
 /* Corroboration read off the family's M0 rather than measured on this peak. The
    badge says so in words too - dimming it instead would borrow the "no value
-   here" idiom the uncalibrated states use, and cost contrast the pill needs. */
+   here" idiom the placeholder values use, and cost contrast the pill needs. */
 .corroboration.inherited {
   border-style: dashed;
 }

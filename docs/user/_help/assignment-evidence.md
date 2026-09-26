@@ -11,5 +11,3 @@ The evidence grid measures how well the formula explains the peak:
 - **confidence** &mdash; the formula's share of the evidence among all
   candidates for the peak. A near-equal runner-up is reported as a *tie* rather
   than resolved by decree.
-- **P(correct)** &mdash; the evidence calibrated into a probability of being
-  correct, per instrument.

@@ -4,6 +4,7 @@ import { reactive } from 'vue'
 import { createPinia, setActivePinia } from 'pinia'
 
 import { MAX_SELECTED_BATCH_PEAKS } from '@/stores/data/modules/batchPeak/ledger'
+import { TIERING_PROVISIONAL } from '@/lib/tiers'
 
 // The tier strip and the tier column's sort: both read the confidence order out
 // of @/lib/tiers, and both used to be wrong in the same direction (alphabetical,
@@ -25,11 +26,13 @@ let notificationHandlers
 
 vi.mock('@/stores', () => ({ useApp: () => app }))
 
-vi.mock('@/lib/base', () => ({
+vi.mock('@/lib/base', async () => ({
   BaseTabbedPanel: { template: '<div><slot name="menu" /><slot /></div>' },
   BaseTierTag: true,
   BaseCopyableField: true,
-  BaseVerdictBadge: true
+  BaseVerdictBadge: true,
+  // Real: the tier header's provisional mark is read off what it draws.
+  BaseProvisionalMark: (await vi.importActual('@/lib/base/BaseProvisionalMark.vue')).default
 }))
 vi.mock('@/lib/panes/PaneBrowserMatch/BatchPeakVerdictPopover.vue', () => ({
   default: { name: 'BatchPeakVerdictPopover', template: '<div class="verdict-popover-stub" />' }
@@ -456,10 +459,15 @@ describe('PaneBrowserBatchPeaks tier ordering', () => {
       'Intensity',
       'Formula',
       'Tier',
+      // The tiering is still being built, and the tier header says so.
+      TIERING_PROVISIONAL.label,
       'Samples',
       '' // the verdict header is an icon
     ])
     for (const [, tip] of tips) expect(tip.length).toBeGreaterThan(20)
+    expect(tips.find(([label]) => label === TIERING_PROVISIONAL.label)[1]).toBe(
+      TIERING_PROVISIONAL.tooltip
+    )
     expect(tips.find(([label]) => label === 'm/z')[1]).toMatch(/anchor/i)
     expect(tips.find(([label]) => label === 'Intensity')[1]).toMatch(/any sample/)
     expect(tips.find(([label]) => label === 'Formula')[1]).toMatch(/consensus/i)

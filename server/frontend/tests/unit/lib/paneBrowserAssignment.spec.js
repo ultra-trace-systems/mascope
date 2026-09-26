@@ -12,7 +12,7 @@ import BaseVerdictBadge from '@/lib/base/BaseVerdictBadge.vue'
 import { useAssignmentLauncher } from '@/lib/panes/PaneBrowserMatch/stores'
 import { usePeakAssignParams } from '@/lib/peakAssignParams'
 import { isIsotopeLine } from '@/lib/isotopeLines'
-import { tierRank } from '@/lib/tiers'
+import { TIERING_PROVISIONAL, tierRank } from '@/lib/tiers'
 
 // The per-sample launcher's job after the assign endpoint became synchronous:
 // a run that is refused (409) or a sample that cannot be assigned (422) arrives
@@ -135,6 +135,9 @@ vi.mock('@/lib/base', async () => ({
   BaseLoadError: true,
   BaseTierTag: true,
   BaseVerdictBadge: true,
+  // Real: the tier column's header renders it, and the provisional-tiers tests
+  // below read the mark it draws.
+  BaseProvisionalMark: (await vi.importActual('@/lib/base/BaseProvisionalMark.vue')).default,
   // Real: the point of the run-provenance test below is that the pane hands
   // this component each run, which a stub could not tell us.
   BaseRunProvenance: (await vi.importActual('@/lib/base/BaseRunProvenance.vue')).default
@@ -559,8 +562,7 @@ describe('PaneBrowserAssignment isotopologue grouping', () => {
     'sample_peak_intensity',
     'assigned_formula',
     'mech',
-    'tierRank',
-    'pCorrect'
+    'tierRank'
   ]
 
   beforeEach(() => {
@@ -763,27 +765,21 @@ describe('PaneBrowserAssignment adduct corroboration', () => {
     expect(rows.get('a').corrobInherited).toBe(false)
   })
 
-  // The engine folds the boost into the record that carries the corroboration -
-  // the M0's p_correct - and never into a child's. So the child's
-  // tooltip must not claim the number it sits beside already accounts for it,
-  // which is exactly what the M0's own wording says.
-  it('says whose evidence it is, and whose P(correct) has the boost', async () => {
+  // An isotopologue shows its M0's count, and the tooltip says whose evidence
+  // it is.
+  it('says whose evidence it is', async () => {
     const wrapper = await unfolded(corroborated(3))
     const rows = rowsById(wrapper)
 
     expect(wrapper.vm.corrobTooltip(rows.get('a-c0'))).toBe(
-      'Supported by 3 channels, via the M0 of this isotopologue family ' +
-        "(folded into the M0's P(correct), not into this row's)"
+      'Supported by 3 channels, via the M0 of this isotopologue family'
     )
-    // The M0's own tooltip is the one it always had.
-    expect(wrapper.vm.corrobTooltip(rows.get('a'))).toBe(
-      'Supported by 3 channels (already folded into P(correct))'
-    )
+    expect(wrapper.vm.corrobTooltip(rows.get('a'))).toBe('Supported by 3 channels')
   })
 
   // The count itself is the same number the M0 shows, so the marker parenthesises
   // a borrowed one rather than dimming it - dimming would borrow the "no value
-  // here" idiom the uncalibrated P(correct) state already owns in this column.
+  // here" idiom a dash already owns in the ledger.
   it('parenthesises a borrowed count and leaves an owned one bare', async () => {
     const wrapper = await unfolded(corroborated(3))
     const rows = rowsById(wrapper)
@@ -809,21 +805,21 @@ describe('PaneBrowserAssignment adduct corroboration', () => {
     }
   })
 
-  // The channel count is folded into nothing, so the marker must not repeat the
-  // curated count's claim that P(correct) already accounts for it.
-  it('does not claim a channel count is in P(correct)', async () => {
+  // The calibrated probability is not shown (step 3.4d), so the marker's
+  // tooltip names no number the page does not show, whichever count it is.
+  it('names no probability, whichever count it shows', async () => {
+    const curated = await unfolded(corroborated(3))
     const fam = corroborated(null)
     fam.parent.corroboration_channels = 3
-    const wrapper = await unfolded(fam)
-    const rows = rowsById(wrapper)
+    const channels = await unfolded(fam)
 
-    expect(wrapper.vm.corrobTooltip(rows.get('a'))).toBe(
-      'Supported by 3 channels (not included in the P(correct) beside it)'
-    )
-    expect(wrapper.vm.corrobTooltip(rows.get('a-c0'))).toBe(
-      'Supported by 3 channels, via the M0 of this isotopologue family ' +
-        '(not included in the P(correct) beside it)'
-    )
+    for (const wrapper of [curated, channels]) {
+      for (const row of wrapper.vm.rows) {
+        if (row.corrobAdducts > 1) {
+          expect(wrapper.vm.corrobTooltip(row)).not.toMatch(/P\(correct\)|probability/)
+        }
+      }
+    }
   })
 
   // The inheritance is a fallback, not an override. A backend that does put a
@@ -1062,115 +1058,93 @@ describe('PaneBrowserAssignment isotopologue labels', () => {
   })
 })
 
-// A dash in the P(correct) column has several different causes and only one of
-// them is about the instrument's calibration. Naming the wrong one is worse than
-// naming none: "no calibration curve for this instrument" on a hand-assigned row
-// sends someone off to calibrate an instrument that is calibrated perfectly well.
-describe('PaneBrowserAssignment uncalibrated P(correct)', () => {
+// The calibrated probability leaves the ledger while its curve is provisional,
+// and the tier column says the tiering is still being built (step 3.4d of the
+// assignment quality plan). The API still serves the probability on every row,
+// so the rows below carry one: the ledger has to leave it out, not merely find
+// none.
+describe('PaneBrowserAssignment a tiering still in progress', () => {
   beforeEach(() => {
     runList = [{ peak_assignment_run_id: 'run-1', status: 'completed' }]
+    const fam = family({ id: 'a', mz: 200.1, intensity: 1000, formula: 'C10H12' })
+    fam.parent.p_correct = 0.93
+    fam.parent.p_correct_provisional = true
+    seed(fam)
   })
   afterEach(() => vi.clearAllMocks())
 
-  // One ledger holding a row per cause, so the reasons are read off rows that
-  // have been through the pane's own row mapping rather than off literals.
-  const LEDGER = [
-    { id: 'hand', source: 'manual', formula: 'C10H12' },
-    { id: 'untargeted', source: 'untargeted', formula: 'C6H6' },
-    { id: 'engine', source: 'database', formula: 'C2H6' },
-    // An isotopologue that curation stripped when its M0 was reassigned: a person's
-    // edit is what unassigned it, so the backend leaves source 'manual' on it,
-    // and it holds no formula at all.
-    { id: 'stripped', source: 'manual', formula: null, tier: 'unassigned', role: 'unassigned' }
-  ]
-
-  async function ledger() {
-    const families = LEDGER.map(({ id, source, formula, tier, role }, index) => {
-      const fam = family({
-        id,
-        mz: 200.1 + index,
-        intensity: 1000 - index,
-        formula,
-        ...(tier ? { tier } : {}),
-        ...(role ? { role } : {})
-      })
-      fam.parent.source = source
-      return fam
+  // Renders every column's header and cells, so what the ledger shows can be
+  // read whole rather than off `rows`.
+  async function renderedTable() {
+    const tableRows = ref([])
+    const wrapper = mount(PaneBrowserAssignment, {
+      global: {
+        directives: { tooltip: {}, help: {} },
+        stubs: {
+          ...GLOBAL_STUBS,
+          DataTable: {
+            ...GLOBAL_STUBS.DataTable,
+            watch: {
+              value: { handler: (value) => (tableRows.value = value), immediate: true }
+            }
+          },
+          Column: {
+            props: ['field', 'header'],
+            setup: () => ({ rows: tableRows }),
+            template:
+              '<div class="stub-col" :data-field="field">' +
+              '<div class="stub-head">{{ header }}<slot name="header" /></div>' +
+              '<template v-for="(row, i) in rows" :key="i">' +
+              '<slot name="body" :data="row" /></template></div>'
+          }
+        }
+      }
     })
-    seed(...families)
-    const wrapper = await mountPane()
-    return { wrapper, rows: new Map(wrapper.vm.rows.map((row) => [row.peak_assignment_id, row])) }
+    await wrapper.vm.$nextTick()
+    return wrapper
   }
 
-  it('names the cause of an empty cell, and never one of the others', async () => {
-    const { wrapper, rows } = await ledger()
-    const reason = (id) => wrapper.vm.uncalibratedReason(rows.get(id))
+  it('shows no calibrated probability', async () => {
+    const wrapper = await renderedTable()
 
-    expect(reason('hand')).toBe('Assigned by hand - the calibration never scored this formula')
-    expect(reason('untargeted')).toBe('Untargeted assignment - no calibrated probability')
-    expect(reason('engine')).toBe('No calibration curve for this instrument')
+    expect(wrapper.text()).not.toContain('P(correct)')
+    expect(wrapper.text()).not.toContain('93%')
+    expect(wrapper.findAll('.stub-col').map((col) => col.attributes('data-field'))).not.toContain(
+      'pCorrect'
+    )
+    expect(wrapper.vm.rows[0]).not.toHaveProperty('pCorrect')
   })
 
-  // The stripped row is 'manual' too, so the source alone would call it
-  // hand-assigned - on a row that holds no formula and whose tier chip beside it
-  // reads Unassigned.
-  it('does not call a row with no formula assigned by hand', async () => {
-    const { wrapper, rows } = await ledger()
+  it('marks the tier column provisional', async () => {
+    const wrapper = await renderedTable()
+    const tier = wrapper
+      .findAll('.stub-col')
+      .find((col) => col.attributes('data-field') === 'tierRank')
 
-    expect(wrapper.vm.uncalibratedReason(rows.get('stripped'))).toBe(
-      'Nothing assigned to this peak'
-    )
+    const mark = tier.find('.stub-head [data-testid="tiering-provisional"]')
+    expect(mark.exists()).toBe(true)
+    expect(mark.text()).toBe(TIERING_PROVISIONAL.label)
+    // Only the tier column says it.
+    expect(wrapper.findAll('[data-testid="tiering-provisional"]')).toHaveLength(1)
   })
 
-  // The header says what the column is in one line; the reasons for a dash are
-  // on the dashes, where each can be the row's own. Four rows, four distinct
-  // reasons - and none of them in the header.
-  it('keeps the header to one line and the reasons on the cells', async () => {
-    const { wrapper, rows } = await ledger()
-    const reasons = LEDGER.map(({ id }) => wrapper.vm.uncalibratedReason(rows.get(id)))
+  it('keeps the tier the sort key under the marked header', async () => {
+    const wrapper = await renderedTable()
 
-    expect(new Set(reasons).size).toBe(LEDGER.length)
-    expect(wrapper.vm.pCorrectHeaderTooltip).toBe(
-      'Calibrated probability the assignment is correct'
-    )
-    for (const reason of reasons) {
-      expect(wrapper.vm.pCorrectHeaderTooltip).not.toContain(reason)
-    }
+    wrapper.vm.sortField = 'tierRank'
+    wrapper.vm.sortOrder = 1
+    await wrapper.vm.$nextTick()
+    expect(wrapper.vm.rows.map((row) => row.peak_assignment_id)).toEqual(['a'])
   })
 
-  // A sample with no run of its own is served from the batch ledger: its
-  // P(correct) is the one recorded when it was folded in, and says so on hover,
-  // and a missing one is the ledger's to explain rather than the instrument's.
-  // The row's own reasons still come first.
-  it('explains a P(correct) served from the batch ledger, and its absence', async () => {
-    runRecord = { engine: 'batch' }
-    const { wrapper, rows } = await ledger()
+  // The channel-count marker sat beside the probability and moves to the
+  // ionization, whose channels it counts.
+  it('puts the channel count beside the ionization', async () => {
+    assignmentList[0].corroboration_channels = 3
+    const wrapper = await renderedTable()
+    const mech = wrapper.findAll('.stub-col').find((col) => col.attributes('data-field') === 'mech')
 
-    expect(wrapper.vm.pCorrectTooltip({ pCorrect: 0.9 })).toMatch(/batch ledger/)
-    expect(wrapper.vm.pCorrectTooltip({ pCorrect: null })).toBe('')
-    expect(wrapper.vm.uncalibratedReason(rows.get('engine'))).toBe(
-      'No calibrated probability was recorded when this sample was folded into the batch ledger'
-    )
-    expect(wrapper.vm.uncalibratedReason(rows.get('untargeted'))).toBe(
-      'Untargeted assignment - no calibrated probability'
-    )
-  })
-
-  it("says nothing about the ledger on a run's own rows", async () => {
-    const { wrapper, rows } = await ledger()
-
-    expect(wrapper.vm.pCorrectTooltip({ pCorrect: 0.9 })).toBe('')
-    expect(wrapper.vm.uncalibratedReason(rows.get('engine'))).toBe(
-      'No calibration curve for this instrument'
-    )
-  })
-
-  it('still says what the column is', async () => {
-    const { wrapper } = await ledger()
-
-    expect(wrapper.vm.pCorrectHeaderTooltip).toContain(
-      'Calibrated probability the assignment is correct'
-    )
+    expect(mech.find('.corrob-mark').text()).toBe('3')
   })
 })
 

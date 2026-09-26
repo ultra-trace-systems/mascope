@@ -167,9 +167,12 @@ describe('BaseRunProvenance', () => {
     expect(wrapper.vm.tierBandsText).toBeNull()
   })
 
-  it('says an import writes no Mascope P(correct), only for imported runs', () => {
-    expect(mountBadge(IMPORTED_RUN).vm.engineTooltip).toContain('no Mascope-calibrated P(correct)')
-    expect(mountBadge(IN_APP_RUN).vm.engineTooltip).not.toContain('P(correct)')
+  // The app shows no calibrated probability while its curve is provisional
+  // (step 3.4d), so no chip says which runs lack one.
+  it('names no calibrated probability, for any run', () => {
+    for (const run of [IMPORTED_RUN, IN_APP_RUN, COPIED_RUN]) {
+      expect(mountBadge(run).vm.engineTooltip).not.toContain('P(correct)')
+    }
   })
 
   it('survives a calibration blob it cannot serialize', () => {
@@ -218,7 +221,6 @@ describe('BaseRunProvenance', () => {
       const tooltip = mountBadge(COPIED_RUN).vm.engineTooltip
 
       expect(tooltip).toContain('re-measured against this sample')
-      expect(tooltip).toContain('no Mascope-calibrated P(correct)')
     })
 
     it('shows its copy manifest where an import shows its calibration', () => {

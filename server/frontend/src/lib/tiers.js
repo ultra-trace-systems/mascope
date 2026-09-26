@@ -53,6 +53,23 @@ const TIER_DEFINITIONS = [
   }
 ]
 
+/**
+ * What the tier column and the inspector's tier row say of the tiering itself
+ * while its rules are being built: under the assignment quality plan
+ * (docs/dev/assignment_quality_plan.md, stage 3) a week's work can move a third
+ * of a set's tiers, and a tier shown with the same face as the m/z beside it
+ * would read as settled. A fixed string rather than a setting, set to null when
+ * the plan's stage 3 gate passes; every surface that shows the marker reads it
+ * from here and shows nothing once it is null.
+ */
+export const TIERING_PROVISIONAL = Object.freeze({
+  label: 'provisional',
+  tooltip:
+    'The tiering is provisional: its rules are still being developed, and a ' +
+    "row's tier can change between engine versions. Read a tier as the engine's " +
+    'current reading of the evidence, not as a settled verdict.'
+})
+
 /** Every tier, in confidence order. */
 export const TIERS = TIER_DEFINITIONS.map(({ key }) => key)
 

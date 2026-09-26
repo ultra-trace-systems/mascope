@@ -5,6 +5,7 @@ import { ref } from 'vue'
 import { num } from '@/lib/formatters'
 import { isIsotopeLine } from '@/lib/isotopeLines'
 import { EVIDENCE_LEVELS } from '@/lib/verification'
+import { TIERING_PROVISIONAL } from '@/lib/tiers'
 
 // The inspector card for a peak with no committed formula. Two states reach it:
 // a ledger row of tier `unassigned` (a real assignment row, just formula-less),
@@ -123,9 +124,11 @@ vi.mock('@/lib/panes/PanePeakAssign/stores/batchPeakCuration.js', () => ({
 
 // Stubbed rather than auto-stubbed: the badge renders nothing of its own for a
 // null record, which would make "no badge" pass even with the block still there.
-vi.mock('@/lib/base', () => ({
+vi.mock('@/lib/base', async () => ({
   BaseTierTag: { props: ['tier'], template: '<span class="tier-tag" />' },
-  BaseVerdictBadge: { props: ['record', 'compact'], template: '<span class="verdict-badge" />' }
+  BaseVerdictBadge: { props: ['record', 'compact'], template: '<span class="verdict-badge" />' },
+  // Real: the tier row's provisional mark is read off what it draws.
+  BaseProvisionalMark: (await vi.importActual('@/lib/base/BaseProvisionalMark.vue')).default
 }))
 
 // The verdict dialog renders its content only while shown, as Popover does, so
@@ -608,17 +611,15 @@ describe('PanePeakAssign adduct corroboration', () => {
     expect(badge(wrapper).text()).toContain('Supported by 3 channels via M0')
   })
 
-  // The engine folds the boost into the record carrying the corroboration - the
-  // M0's p_correct - and never into a child's, which stays calibrated on its
-  // own evidence. The inspector renders that isotopologue's own P(correct) directly
-  // above this badge, so claiming the boost is in it would be false.
-  it('does not claim the boost is in the P(correct) of the isotopologue itself', async () => {
+  // The card no longer shows the calibrated probability (step 3.4d), so the
+  // badge names no number the card does not show.
+  it("says the evidence is the M0's, and names no probability", async () => {
     focusIsotopologue(3)
     const wrapper = await mountPane()
 
     expect(wrapper.vm.corroborationTooltip).toBe(
       "This isotopologue's M0 was seen through 3 ionization channels: independent evidence " +
-        "for the formula. It is in the M0's P(correct), not in this isotopologue's."
+        'for the formula.'
     )
   })
 
@@ -714,19 +715,15 @@ describe('PanePeakAssign adduct corroboration', () => {
     expect(badge(wrapper).classes()).not.toContain('inherited')
   })
 
-  // The one thing the two counts must not share is the claim about P(correct).
-  // The curated count is folded into it; the channel count is evidence the run
-  // recorded and is folded into nothing.
-  it('does not claim the channel count is in P(correct)', async () => {
+  // The channels are named as the run recorded them, and no probability is.
+  it('names the channels, and no probability', async () => {
     focusedAssignment = { ...M0, corroboration_channels: 2 }
     detailRecord = { provenance: { cross_channel: { channels: ['[M+H]+', '[M+NH4]+'] } } }
     const wrapper = await mountPane()
 
-    expect(wrapper.vm.corroborationTooltip).toContain(
-      'Seen through 2 ionization channels ([M+H]+, [M+NH4]+)'
+    expect(wrapper.vm.corroborationTooltip).toBe(
+      'Seen through 2 ionization channels ([M+H]+, [M+NH4]+): independent evidence for the formula.'
     )
-    expect(wrapper.vm.corroborationTooltip).toContain('It is not in P(correct).')
-    expect(wrapper.vm.corroborationTooltip).not.toContain('It is in P(correct).')
   })
 
   // Where a curated row carries both, the channel count is the superset - the
@@ -747,7 +744,7 @@ describe('PanePeakAssign adduct corroboration', () => {
 
     expect(badge(wrapper).text()).toContain('Supported by 3 channels via M0')
     expect(badge(wrapper).classes()).toContain('inherited')
-    expect(wrapper.vm.corroborationTooltip).toContain('It is not in P(correct).')
+    expect(wrapper.vm.corroborationTooltip).not.toContain('P(correct)')
   })
 
   // The badge is gated on more than one, and a capped `ambiguous_nitrogen` row
@@ -2257,31 +2254,21 @@ describe('PanePeakAssign on-demand evidence for a derived row', () => {
     loadEvidence.mockClear()
   })
 
-  // A derived row reads like a run's: the rows a run fills are there, with what
-  // the ledger has or a dash that says why not, so the card keeps its shape
-  // whether the sample has a run of its own or is served from the batch ledger.
-  it('keeps the confidence and P(correct) rows on a ledger-served row', async () => {
+  // A derived row reads like a run's: the row a run fills is there, with a dash
+  // that says why the ledger has none, so the card keeps its shape whether the
+  // sample has a run of its own or is served from the batch ledger. The
+  // probability the ledger recorded is not shown, as a run's is not.
+  it('keeps the confidence row, and no probability, on a ledger-served row', async () => {
     focusedAssignment = { ...derivedM0(), p_correct: 0.87, source: 'database' }
     const wrapper = await mountPane({ recordTooltips: true })
 
     const rows = Object.fromEntries(
       wrapper.findAll('.evidence .ev').map((ev) => [ev.find('.k').text(), ev.find('.v')])
     )
-    expect(rows['P(correct)'].text()).toContain('87')
-    expect(rows['P(correct)'].attributes('data-tooltip')).toMatch(/batch ledger/)
+    expect(rows).not.toHaveProperty('P(correct)')
+    expect(wrapper.find('.evidence').text()).not.toContain('87')
     expect(rows.confidence.text()).toBe('—')
     expect(rows.confidence.attributes('data-tooltip')).toMatch(/assignment run/)
-  })
-
-  it('explains a missing P(correct) on a ledger-served row', async () => {
-    focusedAssignment = { ...derivedM0(), p_correct: null, source: 'untargeted' }
-    const wrapper = await mountPane({ recordTooltips: true })
-
-    const p = wrapper.findAll('.evidence .ev').find((ev) => ev.find('.k').text() === 'P(correct)')
-    expect(p.find('.v').text()).toBe('—')
-    expect(p.find('.v').attributes('data-tooltip')).toBe(
-      'Untargeted assignment - no calibrated probability'
-    )
   })
 
   // The isotopologue table is where the focused peak's m/z is read, so it is
@@ -2930,17 +2917,31 @@ describe('PanePeakAssign hover text', () => {
     )
   })
 
-  // An untargeted row has no calibrated probability because nothing calibrates
-  // the formula search, not because the instrument lacks a curve.
-  it("gives an uncalibrated row the reason it has none, not the instrument's", async () => {
-    detailRecord = { provenance: { calibrated: false, p_correct: null } }
-    const wrapper = await mountPane({ recordTooltips: true })
-    const cell = wrapper
-      .findAll('.evidence .ev')
-      .find((element) => element.find('.k').text() === 'P(correct)')
+  // The calibrated probability leaves the card while its curve is provisional
+  // (step 3.4d): not on a calibrated row, not as an "uncalibrated" placeholder,
+  // and not as a provisional flag.
+  it('shows no calibrated probability, calibrated or not', async () => {
+    for (const provenance of [
+      { calibrated: true, p_correct: 0.91, calibration: { provisional: true } },
+      { calibrated: false, p_correct: null }
+    ]) {
+      detailRecord = { provenance }
+      const wrapper = await mountPane({ recordTooltips: true })
+      const keys = wrapper.findAll('.evidence .ev .k').map((element) => element.text())
 
-    expect(cell.find('.v').text()).toBe('uncalibrated')
-    expect(tip(cell.find('.v'))).toBe('Untargeted assignment - no calibrated probability')
+      expect(keys).not.toContain('P(correct)')
+      expect(wrapper.text()).not.toMatch(/uncalibrated|prov\.|91%/)
+    }
+  })
+
+  // The tier row says the tiering is still being built, beside the chips.
+  it('marks the tier row provisional', async () => {
+    const wrapper = await mountPane({ recordTooltips: true })
+    const mark = wrapper.find('.insp-tiers [data-testid="tiering-provisional"]')
+
+    expect(mark.exists()).toBe(true)
+    expect(mark.text()).toBe(TIERING_PROVISIONAL.label)
+    expect(tip(mark)).toBe(TIERING_PROVISIONAL.tooltip)
   })
 
   it("names the isotopologue table's columns", async () => {
