@@ -47,7 +47,7 @@ dataset's sets G to J, the chemist's reading of 2026-09-24 (decision 21).
 | 3.1c - the stronger partner decides | #2205 | built: the partner gate keeps each neutral's partners (rows committing it at candidate or better through a mode channel) with their peak heights, current through every swap; after its walk, read once against the settled partners, a reading through a gated channel that stands on a partner is weighed against every other reading of its ion through a gated channel that has one, and the brighter partner takes the ion (`took_from`), a tie leaving the row its reading, with what it weighed recorded (`partner_gate.contest`: reading, channel, peak ratio, decisive). Where the brighter partner is at least `PARTNER_MARGIN` (10) times the other's, the other reading is marked `outweighed` and the cross-channel pass settles the ion by the partner (`same_ion_settled` by `partner`); within the margin it stays a rival and the row is held at candidate. A reading through a mode channel is not contested; where a reading has no partner and the family's mode reading is no molecule, the gate takes the opportunistic reading with the brightest partner rather than the first. The cross-channel pass weighs a rival whose molecule the sample commits through a mode channel the same way against the row's own molecule, leaving out the rows through either reading's own channel, on every row: decisively weaker it is settled, otherwise a second channel does not settle it (`shown`, counted as `shown_rival`); a typed formula such as `C6H4(CH3)2` is keyed as the molecule it spells. The run records the gate's summary and margin (`config.partner_gate`). Tiering rule set 7. The tier as a bar rather than a weight, the contest after the walk and the weighed shown rival are the review's (the step's as-built note). Measured on the testbed 2026-09-25 (develop `fb529440c`, rule set 7, margin 10): set K the benzyl cation as toluene less a hydride at assigned in 6 of 6 files, the methylbenzyl cation as xylene less a hydride in 6 (4 assigned, 2 candidate as before), C5H7+ as isoprene less a hydride in 6 (candidate in 5, assigned in the one file where isoprene's row is ten times the C5H6 row's); the gate contested 14 to 20 ions per file, swapped 7 to 12, outweighed 5 to 12 and held 7 to 12 within the margin; assigned rows per file 67 to 60 and assigned intensity 76 to 46% of the M0 total, almost all of it one ion: m/z 69.008, read as C2N2O through proton transfer and now as C2H2N2O less a hydride within the margin, 36% of the assigned intensity in every file and the air-plasma family of 3.3 and 3.6; C5H7+ is 1.5%. Set L keeps every formula and 200 rows, a third of its assigned rows and a quarter of its assigned intensity, fall to candidate on the shown hydride rival: the declared proton transfer is doubted wherever the hydride reading's molecule is seen through electron transfer. Set G, the wider reach: 158 deprotonated acids and 18 formate rows of the no-reagent-ion half fall to candidate, 42% of its assigned intensity, pinonic acid at 183.103 first, because the formate reading's molecule (nopinone) is seen through the nitrate adduct at about twice the acid's own; with reagent ion 59 rows and 8%. G11 unchanged at 5.6% of assigned-plus-candidate intensity, 7.1 to 0.3% of assigned. Set I+ 14 rows, I- none, set C 10 rows (assigned 613 to 603, the reference's confirmation 87.1 to 86.9%), set C2 unchanged |
 | 3.1d - the declared channel's prior | #2211 | measured 2026-09-25 (pass 9, develop `ecbceb593`, rule set 9, read together with 3.4b): on the proton-transfer cylinder set L the 155 rows the pass-8 buckets named return to assigned, 57 more are settled by the second channel but stay under their own band, and 65 stay held on the shown rival (38 where the rival's molecule is ten times as bright or more, 27 where the row's own molecule is shown through no other of the mode's channels); C5H7+ stays candidate in 5 of 6 files (ratios 0.01 to 0.09) and protonated benzene, predicted to stay, is assigned in 4 of 6, its C6H8 rival shown at only 0.95 to 1.3 times its own showing. On set G without reagent ion 45 acids return (the buckets said 63: 18 of those are settled by the second channel and held by their band, which the buckets did not read), pinonic acid assigned in 6 of 6 with nopinone recorded at about twice its showing, glycolic acid candidate in 6 of 6; 154 acids stay held (102 on a rival ten times as bright, 52 with no showing of their own beyond deprotonation) and the 20 formate rows stay, as opportunistic readings; with reagent ion 14 return. Set C's 10 rows return, C2 unchanged; K, K3 and I+ unchanged by the step, their moves being contests; G11 5.58% unchanged. The run's `shown_rival_weighed` reads 10 to 17 per file on G without reagent ion |
 | 3.2 - formate as an opportunistic channel | #2198, stacked on #2197 | built: `+HCOO-` is a secondary channel of the nitrate, 15N-nitrate, bromide and iodide profiles, probed on formate, its dimer with formic acid and (nitrate) its cluster with the reagent's acid, built from the reagent so the labelled profile probes `[HCOO+H^NO3]-`; the nitrate profiles keep it on where the window cannot show a probe, as they do carbonate, because the batch carrying the C11 pseudo-acids is acquired from m/z 130 and the source makes no formate carrier above 127 (the two-acid cluster absent, the two-formic-acid cluster at 0.01-0.05% of base on the wide-window sister batch); the halide profiles claim only what they show. The election alone is not enough: measured with the channel open, it read every deprotonated acid as the molecule 46 Da lighter with formate (1,239 acid rows of six no-reagent-ion samples moved to formate and were capped; set C's same-formula agreement with the reference fell from 89.6% to 62.6%), so formate takes the partner gate of step 3.1 (`engine.apply_partner_gates`): the formate reading is the row's only where the lighter neutral is committed through a mode channel, otherwise the acid stands and the formate reading is set aside. Measured on the testbed with the partner gate judging every row against the ledger as it stands: set G without reagent ion G11 24.4 -> 5.6% of assigned-plus-candidate intensity (assigned-only 32.9 -> 7.1%), the deprotonated C11 rows 195 -> 79 (51 assigned), 104 of them now their C10 formate reading at assigned, each corroborated by the C10 neutral through a mode channel, 51 standing because no reading of the C10 neutral exists through a mode channel, 28 held at candidate; assigned rows per sample 486 -> 440, assigned intensity 58.4 -> 56.5%, of which 272 list-matched acids drop to candidate because their formate rival's lighter neutral is itself committed (O4 to O8 products; a real ambiguity for the small acids, and for a list's C11 the C10 reading is right). Set G with reagent ion G11 1.2 -> 0.5%. Set C tiers within two rows of before (assigned 615 -> 613), same-formula agreement with the reference 89.6 -> 88.0% where a partnered formate reading replaces an acid the reference reads as an acid; set C2 unchanged (probe absent, channel off). The target of under 1% is met with reagent ion and not without: the remaining 5.6% is C11 acids whose C10 partner is seen through no mode channel, which the rule leaves standing |
-| 3.3 - name the source ions | #2218 | built: the pre-pass claims the reagent's own ladder, the air's ions and the calibrant beam, each ion with the works that name it (41 works; a work is cited for an ion only where it names that ion, `provenance.reagent.references`); five rungs no work names are claimed on the test spectra and say so (`observed`: Br3-, BrO-, BrO3-, Br-(HBr), urea's trimer), the plan owner's call per ion, and every other rung of the ladders' grammar is dropped; the monoterpene fragments, C6H9+ among them, are claimed after the stages against a committed parent; `[M-CH3]+` joins the charge-transfer profile; the cyclic-siloxane list carries a `background` tag the row shows. CF3- and CF3O- get no ladder: no work gives them as trifluoroacetic acid's fragments with a ratio. Dry run on the pass-9 ledgers: K3 88%, I+ 84%, I- 12%, G with reagent ion 3.8% of the intensity newly claimed; pass 10 measures it |
+| 3.3 - name the source ions | #2218 | built: the pre-pass claims the reagent's own ladder, the air's ions and the calibrant beam, each ion with the works that name it (41 works; a work is cited for an ion only where it names that ion, `provenance.reagent.references`); seven ions no work names are claimed on the test spectra and say so (`observed`: Br3-, BrO-, BrO3-, Br-(HBr), urea's trimer, the beam's C14H10+. and C15H12+.), the plan owner's call per ion, and every other rung of the ladders' grammar is dropped; an iodide source leaves nitrate and nitrite to the stages (dor21 reads bare nitrate as nitric acid there); the monoterpene fragments, C6H9+ among them, are claimed after the stages against a committed parent; `[M-CH3]+` joins the charge-transfer profile; the cyclic-siloxane list carries a `background` tag the row shows. CF3- and CF3O- get no ladder: no work gives them as trifluoroacetic acid's fragments with a ratio. Dry run on the pass-9 ledgers: K3 88%, I+ 84%, I- 12%, G with reagent ion 3.8%, K 1.5%, L 1.1% of the intensity newly claimed; pass 10 measures it and reads nitrate and nitrite on the bromide sets |
 | 3.3b - the standard adduct notation | #2203, #2204 stacked on it | built: both notations are read everywhere, through one reader in the library (`mechanism_notation`) mirrored by the frontend's; a new mechanism is stored in the standard form, and the mechanism column reads every row in it, so the API, exports, SDK and engine show `[M-H]-` before any row is rewritten; the profiles, channels, catalogue and provisional weights are spelled in it. The map is exact both ways on all 24 fleet spellings; #2204 rewrites the stored rows and the calibration weights' keys (alembic `5193d1e942e0`, the downgrade its inverse). Moves no metric. The legacy form is refused at 2.0 |
 | 3.3c - reagent rows read like rows | - | planned, recorded 2026-09-25 from the peak browser by the plan owner: a reagent row shows no formula, and the lines of its cluster's envelope stand beside it as unrelated reagent rows; the ion formula in the column, the envelope's lines under their monoisotopic row |
 | 3.3d - source-solvent clusters | - | planned, from the reference engine's reading (its #55): the proton- and hydride-bound ladders of water, methanol, ethanol and acetone claimed as reagent rows under its ladder rules |
@@ -1848,12 +1848,13 @@ touches Stage A and neither the reagent pass nor the browser.
     ash26, mar16, shc24, wes18, nist]. O3-, CO4- and OH-(H2O)n turned out to
     be named, and are claimed. The contaminant family is empty and is not
     in the library: its two candidates are below.
-  - *Five rungs no work found names are claimed on the test spectra,* the
+  - *Seven ions no work found names are claimed on the test spectra,* the
     plan owner's call per ion (2026-09-26), and each row says so
     (`provenance.reagent.observed`): bromide's trimer (all 15 files of sets
     D, E and F1, 1.5 to 35% of the base peak), BrO- (11 of the 15, up to
-    1.8%), BrO3- and Br-(HBr) (every file of set E, 0.6% and 0.06%), and
-    urea's protonated trimer (every file of set A, 0.08%). The rest of what
+    1.8%), BrO3- and Br-(HBr) (every file of set E, 0.6% and 0.06%), urea's
+    protonated trimer (every file of set A, 0.08%), and the beam's C14H10+.
+    and C15H12+. (below). The rest of what
     the pass enumerated from its ladders' grammar goes: the bromide and
     iodide ladders' other clusters, hydrates and HX clusters, BrO2-, the
     iodine oxide clusters, the bromide precursors' anions, urea above the
@@ -1869,8 +1870,45 @@ touches Stage A and neither the reagent pass nor the browser.
     dimers are formic and acetic acid in ver08 and ber11 - on the chamber's
     nitrate batch with reagent ion the source's own air anions deprotonate
     the chamber's acids, 15% and 7% of that batch's intensity, through the
-    deprotonation the mode declares. No work found names the PAH rungs the
-    beam carries (C13H8, C14H10, C15H12), and none is claimed.
+    deprotonation the mode declares.
+  - *The planner's review of #2218 asked four calls of the plan owner,*
+    decided on the PR on 2026-09-26 and built as follows.
+    - *On an iodide source nitrate and nitrite are left to the stages*
+      (`_AIR_NOX_ANIONS`: nitrite, nitrate, their hydrates, and nitric acid
+      on nitrate and on bicarbonate; the bicarbonate cluster goes with the
+      nitric-acid one, since it carries the same acid). dor21, cited for the
+      iodide ladder, reads bare nitrate at m/z 62 on an iodide source as
+      nitric acid, with N2O5, the nitrate radical and the halogen nitrates
+      beside it, so there it is an analyte's ion by the library's own rule,
+      and nitrite goes with it as its pair. The gate has no iodide set, so
+      nothing measured moves. On a bromide source both stay the air's: no
+      work found reads either as an analyte's there. Pass 10 reads them on
+      the bromide sets - flat in every file keeps them, varying or absent
+      drops them. The pass-9 ledgers already say where that reading starts:
+      nitrate is absent on D, flat on E (in 3 of 3 files at 1% of the base
+      peak) and varies on F1, the multi-scheme inlet's bromide day, whose
+      inlet also runs a nitrate scheme (NO3- in 2 of 6 files at 12 to 21%,
+      NO3-(HNO3) in 6 of 6 at 0.2 to 6.5%); no bromide set claims nitrite.
+    - *The beam's PAH ions are claimed as calibrant under `observed`*
+      (`_BEAM_PAH_IONS`, kind `background`): C14H10+. and C15H12+. stand in
+      all 19 files of the certified-cylinder sets K, K3 and L, zero air
+      among them, at 0.02 to 4.3% and 0.03 to 6% of the base peak, flat
+      against the beam where K3's window holds both. C13H8+., which family 3
+      lists beside them, is not claimed: it stands in one file of the
+      nineteen, below the bar the call sets. The cost, stated in the library
+      and on the how-it-works page: on the charge-transfer source a PAH of
+      these compositions - C14H10 is anthracene and phenanthrene - is not
+      read as an analyte until step 4.2 reads a dataset's background, and no
+      fleet deployment measures PAHs on this source today. The claim takes
+      the C14H10 and C15H12 rows the stages had committed on K, K3 and L
+      (at candidate or below, and at assigned in one file of L).
+    - *Nitrite's 15N form stays out* on the labelled source: no work names
+      it, and on the testbed it is in 492 of 1,106 files at a median 0.015%
+      of the base peak, unassigned, which clears neither bar. The air's 14N
+      nitrite is claimed there as the air's.
+    - *The five rungs observed on the reagent ladders* (bromide's trimer,
+      BrO-, BrO3-, Br-(HBr), urea's trimer) were the plan owner's call in the
+      build session, confirmed on the PR on the same numbers.
   - *CF3- and CF3O- are not claimed,* as the plan reads them: they ride with
     trifluoroacetic acid, an analyte, so they are not library entries. The
     fragment claim would take them against the acid committed, but no work
@@ -1913,11 +1951,11 @@ touches Stage A and neither the reagent pass nor the browser.
     low-mass end, where the axis bends.
   - *A dry run on the pass-9 ledgers* (the library matched over each file's
     peaks, not a run), as newly claimed shares of each file's total
-    intensity, median: K3 88% (N3+, NO2+, N4+ and C16H12+; N3+ and NO2+ had
-    been matched as the mode's calibration compounds), I+ 84%, I- 12%
-    (carbonate, bicarbonate and nitrate), G with reagent ion 3.8% (ozonide,
-    carbonate, bicarbonate and their hydrates), K 0.02%, L and G without
-    reagent ion none. The fragment claim over the same ledgers, each row
+    intensity, median: K3 88% (N3+, NO2+, N4+, C16H12+ and the PAH ions;
+    N3+ and NO2+ had been matched as the mode's calibration compounds), I+
+    84%, I- 12% (carbonate, bicarbonate and nitrate), G with reagent ion
+    3.8% (ozonide, carbonate, bicarbonate and their hydrates), K 1.5% and L
+    1.1% (the PAH ions and their envelopes), G without reagent ion none. The fragment claim over the same ledgers, each row
     read by its own reading alone, which can only claim more than a run
     (the ledgers carry no alternatives for the third test): C6H8+. in 6 of 6
     files on K and L and C6H9+ in 6 of 6 on L; on I+ C6H8+. in 6, C6H9+ in

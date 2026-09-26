@@ -789,8 +789,9 @@ def channel_notes(channels: Sequence[SecondaryChannel]) -> Mapping[str, str]:
 # reagent all the way through is not enough on its own, because a claim takes
 # the peak before either stage sees it. A few rungs no work found names are in
 # on the evidence of Mascope's test spectra, and say so in ``observed``:
-# bromide's trimer, its cluster with HBr and its two oxides, and urea's
-# protonated trimer, each in every file of at least one set. The rest of what a
+# bromide's trimer, its cluster with HBr and its two oxides, urea's protonated
+# trimer, and the aromatic ions the charge-transfer beam carries, each in every
+# file of at least one set. The rest of what a
 # grammar of these ladders would enumerate - the higher bromide and iodide
 # clusters and their hydrates, the urea multimers above the trimer and those
 # carrying ammonium, the iodine oxide clusters, the bromide precursors' anions -
@@ -803,6 +804,8 @@ KIND_CLUSTER = "cluster"
 KIND_ADDUCT = "adduct"
 #: A reagent-halogen oxide anion.
 KIND_OXIDE = "oxide"
+#: An ion the source carries that is not a rung of its reagent's ladder.
+KIND_BACKGROUND = "background"
 #: A fragment of the reagent ion itself.
 KIND_FRAGMENT = "fragment"
 
@@ -1197,12 +1200,14 @@ def _rung(
     *references: str,
     anchor: bool = False,
     observed: str = "",
+    family: str = FAMILY_REAGENT,
 ) -> ReagentCluster:
-    """A rung of a reagent's own ladder, with the works that name it.
+    """A rung of a source's own ladder, with the works that name it.
 
     :param formula: The ion's composition, in any element order.
     :param references: The works that name it.
     :param observed: Where no work names it: what shows it.
+    :param family: The ladder's family, the reagent's unless said.
     """
     return ReagentCluster(
         _ion_formula((formula, 1)),
@@ -1210,7 +1215,7 @@ def _rung(
         label,
         kind,
         anchor=anchor,
-        family=FAMILY_REAGENT,
+        family=family,
         references=references,
         observed=observed,
     )
@@ -1396,6 +1401,43 @@ def _fluoranthene_ladder() -> tuple[ReagentCluster, ...]:
     )
 
 
+#: The polycyclic aromatic ions the beam carries beside its own, one CH2
+#: apart, at a flat share of it where a window holds both. No work found names
+#: them as the beam's; Mascope's charge-transfer test spectra show them in
+#: every file of the certified-cylinder sets, zero air among them, which is the
+#: bar a reagent's unnamed rung is claimed on. C13H8, the rung below, is not
+#: here: those spectra show it in one file of nineteen. The cost is stated
+#: rather than hidden: C14H10 is anthracene's and phenanthrene's ion, so on
+#: this source a PAH of these compositions is not read as an analyte until a
+#: dataset's own background can be told from its samples.
+_BEAM_PAH_IONS: tuple[ReagentCluster, ...] = (
+    _rung(
+        "C14H10",
+        1,
+        "[C14H10]+.",
+        KIND_BACKGROUND,
+        observed=_seen(
+            "Mascope's charge-transfer test spectra show it in all 19 files of "
+            "the certified-cylinder sets, zero air among them, at 0.02 to 4.3% "
+            "of the base peak"
+        ),
+        family=FAMILY_CALIBRANT,
+    ),
+    _rung(
+        "C15H12",
+        1,
+        "[C15H12]+.",
+        KIND_BACKGROUND,
+        observed=_seen(
+            "Mascope's charge-transfer test spectra show it in all 19 files of "
+            "the certified-cylinder sets, zero air among them, at 0.03 to 6% of "
+            "the base peak"
+        ),
+        family=FAMILY_CALIBRANT,
+    ),
+)
+
+
 #: The negative source's reagent: the fluoranthene radical anion, the negative
 #: EASY-IC lock mass at m/z 202.079. The anions it goes on to make from air are
 #: the air family's (:data:`_AIR_ANIONS`), not the reagent's own ladder.
@@ -1414,7 +1456,10 @@ _FLUORANTHENE_ANION: tuple[ReagentCluster, ...] = (
 # the source ionizes or what its discharge makes of it, not from a trace species
 # in the sample. Nitrate is the one ion both could make, and on a discharge's
 # source it is the charge's terminal sink whatever the sample holds, so a
-# nitrate peak there is the discharge's before it is anyone's nitric acid.
+# nitrate peak there is the discharge's before it is anyone's nitric acid. An
+# iodide source is the exception: there bare nitrate is how nitric acid shows,
+# so its library leaves the nitrogen oxides' anions to the stages
+# (:data:`_AIR_NOX_ANIONS`).
 #
 # Only ions a work names are here. A discharge makes more - bicarbonate's
 # hydrate among them - that no work found names, and those are left to the
@@ -1463,12 +1508,12 @@ _AIR_CATIONS: tuple[ReagentCluster, ...] = (
 
 #: The negative ions of air: the terminal ions of a corona discharge in humid
 #: air, where carbonate and nitrate are the sinks the charge ends in -
-#: hydroxide, superoxide, ozonide, carbonate and bicarbonate, nitrite and
-#: nitrate, their hydrates, superoxide carrying carbon dioxide, and nitrate
-#: clustered with the nitric acid the discharge makes. Hydroxide's water
-#: clusters are read in one ambient corona source and argued in another to
-#: turn into bicarbonate before they could reach the analyser; named, they are
-#: claimed where a spectrum shows them.
+#: hydroxide, superoxide, ozonide, carbonate and bicarbonate, their hydrates,
+#: and superoxide carrying carbon dioxide. Nitrite and nitrate are the family's
+#: other half (:data:`_AIR_NOX_ANIONS`). Hydroxide's water clusters are read in
+#: one ambient corona source and argued in another to turn into bicarbonate
+#: before they could reach the analyser; named, they are claimed where a
+#: spectrum shows them.
 _AIR_ANIONS: tuple[ReagentCluster, ...] = (
     _ion("HO", -1, "[OH]-", "fuj23"),
     _ion("H3O2", -1, "[OH+H2O]-", "fuj23", "sek11", "tak26"),
@@ -1483,6 +1528,17 @@ _AIR_ANIONS: tuple[ReagentCluster, ...] = (
     _ion("CH2O4", -1, "[CO3+H2O]-", "ska04", "ska07", "sha69", "tak26"),
     _ion("CH4O5", -1, "[CO3+2xH2O]-", "ska07", "tak26"),
     _ion("CHO3", -1, "[HCO3]-", "nag06", "sek12", "asa23"),
+)
+
+#: The air's nitrogen oxides charged: nitrite and nitrate, their hydrates, and
+#: nitric acid on nitrate and on bicarbonate. Every negative library claims
+#: them but the iodide one. On an iodide source bare nitrate at m/z 62 is how
+#: nitric acid shows, and N2O5, the nitrate radical and the halogen nitrates
+#: beside it (dor21), so there nitrate is an analyte's ion by the library's own
+#: rule, and nitrite goes with it as its pair. On a bromide source no work
+#: found reads either as an analyte's; the test runs read whether they stand
+#: flat in every file, as a source's own ions do.
+_AIR_NOX_ANIONS: tuple[ReagentCluster, ...] = (
     _ion("NO2", -1, "[NO2]-", "ska07", "sek12", "ewi09", "mat23"),
     _ion("H2NO3", -1, "[NO2+H2O]-", "sek11", "mat23"),
     _ion("H4NO4", -1, "[NO2+2xH2O]-", "mat23"),
@@ -1586,25 +1642,29 @@ _FLUORANTHENE_NAMED = {
 #: library, which is not an omission: there is no one carrier whose clusters
 #: could be enumerated, and no discharge whose air ions could be named.
 REAGENT_CLUSTERS: dict[str, tuple[ReagentCluster, ...]] = {
-    "BR": _library(_BROMIDE_LADDER, _AIR_ANIONS),
+    "BR": _library(_BROMIDE_LADDER, _AIR_ANIONS, _AIR_NOX_ANIONS),
     "IODIDE": _library(_IODIDE_LADDER, _AIR_ANIONS),
     "NO3": _library(
         _cite(_nitrate_clusters("NO3"), FAMILY_REAGENT, _NITRATE_NAMED),
         _AIR_ANIONS,
+        _AIR_NOX_ANIONS,
     ),
     "NO3_15N": _library(
         _cite(_nitrate_clusters("^NO3"), FAMILY_REAGENT, _NITRATE_15N_NAMED),
         _AIR_ANIONS,
+        _AIR_NOX_ANIONS,
         label_isotope=("N", "^N"),
     ),
     "UR": _library(_UREA_LADDER, _AIR_CATIONS),
     "EASYIC_POS": _library(
         _cite(_fluoranthene_ladder(), FAMILY_CALIBRANT, _FLUORANTHENE_NAMED),
+        _BEAM_PAH_IONS,
         _AIR_CATIONS,
     ),
     "EASYIC_NEG": _library(
         _cite(_FLUORANTHENE_ANION, FAMILY_CALIBRANT, _FLUORANTHENE_NAMED),
         _AIR_ANIONS,
+        _AIR_NOX_ANIONS,
     ),
 }
 

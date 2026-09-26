@@ -308,6 +308,18 @@ class TestTheChargeTransferBeam:
         assert record["family"] == "calibrant"
         assert "easyic" in record["references"]
 
+    def test_the_pah_ions_it_carries_say_what_shows_them(self):
+        # Named by no work as the beam's; claimed on the test spectra, which
+        # the row says in place of a citation.
+        rows = _rows("EASYIC_POS", ("C16H10", 1, 1e7), ("C14H10", 1, 3e5))
+        record = next(
+            row["provenance"]["reagent"]
+            for row in rows
+            if row["provenance"]["reagent"]["ion"] == "[C14H10]+."
+        )
+        assert (record["family"], record["references"]) == ("calibrant", [])
+        assert record["observed"].startswith("no work found names it; ")
+
 
 class TestTheAirsIons:
     """What the discharge makes of the air: the source on a charge-transfer
@@ -349,6 +361,21 @@ class TestTheAirsIons:
         }
 
         assert ions == {"[CO3]-", "[HCO3]-"}
+
+    def test_nitrate_and_nitrite_are_left_to_the_stages_on_an_iodide_source(self):
+        # Bare nitrate is how an iodide source shows nitric acid, and nitrite
+        # goes with it; on a bromide source both are the air's.
+        ions = (("NO3", -1, 1e6), ("NO2", -1, 5e5))
+        iodide = _rows("IODIDE", ("I", -1, 1e7), *ions)
+        claimed = {row["provenance"]["reagent"]["ion"] for row in iodide}
+        assert not claimed & {"[NO3]-", "[NO2]-"}
+        bromide = _rows("BR", ("Br", -1, 1e7), *ions)
+        families = {
+            row["provenance"]["reagent"]["ion"]: row["provenance"]["reagent"]["family"]
+            for row in bromide
+            if not row["isotope_label"]
+        }
+        assert families["[NO3]-"] == families["[NO2]-"] == "air"
 
     def test_ammonia_is_left_to_the_stages(self):
         # NH4+ and its hydrates are ammonia's own reading, which a

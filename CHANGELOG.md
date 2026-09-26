@@ -12,27 +12,30 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   N2+, N3+, N4+, O2+, NO+ and NO2+ with their hydrates and the protonated
   water ladder in positive mode; hydroxide, superoxide, ozonide, carbonate,
   bicarbonate, nitrite and nitrate with their hydrates, and nitrate and
-  bicarbonate clustered with nitric acid in negative - and the fluoranthene
-  beam's ions on an Orbitrap's EASY-IC source. Every claimed row records the
-  ion's family and the works that name that ion, cited only where a work
-  names it. A reagent's ladder holds what a work names and, where none does,
-  what Mascope's test spectra show in every file of a set, which the row then
-  says: bromide's trimer, BrO-, bromate and Br-(HBr), and urea's protonated
-  trimer. The ladders' other rungs are no longer claimed - the higher halide
-  clusters and their hydrates, the iodine oxide clusters, the bromide
-  precursors' anions, the urea multimers above the trimer and those carrying
-  ammonium, and the fluoranthene dimer. Ions a work reads as an analyte's
-  are left to the stages: ammonia's NH4+ and its hydrates, bromide with HO2,
-  formate and acetate, trifluoroacetate with CF3- and CF3O-, and the cyclic
-  siloxanes. On a wide-window charge-transfer acquisition these ions carry
-  most of the signal, its base peak N3+ among them, which the mode's
-  calibration compounds had matched as an analyte. Fragments of an analyte
-  are claimed after the stages: alpha-pinene's C7H9+, C6H9+, C6H8+., C6H7+,
-  C6H5+ and C5H7+ where a monoterpene is committed, the fragment is no
-  taller than three times the height the literature gives it, and no reading
-  of its ion names a molecule the sample shows on a peak of its own - which
-  keeps protonated benzene benzene's where benzene's radical cation is
-  there. The charge-transfer profile gains a methyl-loss channel,
+  bicarbonate clustered with nitric acid in negative, nitrite and nitrate
+  except on an iodide source, where bare nitrate is how nitric acid shows -
+  and the fluoranthene beam's ions on an Orbitrap's EASY-IC source. Every
+  claimed row records the ion's family and the works that name that ion, cited
+  only where a work names it. An ion no work names is claimed only where
+  Mascope's test spectra show it in every file of a set, which the row then
+  says: bromide's trimer, BrO-, bromate and Br-(HBr), urea's protonated
+  trimer, and C14H10+. and C15H12+., two polycyclic aromatic ions the
+  charge-transfer beam carries, so a PAH of those compositions is not read as
+  an analyte on that source. The reagent ladders' other rungs are no longer
+  claimed - the higher halide clusters and their hydrates, the iodine oxide
+  clusters, the bromide precursors' anions, the urea multimers above the
+  trimer and those carrying ammonium, and the fluoranthene dimer. Ions a work
+  reads as an analyte's are left to the stages: ammonia's NH4+ and its
+  hydrates, bromide with HO2, formate and acetate, trifluoroacetate with CF3-
+  and CF3O-, and the cyclic siloxanes. On a wide-window charge-transfer
+  acquisition these ions carry most of the signal, its base peak N3+ among
+  them, which the mode's calibration compounds had matched as an analyte.
+  Fragments of an analyte are claimed after the stages: alpha-pinene's C7H9+,
+  C6H9+, C6H8+., C6H7+, C6H5+ and C5H7+ where a monoterpene is committed, the
+  fragment is no taller than three times the height the literature gives it,
+  and no reading of its ion names a molecule the sample shows on a peak of its
+  own - which keeps protonated benzene benzene's where benzene's radical
+  cation is there. The charge-transfer profile gains a methyl-loss channel,
   `[M-CH3]+`, gated as hydride abstraction is, whose mechanism Mascope ships
   with the rest. The offset a thin library is scored at stays read off the
   reagent's ladder and the beam, not the air's low-mass ions (assignment
