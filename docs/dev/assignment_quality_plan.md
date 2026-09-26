@@ -49,10 +49,10 @@ dataset's sets G to J, the chemist's reading of 2026-09-24 (decision 21).
 | 3.2 - formate as an opportunistic channel | #2198, stacked on #2197 | built: `+HCOO-` is a secondary channel of the nitrate, 15N-nitrate, bromide and iodide profiles, probed on formate, its dimer with formic acid and (nitrate) its cluster with the reagent's acid, built from the reagent so the labelled profile probes `[HCOO+H^NO3]-`; the nitrate profiles keep it on where the window cannot show a probe, as they do carbonate, because the batch carrying the C11 pseudo-acids is acquired from m/z 130 and the source makes no formate carrier above 127 (the two-acid cluster absent, the two-formic-acid cluster at 0.01-0.05% of base on the wide-window sister batch); the halide profiles claim only what they show. The election alone is not enough: measured with the channel open, it read every deprotonated acid as the molecule 46 Da lighter with formate (1,239 acid rows of six no-reagent-ion samples moved to formate and were capped; set C's same-formula agreement with the reference fell from 89.6% to 62.6%), so formate takes the partner gate of step 3.1 (`engine.apply_partner_gates`): the formate reading is the row's only where the lighter neutral is committed through a mode channel, otherwise the acid stands and the formate reading is set aside. Measured on the testbed with the partner gate judging every row against the ledger as it stands: set G without reagent ion G11 24.4 -> 5.6% of assigned-plus-candidate intensity (assigned-only 32.9 -> 7.1%), the deprotonated C11 rows 195 -> 79 (51 assigned), 104 of them now their C10 formate reading at assigned, each corroborated by the C10 neutral through a mode channel, 51 standing because no reading of the C10 neutral exists through a mode channel, 28 held at candidate; assigned rows per sample 486 -> 440, assigned intensity 58.4 -> 56.5%, of which 272 list-matched acids drop to candidate because their formate rival's lighter neutral is itself committed (O4 to O8 products; a real ambiguity for the small acids, and for a list's C11 the C10 reading is right). Set G with reagent ion G11 1.2 -> 0.5%. Set C tiers within two rows of before (assigned 615 -> 613), same-formula agreement with the reference 89.6 -> 88.0% where a partnered formate reading replaces an acid the reference reads as an acid; set C2 unchanged (probe absent, channel off). The target of under 1% is met with reagent ion and not without: the remaining 5.6% is C11 acids whose C10 partner is seen through no mode channel, which the rule leaves standing |
 | 3.3 - name the source ions | #2218 | measured 2026-09-26 (pass 10, develop `1b00f0821`, read with 3.3e; the block "After steps 3.3 and 3.3e"): the air's ions carry a median 84% of the positive chamber set's intensity (nitronium the base peak in every file, N3+ beside it) and 88% of the wide-window cylinder set's (N3+ its base peak), which reads as reagent where it had read as an analyte or a calibration compound; the negative chamber set names carbonate, bicarbonate and nitrate on 12% of its intensity, the nitrate chamber set with reagent ion 4.2% more (ozonide and carbonate with their hydrates) and its unassigned share falls from 17.5 to 10.1%; the beam's two PAH ions are claimed in every cylinder file at 3 to 6% of the base peak; C6H8+. is claimed as the monoterpene's fragment in 6 of 6 files on K, L and the positive chamber set, and the ions the third test holds (benzene's, toluene's, isoprene's) keep their molecules. The reagent shares of the uronium and bromide gate sets are unchanged or up after the rung drop, the bromide trimer being the bromide Orbitrap set's largest reagent line at 35% of its base peak. Protonated benzene on L is unchanged at assigned in 4 of 6: in the two bright files the C6H9+ fragment at 81.070 is not claimed, because its hydride reading names C6H10, which the sample commits 18 to 23 times more weakly on a peak of its own, and read as protonated C6H8 through the declared channel it holds benzene (the follow-up under the step). The methyl-loss channel costs K its benzyl, methylbenzyl and 121.101 rows at assigned, each now a contest within the margin with the next homologue's methyl loss (K's assigned share 26 to 21%); and on K3 four of seven files lose their fitted mass centre when the mode's calibration compounds N3+ and NO2+ become reagent rows (3.5's). Nitrate on the bromide sets: absent on D, flat on E in 3 of 3 files at 1% of the base peak, on the multi-scheme inlet's day the inlet's nitrate scheme (2 of 6 files at 21%, the acid cluster in 6 of 6), so bare nitrate stays on the bromide library as decided. Built: the pre-pass claims the reagent's own ladder, the air's ions and the calibrant beam, each ion with the works that name it (41 works; a work is cited for an ion only where it names that ion, `provenance.reagent.references`); seven ions no work names are claimed on the test spectra and say so (`observed`: Br3-, BrO-, BrO3-, Br-(HBr), urea's trimer, the beam's C14H10+. and C15H12+.), the plan owner's call per ion, and every other rung of the ladders' grammar is dropped; an iodide source leaves nitrate and nitrite to the stages (dor21 reads bare nitrate as nitric acid there); the monoterpene fragments, C6H9+ among them, are claimed after the stages against a committed parent; `[M-CH3]+` joins the charge-transfer profile; the cyclic-siloxane list carries a `background` tag the row shows. CF3- and CF3O- get no ladder: no work gives them as trifluoroacetic acid's fragments with a ratio. Dry run on the pass-9 ledgers: K3 88%, I+ 84%, I- 12%, G with reagent ion 3.8%, K 1.5%, L 1.1% of the intensity newly claimed; pass 10 measures it and reads nitrate and nitrite on the bromide sets |
 | 3.3b - the standard adduct notation | #2203, #2204 stacked on it | built: both notations are read everywhere, through one reader in the library (`mechanism_notation`) mirrored by the frontend's; a new mechanism is stored in the standard form, and the mechanism column reads every row in it, so the API, exports, SDK and engine show `[M-H]-` before any row is rewritten; the profiles, channels, catalogue and provisional weights are spelled in it. The map is exact both ways on all 24 fleet spellings; #2204 rewrites the stored rows and the calibration weights' keys (alembic `5193d1e942e0`, the downgrade its inverse). Moves no metric. The legacy form is refused at 2.0 |
-| 3.3c - reagent rows read like rows | #2221 | built: the pre-pass writes a reagent row's ion with its charge (`Br-`, `C16H10+`; it wrote the bare composition, which read as a neutral), and the sample ledger's formula column and the inspector's headline show it on a row with an ion and no compound, the column sorting on what it shows; each isotope line the pass claims names its ion's monoisotopic row as its owner, the role staying reagent, with its abundance error against the envelope's prediction, and a fragment's lines are owned by the fragment; the ledger folds them under the ion (`isIsotopeLine`, `linesByOwner`), the inspector lists them as the ion's isotopologues in bracket spelling (`[81Br]2`) with their predicted abundances, and the reagent chip still counts every peak. Curating an ion's peak into a compound demotes its lines as it does an analyte's isotopologues; the import still accepts an owner only on an isotopologue. Not built: the batch-peaks ledger, which reads a reagent anchor as unassigned because its consensus carries neither a role nor an ion for a formula-less anchor - a step of its own. No tier and no count moves; read in the browser, not measured |
+| 3.3c - reagent rows read like rows | #2221 | built and merged 2026-09-26 (develop `387ba98ff`); the batch ledger's reading of a reagent anchor is the follow-up under the step and rides with 3.4d. Built: the pre-pass writes a reagent row's ion with its charge (`Br-`, `C16H10+`; it wrote the bare composition, which read as a neutral), and the sample ledger's formula column and the inspector's headline show it on a row with an ion and no compound, the column sorting on what it shows; each isotope line the pass claims names its ion's monoisotopic row as its owner, the role staying reagent, with its abundance error against the envelope's prediction, and a fragment's lines are owned by the fragment; the ledger folds them under the ion (`isIsotopeLine`, `linesByOwner`), the inspector lists them as the ion's isotopologues in bracket spelling (`[81Br]2`) with their predicted abundances, and the reagent chip still counts every peak. Curating an ion's peak into a compound demotes its lines as it does an analyte's isotopologues; the import still accepts an owner only on an isotopologue. Not built: the batch-peaks ledger, which reads a reagent anchor as unassigned because its consensus carries neither a role nor an ion for a formula-less anchor - a step of its own. No tier and no count moves; read in the browser, not measured |
 | 3.3d - source-solvent clusters | - | planned, from the reference engine's reading (its #55): the proton- and hydride-bound ladders of water, methanol, ethanol and acetone claimed as reagent rows under its ladder rules |
 | 3.3e - the chemistry a run searches under is shipped | #2217 | measured 2026-09-26 (pass 10): the testbed's first start on develop created the one shipped mechanism it lacked, potassium's adduct, with 1,343 target ions in 7.3 s, held the other eighteen and logged it in one line; the eleven shipped modes are present; none of the pass's 162 runs, over fourteen sets on seven profiles, lists a channel as unavailable. Built: the mechanisms the shipped modes declare and the profiles can open, read off the profiles' channel tables (eighteen, nineteen once 3.3 adds methyl loss to the charge-transfer profile), are created at every start before the modes, under fixed ids (`[M+Br]-` is `sysAddBrNeg`) and with the target ions of the library's compounds; a row held in either spelling keeps its id, one under the wrong polarity is reported and left; the delete route refuses a shipped mechanism and the settings show a lock; the ion build flushes once per mechanism, and the backend healthcheck gives a start 300 s, since the seed runs before the server listens and the old 30 s marked a slow first start unhealthy. On a fresh instance the first start holds eighteen mechanisms and eleven modes and a second start changes nothing; on a synthetic 1,466-compound library, the fleet's largest, 6.5 s per mechanism, about 85 s for the thirteen that library's server lacks. The testbed's pass 10 is the rest of the verification |
-| 3.3f - a list is read through the channels the run opened | #2220 | built: Stage A reads the reference lists through the mode's mechanisms and the secondary channels the run opened (`_searched_mechanisms`, resolved before Stage A in a run and in the run-less ingest fold alike), and the target library through the mode's alone: its rows carry the curated standing (the width's and the calibration's anchors, the mass gate's and the same-ion rule's exemptions, the peak kept against the grid) that an opportunistic channel has not earned, and an operator who wants it read through a channel declares the channel in the mode. A list's reading through an opened channel is held as the search's are (`engine.hold_opened_channel_readings`, the minor-channel policy read off Stage A's rows after the list election): capped at candidate unless its own isotopologue or the same neutral through a mode channel corroborates it. The partner gate reads it with the search's rows and lifts the cap on a partner, and never moves a list's compound: where it would have made another reading of the ion the row's (the mode's reading for want of a partner, or the contest's stronger partner), the list keeps its compound under the cap (`kept: a list names the compound`, counted as `partner_gate.list_kept`) and the other reading stays as the rival the cross-channel pass holds it at candidate on. A list read through a secondary channel the mode declares (carbonate on C) is unchanged. The two calls, the library left out and the list never moved, are the plan owner's to confirm on the PR. Unit-tested, 10 of 10 mutations red; the next pass measures it (K3's D4 and D5, G10 with the family named, the uronium sets' D4 and D5 rows, the cylinder's certified components) |
+| 3.3f - a list is read through the channels the run opened | #2220 | built and merged 2026-09-26 (develop `58b44be47`), the two calls decided as built, pass 11 measures it (the K3 verify line rewritten from the pass-10 ledgers: the lines are there, the protonated molecules are not). Built: Stage A reads the reference lists through the mode's mechanisms and the secondary channels the run opened (`_searched_mechanisms`, resolved before Stage A in a run and in the run-less ingest fold alike), and the target library through the mode's alone: its rows carry the curated standing (the width's and the calibration's anchors, the mass gate's and the same-ion rule's exemptions, the peak kept against the grid) that an opportunistic channel has not earned, and an operator who wants it read through a channel declares the channel in the mode. A list's reading through an opened channel is held as the search's are (`engine.hold_opened_channel_readings`, the minor-channel policy read off Stage A's rows after the list election): capped at candidate unless its own isotopologue or the same neutral through a mode channel corroborates it. The partner gate reads it with the search's rows and lifts the cap on a partner, and never moves a list's compound: where it would have made another reading of the ion the row's (the mode's reading for want of a partner, or the contest's stronger partner), the list keeps its compound under the cap (`kept: a list names the compound`, counted as `partner_gate.list_kept`) and the other reading stays as the rival the cross-channel pass holds it at candidate on. A list read through a secondary channel the mode declares (carbonate on C) is unchanged. The two calls, the library left out and the list never moved, are the plan owner's to confirm on the PR. Unit-tested, 10 of 10 mutations red; the next pass measures it (K3's D4 and D5, G10 with the family named, the uronium sets' D4 and D5 rows, the cylinder's certified components) |
 | 3.4 - an opportunistic channel needs a second channel | - | planned |
 | 3.4b - one peak is not enough | #2212 | measured 2026-09-25 (pass 9, develop `ecbceb593`, rule set 9): G12 at 0 on every set, and every assigned row from the search names a second channel, a second line or a list. What the rule took, as assigned rows per file and as intensity of the rows that fell, of the set's monoisotopic total: G without reagent ion 324 to 232 and 1.7%, with reagent ion 116 to 87 and 0.8%, I+ 36 to 31 and 0.4%, I- 3 to 0 and 10.6% (14 of its 16 assigned rows, the nitrogen-rich C2 formulas through the bare sign on one line each, the one set outside the 5% line and 3.6's first target), K 60 to 54 and 0.5%, K3 27 to 21 and 0.1%, L 119 to 113 and 0.1%, C 121 to 73 and 4.9%, C2 52 to 28 and 4.8%; J reported: 108 to 61 per file and 30.2 to 28.7% of intensity at assigned, the trigger row at m/z 455.0 now candidate in both files that had it assigned. G2 read on C: the reference's unconfirmed share of assigned rows 13.1 to 8.8%; on C2 19.8 to 4.8%. Eight rows on G without reagent ion lost their monoisotopic row to a neighbour's claim under the lone-neighbour allowance. The untracked-line reading cost 11 rows across every set (5, 1, 2, 2, 1 on G, G with reagent ion, J, K, L) against some 9,000 rows with no line at all, so the call the build raised is moot |
 | 3.4c - measure an alternative before committing | - | planned, from the plan owner's reading of 2026-09-25: a close alternative from the batch ledger shows no fit, plausibility or tier before "use this" pins it |
@@ -2068,6 +2068,29 @@ touches Stage A and neither the reagent pass nor the browser.
   row's shape lives in that one builder, this reaches 3.3's new families
   without rework. It moves no tier, so it is read in the browser rather
   than measured.
+- **As built (#2221).** The pass writes a reagent row's ion with its
+  charge (`Br-`, `C16H10+`, a fragment's `C6H8+`), as an analyte row
+  writes its ion; it wrote the bare composition, which read as a neutral.
+  Each isotope line the pass claims names its ion's monoisotopic row as
+  its owner with the role staying reagent and carries its abundance error
+  against the envelope's prediction, the matcher's own measure, so the
+  inspector recovers the predicted share without a new field; a
+  fragment's lines are owned by the fragment's row. One rule says what
+  folds, an isotopologue or a reagent row with an owner, and the ledger,
+  the inspector and the spectrum's envelope read it; a run written before
+  the link keeps its flat rows until rerun. Curating an ion's peak into a
+  compound demotes its lines with it. The import path keeps its rule, an
+  owner only on an isotopologue, since an export carries no owner links
+  and a publishing engine offers no reagent family. The reagent count
+  above the ledger still counts peaks, lines included, as its help says.
+- **Follow-up: the batch-peaks ledger reads a reagent anchor.** Not built
+  here, and a gap older than the step: the batch consensus carries
+  neither a role nor an ion for a formula-less anchor, so an anchor whose
+  members are reagent rows reads as unassigned in the batch ledger. The
+  consensus gains a role and an ion where its members carry one and no
+  formula, the anchor's lines fold under it as a sample's do, and the
+  chip counts it under its role. S; rides with 3.4d, which rewrites that
+  ledger's columns.
 
 ### 3.3d Source-solvent clusters
 
@@ -2186,11 +2209,58 @@ touches Stage A and neither the reagent pass nor the browser.
   is untouched by the channels); `CHANGELOG.md`; the peak-assignment unit
   tests: a list compound matched through an opened channel, not through
   one the run did not open, gated as the untargeted reading is.
-- **Verify.** On K3 the D4 and D5 methyl-loss ions and their protonated
-  parents read as the siloxanes from the list, corroborated by two
-  channels; the uronium sets' D4 and D5 rows unchanged; G10 on K3 at or
-  above 95% with the family counted as named; no certified component of
-  the cylinder moves.
+- **Verify.** On K3 the D4 and D5 methyl-loss ions read as the siloxanes
+  from the list, each assigned on its own silicon lines where the
+  envelope holds them. The pass-10 ledgers say what K3 holds: one of its
+  seven files carries the two ions (D4's at 281.051 with its 29Si line at
+  18% of it, four silicons predicting 18.7%; D5's at 355.070 with its two
+  heavier lines at 22% and 17%, five silicons predicting 23% and 18%),
+  and no file carries the protonated molecules or the molecular ions, so
+  there is no partner and no second channel to read there; the first
+  wording of this line, written from the urea sets where the protonated
+  molecules stand, asked for both. The uronium sets' D4 and D5 rows
+  unchanged; G10 on K3 at or above 95% with the family counted as named;
+  no certified component of the cylinder moves. And on A, D, E, F and
+  both G sets, the rows the partner gate keeps on a list's reading
+  (`partner_gate.list_kept`) with the tier each carried before, since a
+  peak the search assigned as the deprotonated acid can now be a list's
+  compound through formate held at candidate with the acid as its rival.
+- **As built (#2220; the two calls the build raised, decided on the PR on
+  2026-09-26).**
+  - *The target library stays on the mode's mechanisms.* The step's "the
+    ions the compound already carries" was written with the shipped
+    mechanisms in mind and did not weigh what a library row carries with
+    it: it anchors Stage A's width and the run's calibration, it is exempt
+    from the mass gate's cap and from the same-ion rule, and it keeps its
+    peak against the grid. That standing is the mode's declaration, not
+    something an opened channel earns from the spectrum; on a TOF set a
+    library row's chance pairings through carbonate and formate would
+    also widen the width the whole run is scored at, which is why 2.5a
+    took the mirror's lines out of that fit. An operator who wants the
+    library read through a channel declares it in the mode. Reading the
+    library through opened channels is a step of its own, and its first
+    move is to separate "target library row" from "curated reading" in
+    those passes.
+  - *The partner gate never moves a list's compound.* Where the gate moves
+    a search's row to another reading of its ion (the mode's reading for
+    want of a partner, or the contest's stronger partner), a list's row
+    keeps its compound under the minor-channel cap and the other reading
+    stays on the row as the rival the cross-channel pass holds it at
+    candidate on (`partner_gate.kept: a list names the compound`, counted
+    as `list_kept`). A moved row would carry `source: database` and the
+    list's names on a formula the list does not hold, and would take the
+    peak on the mode's prior alone where decision 19 gives the list's
+    reading its prior against the grid. The siloxanes' ions read no other
+    way the grid holds, so the rule never touches them; it matters for
+    formate on the reagent sources and for a contest between two
+    opportunistic readings on the charge-transfer source, which pass 11
+    reads.
+  - The run-less ingest fold resolves the run's channels before its Stage
+    A, which the step did not spell out, so the two ledgers read a list
+    alike; `engine.hold_opened_channel_readings` holds a list's readings
+    through an opened channel as the search's are, read off Stage A's own
+    rows after the list election, and a reading through a secondary
+    channel the mode declares is left as it was.
 - **Size.** S. After 3.3 and 3.3e; beside 3.3c, since it touches Stage A
   and neither the reagent pass nor the browser.
 
@@ -2380,7 +2450,9 @@ touches Stage A and neither the reagent pass nor the browser.
   inspector's tier row read provisional. Tiers and metrics unchanged on
   every set.
 - **Size.** S. After 3.3c, since both rewrite the browser pane; the
-  probability's removal and the marker are one commit, the column another.
+  probability's removal and the marker are one commit, the column another,
+  and 3.3c's follow-up, the batch ledger reading a reagent anchor as the
+  ion it is, a third.
 
 ### 3.5 Calibrants below the brightest lines, an offset term, and the low-mass bend
 
