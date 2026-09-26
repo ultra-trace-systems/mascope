@@ -56,6 +56,7 @@ dataset's sets G to J, the chemist's reading of 2026-09-24 (decision 21).
 | 3.4 - an opportunistic channel needs a second channel | - | planned |
 | 3.4b - one peak is not enough | #2212 | measured 2026-09-25 (pass 9, develop `ecbceb593`, rule set 9): G12 at 0 on every set, and every assigned row from the search names a second channel, a second line or a list. What the rule took, as assigned rows per file and as intensity of the rows that fell, of the set's monoisotopic total: G without reagent ion 324 to 232 and 1.7%, with reagent ion 116 to 87 and 0.8%, I+ 36 to 31 and 0.4%, I- 3 to 0 and 10.6% (14 of its 16 assigned rows, the nitrogen-rich C2 formulas through the bare sign on one line each, the one set outside the 5% line and 3.6's first target), K 60 to 54 and 0.5%, K3 27 to 21 and 0.1%, L 119 to 113 and 0.1%, C 121 to 73 and 4.9%, C2 52 to 28 and 4.8%; J reported: 108 to 61 per file and 30.2 to 28.7% of intensity at assigned, the trigger row at m/z 455.0 now candidate in both files that had it assigned. G2 read on C: the reference's unconfirmed share of assigned rows 13.1 to 8.8%; on C2 19.8 to 4.8%. Eight rows on G without reagent ion lost their monoisotopic row to a neighbour's claim under the lone-neighbour allowance. The untracked-line reading cost 11 rows across every set (5, 1, 2, 2, 1 on G, G with reagent ion, J, K, L) against some 9,000 rows with no line at all, so the call the build raised is moot |
 | 3.4c - measure an alternative before committing | - | planned, from the plan owner's reading of 2026-09-25: a close alternative from the batch ledger shows no fit, plausibility or tier before "use this" pins it |
+| 3.4d - the columns of a tiering still in progress | - | planned, from the plan owner's notes of 2026-09-26: the peak browser gains a reference-list column, the calibrated probability leaves the browser and the inspector while its curve is provisional, and the tier column says the tiering is still being developed |
 | 3.5 - calibrants below the brightest lines, an offset term, and the low-mass bend (calibration node) | - | planned |
 | 3.5b - the envelope's tolerance, fitted per run | - | planned, from the plan owner's reading of 2026-09-25 and the pass-9 ledgers: the fit allows a clean isotope line 5% of its predicted share, the Orbitrap misses by a median 7% and a tenth of committed envelopes by 27% or more, and a row with three lines, two channels and a list sits below assignability on a fit of 41% |
 | 3.6 - priors and the dataset's context | - | planned |
@@ -2323,6 +2324,63 @@ touches Stage A and neither the reagent pass nor the browser.
   measured alternative reads the same numbers the assignment writes when it
   is taken.
 - **Size.** M.
+
+### 3.4d The columns of a tiering still in progress
+
+- **What.** Three changes to what the peak browser and the inspector show,
+  from the plan owner's notes of 2026-09-26, none of them moving a tier or
+  a metric:
+  - **A reference-list column.** The browser's assignment ledger shows,
+    beside the formula, the name and list of the reference identity a row
+    matched, as the inspector's "listed as" field shows it, with the
+    list's tag (3.3's `background`) beside the name where the list carries
+    one. The ledger's rows are the flattened record and carry no
+    provenance, so the row gains one flattened field read off
+    `provenance.reference_identities` where the scalars the ledger renders
+    are collapsed (`service._provenance_scalars`): the first identity's
+    name, its source and its tags. The batch ledger shows the same off its
+    consensus row where the rows it folds carry identities.
+  - **The calibrated probability is hidden.** The `P(correct)` column
+    leaves the browser and the `P(correct)` row leaves the inspector, with
+    the help entry and the marker beside it, while the curve behind it is
+    provisional: a probability read off a curve nobody has verified is
+    the one number on the page a reader would take at its word. The
+    engine keeps computing it, the API and the SDK keep serving
+    `p_correct` and `p_correct_provisional`, and the how-it-works section
+    on calibrated confidence says the app does not show it yet.
+  - **The tier column says the tiering is provisional.** The tier column's
+    header in the browser, the batch ledger's and the inspector's tier row
+    carry a small "provisional" marker whose tooltip says that the tiering
+    rules are still being developed under this plan and that a row's tier
+    can change between engine versions; the tiers help page says the same.
+    The marker is a fixed string in the frontend's tier module, removed
+    when the stage 3 gate passes.
+- **Why.** The plan owner reads the ledger daily while the tiers are being
+  built (3.1c to 3.4b changed a third of some sets' tiers in a week), and
+  the page should say so rather than present a provisional tier and an
+  unverified probability with the same face as the m/z. The list column is
+  the reading the plan owner asks of a row first, and today it takes the
+  inspector to see it.
+- **Where.** `service._provenance_scalars` and the `PeakAssignmentRecord`
+  schema (the flattened listing); `batch_peaks.py` (the same on a batch
+  row); `PaneBrowserAssignment.vue` (the column, the probability column
+  removed, the tier header's marker); `PaneBrowserBatchPeaks.vue` (the tier
+  header's marker, the listing where it has one); `PanePeakAssign.vue`
+  (the probability row removed, the tier row's marker); `pCorrect.js` and
+  the `assignment-p-correct` help entry (retired with the column);
+  `docs/user/_help/assignment-tiers.md`; the how-it-works page's calibrated
+  confidence section; `CHANGELOG.md`. Tests: the browser and inspector
+  specs (a listed row shows its list and tag; no probability rendered; the
+  tier header carries the marker); a backend test that the flattened
+  listing is the first identity's name, source and tags and empty on a
+  row no list names.
+- **Verify.** In the browser, on sets C, K3 and the uronium batch, every
+  list-matched row shows its list beside the formula and the siloxane rows
+  their tag; no probability anywhere in the app; the tier header and the
+  inspector's tier row read provisional. Tiers and metrics unchanged on
+  every set.
+- **Size.** S. After 3.3c, since both rewrite the browser pane; the
+  probability's removal and the marker are one commit, the column another.
 
 ### 3.5 Calibrants below the brightest lines, an offset term, and the low-mass bend
 
