@@ -115,6 +115,16 @@ the formula, and the charge of the species moved rather than of the ion (`+H+`
 for `[M+H]+`, `-H+` for `[M-H]-`, `+Br-` for `[M+Br]-`, a bare `+` or `-` for
 electron transfer).
 
+Mascope ships the mechanisms its own chemistry uses, so they are in the list from
+the first start: the nitrate, 15N-nitrate, bromide, iodide, urea, ammonium and
+15N-ammonium adducts, protonation, deprotonation, hydride abstraction, electron
+transfer in either polarity, and the carbonate, formate, dibromide, diiodide,
+sodium and potassium adducts that
+[peak assignment](../how-it-works/peak-assignment.md) searches as secondary
+channels. They carry a lock instead of a delete button, because Mascope would
+only create them again at its next start. Add any other mechanism your modes
+need.
+
 A mode can only use mechanisms of its own polarity, so make sure the ones you
 need exist.
 

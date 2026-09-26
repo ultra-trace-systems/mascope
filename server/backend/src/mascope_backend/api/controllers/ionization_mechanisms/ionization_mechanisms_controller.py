@@ -10,8 +10,8 @@ from sqlalchemy import (
     select,
 )
 
-from mascope_backend.api.controllers.target.ions.target_ions_controller import (
-    create_target_ions,
+from mascope_backend.api.controllers.target.lib.compute.target_ions_compute import (
+    generate_target_ions_from_composition,
 )
 from mascope_backend.api.lib.api_features import api_controller
 from mascope_backend.api.lib.exceptions.api_exceptions import (
@@ -34,6 +34,7 @@ from mascope_backend.db import (
     async_session,
 )
 from mascope_backend.db.id import gen_id
+from mascope_backend.ionization_catalogue import is_shipped_mechanism
 from mascope_backend.runtime import runtime
 from mascope_backend.socket.records.service import (
     emit_record_created,
@@ -219,6 +220,44 @@ async def get_ionization_mechanism(ionization_mechanism_id: str) -> dict:
         }
 
 
+async def add_ionization_mechanism(session, ionization_mechanism) -> tuple[int, int]:
+    """
+    Add a mechanism and build the target ions of every compound under it.
+
+    The one path a mechanism is created by, whether an operator adds it through
+    the API or the start-up seed adds one Mascope ships. A compound gains ions
+    for every mechanism there is when it is created, so a mechanism added
+    without them would leave the library holding ions for some mechanisms and
+    not others, and a mode built on it matching nothing the library already
+    held.
+
+    Flushed once, not committed: the mechanism and its ions are the caller's
+    transaction, to commit as one. One flush rather than one per compound,
+    because on a library of a thousand-odd compounds the round trips, not
+    the isotope patterns, are most of the time.
+
+    :param session: The session to add them in.
+    :param ionization_mechanism: The ``IonizationMechanism`` row, id and all.
+    :return: How many compounds the library holds, and how many target ions
+        were built for them (a mechanism that cannot apply to a compound, such
+        as a loss of atoms it lacks, builds none for it).
+    :rtype: tuple[int, int]
+    """
+    session.add(ionization_mechanism)
+
+    target_compounds = (await session.execute(select(TargetCompound))).scalars().all()
+    ions = 0
+    for target_compound in target_compounds:
+        target_ions, target_isotopes = generate_target_ions_from_composition(
+            target_compound, [ionization_mechanism]
+        )
+        session.add_all(target_ions)
+        session.add_all(target_isotopes)
+        ions += len(target_ions)
+    await session.flush()
+    return len(target_compounds), ions
+
+
 @api_controller()
 async def create_ionization_mechanism(
     ionization_mechanism_create: IonizationMechanismCreate,
@@ -228,10 +267,8 @@ async def create_ionization_mechanism(
 
     Steps:
     - Check if the ionization mechanism already exists using the get_ionization_mechanisms function.
-    - Create a new ionization mechanism instance and add it to the session.
-    - Fetch all target compounds from the database.
-    - For each target compound, create target ions with the new ionization mechanism.
-    - Commit the transaction to persist changes to the database.
+    - Add the new mechanism with the target ions of every compound in the library
+      (add_ionization_mechanism), and commit them as one.
     - Return the created ionization mechanism's details with a success message.
 
     :param ionization_mechanism: Ionization mechanism to create
@@ -257,26 +294,9 @@ async def create_ionization_mechanism(
         **ionization_mechanism_create.model_dump(),
     )
 
-    # --- Create a new ionization mechanism instance and add it to the session. --- #
+    # --- Add it, with the target ions of every compound, and commit --- #
     async with async_session() as session:
-        session.add(new_ionization_mechanism)
-
-        # --- Fetch all target compounds --- #
-        stmt = select(TargetCompound)
-        result = await session.execute(stmt)
-        target_compounds = result.scalars().all()
-
-        # --- Create target ions with new mechanism for each compound --- #
-        for target_compound in target_compounds:
-            # Create target ions for the compound
-            await create_target_ions(
-                target_compound=target_compound,
-                ionization_mechanisms=[new_ionization_mechanism],
-                independent_transaction=False,
-                session=session,
-            )
-
-        # --- Commit the transaction --- #
+        await add_ionization_mechanism(session, new_ionization_mechanism)
         await session.commit()
         await session.refresh(new_ionization_mechanism)
 
@@ -345,6 +365,7 @@ async def delete_ionization_mechanism(ionization_mechanism_id: str) -> dict:
 
     Steps:
     - Retrieve the ionization mechanism along with any referencing ionization modes.
+    - If it is one Mascope ships, refuse: the next start would only create it again.
     - If referenced in any ionization modes, raise an ApiException preventing deletion.
     - If no ionization modes use this ionization mechanism, delete related TargetIsotope and TargetIon records.
     - Delete the ionization mechanism from the database.
@@ -352,6 +373,7 @@ async def delete_ionization_mechanism(ionization_mechanism_id: str) -> dict:
 
     :param ionization_mechanism_id: The unique identifier of the ionization mechanism to delete.
     :type ionization_mechanism_id: str
+    :raises ValueError: If the ionization mechanism is one Mascope ships.
     :raises ApiException: If the ionization mechanism is referenced by any ionization modes.
     :raises NotFoundException: If no ionization mechanism is found with the provided ID.
     :return: Deleted ionization mechanism message.
@@ -365,6 +387,20 @@ async def delete_ionization_mechanism(ionization_mechanism_id: str) -> dict:
         if not ionization_mechanism:
             raise NotFoundException(
                 f"Ionization mechanism with ID '{ionization_mechanism_id}' not found"
+            )
+
+        # -- A mechanism Mascope ships is not the deployment's to delete -- #
+        # The shipped modes and the channels a run searches are built on it,
+        # and the next start would create it again, under another id and with
+        # every compound's ions rebuilt. A row under the wrong polarity is not
+        # the shipped mechanism (is_shipped_mechanism), and goes like any other.
+        if is_shipped_mechanism(
+            ionization_mechanism.ionization_mechanism,
+            ionization_mechanism.ionization_mechanism_polarity,
+        ):
+            raise ValueError(
+                f"Ionization mechanism '{ionization_mechanism.ionization_mechanism}' "
+                "is one Mascope ships and cannot be deleted"
             )
 
         # -- Drop the seeded modes nobody adopted that hold this mechanism -- #

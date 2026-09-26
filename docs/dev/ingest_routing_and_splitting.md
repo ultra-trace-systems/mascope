@@ -980,11 +980,14 @@ Needed before any rung can be provisional or park.
   out of the ionization listing until a deployment adopts one - and a
   deployment owns only the collections it points them at.
   `mascope_backend.ionization_catalogue` holds the catalogue and
-  `db.admin.ionization.ensure_system_modes` creates what a server can hold at
-  each start, from the ionization mechanisms it already has. It never creates
-  a mechanism: doing so gives every compound in the library another set of
-  ions, and every compound imported afterwards, so a chemistry whose
-  mechanisms are not configured is simply left out until they are.
+  `db.admin.ionization.ensure_system_modes` creates it at each start: first
+  the ionization mechanisms Mascope ships, the modes' own and every channel
+  an assignment profile can open, each built with the target ions of the
+  compounds already in the library (assignment quality plan, step 3.3e and
+  decision 28), and then the modes, so a fresh server holds all eleven from
+  its first start. A mechanism's identity across servers is its standard
+  notation; its id is the server's own, and a mechanism a server already
+  held keeps its row.
 - **Gate:** a replay of the fleet corpus. Every token-routed file binds to
   the same mode. Files of known methods route without their token. Each
   outcome matches the re-baselined manifest.

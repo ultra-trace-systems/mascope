@@ -549,7 +549,7 @@ comes from its flags. For example,
 | -------- | ------------------------------------ | ------------------- |
 | `list()` | List available ionization mechanisms | `pd.DataFrame│None` |
 
-Columns: `ionization_mechanism_id`, `ionization_mechanism` (the mechanism in the standard adduct notation: `[M+H]+`, `[M-H]-`, `[M+Br]-`, `[M]+.` for electron transfer), `ionization_mechanism_polarity`.
+Columns: `ionization_mechanism_id`, `ionization_mechanism` (the mechanism in the standard adduct notation: `[M+H]+`, `[M-H]-`, `[M+Br]-`, `[M]+.` for electron transfer), `ionization_mechanism_polarity`, `shipped` (whether Mascope ships the mechanism, so that every server holds it from its first start).
 
 #### `mascope.cheminfo`
 

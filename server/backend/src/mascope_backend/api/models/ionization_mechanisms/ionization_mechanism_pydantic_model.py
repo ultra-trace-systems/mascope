@@ -7,12 +7,20 @@ with validation rules and business logic constraints.
 
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    computed_field,
+    field_validator,
+    model_validator,
+)
 
 from mascope_backend.api.models.base_pydantic_model import QueryParamsModel
 from mascope_backend.api.models.ionization_mechanisms.config import (
     ionization_mechanism_config,
 )
+from mascope_backend.ionization_catalogue import is_shipped_mechanism
 from mascope_tools.composition.mechanism_notation import (
     MechanismNotationError,
     parse_mechanism,
@@ -158,6 +166,19 @@ class IonizationMechanismRead(IonizationMechanismBase):
     ionization_mechanism_id: str = Field(
         ..., description="Unique identifier for the ionization mechanism"
     )
+
+    @computed_field(
+        description=(
+            "Whether Mascope ships this mechanism. A shipped mechanism is on "
+            "every server from its first start and cannot be deleted."
+        )
+    )
+    @property
+    def shipped(self) -> bool:
+        """Whether this is a mechanism Mascope ships (``is_shipped_mechanism``)."""
+        return is_shipped_mechanism(
+            self.ionization_mechanism, self.ionization_mechanism_polarity
+        )
 
 
 # Columns `sort` accepts (see mascope_backend.api.lib.sorting).
