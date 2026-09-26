@@ -319,9 +319,17 @@ belongs to the whole list, and its species are neutral formulas:
 - **A species** may add a `name`, its own `reference`, an `evidence` grade
   (`standard`, `ms2` or `formula`), `conditions` and a `note`.
   - Its own `reference` is a DOI, for a list compiled from several papers.
-  - Only the name and that DOI reach the database. Everything else stays in the
-    file, because the identities Stage A matches are copied into the provenance
-    of every row they match.
+  - Only the name, that DOI and the list's `tags` reach the database.
+    Everything else stays in the file, because the identities Stage A matches
+    are copied into the provenance of every row they match.
+- **`tags` say how a reader should take the list's compounds**, from a fixed
+  vocabulary the checks hold a list to. The one tag is `background`: the
+  cyclic siloxanes carry it, because they are a background of most inlets and
+  an analyte of indoor air, so a row they name says the list reads them as
+  background. The row shows the tag beside the list's name; the tier does not
+  weigh it, and whether the compounds are background in a dataset is the
+  batch's question. A tag reaches every record the list loads, so changing it
+  needs a new `data_version`.
 - **Radical status is read from the formula.** A neutral with a half-integer
   DBE has an unpaired electron.
   - Only a list that says `"allow_radicals": true` may hold one. In any other
@@ -340,7 +348,7 @@ belongs to the whole list, and its species are neutral formulas:
 - **`applies_to_contexts` and `always_active` are read, but nothing acts on them
   yet.** They say which chemistry contexts a list belongs to, and whether it
   should match in every context; the cyclic siloxanes, for example, are a
-  background of every inlet. Until a source row carries tags, Stage A matches
+  background of every inlet. Until a source row records them, Stage A matches
   every loaded list in every context, under that context's ceiling.
 
 `libraries/reference/tests/test_seed_lists.py` holds every shipped list to these

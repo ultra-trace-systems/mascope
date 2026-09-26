@@ -20,6 +20,12 @@ header says ``allow_radicals``. Anywhere else they are held back at ingest
 (:func:`admitted_species`), which is what keeps radicals out of a default load.
 A species may still say ``radical``, as a claim :func:`list_problems` checks
 against its formula.
+
+A list may carry ``tags``: how a reader should take its compounds, from a
+fixed vocabulary (:data:`LIST_TAGS`). Unlike the rest of the header, a tag
+reaches every record the list loads, because it is read where the record is
+shown - a row the list named says so - and nowhere else: the tier does not
+weigh it.
 """
 
 import json
@@ -53,6 +59,12 @@ EVIDENCE_GRADES = ("standard", "ms2", "formula")
 #: The polarity a list's source measured in.
 POLARITIES = frozenset({"positive", "negative", "both"})
 
+#: The tags a list may carry. ``background``: the list's compounds are commonly
+#: a background of laboratory air or of the instrument itself, which a row the
+#: list names shows beside its name. Whether they are background in a dataset
+#: is the batch's question; the tag is the list's reading, not a verdict.
+LIST_TAGS = frozenset({"background"})
+
 _LIST_KEYS = frozenset(
     {
         "schema_version",
@@ -67,6 +79,7 @@ _LIST_KEYS = frozenset(
         "always_active",
         "allow_radicals",
         "load_by_default",
+        "tags",
         "provenance",
         "species",
     }
@@ -122,6 +135,8 @@ class PeakList:
     always_active: bool = False
     allow_radicals: bool = False
     load_by_default: bool = True
+    #: How a reader should take the list's compounds (:data:`LIST_TAGS`).
+    tags: tuple[str, ...] = ()
     provenance: dict = field(default_factory=dict)
     #: Keys schema 2 does not define, kept so a check can name them.
     unknown_keys: tuple[str, ...] = ()
@@ -220,6 +235,7 @@ def read_peak_list(path: Path) -> PeakList:
         always_active=data.get("always_active") is True,
         allow_radicals=data.get("allow_radicals") is True,
         load_by_default=data.get("load_by_default", True) is not False,
+        tags=_strings(data.get("tags")),
         provenance=provenance if isinstance(provenance, dict) else {},
         unknown_keys=tuple(sorted(set(data) - _LIST_KEYS)),
     )
@@ -295,10 +311,11 @@ def list_problems(
     Holds a list to schema 2. The header needs an id that names the file and
     fits a source name, a label, a version, a licence - one of ``licenses`` when
     given, the tags the Stage A licence gate knows - and at least one reference,
-    each with a DOI or a valid ISBN. Every species needs a neutral molecular
-    formula with a non-negative DBE, odd-electron only in a list that allows
-    radicals, and agreeing with any radical claim of its own; and each identity
-    is listed once - a formula may repeat only as isomers under different names.
+    each with a DOI or a valid ISBN; any ``tags`` it carries are from
+    :data:`LIST_TAGS`. Every species needs a neutral molecular formula with a
+    non-negative DBE, odd-electron only in a list that allows radicals, and
+    agreeing with any radical claim of its own; and each identity is listed
+    once - a formula may repeat only as isomers under different names.
 
     :param peak_list: The list, as :func:`read_peak_list` returns it.
     :param licenses: The licence tags a list may carry; None skips that check.
@@ -341,6 +358,9 @@ def list_problems(
         problems.append("no reference")
     for number, reference in enumerate(peak_list.references, start=1):
         problems.extend(_reference_problems(reference, f"reference {number}"))
+    for tag in peak_list.tags:
+        if tag not in LIST_TAGS:
+            problems.append(f"tag '{tag}' is not one of {', '.join(sorted(LIST_TAGS))}")
     if peak_list.polarity is not None and peak_list.polarity not in POLARITIES:
         problems.append(
             f"polarity '{peak_list.polarity}' is not one of "

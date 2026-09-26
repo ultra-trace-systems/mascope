@@ -12,7 +12,9 @@ its own DOI when the list compiles several papers. What belongs to the whole
 list stays in the file: Stage A copies every identity, cross-references
 included, into the provenance of each row whose formula it matches, so a list's
 constants on every record would be written onto every matched peak of every
-sample and read by nothing.
+sample and read by nothing. The list's ``tags`` are the one exception, because
+a row does read them: a compound the cyclic-siloxane list names says, on the
+row, that the list reads it as background.
 
 A radical is held back unless the list says ``allow_radicals``, which a
 schema 1 list cannot say.
@@ -67,6 +69,11 @@ class PeakListAdapter:
         peak_list = read_peak_list(path)
         license_tag = peak_list.license or self.license
         for species in admitted_species(peak_list):
+            xrefs: dict = {}
+            if species.reference:
+                xrefs["reference"] = species.reference
+            if peak_list.tags:
+                xrefs["tags"] = list(peak_list.tags)
             yield ReferenceRecord(
                 formula=species.formula,
                 name=species.name,
@@ -79,6 +86,6 @@ class PeakListAdapter:
                     if species.name is None
                     else f"{species.formula} {species.name}"
                 ),
-                xrefs={"reference": species.reference} if species.reference else {},
+                xrefs=xrefs,
                 license=license_tag,
             )

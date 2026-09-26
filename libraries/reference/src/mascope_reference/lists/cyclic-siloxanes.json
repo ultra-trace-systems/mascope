@@ -2,7 +2,7 @@
   "schema_version": 2,
   "id": "cyclic-siloxanes",
   "label": "Cyclic volatile methylsiloxanes, D3 to D8",
-  "data_version": "2026.09.2",
+  "data_version": "2026.09.3",
   "license": "CC-BY-4.0",
   "references": [
     {
@@ -20,8 +20,9 @@
   ],
   "polarity": "positive",
   "always_active": true,
+  "tags": ["background"],
   "provenance": {
-    "compiled_from": "The cyclic volatile methylsiloxanes: observed in ambient and indoor air, and a classic background of mass spectrometry inlets. D3 to D6 as measured in air worldwide (Genualdi et al. 2011); D7 and D8 as measured in indoor air (Fromme et al. 2019). Formulas checked against PubChem."
+    "compiled_from": "The cyclic volatile methylsiloxanes: observed in ambient and indoor air, and a classic background of mass spectrometry inlets, which the list's background tag says on every row it names (Schlosser and Volkmer-Engert 2003). D3 to D6 as measured in air worldwide (Genualdi et al. 2011); D7 and D8 as measured in indoor air (Fromme et al. 2019). Formulas checked against PubChem."
   },
   "species": [
     {"formula": "C6H18O3Si3", "name": "Hexamethylcyclotrisiloxane (D3)", "reference": "10.1021/es200301j"},

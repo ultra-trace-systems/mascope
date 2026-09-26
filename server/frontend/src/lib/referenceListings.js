@@ -12,6 +12,11 @@
  * Both carry at most as many names as a run keeps. How many records name the
  * formula in all comes with the lookup (`known_compounds_total`), and a listing
  * says so where it is more than the names it carries.
+ *
+ * A list may also say how it reads its compounds, as tags each identity carries
+ * (`xrefs.tags`): `background` for a list of what is commonly laboratory-air or
+ * instrument background, the cyclic siloxanes first. A tag is the list's
+ * reading, shown beside the name; the tier does not weigh it.
  */
 
 /**
@@ -65,8 +70,30 @@ export function listingSource(listing) {
   return typeof source === 'string' ? source : ''
 }
 
+const tagsOf = (identity) =>
+  Array.isArray(identity?.xrefs?.tags)
+    ? identity.xrefs.tags.filter((tag) => typeof tag === 'string' && tag)
+    : []
+
+/** What each tag a list may carry says of the compounds it names. */
+const TAG_READINGS = {
+  background:
+    'commonly a background of laboratory air or of the instrument. It can still be in the sample: whether it is background in these data is for the batch and its blanks to say, and the tier does not weigh it'
+}
+
 /**
- * Every name with its list, and which kind of listing it is.
+ * The tags the lists naming the formula carry, each once.
+ *
+ * @param {object|null} listing - from `listingOf`
+ * @returns {Array<string>}
+ */
+export function listingTags(listing) {
+  return [...new Set((listing?.identities ?? []).flatMap(tagsOf))]
+}
+
+/**
+ * Every name with its list, which kind of listing it is, and what a tag the
+ * lists carry says.
  *
  * @param {object|null} listing - from `listingOf`
  * @returns {string}
@@ -77,12 +104,24 @@ export function listingTooltip(listing) {
     (identity) => `${nameOf(identity)}${identity?.source ? ` (${identity.source})` : ''}`
   )
   const unlisted = (listing.total ?? names.length) - names.length
+  const readings = listingTags(listing).map((tag) => {
+    const lists = [
+      ...new Set(
+        listing.identities
+          .filter((identity) => tagsOf(identity).includes(tag) && identity?.source)
+          .map((identity) => identity.source)
+      )
+    ]
+    const by = lists.length ? `The ${lists.join(', ')} list` : 'A list'
+    return `${by} tags it ${tag}: ${TAG_READINGS[tag] ?? 'a reading of the list'}.`
+  })
   return [
     listing.matched
       ? 'The run matched this formula from a reference list.'
       : 'A reference list holds this formula. The run did not match it from the list, so the name is a lead to check.',
     ...names,
     ...(unlisted > 0 ? [`and ${unlisted} more the lists hold for it`] : []),
+    ...readings,
     'A formula match names candidate compounds; it is not an identification.'
   ].join('\n')
 }
