@@ -16,8 +16,15 @@ import pytest
 from mascope_backend.api.new.peak_assignments import engine as engine_module
 from mascope_backend.api.new.peak_assignments import service as service_module
 from mascope_backend.api.new.peak_assignments.config import PeakAssignmentConfig
+from mascope_backend.api.new.peak_assignments.cross_channel import (
+    REASON_AMBIGUOUS_ADDUCT,
+    apply_cross_channel,
+)
 from mascope_backend.api.new.peak_assignments.engine import (
+    PARTNER_GATE_KEPT,
+    PARTNER_GATE_LIST,
     apply_partner_gates,
+    hold_opened_channel_readings,
     untargeted_matches_to_peak_assignments,
 )
 from mascope_backend.api.new.peak_assignments.profiles import (
@@ -1473,3 +1480,236 @@ class TestEachMechanismIsSearchedOnce:
         assert mechanism_ids == ["im-h", "im-other-polarity"]
         assert [m.ionization_mechanism_id for m in mechanisms] == ["im-h"]
         assert mechanisms[0] is not self.PROTON
+
+
+#: A charge-transfer source that opened methyl loss and proton transfer for
+#: itself, and a nitrate source that declares carbonate and opened formate.
+OPENED_CT = {"im-ct": "[M]+.", "im-me": "[M-CH3]+", "im-h": "[M+H]+"}
+OPENED_NO3 = {
+    "im-no3": "[M+NO3]-",
+    "im-deprot": "[M-H]-",
+    "im-co3": "[M+CO3]-",
+    "im-formate": "[M+HCOO]-",
+}
+
+
+def list_row(row_id, formula, mechanism_id, **kwargs):
+    """A monoisotopic row a reference list's compound won in Stage A."""
+    return ledger_row(row_id, formula, mechanism_id, source="database", **kwargs)
+
+
+def isotopologue_of(owner_id):
+    return {
+        "peak_assignment_id": f"{owner_id}-iso",
+        "role": "iso_child",
+        "owner_peak_assignment_id": owner_id,
+        "assigned_formula": None,
+        "ionization_mechanism_id": None,
+        "tier": TIER_ASSIGNED,
+    }
+
+
+class TestAListIsReadThroughTheChannelsTheRunOpened:
+    """Stage A reads a reference list through the channels the run opened, and
+    a reading through one is held as the search's readings through it are."""
+
+    @staticmethod
+    def _hold(rows, ids=OPENED_CT, minor=("[M-CH3]+", "[M+H]+"), opened=None):
+        return hold_opened_channel_readings(
+            rows,
+            notation_by_id=ids,
+            minor_channels=frozenset(minor),
+            opened_channels=frozenset(minor if opened is None else opened),
+        )
+
+    def test_a_reading_with_nothing_behind_it_is_held_at_candidate(self):
+        # D4's methyl-loss ion, the siloxane's base peak on this source.
+        d4 = list_row("a1", "C8H24O4Si4", "im-me")
+
+        assert self._hold([d4]) == {"read": 1, "capped": 1}
+        assert d4["tier"] == TIER_CANDIDATE
+        assert d4["provenance"]["minor_channel"] == {
+            "corroborated_by": None,
+            "capped": True,
+        }
+
+    def test_its_own_isotopologue_corroborates_it(self):
+        d4 = list_row("a1", "C8H24O4Si4", "im-me")
+
+        assert self._hold([d4, isotopologue_of("a1")]) == {"read": 1, "capped": 0}
+        assert d4["tier"] == TIER_ASSIGNED
+        assert d4["provenance"]["minor_channel"]["corroborated_by"] == "isotopologue"
+
+    def test_the_compound_through_the_modes_own_channel_corroborates_it(self):
+        # One neutral, written in two orders: a composition, not a string.
+        d4 = list_row("a1", "C8H24O4Si4", "im-me")
+        molecular_ion = list_row("a2", "Si4O4C8H24", "im-ct")
+
+        self._hold([d4, molecular_ion])
+
+        assert d4["tier"] == TIER_ASSIGNED
+        assert d4["provenance"]["minor_channel"]["corroborated_by"] == "second_channel"
+        assert "minor_channel" not in molecular_ion["provenance"]
+
+    def test_another_opened_channel_is_no_second_channel(self):
+        # Methyl loss and proton transfer at once corroborate each other in the
+        # cross-channel pass's count, not here: neither is the mode's.
+        d4 = list_row("a1", "C8H24O4Si4", "im-me")
+        protonated = list_row("a2", "C8H24O4Si4", "im-h")
+
+        assert self._hold([d4, protonated]) == {"read": 2, "capped": 2}
+        assert d4["tier"] == protonated["tier"] == TIER_CANDIDATE
+
+    def test_a_secondary_channel_the_mode_declares_is_left_as_it_was(self):
+        # The list was read through declared carbonate before any channel was
+        # opened; only the formate the run opened for itself is held.
+        through_carbonate = list_row("a1", "C5H8O4", "im-co3")
+        through_formate = list_row("a2", "C10H18O5", "im-formate")
+
+        held = self._hold(
+            [through_carbonate, through_formate],
+            ids=OPENED_NO3,
+            minor=("[M+CO3]-", "[M+HCOO]-"),
+            opened=("[M+HCOO]-",),
+        )
+
+        assert held == {"read": 1, "capped": 1}
+        assert through_carbonate["tier"] == TIER_ASSIGNED
+        assert "minor_channel" not in through_carbonate["provenance"]
+        assert through_formate["tier"] == TIER_CANDIDATE
+
+    def test_a_declared_secondary_channel_is_no_second_channel(self):
+        through_carbonate = list_row("a1", "C10H18O5", "im-co3")
+        through_formate = list_row("a2", "C10H18O5", "im-formate")
+
+        self._hold(
+            [through_carbonate, through_formate],
+            ids=OPENED_NO3,
+            minor=("[M+CO3]-", "[M+HCOO]-"),
+            opened=("[M+HCOO]-",),
+        )
+
+        assert through_formate["provenance"]["minor_channel"]["corroborated_by"] is None
+
+
+class TestAListsReadingThroughAGatedChannel:
+    """The partner gate reads a list's reading through an opened channel as it
+    reads the search's, and never moves the list's compound off the row."""
+
+    @staticmethod
+    def _gate(rows, ids, minor, gated=None):
+        return apply_partner_gates(
+            rows,
+            notation_by_id=ids,
+            minor_channels=frozenset(minor),
+            partner_gated_channels=frozenset(minor if gated is None else gated),
+            tier_bands=BANDS,
+        )
+
+    def test_without_a_partner_the_list_keeps_its_compound_under_the_cap(self):
+        # The search's row here would become the acid (the mode's reading); the
+        # list named C10H18O5, so the row keeps it, capped, and the acid stays
+        # on the row as the rival the cross-channel pass names.
+        pinic = list_row(
+            "a1",
+            "C10H18O5",
+            "im-formate",
+            capped=True,
+            tier=TIER_CANDIDATE,
+            alternatives=[("C11H20O7", "im-deprot")],
+        )
+        rows = [pinic]
+
+        summary = self._gate(rows, OPENED_NO3, minor=("[M+HCOO]-",))
+        apply_cross_channel(
+            rows,
+            notation_by_id=OPENED_NO3,
+            minor_channels=frozenset({"[M+HCOO]-"}),
+        )
+
+        assert pinic["assigned_formula"] == "C10H18O5"
+        assert pinic["ionization_mechanism_id"] == "im-formate"
+        assert pinic["tier"] == TIER_CANDIDATE
+        assert pinic["provenance"]["partner_gate"] == {
+            "channel": "[M+HCOO]-",
+            "partner": False,
+            "kept": PARTNER_GATE_LIST,
+        }
+        assert (summary["swapped"], summary["list_kept"]) == (0, 1)
+        assert pinic["provenance"]["cross_channel"][REASON_AMBIGUOUS_ADDUCT] == {
+            "alternative": "C11H20O7",
+            "via": "[M-H]-",
+        }
+
+    def test_a_search_row_in_its_place_is_still_moved(self):
+        search = ledger_row(
+            "b1",
+            "C10H18O5",
+            "im-formate",
+            capped=True,
+            tier=TIER_CANDIDATE,
+            alternatives=[("C11H20O7", "im-deprot")],
+        )
+
+        summary = self._gate([search], OPENED_NO3, minor=("[M+HCOO]-",))
+
+        assert search["assigned_formula"] == "C11H20O7"
+        assert (summary["swapped"], summary["list_kept"]) == (1, 0)
+
+    def test_with_nothing_to_move_to_it_is_kept_as_any_row_is(self):
+        # The siloxane's ion reads no other way the grid can hold.
+        d4 = list_row("a1", "C8H24O4Si4", "im-me", capped=True, tier=TIER_CANDIDATE)
+
+        summary = self._gate([d4], OPENED_CT, minor=("[M-CH3]+", "[M+H]+"))
+
+        assert d4["provenance"]["partner_gate"]["kept"] == PARTNER_GATE_KEPT
+        assert d4["tier"] == TIER_CANDIDATE
+        assert summary["list_kept"] == 0
+
+    def test_on_a_partner_the_reading_stands_and_its_cap_is_lifted(self):
+        # The partner is the search's row, which Stage A's own hold never saw.
+        d4 = list_row("a1", "C8H24O4Si4", "im-me", capped=True, tier=TIER_CANDIDATE)
+        molecular_ion = ledger_row("b1", "C8H24O4Si4", "im-ct")
+
+        self._gate([d4, molecular_ion], OPENED_CT, minor=("[M-CH3]+", "[M+H]+"))
+
+        assert d4["tier"] == TIER_ASSIGNED
+        assert d4["provenance"]["partner_gate"]["partner"] is True
+        assert d4["provenance"]["partner_gate"]["uncapped"] is True
+        assert d4["provenance"]["minor_channel"] == {
+            "corroborated_by": "second_channel",
+            "capped": False,
+        }
+
+    def test_a_stronger_rival_is_weighed_and_does_not_take_the_row(self):
+        # Toluene less a hydride, from a list, against protonated C7H6: the
+        # sample shows C7H6 thirty times as brightly. The search's row would
+        # be moved to it; the list's keeps toluene, and the cross-channel pass
+        # holds it at candidate with the rival it shows.
+        ids = {"im-ct": "[M]+.", "im-hydride": "[M-H]+", "im-h": "[M+H]+"}
+        minor = ("[M-H]+", "[M+H]+")
+        tropylium = list_row(
+            "a1",
+            "C7H8",
+            "im-hydride",
+            alternatives=[("C7H6", "im-h")],
+        )
+        toluene = ledger_row("b1", "C7H8", "im-ct", intensity=1.0e5)
+        c7h6 = ledger_row("b2", "C7H6", "im-ct", intensity=3.0e6)
+        rows = [tropylium, toluene, c7h6]
+
+        summary = self._gate(rows, ids, minor)
+        apply_cross_channel(rows, notation_by_id=ids, minor_channels=frozenset(minor))
+
+        assert tropylium["assigned_formula"] == "C7H8"
+        gate = tropylium["provenance"]["partner_gate"]
+        assert gate["kept"] == PARTNER_GATE_LIST
+        assert gate["partner"] is True
+        assert [(entry["reading"], entry["decisive"]) for entry in gate["contest"]] == [
+            ("C7H6", False)
+        ]
+        assert (summary["contest_swapped"], summary["list_kept"]) == (0, 1)
+        assert tropylium["tier"] == TIER_CANDIDATE
+        assert tropylium["provenance"]["cross_channel"][REASON_AMBIGUOUS_ADDUCT][
+            "shown"
+        ]
