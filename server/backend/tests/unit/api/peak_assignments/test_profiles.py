@@ -140,7 +140,11 @@ class TestResolution:
         assert [e.notation for e in resolved.channel_evidence if e.present] == [
             "[M-H]+",
             "[M+H]+",
+            "[M-CH3]+",
         ]
+        # Methyl loss is on by the window, as hydride abstraction is, and not
+        # searched where the deployment holds no mechanism for it.
+        assert resolved.unavailable_channels == ("[M-CH3]+",)
         assert resolved.minor_channels == frozenset({"[M-H]+"})
         assert resolved.added_channels == frozenset({"[M-H]+"})
 

@@ -760,7 +760,7 @@ const SOURCE_TOOLTIPS = Object.freeze({
   database: 'Matched from a target or reference list',
   untargeted: 'Found by the formula search',
   manual: 'Assigned by hand',
-  reagent: "The ionization source's own ion",
+  reagent: 'An ion the ionization source made, not a compound of the sample',
   artifact: 'A side lobe of an intense neighbouring peak'
 })
 const sourceTooltip = (source) =>

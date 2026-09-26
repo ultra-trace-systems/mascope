@@ -24,7 +24,8 @@ usual: an engine tiers only the peaks it committed a formula to. Only Mascope's
 tier is used when peaks are rolled up across a batch.
 
 Beside its tier, a peak can carry a role: **reagent** (an ion the ionization
-source makes of itself), **artifact** (a ringing side lobe of a very intense
+source made: of its reagent, the air it ionizes or its calibrant, or by
+breaking an analyte), **artifact** (a ringing side lobe of a very intense
 neighbouring peak) or **isotopologue** (a line of another assignment's isotope
 pattern). Reagent and artifact peaks are not the sample's compounds, so each has
 a chip of its own in place of a tier, is counted apart from the tiers above the

@@ -200,16 +200,26 @@ class TestDetection:
 
     def test_the_fluoranthene_ion_switches_hydride_abstraction_on(self):
         # The reagent cation is the hydride acceptor: where the beam is, the
-        # abstraction channel is. Proton transfer needs its own evidence.
-        # A window from 15 shows hydronium's absence, so only the beam's own
-        # channel comes on.
+        # abstraction channel is, and so is methyl loss, which is read off the
+        # same beam. Proton transfer needs its own evidence. A window from 15
+        # shows hydronium's absence, so only the beam's own channels come on.
         mz = np.array([15.0, FLUORANTHENE_CATION, 300.0])
         intensity = np.array([1.0e6, 3.0e5, 1.0e4])
         evidence = R.detect_channels(
             R.secondary_channels("EASYIC_POS"), mz, intensity, ppm=5.0
         )
-        assert R.present_notations(evidence) == ["[M-H]+"]
+        assert R.present_notations(evidence) == ["[M-H]+", "[M-CH3]+"]
         assert evidence[0].probe == "[C16H10]+"
+
+    def test_methyl_loss_is_read_off_the_beam_as_hydride_abstraction_is(self):
+        # Gated the way hydride abstraction is: the same fingerprint, on where
+        # the window cannot show it, the mode's own where declared, and a
+        # reading through it standing only on a partner.
+        channels = {c.notation: c for c in R.secondary_channels("EASYIC_POS")}
+        methyl, hydride = channels["[M-CH3]+"], channels["[M-H]+"]
+        assert methyl.probes == hydride.probes
+        assert methyl.when_unobservable == hydride.when_unobservable
+        assert methyl.needs_partner and not methyl.declared_stays_secondary
 
     def test_the_beams_own_13c_line_does_not_switch_proton_transfer_on(self):
         # Protonated fluoranthene sits 22 ppm above the beam's 13C line, inside
@@ -224,7 +234,7 @@ class TestDetection:
         evidence = R.detect_channels(
             R.secondary_channels("EASYIC_POS"), mz, intensity, ppm=20.0
         )
-        assert R.present_notations(evidence) == ["[M-H]+"]
+        assert R.present_notations(evidence) == ["[M-H]+", "[M-CH3]+"]
         proton = [item for item in evidence if item.notation == "[M+H]+"][0]
         assert proton.status == R.STATUS_NOT_FOUND
 
@@ -237,7 +247,7 @@ class TestDetection:
         evidence = R.detect_channels(
             R.secondary_channels("EASYIC_POS"), mz, intensity, ppm=5.0
         )
-        assert R.present_notations(evidence) == ["[M-H]+", "[M+H]+"]
+        assert R.present_notations(evidence) == ["[M-H]+", "[M+H]+", "[M-CH3]+"]
         assert {item.status for item in evidence} == {R.STATUS_UNOBSERVABLE}
 
     def test_a_dry_source_still_shows_its_hydronium(self):

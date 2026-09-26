@@ -160,7 +160,10 @@ class TestFingerprint:
             assert "[M+HCOO]-" not in profile.secondary_adducts, profile.name
 
     def test_the_charge_transfer_channels_are_secondary_not_declared(self):
-        assert P.EASYIC_POS.secondary_adducts == ("[M-H]+", "[M+H]+")
+        # Methyl loss beside hydride abstraction and proton transfer: what
+        # charge transfer leaves of alpha-pinene at m/z 121 and of a cyclic
+        # siloxane at its base peak.
+        assert P.EASYIC_POS.secondary_adducts == ("[M-H]+", "[M+H]+", "[M-CH3]+")
         assert P.EASYIC_NEG.secondary_adducts == ("[M-H]-",)
         assert P.get_reagent_profile("charge-transfer") is P.EASYIC_POS
         assert P.get_reagent_profile("ct-") is P.EASYIC_NEG

@@ -81,6 +81,7 @@ from mascope_backend.api.new.peak_assignments.cross_channel import (
 )
 from mascope_backend.api.new.peak_assignments.engine import (
     CROSS_CHANNEL_KEY,
+    FRAGMENTS_KEY,
     LIST_PRIOR_WEIGHT,
     MASS_CALIBRATION_KEY,
     PARTNER_GATE_KEY,
@@ -134,8 +135,11 @@ from mascope_backend.api.new.peak_assignments.profiles import (
     with_secondary_channels,
 )
 from mascope_backend.api.new.peak_assignments.reagent_pass import (
+    FragmentClaims,
     build_reagent_assignments,
+    claim_fragments,
     claim_reagent_peaks,
+    fragment_ladders_for,
     reagent_library_for,
 )
 from mascope_backend.api.new.peak_assignments.schemas import DEFAULT_PAGE_LIMIT
@@ -182,7 +186,10 @@ from mascope_tools.composition.mechanism_notation import (
     mechanism_spellings,
     parse_mechanism,
 )
-from mascope_tools.composition.reagents import secondary_channels
+from mascope_tools.composition.reagents import (
+    REAGENT_LINE_FAMILIES,
+    secondary_channels,
+)
 
 
 # -------------------------------------------------------------------
@@ -1304,34 +1311,25 @@ def _read_other_readings(
     *,
     searched_mechanisms: list[SimpleNamespace],
     resolved_profile: ResolvedProfile,
-    max_alternatives: int,
     tier_bands: dict[str, float] | None = None,
-) -> tuple[int, dict]:
-    """Give each reference mirror row its ion's family, then read every channel.
+) -> dict:
+    """Read every channel: the partner gate, then the cross-channel pass.
 
-    An election carries the readings it displaced and a matched row carries
-    none, so the cross-channel pass could not ask a list's formula what it asks
-    the search's without the family written first. It is built under the
-    untargeted search's own box and filter, whether or not that stage ran, so it
-    is the family the search would have held. A run and the run-less ingest fold
-    both call this, so a reference-list row capped for another reading of its
-    ion in a run is capped on the batch ledger too.
+    The run-less ingest fold's reading of what a run's :func:`judge_commits`
+    reads, so a reference-list row capped for another reading of its ion in a
+    run is capped on the batch ledger too. Each reference mirror row carries
+    its ion's family by now (:func:`_record_mirror_readings`): an election
+    carries the readings it displaced and a matched row carries none, so the
+    cross-channel pass could not ask a list's formula what it asks the search's
+    without the family written first.
 
-    :param stage_a_assignments: Stage A's rows, mirror rows modified in place.
+    :param stage_a_assignments: Stage A's rows, modified in place.
     :param stage_b_assignments: The untargeted stage's rows; none on the fold.
     :param searched_mechanisms: :func:`_searched_mechanisms`.
     :param resolved_profile: The sample's resolved chemistry.
-    :param max_alternatives: Cap on stored alternatives per row.
     :param tier_bands: The run's evidence bands, for the partner gate.
-    :return: How many mirror rows carry same-ion readings, and the cross-channel
-        pass's summary.
+    :return: The cross-channel pass's summary.
     """
-    mirror_families = _record_mirror_readings(
-        stage_a_assignments,
-        searched_mechanisms=searched_mechanisms,
-        resolved_profile=resolved_profile,
-        max_alternatives=max_alternatives,
-    )
     notation_by_id = _notation_by_id(searched_mechanisms)
     rows = stage_a_assignments + stage_b_assignments
     apply_partner_gates(
@@ -1341,12 +1339,48 @@ def _read_other_readings(
         partner_gated_channels=resolved_profile.partner_gated_channels,
         tier_bands=tier_bands,
     )
-    cross_channel = apply_cross_channel(
+    return apply_cross_channel(
         rows,
         notation_by_id=notation_by_id,
         minor_channels=resolved_profile.minor_channels,
     )
-    return mirror_families, cross_channel
+
+
+def _claim_fragments(
+    rows: list[dict],
+    *,
+    resolved_profile: ResolvedProfile,
+    searched_mechanisms: list[SimpleNamespace],
+    sample_name: str,
+) -> FragmentClaims:
+    """Read the fragments of the analytes the stages committed as the source's.
+
+    Shared by a run and the run-less ingest fold, after the reference mirror
+    rows carry their ion's families and before any pass that weighs the rows as
+    molecules, so the two ledgers read one peak the same way
+    (``reagent_pass.claim_fragments``).
+
+    :param rows: The stages' committed rows, as built.
+    :param resolved_profile: The sample's resolved chemistry, whose profile
+        names the ladders.
+    :param searched_mechanisms: :func:`_searched_mechanisms`.
+    :param sample_name: For the log line.
+    :return: What the claim left and wrote.
+    """
+    claims = claim_fragments(
+        rows,
+        fragment_ladders_for(resolved_profile.profile.name),
+        notation_by_id=_notation_by_id(searched_mechanisms),
+        minor_channels=resolved_profile.minor_channels,
+    )
+    if claims.summary["claimed"]:
+        runtime.logger.info(
+            f"Sample '{sample_name}': {claims.summary['claimed']} committed peaks "
+            f"read as fragments of {', '.join(claims.summary['ladders'])} "
+            f"({claims.summary['claimed_isotopologues']} of their lines with them); "
+            f"held: {claims.summary['held']}"
+        )
+    return claims
 
 
 def _notation_by_id(searched_mechanisms: list[SimpleNamespace]) -> dict[str, str]:
@@ -1377,9 +1411,13 @@ def _record_mirror_readings(
     resolved_profile: ResolvedProfile,
     max_alternatives: int,
 ) -> int:
-    """Give each reference mirror row its ion's family (the first half of
-    :func:`_read_other_readings`), which reads no tier and so is written once
-    however many times the passes after it run.
+    """Give each reference mirror row its ion's family, which reads no tier and
+    so is written once however many times the passes after it run.
+
+    It is built under the untargeted search's own box and filter, whether or
+    not that stage ran, so it is the family the search would have held. A run
+    and the run-less ingest fold both write it before the fragment claim and
+    the passes that read the families (:func:`_read_other_readings`).
 
     :return: How many mirror rows carry same-ion readings.
     """
@@ -1970,6 +2008,7 @@ def _stored_run_config(
     cross_channel: dict | None = None,
     tiering: dict | None = None,
     partner_gate: dict | None = None,
+    fragments: dict | None = None,
 ) -> dict:
     """The blob persisted on a run: the requested config plus server-side state.
 
@@ -2010,6 +2049,11 @@ def _stored_run_config(
     what it leaves: which opportunistic readings stood on a partner, which it
     turned to another reading, and what its contest took and at what margin.
 
+    The fragment claim is the eighth, where the profile names a ladder: which
+    parents it found committed, which peaks it read as their fragments, and
+    which it left and why. A peak that reads as a reagent row on one run and a
+    molecule on another is otherwise unexplained.
+
     :param config: The validated client-supplied run configuration.
     :param resolved_profile: The chemistry the run resolved to, when known.
     :param search_scope: What the untargeted stage was offered, once it is known.
@@ -2018,6 +2062,8 @@ def _stored_run_config(
     :param cross_channel: What the sample's own channels corroborated.
     :param tiering: The rule set that judged the commits, and what it took.
     :param partner_gate: What the partner gate decided, and at what margin.
+    :param fragments: What the fragment claim took, where the profile names a
+        ladder.
     :return: A JSON-serializable dict for ``PeakAssignmentRun.config``.
     """
     stored = config.model_dump()
@@ -2036,6 +2082,8 @@ def _stored_run_config(
         stored[TIERING_KEY] = tiering
     if partner_gate is not None:
         stored[PARTNER_GATE_KEY] = partner_gate
+    if fragments is not None:
+        stored[FRAGMENTS_KEY] = fragments
     return stored
 
 
@@ -2049,6 +2097,7 @@ async def _record_resolved_profile(
     cross_channel: dict | None = None,
     tiering: dict | None = None,
     partner_gate: dict | None = None,
+    fragments: dict | None = None,
 ) -> None:
     """Write the resolved chemistry onto a run that is about to use it.
 
@@ -2070,6 +2119,8 @@ async def _record_resolved_profile(
     :param cross_channel: What the sample's own channels corroborated.
     :param tiering: The rule set that judged the commits, and what it took.
     :param partner_gate: What the partner gate decided, and at what margin.
+    :param fragments: What the fragment claim took, where the profile names a
+        ladder.
     """
     async with async_session() as session:
         await session.execute(
@@ -2085,6 +2136,7 @@ async def _record_resolved_profile(
                     cross_channel,
                     tiering,
                     partner_gate,
+                    fragments,
                 )
             )
         )
@@ -2345,12 +2397,19 @@ def _reagent_assignments(
             + ", ".join(f"{label} {error:+.1f}" for label, error in calibration.anchors)
         )
     # A profile with no reagent library has no pre-pass to ask, which the run
-    # records differently from a pass that claimed nothing.
+    # records differently from a pass that claimed nothing. The offset is read
+    # off the reagent's own ladder and the calibrant beam; the air's ions sit
+    # where the axis bends (``REAGENT_LINE_FAMILIES``).
     offset = (
         None
         if calibration is None
         else reagent_line_offset(
-            (hit.mz_error_ppm for hit in hits), resolved_profile.fallback_sigma_ppm
+            (
+                hit.mz_error_ppm
+                for hit in hits
+                if hit.cluster.family in REAGENT_LINE_FAMILIES
+            ),
+            resolved_profile.fallback_sigma_ppm,
         )
     )
     if offset is not None and offset.mu_ppm is not None:
@@ -2949,6 +3008,16 @@ async def _run_sample_assignment(
             resolved_profile=resolved_profile,
             max_alternatives=config.max_alternatives,
         )
+        # -- The fragments the source made of an analyte the stages committed,
+        # read as the source's before anything weighs them as molecules: a
+        # fragment read as a molecule is a partner, a second channel and a
+        # rival to every other reading of its mass.
+        fragments = _claim_fragments(
+            stage_a_assignments + stage_b_assignments,
+            resolved_profile=resolved_profile,
+            searched_mechanisms=searched_mechanisms,
+            sample_name=sample.sample_item_name,
+        )
         # -- The passes that judge the finished ledger, on the committed rows of
         # both stages together, and before the unassigned placeholders are
         # built, which commit nothing and have nothing to measure:
@@ -2966,7 +3035,7 @@ async def _run_sample_assignment(
         # all three run again over the ledger that leaves (`judge_commits`).
         lines = SpectrumLines.from_peaks(peaks_df, await _resolution_of(sample))
         judged = judge_commits(
-            stage_a_assignments + stage_b_assignments,
+            fragments.rows,
             stage_a_accuracy=mass_accuracy,
             fallback_sigma_ppm=resolved_profile.fallback_sigma_ppm,
             notation_by_id=_notation_by_id(searched_mechanisms),
@@ -3086,15 +3155,18 @@ async def _run_sample_assignment(
             cross_channel,
             tiering,
             partner_gate,
+            fragments.summary if fragments.summary["ladders"] else None,
         )
         await send_progress_user_notification(notification, 0.8)
 
         # -- Persist the complete ledger: one row per observed peak. What the
         # passes left committed, since an isotopologue released with the reading
         # it belonged to is a peak nothing explains.
-        assigned_peak_ids = claimed_peak_ids | {
-            assignment["sample_peak_id"] for assignment in committed_rows
-        }
+        assigned_peak_ids = (
+            claimed_peak_ids
+            | fragments.peak_ids
+            | {assignment["sample_peak_id"] for assignment in committed_rows}
+        )
         unassigned_df = peaks_df[~peaks_df["sample_peak_id"].isin(assigned_peak_ids)]
         unassigned_assignments = build_unassigned_assignments(
             unassigned_df,
@@ -3104,6 +3176,7 @@ async def _run_sample_assignment(
 
         all_assignments = (
             reagent_assignments
+            + fragments.fragments
             + artifact_assignments
             + committed_rows
             + unassigned_assignments
@@ -3351,6 +3424,29 @@ async def _fold_sample_peaks_without_run(
         known_window=resolved_profile.context.known_window,
         reagent_offset=reagent_offset,
     )
+    # The channels a run would read, for the passes below that read them.
+    resolved_profile, secondary_mechanisms = await _resolve_secondary_channels(
+        sample, resolved_profile, peaks_df
+    )
+    searched_mechanisms = _searched_mechanisms(
+        mechanisms, secondary_mechanisms, resolved_profile
+    )
+    # The fragments of what Stage A committed, read at the point a run reads
+    # them: after the mirror rows carry their families, before any pass that
+    # weighs a row as a molecule.
+    _record_mirror_readings(
+        stage_a,
+        searched_mechanisms=searched_mechanisms,
+        resolved_profile=resolved_profile,
+        max_alternatives=config.max_alternatives,
+    )
+    fragments = _claim_fragments(
+        stage_a,
+        resolved_profile=resolved_profile,
+        searched_mechanisms=searched_mechanisms,
+        sample_name=sample.sample_item_name,
+    )
+    stage_a = fragments.rows
     # The run's gate over this path's commits, so that a reference mirror's
     # row off calibration is capped here as a run would cap it, and an
     # isotopologue that does not track its parent is held as a run holds it.
@@ -3364,20 +3460,18 @@ async def _fold_sample_peaks_without_run(
     # ...and the run's same-ion check, through the channels a run would read,
     # so a reference-list row whose ion reads as well another way is not held
     # at a tier a run takes from it.
-    resolved_profile, secondary_mechanisms = await _resolve_secondary_channels(
-        sample, resolved_profile, peaks_df
-    )
-    _, cross_channel = _read_other_readings(
+    cross_channel = _read_other_readings(
         stage_a,
         [],
-        searched_mechanisms=_searched_mechanisms(
-            mechanisms, secondary_mechanisms, resolved_profile
-        ),
+        searched_mechanisms=searched_mechanisms,
         resolved_profile=resolved_profile,
-        max_alternatives=config.max_alternatives,
         tier_bands=config.tier_bands(),
     )
-    assigned = claimed_peak_ids | {row["sample_peak_id"] for row in stage_a}
+    assigned = (
+        claimed_peak_ids
+        | fragments.peak_ids
+        | {row["sample_peak_id"] for row in stage_a}
+    )
     unassigned = build_unassigned_assignments(
         peaks_df[~peaks_df["sample_peak_id"].isin(assigned)],
         sample_item_id=sample_item_id,
@@ -3387,6 +3481,7 @@ async def _fold_sample_peaks_without_run(
         f"Stage A assigned {len(stage_a)} of {len(peaks_df)} peaks of sample "
         f"'{sample.sample_item_name}' ({len(reagent)} claimed by the reagent "
         f"pre-pass, {len(artifact)} by the artifact one, "
+        f"{len(fragments.fragments)} read as fragments, "
         f"{cross_channel['capped']} capped for another reading of their ion); "
         "folding into the batch ledger without a run"
     )
@@ -3397,7 +3492,8 @@ async def _fold_sample_peaks_without_run(
     return await fold_sample_into_batch_peaks(
         sample_item_id,
         rows=[
-            SimpleNamespace(**row) for row in reagent + artifact + stage_a + unassigned
+            SimpleNamespace(**row)
+            for row in reagent + fragments.fragments + artifact + stage_a + unassigned
         ],
         persisted=False,
         defer_consensus_to=defer_consensus_to,

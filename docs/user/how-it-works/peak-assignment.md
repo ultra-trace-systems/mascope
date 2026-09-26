@@ -86,13 +86,15 @@ poorly-fitting isotopologue of something else.
 
 A run searches under two presets:
 
-- **A chemistry profile:** how the sample was ionized. It decides which cluster ions the
-  source makes of itself, and which elements the sample's compounds can be built from.
+- **A chemistry profile:** how the sample was ionized. It decides which ions the source
+  makes of itself, and which elements the sample's compounds can be built from.
 - **A chemistry context:** what was sampled.
 
-**What they set.** A run first sets aside the cluster ions a CIMS profile's reagent
-makes, as *reagent* peaks, so neither stage reads them as compounds. An electrospray
-profile has no single reagent and sets none aside. Then:
+**What they set.** A run first sets aside the ions a CIMS or charge-transfer source makes
+of itself - its reagent's own clusters, the ions of the air it ionizes, an Orbitrap's
+calibrant beam - as *reagent* peaks, so neither stage reads them as compounds (*The ions a
+source makes of itself*, below). An electrospray profile has neither a reagent nor a
+discharge, and sets none aside. Then:
 
 - the profile gives the untargeted stage its element grid, its m/z window on each
   instrument class, and the extra channels a source of its kind produces;
@@ -123,11 +125,13 @@ the mode is called. On an Orbitrap, a mode with no reagent whose mechanisms incl
 electron transfer, `[M]+.` or `[M]-.`, is a charge-transfer source, the way that
 instrument's EASY-IC source is declared: it searches a hydrocarbon-sized grid under the
 ambient prior, its reagent pass claims the fluoranthene beam, and the channels such a
-source also runs, hydride abstraction (`[M-H]+`) and proton transfer in positive mode and
-deprotonation in negative, are opened as secondary ones where the spectrum shows the
-source runs them (or where the acquisition could not have shown it), and capped at
-candidate without corroboration. A channel the mode declares itself, proton transfer
-beside electron transfer, is the mode's own and is not capped. An ion such a channel reads
+source also runs, hydride abstraction (`[M-H]+`), proton transfer and methyl loss
+(`[M-CH3]+`, what charge transfer leaves of alpha-pinene at m/z 121 and of a cyclic
+siloxane at its base peak) in positive mode and deprotonation in negative, are opened as
+secondary ones where the spectrum shows the source runs them (or where the acquisition
+could not have shown it), and capped at candidate without corroboration. A channel the
+mode declares itself, proton transfer beside electron transfer, is the mode's own and is
+not capped. An ion such a channel reads
 is often one electron transfer reads too, as a different molecule: the tropylium ion is
 protonated C7H6 or toluene
 less a hydride, and the search's own preference for the heavier mechanism would take the
@@ -157,9 +161,11 @@ rows. On any other instrument electron transfer names an
 ambient-ion mode as readily, and such a mode keeps the ESI profile of its polarity; so does
 a mode with only protonation or deprotonation and no reagent. A secondary channel is
 searched only where the deployment holds its mechanism, so Mascope ships the mechanism of
-every channel a profile can open, hydride abstraction's `[M-H]+` among them (*The
-chemistry every deployment holds*, below). The context is the one the profile is normally
-used with.
+every channel a profile can open, hydride abstraction's `[M-H]+` and methyl loss's
+`[M-CH3]+` among them (*The chemistry every deployment holds*, below). A reading through
+methyl loss stands, as one through hydride abstraction does, only where the sample commits
+the molecule it proposes through one of the mode's own channels: pinene less a methyl is
+also protonated C9H12. The context is the one the profile is normally used with.
 
 **Formate.** Every negative reagent profile (nitrate, 15N-nitrate, bromide, iodide) can
 open a formate adduct channel, `[M+HCOO]-`, the way it opens carbonate: where the spectrum
@@ -180,7 +186,7 @@ read through. So Mascope ships every mechanism its chemistry needs, and a server
 the ones it lacks when it starts: those the ionization modes Mascope ships declare (the
 nitrate, 15N-nitrate, bromide, iodide, urea, ammonium and 15N-ammonium reagents,
 protonation, deprotonation, and electron transfer in either polarity), and every
-secondary channel a profile can open (hydride abstraction, proton transfer,
+secondary channel a profile can open (hydride abstraction, methyl loss, proton transfer,
 deprotonation, carbonate, formate, the dibromide and diiodide clusters, ammonium, sodium
 and potassium). A fresh server searches under the same chemistry as any other from its
 first run, so a run on one set of samples reads the same wherever it is repeated. Each
@@ -215,6 +221,124 @@ engine. Hovering the name shows:
 - the element grid and the m/z window;
 - the extra channels searched;
 - any channel the spectrum showed but the deployment has no mechanism for.
+
+### The ions a source makes of itself
+
+Before either stage, a run sets aside the peaks its source made rather than its sample,
+as *reagent* peaks: a row that names the ion and no compound, so it votes on no batch
+consensus and weighs on no tier. Each ion the pass knows belongs to a family and carries
+the works that name it, and the row records both, so a claim can be checked against a
+paper rather than against Mascope's word. A work is cited for an ion only where it names
+that ion.
+
+- **The reagent's own ladder.** The ion a CIMS source is dosed with and what it makes of
+  itself: nitrate, its clusters with nitric acid [Jokinen et al. 2012][jok12] and its
+  hydrates [Skalný et al. 2004][ska04], [2007][ska07], with every nitrogen labelled on a
+  15N-nitrate source [Zhang et al. 2026][zha26]; bromide, its hydrates and its dimer
+  [Sanchez et al. 2016][san16], [Rissanen et al. 2019][ris19], [Wang et al. 2021][wa21];
+  iodide and its hydrate [Dörich et al. 2021][dor21], and its dimer and trimer [Gómez
+  Martín et al. 2022][gom22]; protonated urea and its dimer [Shcherbinin et al.
+  2025][shc25].
+- **The air's ions.** What a discharge makes of nitrogen, oxygen, water and carbon dioxide
+  before any reagent or analyte is involved. On a charge-transfer source they are the
+  source; on a reagent source, its background.
+    - Positive: N2+, N3+ and N4+ [Good et al. 1970a][good70], [Kolakowski et al.
+      2004][kol04], the first also [Shcherbinin et al. 2024][shc24]; O2+ [Good et al.
+      1970b][good70b], [Shcherbinin et al. 2024][shc24], [Dusanter et al. 2025][dus25];
+      NO+ [Shahin 1966][sha66], [Sabo & Matejčík 2012][sab12], [2013][sab13], [Dusanter
+      et al. 2025][dus25]; NO2+ [Shahin 1966][sha66], [Shcherbinin et al. 2024][shc24];
+      the hydrates of O2+, NO+ and NO2+ [Shahin 1966][sha66]; and the protonated water
+      ladder from H3O+ to (H2O)5H+ [Good et al. 1970a][good70], [Shahin 1966][sha66],
+      [Hansel et al. 1995][han95], [Pfeifer et al. 2020][pfe20].
+    - Negative: OH- and its water clusters [Fujishima et al. 2023][fuj23], [Sekimoto &
+      Takayama 2011][sek11], [Takayama 2026][tak26], which one corona source reads and
+      another argues become bicarbonate before they reach the analyser [Asakawa &
+      Hiraoka 2023][asa23], so they are claimed where a spectrum shows them; O2-
+      [Skalný et al. 2004][ska04], [2007][ska07], [Sekimoto et al. 2012][sek12] and its
+      hydrate [Sekimoto & Takayama 2011][sek11]; O3- and its hydrate [Shahin
+      1969][sha69]; O2- carrying carbon dioxide [Matas et al. 2023][mat23]; carbonate and
+      its hydrates [Skalný et al. 2004][ska04], [2007][ska07], [Shahin 1969][sha69];
+      bicarbonate [Nagato et al. 2006][nag06], [Sekimoto et al. 2012][sek12]; nitrite and
+      its hydrates [Skalný et al. 2007][ska07], [Ewing & Waltman 2009][ewi09], [Matas et
+      al. 2023][mat23]; nitrate, its hydrates and its cluster with nitric acid [Skalný et
+      al. 2004][ska04], [Nagato et al. 2006][nag06], [Ewing & Waltman 2009][ewi09]; and
+      bicarbonate's cluster with nitric acid [Nagato et al. 2006][nag06].
+    - On a 15N-nitrate source the plain nitrate ions are left to the reagent's own
+      envelope, whose 14N remainder they are first: the envelope claims them where their
+      height fits the label's purity.
+- **The calibrant beam.** An Orbitrap's EASY-IC source is a fluoranthene beam, its radical
+  cation at m/z 202.0777 and its radical anion at 202.0788 [Thermo Fisher Scientific
+  2018][easyic], [Leborgne et al. 2023][leb23], [Ashbacher et al. 2026][ash26], [Martens
+  et al. 2016][mar16]. Beside the cation it carries the ion one hydrogen lighter, the
+  protonated ion and the ions two and three hydrogens heavier where the source is humid
+  [Shcherbinin et al. 2024][shc24], [West et al. 2018][wes18], and the cation's own
+  fragments, less H2 and less one and two acetylenes, which its electron-ionization
+  spectrum shows [NIST WebBook][nist].
+
+Five rungs of the reagents' ladders are named by no work found. They are claimed on what
+Mascope's test spectra show instead, and each row says so: bromide's trimer Br3-, in all
+15 files of the three bromide sets at 1.5 to 35% of the base peak; its oxide BrO-, in 11
+of the 15 at up to 1.8%; bromate, BrO3-, and bromide's cluster with HBr, in every file of
+one set at 0.6% and 0.06%; and protonated urea's trimer, in every file of one of the two
+uronium sets at 0.08%.
+
+**What is left to the stages.** An ion a work reads as an analyte's is not claimed,
+however much it looks like the source's, and neither is an ion no work names that the
+test spectra do not show:
+
+- ammonia's ions, NH4+ and its hydrates: how a protonated-water source measures ammonia
+  [Pfeifer et al. 2020][pfe20]; ammonia with urea is the urea source's reading of it
+  [Shcherbinin et al. 2025][shc25];
+- bromide with HO2, the HO2 radical's own reading [Sanchez et al. 2016][san16];
+- formate, acetate and their clusters with their acids: formic and acetic acid
+  deprotonated, which is how an acetate source measures them [Veres et al. 2008][ver08],
+  [Bertram et al. 2011][ber11]. On a chamber's nitrate source they are the chamber's acids,
+  read through the deprotonation the mode declares;
+- trifluoroacetate, and CF3- and CF3O-, which ride with it: trifluoroacetic acid is an
+  analyte a nitrate or iodide source measures, and a claim before the stages cannot ask
+  whether it is in the sample. As its fragments the two would be claimed after the
+  stages, against the acid committed, but no work found gives either as its fragment
+  with a height a claim could be held to, so neither is claimed;
+- the cyclic siloxanes. They are a background of most instruments, from laboratory air
+  and the inlet [Schlosser & Volkmer-Engert 2003][sch03], and the analytes of an indoor-
+  or urban-air study, and a claim before the stages cannot tell the two apart. They are
+  named from the shipped cyclic-siloxane list, which reads them as background: the row
+  shows the list's *background* tag beside the name, the tier does not weigh it, and
+  whether they are background in a dataset is for the batch and its blanks to say. A list
+  is read through the mechanisms the mode declares, so on a charge-transfer source a
+  siloxane's methyl-loss ion, its brightest there, is named where the mode declares
+  methyl loss;
+- the rest of what the ladders' grammar would enumerate: the higher bromide and iodide
+  clusters and their hydrates, the iodine oxide clusters, a bromide precursor's anion, the
+  urea multimers above the trimer and those carrying ammonium, and the fluoranthene dimer.
+
+**Fragments of an analyte.** A charge-transfer or proton-transfer source breaks some of
+what it ionizes, and a fragment has an ordinary composition, so the formula search reads it
+as a molecule of its own: a partner, a second channel and a rival for everything else at
+its mass. The monoterpenes are the case: alpha-pinene's C7H9+, C6H9+, C6H8+., C6H7+,
+C6H5+ and C5H7+ ([NIST WebBook][nist]; [Wang et al. 2003][wan03]; [Schoon et al.
+2003][scn03]; [Materić et al. 2017][mat17]; [Tani et al. 2003][tan03]; [Kari et al.
+2018][kar18]; [Ishihara et al. 2026][ish26]). A fragment is claimed after the stages,
+since what licenses it is a commit, where three things hold:
+
+- the monoterpene is committed through one of the mode's own channels, at any tier, since
+  the claim asks of it its height, not its fit;
+- the fragment is no taller, against the parent's ion, than three times what the
+  literature gives it. For the ions electron ionization makes that is alpha-pinene's
+  electron-ionization spectrum, the hardest ionization a monoterpene meets, so a softer
+  source breaks it less and there is no lower bound; for C6H9+, which proton transfer
+  makes beside the protonated molecule, it is the ion's share of a proton-transfer
+  spectrum at the harder of two drift fields [Kari et al. 2018][kar18];
+- no reading of the fragment's ion names a molecule the sample shows on a peak of its own,
+  at *candidate* or better through one of the mode's own channels. That is what tells a
+  monoterpene's C6H7+ from protonated benzene: where the sample shows benzene's radical
+  cation, the ion stays benzene's.
+
+The ladder leaves out C7H8+., C7H7+ and C8H9+, though the monoterpene's spectrum has them
+strong: they are toluene's radical cation and toluene and xylene less a hydride, and a
+component all of whose ions sat on the ladder would have nothing left to be shown on. The
+row names the fragment's ion, the parent it was read against and what the stages had read
+the peak as; a compound of your own target library keeps its peak.
 
 ## The fit score — a pure measurement
 
@@ -847,6 +971,170 @@ batch ledger* puts Mascope's own view back.
 - <a id="sum07"></a>Sumner, L. W. et al. *Proposed minimum reporting standards for chemical
   analysis (Metabolomics Standards Initiative).* Metabolomics 2007, 3:211–221.
   [link](https://doi.org/10.1007/s11306-007-0082-2)
+- <a id="good70"></a>Good, A.; Durden, D. A.; Kebarle, P. *Ion-molecule reactions in pure
+  nitrogen and nitrogen containing traces of water at total pressures 0.5-4 torr. Kinetics
+  of clustering reactions forming H+(H2O)n.* J. Chem. Phys. 1970, 52:212–221.
+  [link](https://doi.org/10.1063/1.1672667)
+- <a id="good70b"></a>Good, A.; Durden, D. A.; Kebarle, P. *Mechanism and rate constants
+  of ion-molecule reactions leading to formation of H+(H2O)n in moist oxygen and air.* J.
+  Chem. Phys. 1970, 52:222–229. [link](https://doi.org/10.1063/1.1672668)
+- <a id="sha66"></a>Shahin, M. M. *Mass-spectrometric studies of corona discharges in air
+  at atmospheric pressures.* J. Chem. Phys. 1966, 45:2600–2605.
+  [link](https://doi.org/10.1063/1.1727980)
+- <a id="sha69"></a>Shahin, M. M. *Nature of charge carriers in negative coronas.* Appl.
+  Opt. 1969, 8(S1):106–110. [link](https://doi.org/10.1364/AO.8.S1.000106)
+- <a id="sab12"></a>Sabo, M.; Matejčík, S. *Corona discharge ion mobility spectrometry
+  with orthogonal acceleration time of flight mass spectrometry for monitoring of volatile
+  organic compounds.* Anal. Chem. 2012, 84:5327–5334.
+  [link](https://doi.org/10.1021/ac300722s)
+- <a id="sab13"></a>Sabo, M.; Matejčík, S. *A corona discharge atmospheric pressure
+  chemical ionization source with selective NO+ formation and its application for
+  monoaromatic VOC detection.* Analyst 2013, 138:6907–6912.
+  [link](https://doi.org/10.1039/c3an00964e)
+- <a id="kol04"></a>Kolakowski, B. M.; Grossert, J. S.; Ramaley, L. *Studies on the
+  positive-ion mass spectra from atmospheric pressure chemical ionization of gases and
+  solvents used in liquid chromatography and direct liquid injection.* J. Am. Soc. Mass
+  Spectrom. 2004, 15:311–324. [link](https://doi.org/10.1016/j.jasms.2003.10.019)
+- <a id="dus25"></a>Dusanter, S.; Holzinger, R.; Klein, F.; Salameh, T.; Jamar, M.
+  *Measurement guidelines for VOC analysis by PTR-MS.* ACTRIS standard operating
+  procedure, 2025.
+  [link](https://actris.eu/sites/default/files/inline-files/PTRMS%20SOP%20(April2025).pdf)
+- <a id="han95"></a>Hansel, A.; Jordan, A.; Holzinger, R.; Prazeller, P.; Vogel, W.;
+  Lindinger, W. *Proton transfer reaction mass spectrometry: on-line trace gas analysis at
+  the ppb level.* Int. J. Mass Spectrom. Ion Processes 1995, 149-150:609–619.
+  [link](https://doi.org/10.1016/0168-1176(95)04294-U)
+- <a id="pfe20"></a>Pfeifer, J.; Simon, M.; Heinritzi, M.; Piel, F.; Weitz, L.; Wang, D.;
+  Granzin, M.; Müller, T.; Bräkling, S.; Kirkby, J.; Curtius, J.; Kurtén, A. *Measurement
+  of ammonia, amines and iodine compounds using protonated water cluster chemical
+  ionization mass spectrometry.* Atmos. Meas. Tech. 2020, 13:2501–2522.
+  [link](https://doi.org/10.5194/amt-13-2501-2020)
+- <a id="ska04"></a>Skalný, J. D.; Mikoviny, T.; Matejčík, S.; Mason, N. J. *An analysis
+  of mass spectrometric study of negative ions extracted from negative corona discharge in
+  air.* Int. J. Mass Spectrom. 2004, 233:317–324.
+  [link](https://doi.org/10.1016/j.ijms.2004.01.012)
+- <a id="ska07"></a>Skalný, J. D.; Horváth, G.; Mason, N. J. *Mass spectrometric analysis
+  of small negative ions (e/m < 100) produced by Trichel pulse negative corona discharge
+  fed by ozonised air.* J. Optoelectron. Adv. Mater. 2007, 9:887–893.
+  [link](https://oro.open.ac.uk/11208/)
+- <a id="nag06"></a>Nagato, K.; Matsui, Y.; Miyata, T.; Yamauchi, T. *An analysis of the
+  evolution of negative ions produced by a corona ionizer in air.* Int. J. Mass Spectrom.
+  2006, 248:142–147. [link](https://doi.org/10.1016/j.ijms.2005.12.001)
+- <a id="sek11"></a>Sekimoto, K.; Takayama, M. *Observations of different core water
+  cluster ions Y-(H2O)n (Y = O2, HOx, NOx, COx) and magic number in atmospheric pressure
+  negative corona discharge mass spectrometry.* J. Mass Spectrom. 2011, 46:50–60.
+  [link](https://doi.org/10.1002/jms.1870)
+- <a id="sek12"></a>Sekimoto, K.; Sakai, M.; Takayama, M. *Specific interaction between
+  negative atmospheric ions and organic compounds in atmospheric pressure corona discharge
+  ionization mass spectrometry.* J. Am. Soc. Mass Spectrom. 2012, 23:1109–1119.
+  [link](https://doi.org/10.1007/s13361-012-0363-5)
+- <a id="fuj23"></a>Fujishima, S.; Sekimoto, K.; Takayama, M. *Identification of negative
+  ion at m/z 20 produced by atmospheric pressure corona discharge ionization under ambient
+  air.* Mass Spectrom. 2023, 12:A0124.
+  [link](https://doi.org/10.5702/massspectrometry.A0124)
+- <a id="asa23"></a>Asakawa, D.; Hiraoka, K. *Comments on "Identification of negative ion
+  at m/z 20 produced by atmospheric pressure corona discharge ionization under ambient
+  air".* Mass Spectrom. 2023, 12:A0140.
+  [link](https://doi.org/10.5702/massspectrometry.A0140)
+- <a id="tak26"></a>Takayama, M. *Reply to comment on "Identification of negative ion at
+  m/z 20 produced by atmospheric pressure corona discharge ionization under ambient air".*
+  Mass Spectrom. 2026, 15:A0185. [link](https://doi.org/10.5702/massspectrometry.A0185)
+- <a id="mat23"></a>Matas, E.; Moravský, L.; Ilbeigi, V.; Matejčík, S. *Negative
+  atmospheric pressure chemical ionisation of NO2 by O2-.CO2.(H2O)n studied by ion
+  mobility spectrometry.* Eur. Phys. J. D 2023, 77:21.
+  [link](https://doi.org/10.1140/epjd/s10053-023-00603-x)
+- <a id="ewi09"></a>Ewing, R. G.; Waltman, M. J. *Mechanisms for negative reactant ion
+  formation in an atmospheric pressure corona discharge.* Int. J. Ion Mobil. Spectrom.
+  2009, 12:65–72. [link](https://doi.org/10.1007/s12127-009-0019-8)
+- <a id="jok12"></a>Jokinen, T.; Sipilä, M.; Junninen, H.; Ehn, M.; Lönn, G.; Hakala, J.;
+  Petäjä, T.; Mauldin, R. L.; Kulmala, M.; Worsnop, D. R. *Atmospheric sulphuric acid and
+  neutral cluster measurements using CI-APi-TOF.* Atmos. Chem. Phys. 2012, 12:4117–4125.
+  [link](https://doi.org/10.5194/acp-12-4117-2012)
+- <a id="zha26"></a>Zhang, J.; Zhang, Y.; Koskenvaara, H.; Zhao, J.; Ehn, M. *Gas-phase
+  products from nitrate radical oxidation of five monoterpenes: insights from free-jet
+  flow-tube experiments.* Atmos. Chem. Phys. 2026, 26:3933–3949.
+  [link](https://doi.org/10.5194/acp-26-3933-2026)
+- <a id="san16"></a>Sanchez, J.; Tanner, D. J.; Chen, D.; Huey, L. G.; Ng, N. L. *A new
+  technique for the direct detection of HO2 radicals using bromide chemical ionization
+  mass spectrometry (Br-CIMS): initial characterization.* Atmos. Meas. Tech. 2016,
+  9:3851–3861. [link](https://doi.org/10.5194/amt-9-3851-2016)
+- <a id="ris19"></a>Rissanen, M. P.; Mikkilä, J.; Iyer, S.; Hakala, J. *Multi-scheme
+  chemical ionization inlet (MION) for fast switching of reagent ion chemistry in
+  atmospheric pressure chemical ionization mass spectrometry (CIMS) applications.* Atmos.
+  Meas. Tech. 2019, 12:6635–6646. [link](https://doi.org/10.5194/amt-12-6635-2019)
+- <a id="dor21"></a>Dörich, R.; Eger, P.; Lelieveld, J.; Crowley, J. N. *Iodide CIMS and
+  m/z 62: the detection of HNO3 as NO3- in the presence of PAN, peroxyacetic acid and
+  ozone.* Atmos. Meas. Tech. 2021, 14:5319–5332.
+  [link](https://doi.org/10.5194/amt-14-5319-2021)
+- <a id="gom22"></a>Gómez Martín, J. C.; Lewis, T. R.; James, A. D.; Saiz-Lopez, A.;
+  Plane, J. M. C. *Insights into the chemistry of iodine new particle formation: the role
+  of iodine oxides and the source of iodic acid.* J. Am. Chem. Soc. 2022, 144:9240–9253.
+  [link](https://doi.org/10.1021/jacs.1c12957)
+- <a id="shc24"></a>Shcherbinin, A.; Finkenzeller, H.; Mikkilä, J.; Kontro, J.; Vinkvist,
+  N.; Kangasluoma, J.; Rissanen, M. *From hydrocarbons to highly functionalized molecules
+  in a single measurement: comprehensive analysis of complex gas mixtures by
+  multi-pressure chemical ionization mass spectrometry.* Anal. Chem. 2024, 96:19926–19932.
+  [link](https://doi.org/10.1021/acs.analchem.4c03859)
+- <a id="shc25"></a>Shcherbinin, A. et al. *Uronium from X-ray-desorbed urea enables
+  sustainable ultrasensitive detection of amines and semivolatiles.* Anal. Chem. 2025,
+  97:21282–21290. [link](https://doi.org/10.1021/acs.analchem.5c02239)
+- <a id="easyic"></a>Thermo Fisher Scientific. *EASY-ETD and EASY-IC Ion Sources User
+  Guide, for the Orbitrap Tribrid series mass spectrometer.* Document 80000-97515,
+  Revision A, 2018.
+  [link](https://documents.thermofisher.com/TFS-Assets/CMD/manuals/man-80000-97515-easy-etd-ic-ion-sources-user-man8000097515-en.pdf)
+- <a id="leb23"></a>Leborgne, C.; Meudec, E.; Sommerer, N.; Masson, G.; Mouret, J.-R.;
+  Cheynier, V. *Untargeted metabolomics approach using UHPLC-HRMS to unravel the impact of
+  fermentation on color and phenolic composition of rose wines.* Molecules 2023, 28:5748.
+  [link](https://doi.org/10.3390/molecules28155748)
+- <a id="ash26"></a>Ashbacher, S. M.; Xie, D.-Y.; Muddiman, D. C. *Differentiation of
+  wild-type and PAP1-overexpressing tobacco by volatile organic compound profiling using
+  TP-SESI mass spectrometry.* Anal. Bioanal. Chem. 2026, 418:5577–5585.
+  [link](https://doi.org/10.1007/s00216-026-06630-y)
+- <a id="mar16"></a>Martens, J.; Berden, G.; Oomens, J. *Structures of fluoranthene
+  reagent anions used in electron transfer dissociation and proton transfer reaction
+  tandem mass spectrometry.* Anal. Chem. 2016, 88:6126–6129.
+  [link](https://doi.org/10.1021/acs.analchem.6b01483)
+- <a id="wes18"></a>West, B.; Rodriguez Castillo, S.; Sit, A.; Mohamad, S.; Lowe, B.;
+  Joblin, C.; Bodi, A.; Mayer, P. M. *Unimolecular reaction energies for polycyclic
+  aromatic hydrocarbon ions.* Phys. Chem. Chem. Phys. 2018, 20:7195–7205.
+  [link](https://doi.org/10.1039/c7cp07369k)
+- <a id="nist"></a>Linstrom, P. J.; Mallard, W. G. (eds.). *NIST Chemistry WebBook, NIST
+  Standard Reference Database Number 69*; electron-ionization spectra from the NIST Mass
+  Spectrometry Data Center. [link](https://doi.org/10.18434/T4D303)
+- <a id="wan03"></a>Wang, T.; Španěl, P.; Smith, D. *Selected ion flow tube, SIFT, studies
+  of the reactions of H3O+, NO+ and O2+ with eleven C10H16 monoterpenes.* Int. J. Mass
+  Spectrom. 2003, 228:117–126. [link](https://doi.org/10.1016/S1387-3806(03)00271-9)
+- <a id="scn03"></a>Schoon, N.; Amelynck, C.; Vereecken, L.; Arijs, E. *A selected ion
+  flow tube study of the reactions of H3O+, NO+ and O2+ with a series of monoterpenes.*
+  Int. J. Mass Spectrom. 2003, 229:231–240.
+  [link](https://doi.org/10.1016/S1387-3806(03)00343-9)
+- <a id="mat17"></a>Materić, D.; Lanza, M.; Sulzer, P.; Herbig, J.; Bruhn, D.; Gauci, V.;
+  Mason, N.; Turner, C. *Selective reagent ion-time of flight-mass spectrometry study of
+  six common monoterpenes.* Int. J. Mass Spectrom. 2017, 421:40–50.
+  [link](https://doi.org/10.1016/j.ijms.2017.06.003)
+- <a id="tan03"></a>Tani, A.; Hayward, S.; Hewitt, C. N. *Measurement of monoterpenes and
+  related compounds by proton transfer reaction-mass spectrometry (PTR-MS).* Int. J. Mass
+  Spectrom. 2003, 223-224:561–578. [link](https://doi.org/10.1016/S1387-3806(02)00880-1)
+- <a id="kar18"></a>Kari, E.; Miettinen, P.; Yli-Pirilä, P.; Virtanen, A.; Faiola, C. L.
+  *PTR-ToF-MS product ion distributions and humidity-dependence of biogenic volatile
+  organic compounds.* Int. J. Mass Spectrom. 2018, 430:87–97.
+  [link](https://doi.org/10.1016/j.ijms.2018.05.003)
+- <a id="ish26"></a>Ishihara, R.; Fukuyama, D.; Sekimoto, K. *Interpretation of
+  alpha-pinene mass spectra in APCI-like ambient mass spectrometry using GC-coupled
+  atmospheric pressure corona discharge ionization.* Mass Spectrom. 2026, 15:A0190.
+  [link](https://doi.org/10.5702/massspectrometry.A0190)
+- <a id="sch03"></a>Schlosser, A.; Volkmer-Engert, R. *Volatile polydimethylcyclosiloxanes
+  in the ambient laboratory air identified as source of extreme background signals in
+  nanoelectrospray mass spectrometry.* J. Mass Spectrom. 2003, 38:523–525.
+  [link](https://doi.org/10.1002/jms.465)
+- <a id="ver08"></a>Veres, P.; Roberts, J. M.; Warneke, C.; Welsh-Bon, D.; Zahniser, M.;
+  Herndon, S.; Fall, R.; de Gouw, J. *Development of negative-ion proton-transfer
+  chemical-ionization mass spectrometry (NI-PT-CIMS) for the measurement of gas-phase
+  organic acids in the atmosphere.* Int. J. Mass Spectrom. 2008, 274:48–55.
+  [link](https://doi.org/10.1016/j.ijms.2008.04.032)
+- <a id="ber11"></a>Bertram, T. H.; Kimmel, J. R.; Crisp, T. A.; Ryder, O. S.; Yatavelli,
+  R. L. N.; Thornton, J. A.; Cubison, M. J.; Gonin, M.; Worsnop, D. R. *A
+  field-deployable, chemical ionization time-of-flight mass spectrometer.* Atmos. Meas.
+  Tech. 2011, 4:1471–1479. [link](https://doi.org/10.5194/amt-4-1471-2011)
 
 [kf06]: #kf06
 [kf07]: #kf07
@@ -859,3 +1147,46 @@ batch ledger* puts Mascope's own view back.
 [hy15]: #hy15
 [wa21]: #wa21
 [platt]: #platt
+[good70]: #good70
+[good70b]: #good70b
+[sha66]: #sha66
+[sha69]: #sha69
+[sab12]: #sab12
+[sab13]: #sab13
+[kol04]: #kol04
+[dus25]: #dus25
+[han95]: #han95
+[pfe20]: #pfe20
+[ska04]: #ska04
+[ska07]: #ska07
+[nag06]: #nag06
+[sek11]: #sek11
+[sek12]: #sek12
+[fuj23]: #fuj23
+[asa23]: #asa23
+[tak26]: #tak26
+[mat23]: #mat23
+[ewi09]: #ewi09
+[jok12]: #jok12
+[zha26]: #zha26
+[san16]: #san16
+[ris19]: #ris19
+[dor21]: #dor21
+[gom22]: #gom22
+[shc24]: #shc24
+[shc25]: #shc25
+[easyic]: #easyic
+[leb23]: #leb23
+[ash26]: #ash26
+[mar16]: #mar16
+[wes18]: #wes18
+[nist]: #nist
+[wan03]: #wan03
+[scn03]: #scn03
+[mat17]: #mat17
+[tan03]: #tan03
+[kar18]: #kar18
+[ish26]: #ish26
+[sch03]: #sch03
+[ver08]: #ver08
+[ber11]: #ber11

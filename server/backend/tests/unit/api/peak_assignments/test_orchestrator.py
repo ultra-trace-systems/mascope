@@ -518,6 +518,76 @@ class TestTheJudgedLedger:
             "unapplied": 0,
         }
 
+    @pytest.mark.asyncio
+    async def test_a_fragment_of_a_committed_parent_is_persisted_as_the_sources(self):
+        # The fragment claim reads the stages' commits before anything judges
+        # them, and the peak it takes is written once, as the source's ion.
+        from mascope_backend.api.new.peak_assignments.config import (
+            PeakAssignmentConfig,
+        )
+        from mascope_backend.api.new.peak_assignments.engine import FRAGMENTS_KEY
+        from mascope_tools.composition.reagents import FragmentIon, FragmentLadder
+
+        ladder = FragmentLadder(
+            parent="C6H12O6",
+            label="a stated parent",
+            fragments=(FragmentIon("C3H7O3", 1, "[C3H7O3]+", literature_ratio=1.0),),
+            references=("nist",),
+        )
+        fragment = _isotope_row(
+            target_isotope_id="ti-3",
+            target_ion_id="ion-2",
+            target_compound_id="tc-2",
+            compound_formula="C3H6O3",
+            ion_formula="C3H7O3+",
+            mz=91.0390,
+            relative_abundance=1.0,
+            sample_peak_id="p3",
+            sample_peak_intensity=5000.0,
+        )
+        # A reference list's reading, which the claim may take: a compound of
+        # the target library keeps its peak.
+        fragment["target_compound_id"] = None
+        fragment["reference_identities"] = [{"name": "lactic acid", "source": "a list"}]
+        peaks = _peaks_df(
+            [
+                ("p1", 181.0707, 10000.0),
+                ("p2", 182.0741, 660.0),
+                ("p3", 91.0390, 5000.0),
+            ]
+        )
+        recorder = _Recorder()
+        _start(_patches(recorder, peaks, _stage_a_rows() + [fragment]))
+        patch(f"{_MOD}.fragment_ladders_for", return_value=(ladder,)).start()
+
+        await _run(PeakAssignmentConfig(run_untargeted=False))
+
+        by_peak = {row["sample_peak_id"]: row for row in recorder.rows}
+        assert len(recorder.rows) == len(by_peak) == len(peaks)
+        assert by_peak["p1"]["role"] == "M0"
+        claimed = by_peak["p3"]
+        assert (claimed["role"], claimed["assigned_formula"]) == ("reagent", None)
+        assert claimed["ion_formula"] == "C3H7O3"
+        assert claimed["provenance"]["reagent"]["family"] == "fragment"
+        assert claimed["provenance"]["reagent"]["parent"]["formula"] == "C6H12O6"
+        recorded = recorder.recorded_configs()[-1][FRAGMENTS_KEY]
+        assert (recorded["claimed"], recorded["ladders"]) == (1, ["a stated parent"])
+
+    @pytest.mark.asyncio
+    async def test_a_profile_with_no_ladder_records_no_claim(self):
+        from mascope_backend.api.new.peak_assignments.config import (
+            PeakAssignmentConfig,
+        )
+        from mascope_backend.api.new.peak_assignments.engine import FRAGMENTS_KEY
+
+        peaks = _peaks_df([("p1", 181.0707, 10000.0), ("p2", 182.0741, 660.0)])
+        recorder = _Recorder()
+        _start(_patches(recorder, peaks, _stage_a_rows()))
+
+        await _run(PeakAssignmentConfig(run_untargeted=False))
+
+        assert FRAGMENTS_KEY not in recorder.recorded_configs()[-1]
+
 
 class TestAListHitMeetsTheGrid:
     """Every peak a list read is put to the formula search, which may keep the
