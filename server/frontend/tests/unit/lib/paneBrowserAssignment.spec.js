@@ -1246,6 +1246,171 @@ describe('PaneBrowserAssignment reference-list column', () => {
   })
 })
 
+// One row per neutral (step 3.4d, the plan owner's request in the build): a
+// neutral committed through more than one channel is one row, headed by its
+// strongest reading, with the others under it when the group is opened.
+describe('PaneBrowserAssignment grouping by formula', () => {
+  beforeEach(() => {
+    runList = [{ peak_assignment_run_id: 'run-1', status: 'completed' }]
+  })
+  afterEach(() => vi.clearAllMocks())
+
+  /** One reading of a neutral through `mechanism`. */
+  const reading = (
+    id,
+    mechanism,
+    { mz, tier = 'assigned', fit = 0.9, formula = 'C10H16O' } = {}
+  ) => {
+    const fam = family({
+      id,
+      mz,
+      intensity: 100,
+      formula,
+      tier,
+      fit,
+      children: [{ sample_peak_mz: mz + 1.003 }]
+    })
+    fam.parent.ionization_mechanism_id = mechanism
+    return fam
+  }
+  // One neutral through three channels, the proton-transfer reading the
+  // strongest; and another neutral through one.
+  const protonated = () => reading('h', 'm-h', { mz: 153.127, fit: 0.95 })
+  const ammoniated = () => reading('nh4', 'm-nh4', { mz: 170.154, tier: 'candidate', fit: 0.9 })
+  const sodiated = () => reading('na', 'm-na', { mz: 175.109, tier: 'candidate', fit: 0.6 })
+  const other = () => reading('o', 'm-h', { mz: 137.132, formula: 'C10H16' })
+
+  async function grouped(...families) {
+    seed(...families)
+    const wrapper = await mountPane()
+    wrapper.vm.groupByFormula = true
+    await wrapper.vm.$nextTick()
+    return wrapper
+  }
+  const ids = (wrapper) => wrapper.vm.rows.map((row) => row.peak_assignment_id)
+
+  it('lists a row per ion until it is switched on', async () => {
+    seed(protonated(), ammoniated(), other())
+    const wrapper = await mountPane()
+
+    expect(wrapper.vm.groupByFormula).toBe(false)
+    expect(ids(wrapper).sort()).toEqual(['h', 'nh4', 'o'])
+  })
+
+  it('makes a neutral one row, headed by its strongest reading', async () => {
+    const wrapper = await grouped(ammoniated(), sodiated(), protonated(), other())
+
+    expect(ids(wrapper)).toEqual(['h', 'o'])
+    const head = wrapper.vm.rows[0]
+    // Tier first, then fit: the two candidates follow in that order.
+    expect(head.channelRows.map((row) => row.peak_assignment_id)).toEqual(['nh4', 'na'])
+  })
+
+  it('shows the other channels under the head when the group is opened', async () => {
+    const wrapper = await grouped(ammoniated(), sodiated(), protonated(), other())
+
+    wrapper.vm.toggleGroup(wrapper.vm.rows[0].groupKey)
+    await wrapper.vm.$nextTick()
+    expect(ids(wrapper)).toEqual(['h', 'nh4', 'na', 'o'])
+    expect(
+      wrapper.vm.rows.filter((row) => row.isChannel).map((row) => row.peak_assignment_id)
+    ).toEqual(['nh4', 'na'])
+
+    wrapper.vm.toggleGroup(wrapper.vm.rows[0].groupKey)
+    await wrapper.vm.$nextTick()
+    expect(ids(wrapper)).toEqual(['h', 'o'])
+  })
+
+  it("puts each channel's isotopologues under it, a step further in", async () => {
+    const wrapper = await grouped(protonated(), ammoniated())
+    wrapper.vm.showIsotopologues = true
+    wrapper.vm.toggleGroup(wrapper.vm.rows[0].groupKey)
+    await wrapper.vm.$nextTick()
+
+    expect(ids(wrapper)).toEqual(['h', 'h-c0', 'nh4', 'nh4-c0'])
+    const byId = new Map(wrapper.vm.rows.map((row) => [row.peak_assignment_id, row]))
+    expect(byId.get('h-c0').underChannel).toBe(false)
+    expect(byId.get('nh4-c0').underChannel).toBe(true)
+  })
+
+  it('groups what the filters leave', async () => {
+    const wrapper = await grouped(protonated(), ammoniated(), sodiated())
+
+    wrapper.vm.toggleTier('candidate')
+    await wrapper.vm.$nextTick()
+    // The assigned reading is filtered out, so the stronger candidate heads.
+    expect(ids(wrapper)).toEqual(['nh4'])
+    expect(wrapper.vm.rows[0].channelRows.map((row) => row.peak_assignment_id)).toEqual(['na'])
+  })
+
+  it('never groups a row that names no neutral of the sample', async () => {
+    const reagent = family({ id: 'br', mz: 78.918, intensity: 9, formula: null, role: 'reagent' })
+    reagent.parent.ion_formula = 'Br-'
+    const reagent2 = family({ id: 'br2', mz: 80.916, intensity: 9, formula: null, role: 'reagent' })
+    reagent2.parent.ion_formula = 'Br-'
+    const wrapper = await grouped(reagent, reagent2)
+
+    expect(ids(wrapper).sort()).toEqual(['br', 'br2'])
+    expect(wrapper.vm.rows.every((row) => !row.channelRows)).toBe(true)
+  })
+
+  it('selects the head for a peak of a folded group', async () => {
+    focusedPeak = { peak_id: 'p-nh4' }
+    try {
+      const wrapper = await grouped(protonated(), ammoniated())
+      expect(wrapper.vm.selectedRow?.peak_assignment_id).toBe('h')
+    } finally {
+      focusedPeak = null
+    }
+  })
+
+  it('offers the switch in the view menu', async () => {
+    seed(protonated())
+    const wrapper = await mountPane()
+
+    expect(wrapper.find('label[for="group-formula"]').text()).toBe('Group by formula')
+    await wrapper.find('#group-formula').trigger('click')
+    expect(wrapper.vm.groupByFormula).toBe(true)
+  })
+
+  it('renders the toggle on the head, naming the other channels', async () => {
+    const tableRows = ref([])
+    seed(protonated(), ammoniated())
+    const wrapper = mount(PaneBrowserAssignment, {
+      global: {
+        directives: { tooltip: {}, help: {} },
+        stubs: {
+          ...GLOBAL_STUBS,
+          DataTable: {
+            ...GLOBAL_STUBS.DataTable,
+            watch: {
+              value: { handler: (value) => (tableRows.value = value), immediate: true }
+            }
+          },
+          Column: {
+            props: ['field'],
+            setup: () => ({ rows: tableRows }),
+            template:
+              '<div class="stub-col" :data-field="field">' +
+              '<template v-for="(row, i) in rows" :key="i">' +
+              '<div class="stub-cell"><slot name="body" :data="row" /></div></template></div>'
+          }
+        }
+      }
+    })
+    wrapper.vm.groupByFormula = true
+    await wrapper.vm.$nextTick()
+
+    const toggle = wrapper.find('[data-testid="group-toggle"]')
+    expect(toggle.text()).toBe('+1')
+    expect(toggle.attributes('aria-expanded')).toBe('false')
+    await toggle.trigger('click')
+    expect(wrapper.find('[data-testid="group-toggle"]').attributes('aria-expanded')).toBe('true')
+    // The channel's row reads as the same neutral, under its head.
+    expect(wrapper.find('.channel-cell').text()).toContain('C10H16O')
+  })
+})
+
 describe('PaneBrowserAssignment header and controls', () => {
   beforeEach(() => {
     runList = [{ peak_assignment_run_id: 'run-1', status: 'completed' }]

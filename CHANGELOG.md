@@ -61,6 +61,15 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   Ledger rows carry it as `reference_listing` in the API (assignment quality
   plan, step 3.4d).
 
+- **The peak browser can show a neutral as one row.** A compound committed
+  through more than one ionization channel - `[M+H]+` and `[M+NH4]+`, `[M-H]-`
+  and `[M+Br]-` - was a row per ion, scattered through the ledger by m/z.
+  *Group by formula*, in the ledger's view menu, makes it one row headed by its
+  strongest reading, with the other readings a click away under it, each
+  keeping its own tier and verdict. Off by default; the filters apply before
+  the grouping, and the counts still count readings (assignment quality plan,
+  step 3.4d).
+
 - **A reference list is read through the channels a run opens.** Stage A
   matched a list's compounds only through the ionization mechanisms the
   sample's mode declares, so on a charge-transfer source, whose mode declares

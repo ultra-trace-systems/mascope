@@ -712,6 +712,17 @@ seen at another isotope, so it takes the M0's answer and loses the top tier with
 the inspector shows the M0's reasons beneath its own. What was found about its own line -
 in doubt, off its M0, read as the M0's line - is listed above that.
 
+The ledger lists each reading of a neutral as a row of its own, at its own m/z, so a
+compound seen through two channels is two rows far apart in the table. **Group by
+formula**, in the view menu behind the cog at the end of the tier-chip row, makes it one:
+the neutral's strongest reading heads the row (the higher tier, then the better fit), and
+the arrow and count beside its ionization open the other readings under it, each with its
+own m/z, tier and verdict, and with its own isotopologues when those are unfolded. The
+tier chips and the verdict filter apply to each reading before it is grouped, so a
+filtered-out reading leaves the next one to head the row, and the counts above the ledger
+still count readings. A reagent's ion or a peak nothing explained names no neutral of the
+sample and is never grouped.
+
 **Beside the reasons.** The peak inspector also names what the row is, and shows two
 measurements the reasons read.
 
