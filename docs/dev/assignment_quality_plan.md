@@ -56,7 +56,7 @@ dataset's sets G to J, the chemist's reading of 2026-09-24 (decision 21).
 | 3.4 - an opportunistic channel needs a second channel | - | planned |
 | 3.4b - one peak is not enough | #2212 | measured 2026-09-25 (pass 9, develop `ecbceb593`, rule set 9): G12 at 0 on every set, and every assigned row from the search names a second channel, a second line or a list. What the rule took, as assigned rows per file and as intensity of the rows that fell, of the set's monoisotopic total: G without reagent ion 324 to 232 and 1.7%, with reagent ion 116 to 87 and 0.8%, I+ 36 to 31 and 0.4%, I- 3 to 0 and 10.6% (14 of its 16 assigned rows, the nitrogen-rich C2 formulas through the bare sign on one line each, the one set outside the 5% line and 3.6's first target), K 60 to 54 and 0.5%, K3 27 to 21 and 0.1%, L 119 to 113 and 0.1%, C 121 to 73 and 4.9%, C2 52 to 28 and 4.8%; J reported: 108 to 61 per file and 30.2 to 28.7% of intensity at assigned, the trigger row at m/z 455.0 now candidate in both files that had it assigned. G2 read on C: the reference's unconfirmed share of assigned rows 13.1 to 8.8%; on C2 19.8 to 4.8%. Eight rows on G without reagent ion lost their monoisotopic row to a neighbour's claim under the lone-neighbour allowance. The untracked-line reading cost 11 rows across every set (5, 1, 2, 2, 1 on G, G with reagent ion, J, K, L) against some 9,000 rows with no line at all, so the call the build raised is moot |
 | 3.4c - measure an alternative before committing | - | planned, from the plan owner's reading of 2026-09-25: a close alternative from the batch ledger shows no fit, plausibility or tier before "use this" pins it |
-| 3.4d - the columns of a tiering still in progress | - | planned, from the plan owner's notes of 2026-09-26: the peak browser gains a reference-list column, the calibrated probability leaves the browser and the inspector while its curve is provisional, and the tier column says the tiering is still being developed |
+| 3.4d - the columns of a tiering still in progress | #2223 | built and merged 2026-09-26 (develop `85162ac4f`), the two calls decided as built, plus *group by formula* from the plan owner's request during the build; read in the browser on the testbed once a batch ledger is rebuilt, pass 11 reads the rest. Built: the listed-as column in both ledgers, the probability hidden while its curve is provisional, the provisional mark on the tier surfaces, and the batch ledger reading a reagent anchor by majority of its members (3.3c's follow-up) |
 | 3.5 - calibrants below the brightest lines, an offset term, and the low-mass bend (calibration node) | - | planned |
 | 3.5b - the envelope's tolerance, fitted per run | - | planned, from the plan owner's reading of 2026-09-25 and the pass-9 ledgers: the fit allows a clean isotope line 5% of its predicted share, the Orbitrap misses by a median 7% and a tenth of committed envelopes by 27% or more, and a row with three lines, two channels and a list sits below assignability on a fit of 41% |
 | 3.6 - priors and the dataset's context | - | planned |
@@ -2090,7 +2090,9 @@ touches Stage A and neither the reagent pass nor the browser.
   consensus gains a role and an ion where its members carry one and no
   formula, the anchor's lines fold under it as a sample's do, and the
   chip counts it under its role. S; rides with 3.4d, which rewrites that
-  ledger's columns.
+  ledger's columns. Built there (#2223); the role is taken by majority of
+  the members rather than only where none carries a formula, as 3.4d's
+  as-built note records.
 
 ### 3.3d Source-solvent clusters
 
@@ -2449,6 +2451,37 @@ touches Stage A and neither the reagent pass nor the browser.
   their tag; no probability anywhere in the app; the tier header and the
   inspector's tier row read provisional. Tiers and metrics unchanged on
   every set.
+- **As built (#2223; the two calls the build raised, decided on the PR on
+  2026-09-26).** The column, the probability's removal and the marker as
+  specified; the channel-count marker that sat beside the probability now
+  sits beside the ionization it counts. The batch-peaks ledger reads a
+  reagent anchor as 3.3c's follow-up asked: a claimed row registers its
+  ion as a formula-less entry, a reagent line names its ion's anchor as an
+  isotopologue names its M0, the consensus carries `consensus_role` (a
+  nullable column on the anchor and on a run's snapshot of it, with no
+  backfill, so a ledger folded before this reads its reagent anchors once
+  rebuilt), the sample's assigned count leaves claimed members out, and
+  the export carries the role. And a fourth change the plan owner asked
+  for during the build: *group by formula*, a switch in the sample
+  ledger's view menu, off by default, that makes a neutral committed
+  through several channels one row headed by its strongest reading (tier,
+  then fit) with the other readings a click away under it, each keeping
+  its own m/z, tier, verdict and isotopologues; the filters apply before
+  the grouping, the counts still count readings, and a source ion is
+  never grouped.
+  - *The role takes an anchor by majority.* The follow-up's "where its
+    members carry one and no formula" would let one member's neutral
+    reading hide a claim the rest of the batch made: on the demo's bromide
+    batch the older engine read BrO-, Br2- and Br3- as the neutrals O, Br
+    and Br2 through [M+Br]- in 79 of 80 samples, and one run by the
+    current engine claimed them. An anchor reads as the source's ion where
+    more of its members were claimed than assigned a formula, a tie stays
+    with the formula, and a pin still wins; a batch folded by the current
+    engine alone is unchanged, since every member is claimed.
+  - *The listing's tags are the union over every identity the run
+    matched*, with the total of names, as the inspector's field shows
+    them, rather than the first identity's alone; the step named that
+    field as the reference.
 - **Size.** S. After 3.3c, since both rewrite the browser pane; the
   probability's removal and the marker are one commit, the column another,
   and 3.3c's follow-up, the batch ledger reading a reagent anchor as the
