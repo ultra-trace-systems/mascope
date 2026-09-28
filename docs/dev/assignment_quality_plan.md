@@ -57,6 +57,10 @@ dataset's sets G to J, the chemist's reading of 2026-09-24 (decision 21).
 | 3.4b - one peak is not enough | #2212 | measured 2026-09-25 (pass 9, develop `ecbceb593`, rule set 9): G12 at 0 on every set, and every assigned row from the search names a second channel, a second line or a list. What the rule took, as assigned rows per file and as intensity of the rows that fell, of the set's monoisotopic total: G without reagent ion 324 to 232 and 1.7%, with reagent ion 116 to 87 and 0.8%, I+ 36 to 31 and 0.4%, I- 3 to 0 and 10.6% (14 of its 16 assigned rows, the nitrogen-rich C2 formulas through the bare sign on one line each, the one set outside the 5% line and 3.6's first target), K 60 to 54 and 0.5%, K3 27 to 21 and 0.1%, L 119 to 113 and 0.1%, C 121 to 73 and 4.9%, C2 52 to 28 and 4.8%; J reported: 108 to 61 per file and 30.2 to 28.7% of intensity at assigned, the trigger row at m/z 455.0 now candidate in both files that had it assigned. G2 read on C: the reference's unconfirmed share of assigned rows 13.1 to 8.8%; on C2 19.8 to 4.8%. Eight rows on G without reagent ion lost their monoisotopic row to a neighbour's claim under the lone-neighbour allowance. The untracked-line reading cost 11 rows across every set (5, 1, 2, 2, 1 on G, G with reagent ion, J, K, L) against some 9,000 rows with no line at all, so the call the build raised is moot |
 | 3.4c - measure an alternative before committing | - | planned, from the plan owner's reading of 2026-09-25: a close alternative from the batch ledger shows no fit, plausibility or tier before "use this" pins it |
 | 3.4d - the columns of a tiering still in progress | #2223 | built and merged 2026-09-26 (develop `85162ac4f`), the two calls decided as built, plus *group by formula* from the plan owner's request during the build; read in the browser on the testbed once a batch ledger is rebuilt, pass 11 reads the rest. Built: the listed-as column in both ledgers, the probability hidden while its curve is provisional, the provisional mark on the tier surfaces, and the batch ledger reading a reagent anchor by majority of its members (3.3c's follow-up) |
+| 3.4e - an expected line that is absent | - | planned, from the plan owner's notes of 2026-09-26 reading develop `85162ac4f` on the testbed: a row whose predicted envelope holds a line the spectrum should have shown and does not is capped at candidate, no second channel lifting it; the inspector and the chart show the absent lines; gate G13 |
+| 3.4f - a peak that is not separated | - | planned, from the same notes: a row whose peak the instrument did not separate from a neighbour is capped at candidate unless a separated partner channel commits the neutral; gate G14; the TOF sets |
+| 3.4g - the chart draws each peak in the trace's unit, and a lone M0 | - | planned, from the same notes: the TOF sticks overshoot the trace, and a focused peak with no isotopologue row gets no theoretical position drawn |
+| 3.4h - the inspector links the other channels, and the listing column folds | - | planned, from the same notes: the corroboration badge links the peaks of the other channels; the listed-as column folds to a mark with a switch for the full column |
 | 3.5 - calibrants below the brightest lines, an offset term, and the low-mass bend (calibration node) | - | planned |
 | 3.5b - the envelope's tolerance, fitted per run | - | planned, from the plan owner's reading of 2026-09-25 and the pass-9 ledgers: the fit allows a clean isotope line 5% of its predicted share, the Orbitrap misses by a median 7% and a tenth of committed envelopes by 27% or more, and a row with three lines, two channels and a list sits below assignability on a fit of 41% |
 | 3.6 - priors and the dataset's context | - | planned |
@@ -2486,6 +2490,137 @@ touches Stage A and neither the reagent pass nor the browser.
   probability's removal and the marker are one commit, the column another,
   and 3.3c's follow-up, the batch ledger reading a reagent anchor as the
   ion it is, a third.
+
+### 3.4e An expected line that is absent
+
+- **What.** A demote rule of the tiering pass, beside `lone_peak`: a
+  monoisotopic row whose predicted envelope holds a line the detectability
+  gate says the spectrum should have shown, and which the spectrum does
+  not hold, is capped at candidate with the reason `absent_line`, naming
+  the line, its predicted share and the share the gate asked for. The gate
+  is the fit's own (`DETECT_SNR_K` against the peak's signal-to-noise,
+  `REL_DETECT_NO_SNR` without one), the envelope is the one
+  `envelope_claims` predicts for the row, and the lines are read off the
+  run's spectrum snapshot as the mass gate reads them, within the
+  tolerance 3.5b fits. No second channel lifts the cap: a second channel
+  says the neutral is in the sample, and cannot put a bromine line into a
+  spectrum that lacks one. Every committed monoisotopic row is asked, a
+  Stage A row and a hand assignment included, since the statement is about
+  the spectrum and not about who named the formula; the fit's own refusal
+  (`pattern_has_required_lines`, the ion's line and the lead line) stays
+  as it is, and this rule reaches the lines the fit only charges. Beside
+  the rule, the absence becomes visible: the inspector's isotopologue
+  table lists the predicted lines that were not found under the found
+  ones, with their predicted m/z and share and the words *not found*, and
+  the chart's theoretical envelope draws them as empty circles at the
+  predicted heights, so the detail carries the row's predicted envelope
+  (`predicted_mz`, `predicted_share`, found or not) for the focused row.
+- **Why.** The plan owner's note of 2026-09-26: in bromide mode a row
+  read through `[M+Br]-` kept its tier with its `[81Br]` line, half the
+  ion's signal, absent from the spectrum, because a second channel
+  committed the neutral. 3.4b's second-channel escape was written for a
+  lone line, not for a line that should have been there and was not; the
+  fit charges the absence (the v2 score), and the bands can still put the
+  row at assigned. And the table showed only what was found, so the
+  absence had to be inferred from what was not listed.
+- **Where.** `tiering.py` (the reason constant, an `absent_line_reason`
+  beside `lone_peak_reason`, reading the row's predicted envelope and the
+  spectrum lines the pass already holds), the reason in provenance and the
+  detail's envelope, `PanePeakAssign.vue` (the table's absent rows),
+  `ChartSampleSpectrum/data.js` (the envelope drawn from the prediction
+  rather than from the found rows, which 3.4g also needs), the
+  how-it-works page and the tiers help, `CHANGELOG.md`; `test_tiering.py`
+  (a bromine row capped on its absent `81Br` line, a second channel not
+  lifting it, a line under the gate ignored, a curated row asked), the
+  inspector and chart specs.
+- **Verify.** G13 at 0 on every set. On D, E and F the assigned rows that
+  move, ten of them read by hand against the spectrum; the chlorine
+  compounds on the sets that hold them; no reagent row moves; G1 and G2
+  as readings.
+- **Size.** M. After 3.5b, whose fitted tolerance decides what "not
+  found" means; beside 3.4f.
+
+### 3.4f A peak that is not separated
+
+- **What.** A demote rule of the tiering pass: a row whose peak the
+  instrument did not separate from a neighbouring peak, a neighbour within
+  two widths of it (the width from the peak's own `resolution`, m/z over
+  full width at half maximum, as the peak picker records it) that is not a
+  line of the row's own envelope, is capped at candidate with the reason
+  `unresolved_peak`, naming the neighbour, its distance in widths and its
+  height against the peak's. One escape: a second channel committing the
+  neutral whose own peak is separated, read through the same test, since
+  a partner the instrument did not separate either corroborates a mass it
+  did not measure. A list naming the compound is not an escape, for the
+  reason 3.4e gives: the statement is about the measurement. Two widths
+  is the starting value; the step reads E, F and J by hand at one and a
+  half, two and three widths before it is fixed, and records the reading.
+- **Why.** The plan owner's note of 2026-09-26: on the TOF, heavily
+  overlapping peaks reach assigned when another channel supports the
+  formula, and that channel's peak may be as overlapped. A centroid and a
+  height read off an unresolved pair carry neither the mass nor the
+  intensity the fit scores, and the bands cannot know: the candidate
+  density rule asks about formulas the mass window cannot separate, not
+  about peaks the instrument did not.
+- **Where.** `tiering.py` (the rule and its reason; the spectrum lines the
+  pass holds gain each peak's width, which the peak table carries), the
+  cross-channel record (the partner's separation), the inspector (the
+  neighbour named beside the reason), the how-it-works page, the tiers
+  help, `CHANGELOG.md`; `test_tiering.py` (an overlapped peak capped, a
+  separated partner lifting it, an overlapped partner not, an envelope
+  line not counted as a neighbour, a resolved Orbitrap pair untouched).
+- **Verify.** G14 at 0 on every set: no assigned M0 row whose peak is
+  unseparated and whose neutral no separated partner channel commits. On
+  E, F and J the rows that move, read by hand; the Orbitrap sets report
+  what moves, expected next to nothing; G1 and G2 as readings.
+- **Size.** M. Beside 3.4e; the TOF sets are where it is read.
+
+### 3.4g The chart draws each peak in the trace's unit, and a lone M0
+
+- **What.** Two fixes to the sample spectrum chart. The sticks and the
+  theoretical envelope are drawn in the unit of the continuous trace: on a
+  TOF the sticks overshoot the trace, and the chart draws every peak's
+  `height` and scales sticks and trace alike by the scan count in its
+  "sum" mode, so the first thing to settle is what a TOF peak's height
+  is against the trace's counts per second, a height that is already the
+  acquisition's sum being scaled twice; the stick is then drawn in the
+  trace's unit on both instruments. And a focused peak whose assignment
+  has no isotopologue row gets its theoretical position drawn, one circle
+  at the predicted m/z and height, where the envelope trace today returns
+  nothing under two family members, so the m/z error of a lone M0 can be
+  judged by eye; with 3.4e the envelope is drawn from the prediction.
+- **Why.** The plan owner's notes of 2026-09-26: the TOF peaks are drawn
+  too high in the sum spectrum, and a peak with only its M0 assigned is
+  not shown at all.
+- **Where.** `ChartSampleSpectrum/data.js` (the stick's y, the envelope
+  trace's two-member guard) and `ChartSampleSpectrum.vue` (the sum and
+  average scaling); the peak endpoint if the height's unit is the fault;
+  `CHANGELOG.md`; a chart spec for the lone M0.
+- **Verify.** By eye on a TOF sample and an Orbitrap sample of the
+  testbed, the sticks resting on the trace in both modes; a lone M0 shows
+  its circle.
+- **Size.** S. No tier moves; can go now.
+
+### 3.4h The inspector links the other channels, and the listing column folds
+
+- **What.** Two changes to what the app shows. The inspector's
+  "Supported by N channels" badge opens the other readings of the
+  neutral, each a link that focuses that peak, read off the ledger's rows
+  by neutral formula as 3.4d's grouping reads them, since the
+  cross-channel record names channels and not peaks. And the listed-as
+  column folds to a mark: an icon, with the list's tag beside it where
+  the list carries one, whose tooltip carries the name, the list, the
+  tags and the count of further names; a switch in the view menu shows
+  the full column, folded by default, in both ledgers.
+- **Why.** The plan owner's notes of 2026-09-26: the ledger is too wide
+  with the column, and the badge names channels the reader then has to
+  find.
+- **Where.** `PanePeakAssign.vue` (the badge's popover and links),
+  `PaneBrowserAssignment.vue` and `PaneBrowserBatchPeaks.vue` (the mark,
+  the switch), `CHANGELOG.md`; the inspector and ledger specs.
+- **Verify.** In the browser: the badge's links focus the other
+  channels' peaks; the ledger's width with the column folded; the switch.
+- **Size.** S. No tier moves; can go now, beside 3.4g.
 
 ### 3.5 Calibrants below the brightest lines, an offset term, and the low-mass bend
 
@@ -4933,6 +5068,13 @@ Sets G to J, read on chemical plausibility with no reference run (decision
 - **G12, lone peaks:** the count of assigned M0 rows from the search with no
   committed isotopologue row, no second channel committing the neutral and
   no reference list naming it. Target 0 on every set.
+- **G13, absent lines:** the count of assigned M0 rows whose predicted
+  envelope holds a line the detectability gate says the spectrum should
+  have shown and the spectrum does not hold (step 3.4e). Target 0 on
+  every set.
+- **G14, unseparated peaks:** the count of assigned M0 rows whose peak the
+  instrument did not separate from a neighbour and whose neutral no
+  separated partner channel commits (step 3.4f). Target 0 on every set.
 
 | set | samples | peaks per sample | intensity assigned / candidate / reagent / unassigned | G9 | G10 | G11 | mass error, assigned rows |
 |---|---|---|---|---|---|---|---|
