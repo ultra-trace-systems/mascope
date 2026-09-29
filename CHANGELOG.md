@@ -489,6 +489,31 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   none. Run it before the method binding backfill, or run that one again
   afterwards.
 
+- **An ionization mode can belong to one instrument.** A mode left as "Every
+  instrument" behaves exactly as every mode did before. Set to an instrument, its
+  filename token is only matched against that instrument's files - so two
+  instruments can use the same token in their file names and mean a different
+  chemistry by it, and a mode only ever run on one instrument stops competing
+  for every other instrument's names. Where an instrument has its own mode for a
+  polarity and a shared mode also matches, the instrument's own wins as long as
+  its token covers the shared one - the same token, or a longer one - so one
+  scoped mode can be added without scoping everything else to keep the tokens
+  apart. The other way round is refused when it is set up: a shared token more
+  specific than an instrument's own would match the same files in that polarity
+  and leave them waiting for someone. A name carrying two unrelated tokens is
+  still left for someone to decide.
+
+  A token now has to be unique among the modes that could match one file rather
+  than unique outright: one unscoped mode per token, one per token and
+  instrument, and a scoped mode may share a token with an unscoped one.
+  Overlapping tokens stay refused whatever their polarities, as they were
+  before. The instrument is matched however its name was recorded, since the
+  same instrument arrives spelled more than one way. Set it under Ionization
+  settings, on a mode that has already routed files as well. It does not
+  restrict a mode someone picks by hand, and it cannot be set on a mode Mascope
+  ships: those carry no filename token, so a scope could not change how anything
+  routes.
+
 ### Changed
 
 - **Peak assignment still ships off, and the assignment work in these notes
