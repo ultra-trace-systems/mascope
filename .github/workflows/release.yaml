@@ -31,7 +31,7 @@ jobs:
         run: echo "version=$(git log -1 --date=format:"%Y.%m.%d" --format="%ad")-$(git rev-parse HEAD | cut -c1-7)" >> "$GITHUB_OUTPUT"
       - name: Push version tag
         id: tag_version
-        uses: mathieudutour/github-tag-action@a22cf08638b34d5badda920f9daf6e72c477b07b # v6.2
+        uses: mathieudutour/github-tag-action@af99e60ce8132224b8e6ebab5023449fe256ed46 # v7.0.0
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           release_branches: ${{ env.BRANCH }}
@@ -56,7 +56,7 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
       - name: Install uv
-        uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
+        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
         with:
           version: "0.11.2"
       - name: Build Docker images
