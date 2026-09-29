@@ -115,16 +115,20 @@ const sharePercent = new Intl.NumberFormat('en-US', {
 })
 
 /**
- * Hover text for the tag of a candidate read at another line of its ion.
+ * Hover text for the tag of a candidate read at another line of its ion. A
+ * line at the monoisotopic nominal mass has no offset worth naming.
  *
  * @param {{name: string, offset: string, share: number|null}} line see readLineOfHit
  * @returns {string} the text
  */
 function lineTooltip(line) {
-  const share = line.share != null ? `, ${sharePercent.format(line.share)} of its brightest` : ''
+  const place = [
+    line.offset !== 'M0' ? line.offset : null,
+    line.share != null ? `${sharePercent.format(line.share)} of its brightest` : null
+  ].filter(Boolean)
   return (
-    `Found at the ion's ${line.name} line (${line.offset}${share}): the peak is ` +
-    'this isotopologue of the compound, and the error is against that line'
+    `Found at the ion's ${line.name} line${place.length ? ` (${place.join(', ')})` : ''}: ` +
+    'the peak is this isotopologue of the compound, and the error is against that line'
   )
 }
 
@@ -442,14 +446,19 @@ const rows = computed(() => {
 const lineName = (line) =>
   formatIsotopeFormula(line.target_isotope_formula, line.parent.target_ion_formula) || '-'
 
-// A click on a line previews it in the spectrum chart; a click on the line
-// already previewed takes the preview away.
-function onRowClick({ data }) {
-  if (!data.parent) return
-  preview.peak = preview.peak?.key === data.key ? null : data
-}
-const rowClass = (row) =>
-  row.parent ? { 'line-row': true, 'line-previewed': preview.peak?.key === row.key } : undefined
+// The line previewed in the spectrum chart is the table's selection, so a row
+// takes focus and the keyboard reaches the lines: the arrow keys move between
+// rows, and Enter or Space previews a line as a click does. Selecting the line
+// already previewed takes the preview away. A candidate is not a line, and
+// selecting one changes nothing.
+const previewedLine = computed({
+  get: () => preview.peak ?? null,
+  set: (row) => {
+    if (!row) preview.peak = null
+    else if (row.parent) preview.peak = row
+  }
+})
+const rowClass = (row) => (row.parent ? 'line-row' : undefined)
 
 const fitPercent = new Intl.NumberFormat('en-US', {
   style: 'percent',
@@ -685,7 +694,9 @@ watch(
       v-model:expandedRows="expanded"
       :virtualScrollerOptions="{ itemSize: ROW_HEIGHT }"
       :rowClass="rowClass"
-      @row-click="onRowClick"
+      selectionMode="single"
+      :metaKeySelection="false"
+      v-model:selection="previewedLine"
       :pt="app.ui.help.top(resultsHelp)"
     >
       <Column expander />
@@ -965,7 +976,8 @@ watch(
 /* An expanded candidate's isotope line, a row under it: indented, and a click
    previews it in the spectrum chart. Its row has the expander column like
    every row, with nothing to expand, and the virtual scroller's row height,
-   which its own content would fall short of. */
+   which its own content would fall short of. A candidate's row is selectable
+   only so the keyboard can pass through it, and says so by its cursor. */
 .line-cell {
   display: inline-flex;
   align-items: baseline;
@@ -982,14 +994,12 @@ watch(
 }
 .search-pane :deep(tr.line-row) {
   height: var(--row-height);
-  cursor: pointer;
+}
+.search-pane :deep(.p-datatable-tbody > tr:not(.line-row)) {
+  cursor: default;
 }
 .search-pane :deep(tr.line-row .p-datatable-row-toggle-button) {
   visibility: hidden;
-}
-.search-pane :deep(tr.line-row.line-previewed) {
-  background: var(--p-highlight-background, rgba(127, 127, 127, 0.18));
-  color: var(--p-highlight-color, inherit);
 }
 /* The element the curation help card is registered on. It is a hook for the
    directive and nothing else, so with its glyph gone it takes up no space -

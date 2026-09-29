@@ -1314,8 +1314,8 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   and the pattern nested under the candidate was as tall as the pattern. The
   candidate's isotope lines now unfold as rows under it, the way the peak
   ledger unfolds isotopologues, each with its abundance, m/z, error and match
-  score; a click on a line still previews it in the spectrum, and sorting keeps
-  every candidate's lines under it.
+  score; a click on a line, or Enter on it from the keyboard, still previews it
+  in the spectrum, and sorting keeps every candidate's lines under it.
 
 - **The composition search answers for a wide element box under adducts far
   apart in mass.** A search enumerated every composition across the whole

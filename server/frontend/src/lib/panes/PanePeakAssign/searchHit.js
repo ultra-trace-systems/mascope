@@ -90,6 +90,9 @@ function placeInPattern(hit) {
  * Named as the peak inspector names an isotopologue row, by the isotopes it
  * substitutes (`[13C]`, `[81Br]`, `[14N]`), with the offset the hand button
  * commits it under (`isotopeOfHit`) - so the tag says what a click would write.
+ * A line can be another line at the monoisotopic one's nominal mass: a labelled
+ * reagent's unlabelled remainder with a 13C (`[13C][14N]`) sits a few
+ * milli-daltons above it, and is tagged though its offset is M0.
  *
  * @param {Object} hit a composition-search result row
  * @returns {{name: string, offset: string, share: number|null}|null} the line's
@@ -97,9 +100,10 @@ function placeInPattern(hit) {
  *   pattern gives abundances; null for a hit read at its monoisotopic line
  */
 export function readLineOfHit(hit) {
+  const placed = placeInPattern(hit)
+  if (!placed || placed.matched === placed.main) return null
   const { label } = isotopeOfHit(hit)
-  if (label === 'M0') return null
-  const { children, matched } = placeInPattern(hit)
+  const { children, matched } = placed
   const brightest = Math.max(...children.map((row) => row.relative_abundance ?? 0))
   const share =
     brightest > 0 && matched.relative_abundance != null
