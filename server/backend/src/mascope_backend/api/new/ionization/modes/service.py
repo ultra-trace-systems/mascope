@@ -72,7 +72,10 @@ async def create_ionization_mode(
     async with async_session() as session:
         # Step 1: Check for token conflicts if provided
         if ionization_mode_data.ionization_mode_token:
-            if not await token_is_unique(ionization_mode_data.ionization_mode_token):
+            if not await token_is_unique(
+                ionization_mode_data.ionization_mode_token,
+                instrument=ionization_mode_data.instrument,
+            ):
                 raise ValueError(
                     f"Ionization mode with similar token as '{ionization_mode_data.ionization_mode_token}' already exists"
                 )
@@ -114,46 +117,25 @@ async def create_ionization_mode(
 
 
 @api_controller()
-async def get_ionization_mode(
-    ionization_mode_id: str | None = None,
-    token: str | None = None,
-) -> dict:
+async def get_ionization_mode(ionization_mode_id: str) -> dict:
     """
-    Retrieves a single ionization mode either by ID or by token. One of them must be provided, but not both.
+    Retrieves a single ionization mode by ID.
 
-    Steps:
-    1. Validate input parameters to ensure that either an ID or token is provided, but not both.
-    2. Construct a query to fetch the ionization mode based on the provided parameter.
-    3. Execute the query and fetch the result.
-    4. Check if the ionization mode exists. If not, raise a NotFoundException.
-    5. Return the ionization mode's details as a dictionary.
+    By ID alone: a token no longer identifies one mode, since two instruments
+    may each have one of their own for the same token (#1463). To find the mode
+    a file belongs to, resolve its name with
+    :func:`resolve_ionization_modes_by_tokens`, which knows the instrument.
 
-    :param ionization_mode_id: Unique ID of the ionization mode to retrieve directly.
-    :param token: Token of the ionization mode to retrieve.
+    :param ionization_mode_id: Unique ID of the ionization mode to retrieve.
     :return: The requested ionization mode's details.
     """
     async with async_session() as session:
-        # Validate input parameters
-        if ionization_mode_id and token:
-            raise ValueError("Provide either ionization_mode_id or token, not both.")
-
-        if not ionization_mode_id and not token:
-            raise ValueError("Provide either ionization_mode_id or token.")
-
-        # Construct query based on parameters
-        if ionization_mode_id:
-            stmt = select(IonizationMode).where(
+        label = f"with ID {ionization_mode_id}"
+        result = await session.execute(
+            select(IonizationMode).where(
                 IonizationMode.ionization_mode_id == ionization_mode_id
             )
-            label = f"with ID {ionization_mode_id}"
-        else:  # token
-            stmt = select(IonizationMode).where(
-                IonizationMode.ionization_mode_token == token
-            )
-            label = f"with token '{token}'"
-
-        # Execute query
-        result = await session.execute(stmt)
+        )
         ionization_mode = result.scalar_one_or_none()
 
         # Check existence
@@ -275,12 +257,26 @@ async def update_ionization_mode(
             # exactly as seeded, so it reads the same on every server.
             update_data.pop("ionization_mechanism_ids", None)
 
-        # Check for token conflicts if being updated
-        new_token = update_data.get("ionization_mode_token")
-        if new_token and new_token != ionization_mode.ionization_mode_token:
-            if not await token_is_unique(new_token, ignore_id=ionization_mode_id):
+        # Check for token conflicts if the token or its scope is being
+        # updated. The scope matters as much as the token: widening a mode from
+        # one instrument to all of them can collide a token that was fine while
+        # only that instrument's names were matched against it.
+        effective_token = update_data.get(
+            "ionization_mode_token", ionization_mode.ionization_mode_token
+        )
+        effective_instrument = update_data.get("instrument", ionization_mode.instrument)
+        changed = (
+            effective_token != ionization_mode.ionization_mode_token
+            or effective_instrument != ionization_mode.instrument
+        )
+        if effective_token and changed:
+            if not await token_is_unique(
+                effective_token,
+                ignore_id=ionization_mode_id,
+                instrument=effective_instrument,
+            ):
                 raise ValueError(
-                    f"Ionization mode with similar token as '{new_token}'"
+                    f"Ionization mode with similar token as '{effective_token}'"
                     " already exists"
                 )
 
@@ -399,6 +395,16 @@ async def update_ionization_mode(
                         continue
                     case "ionization_mechanism_ids" | "ionization_mode_polarity":
                         # Mechanisms and polarity can be updated (triggers rematch)
+                        continue
+                    case "instrument":
+                        # The scope only decides which file names this mode's
+                        # token is matched against from now on. It renames
+                        # nothing - an acquisition batch is named after the
+                        # mode, not its scope - and rebinds nothing, since a
+                        # sample item holds the mode it was bound to. Refusing
+                        # it here would make the feature unreachable on exactly
+                        # the modes it is for: any mode that has ever routed a
+                        # file has acquisition batches.
                         continue
                     case _:
                         if getattr(ionization_mode, key) != value:

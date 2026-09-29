@@ -219,6 +219,34 @@ async def test_a_seeded_mode_cannot_be_deleted(admin_client, system_mode):
     assert resp.status_code == 400
 
 
+@pytest.mark.asyncio
+async def test_a_seeded_mode_cannot_be_scoped_to_an_instrument(
+    admin_client, system_mode, sys_mechanisms, async_session_factory
+):
+    """The scope filters token matching, and a seeded mode has no token.
+
+    It ships without one and cannot be given one, so scoping it could not
+    change how anything routes. Refused rather than accepted-and-inert, so the
+    setting never reads as if it were doing something. It belongs among the
+    deployment's own fields on the day a seeded mode can carry a token.
+    """
+    resp = await admin_client.patch(
+        f"/api/ionization/modes/{system_mode}",
+        json=_body(
+            sys_mechanisms,
+            ionization_mode_name=f"Seeded Chemistry {system_mode}",
+            instrument="SCOPE-A",
+        ),
+    )
+
+    assert resp.status_code == 400
+    assert "instrument" in resp.text
+
+    async with async_session_factory() as session:
+        mode = await session.get(IonizationMode, system_mode)
+        assert mode.instrument is None
+
+
 # ============= The collections are the deployment's =============
 
 

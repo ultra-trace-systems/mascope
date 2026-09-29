@@ -23,17 +23,21 @@ from mascope_backend.api.new.ionization.modes.util import (
 _UTIL = "mascope_backend.api.new.ionization.modes.util"
 
 
-def _mode(name, token, polarity):
+def _mode(name, token, polarity, instrument=None):
     return SimpleNamespace(
         ionization_mode_id=f"id-{name}",
         ionization_mode_name=name,
         ionization_mode_token=token,
         ionization_mode_polarity=polarity,
+        # None: applies to every instrument, as every mode did before the
+        # scope existed. Scoping itself is covered in
+        # test_ionization_mode_instrument_scope.py.
+        instrument=instrument,
     )
 
 
-def _file(filename, polarity):
-    return SimpleNamespace(filename=filename, polarity=polarity)
+def _file(filename, polarity, instrument="ORBI-1"):
+    return SimpleNamespace(filename=filename, polarity=polarity, instrument=instrument)
 
 
 BROMIDE = _mode("Bromide", "BR", "-")

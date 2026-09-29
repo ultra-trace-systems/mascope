@@ -747,9 +747,9 @@ class SampleBatch(Base):
         # split the day's samples across two batches.
         #
         # `polarity` is in the key because the name alone does not identify the
-        # mode: it embeds `ionization_mode_name`, which carries no uniqueness
-        # (only `ionization_mode_token` does), so an admin who names the
-        # positive and negative variant alike renders one name for both. Two
+        # mode: it embeds `ionization_mode_name`, which carries no uniqueness,
+        # so an admin who names the positive and negative variant alike renders
+        # one name for both. Two
         # modes sharing a name AND a polarity still collapse onto one batch -
         # separating those needs the mode id on the batch.
         #
@@ -1280,9 +1280,16 @@ class IonizationMode(Base):
 
     ionization_mode_id: Mapped[str] = mapped_column(String(16), primary_key=True)
     ionization_mode_name: Mapped[str] = mapped_column(String(256))
-    ionization_mode_token: Mapped[Optional[str]] = mapped_column(
-        String(256), unique=True
-    )
+    ionization_mode_token: Mapped[Optional[str]] = mapped_column(String(256))
+    # The instrument this mode belongs to, or NULL for every instrument. A
+    # filter on the automatic rungs, not on a person's choice: it decides which
+    # modes a file name's tokens are matched against, so the same token can
+    # mean one chemistry on one instrument and another elsewhere, and a mode
+    # that is only ever run on one instrument stops competing for every other
+    # instrument's file names. Where a scoped and an unscoped mode match one
+    # polarity and the scoped token covers the shared one, the instrument's own
+    # wins; a name carrying two different tokens stays ambiguous.
+    instrument: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     ionization_mode_polarity: Mapped[str] = mapped_column(String(1))
     ionization_mechanism_ids: Mapped[list[str]] = mapped_column(JSON)
     # The chemistry this row stands for, the same string on every server, for
@@ -1312,6 +1319,40 @@ class IonizationMode(Base):
         "TargetCollection",
         foreign_keys=[diagnostic_collection_id],
         back_populates="diagnostic_ionization_modes",
+    )
+
+    # Declared after the columns so the indexes can name `instrument` itself,
+    # which an expression index needs.
+    __table_args__ = (
+        # A token is unique among the modes that could match the same file,
+        # which is not the same as unique outright. An instrument runs several
+        # chemistries and two instruments name theirs in their own way, so a
+        # site has to be able to spell "nitrate" the same in the file names of
+        # two instruments and mean a different mode by it (#1463). Measured on
+        # the production fleet: 13 of 16 instruments on one server have run
+        # more than one chemistry, one of them 55.
+        #
+        # Two partial indexes rather than one on (token, instrument), because
+        # Postgres counts NULLs as distinct: a plain composite would let two
+        # unscoped modes share a token, which is the ambiguity this whole rule
+        # exists to prevent.
+        Index(
+            "uq_ionization_mode_token_global",
+            "ionization_mode_token",
+            unique=True,
+            postgresql_where=text("instrument IS NULL"),
+        ),
+        # Folded, like every other comparison of an instrument name
+        # (`method_keys.instrument_key`): `ORBI-1` and `orbi-1` are one
+        # instrument, so two modes scoped to those spellings must not both
+        # claim a token.
+        Index(
+            "uq_ionization_mode_token_per_instrument",
+            "ionization_mode_token",
+            func.lower(instrument),
+            unique=True,
+            postgresql_where=text("instrument IS NOT NULL"),
+        ),
     )
 
 

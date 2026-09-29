@@ -52,6 +52,7 @@ from mascope_backend.db import (
 )
 from mascope_backend.db.devices import device_sponsor_id
 from mascope_backend.db.id import gen_id
+from mascope_backend.method_keys import instrument_key
 from mascope_backend.runtime import runtime
 from mascope_backend.socket.records.service import (
     emit_record_created,
@@ -62,15 +63,6 @@ from mascope_backend.socket.records.service import (
 #: A digest change: whether the row was created, and the row as sent to
 #: browsers.
 Change = tuple[bool, dict]
-
-
-def instrument_key(instrument: str | None) -> str | None:
-    """What an instrument's digests are matched on: its trimmed lower case.
-
-    ``SampleFile.instrument`` is recorded with inconsistent case, and one
-    workspace serves every variant; its digests do too.
-    """
-    return instrument.strip().lower() if instrument else None
 
 
 async def _lock_instrument(session, key: str | None) -> None:
