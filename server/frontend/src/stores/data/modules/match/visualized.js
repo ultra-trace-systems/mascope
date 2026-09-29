@@ -114,6 +114,9 @@ export const useMatchVisualized = defineStore('app.data.match.visualized', () =>
   }
 
   async function load({ sampleId, ionId, collectionId, isotopeId, init } = { init: true }) {
+    // Hold on to the rows being replaced: the colours below are read off them,
+    // and the reset on the next line would otherwise be all the lookup could see.
+    const previous = isotopes.value
     isotopes.value = null
     // Resolve IDs from current state or cache
     const sample_item_id =
@@ -152,7 +155,7 @@ export const useMatchVisualized = defineStore('app.data.match.visualized', () =>
       ...isotope,
       // Preserve existing color if isotope was already loaded
       color:
-        isotopes.value?.find((existing) => existing.target_isotope_id === isotope.target_isotope_id)
+        previous?.find((existing) => existing.target_isotope_id === isotope.target_isotope_id)
           ?.color ?? null,
       // Format mz to 4 decimal places
       mz: isotope.mz.toFixed(4)

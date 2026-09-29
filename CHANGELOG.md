@@ -1077,6 +1077,15 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 ### Fixed
 
+- **An isotope keeps its colour when the match tab reloads the same ion.** The
+  spectra chart picks each isotope's colour as it draws the trace and writes it
+  back onto the row, and the store meant to carry that colour over the rows a
+  reload replaces. It read the colour off the list it was in the middle of
+  reassigning, which the same function had already emptied, so every reloaded
+  row came back colourless and the swatch in the rating dialog went blank until
+  the socket re-streamed the spectra. The store now reads the colours off the
+  rows it is replacing, taken before the reset.
+
 - **A sample's properties survive a write that does not finish.** `.props`
   was rewritten in place, so a process that died between truncating it and
   writing the new content left the file empty - and it holds the sample's m/z
