@@ -1084,7 +1084,12 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   reassigning, which the same function had already emptied, so every reloaded
   row came back colourless and the swatch in the rating dialog went blank until
   the socket re-streamed the spectra. The store now reads the colours off the
-  rows it is replacing, taken before the reset.
+  rows it is replacing, taken before the reset. Removing an ion's instrument
+  params blanked the swatch by a second route, which the same reload also fixes:
+  it started one reload without waiting for it and then a second, and because a
+  reload clears the isotopes before it awaits anything, the second found no rows
+  to read the colours off. It now reloads once, which also stops the spectra
+  being fetched and re-streamed twice.
 
 - **A sample's properties survive a write that does not finish.** `.props`
   was rewritten in place, so a process that died between truncating it and

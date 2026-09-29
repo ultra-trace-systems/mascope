@@ -100,7 +100,11 @@ export const useMatchParams = defineStore('app.data.match.params', () => {
         type: 'remove_ion_match_params'
       }
     )
-    reset()
+    // Drop the removed params from the UI, then reload once. Calling reset()
+    // here would start a second load: it does not await the one it fires, and
+    // a load runs as far as clearing the isotopes before it awaits, so the
+    // reload below would find no previous rows to carry the colours off.
+    set()
     await matchVisualized.reload({ init: true })
   }
 
