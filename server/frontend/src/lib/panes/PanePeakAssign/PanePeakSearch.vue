@@ -16,6 +16,7 @@ import { api } from '@/api'
 import { BaseTierTag, BaseMatchTag } from '@/lib/base'
 import { PopoverTargetCompoundAdd } from '@/lib/dialogs'
 import { num } from '@/lib/formatters'
+import { formatIsotopeFormula } from '@/lib/chem'
 import { peakAssignmentEnabled } from '@/lib/features'
 import { fetchProfilePreview, isFormulaRange, usePeakAssignParams } from '@/lib/peakAssignParams'
 
@@ -98,9 +99,10 @@ const resultsHelp = {
     against that line.
     </p>
     <p>
-    Expand a row to see the candidate's full theoretical isotope pattern, and
-    click an isotope row to preview it in the spectrum chart. The <b>+</b>
-    button adds a candidate to the open target collection.
+    Expand a row to list the candidate's theoretical isotope lines under it,
+    with each line's abundance and a crosshair on the one within tolerance of
+    the searched peak, and click a line to preview it in the spectrum chart.
+    The <b>+</b> button adds a candidate to the open target collection.
     </p>`,
   doc: peakAssignmentEnabled
     ? app.ui.help.docUrl('how-it-works/peak-assignment/#the-fit-score-a-pure-measurement')
@@ -248,7 +250,7 @@ app.ui.notification.on('match_compositions_by_mz', (payload) => {
         const existing = app.data.target.compound.list.filter(
           ({ target_compound_formula }) => target_compound_formula === res.target_compound_formula
         )
-        return { ...res, existing, line: readLineOfHit(res), key: hitKey(res) }
+        return { ...res, existing, readAt: readLineOfHit(res), key: hitKey(res) }
       })
     }
     loading.value = false
@@ -376,6 +378,79 @@ function knownCompoundsTooltip(known) {
 
 const expanded = ref({})
 
+// --- Rows -------------------------------------------------------------------
+// An expanded candidate lists its isotope lines as rows of the table, under
+// it, rather than as a table nested in an expansion row. The results scroll
+// virtually - the scroller renders the rows in view, sliced by a fixed row
+// height - and a nested table is as tall as the candidate's isotope pattern,
+// which that slicing cannot allow for: scrolling through a long pattern moved
+// the slice past the candidate, the candidate left the page, the table shrank,
+// and the view snapped back to the top. A line as a row of its own is one
+// fixed-height row among the others, the arrangement the peak ledger unfolds
+// its isotopologues in for the same reason.
+//
+// The sort is therefore the pane's, not the table's: PrimeVue sorting the flat
+// rows would tear the lines away from their candidate. `lazy` hands sorting
+// back, and `rows` orders the candidates and puts each one's lines under it.
+const ROW_HEIGHT = 35.5
+const scrollHeightPx = computed(() => Math.max(120, props.height - 120))
+const sortField = ref(peakAssignmentEnabled ? 'fit_score' : 'match_score')
+const sortOrder = ref(-1)
+
+// Numeric collation, as PrimeVue's own sort had it: C9H14O4 before C10H16O4.
+const collator = new Intl.Collator(undefined, { numeric: true })
+const isBlank = (value) => value == null || value === ''
+
+// What a column sorts on: the field it names, read along its path, except the
+// database column, which counts the target compounds it names.
+function sortValue(row, field) {
+  if (field === 'existing') return row.existing?.length ?? 0
+  return field.split('.').reduce((value, key) => value?.[key], row)
+}
+
+// One column's order, blanks last either way. The sort is stable, so
+// candidates the column cannot tell apart keep the order the search gave them.
+function compareBy(field, order) {
+  const dir = order === -1 ? -1 : 1
+  return (a, b) => {
+    const av = sortValue(a, field)
+    const bv = sortValue(b, field)
+    if (isBlank(av) && isBlank(bv)) return 0
+    if (isBlank(av)) return 1
+    if (isBlank(bv)) return -1
+    if (typeof av === 'string' && typeof bv === 'string') return collator.compare(av, bv) * dir
+    return av < bv ? -dir : av > bv ? dir : 0
+  }
+}
+
+// A candidate's isotope lines, lightest first, as rows under it: each keeps
+// its candidate (`parent`) and has a key of its own.
+function linesOf(hit) {
+  return getIsotopeRows(hit)
+    .sort((a, b) => a.mz - b.mz)
+    .map((line) => ({ ...line, key: `${hit.key}|${line.mz}`, parent: hit }))
+}
+
+const rows = computed(() => {
+  const candidates = [...results.value]
+  if (sortField.value) candidates.sort(compareBy(sortField.value, sortOrder.value))
+  return candidates.flatMap((hit) => (expanded.value[hit.key] ? [hit, ...linesOf(hit)] : [hit]))
+})
+
+// A line's name, as the peak inspector names an isotopologue row: M0, [13C],
+// [81Br]2, or [14N] for a labelled reagent's unlabelled remainder.
+const lineName = (line) =>
+  formatIsotopeFormula(line.target_isotope_formula, line.parent.target_ion_formula) || '-'
+
+// A click on a line previews it in the spectrum chart; a click on the line
+// already previewed takes the preview away.
+function onRowClick({ data }) {
+  if (!data.parent) return
+  preview.peak = preview.peak?.key === data.key ? null : data
+}
+const rowClass = (row) =>
+  row.parent ? { 'line-row': true, 'line-previewed': preview.peak?.key === row.key } : undefined
+
 const fitPercent = new Intl.NumberFormat('en-US', {
   style: 'percent',
   minimumFractionDigits: 0,
@@ -469,7 +544,12 @@ watch(
        so the pane is absent rather than showing a "No peak selected" card.
        As a takeover of the time-series pane it always renders, otherwise
        "Re-search" would open onto nothing with no way back. -->
-  <div class="search-pane" v-if="!embedded || app.data.peak.list.length > 0" v-help.top="rootHelp">
+  <div
+    class="search-pane"
+    v-if="!embedded || app.data.peak.list.length > 0"
+    v-help.top="rootHelp"
+    :style="{ '--row-height': `${ROW_HEIGHT}px` }"
+  >
     <header class="search-head">
       <div class="search-title">
         <span class="pi ph ph-magnifying-glass" />
@@ -588,29 +668,49 @@ watch(
         @click="store.reset(RESETTABLE)"
       />
     </menu>
+    <!-- The rows are `rows`: the candidates in the pane's sort, each expanded
+         one followed by its isotope lines (see the script). The expander is
+         PrimeVue's, and with no #expansion template it only flips
+         `expanded`; a line's own expander is hidden. -->
     <DataTable
       v-if="!loading && results.length > 0"
-      :value="results"
+      :value="rows"
       dataKey="key"
-      :sortField="peakAssignmentEnabled ? 'fit_score' : 'match_score'"
-      :sortOrder="-1"
+      lazy
+      v-model:sortField="sortField"
+      v-model:sortOrder="sortOrder"
       scrollable
-      :scrollHeight="`${Math.max(120, height - 120)}px`"
+      :scrollHeight="`${scrollHeightPx}px`"
       size="small"
       v-model:expandedRows="expanded"
-      :virtualScrollerOptions="{ itemSize: 35.5 }"
+      :virtualScrollerOptions="{ itemSize: ROW_HEIGHT }"
+      :rowClass="rowClass"
+      @row-click="onRowClick"
       :pt="app.ui.help.top(resultsHelp)"
     >
       <Column expander />
       <Column field="target_compound_formula" header="Formula" sortable>
         <template #body="{ data }">
-          {{ data.target_compound_formula }}
-          <span
-            v-if="data.line"
-            class="line-tag"
-            v-tooltip.top="{ value: lineTooltip(data.line), showDelay: 300 }"
-            >{{ data.line.name }}</span
-          >
+          <span v-if="data.parent" class="line-cell">
+            <span
+              class="pi ph ph-crosshair line-close"
+              :class="{ hidden: !data.close }"
+              v-tooltip.left="data.close ? 'Within tolerance of the searched peak' : null"
+            />
+            {{ lineName(data) }}
+            <span class="line-share">{{
+              num.relativeAbundance.format(data.relative_abundance)
+            }}</span>
+          </span>
+          <template v-else>
+            {{ data.target_compound_formula }}
+            <span
+              v-if="data.readAt"
+              class="line-tag"
+              v-tooltip.top="{ value: lineTooltip(data.readAt), showDelay: 300 }"
+              >{{ data.readAt.name }}</span
+            >
+          </template>
         </template>
       </Column>
       <Column field="cheminfo.target_compound_unsaturation" sortable>
@@ -620,13 +720,17 @@ watch(
       </Column>
       <Column field="cheminfo.target_isotope_mz" header="Isotope m/z" sortable>
         <template #body="{ data }">
-          {{ num.mz.format(data.cheminfo.target_isotope_mz) }}
+          {{ num.mz.format(data.parent ? data.mz : data.cheminfo.target_isotope_mz) }}
         </template>
       </Column>
       <Column field="cheminfo.ionization_mechanism.ionization_mechanism" header="Mech." sortable />
       <Column field="cheminfo.target_isotope_mz_error_ppm" header="Error (ppm)" sortable>
         <template #body="{ data }">
-          {{ num.mzError.format(data.cheminfo.target_isotope_mz_error_ppm) }}
+          {{
+            num.mzError.format(
+              data.parent ? data.match_mz_error : data.cheminfo.target_isotope_mz_error_ppm
+            )
+          }}
         </template>
       </Column>
       <Column v-if="peakAssignmentEnabled" field="fit_score" sortable>
@@ -637,7 +741,15 @@ watch(
           />
         </template>
         <template #body="{ data }">
-          <BaseTierTag :tier="data.tier" :evidence="data.evidence" :source="data.source" />
+          <!-- A line has no tier of its own: it shows how well it matched. -->
+          <BaseMatchTag
+            v-if="data.parent"
+            :match-score="data.match_score"
+            :match-category="data.match_category"
+            :alarming="data.alarming"
+            nofade
+          />
+          <BaseTierTag v-else :tier="data.tier" :evidence="data.evidence" :source="data.source" />
         </template>
       </Column>
       <Column v-if="peakAssignmentEnabled" field="plausibility" sortable>
@@ -648,7 +760,9 @@ watch(
           />
         </template>
         <template #body="{ data }">
-          {{ data.plausibility != null ? formatFit(data.plausibility) : '—' }}
+          <template v-if="!data.parent">
+            {{ data.plausibility != null ? formatFit(data.plausibility) : '—' }}
+          </template>
         </template>
       </Column>
       <!-- Legacy scoring: what this search has always reported. The backend
@@ -678,7 +792,7 @@ watch(
         </template>
         <template #body="{ data }">
           <span
-            v-if="data.existing.length > 0"
+            v-if="data.existing?.length > 0"
             class="ph pi ph-database"
             v-tooltip.left="
               `Found in DB: ${data.existing
@@ -742,7 +856,7 @@ watch(
           </span>
         </template>
         <template #body="{ data }">
-          <div class="row-actions">
+          <div v-if="!data.parent" class="row-actions">
             <!-- The Button is disabled when no run covers the peak, or while
                  the rows on screen still belong to the previously focused one,
                  and a disabled PrimeVue button receives no mouse events - so
@@ -772,58 +886,6 @@ watch(
           </div>
         </template>
       </Column>
-      <template #expansion="{ data }">
-        <DataTable
-          :value="getIsotopeRows(data)"
-          dataKey="mz"
-          selectionMode="single"
-          v-model:selection="preview.peak"
-          sortField="mz"
-          size="small"
-          style="margin-left: 3rem; margin-right: 10rem"
-        >
-          <Column field="close" sortable>
-            <template #header>
-              <span class="pi pi-info-circle" v-tooltip.left="'Peak info'" />
-            </template>
-            <template #body="{ data }">
-              <span
-                class="pi ph ph-crosshair"
-                v-if="data.close"
-                v-tooltip.left="'Within tolerance of searched peak'"
-              />
-            </template>
-          </Column>
-          <Column field="relative_abundance" header="Rel. Abu." sortable>
-            <template #body="{ data }">
-              {{ num.relativeAbundance.format(data.relative_abundance) }}
-            </template>
-          </Column>
-          <Column field="mz" header="Isotope m/z" sortable>
-            <template #body="{ data }">
-              {{ num.mz.format(data.mz) }}
-            </template>
-          </Column>
-          <Column field="match_mz_error" header="Error (ppm)" sortable>
-            <template #body="{ data }">
-              {{ num.mzError.format(data.match_mz_error) }}
-            </template>
-          </Column>
-          <Column field="match_score" sortable>
-            <template #header>
-              <span class="pi ph ph-seal-percent" v-tooltip="'Match score'" />
-            </template>
-            <template #body="{ data }">
-              <BaseMatchTag
-                :match-score="data?.match_score"
-                :match-category="data?.match_category"
-                :alarming="data?.alarming"
-                nofade
-              />
-            </template>
-          </Column>
-        </DataTable>
-      </template>
     </DataTable>
     <div v-else-if="!app.data.peak.focused" class="center search-placeholder">
       <div class="col" style="gap: 1rem; max-width: 45ch; text-align: center">
@@ -899,6 +961,35 @@ watch(
   font-size: 0.75rem;
   background: var(--p-content-hover-background, rgba(127, 127, 127, 0.12));
   white-space: nowrap;
+}
+/* An expanded candidate's isotope line, a row under it: indented, and a click
+   previews it in the spectrum chart. Its row has the expander column like
+   every row, with nothing to expand, and the virtual scroller's row height,
+   which its own content would fall short of. */
+.line-cell {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.35rem;
+  padding-left: 0.9rem;
+  white-space: nowrap;
+}
+.line-close.hidden {
+  visibility: hidden;
+}
+.line-share {
+  opacity: 0.6;
+  font-size: 0.85em;
+}
+.search-pane :deep(tr.line-row) {
+  height: var(--row-height);
+  cursor: pointer;
+}
+.search-pane :deep(tr.line-row .p-datatable-row-toggle-button) {
+  visibility: hidden;
+}
+.search-pane :deep(tr.line-row.line-previewed) {
+  background: var(--p-highlight-background, rgba(127, 127, 127, 0.18));
+  color: var(--p-highlight-color, inherit);
 }
 /* The element the curation help card is registered on. It is a hook for the
    directive and nothing else, so with its glyph gone it takes up no space -

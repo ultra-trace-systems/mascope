@@ -117,15 +117,20 @@ vi.mock('@/lib/dialogs', () => ({
   PopoverTargetCompoundAdd: { props: ['formula'], template: '<span class="target-add" />' }
 }))
 
-vi.mock('@/lib/panes/PanePeakAssign/preview.js', () => ({
-  usePreview: () => ({ peak: ref(null) })
-}))
+// One preview for the pane and the tests alike: a click on an isotope line puts
+// that line in it for the spectrum chart.
+vi.mock('@/lib/panes/PanePeakAssign/preview.js', async () => {
+  const { reactive } = await import('vue')
+  const preview = reactive({ peak: null })
+  return { usePreview: () => preview }
+})
 
 // PrimeVue's DataTable renders nothing under a plain auto-stub, and its real
 // virtual scroller renders no rows in a zero-height jsdom viewport - either way
 // the row actions under test would never exist. This pair renders each Column's
 // `#body` slot once per row, plus its `#header` slot once: the header is where
 // the curation help card is anchored, and its lifetime is the thing under test.
+// A click on a row is the table's `row-click`, as PrimeVue emits it.
 const Column = {
   name: 'Column',
   props: ['field', 'header', 'sortable', 'expander'],
@@ -135,7 +140,8 @@ const Column = {
 const DataTable = {
   name: 'DataTable',
   props: ['value'],
-  setup(props, { slots }) {
+  emits: ['row-click'],
+  setup(props, { slots, emit }) {
     const columns = () => {
       const flat = []
       const walk = (nodes) => {
@@ -157,7 +163,7 @@ const DataTable = {
         ...(props.value ?? []).map((row, index) =>
           h(
             'div',
-            { class: 'dt-row', key: index },
+            { class: 'dt-row', key: index, onClick: () => emit('row-click', { data: row }) },
             columns().map((column) =>
               column.children?.body ? column.children.body({ data: row }) : null
             )
@@ -423,6 +429,79 @@ describe('PanePeakSearch results read at another line', () => {
       assigned_formula: 'C9H15O4',
       isotope_label: 'M+1'
     })
+  })
+})
+
+// An expanded candidate's isotope lines are rows of the table, under it: one
+// fixed-height row each, which is what lets the table keep scrolling virtually
+// with a long pattern open. A pattern nested in an expansion row was as tall as
+// the pattern, the virtual scroller sliced past the candidate while it was
+// being read, and the view snapped back to the top.
+describe('PanePeakSearch isotope lines under an expanded candidate', () => {
+  /** A hit with a three-line pattern, its lines out of m/z order. */
+  function patternHit(formula, fit) {
+    const found = hit(formula)
+    found.fit_score = fit
+    found.children = [
+      { mz: 201.1268, relative_abundance: 0.11, target_isotope_formula: `[13C]${formula}` },
+      { mz: 200.1234, relative_abundance: 1.0, target_isotope_formula: formula },
+      { mz: 202.1302, relative_abundance: 0.02, target_isotope_formula: `[18O]${formula}` }
+    ]
+    return found
+  }
+
+  const expand = async (wrapper, formula) => {
+    const { key } = wrapper.vm.results.find((row) => row.target_compound_formula === formula)
+    wrapper.vm.expanded = { [key]: true }
+    await wrapper.vm.$nextTick()
+  }
+
+  // What each row is: a candidate's formula, or the m/z of a line under one.
+  const rowNames = (wrapper) =>
+    wrapper.vm.rows.map((row) => (row.parent ? row.mz : row.target_compound_formula))
+
+  it("lists an expanded candidate's lines under it, lightest first", async () => {
+    const wrapper = await mountPane()
+    await deliverResults(wrapper, PEAK_A, [patternHit('C6H12O6', 0.9), patternHit('C9H8O4', 0.5)])
+
+    await expand(wrapper, 'C6H12O6')
+
+    expect(rowNames(wrapper)).toEqual(['C6H12O6', 200.1234, 201.1268, 202.1302, 'C9H8O4'])
+    expect(wrapper.findAll('.dt-row')).toHaveLength(5)
+    // A line is not a candidate: it has no hand button of its own.
+    expect(handButtons(wrapper)).toHaveLength(2)
+  })
+
+  it('keeps the lines under their candidate whatever the sort', async () => {
+    const wrapper = await mountPane()
+    await deliverResults(wrapper, PEAK_A, [patternHit('C9H8O4', 0.9), patternHit('C6H12O6', 0.5)])
+    await expand(wrapper, 'C9H8O4')
+
+    wrapper.vm.sortField = 'target_compound_formula'
+    wrapper.vm.sortOrder = 1
+    await wrapper.vm.$nextTick()
+
+    expect(rowNames(wrapper)).toEqual(['C6H12O6', 'C9H8O4', 200.1234, 201.1268, 202.1302])
+  })
+
+  it('previews a line in the spectrum on a click, and takes it away on a second', async () => {
+    const { usePreview } = await import('@/lib/panes/PanePeakAssign/preview.js')
+    const preview = usePreview()
+    preview.peak = null
+    const wrapper = await mountPane()
+    await deliverResults(wrapper, PEAK_A, [patternHit('C6H12O6', 0.9)])
+    await expand(wrapper, 'C6H12O6')
+
+    const line = () => wrapper.findAll('.dt-row')[2]
+    await line().trigger('click')
+    expect(preview.peak).toMatchObject({ mz: 201.1268, relative_abundance: 0.11 })
+
+    await line().trigger('click')
+    expect(preview.peak).toBeNull()
+
+    // A candidate's row is not a line, and previews nothing.
+    await wrapper.findAll('.dt-row')[0].trigger('click')
+    expect(preview.peak).toBeNull()
   })
 })
 
