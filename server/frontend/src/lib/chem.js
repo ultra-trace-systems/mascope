@@ -317,8 +317,18 @@ export const isMonoisotopicFormula = (formula, labels = {}) =>
  *
  * The lightest row stands in when no formula carries the marker that tells the
  * lines apart, and is the same row wherever an element's most abundant isotope is
- * also its lightest - so an unlabelled ion keeps the lightest line. The backend's
- * `monoisotopic_row` resolves it the same way.
+ * also its lightest - so an unlabelled ion keeps the lightest line.
+ *
+ * The backend's `monoisotopic_row` resolves it the same way but for one
+ * spelling, the one `isMonoisotopicFormula` reads more widely than its backend
+ * counterpart: a line written in the ion's own caret notation (`C10H18O7^N-` for
+ * `C10H18O7^N-`), which an imported run may write, is the M0 here, while the
+ * backend counts bracketed isotopes alone and reads it as the unlabelled
+ * remainder, leaving no line to qualify and the lightest one to stand in. Where
+ * a run wrote its M0 that way, this picks the ion's own line and the rows that
+ * run stored count from the line below it. Sending the flag from the endpoint
+ * that already knows it would retire this second implementation and the drift
+ * with it.
  *
  * @param {Array<Object>} isotopes an ion's isotope rows, each carrying
  *   `target_isotope_formula` and `mz`; not sorted in place

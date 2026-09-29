@@ -6,7 +6,7 @@ import Tag from 'primevue/tag'
 import { BaseMatchTag } from '@/lib/base'
 import { clone } from '@/lib/utils'
 import { num } from '@/lib/formatters'
-import { formatIsotopeFormula, monoisotopicIsotope } from '@/lib/chem'
+import { formatIsotopeFormula } from '@/lib/chem'
 import { useApp } from '@/stores'
 
 import BaseChartPlotly from '../BaseChartPlotly.vue'
@@ -49,18 +49,6 @@ const traces = computed(() => {
       }))
 })
 
-// The isotope the tab opens on: the ion's monoisotopic isotopologue, which the
-// ion formula names for a labelled ion. The store holds the isotopes in the
-// backend's m/z order, where the lightest one comes first - the M0 of an
-// unlabelled ion, but for a labelled one the reagent's unlabelled remainder, a
-// couple of percent of the line the ion is measured by.
-const isotopeMain = computed(() =>
-  monoisotopicIsotope(
-    app.data.match.visualized.isotopes,
-    app.data.match.visualized.ion?.target_ion_formula
-  )
-)
-
 // transform raw visualiation data into seperate charts
 const isotopeCharts = computed(() => {
   // Build array with the M0 isotope and selected isotope (if different)
@@ -68,8 +56,10 @@ const isotopeCharts = computed(() => {
 
   const isotopeList = []
 
-  if (isotopeMain.value) {
-    isotopeList.push(isotopeMain.value)
+  // The ion's M0, which the store derives (`isotopeMain`), not the first
+  // isotope in m/z order: for a labelled ion those are different lines.
+  if (app.data.match.visualized.isotopeMain) {
+    isotopeList.push(app.data.match.visualized.isotopeMain)
   }
   if (
     app.data.match.visualized.isotopeSelected &&
@@ -84,6 +74,9 @@ const isotopeCharts = computed(() => {
     const start = traces.value?.findIndex(
       (trace) => trace.target_isotope_id === isotope.target_isotope_id
     )
+    // No trace group for this isotope yet - the figure draws empty rather than
+    // taking `slice(-1)`'s last trace, which belongs to another isotope.
+    if (start === -1) return { ...isotope, traces: [] }
     const nextStart = traces.value?.findIndex(
       ({ target_isotope_id }, index) => target_isotope_id && index > start
     )

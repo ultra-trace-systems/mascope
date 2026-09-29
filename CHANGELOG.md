@@ -1165,7 +1165,11 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   remainder. Both now read the M0 the way the assignment engine's
   `monoisotopic_row` does: the line whose brackets name exactly the ion's
   labels, with the lightest line standing in where no line carries the marker
-  that tells them apart. An unlabelled ion opens where it always did.
+  that tells them apart. An unlabelled ion opens where it always did. One
+  spelling still reads differently on the two sides: where an imported run
+  wrote its M0 in the ion's own caret notation rather than in brackets, the
+  tab opens on that line while the run's own rows count from the line below
+  it.
 
 - **A loaded reference database no longer widens the mass width a TOF sample is
   scored and gated at.** Stage A matches a reference list's formulas in the
