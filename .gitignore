@@ -27,6 +27,12 @@ tofdaq
 # MkDocs build output
 /site/
 
+# Node dependencies and Vite caches. server/frontend carries its own rules,
+# but a frontend tool run from the repository root (vitest, say) creates
+# these here, where nothing covered them
+/node_modules/
+/.vite/
+
 # Python third-party attributions (tooling/third-party-notices.py). The backend
 # serves them from its runtime home (MASCOPE_PATH), which is this checkout only
 # where MASCOPE_PATH points at it; the images generate their own at build time
