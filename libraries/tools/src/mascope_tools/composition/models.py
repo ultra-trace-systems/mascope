@@ -137,13 +137,9 @@ class Result:
     unsaturation: float | None = None
     other_candidates: list[str] | None = None
     # Set only on a reading of the peak as another line of the ion than its
-    # monoisotopic one (`isotopologues.isotopologue_readings`), and then the
-    # mass error above is against that line: its whole-unit offset from the
-    # monoisotopic line, its m/z, and its abundance as a share of the ion's
-    # brightest line.
-    isotope_offset: int | None = None
+    # monoisotopic one (`isotopologues.isotopologue_readings`): that line's
+    # m/z, which the mass error above is taken against.
     isotope_mz: float | None = None
-    isotope_abundance: float | None = None
 
     def to_dict(self):
         d = asdict(self)

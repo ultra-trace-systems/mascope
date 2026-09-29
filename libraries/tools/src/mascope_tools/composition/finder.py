@@ -464,16 +464,16 @@ def find_compositions(
         line of a candidate's ion - a 13C or 81Br line above the monoisotopic
         one, a labelled reagent's unlabelled remainder below it - whose abundance
         is at least this share of the ion's brightest line; 1.0 reads it as the
-        brightest line alone. Such a reading carries the line it is read as
-        (``isotope_offset``, ``isotope_mz``, ``isotope_abundance``) and its
-        mass error is against that line. Without it the target is the
-        monoisotopic line of every candidate, which is what a search walking a
-        whole spectrum wants: there the isotopologues are claimed from the
-        monoisotopic peak instead.
+        brightest line alone. Such a reading carries the m/z of the line it is
+        read as (``isotope_mz``), and its mass error is against that line.
+        Without it the target is the monoisotopic line of every candidate,
+        which is what a search walking a whole spectrum wants: there the
+        isotopologues are claimed from the monoisotopic peak instead.
     :type isotopologue_floor: float, optional
     :return: A list of dictionaries containing composition results, at most
-        ``config.max_result_rows`` of them per ionization mechanism - the
-        closest in mass, whichever line each is read at.
+        ``config.max_result_rows`` of them per ionization mechanism: the
+        closest monoisotopic readings, and in the room they leave the closest
+        readings at another line.
     :rtype: list[dict]
     """
     ionization_mech_string_list = get_ionization_mech_string_list(config.ionizations)
@@ -491,14 +491,7 @@ def find_compositions(
     if grid is None:
         windows = []
         for index, mechanism in enumerate(mechanisms):
-            shift = mechanism.mass if mechanism.addition else -mechanism.mass
-            required_neutral_mass = target_mz - shift
-            windows.append(
-                (
-                    required_neutral_mass - mz_tolerance_da,
-                    required_neutral_mass + mz_tolerance_da,
-                )
-            )
+            windows.append(_monoisotopic_window(target_mz, mechanism, mz_tolerance_da))
             if offsets is not None:
                 windows.extend(
                     isotopologues.isotopologue_windows(
@@ -525,9 +518,13 @@ def find_compositions(
         readings, rows = _monoisotopic_readings(
             target_mz, mz_tolerance_da, ionization_mechanism, grid, config
         )
-        if offsets is not None:
-            # One cap for the mechanism, whichever line a reading is at: the
-            # closest readings of either kind are kept.
+        # One cap for the mechanism, filled by the monoisotopic readings first.
+        # A line reading is the weaker hypothesis - its ion's monoisotopic line
+        # need not be in the spectrum at all - so it takes only the room they
+        # leave, the closest first, and never the place of a compound read at
+        # its own mass.
+        room = config.max_result_rows - len(readings)
+        if offsets is not None and room > 0:
             readings.extend(
                 isotopologues.isotopologue_readings(
                     target_mz,
@@ -536,17 +533,31 @@ def find_compositions(
                     grid,
                     offsets[index],
                     isotopologue_floor,
-                    max_rows=config.max_result_rows,
+                    max_rows=room,
                     skip_rows=rows,
                 )
             )
-            readings.sort(key=lambda r: abs(r.composition_error_ppm))
-            del readings[config.max_result_rows :]
         all_results.extend(readings)
 
     all_results.sort(key=lambda r: abs(r.composition_error_ppm))
 
     return [r.to_dict() for r in all_results]
+
+
+def _monoisotopic_window(
+    target_mz: float, mechanism: IonizationMechanism, tolerance_da: float
+) -> tuple[float, float]:
+    """The neutral masses whose ion's monoisotopic line lands on a target.
+
+    One window for the grid a search builds and for the rows it reads there:
+    a grid narrower than the reading would answer fewer candidates, and say
+    nothing.
+
+    :return: ``(lowest, highest)`` neutral mass.
+    """
+    shift = mechanism.mass if mechanism.addition else -mechanism.mass
+    required_neutral_mass = target_mz - shift
+    return required_neutral_mass - tolerance_da, required_neutral_mass + tolerance_da
 
 
 def _monoisotopic_readings(
@@ -597,7 +608,9 @@ def _monoisotopic_readings(
     # Ranked before the row cap applies, so a target with more readings than
     # the cap allows keeps the closest ones rather than whichever the walk
     # reached first.
-    rows = grid.window(required_neutral_mass, mz_tolerance_da)
+    rows = grid.between(
+        *_monoisotopic_window(target_mz, ionization_mechanism, mz_tolerance_da)
+    )
     errors = [
         (
             abs(grid.mass[row] + ion_shift - target_mz),

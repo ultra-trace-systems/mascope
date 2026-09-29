@@ -31,8 +31,6 @@ from mascope_tools.composition.utils import (
 )
 
 
-ISOTOPE_KEYS = {"isotope_offset", "isotope_mz", "isotope_abundance"}
-
 NITRATE = CompositionSearchConfig(
     ionizations="[M+[15N]O3]-",
     mass_range_ppm=3.0,
@@ -72,6 +70,11 @@ def _readings_of(formula: str, results: list[dict]) -> list[dict]:
     return [result for result in results if result["formula"] == formula]
 
 
+def _at_a_line(result: dict) -> bool:
+    """Whether the search read the peak as another line of the result's ion."""
+    return "isotope_mz" in result
+
+
 class TestAMonoisotopicSearch:
     """Without a floor the search is the one it always was."""
 
@@ -79,19 +82,19 @@ class TestAMonoisotopicSearch:
     def test_it_reads_no_other_line(self, target):
         for config in (NITRATE, HALOGENS, PROTONATION):
             results = find_compositions(target, config)
-            assert all(not ISOTOPE_KEYS & result.keys() for result in results)
+            assert not any(_at_a_line(result) for result in results)
 
     @pytest.mark.parametrize("target", [182.0740, 311.0750, 250.8536])
-    def test_a_floor_adds_readings_and_changes_none(self, target):
-        # Under a cap that does not bind: a mechanism's cap counts readings of
-        # both kinds, so where it binds the closer line readings take the
-        # places of the farther monoisotopic ones.
+    @pytest.mark.parametrize("cap", [100, 3])
+    def test_a_floor_adds_readings_and_changes_none(self, target, cap):
+        # Whether or not the cap binds - at 311 it does for the halogen box
+        # even at 100: a line reading takes only the room the monoisotopic
+        # readings leave, never the place of a compound read at its own mass.
         for config in (NITRATE, HALOGENS, PROTONATION):
-            config = replace(config, max_result_rows=10**6)
+            config = replace(config, max_result_rows=cap)
             plain = find_compositions(target, config)
             wider = find_compositions(target, config, isotopologue_floor=0.01)
-            monoisotopic = [r for r in wider if not ISOTOPE_KEYS & r.keys()]
-            assert monoisotopic == plain
+            assert [r for r in wider if not _at_a_line(r)] == plain
 
 
 class TestALabelledReagent:
@@ -108,10 +111,10 @@ class TestALabelledReagent:
             "C10H16O7", find_compositions(target, NITRATE, isotopologue_floor=0.01)
         )
         assert len(readings) == 1
-        assert not ISOTOPE_KEYS & readings[0].keys()
+        assert not _at_a_line(readings[0])
 
     def test_the_unlabelled_remainder_is_read_one_unit_below(self):
-        target, share = self.LINES["14N"]
+        target, _ = self.LINES["14N"]
         assert not _readings_of("C10H16O7", find_compositions(target, NITRATE))
 
         readings = _readings_of(
@@ -120,8 +123,6 @@ class TestALabelledReagent:
         assert len(readings) == 1
         reading = readings[0]
         assert reading["isotope_mz"] == pytest.approx(target, abs=1e-6)
-        assert reading["isotope_offset"] == -1
-        assert reading["isotope_abundance"] == pytest.approx(share, rel=1e-6)
         assert reading["ion"] == "C10H16O10^N-"
         assert reading["composition_error_ppm"] == pytest.approx(0.0, abs=1e-3)
 
@@ -136,17 +137,14 @@ class TestAHeavierLine:
     GLUCOSE = _lines("C6H13O6", 1)
 
     def test_a_13c_line_is_read_as_its_ions_isotopologue(self):
-        target, share = self.GLUCOSE["13C"]
+        target, _ = self.GLUCOSE["13C"]
         assert not _readings_of("C6H12O6", find_compositions(target, PROTONATION))
 
         readings = _readings_of(
             "C6H12O6", find_compositions(target, PROTONATION, isotopologue_floor=0.05)
         )
         assert len(readings) == 1
-        reading = readings[0]
-        assert reading["isotope_offset"] == 1
-        assert reading["isotope_mz"] == pytest.approx(target, abs=1e-9)
-        assert reading["isotope_abundance"] == pytest.approx(share, rel=1e-6)
+        assert readings[0]["isotope_mz"] == pytest.approx(target, abs=1e-9)
 
     def test_a_line_under_the_floor_is_not_read(self):
         target, share = self.GLUCOSE["13C"]
@@ -183,8 +181,6 @@ class TestTheBrightestLine:
         )
         assert reading["ionization_mechanism"] == "[M-H]-"
         assert reading["isotope_mz"] == pytest.approx(target, abs=1e-6)
-        assert reading["isotope_offset"] == 2
-        assert reading["isotope_abundance"] == pytest.approx(1.0)
 
     def test_a_dimmer_line_is_not_read_at_a_floor_of_one(self):
         target, share = self.DIBROMOPHENOL["81Br2"]
@@ -196,7 +192,6 @@ class TestTheBrightestLine:
             "C6H4Br2O", find_compositions(target, HALOGENS, isotopologue_floor=0.3)
         )
         assert reading["isotope_mz"] == pytest.approx(target, abs=1e-6)
-        assert reading["isotope_offset"] == 4
 
 
 def test_the_reagents_own_line_is_the_empty_formula():
@@ -208,34 +203,47 @@ def test_the_reagents_own_line_is_the_empty_formula():
     assert len(empty) == 1
     assert empty[0]["ionization_mechanism"] == "[M+Br]-"
     assert empty[0]["isotope_mz"] == pytest.approx(target, abs=1e-6)
-    assert empty[0]["isotope_offset"] == 2
     # At its monoisotopic line it is the search's own reading, and no other.
     monoisotopic, _ = _lines("Br", -1)["M0"]
     (own,) = _readings_of(
         "()", find_compositions(monoisotopic, HALOGENS, isotopologue_floor=0.01)
     )
-    assert not ISOTOPE_KEYS & own.keys()
+    assert not _at_a_line(own)
 
 
-def test_the_row_cap_is_one_per_mechanism_whichever_line_a_reading_is_at():
-    # max_result_rows bounds a mechanism's readings, as it always has: the
-    # closest five of either kind, not five monoisotopic readings and five
-    # more at other lines.
+def test_the_row_cap_fills_with_the_monoisotopic_readings_first():
+    # max_result_rows bounds a mechanism's readings, as it always has. The
+    # monoisotopic readings fill it first and the closest line readings take
+    # the room they leave: a line reading is the weaker hypothesis, since its
+    # ion's monoisotopic line need not be in the spectrum at all.
     target, _ = _lines("C6H3Br2O", -1)["81Br"]
-    wide = replace(HALOGENS, mass_range_ppm=20.0, max_result_rows=10**6)
-    uncapped = find_compositions(target, wide, isotopologue_floor=0.01)
-    capped = find_compositions(
-        target, replace(wide, max_result_rows=5), isotopologue_floor=0.01
+    wide = replace(
+        HALOGENS, ionizations="[M-H]-", mass_range_ppm=20.0, max_result_rows=10**6
     )
-    for mechanism in ("[M-H]-", "[M+Br]-"):
-        every = [r for r in uncapped if r["ionization_mechanism"] == mechanism]
-        kept = [r for r in capped if r["ionization_mechanism"] == mechanism]
-        assert any(ISOTOPE_KEYS & r.keys() for r in every)
-        assert any(not ISOTOPE_KEYS & r.keys() for r in every)
-        assert len(every) > 5
-        assert len(kept) == 5
-        closest = sorted(abs(r["composition_error_ppm"]) for r in every)[:5]
-        assert sorted(abs(r["composition_error_ppm"]) for r in kept) == closest
+    every = find_compositions(target, wide, isotopologue_floor=0.01)
+    monoisotopic = [r for r in every if not _at_a_line(r)]
+    lines = sorted(
+        (r for r in every if _at_a_line(r)),
+        key=lambda r: abs(r["composition_error_ppm"]),
+    )
+    assert len(monoisotopic) > 1 and len(lines) > 3
+    # A line closer than a monoisotopic reading does not take its place.
+    assert abs(lines[0]["composition_error_ppm"]) < max(
+        abs(r["composition_error_ppm"]) for r in monoisotopic
+    )
+
+    def kept(cap):
+        return find_compositions(
+            target, replace(wide, max_result_rows=cap), isotopologue_floor=0.01
+        )
+
+    room_for_three = kept(len(monoisotopic) + 3)
+    assert [r for r in room_for_three if not _at_a_line(r)] == monoisotopic
+    assert [r for r in room_for_three if _at_a_line(r)] == sorted(
+        lines[:3], key=lambda r: abs(r["composition_error_ppm"])
+    )
+    no_room = kept(len(monoisotopic) - 1)
+    assert no_room == monoisotopic[:-1]
 
 
 def test_a_grid_atom_with_a_fixed_label_is_not_given_an_envelope():
@@ -284,7 +292,7 @@ def test_the_brightest_line_inside_the_window_is_the_reading(order):
     # lines come in.
     lines = [(0.0, 1.0), (1.0, 0.06), (2.0, 0.002), (2.0025, 0.012)]
     reading = _brightest_on_target([lines[i] for i in order], 100.0, 1, 102.0010, 0.004)
-    assert reading == pytest.approx((102.0025, 0.012))
+    assert reading == pytest.approx(102.0025)
     assert _brightest_on_target(lines, 100.0, 1, 103.5, 0.004) is None
 
 
@@ -370,7 +378,7 @@ class TestALineAtTheMonoisotopicNominalMass:
     LINES = _lines("C10H16O10^N", -1)
 
     def test_it_is_read_as_a_line_of_its_own(self):
-        target, share = self.LINES["13C+14N"]
+        target, _ = self.LINES["13C+14N"]
         monoisotopic_mz, _ = self.LINES["M0"]
         assert target - monoisotopic_mz > 3 * target * NITRATE.mass_range_ppm * 1e-6
         assert not _readings_of("C10H16O7", find_compositions(target, NITRATE))
@@ -378,9 +386,7 @@ class TestALineAtTheMonoisotopicNominalMass:
         (reading,) = _readings_of(
             "C10H16O7", find_compositions(target, NITRATE, isotopologue_floor=0.002)
         )
-        assert reading["isotope_offset"] == 0
         assert reading["isotope_mz"] == pytest.approx(target, abs=1e-6)
-        assert reading["isotope_abundance"] == pytest.approx(share, rel=1e-6)
 
     def test_its_offset_is_searched_only_where_such_a_line_exists(self):
         mechanism = parse_ionization("[M+[15N]O3]-")
@@ -420,7 +426,7 @@ def test_a_box_too_wide_to_hold_across_the_lines_is_still_searched(monkeypatch):
     assert build_neutral_grid(HALOGENS, low, high, max_rows=bound) is None
 
     expected = find_compositions(target, HALOGENS, isotopologue_floor=0.01)
-    assert any(ISOTOPE_KEYS & r.keys() for r in expected)
+    assert any(_at_a_line(r) for r in expected)
     monkeypatch.setattr(
         finder, "build_neutral_grid", partial(build_neutral_grid, max_rows=bound)
     )

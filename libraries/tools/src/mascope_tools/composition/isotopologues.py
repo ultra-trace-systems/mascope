@@ -372,9 +372,8 @@ def isotopologue_readings(
     :param max_rows: How many readings to keep, the closest in mass first.
     :param skip_rows: Grid rows already read as the monoisotopic line of this
         mechanism's ion; no other line of theirs can be on the target.
-    :return: One :class:`Result` per formula, its mass error taken against the
-        line it is read as, with the line's nominal offset, m/z and share of
-        the brightest line.
+    :return: One :class:`Result` per formula, carrying the m/z of the line it
+        is read as, which its mass error is taken against.
     """
     shift = mechanism.mass if mechanism.addition else -mechanism.mass
     moiety = utils.ionization_composition(mechanism.formula)
@@ -404,17 +403,15 @@ def isotopologue_readings(
             counts[symbol] = counts.get(symbol, 0) + sign * n
         if any(n < 0 for n in counts.values()):
             continue  # a removal the neutral has nothing to give for
-        monoisotopic_mz = neutral_mass + shift
-        reading = _brightest_on_target(
+        line_mz = _brightest_on_target(
             _ion_lines(counts, floor),
-            monoisotopic_mz,
+            neutral_mass + shift,
             mechanism.charge,
             target_mz,
             tolerance_da,
         )
-        if reading is None:
+        if line_mz is None:
             continue
-        line_mz, share = reading
         error_ppm = (target_mz - line_mz) / line_mz * 1e6
         readings.append(
             (
@@ -433,9 +430,7 @@ def isotopologue_readings(
                     ),
                     ionization_mechanism=mechanism.mascope_notation,
                     observed_mass=target_mz,
-                    isotope_offset=int(round(line_mz - monoisotopic_mz)),
                     isotope_mz=line_mz,
-                    isotope_abundance=share,
                 ),
             )
         )
@@ -453,13 +448,13 @@ def _brightest_on_target(
     charge: int,
     target_mz: float,
     tolerance_da: float,
-) -> tuple[float, float] | None:
+) -> float | None:
     """The brightest of an ion's lines within the window, when there is one.
 
     :param lines: The ion's :func:`_ion_lines`.
     :param monoisotopic_mz: The m/z of the ion's monoisotopic line.
     :param charge: The ion's charge.
-    :return: ``(line m/z, share of the brightest line)``, or None.
+    :return: The line's m/z, or None.
     """
     brightest = None
     for offset, share in lines:
@@ -468,7 +463,7 @@ def _brightest_on_target(
             brightest is None or share > brightest[1]
         ):
             brightest = (mz, share)
-    return brightest
+    return None if brightest is None else brightest[0]
 
 
 def _adduct_line_readings(
@@ -489,16 +484,15 @@ def _adduct_line_readings(
         return []
     if abs(target_mz - mechanism.mass) <= tolerance_da:
         return []  # the monoisotopic line is on the target, and read already
-    reading = _brightest_on_target(
+    line_mz = _brightest_on_target(
         _ion_lines(moiety, floor),
         mechanism.mass,
         mechanism.charge,
         target_mz,
         tolerance_da,
     )
-    if reading is None:
+    if line_mz is None:
         return []
-    line_mz, share = reading
     error_ppm = (target_mz - line_mz) / line_mz * 1e6
     return [
         (
@@ -510,9 +504,7 @@ def _adduct_line_readings(
                 ion=utils.combine_counts_and_ionization({}, mechanism),
                 ionization_mechanism=mechanism.mascope_notation,
                 observed_mass=target_mz,
-                isotope_offset=int(round(line_mz - mechanism.mass)),
                 isotope_mz=line_mz,
-                isotope_abundance=share,
             ),
         )
     ]
