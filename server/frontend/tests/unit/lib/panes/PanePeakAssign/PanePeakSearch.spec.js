@@ -378,6 +378,54 @@ describe('PanePeakSearch stale results after the focus moves', () => {
   })
 })
 
+// A candidate found at another line of its ion than the monoisotopic one - its
+// 13C line, a dibromide's brightest line - carries a tag naming that line,
+// because the row otherwise reads as the compound's own mass on a peak it is not.
+describe('PanePeakSearch results read at another line', () => {
+  /** A hit whose pattern puts its 13C line on the searched peak. */
+  function isotopologueHit(formula, mechanism = 'mech-1') {
+    const found = hit(formula, mechanism)
+    found.children = [
+      { mz: 199.12, relative_abundance: 1.0, target_isotope_formula: formula },
+      { mz: 200.1234, relative_abundance: 0.11, target_isotope_formula: `[13C]${formula}` }
+    ]
+    return found
+  }
+
+  it('tags a candidate found at its 13C line with that line', async () => {
+    const wrapper = await mountPane()
+    await deliverResults(wrapper, PEAK_A, [hit('C6H12O6'), isotopologueHit('C9H15O4')])
+
+    const tags = wrapper.findAll('.dt-row .line-tag')
+    expect(tags).toHaveLength(1)
+    expect(tags[0].text()).toBe('[13C]')
+  })
+
+  // One composition read under two adducts - at its monoisotopic line under
+  // one, at an isotopologue line under the other - is two rows, and a row key
+  // of the formula alone would make them one.
+  it('keys a composition found under two adducts as two rows', async () => {
+    const wrapper = await mountPane()
+    await deliverResults(wrapper, PEAK_A, [hit('C9H15O4'), isotopologueHit('C9H15O4', 'mech-2')])
+
+    expect(wrapper.findAll('.dt-row')).toHaveLength(2)
+    expect(wrapper.find('.dt').attributes('datakey')).toBe('key')
+    expect(new Set(wrapper.vm.results.map((row) => row.key)).size).toBe(2)
+  })
+
+  it('commits the peak as that isotopologue of the compound', async () => {
+    const wrapper = await mountPane()
+    await deliverResults(wrapper, PEAK_A, [isotopologueHit('C9H15O4')])
+
+    await handButtons(wrapper)[0].trigger('click')
+
+    expect(curate.mock.calls[0][1]).toMatchObject({
+      assigned_formula: 'C9H15O4',
+      isotope_label: 'M+1'
+    })
+  })
+})
+
 // The hand button's help card is anchored on the column header rather than on
 // the button, because a card registered inside a virtual-scrolled row body
 // would leak one per row rendered. The header carries the same hazard in

@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest'
 
 import {
   isotopeOfHit,
+  readLineOfHit,
   curationBodyForHit,
   canCurateHit,
   hitKey
@@ -160,6 +161,62 @@ describe('isotopeOfHit with the ion formula', () => {
 
     expect(at(328.6817)).toEqual({ label: 'M0', formula: 'CHBr4-' })
     expect(at(332.6776)).toEqual({ label: 'M+4', formula: '[81Br]2CHBr2-' })
+  })
+})
+
+// A search that reads the peak as any line of a candidate's ion finds compounds
+// at their 13C line, a dibromide at its brightest line, a 15N reagent's adduct
+// at its unlabelled remainder. The table tags each such row with the line, named
+// as the peak inspector names an isotopologue row, so a row found at a 13C line
+// is not read as the compound's own mass.
+describe('readLineOfHit', () => {
+  it('names nothing for a hit read at its monoisotopic line', () => {
+    expect(readLineOfHit(hit(180.0634))).toBeNull()
+    expect(readLineOfHit({ children: [] })).toBeNull()
+    expect(readLineOfHit(null)).toBeNull()
+  })
+
+  it('names a heavier line by the isotope it substitutes, with its offset and share', () => {
+    expect(readLineOfHit(hit(181.0668))).toEqual({
+      name: '[13C]',
+      offset: 'M+1',
+      share: 0.067
+    })
+  })
+
+  // The pattern's abundances are probabilities, as the isotope rows the search
+  // matches carry them - the brightest line is not 1 - so the share is taken
+  // against the brightest.
+  it('names the brightest line of a dibromide', () => {
+    const dibromophenol = [
+      { mz: 248.8556, relative_abundance: 0.2313, target_isotope_formula: 'C6H3Br2O-' },
+      { mz: 250.8536, relative_abundance: 0.45, target_isotope_formula: '[81Br]C6H3BrO-' },
+      { mz: 252.8515, relative_abundance: 0.2187, target_isotope_formula: '[81Br]2C6H3O-' }
+    ]
+    const at = (mz) => readLineOfHit({ ...hit(mz, dibromophenol), target_ion_formula: 'C6H3Br2O-' })
+
+    expect(at(250.8536)).toEqual({ name: '[81Br]', offset: 'M+2', share: 1.0 })
+    expect(at(252.8515)).toMatchObject({ name: '[81Br]2', offset: 'M+4' })
+    expect(at(252.8515).share).toBeCloseTo(0.486, 6)
+  })
+
+  // Counted from the labelled line, so the reagent's remainder below it is the
+  // named line and the labelled one is the ion's own.
+  it("names a labelled reagent's unlabelled remainder below its labelled line", () => {
+    const labelled = [
+      { mz: 310.078, relative_abundance: 0.0204, target_isotope_formula: 'C10H16NO10-' },
+      { mz: 311.075, relative_abundance: 1.0, target_isotope_formula: '[15N]C10H16O10-' }
+    ]
+    const at = (mz) => readLineOfHit({ ...hit(mz, labelled), target_ion_formula: 'C10H16O10^N-' })
+
+    expect(at(311.075)).toBeNull()
+    expect(at(310.078)).toEqual({ name: '[14N]', offset: 'M-1', share: 0.0204 })
+  })
+
+  it('names the line by its offset when the pattern gives no formulas or abundances', () => {
+    const bare = [{ mz: 100.0 }, { mz: 102.0 }]
+
+    expect(readLineOfHit(hit(102.0, bare))).toEqual({ name: 'M+2', offset: 'M+2', share: null })
   })
 })
 

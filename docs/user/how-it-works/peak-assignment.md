@@ -786,6 +786,28 @@ it. Verifications are the layer built to outlive a run &mdash; keyed on the peak
 and ionization mechanism rather than on a run &mdash; which is why they carry over a
 re-assignment and an override does not.
 
+### Searching one peak
+
+*Find more* searches the focused peak on its own: every formula of the grid whose ion,
+under one of the chosen ionization mechanisms, puts a line within the m/z window of the
+peak, each matched against the sample and scored as a run scores it.
+
+Which line of the ion the peak is decides what can be found. Read as the monoisotopic
+line of every candidate, a peak that is another line of a compound's ion never finds
+that compound: a dibromide shows its 79Br81Br line twice as bright as its monoisotopic
+79Br2 line, and a peak one mass unit above a compound is its 13C line. So the search
+reads the peak as any line of each candidate's ion at least 1% of the brightest: the 13C
+line one unit above a compound, a 34S or 37Cl line two above, a 15N reagent's unlabelled
+remainder one below. A labelled reagent's adduct is read at its labelled line, the one
+the reagent makes most of - the 15N-nitrate adduct of a compound at its [15N] line.
+
+A candidate found at another line than its monoisotopic one is tagged with that line
+(`[13C]`, `[81Br]`, `[14N]`), its m/z error is against it, and assigning it by hand
+records the peak as that isotopologue of the compound. Reading every line finds about
+twice as many candidates as reading the monoisotopic line alone; most of the extra ones
+are compounds whose monoisotopic line the spectrum does not hold, which the fit score
+ranks low.
+
 ### Curating a species for the whole batch
 
 In a sample served from the batch ledger (its runs list shows *Batch ledger*), the

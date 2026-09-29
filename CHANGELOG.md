@@ -514,6 +514,22 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   ships: those carry no filename token, so a scope could not change how anything
   routes.
 
+- **The composition search finds a compound at any of its isotopologue
+  lines.** *Find more* read the searched peak as the monoisotopic line of every
+  candidate's ion, so a peak that is another line of a compound's ion never
+  found that compound: a dibromide shows its 79Br81Br line twice as bright as
+  its monoisotopic one, and a peak one unit above a compound is its 13C line.
+  The search now reads the peak as any line of each candidate's ion at least 1%
+  of the brightest - a 13C, 34S, 37Cl or 18O line, or a 15N reagent's unlabelled
+  remainder one unit below its labelled line. A candidate found at another line
+  is tagged with it (`[13C]`, `[81Br]`), its m/z error is against that line, and
+  the hand button assigns the peak as that isotopologue of the compound. That
+  finds about twice as many candidates, most of which score low because the
+  spectrum lacks their monoisotopic line. The API's composition search reads
+  every line when asked with `isotopologues: true` (the default, false, keeps the
+  monoisotopic line alone) and names the line a result was read at in
+  `target_isotope_label` and `target_isotope_offset`.
+
 ### Changed
 
 - **Peak assignment still ships off, and the assignment work in these notes
