@@ -1287,7 +1287,9 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   scrolled too - by more when the create form wrapped in a narrow window. The
   table now takes the height the form and the search leave and scrolls its own
   rows, as the mechanisms table does; only when a wrapped form leaves it less
-  than its header and a row does the tab scroll instead.
+  than its header and a row does the tab scroll instead. The mechanisms table
+  keeps the same floor, where on a very short screen it had shrunk away with
+  no scrollbar to reach its rows.
 
 ## [1.9.0] - 2026.09.24
 
