@@ -34,17 +34,23 @@ const resetFields = () => {
 }
 
 // Why the typed mechanism cannot be added, or null: the notation first, then
-// each term as a formula of element symbols. A labelled atom is written with a
-// caret (^N); the bracketed form ([15N]) is refused here, as it always was,
-// because target ions are built from the caret form alone. Whether the symbols
-// are real elements is the server's check.
+// each term as a formula of element symbols, then whether the server already
+// has it, compared in the standard notation so either spelling is caught. A
+// labelled atom is written with a caret (^N); the bracketed form ([15N]) is
+// refused here, as it always was, because target ions are built from the caret
+// form alone. Whether the symbols are real elements is the server's check.
 const problem = computed(() => {
   const text = add.mechanism.trim()
   if (!text) return null
   const notation = mechanismProblem(text)
   if (notation) return notation
   const term = mechanismTerms(text).find((term) => !isValidChemicalFormula(term))
-  return term ? `'${term}' is not a formula; a labelled atom is written with a caret, ^N` : null
+  if (term) return `'${term}' is not a formula; a labelled atom is written with a caret, ^N`
+  const stored = standardMechanism(text)
+  const exists = app.data.ionization.mechanism.list.some(
+    (row) => standardMechanism(row.ionization_mechanism) === stored
+  )
+  return exists ? `${stored} is already a mechanism` : null
 })
 
 // Under the examples: what is wrong, else the spelling the server will store
