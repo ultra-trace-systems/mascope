@@ -81,6 +81,46 @@ class TestTheWindow:
         assert rows == inside.tolist()
 
 
+class TestSeveralWindows:
+    """A search of one target reads a narrow window per ionization mechanism
+    and per isotopologue line, spread over a range many daltons wide; a grid of
+    those windows holds their rows and none of the rows between them."""
+
+    CONFIG = CompositionSearchConfig(
+        ionizations="[M+H]+", element_count_ranges="C0-10 H0-20 N0-2 O0-5"
+    )
+    WINDOWS = [(140.0, 140.05), (99.0, 99.2), (100.9, 101.3), (101.1, 101.6)]
+
+    def test_it_holds_every_row_of_the_windows_and_no_other(self):
+        whole = build_neutral_grid(self.CONFIG, 0.0, 200.0)
+        windowed = build_neutral_grid(self.CONFIG, 0.0, 200.0, windows=self.WINDOWS)
+        inside = np.zeros(len(whole), dtype=bool)
+        for low, high in self.WINDOWS:
+            inside |= (whole.mass >= low) & (whole.mass <= high)
+        assert 0 < len(windowed) < len(whole)
+        np.testing.assert_array_equal(windowed.mass, whole.mass[inside])
+        np.testing.assert_array_equal(windowed.counts, whole.counts[inside])
+        for low, high in self.WINDOWS:
+            rows = windowed.between(low, high)
+            np.testing.assert_array_equal(
+                windowed.mass[rows.start : rows.stop],
+                whole.mass[(whole.mass >= low) & (whole.mass <= high)],
+            )
+
+    def test_the_rows_between_the_windows_do_not_count_against_the_bound(self):
+        held = len(build_neutral_grid(self.CONFIG, 0.0, 200.0, windows=self.WINDOWS))
+        assert build_neutral_grid(self.CONFIG, 99.0, 140.05, max_rows=held) is None
+        grid = build_neutral_grid(
+            self.CONFIG, 0.0, 200.0, max_rows=held, windows=self.WINDOWS
+        )
+        assert grid is not None and len(grid) == held
+
+    def test_the_range_cuts_the_windows(self):
+        grid = build_neutral_grid(self.CONFIG, 100.0, 101.2, windows=self.WINDOWS)
+        assert grid.mass.min() >= 100.9 and grid.mass.max() <= 101.2
+        assert build_neutral_grid(self.CONFIG, 0.0, 50.0, windows=self.WINDOWS) is None
+
+
 class TestTheRowBound:
     def test_a_box_too_wide_to_hold_is_refused_rather_than_truncated(self):
         # Half an answer is worse than none: the caller falls back to a grid per

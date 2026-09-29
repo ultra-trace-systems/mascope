@@ -19,10 +19,10 @@ at least a floor of its brightest line, within the window.
 It does not predict an envelope for every formula in a mass range. A line sits
 a whole number of mass units from its ion's monoisotopic line plus a mass
 defect bounded by the isotopes involved (:func:`line_offsets`), so the formulas
-one offset could explain are a narrow window of the neutral grid, found by the
-binary search the monoisotopic reading uses. Only those formulas are predicted,
-and one is kept where its envelope puts a line on the peak
-(:func:`isotopologue_readings`).
+one offset could explain are a narrow window of the neutral grid
+(:func:`isotopologue_windows`), found by the binary search the monoisotopic
+reading uses. Only those formulas are predicted, and one is kept where its
+envelope puts a line on the peak (:func:`isotopologue_readings`).
 """
 
 from __future__ import annotations
@@ -37,10 +37,8 @@ from IsoSpecPy import IsoThreshold
 from pyteomics.mass import calculate_mass
 
 from mascope_tools.composition import utils
-from mascope_tools.composition.config import ELECTRON_MASS
 from mascope_tools.composition.custom_elements import CUSTOM_ELEMENTS
 from mascope_tools.composition.grid import NeutralGrid
-from mascope_tools.composition.heuristic_filter import predict_isotopes
 from mascope_tools.composition.models import (
     CompositionSearchConfig,
     IonizationMechanism,
@@ -50,8 +48,8 @@ from mascope_tools.composition.models import (
 
 __all__ = [
     "MAX_NOMINAL_OFFSET",
-    "isotopologue_mass_bounds",
     "isotopologue_readings",
+    "isotopologue_windows",
     "line_offsets",
 ]
 
@@ -62,6 +60,13 @@ __all__ = [
 #: is given to search comes close to twelve, and the bound only keeps a box of
 #: absurd width from turning into a scan of the whole grid.
 MAX_NOMINAL_OFFSET = 12
+
+#: How far from the monoisotopic line a line must sit to be another line. The
+#: grid's element masses and the isotope tables' differ by up to a
+#: micro-dalton an atom, so a formula's monoisotopic configuration comes out
+#: that far from zero; another configuration at the same nominal mass comes no
+#: nearer than a milli-dalton.
+_SAME_LINE_DA = 1e-4
 
 #: An element's configurations worth a line: each one's nominal offset, its
 #: mass offset in daltons, and its abundance relative to the element's most
@@ -109,6 +114,7 @@ def _element_lines(symbol: str, count: int, floor: float) -> _ElementLines:
     )
 
 
+@lru_cache(maxsize=1024)
 def _custom_lines(symbol: str, count: int, floor: float) -> _ElementLines:
     """The configurations of a labelled reagent's atoms worth a line.
 
@@ -206,15 +212,37 @@ def line_offsets(
     :param floor: The abundance, relative to the ion's most abundant line,
         below which a line is not searched for; 1.0 searches the most abundant
         line alone.
-    :return: ``{nominal offset: (lowest, highest) mass offset}``, the
-        monoisotopic offset 0 left out, each offset within
-        :data:`MAX_NOMINAL_OFFSET` either way.
+    :return: ``{nominal offset: (lowest, highest) mass offset}``, each offset
+        within :data:`MAX_NOMINAL_OFFSET` either way. Offset 0 is there only
+        where a line other than the monoisotopic one reaches it - a labelled
+        reagent's unlabelled remainder with a 13C, a few milli-daltons from the
+        monoisotopic line and outside a narrow window around it.
+    """
+    ranges = _ion_count_ranges(config, mechanism, target_mz)
+    return {
+        nominal: (lowest, highest)
+        for nominal, lowest, highest in _combined_offsets(
+            tuple(sorted(ranges.items())), floor
+        )
+    }
+
+
+@lru_cache(maxsize=1024)
+def _combined_offsets(
+    ranges: tuple[tuple[str, tuple[int, int]], ...], floor: float
+) -> tuple[tuple[int, float, float], ...]:
+    """:func:`line_offsets` for one set of atom count ranges.
+
+    Cached on the ranges rather than on the target: the box's own limits, not
+    the target's mass, bound the counts of an ordinary search, so the peaks of
+    one spectrum and a search repeated with the same parameters share one
+    answer.
+
+    :return: ``(nominal offset, lowest, highest mass offset)``, ascending.
     """
     # nominal offset -> (best achievable relative abundance, mass span)
     reachable: dict[int, tuple[float, float, float]] = {0: (1.0, 0.0, 0.0)}
-    for symbol, (low, high) in sorted(
-        _ion_count_ranges(config, mechanism, target_mz).items()
-    ):
+    for symbol, (low, high) in ranges:
         per_offset: dict[int, tuple[float, float, float]] = {}
         for count in range(low, high + 1):
             lines = (
@@ -245,94 +273,74 @@ def line_offsets(
                     max(known[2], highest + step_high),
                 )
         reachable = combined
-    return {
-        nominal: (lowest, highest)
+    return tuple(
+        (nominal, lowest, highest)
         for nominal, (_, lowest, highest) in sorted(reachable.items())
-        if nominal != 0
-    }
+        if nominal != 0 or max(abs(lowest), abs(highest)) > _SAME_LINE_DA
+    )
 
 
-def isotopologue_mass_bounds(
+def isotopologue_windows(
     target_mz: float,
-    mechanisms: Sequence[IonizationMechanism],
-    offsets: Sequence[LineOffsets],
+    mechanism: IonizationMechanism,
+    offsets: LineOffsets,
     tolerance_da: float,
-) -> tuple[float, float]:
-    """The neutral masses a grid must span to answer every line reading.
+) -> list[tuple[float, float]]:
+    """The neutral masses whose ion could put a line on the target, one window
+    per nominal offset.
 
     :param target_mz: The peak being searched.
-    :param mechanisms: The ionization mechanisms, in the order of ``offsets``.
-    :param offsets: Each mechanism's :func:`line_offsets`.
+    :param mechanism: The ionization mechanism the ions are built with.
+    :param offsets: The mechanism's :func:`line_offsets`.
     :param tolerance_da: The search window's half-width.
-    :return: ``(mass_min, mass_max)``; ``(0.0, -1.0)`` when nothing is searched.
+    :return: ``(lowest, highest)`` neutral mass per offset, in the order of
+        ``offsets``.
     """
-    lows, highs = [], []
-    for mechanism, spans in zip(mechanisms, offsets):
-        shift = mechanism.mass if mechanism.addition else -mechanism.mass
-        for lowest, highest in spans.values():
-            lows.append(target_mz - shift - highest - tolerance_da)
-            highs.append(target_mz - shift - lowest + tolerance_da)
-    if not lows:
-        return (0.0, -1.0)
-    return (max(0.0, min(lows)), max(highs))
+    shift = mechanism.mass if mechanism.addition else -mechanism.mass
+    return [
+        (
+            target_mz - shift - highest - tolerance_da,
+            target_mz - shift - lowest + tolerance_da,
+        )
+        for lowest, highest in offsets.values()
+    ]
 
 
-def _envelope(ion_formula: str, charge: int, floor: float):
-    """An ion's lines at least ``floor`` of its brightest: m/z and share.
+def _ion_lines(counts: Mapping[str, int], floor: float) -> list[tuple[float, float]]:
+    """An ion's lines at least ``floor`` of its brightest.
 
-    IsoSpec alone for an ordinary ion. A labelled reagent's atoms are not in
-    IsoSpec's tables, so for an ion holding one the rest of the ion is predicted
-    and convolved with the reagent's own distribution; the envelope of the whole
-    is the product of the two, which is also why thresholding each part at the
-    floor loses no line of the product.
+    Combined from its elements' configurations rather than predicted whole. The
+    envelope of an ion is the product of its elements' own, so a line's share
+    of the ion's brightest is the product of its element configurations' shares
+    of their own most abundant, and a line above the floor is built only of
+    configurations above it - which :func:`_element_lines` and
+    :func:`_custom_lines` hold, cached per element and count. A window of
+    thousands of formulas then costs a few multiplications per formula, not an
+    isotope prediction and the formula strings it is asked with.
 
-    :return: ``(m/z array, relative abundance array)``, empty where the formula
-        cannot be predicted: a grid atom carrying a fixed isotope label
-        (``[13C]``) has no envelope of its own, and reading it as its base
-        element would predict one it does not have.
+    :param counts: The ion's atoms by symbol - an element, or a labelled
+        reagent's atom (``^N``) - with their counts.
+    :param floor: The least share of the brightest line a line may have.
+    :return: ``(mass offset, share of the brightest line)`` per line, the
+        offset in daltons from every atom at its monoisotopic mass, which for a
+        labelled reagent's atom is its labelled mass.
     """
-    if "[" in ion_formula:
-        return np.empty(0), np.empty(0)
-    counts = utils.parse_composition(ion_formula)
-    labelled = {
-        symbol: int(n) for symbol, n in counts.items() if symbol in CUSTOM_ELEMENTS
-    }
-    base = {
-        symbol: int(n)
-        for symbol, n in counts.items()
-        if symbol not in CUSTOM_ELEMENTS and n > 0
-    }
-    try:
-        if base:
-            lines = IsoThreshold(formula=utils.to_hill_order(base), threshold=floor)
-            masses = np.fromiter(lines.masses, dtype=float)
-            probs = np.fromiter(lines.probs, dtype=float)
-        else:
-            masses, probs = np.zeros(1), np.ones(1)
-    except Exception:  # noqa: BLE001 - IsoSpec refuses a bracketed isotope
-        return np.empty(0), np.empty(0)
-    for symbol, n in labelled.items():
-        heavy_mass = CUSTOM_ELEMENTS[symbol].isotopes[-1][0]
-        custom = _custom_lines(symbol, n, floor)
-        masses = (
-            masses[:, None] + np.array([n * heavy_mass + d for _, d, _ in custom])
-        ).ravel()
-        probs = (probs[:, None] * np.array([s for _, _, s in custom])).ravel()
-    if not probs.size:
-        return np.empty(0), np.empty(0)
-    share = probs / probs.max()
-    keep = share >= floor
-    mzs = (masses[keep] - ELECTRON_MASS * charge) / abs(charge)
-    return mzs, share[keep]
-
-
-def _label_of(ion_formula: str, charge: int, line_mz: float, floor: float) -> str:
-    """The isotope label the rest of the finder gives a line: ``13C``, ``81Br2``,
-    ``13C+34S``, and ``14N`` for a labelled reagent's unlabelled remainder."""
-    mzs, _, labels = predict_isotopes(ion_formula, charge, threshold=floor / 10.0)
-    if not len(mzs):
-        return ""
-    return labels[int(np.argmin(np.abs(np.asarray(mzs) - line_mz)))]
+    lines = [(0.0, 1.0)]
+    for symbol, count in counts.items():
+        if count <= 0:
+            continue
+        configurations = (
+            _custom_lines(symbol, count, floor)
+            if symbol in CUSTOM_ELEMENTS
+            else _element_lines(symbol, count, floor)
+        )
+        lines = [
+            (offset + delta, share * part)
+            for offset, share in lines
+            for _, delta, part in configurations
+            if share * part >= floor
+        ]
+    return lines
 
 
 def isotopologue_readings(
@@ -357,45 +365,56 @@ def isotopologue_readings(
     :param target_mz: The peak being searched.
     :param tolerance_da: The search window's half-width.
     :param mechanism: The ionization mechanism the ions are built with.
-    :param grid: A neutral grid spanning :func:`isotopologue_mass_bounds`.
+    :param grid: A neutral grid holding every row of
+        :func:`isotopologue_windows`.
     :param offsets: The mechanism's :func:`line_offsets`.
     :param floor: The least share of its ion's brightest line a line may have.
     :param max_rows: How many readings to keep, the closest in mass first.
     :param skip_rows: Grid rows already read as the monoisotopic line of this
         mechanism's ion; no other line of theirs can be on the target.
     :return: One :class:`Result` per formula, its mass error taken against the
-        line it is read as, with the line's label, nominal offset, m/z and
-        share of the brightest line.
+        line it is read as, with the line's nominal offset, m/z and share of
+        the brightest line.
     """
     shift = mechanism.mass if mechanism.addition else -mechanism.mass
     moiety = utils.ionization_composition(mechanism.formula)
     sign = 1 if mechanism.addition else -1
     skipped = set(skip_rows)
+    symbols = [atom.symbol for atom in grid.atoms]
+    # A grid atom carrying a fixed isotope label ("[13C]") has no envelope of
+    # its own, and reading it as its base element would predict one it does
+    # not have.
+    fixed = [symbol for symbol in symbols if symbol.startswith("[")]
 
     candidates: dict[int, None] = {}
-    for lowest, highest in offsets.values():
-        centre = target_mz - shift - (lowest + highest) / 2.0
-        half_width = (highest - lowest) / 2.0 + tolerance_da
-        for row in grid.window(centre, half_width):
+    for low, high in isotopologue_windows(target_mz, mechanism, offsets, tolerance_da):
+        for row in grid.between(low, high):
             if row not in skipped:
                 candidates.setdefault(row, None)
 
     readings: list[tuple[float, Result]] = []
     for row in candidates:
-        if grid.mass[row] <= 0.0:
+        neutral_mass = float(grid.mass[row])
+        if neutral_mass <= 0.0:
             continue  # the empty neutral: the adduct's own lines, read below
-        counts = grid.pyteomics_composition(row)
-        if not mechanism.addition and any(
-            counts.get(symbol, 0) < n for symbol, n in moiety.items()
-        ):
+        counts = dict(zip(symbols, grid.counts[row].tolist()))
+        if any(counts[symbol] for symbol in fixed):
+            continue
+        for symbol, n in moiety.items():
+            counts[symbol] = counts.get(symbol, 0) + sign * n
+        if any(n < 0 for n in counts.values()):
             continue  # a removal the neutral has nothing to give for
-        ion = utils.combine_counts_and_ionization(counts, mechanism)
-        reading = _line_on_target(ion, mechanism, target_mz, tolerance_da, floor)
+        monoisotopic_mz = neutral_mass + shift
+        reading = _brightest_on_target(
+            _ion_lines(counts, floor),
+            monoisotopic_mz,
+            mechanism.charge,
+            target_mz,
+            tolerance_da,
+        )
         if reading is None:
             continue
         line_mz, share = reading
-        neutral_mass = float(grid.mass[row])
-        monoisotopic_mz = neutral_mass + shift
         error_ppm = (target_mz - line_mz) / line_mz * 1e6
         readings.append(
             (
@@ -409,10 +428,11 @@ def isotopologue_readings(
                         if grid.unsaturation is None
                         else float(grid.unsaturation[row])
                     ),
-                    ion=ion,
+                    ion=utils.combine_counts_and_ionization(
+                        grid.pyteomics_composition(row), mechanism
+                    ),
                     ionization_mechanism=mechanism.mascope_notation,
                     observed_mass=target_mz,
-                    isotope_label=_label_of(ion[:-1], mechanism.charge, line_mz, floor),
                     isotope_offset=int(round(line_mz - monoisotopic_mz)),
                     isotope_mz=line_mz,
                     isotope_abundance=share,
@@ -427,23 +447,28 @@ def isotopologue_readings(
     return [result for _, result in readings[:max_rows]]
 
 
-def _line_on_target(
-    ion: str,
-    mechanism: IonizationMechanism,
+def _brightest_on_target(
+    lines: Sequence[tuple[float, float]],
+    monoisotopic_mz: float,
+    charge: int,
     target_mz: float,
     tolerance_da: float,
-    floor: float,
 ) -> tuple[float, float] | None:
-    """The brightest line of an ion within the window, when there is one.
+    """The brightest of an ion's lines within the window, when there is one.
 
+    :param lines: The ion's :func:`_ion_lines`.
+    :param monoisotopic_mz: The m/z of the ion's monoisotopic line.
+    :param charge: The ion's charge.
     :return: ``(line m/z, share of the brightest line)``, or None.
     """
-    mzs, shares = _envelope(ion[:-1], mechanism.charge, floor)
-    inside = np.abs(mzs - target_mz) <= tolerance_da
-    if not inside.any():
-        return None
-    brightest = int(np.argmax(np.where(inside, shares, -1.0)))
-    return float(mzs[brightest]), float(shares[brightest])
+    brightest = None
+    for offset, share in lines:
+        mz = monoisotopic_mz + offset / abs(charge)
+        if abs(mz - target_mz) <= tolerance_da and (
+            brightest is None or share > brightest[1]
+        ):
+            brightest = (mz, share)
+    return brightest
 
 
 def _adduct_line_readings(
@@ -462,14 +487,18 @@ def _adduct_line_readings(
     """
     if sign < 0 or not moiety:
         return []
-    ion = utils.combine_counts_and_ionization({}, mechanism)
-    reading = _line_on_target(ion, mechanism, target_mz, tolerance_da, floor)
+    if abs(target_mz - mechanism.mass) <= tolerance_da:
+        return []  # the monoisotopic line is on the target, and read already
+    reading = _brightest_on_target(
+        _ion_lines(moiety, floor),
+        mechanism.mass,
+        mechanism.charge,
+        target_mz,
+        tolerance_da,
+    )
     if reading is None:
         return []
     line_mz, share = reading
-    offset = int(round(line_mz - mechanism.mass))
-    if offset == 0:
-        return []  # the monoisotopic line, which the search reads already
     error_ppm = (target_mz - line_mz) / line_mz * 1e6
     return [
         (
@@ -478,11 +507,10 @@ def _adduct_line_readings(
                 formula="()",
                 neutral_mass=0.0,
                 composition_error_ppm=error_ppm,
-                ion=ion,
+                ion=utils.combine_counts_and_ionization({}, mechanism),
                 ionization_mechanism=mechanism.mascope_notation,
                 observed_mass=target_mz,
-                isotope_label=_label_of(ion[:-1], mechanism.charge, line_mz, floor),
-                isotope_offset=offset,
+                isotope_offset=int(round(line_mz - mechanism.mass)),
                 isotope_mz=line_mz,
                 isotope_abundance=share,
             ),
