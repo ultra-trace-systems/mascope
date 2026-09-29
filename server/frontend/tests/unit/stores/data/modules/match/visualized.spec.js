@@ -98,3 +98,33 @@ describe('match.visualized isotopeMain', () => {
     expect(mainFormula()).toBe('C9H16NO7-')
   })
 })
+
+// The spectra chart draws the M0 and, beside it, the selected isotope when that
+// is a different line - `isotopeSelected !== isotopeList[0]`, an identity test
+// between two store members. Pinia hands back a reactive proxy rather than the
+// row that was assigned, so whether the two agree for one row is a question only
+// a real store answers; a component spec's plain-object mock cannot pose it.
+describe('match.visualized isotopeMain identity', () => {
+  beforeEach(() => {
+    store.ion = { target_ion_formula: 'C9H16O7^N-' }
+    store.isotopes = NITRATE
+  })
+
+  it('is the same object as the selection when the M0 is what is selected', () => {
+    store.isotopeSelected = store.isotopes[1]
+
+    expect(store.isotopeSelected === store.isotopeMain).toBe(true)
+  })
+
+  it('is a different object from the selection when another line is selected', () => {
+    store.isotopeSelected = store.isotopes[0]
+
+    expect(store.isotopeSelected === store.isotopeMain).toBe(false)
+  })
+
+  // Read twice without the state moving: a getter handing back a fresh proxy each
+  // time would make the chart's dedup miss and draw the M0 twice.
+  it('gives back the same object on every read', () => {
+    expect(store.isotopeMain === store.isotopeMain).toBe(true)
+  })
+})

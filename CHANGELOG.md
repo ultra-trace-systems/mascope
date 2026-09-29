@@ -1169,7 +1169,10 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   spelling still reads differently on the two sides: where an imported run
   wrote its M0 in the ion's own caret notation rather than in brackets, the
   tab opens on that line while the run's own rows count from the line below
-  it.
+  it. The isotope table's *Substitution* header also loses the tint of a
+  sorted column. The table declared itself sorted by a field the isotope rows
+  do not carry, so the comparator never moved a row and the tint announced an
+  ordering that was not there; the rows were, and remain, in m/z order.
 
 - **A loaded reference database no longer widens the mass width a TOF sample is
   scored and gated at.** Stage A matches a reference list's formulas in the

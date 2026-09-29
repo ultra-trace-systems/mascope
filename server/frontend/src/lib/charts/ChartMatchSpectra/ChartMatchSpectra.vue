@@ -71,20 +71,23 @@ const isotopeCharts = computed(() => {
   // Map over the limited isotope list
   return isotopeList.map((isotope) => {
     // split up the chart's traces by isotope
-    const start = traces.value?.findIndex(
+    // `traces` is an array at every point of its own computed, so these read it
+    // straight: an optional chain here would hand `start` undefined, which the
+    // "not found" test below is not looking for.
+    const start = traces.value.findIndex(
       (trace) => trace.target_isotope_id === isotope.target_isotope_id
     )
     // No trace group for this isotope yet - the figure draws empty rather than
     // taking `slice(-1)`'s last trace, which belongs to another isotope.
     if (start === -1) return { ...isotope, traces: [] }
-    const nextStart = traces.value?.findIndex(
+    const nextStart = traces.value.findIndex(
       ({ target_isotope_id }, index) => target_isotope_id && index > start
     )
     const end =
       nextStart !== -1 // if next isotope found
         ? nextStart // use it as the end of isotope trace data
-        : traces.value?.length // otherwise use all remaining data
-    const isotopeTraces = traces.value?.slice(start, end)
+        : traces.value.length // otherwise use all remaining data
+    const isotopeTraces = traces.value.slice(start, end)
     return {
       // all match isotope fields
       ...isotope,
