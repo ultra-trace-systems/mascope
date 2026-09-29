@@ -47,11 +47,17 @@ const problem = computed(() => {
   const term = mechanismTerms(text).find((term) => !isValidChemicalFormula(term))
   if (term) return `'${term}' is not a formula; a labelled atom is written with a caret, ^N`
   const stored = standardMechanism(text)
-  const exists = app.data.ionization.mechanism.list.some(
-    (row) => standardMechanism(row.ionization_mechanism) === stored
-  )
-  return exists ? `${stored} is already a mechanism` : null
+  return existing.value.has(stored) ? `${stored} is already a mechanism` : null
 })
+
+// The server's mechanisms in the standard notation, worked out once per list
+// rather than once per keystroke.
+const existing = computed(
+  () =>
+    new Set(
+      app.data.ionization.mechanism.list.map((row) => standardMechanism(row.ionization_mechanism))
+    )
+)
 
 // Under the examples: what is wrong, else the spelling the server will store
 // when it is not what was typed (a legacy spelling, or terms in another order
@@ -89,7 +95,7 @@ defineExpose({
   <!-- A column (a dialog's menu is a row), as wide as the table -->
   <menu class="add">
     <div class="row">
-      <FloatLabel style="flex-grow: 1">
+      <FloatLabel class="field">
         <InputText
           v-model="add.mechanism"
           id="add-mechanism"
@@ -195,6 +201,13 @@ section :deep(*) {
   margin-top: 1.5rem;
   width: 500px;
   max-width: 100%;
+}
+
+/* The hints belong to the field, so keep them close under it rather than
+   below a float label's usual bottom margin */
+.field {
+  flex-grow: 1;
+  margin-bottom: 0.375rem;
 }
 
 /* A message is a grid, whose column would otherwise grow to the text */
