@@ -4,8 +4,6 @@ Utility functions for cheminfo composition search.
 
 import re
 
-from pyteomics.mass import calculate_mass
-
 from mascope_tools.composition.custom_elements import CUSTOM_ELEMENTS
 
 
@@ -70,41 +68,3 @@ def to_explicit_isotope_format(formula_ranges: str) -> str:
 
     result = re.sub(pattern, replace_custom_element, formula_ranges)
     return result, replacements
-
-
-def explicit_isotope_line(formula: str) -> tuple[str, int] | None:
-    """The isotopologue line a formula's bracketed isotopes name.
-
-    A search whose formula range holds an explicit isotope (``[13C]0-1``) finds
-    formulas carrying it, and the search reports each as its unlabelled
-    compound read at the labelled mass - that compound's 13C line. This names
-    the line the way an isotope label does, with its whole-unit offset from the
-    compound's monoisotopic line.
-
-    Only bracketed tokens count: a labelled reagent's isotope is a custom
-    element (``^N``) by the time a formula gets here, a compound of its own
-    rather than a line of another.
-
-    :param formula: A formula, e.g. ``"[13C]2C4H12O6"``.
-    :return: ``(label, offset)``, e.g. ``("13C2", 2)``; None when the formula
-        holds no bracketed isotope.
-
-    Examples
-    --------
-    >>> explicit_isotope_line("[13C]C5H12O6")
-    ('13C', 1)
-    >>> explicit_isotope_line("[13C]2[18O]C4H12O5")
-    ('13C2+18O', 4)
-    >>> explicit_isotope_line("C6H12O6") is None
-    True
-    """
-    parts, offset = [], 0
-    for mass_number, element, count in re.findall(
-        r"\[(\d+)([A-Z][a-z]?)\](\d*)", formula
-    ):
-        n = int(count) if count else 1
-        parts.append(f"{mass_number}{element}{n if n > 1 else ''}")
-        offset += n * (int(mass_number) - round(calculate_mass(formula=element)))
-    if not parts:
-        return None
-    return "+".join(parts), offset

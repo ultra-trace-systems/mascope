@@ -454,24 +454,26 @@ def find_compositions(
     :param grid: A neutral grid already enumerated over a range covering this
         target, from :func:`grid.build_neutral_grid`. A caller searching many
         peaks of one spectrum builds it once and passes it here; without one a
-        grid is built over this target's own window, which is the same walk the
-        search used to make per peak. The grid must have been built from an
-        equivalent config - it carries the element box and the unsaturation cut.
-        With ``isotopologue_floor`` it must also span
-        :func:`isotopologues.isotopologue_mass_bounds`.
+        grid is built over this target's own windows, one per ionization
+        mechanism, which is the same walk the search used to make per peak. The
+        grid must have been built from an equivalent config - it carries the
+        element box and the unsaturation cut. With ``isotopologue_floor`` it
+        must also hold every row of :func:`isotopologues.isotopologue_windows`.
     :type grid: NeutralGrid, optional
     :param isotopologue_floor: When given, the target is also read as any other
         line of a candidate's ion - a 13C or 81Br line above the monoisotopic
         one, a labelled reagent's unlabelled remainder below it - whose abundance
         is at least this share of the ion's brightest line; 1.0 reads it as the
         brightest line alone. Such a reading carries the line it is read as
-        (``isotope_label``, ``isotope_offset``, ``isotope_mz``,
-        ``isotope_abundance``) and its mass error is against that line. Without
-        it the target is the monoisotopic line of every candidate, which is what
-        a search walking a whole spectrum wants: there the isotopologues are
-        claimed from the monoisotopic peak instead.
+        (``isotope_offset``, ``isotope_mz``, ``isotope_abundance``) and its
+        mass error is against that line. Without it the target is the
+        monoisotopic line of every candidate, which is what a search walking a
+        whole spectrum wants: there the isotopologues are claimed from the
+        monoisotopic peak instead.
     :type isotopologue_floor: float, optional
-    :return: A list of dictionaries containing composition results.
+    :return: A list of dictionaries containing composition results, at most
+        ``config.max_result_rows`` of them per ionization mechanism - the
+        closest in mass, whichever line each is read at.
     :rtype: list[dict]
     """
     ionization_mech_string_list = get_ionization_mech_string_list(config.ionizations)
@@ -487,21 +489,34 @@ def find_compositions(
     )
 
     if grid is None:
-        mass_min, mass_max = neutral_mass_bounds(
-            [target_mz], mechanisms, config.mass_range_ppm
-        )
-        if offsets is not None:
-            lines_min, lines_max = isotopologues.isotopologue_mass_bounds(
-                target_mz, mechanisms, offsets, mz_tolerance_da
+        windows = []
+        for index, mechanism in enumerate(mechanisms):
+            shift = mechanism.mass if mechanism.addition else -mechanism.mass
+            required_neutral_mass = target_mz - shift
+            windows.append(
+                (
+                    required_neutral_mass - mz_tolerance_da,
+                    required_neutral_mass + mz_tolerance_da,
+                )
             )
-            if lines_min <= lines_max:
-                mass_min = min(mass_min, lines_min)
-                mass_max = max(mass_max, lines_max)
-        grid = build_neutral_grid(config, mass_min, mass_max)
+            if offsets is not None:
+                windows.extend(
+                    isotopologues.isotopologue_windows(
+                        target_mz, mechanism, offsets[index], mz_tolerance_da
+                    )
+                )
+        grid = build_neutral_grid(
+            config,
+            0.0,
+            max((high for _, high in windows), default=-1.0),
+            windows=windows,
+        )
     if grid is None:
-        # Only reachable when a single target's own window overflows the row
-        # bound, which takes an element box orders of magnitude wider than the
-        # API's species cap allows. Nothing to search rather than a wrong answer.
+        # Only reachable when a target's own windows - each a few ppm wide -
+        # overflow the row bound, which takes an element box orders of
+        # magnitude wider than the API's species cap allows, or when no
+        # mechanism leaves a neutral of positive mass. Nothing to search rather
+        # than a wrong answer.
         return []
 
     all_results: list[Result] = []
@@ -510,9 +525,10 @@ def find_compositions(
         readings, rows = _monoisotopic_readings(
             target_mz, mz_tolerance_da, ionization_mechanism, grid, config
         )
-        all_results.extend(readings)
         if offsets is not None:
-            all_results.extend(
+            # One cap for the mechanism, whichever line a reading is at: the
+            # closest readings of either kind are kept.
+            readings.extend(
                 isotopologues.isotopologue_readings(
                     target_mz,
                     mz_tolerance_da,
@@ -524,6 +540,9 @@ def find_compositions(
                     skip_rows=rows,
                 )
             )
+            readings.sort(key=lambda r: abs(r.composition_error_ppm))
+            del readings[config.max_result_rows :]
+        all_results.extend(readings)
 
     all_results.sort(key=lambda r: abs(r.composition_error_ppm))
 

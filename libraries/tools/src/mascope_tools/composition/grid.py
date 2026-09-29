@@ -28,7 +28,7 @@ per peak - which is bounded by construction, because a peak's window is narrow.
 from __future__ import annotations
 
 import warnings
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from math import ceil, floor
 
@@ -91,10 +91,19 @@ class NeutralGrid:
         :param tolerance: Half-width of the window, in daltons.
         :return: A range of row indices, empty when nothing is in the window.
         """
-        # 'left' on the low bound and 'right' on the high one make the window
+        return self.between(centre - tolerance, centre + tolerance)
+
+    def between(self, low: float, high: float) -> range:
+        """The rows whose mass is at least ``low`` and at most ``high``.
+
+        :param low: The lightest neutral mass sought.
+        :param high: The heaviest neutral mass sought.
+        :return: A range of row indices, empty when nothing is in the range.
+        """
+        # 'left' on the low bound and 'right' on the high one make the range
         # closed at both ends, which is what the search's `<= tolerance` means.
-        first = np.searchsorted(self.mass, centre - tolerance, side="left")
-        last = np.searchsorted(self.mass, centre + tolerance, side="right")
+        first = np.searchsorted(self.mass, low, side="left")
+        last = np.searchsorted(self.mass, high, side="right")
         return range(int(first), int(last))
 
     def composition(self, row: int) -> dict[str, int]:
@@ -119,6 +128,7 @@ def build_neutral_grid(
     mass_min: float,
     mass_max: float,
     max_rows: int = DEFAULT_MAX_GRID_ROWS,
+    windows: Sequence[tuple[float, float]] | None = None,
 ) -> NeutralGrid | None:
     """Enumerate every allowed composition whose mass falls in a range.
 
@@ -127,8 +137,21 @@ def build_neutral_grid(
     :param mass_min: Lowest neutral mass to keep.
     :param mass_max: Highest neutral mass to keep.
     :param max_rows: Give up and answer None past this many compositions.
+    :param windows: ``(low, high)`` ranges of neutral mass to keep the
+        compositions of, leaving out every composition of the range outside
+        them. A search of one target reads a narrow window per ionization
+        mechanism and per isotopologue line, spread over a range many daltons
+        wide; the tree is walked once for them all, and the grid holds the rows
+        of the windows instead of every row between them.
     :return: The grid, or None when the box is too wide to hold at this range.
     """
+    if windows is not None:
+        windows = _disjoint(windows, mass_min, mass_max)
+        if not windows:
+            return None
+        mass_min, mass_max = windows[0][0], windows[-1][1]
+        if len(windows) == 1:
+            windows = None
     if mass_max < mass_min:
         return None
     atoms = utils.parse_atom_count_ranges(config.element_count_ranges)
@@ -150,6 +173,7 @@ def build_neutral_grid(
         max_unsaturation=config.max_unsaturation,
         only_integer_unsaturation=config.only_integer_unsaturation,
         max_rows=max_rows,
+        windows=windows,
     )
     if enumerated is None:
         return None
@@ -204,6 +228,26 @@ def admits(config: CompositionSearchConfig, composition: Mapping[str, int]) -> b
     return not config.only_integer_unsaturation or unsaturation == floor(unsaturation)
 
 
+def _disjoint(
+    windows: Sequence[tuple[float, float]], mass_min: float, mass_max: float
+) -> list[tuple[float, float]]:
+    """Mass windows cut to a range, in ascending order, overlapping ones joined.
+
+    :return: Disjoint ``(low, high)`` windows; empty when none reaches the range.
+    """
+    joined: list[tuple[float, float]] = []
+    for low, high in sorted(
+        (max(low, mass_min), min(high, mass_max)) for low, high in windows
+    ):
+        if high < low:
+            continue
+        if joined and low <= joined[-1][1]:
+            joined[-1] = (joined[-1][0], max(joined[-1][1], high))
+        else:
+            joined.append((low, high))
+    return joined
+
+
 def _unsaturation_coefficients(atoms: list[Atom]) -> list[int]:
     """The unsaturation coefficient of each atom, warning once about the unknown.
 
@@ -231,6 +275,7 @@ def _enumerate(
     max_unsaturation: float,
     only_integer_unsaturation: bool,
     max_rows: int,
+    windows: Sequence[tuple[float, float]] | None = None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray | None] | None:
     """Depth-first walk of the count tree, keeping what lands in the mass range.
 
@@ -241,6 +286,10 @@ def _enumerate(
     tens of rows on an ordinary box. Recursing into it would spend a Python call
     per composition, and there are millions of them; as a range it is a handful
     of array operations.
+
+    With ``windows`` - disjoint and ascending, inside the range - the range
+    still prunes the tree, and a run keeps only the counts that land in a
+    window.
 
     Rows land in preallocated buffers that are packed away as they fill, rather
     than in per-row tuples - at grid size the intermediate, not the result, is
@@ -265,6 +314,14 @@ def _enumerate(
     last = width - 1
     last_mass = masses[last]
     last_coefficient = 0 if coefficients is None else coefficients[last]
+    window_lows = (
+        None if windows is None else np.array([low for low, _ in windows], dtype=float)
+    )
+    window_highs = (
+        None
+        if windows is None
+        else np.array([high for _, high in windows], dtype=float)
+    )
 
     mass_chunks: list[np.ndarray] = []
     count_chunks: list[np.ndarray] = []
@@ -337,6 +394,11 @@ def _enumerate(
             run = np.arange(lowest, highest + 1)
             run_masses = mass + run * last_mass
             keep = (run_masses >= mass_min) & (run_masses <= mass_max)
+            if window_lows is not None:
+                # Inside a window: the last one starting at or below the mass
+                # reaches up to it. An index of -1 starts nowhere below.
+                at = np.searchsorted(window_lows, run_masses, side="right") - 1
+                keep &= (at >= 0) & (run_masses <= window_highs[at])
             run_unsaturations = None
             if coefficients is not None:
                 run_unsaturations = (

@@ -527,8 +527,8 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   finds about twice as many candidates, most of which score low because the
   spectrum lacks their monoisotopic line. The API's composition search reads
   every line when asked with `isotopologues: true` (the default, false, keeps the
-  monoisotopic line alone) and names the line a result was read at in
-  `target_isotope_label` and `target_isotope_offset`.
+  monoisotopic line alone); a result read at another line has that line's m/z
+  as its `target_isotope_mz`.
 
 ### Changed
 
@@ -1316,6 +1316,14 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   ledger unfolds isotopologues, each with its abundance, m/z, error and match
   score; a click on a line still previews it in the spectrum, and sorting keeps
   every candidate's lines under it.
+
+- **The composition search answers for a wide element box under adducts far
+  apart in mass.** A search enumerated every composition across the whole
+  range of neutral masses its ionization mechanisms reach - 64 Da for a
+  15N-nitrate, nitrate and deprotonation trio - and where the element box held
+  more of them than one grid may, a CHNO box with S, Cl and Br at m/z 700 for
+  one, it came back with no candidates at all. It now enumerates only the
+  narrow window each mechanism reads, and each isotopologue line.
 
 ## [1.9.0] - 2026.09.24
 
