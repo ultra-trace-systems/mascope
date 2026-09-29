@@ -122,8 +122,11 @@ describe('match.visualized isotopeMain identity', () => {
     expect(store.isotopeSelected === store.isotopeMain).toBe(false)
   })
 
-  // Read twice without the state moving: a getter handing back a fresh proxy each
-  // time would make the chart's dedup miss and draw the M0 twice.
+  // Stated, not guarded. The reads are stable whether or not the getter
+  // memoises: vue caches a reactive proxy by its raw target, so re-running the
+  // rule over the same rows hands back the same objects either way. Only a
+  // getter that both re-evaluated and copied would fail here, and the copy alone
+  // already fails the case above, so nothing reaches this one first.
   it('gives back the same object on every read', () => {
     expect(store.isotopeMain === store.isotopeMain).toBe(true)
   })
