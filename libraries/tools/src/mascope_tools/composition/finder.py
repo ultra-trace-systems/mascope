@@ -10,7 +10,7 @@ import pandas as pd
 import polars as pl
 from pyteomics.mass import Composition
 
-from mascope_tools.composition import utils
+from mascope_tools.composition import isotopologues, utils
 from mascope_tools.composition.arbitration import (
     CANDIDATE_DENSITY,
     DEFAULT_TIE_TOL,
@@ -443,6 +443,7 @@ def find_compositions(
     target_mz: float,
     config: CompositionSearchConfig,
     grid: NeutralGrid | None = None,
+    isotopologue_floor: float | None = None,
 ) -> list[dict]:
     """Find molecular compositions whose ion lands on a target m/z.
 
@@ -456,19 +457,47 @@ def find_compositions(
         grid is built over this target's own window, which is the same walk the
         search used to make per peak. The grid must have been built from an
         equivalent config - it carries the element box and the unsaturation cut.
+        With ``isotopologue_floor`` it must also span
+        :func:`isotopologues.isotopologue_mass_bounds`.
     :type grid: NeutralGrid, optional
+    :param isotopologue_floor: When given, the target is also read as any other
+        line of a candidate's ion - a 13C or 81Br line above the monoisotopic
+        one, a labelled reagent's unlabelled remainder below it - whose abundance
+        is at least this share of the ion's brightest line; 1.0 reads it as the
+        brightest line alone. Such a reading carries the line it is read as
+        (``isotope_label``, ``isotope_offset``, ``isotope_mz``,
+        ``isotope_abundance``) and its mass error is against that line. Without
+        it the target is the monoisotopic line of every candidate, which is what
+        a search walking a whole spectrum wants: there the isotopologues are
+        claimed from the monoisotopic peak instead.
+    :type isotopologue_floor: float, optional
     :return: A list of dictionaries containing composition results.
     :rtype: list[dict]
     """
     ionization_mech_string_list = get_ionization_mech_string_list(config.ionizations)
     mechanisms = [utils.parse_ionization(name) for name in ionization_mech_string_list]
     mz_tolerance_da = target_mz * config.mass_range_ppm * 1e-6
+    offsets = (
+        None
+        if isotopologue_floor is None
+        else [
+            isotopologues.line_offsets(config, mechanism, target_mz, isotopologue_floor)
+            for mechanism in mechanisms
+        ]
+    )
 
     if grid is None:
-        grid = build_neutral_grid(
-            config,
-            *neutral_mass_bounds([target_mz], mechanisms, config.mass_range_ppm),
+        mass_min, mass_max = neutral_mass_bounds(
+            [target_mz], mechanisms, config.mass_range_ppm
         )
+        if offsets is not None:
+            lines_min, lines_max = isotopologues.isotopologue_mass_bounds(
+                target_mz, mechanisms, offsets, mz_tolerance_da
+            )
+            if lines_min <= lines_max:
+                mass_min = min(mass_min, lines_min)
+                mass_max = max(mass_max, lines_max)
+        grid = build_neutral_grid(config, mass_min, mass_max)
     if grid is None:
         # Only reachable when a single target's own window overflows the row
         # bound, which takes an element box orders of magnitude wider than the
@@ -477,84 +506,114 @@ def find_compositions(
 
     all_results: list[Result] = []
 
-    for ionization_mechanism in mechanisms:
-        # Ion shift: ion m/z = neutral_mass + ion_shift
-        ion_shift = (
-            ionization_mechanism.mass
-            if ionization_mechanism.addition
-            else -ionization_mechanism.mass
+    for index, ionization_mechanism in enumerate(mechanisms):
+        readings, rows = _monoisotopic_readings(
+            target_mz, mz_tolerance_da, ionization_mechanism, grid, config
         )
-        # Neutral mass that would give the target m/z with this ionization mechanism
-        required_neutral_mass = target_mz - ion_shift
-
-        # --- Ionization peak case: no analyte mass (neutral mass ~ 0) ---
-        if abs(required_neutral_mass) <= mz_tolerance_da:
-            ion_charge = "+" if ionization_mechanism.charge > 0 else "-"
-            ion_formula = ionization_mechanism.formula + ion_charge
-            # Signed, relative to the prediction; for an ionization peak the
-            # prediction is the adduct's own m/z, ion_shift.
-            compositions_error_ppm = (target_mz - ion_shift) / ion_shift * 1e6
-            all_results.append(
-                Result(
-                    formula="()",
-                    neutral_mass=0.0,
-                    composition_error_ppm=compositions_error_ppm,
-                    unsaturation=None,
-                    ion=ion_formula,
-                    ionization_mechanism=ionization_mechanism.mascope_notation,
-                    observed_mass=target_mz,
-                )
-            )
-            continue
-
-        # --- Negative neutral mass case (ionization mechanism inapplicable) ---
-        if required_neutral_mass <= 0:
-            continue
-
-        # --- Regular case: the grid rows whose mass is close enough --- #
-        # Ranked before the row cap applies, so a target with more readings than
-        # the cap allows keeps the closest ones rather than whichever the walk
-        # reached first.
-        rows = grid.window(required_neutral_mass, mz_tolerance_da)
-        errors = [
-            (
-                abs(grid.mass[row] + ion_shift - target_mz),
-                row,
-            )
-            for row in rows
-        ]
-        errors.sort()
-        for _, row in errors[: config.max_result_rows]:
-            neutral_mass = float(grid.mass[row])
-            ion_mz = neutral_mass + ion_shift
-            formula = utils.to_hill_order(grid.composition(row))
-            ion_formula = utils.combine_counts_and_ionization(
-                grid.pyteomics_composition(row), ionization_mechanism
-            )
-            # (observed - predicted)/predicted, signed: the targeted matcher's
-            # match_mz_error convention. Dividing by the PREDICTION (not by the
-            # observation) is what makes the consumers' recovery of the predicted
-            # m/z, observed / (1 + error/1e6), exact.
-            error_ppm = (target_mz - ion_mz) / ion_mz * 1e6
-            all_results.append(
-                Result(
-                    formula=formula,
-                    neutral_mass=neutral_mass,
-                    composition_error_ppm=error_ppm,
-                    unsaturation=(
-                        None
-                        if grid.unsaturation is None
-                        else float(grid.unsaturation[row])
-                    ),
-                    ion=ion_formula,
-                    ionization_mechanism=ionization_mechanism.mascope_notation,
-                    observed_mass=target_mz,
+        all_results.extend(readings)
+        if offsets is not None:
+            all_results.extend(
+                isotopologues.isotopologue_readings(
+                    target_mz,
+                    mz_tolerance_da,
+                    ionization_mechanism,
+                    grid,
+                    offsets[index],
+                    isotopologue_floor,
+                    max_rows=config.max_result_rows,
+                    skip_rows=rows,
                 )
             )
 
     all_results.sort(key=lambda r: abs(r.composition_error_ppm))
 
     return [r.to_dict() for r in all_results]
+
+
+def _monoisotopic_readings(
+    target_mz: float,
+    mz_tolerance_da: float,
+    ionization_mechanism: IonizationMechanism,
+    grid: NeutralGrid,
+    config: CompositionSearchConfig,
+) -> tuple[list[Result], range]:
+    """The compositions whose ion's monoisotopic line lands on a target.
+
+    :return: The readings, and the grid rows the window held - capped or not,
+        every one of them is read at its monoisotopic line.
+    """
+    # Ion shift: ion m/z = neutral_mass + ion_shift
+    ion_shift = (
+        ionization_mechanism.mass
+        if ionization_mechanism.addition
+        else -ionization_mechanism.mass
+    )
+    # Neutral mass that would give the target m/z with this ionization mechanism
+    required_neutral_mass = target_mz - ion_shift
+
+    # --- Ionization peak case: no analyte mass (neutral mass ~ 0) ---
+    if abs(required_neutral_mass) <= mz_tolerance_da:
+        ion_charge = "+" if ionization_mechanism.charge > 0 else "-"
+        ion_formula = ionization_mechanism.formula + ion_charge
+        # Signed, relative to the prediction; for an ionization peak the
+        # prediction is the adduct's own m/z, ion_shift.
+        compositions_error_ppm = (target_mz - ion_shift) / ion_shift * 1e6
+        return [
+            Result(
+                formula="()",
+                neutral_mass=0.0,
+                composition_error_ppm=compositions_error_ppm,
+                unsaturation=None,
+                ion=ion_formula,
+                ionization_mechanism=ionization_mechanism.mascope_notation,
+                observed_mass=target_mz,
+            )
+        ], range(0)
+
+    # --- Negative neutral mass case (ionization mechanism inapplicable) ---
+    if required_neutral_mass <= 0:
+        return [], range(0)
+
+    # --- Regular case: the grid rows whose mass is close enough --- #
+    # Ranked before the row cap applies, so a target with more readings than
+    # the cap allows keeps the closest ones rather than whichever the walk
+    # reached first.
+    rows = grid.window(required_neutral_mass, mz_tolerance_da)
+    errors = [
+        (
+            abs(grid.mass[row] + ion_shift - target_mz),
+            row,
+        )
+        for row in rows
+    ]
+    errors.sort()
+    results = []
+    for _, row in errors[: config.max_result_rows]:
+        neutral_mass = float(grid.mass[row])
+        ion_mz = neutral_mass + ion_shift
+        formula = utils.to_hill_order(grid.composition(row))
+        ion_formula = utils.combine_counts_and_ionization(
+            grid.pyteomics_composition(row), ionization_mechanism
+        )
+        # (observed - predicted)/predicted, signed: the targeted matcher's
+        # match_mz_error convention. Dividing by the PREDICTION (not by the
+        # observation) is what makes the consumers' recovery of the predicted
+        # m/z, observed / (1 + error/1e6), exact.
+        error_ppm = (target_mz - ion_mz) / ion_mz * 1e6
+        results.append(
+            Result(
+                formula=formula,
+                neutral_mass=neutral_mass,
+                composition_error_ppm=error_ppm,
+                unsaturation=(
+                    None if grid.unsaturation is None else float(grid.unsaturation[row])
+                ),
+                ion=ion_formula,
+                ionization_mechanism=ionization_mechanism.mascope_notation,
+                observed_mass=target_mz,
+            )
+        )
+    return results, rows
 
 
 def rivals_of_readings(
