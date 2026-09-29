@@ -6,7 +6,7 @@ import Tag from 'primevue/tag'
 import { BaseMatchTag } from '@/lib/base'
 import { clone } from '@/lib/utils'
 import { num } from '@/lib/formatters'
-import { formatIsotopeFormula } from '@/lib/chem'
+import { formatIsotopeFormula, monoisotopicIsotope } from '@/lib/chem'
 import { useApp } from '@/stores'
 
 import BaseChartPlotly from '../BaseChartPlotly.vue'
@@ -49,15 +49,27 @@ const traces = computed(() => {
       }))
 })
 
+// The isotope the tab opens on: the ion's monoisotopic isotopologue, which the
+// ion formula names for a labelled ion. The store holds the isotopes in the
+// backend's m/z order, where the lightest one comes first - the M0 of an
+// unlabelled ion, but for a labelled one the reagent's unlabelled remainder, a
+// couple of percent of the line the ion is measured by.
+const isotopeMain = computed(() =>
+  monoisotopicIsotope(
+    app.data.match.visualized.isotopes,
+    app.data.match.visualized.ion?.target_ion_formula
+  )
+)
+
 // transform raw visualiation data into seperate charts
 const isotopeCharts = computed(() => {
-  // Build array with first isotope and selected isotope (if different)
+  // Build array with the M0 isotope and selected isotope (if different)
   if (app.data.match.visualized.isotopes === null) return []
 
   const isotopeList = []
 
-  if (app.data.match.visualized.isotopes?.[0]) {
-    isotopeList.push(app.data.match.visualized.isotopes[0])
+  if (isotopeMain.value) {
+    isotopeList.push(isotopeMain.value)
   }
   if (
     app.data.match.visualized.isotopeSelected &&

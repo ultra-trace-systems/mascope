@@ -1,4 +1,4 @@
-import { isMonoisotopicFormula, labelledIsotopes } from '@/lib/chem'
+import { monoisotopicIsotope } from '@/lib/chem'
 
 /**
  * What a composition-search hit means when it is committed to a peak.
@@ -12,32 +12,6 @@ import { isMonoisotopicFormula, labelledIsotopes } from '@/lib/chem'
  */
 
 /**
- * The monoisotopic isotopologue of a hit's predicted pattern: the M0 every
- * offset label counts from, the way an isotope table counts - which for a
- * bromine- or chlorine-rich ion is the lightest line of the cluster, not the
- * tallest, and for a labelled ion is the labelled line, not the unlabelled
- * remainder below it.
- *
- * The lightest row stands in when no formula carries the marker that tells the
- * lines apart, and is the same row wherever an element's most abundant isotope
- * is also its lightest. The backend's `monoisotopic_row` resolves it the same way.
- *
- * @param {Array<Object>} children the hit's predicted isotopologues
- * @param {string|null|undefined} ionFormula the ion's formula, which names its
- *   labels; without one, the pattern is read as an unlabelled ion's
- * @returns {Object} the monoisotopic row, or the lightest one
- */
-function monoisotopicOf(children, ionFormula) {
-  // Copied before sorting: `children` is the hit's own array, and the results
-  // table renders from it.
-  const ordered = [...children].sort((a, b) => (a.mz ?? 0) - (b.mz ?? 0))
-  const labels = labelledIsotopes(ionFormula)
-  return (
-    ordered.find((row) => isMonoisotopicFormula(row.target_isotope_formula, labels)) ?? ordered[0]
-  )
-}
-
-/**
  * Which isotopologue of a search hit's ion the searched peak actually is.
  *
  * The composition search scores a whole ION against the spectrum and reports one
@@ -48,8 +22,8 @@ function monoisotopicOf(children, ionFormula) {
  * everything that folds an isotopologue family onto its M0 (the tier histogram,
  * the batch consensus, a verification verdict) would then believe.
  *
- * Labels count from the ion's MONOISOTOPIC isotopologue (`monoisotopicOf`), and
- * the label is the nominal mass offset from it. That is the convention the
+ * Labels count from the ion's MONOISOTOPIC isotopologue (`monoisotopicIsotope`),
+ * and the label is the nominal mass offset from it. That is the convention the
  * assignment engine's `monoisotopic_row` and `_isotope_offset_label` use, so a
  * hand-assigned row reads like an engine-assigned one: for a bromine-rich ion
  * the lightest peak of the cluster is the M0 and the tallest is its M+2, as in
@@ -69,7 +43,7 @@ export function isotopeOfHit(hit) {
 
   // The labels are read off the ion formula, which the search spreads onto the
   // hit with the rest of the matched ion; an isotope row carries only its own.
-  const main = monoisotopicOf(children, hit?.target_ion_formula)
+  const main = monoisotopicIsotope(children, hit?.target_ion_formula)
   // The isotope the search matched at this peak. Taken from the hit's own
   // `cheminfo` rather than from the focused peak, so the answer does not depend
   // on which peak happens to be focused when the button is clicked.

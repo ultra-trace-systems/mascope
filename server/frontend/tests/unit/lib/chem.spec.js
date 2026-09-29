@@ -8,6 +8,7 @@ import {
   formatIsotopeLabel,
   isMonoisotopicFormula,
   labelledIsotopes,
+  monoisotopicIsotope,
   neutralKey,
   parseCompoundPaste,
   validateCompoundPaste
@@ -395,5 +396,62 @@ describe('neutralKey', () => {
     expect(neutralKey('Ca(OH)2')).toBe('Ca(OH)2')
     expect(neutralKey('')).toBe('')
     expect(neutralKey(null)).toBe('')
+  })
+})
+
+// The M0 an isotope table opens on and every offset label counts from. The rows
+// arrive in m/z order, so for an unlabelled ion - a bromine cluster included -
+// the answer is the first one; for a labelled ion the first row is the reagent's
+// unlabelled remainder, and the M0 is the labelled line above it.
+describe('monoisotopicIsotope', () => {
+  const row = (mz, formula) => ({ mz, target_isotope_formula: formula })
+
+  const NITRATE = [
+    row(250.0932, 'C9H16NO7-'),
+    row(251.0903, '[15N]C9H16O7-'),
+    row(252.0936, '[13C][15N]C8H16O7-')
+  ]
+  const BROMINE = [row(328.6817, 'CHBr4-'), row(330.6797, '[81Br]CHBr3-')]
+
+  it("picks a labelled ion's labelled line over the lighter remainder", () => {
+    expect(monoisotopicIsotope(NITRATE, 'C9H16O7^N-')).toBe(NITRATE[1])
+  })
+
+  it('picks the lightest line of an unlabelled bromine cluster', () => {
+    expect(monoisotopicIsotope(BROMINE, 'CHBr4-')).toBe(BROMINE[0])
+  })
+
+  it('reads rows in m/z order whatever order they arrive in', () => {
+    expect(monoisotopicIsotope([...NITRATE].reverse(), 'C9H16O7^N-')).toBe(NITRATE[1])
+    expect(monoisotopicIsotope([...BROMINE].reverse(), 'CHBr4-')).toBe(BROMINE[0])
+  })
+
+  it("leaves the caller's array in the order it was given", () => {
+    const rows = [...NITRATE].reverse()
+    monoisotopicIsotope(rows, 'C9H16O7^N-')
+    expect(rows).toEqual([...NITRATE].reverse())
+  })
+
+  it('sorts an m/z the store formatted as a string', () => {
+    const formatted = NITRATE.map(({ mz, target_isotope_formula }) => ({
+      mz: mz.toFixed(4),
+      target_isotope_formula
+    }))
+    expect(monoisotopicIsotope([...formatted].reverse(), 'C9H16O7^N-')).toBe(formatted[1])
+  })
+
+  it('reads a merged low-resolution line that holds the M0 as the M0', () => {
+    const merged = [row(250.0932, 'C9H16NO7-'), row(251.0903, '[15N]C9H16O7-/[13C]C8H16NO7-')]
+    expect(monoisotopicIsotope(merged, 'C9H16O7^N-')).toBe(merged[1])
+  })
+
+  it('falls back to the lightest row when no formula is the M0', () => {
+    const heavy = [NITRATE[2], row(253.0937, '[13C]2[15N]C7H16O7-')]
+    expect(monoisotopicIsotope([...heavy].reverse(), 'C9H16O7^N-')).toBe(heavy[0])
+  })
+
+  it('has no answer without rows', () => {
+    expect(monoisotopicIsotope([], 'C9H16O7^N-')).toBeUndefined()
+    expect(monoisotopicIsotope(null, 'C9H16O7^N-')).toBeUndefined()
   })
 })

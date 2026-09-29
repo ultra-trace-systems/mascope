@@ -7,7 +7,7 @@ import ProgressSpinner from 'primevue/progressspinner'
 
 import { BaseMatchTag, BaseCopyableField } from '@/lib/base'
 import { num } from '@/lib/formatters'
-import { formatIsotopeFormula } from '@/lib/chem'
+import { formatIsotopeFormula, monoisotopicIsotope } from '@/lib/chem'
 
 import { useApp } from '@/stores'
 
@@ -16,6 +16,19 @@ const app = useApp()
 // --- Computed ---
 const ionFormula = () => app.data.match.visualized.ion?.target_ion_formula
 const loading = computed(() => app.data.match.visualized.isotopes === null)
+
+// The isotope the table opens on: the ion's monoisotopic isotopologue, which the
+// ion formula names for a labelled ion. The rows arrive in the backend's m/z
+// order, where the lightest one comes first - the M0 of an unlabelled ion, but
+// for a labelled one the reagent's unlabelled remainder, a couple of percent of
+// the line the ion is measured by.
+const mainIsotopeId = computed(
+  () => monoisotopicIsotope(app.data.match.visualized.isotopes, ionFormula())?.target_isotope_id
+)
+
+// The M0 row shows as the one the table opens on.
+const rowClass = (data) =>
+  data?.target_isotope_id === mainIsotopeId.value ? 'main-isotope-row' : ''
 
 // Compute UI-based match category for display
 const uiMatchCategory = (match) => {
@@ -44,6 +57,7 @@ const uiMatchCategory = (match) => {
       selectionMode="single"
       v-model:selection="app.data.match.visualized.isotopeSelected"
       size="small"
+      :rowClass="rowClass"
       sortField="formula"
       :sortOrder="-1"
       scrollable
@@ -127,8 +141,8 @@ const uiMatchCategory = (match) => {
   overflow: auto;
 }
 
-/* Make first row appear selected */
-.isotope-table-container :deep(.p-datatable tbody > tr:first-child) {
+/* Make the ion's M0 row appear selected (`rowClass`) */
+.isotope-table-container :deep(.p-datatable tbody > tr.main-isotope-row) {
   background-color: var(--p-datatable-row-selected-background) !important;
 }
 </style>

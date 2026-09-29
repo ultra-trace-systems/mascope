@@ -306,6 +306,39 @@ export const isMonoisotopicFormula = (formula, labels = {}) =>
   formula.split('/').some((name) => sameIsotopes(substitutedIsotopes(name), labels))
 
 /**
+ * The monoisotopic isotopologue among an ion's isotope rows: the M0 an isotope
+ * table reads first and every offset label counts from - which for a bromine- or
+ * chlorine-rich ion is the lightest line of the cluster, not the tallest, and for
+ * a labelled ion is the labelled line, not the unlabelled remainder below it.
+ *
+ * For the 15N-nitrate ion `C9H16O7^N-` that is `[15N]C9H16O7-` at 251.0903, and
+ * the lightest row, `C9H16NO7-` at 250.0932, is the reagent's unlabelled
+ * remainder at about 2% of it.
+ *
+ * The lightest row stands in when no formula carries the marker that tells the
+ * lines apart, and is the same row wherever an element's most abundant isotope is
+ * also its lightest - so an unlabelled ion keeps the lightest line. The backend's
+ * `monoisotopic_row` resolves it the same way.
+ *
+ * @param {Array<Object>} isotopes an ion's isotope rows, each carrying
+ *   `target_isotope_formula` and `mz`; not sorted in place
+ * @param {string|null|undefined} [ionFormula] the ion's formula, which names its
+ *   labels (`C9H16O7^N-`); without one, the pattern is read as an unlabelled ion's
+ * @returns {Object|undefined} the monoisotopic row, the lightest one, or
+ *   undefined when there are no rows
+ */
+export function monoisotopicIsotope(isotopes, ionFormula) {
+  // Copied before sorting: the caller's array is the one a table renders from.
+  // `mz` may be a formatted string, which subtraction reads as the number it
+  // spells.
+  const ordered = [...(isotopes ?? [])].sort((a, b) => (a?.mz ?? 0) - (b?.mz ?? 0))
+  const labels = labelledIsotopes(ionFormula)
+  return (
+    ordered.find((row) => isMonoisotopicFormula(row?.target_isotope_formula, labels)) ?? ordered[0]
+  )
+}
+
+/**
  * A key that sorts bracketed isotopes into the Hill order the generator writes
  * them in (`[13C][15N]C8H16O7-`): carbon first, then hydrogen, then the rest
  * alphabetically. Without carbon, Hill sorts hydrogen alphabetically as well,
