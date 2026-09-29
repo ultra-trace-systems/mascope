@@ -26,9 +26,11 @@ Chemistry is bound by a ladder of evidence, strongest rung first (section
 0. a declaration;
 1. an explicit choice;
 2. a learned binding on the acquisition method;
-3. the filename token;
-4. an instrument default;
+3. the filename token, matched within the instrument's own modes;
 5. detection from the reagent ions.
+
+(There is no rung 4. An instrument default was planned there and dropped -
+section 5.2 says why.)
 
 Detection also audits every other rung. Anything unresolved is parked as
 "needs a chemistry", visibly, instead of failing silently.
@@ -486,9 +488,31 @@ exactly one mode binds.
 | 1. Explicit | A person: manual processing, re-routing, a review decision | `explicit`, confirmed | yes |
 | 2. Method binding | `method_binding` on (instrument, method identity, signature class) | `method`, with the binding's own state | - |
 | 3. Filename token | Today's rule, evaluated per stream polarity and requiring one mode per polarity | `token`, learned | yes |
-| 4. Instrument default | An admin-set default for (instrument, polarity) (#1463) | `default`, confirmed | no |
+| ~~4. Instrument default~~ | ~~An admin-set default for (instrument, polarity)~~ - **dropped, see below** | - | - |
 | 5. Detected | Section 5.4, only when its guards pass | `detected`, **provisional** | only after review |
 | none | - | stream parked as `needs_chemistry` | - |
+
+**There is no instrument-default rung, and #1463 is not one.** The rung was
+planned as an admin-set default per (instrument, polarity): what an instrument
+runs, for a file nothing else identifies. Measured on the production fleet
+before building it, that is a fiction. On the largest server 13 of its 16
+instruments have run more than one chemistry - the busiest has run 55 - and 78
+of its 116 modes carry a token. An instrument does not have *a* chemistry; it
+switches between them, and a default would bind a file to whichever one was set
+last. Rung 4 fires precisely when no other evidence exists, so a stale default
+would route files wrongly with nobody looking, and it was to be written
+`confirmed`, which is not reviewed.
+
+What #1463 asked for instead, and what it became, is a **filter**: an
+ionization mode may belong to one instrument, so the same filename token can
+mean a different chemistry on each, and a mode only ever run on one instrument
+stops competing for every other instrument's names. That is rung 3 getting
+sharper rather than a rung below it. It also opens the way to per-instrument
+configuration beyond chemistry (`ionization_method_config.md`).
+
+A site that genuinely runs one chemistry per instrument is served by rung 2
+once its method has been seen once, which is the same outcome without a
+standing setting to go stale.
 
 **Detection runs on every MS1 stream, whatever rung bound it.** It stores its
 evidence on the stream. A strong disagreement with the binding raises a
@@ -504,6 +528,21 @@ and records:
 - `source`;
 - `first_seen`, `last_seen`, `n_streams`, `n_disagreements`;
 - who confirmed it.
+
+**Scoped to the instrument.** A mode that belongs to one instrument is matched
+against that instrument's file names alone. Where a scoped and an unscoped mode
+match one polarity and the instrument's own token covers the shared one - the
+same token, or a longer one - the instrument's own wins; a name carrying two
+different tokens stays ambiguous and parks, as it did before. A shared token
+*more* specific than an instrument's own is refused when it is configured: in one
+polarity nothing could resolve it, since it would match the same files and the
+instrument could not add its own longer token either. Overlapping tokens are
+refused whatever their polarities, as they were before a mode could be scoped,
+so a pair that two polarities would have separated is refused with the rest.
+
+A token is therefore unique among the modes that could match one file rather
+than unique outright: at most one unscoped mode per token, and at most one per
+(token, instrument).
 
 **The method key** is the normalised method file name: the basename, case
 folded. For Orbitrap this is `sample_info["inst_method"]` (read again since
@@ -973,7 +1012,11 @@ Needed before any rung can be provisional or park.
   `mascope prod db script run backfill_method_bindings`. What remains is the rung
   that consults them, behind the value that switches it on per site, and the
   conflicts as review items.
-- **Defaults:** the instrument-default rung (#1463), and the seeded
+- **Per-instrument modes (#1463):** an ionization mode may belong to one
+  instrument, which filters what its file names are matched against. Not the
+  instrument-default rung this item once named - section 5.2 records why that
+  was dropped.
+- **Defaults:** the seeded
   system-owned modes. The modes have shipped: eleven chemistries, drawn from
   what the fleet actually runs, each with a `system_key` that reads the same
   on every server. They arrive inert - no token, no target collections, left
