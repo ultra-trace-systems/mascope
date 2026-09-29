@@ -1265,7 +1265,7 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 - **Edit Ionization Settings refuses a mechanism the server already has, in
   either spelling.** Typing one that exists - `[M-H]-`, or its legacy
   spelling `-H+` - says so under the field and leaves Add off, rather than
-  offering to add it again.
+  failing only once Add is pressed.
 
 ## [1.9.0] - 2026.09.24
 

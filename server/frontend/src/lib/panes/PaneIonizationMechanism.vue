@@ -33,6 +33,15 @@ const resetFields = () => {
   add.mechanism = ''
 }
 
+// The server's mechanisms in the standard notation, worked out once per list
+// rather than once per keystroke.
+const existing = computed(
+  () =>
+    new Set(
+      app.data.ionization.mechanism.list.map((row) => standardMechanism(row.ionization_mechanism))
+    )
+)
+
 // Why the typed mechanism cannot be added, or null: the notation first, then
 // each term as a formula of element symbols, then whether the server already
 // has it, compared in the standard notation so either spelling is caught. A
@@ -49,15 +58,6 @@ const problem = computed(() => {
   const stored = standardMechanism(text)
   return existing.value.has(stored) ? `${stored} is already a mechanism` : null
 })
-
-// The server's mechanisms in the standard notation, worked out once per list
-// rather than once per keystroke.
-const existing = computed(
-  () =>
-    new Set(
-      app.data.ionization.mechanism.list.map((row) => standardMechanism(row.ionization_mechanism))
-    )
-)
 
 // Under the examples: what is wrong, else the spelling the server will store
 // when it is not what was typed (a legacy spelling, or terms in another order
