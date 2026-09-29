@@ -1259,9 +1259,13 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   no longer widens and narrows as you type; the table takes the height the
   dialog leaves and scrolls within it, so the dialog no longer scrolls a few
   pixels; the lock on a shipped mechanism lines up with the trash button of
-  the others; the shipped mechanisms are listed first, the ones added on the
-  server after them; and a mechanism the server already has, in either
-  spelling, cannot be added again - the field says so and Add stays off.
+  the others; and the shipped mechanisms are listed first, the ones added on
+  the server after them.
+
+- **Edit Ionization Settings refuses a mechanism the server already has, in
+  either spelling.** Typing one that exists - `[M-H]-`, or its legacy
+  spelling `-H+` - says so under the field and leaves Add off, rather than
+  offering to add it again.
 
 ## [1.9.0] - 2026.09.24
 
