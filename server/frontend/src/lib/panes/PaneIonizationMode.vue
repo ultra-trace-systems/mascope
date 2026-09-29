@@ -401,7 +401,7 @@ defineExpose({
     </menu>
   </Fieldset>
 
-  <section style="margin: 1rem 0">
+  <section class="list">
     <DataTable
       :value="
         app.data.ionization.mode.list.filter(
@@ -416,7 +416,7 @@ defineExpose({
         'instrument'
       ]"
       scrollable
-      scrollHeight="calc(85vh - 350px)"
+      scrollHeight="flex"
       tableStyle="min-width: 800px"
     >
       <Column header="Name" style="min-width: 150px">
@@ -635,6 +635,22 @@ defineExpose({
 .row {
   display: flex;
   align-items: flex-start;
+}
+
+/* The table takes the height the form and the search leave in the panel, and
+   scrolls its own rows. It keeps its header and a row, though: should a
+   wrapped form leave less, the panel scrolls instead. */
+.list {
+  flex: 1;
+  min-height: 7rem;
+  display: flex;
+  flex-flow: column;
+  margin: 1rem 0;
+}
+
+.list :deep(.p-datatable) {
+  flex: 1;
+  min-height: 0;
 }
 
 .mechanism-tag {

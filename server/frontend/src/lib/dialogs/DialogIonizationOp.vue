@@ -128,7 +128,7 @@ watch(visible, () => {
         >
       </TabList>
       <TabPanels class="fill panels">
-        <TabPanel value="modes">
+        <TabPanel value="modes" class="fill">
           <PaneIonizationMode ref="modesPaneRef" />
         </TabPanel>
 
@@ -146,8 +146,8 @@ watch(visible, () => {
 
 <style scoped>
 /* The dialog is a fixed height; the tabs take what the Close menu leaves, and
-   the mechanisms pane fills its panel, its table scrolling within it. The
-   modes pane sizes its own table, and scrolls in the panel should it not fit. */
+   each pane fills its panel, its table scrolling within it. The panel scrolls
+   only should the content around a table not leave it room. */
 .fill,
 .panels > :deep(.fill) {
   flex: 1;
