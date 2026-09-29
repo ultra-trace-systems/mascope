@@ -438,7 +438,7 @@ async def _find_acquisition_batch(
     same read - and the day's samples keep splitting instead of converging.
 
     Polarity is part of the lookup because ``ionization_mode_name`` carries no
-    uniqueness (only ``ionization_mode_token`` does), so an admin who names the
+    uniqueness, so an admin who names the
     positive and negative variant of a mode alike renders one batch name for
     both. Matching on it too keeps the two polarities in their own batches
     rather than filing the second one under the first one's polarity and

@@ -1,4 +1,4 @@
-from sqlalchemy import and_, exists, or_, select
+from sqlalchemy import exists, or_, select
 
 from mascope_backend.db import (
     IonizationMode,
@@ -6,6 +6,7 @@ from mascope_backend.db import (
     SampleItem,
     async_session,
 )
+from mascope_backend.method_keys import instrument_key
 from mascope_backend.runtime import runtime
 
 
@@ -233,6 +234,139 @@ async def resolve_ionization_modes_by_peaks(
         )
 
 
+def applies_to_instrument(mode: IonizationMode, instrument: str | None) -> bool:
+    """Whether a mode is a candidate for files of ``instrument``.
+
+    A mode scoped to one instrument is matched against that instrument's file
+    names alone; an unscoped mode is matched against every instrument's, as all
+    of them were before the scope existed (#1463).
+
+    Compared folded, through :func:`instrument_key`: ``SampleFile.instrument``
+    is recorded with inconsistent case, so a mode scoped to ``ORBI-1`` has to
+    match the files recorded as ``orbi-1`` too, or they park.
+
+    :param mode: The mode to test.
+    :param instrument: The instrument a file was acquired on.
+    :return: True when the mode may match that instrument's files.
+    :rtype: bool
+    """
+    return mode.instrument is None or instrument_key(mode.instrument) == instrument_key(
+        instrument
+    )
+
+
+async def _modes_matching_tokens(sample_file: SampleFile) -> list[IonizationMode]:
+    """The modes whose token occurs in a file's name, in a polarity it holds.
+
+    Scoped to the file's instrument: a mode belonging to another instrument is
+    not a candidate, however well its token reads in this file's name.
+
+    :param sample_file: The file to match.
+    :return: Every matching mode, which may be none, one or several per
+        polarity - the caller decides what to do about that.
+    :rtype: list[IonizationMode]
+    """
+    all_ionization_modes = await fetch_all_ionization_modes()
+    file_polarities = set(sample_file.polarity)
+    matched = []
+    for ionization_mode in all_ionization_modes:
+        if not ionization_mode.ionization_mode_token:
+            continue
+        if not applies_to_instrument(ionization_mode, sample_file.instrument):
+            continue
+        if (
+            ionization_mode.ionization_mode_polarity in file_polarities
+            and ionization_mode.ionization_mode_token in sample_file.filename
+        ):
+            runtime.logger.debug(
+                f"Matched ionization mode token: {ionization_mode.ionization_mode_token} "
+                f"with filename: {sample_file.filename}"
+            )
+            matched.append(ionization_mode)
+    return matched
+
+
+def _tokens_overlap(one: str | None, other: str | None) -> bool:
+    """Whether one token contains the other, so one name can match both.
+
+    Symmetric, and the relation :func:`token_is_unique` refuses within a scope:
+    either way round, a name carrying the longer token carries both.
+    """
+    if not one or not other:
+        return False
+    return one in other or other in one
+
+
+def _token_covers(scoped_token: str | None, shared_token: str | None) -> bool:
+    """Whether an instrument's own token is at least as specific as a shared one.
+
+    One way round, deliberately. The override is for an instrument that means
+    its own thing by a token everyone else uses, so the scoped token has to
+    *contain* the shared one - equal tokens, or a longer scoped one like
+    ``NO3_15N`` over a shared ``NO3``.
+
+    The reverse is a different configuration entirely: a shared ``NO3_15N``
+    beside an instrument's ``NO3``. A file named ``..._NO3_15N_...`` carries
+    both, and the more specific one is the shared mode, so letting the scope
+    win would bind a 15N file to the instrument's plain nitrate on the strength
+    of a shorter token. That stays ambiguous and parks for a person, as it did
+    before a token could be scoped at all.
+    """
+    if not scoped_token or not shared_token:
+        return False
+    return shared_token in scoped_token
+
+
+def _prefer_scoped(
+    matched: list[IonizationMode], sample_file: SampleFile
+) -> list[IonizationMode]:
+    """Drop an unscoped match that a scoped match of the same token overrides.
+
+    The instrument's own mode wins, which is what makes a scope worth setting:
+    a site can keep the token it has always used as an unscoped mode and add a
+    scoped one for the instrument that means something else by it, instead of
+    having to scope every mode at once to stop them colliding.
+
+    **Only where the instrument's own token covers the shared one.** An
+    unscoped BR and a scoped NO3 both matching one name is not an override of
+    anything - it is a name that says two chemistries, which was refused and
+    parked for a person before the scope existed and must go on being. Nor is a
+    shared NO3_15N beside an instrument's NO3: there the shared mode is the more
+    specific reading of the name, so the scope does not get to win on a shorter
+    token (:func:`_token_covers`).
+
+    Applied per polarity, because a file's polarities are bound
+    independently - an instrument may have its own negative mode and share the
+    positive one with everything else.
+
+    :param matched: What the tokens matched, from :func:`_modes_matching_tokens`.
+    :param sample_file: The file being bound.
+    :return: The matches, with an unscoped one dropped where a scoped match of
+        the same polarity carries a token that covers it.
+    :rtype: list[IonizationMode]
+    """
+    scoped = [mode for mode in matched if mode.instrument is not None]
+    if not scoped:
+        return matched
+    kept = []
+    for mode in matched:
+        overridden = mode.instrument is None and any(
+            other.ionization_mode_polarity == mode.ionization_mode_polarity
+            and _token_covers(other.ionization_mode_token, mode.ionization_mode_token)
+            for other in scoped
+        )
+        if overridden:
+            runtime.logger.debug(
+                f"Mode '{mode.ionization_mode_name}' applies to every instrument, but "
+                f"{sample_file.instrument} has its own mode carrying a token "
+                f"covering this one in polarity {mode.ionization_mode_polarity}; the "
+                f"instrument's own one is used"
+            )
+            continue
+        kept.append(mode)
+    return kept
+
+
 async def resolve_ionization_modes_by_tokens(
     sample_file: SampleFile,
 ) -> list[IonizationMode]:
@@ -254,23 +388,9 @@ async def resolve_ionization_modes_by_tokens(
     runtime.logger.debug(
         f"Resolving ionization modes by tokens for {sample_file.filename}"
     )
-    # Fetch all ionization modes
-    all_ionization_modes = await fetch_all_ionization_modes()
-    file_polarities = set(sample_file.polarity)
-    # Match ionization modes based on tokens in the filename
-    matched_ionization_modes = []
-    for ionization_mode in all_ionization_modes:
-        if not ionization_mode.ionization_mode_token:
-            continue
-        if (
-            ionization_mode.ionization_mode_polarity in file_polarities
-            and ionization_mode.ionization_mode_token in sample_file.filename
-        ):
-            runtime.logger.debug(
-                f"Matched ionization mode token: {ionization_mode.ionization_mode_token} "
-                f"with filename: {sample_file.filename}"
-            )
-            matched_ionization_modes.append(ionization_mode)
+    matched_ionization_modes = _prefer_scoped(
+        await _modes_matching_tokens(sample_file), sample_file
+    )
 
     if not matched_ionization_modes:
         raise NoTokenMatchError(
@@ -289,43 +409,99 @@ async def resolve_ionization_modes_by_tokens(
     return chosen
 
 
-async def token_is_unique(token: str, ignore_id: str | None = None) -> bool:
+def tokens_conflict(
+    token: str | None,
+    instrument: str | None,
+    other_token: str | None,
+    other_instrument: str | None,
+) -> bool:
+    """Whether two modes' tokens would leave a file with no single answer.
+
+    Tokens that do not overlap never conflict: no one name carries both. For
+    the ones that do, the scopes decide, in three cases:
+
+    - **The same scope.** Two unscoped modes, or two of one instrument, are
+      matched against the same names with nothing to break the tie.
+    - **Two named instruments.** Never matched against one file, so each
+      instrument's tokens are its own - which is what the scope is for.
+    - **One scoped, one shared.** Both match the scoped instrument's files, and
+      :func:`_prefer_scoped` settles it *only* where the instrument's own token
+      covers the shared one. The other way round - a shared ``NO3_15N`` beside
+      an instrument's ``NO3`` - it does not, and in one polarity that pair is a
+      dead end: every file of that instrument naming 15N matches both and parks,
+      for good, because the instrument cannot add its own ``NO3_15N`` either
+      (that overlaps its ``NO3`` within one scope). So it is refused when it is
+      configured.
+
+    **Polarity is not considered, here or anywhere an overlap is refused.** Two
+    overlapping tokens in *different* polarities could in fact be routed - a
+    shared ``NO3_15N`` in positive mode beside an instrument's ``NO3`` in
+    negative mode binds each polarity to one mode - and this refuses them
+    anyway, as every overlap has been refused since before a mode could be
+    scoped. Conservative rather than reasoned: taking polarity into account
+    would start allowing pairs the check has always rejected, which is a change
+    worth making on its own evidence rather than inside this one.
+
+    :param token: The token being set.
+    :param instrument: The scope it is being set under, or None for every
+        instrument.
+    :param other_token: An existing mode's token.
+    :param other_instrument: That mode's scope.
+    :return: True when the two could not be told apart on one file.
+    :rtype: bool
+    """
+    if not _tokens_overlap(token, other_token):
+        return False
+    # Folded, as every comparison of an instrument name is: ORBI-1 and orbi-1
+    # are one instrument, so two modes scoped to those spellings share a scope.
+    key, other_key = instrument_key(instrument), instrument_key(other_instrument)
+    if key == other_key:
+        return True
+    if key and other_key:
+        return False
+    scoped, shared = (token, other_token) if key else (other_token, token)
+    return not _token_covers(scoped, shared)
+
+
+async def token_is_unique(
+    token: str,
+    ignore_id: str | None = None,
+    instrument: str | None = None,
+) -> bool:
     """Validate if an ionization mode token overlaps with an existing one.
 
-    Note: This checks for overlapping tokens, not exact matches. Also, it still
-    does not completely guarantee that a specific filename would only match one token.
+    Overlap, not equality: a token that contains another, or is contained by
+    one, would make a file name match both. It still does not completely
+    guarantee that a specific filename would only match one token.
+
+    **Compared within the scope** (#1463). A mode scoped to one instrument is
+    never matched against another instrument's file names, so requiring its
+    token to be unique across the whole server would forbid exactly what the
+    scope is for: two instruments spelling their own chemistry the same way in
+    their own file names. A scoped and an unscoped mode are still compared,
+    because both match the scoped instrument's files -
+    :func:`tokens_conflict` has the rule.
 
     :param token: The ionization mode token to validate.
     :type token: str
     :param ignore_id: An optional ionization mode ID to ignore during the check (useful when updating).
     :type ignore_id: str | None
+    :param instrument: The scope the token is being set under, or None for
+        every instrument.
+    :type instrument: str | None
     :return: True if the token is unique, False otherwise.
     :rtype: bool
     """
-    async with async_session() as session:
-        # First check if any existing token contains the new token
-        result = await session.execute(
-            select(IonizationMode).where(
-                and_(
-                    IonizationMode.ionization_mode_token.contains(token),
-                    IonizationMode.ionization_mode_id != ignore_id,
-                )
+    all_modes = await fetch_all_ionization_modes()
+    for mode in all_modes:
+        if not mode.ionization_mode_token or mode.ionization_mode_id == ignore_id:
+            continue
+        if tokens_conflict(
+            token, instrument, mode.ionization_mode_token, mode.instrument
+        ):
+            runtime.logger.debug(
+                f"Token '{token}' conflicts with existing token "
+                f"'{mode.ionization_mode_token}'"
             )
-        )
-        if result.scalars().first():
             return False
-
-        # Then fetch all existing tokens and check if new token contains any of them
-        all_modes = await fetch_all_ionization_modes()
-
-        # Check if the new token contains any existing token
-        for mode in all_modes:
-            if not mode.ionization_mode_token or mode.ionization_mode_id == ignore_id:
-                continue
-            if mode.ionization_mode_token in token:
-                runtime.logger.debug(
-                    f"New token '{token}' contains existing token '{mode.ionization_mode_token}'"
-                )
-                return False
-
-        return True
+    return True

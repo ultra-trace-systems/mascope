@@ -113,6 +113,27 @@ def method_key(method_file: str | None) -> str:
     return key
 
 
+def instrument_key(instrument: str | None) -> str | None:
+    """What an instrument is identified by: its trimmed lower case.
+
+    ``SampleFile.instrument`` is recorded with inconsistent case - one
+    instrument arrives as ``ORBI-1`` and ``orbi-1`` in different files - and one
+    workspace serves every variant. So anything that decides "is this the same
+    instrument" has to fold the case, or it splits one instrument in two: a mode
+    scoped to one spelling would miss the files recorded under the other, and
+    those files would park or fall back to a shared mode.
+
+    Here rather than beside one caller because two now share it - the
+    notification digests and the per-instrument ionization modes - and they must
+    agree.
+
+    :param instrument: The instrument name as recorded, or None.
+    :return: The folded key, or None.
+    :rtype: str | None
+    """
+    return instrument.strip().lower() if instrument else None
+
+
 def usable_streams(streams: object) -> list[dict]:
     """The census entries a caller may walk without guarding each field.
 

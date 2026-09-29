@@ -34,10 +34,10 @@ from mascope_backend.api.models.sample.files.config import (
 )
 from mascope_backend.api.new.notifications.service import (
     add_to_digests,
-    instrument_key,
     resolve_digests,
 )
 from mascope_backend.db import SampleFile, async_session
+from mascope_backend.method_keys import instrument_key
 from mascope_backend.runtime import runtime
 
 
