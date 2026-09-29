@@ -1307,6 +1307,16 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   keeps the same floor, where on a very short screen it had shrunk away with
   no scrollbar to reach its rows.
 
+- **An expanded result of the composition search can be scrolled through.**
+  Expanding a candidate with a long isotope pattern and scrolling down snapped
+  the view back to the top, so the rest of the pattern could not be read: the
+  results table renders only the rows in view, sliced by a fixed row height,
+  and the pattern nested under the candidate was as tall as the pattern. The
+  candidate's isotope lines now unfold as rows under it, the way the peak
+  ledger unfolds isotopologues, each with its abundance, m/z, error and match
+  score; a click on a line still previews it in the spectrum, and sorting keeps
+  every candidate's lines under it.
+
 ## [1.9.0] - 2026.09.24
 
 ### Added
