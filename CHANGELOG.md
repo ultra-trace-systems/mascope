@@ -1154,6 +1154,19 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   family's M0 row, the table now labels that row "[14N]"; re-running the sample
   commits the labelled line as the M0.
 
+- **The match tab now opens on the ion's monoisotopic line rather than its
+  lightest one.** The spectrum the tab drew first, and the isotope row it showed
+  as the selected one, were the first of the ion's isotopes in m/z order. For an
+  unlabelled ion that is the M0 - a bromine or chlorine cluster included, whose
+  M0 is its lightest line and its tallest line an M+2 or beyond. A labelled
+  reagent's atom is bracketed like any substituted isotope, so for a 15N-nitrate
+  ion the lightest line is the reagent's unlabelled remainder, 2% of the line
+  the ion is measured by and one mass unit below it, and the tab opened on the
+  remainder. Both now read the M0 the way the assignment engine's
+  `monoisotopic_row` does: the line whose brackets name exactly the ion's
+  labels, with the lightest line standing in where no line carries the marker
+  that tells them apart. An unlabelled ion opens where it always did.
+
 - **A loaded reference database no longer widens the mass width a TOF sample is
   scored and gated at.** Stage A matches a reference list's formulas in the
   same frame as the workspace's target library. On a TOF most of those pairings
