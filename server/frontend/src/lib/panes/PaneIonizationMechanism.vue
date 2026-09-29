@@ -222,9 +222,12 @@ section :deep(*) {
   text-overflow: ellipsis;
 }
 
+/* The table takes the height the form leaves in the panel, and scrolls its own
+   rows. It keeps its header and a row, though: on a screen too short for that,
+   the panel scrolls instead. */
 .list {
   flex: 1;
-  min-height: 0;
+  min-height: 7rem;
   display: flex;
   flex-flow: column;
   margin: 1rem 0;
