@@ -27,7 +27,10 @@ const stubs = {
     template: `<input :value="modelValue" @input="$emit('update:modelValue', $event.target.value)" />`
   },
   FloatLabel: { template: '<div><slot /></div>' },
-  Message: { template: '<p class="hint"><slot /></p>' },
+  Message: {
+    props: ['severity'],
+    template: '<p class="hint" :data-severity="severity"><slot /></p>'
+  },
   Button: true,
   DataTable: true,
   Column: true
@@ -38,9 +41,13 @@ async function hintsFor(typed) {
     global: { stubs, directives: { tooltip: {} } }
   })
   await wrapper.find('input').setValue(typed)
+  const examples = wrapper.find('#add-mechanism-examples')
+  const status = wrapper.find('#add-mechanism-status')
   return {
-    examples: wrapper.find('#add-mechanism-examples').text(),
-    status: wrapper.find('#add-mechanism-status').text()
+    examples: examples.text(),
+    examplesSeverity: examples.attributes('data-severity'),
+    status: status.text(),
+    statusSeverity: status.attributes('data-severity')
   }
 }
 
@@ -72,6 +79,16 @@ describe('PaneIonizationMechanism', () => {
   it('says what is wrong rather than what would be stored', async () => {
     expect(await hintFor('[M+H]')).toContain('singly charged')
     expect(await hintFor('[M+[15N]O3]-')).toContain('written with a caret')
+  })
+
+  it('turns only the status line red on a problem', async () => {
+    const wrong = await hintsFor('[M+H]')
+    expect(wrong.statusSeverity).toBe('error')
+    expect(wrong.examplesSeverity).toBe('secondary')
+
+    const stored = await hintsFor('-H+')
+    expect(stored.statusSeverity).toBe('secondary')
+    expect(stored.examplesSeverity).toBe('secondary')
   })
 })
 

@@ -1233,13 +1233,14 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   assignment engine's untargeted stage and the on-demand composition search.
 
 - **The Ionization Mechanisms tab of Edit Ionization Settings sits still.**
-  The examples under the mechanism field stay on a line of their own, with
-  what is wrong or how the mechanism will be stored on the line below, so the
-  dialog no longer widens and narrows as you type; the table is shortened to
-  make room for the hint, so the dialog no longer scrolls a few pixels; the
-  lock on a shipped mechanism lines up with the trash button of the others;
-  and the shipped mechanisms are listed first, the ones added on the server
-  after them.
+  The examples under the mechanism field sit under it rather than beside it,
+  on a line of their own, with what is wrong or how the mechanism will be
+  stored on a line below that is cut short rather than wrapped, so the dialog
+  no longer widens and narrows as you type; the table takes the height the
+  dialog leaves and scrolls within it, so the dialog no longer scrolls a few
+  pixels; the lock on a shipped mechanism lines up with the trash button of
+  the others; and the shipped mechanisms are listed first, the ones added on
+  the server after them.
 
 ## [1.9.0] - 2026.09.24
 
