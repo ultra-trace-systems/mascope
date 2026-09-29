@@ -213,6 +213,20 @@ describe('readLineOfHit', () => {
     expect(at(310.078)).toEqual({ name: '[14N]', offset: 'M-1', share: 0.0204 })
   })
 
+  // The remainder with a 13C is 6.3 mDa above the labelled line: another line
+  // at the monoisotopic nominal mass, named though its offset is M0.
+  it('names another line at the monoisotopic nominal mass', () => {
+    const labelled = [
+      { mz: 1682.5166, relative_abundance: 0.0204, target_isotope_formula: 'C60H100NO53-' },
+      { mz: 1683.51364, relative_abundance: 1.0, target_isotope_formula: '[15N]C60H100O53-' },
+      { mz: 1683.51996, relative_abundance: 0.0134, target_isotope_formula: '[13C]C59H100NO53-' }
+    ]
+    const at = (mz) => readLineOfHit({ ...hit(mz, labelled), target_ion_formula: 'C60H100O53^N-' })
+
+    expect(at(1683.51364)).toBeNull()
+    expect(at(1683.51996)).toEqual({ name: '[13C][14N]', offset: 'M0', share: 0.0134 })
+  })
+
   it('names the line by its offset when the pattern gives no formulas or abundances', () => {
     const bare = [{ mz: 100.0 }, { mz: 102.0 }]
 
