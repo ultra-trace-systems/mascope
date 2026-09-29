@@ -20,7 +20,7 @@ import { peakAssignmentEnabled } from '@/lib/features'
 import { fetchProfilePreview, isFormulaRange, usePeakAssignParams } from '@/lib/peakAssignParams'
 
 import { usePreview } from './preview.js'
-import { canCurateHit, curationBodyForHit, hitKey } from './searchHit.js'
+import { canCurateHit, curationBodyForHit, hitKey, readLineOfHit } from './searchHit.js'
 
 // On-demand composition search for the focused peak. Lives in the Sample view's
 // pane under the spectrum, shown in place of the time series while "Re-search"
@@ -55,7 +55,10 @@ const rootHelp = {
     <h1>Composition Search</h1>
     <p>
     Search candidate compositions for the selected peak from its m/z value, the
-    chosen ionization mechanisms and the allowed ranges of atom counts.
+    chosen ionization mechanisms and the allowed ranges of atom counts. The peak
+    may be any line of a candidate's ion at least 1% of its brightest: a
+    compound is found at its 13C, 34S or 81Br line as well as at its
+    monoisotopic one.
     </p>
     ${
       props.embedded
@@ -68,7 +71,7 @@ const rootHelp = {
           or the Assignments ledger. Close the search to return to the time series.
           </p>`
     }`,
-  doc: app.ui.help.docUrl('how-it-works/peak-assignment/#the-two-stages')
+  doc: app.ui.help.docUrl('how-it-works/peak-assignment/#searching-one-peak')
 }
 
 // One card for the whole results table: the icon-only column headers and the
@@ -89,6 +92,12 @@ const resultsHelp = {
     A database icon marks formulas that already exist among your target compounds.
     </p>
     <p>
+    A tag beside a formula, such as <code>[13C]</code> or <code>[81Br]</code>,
+    marks a candidate found at another line of its ion than the monoisotopic
+    one: the peak is that isotopologue of the compound, and the error is
+    against that line.
+    </p>
+    <p>
     Expand a row to see the candidate's full theoretical isotope pattern, and
     click an isotope row to preview it in the spectrum chart. The <b>+</b>
     button adds a candidate to the open target collection.
@@ -96,6 +105,25 @@ const resultsHelp = {
   doc: peakAssignmentEnabled
     ? app.ui.help.docUrl('how-it-works/peak-assignment/#the-fit-score-a-pure-measurement')
     : app.ui.help.docUrl('how-it-works/matching/')
+}
+
+const sharePercent = new Intl.NumberFormat('en-US', {
+  style: 'percent',
+  maximumSignificantDigits: 2
+})
+
+/**
+ * Hover text for the tag of a candidate read at another line of its ion.
+ *
+ * @param {{name: string, offset: string, share: number|null}} line see readLineOfHit
+ * @returns {string} the text
+ */
+function lineTooltip(line) {
+  const share = line.share != null ? `, ${sharePercent.format(line.share)} of its brightest` : ''
+  return (
+    `Found at the ion's ${line.name} line (${line.offset}${share}): the peak is ` +
+    'this isotopologue of the compound, and the error is against that line'
+  )
 }
 
 // The hand button's own card, rendered from the shared docs snippet rather than
@@ -220,7 +248,7 @@ app.ui.notification.on('match_compositions_by_mz', (payload) => {
         const existing = app.data.target.compound.list.filter(
           ({ target_compound_formula }) => target_compound_formula === res.target_compound_formula
         )
-        return { ...res, existing }
+        return { ...res, existing, line: readLineOfHit(res), key: hitKey(res) }
       })
     }
     loading.value = false
@@ -295,6 +323,10 @@ watchDebounced(
         ),
         mz_precision: deps.mzPrecision,
         formula_ranges: deps.formulaRange,
+        // Any line of a candidate's ion may be the peak, not only its
+        // monoisotopic one: a peak searched can be a compound's 13C or 81Br
+        // line, and a candidate found at another line is tagged with it.
+        isotopologues: true,
         match_params: app.data.match.params.typeDefaults
       },
       {
@@ -559,7 +591,7 @@ watch(
     <DataTable
       v-if="!loading && results.length > 0"
       :value="results"
-      dataKey="target_compound_formula"
+      dataKey="key"
       :sortField="peakAssignmentEnabled ? 'fit_score' : 'match_score'"
       :sortOrder="-1"
       scrollable
@@ -570,7 +602,17 @@ watch(
       :pt="app.ui.help.top(resultsHelp)"
     >
       <Column expander />
-      <Column field="target_compound_formula" header="Formula" sortable />
+      <Column field="target_compound_formula" header="Formula" sortable>
+        <template #body="{ data }">
+          {{ data.target_compound_formula }}
+          <span
+            v-if="data.line"
+            class="line-tag"
+            v-tooltip.top="{ value: lineTooltip(data.line), showDelay: 300 }"
+            >{{ data.line.name }}</span
+          >
+        </template>
+      </Column>
       <Column field="cheminfo.target_compound_unsaturation" sortable>
         <template #header>
           <span v-tooltip="{ value: 'Degree of unsaturation', showDelay: 500 }"><b>DBE</b></span>
@@ -846,6 +888,17 @@ watch(
 .reset-params {
   flex: 0 0 auto;
   align-self: center;
+}
+/* The line a candidate was read at, beside its formula: quiet enough that a
+   table of them still reads as formulas, present enough that a row found at a
+   13C line is not taken for the compound's own mass. */
+.line-tag {
+  margin-left: 0.35rem;
+  padding: 0 0.3rem;
+  border-radius: 4px;
+  font-size: 0.75rem;
+  background: var(--p-content-hover-background, rgba(127, 127, 127, 0.12));
+  white-space: nowrap;
 }
 /* The element the curation help card is registered on. It is a hook for the
    directive and nothing else, so with its glyph gone it takes up no space -

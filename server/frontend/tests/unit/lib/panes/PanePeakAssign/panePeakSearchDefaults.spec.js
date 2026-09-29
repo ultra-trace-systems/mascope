@@ -214,3 +214,13 @@ describe('PanePeakSearch with its fields left empty', () => {
     expect(previewCalls.at(-1).url).toBe('/peak-assignments/sample/si-2/profile-preview')
   })
 })
+
+// Any line of a candidate's ion may be the peak - its 13C or 81Br line as well
+// as its monoisotopic one - so the search asks for every line.
+describe('PanePeakSearch isotopologue lines', () => {
+  it("reads the peak as any line of each candidate's ion", async () => {
+    await mountPane()
+
+    expect(lastSearch()).toMatchObject({ isotopologues: true })
+  })
+})

@@ -1,4 +1,4 @@
-import { monoisotopicIsotope } from '@/lib/chem'
+import { formatIsotopeFormula, monoisotopicIsotope } from '@/lib/chem'
 
 /**
  * What a composition-search hit means when it is committed to a peak.
@@ -36,10 +36,29 @@ import { monoisotopicIsotope } from '@/lib/chem'
  *   carries one
  */
 export function isotopeOfHit(hit) {
-  const children = hit?.children ?? []
+  const placed = placeInPattern(hit)
   // No predicted pattern to place the peak in: the honest default is the main
   // isotopologue, which is what a single-isotope candidate means anyway.
-  if (!children.length) return { label: 'M0', formula: null }
+  if (!placed) return { label: 'M0', formula: null }
+
+  const { main, matched } = placed
+  const offset = Math.round((matched.mz ?? 0) - (main.mz ?? 0))
+  return {
+    label: offset === 0 ? 'M0' : offset > 0 ? `M+${offset}` : `M${offset}`,
+    formula: matched.target_isotope_formula ?? null
+  }
+}
+
+/**
+ * The hit's monoisotopic row and the row the search matched at the peak.
+ *
+ * @param {Object} hit a composition-search result row
+ * @returns {{children: Array<Object>, main: Object, matched: Object}|null} null
+ *   when the hit carries no predicted pattern
+ */
+function placeInPattern(hit) {
+  const children = hit?.children ?? []
+  if (!children.length) return null
 
   // The labels are read off the ion formula, which the search spreads onto the
   // hit with the rest of the matched ion; an isotope row carries only its own.
@@ -56,11 +75,40 @@ export function isotopeOfHit(hit) {
             Math.abs((row.mz ?? 0) - searched) < Math.abs((best.mz ?? 0) - searched) ? row : best,
           children[0]
         )
+  return { children, main, matched }
+}
 
-  const offset = Math.round((matched.mz ?? 0) - (main.mz ?? 0))
+/**
+ * The line of its ion a search hit was read at, when that is not the ion's
+ * monoisotopic line.
+ *
+ * A search that reads a peak as any line of a candidate's ion finds a compound
+ * whose 13C line, whose dibromide's brightest line, or whose labelled reagent's
+ * unlabelled remainder the peak is. The results table has to say which line,
+ * or the row reads as the compound's monoisotopic mass on a peak it is not.
+ *
+ * Named as the peak inspector names an isotopologue row, by the isotopes it
+ * substitutes (`[13C]`, `[81Br]`, `[14N]`), with the offset the hand button
+ * commits it under (`isotopeOfHit`) - so the tag says what a click would write.
+ *
+ * @param {Object} hit a composition-search result row
+ * @returns {{name: string, offset: string, share: number|null}|null} the line's
+ *   name, its offset label, and its share of the ion's brightest line when the
+ *   pattern gives abundances; null for a hit read at its monoisotopic line
+ */
+export function readLineOfHit(hit) {
+  const { label } = isotopeOfHit(hit)
+  if (label === 'M0') return null
+  const { children, matched } = placeInPattern(hit)
+  const brightest = Math.max(...children.map((row) => row.relative_abundance ?? 0))
+  const share =
+    brightest > 0 && matched.relative_abundance != null
+      ? matched.relative_abundance / brightest
+      : null
   return {
-    label: offset === 0 ? 'M0' : offset > 0 ? `M+${offset}` : `M${offset}`,
-    formula: matched.target_isotope_formula ?? null
+    name: formatIsotopeFormula(matched.target_isotope_formula, hit?.target_ion_formula) || label,
+    offset: label,
+    share
   }
 }
 
@@ -118,11 +166,12 @@ export function curationBodyForHit(hit) {
 }
 
 /**
- * Identity of a hit for per-row UI state (which row is mid-write).
+ * Identity of a hit within one result set: the results table's row key, and
+ * per-row UI state (which row is mid-write, which is expanded).
  *
- * Formula AND mechanism: the same composition can be found under two adducts,
- * and the results table's dataKey is the formula alone, so it cannot tell those
- * two rows apart.
+ * Formula AND mechanism: the same composition can be found under two adducts -
+ * at its monoisotopic line under one and at an isotopologue line under the
+ * other - and a key of the formula alone makes those two rows one.
  *
  * @param {Object} hit a composition-search result row
  * @returns {string} a key unique to the hit within one result set
