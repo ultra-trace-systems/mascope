@@ -50,10 +50,10 @@ watch(visible, () => {
     v-model:visible="visible"
     header="Edit Ionization Settings"
     modal
-    style="max-width: 80vw; min-height: 85vh"
+    style="max-width: 80vw; height: 85vh"
     contentStyle="flex-grow: 1; display: flex; flex-flow: column; gap: 0.5rem; justify-content: space-between"
   >
-    <Tabs v-model:value="tab">
+    <Tabs v-model:value="tab" class="fill">
       <TabList>
         <Tab
           value="modes"
@@ -127,12 +127,12 @@ watch(visible, () => {
           >Ionization Mechanisms</Tab
         >
       </TabList>
-      <TabPanels>
+      <TabPanels class="fill panels">
         <TabPanel value="modes">
           <PaneIonizationMode ref="modesPaneRef" />
         </TabPanel>
 
-        <TabPanel value="mechanisms">
+        <TabPanel value="mechanisms" class="fill">
           <PaneIonizationMechanism ref="mechanismsPaneRef" />
         </TabPanel>
       </TabPanels>
@@ -143,3 +143,21 @@ watch(visible, () => {
     </menu>
   </Dialog>
 </template>
+
+<style scoped>
+/* The dialog is a fixed height; the tabs take what the Close menu leaves, and
+   the mechanisms pane fills its panel, its table scrolling within it. The
+   modes pane sizes its own table, and scrolls in the panel should it not fit. */
+.fill,
+.panels > :deep(.fill) {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-flow: column;
+}
+
+/* A tab panel is not given this component's scope, hence the :deep above */
+.panels {
+  overflow-y: auto;
+}
+</style>

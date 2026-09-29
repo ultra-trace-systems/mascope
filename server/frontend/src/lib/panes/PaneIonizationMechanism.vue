@@ -58,11 +58,10 @@ const status = computed(() => {
 })
 
 // The shipped mechanisms first, then the ones added on this server, each
-// group in the order the server lists it.
-const mechanisms = computed(() => {
-  const list = app.data.ionization.mechanism.list
-  return [...list.filter((row) => row.shipped), ...list.filter((row) => !row.shipped)]
-})
+// group in the order the server lists it (the sort is stable).
+const mechanisms = computed(() =>
+  [...app.data.ionization.mechanism.list].sort((a, b) => Number(b.shipped) - Number(a.shipped))
+)
 
 // reset when create successful
 watch(
@@ -81,8 +80,8 @@ defineExpose({
 </script>
 
 <template>
-  <!-- As wide as the table, so a long message wraps instead of widening the dialog -->
-  <menu style="margin-top: 1.5rem; width: 500px; max-width: 100%">
+  <!-- A column (a dialog's menu is a row), as wide as the table -->
+  <menu class="add">
     <div class="row">
       <FloatLabel style="flex-grow: 1">
         <InputText
@@ -109,24 +108,23 @@ defineExpose({
     <Message id="add-mechanism-examples" severity="secondary" size="small" variant="simple">
       For example [M+H]+, [M-H]-, [M+Br]-, or [M]+. for electron transfer
     </Message>
-    <!-- Always a line tall, so the table does not move as the message comes and goes -->
+    <!-- Exactly a line tall, so the table does not move as the message comes and
+      goes; a message longer than the line is cut short, whole in its title -->
     <Message
       id="add-mechanism-status"
+      class="status"
       :severity="problem ? 'error' : 'secondary'"
       size="small"
       variant="simple"
+      :title="status || undefined"
     >
       <template v-if="status">{{ status }}</template>
       <template v-else>&nbsp;</template>
     </Message>
   </menu>
-  <section style="margin: 1rem 0">
-    <DataTable
-      :value="mechanisms"
-      tableStyle="width: 500px"
-      scrollable
-      scrollHeight="calc(85vh - 320px)"
-    >
+  <!-- The table takes the height left in the tab, scrolling its rows within it -->
+  <section class="list">
+    <DataTable :value="mechanisms" tableStyle="width: 500px" scrollable scrollHeight="flex">
       <Column field="ionization_mechanism_polarity" header="Polarity" width="2rem" sortable />
       <Column field="ionization_mechanism" header="Mechanism" width="40%" sortable />
       <Column field="ionization_mechanism_id" width="2rem">
@@ -182,6 +180,40 @@ defineExpose({
 <style scoped>
 section :deep(*) {
   overflow-x: hidden !important;
+}
+
+.add {
+  flex-flow: column;
+  align-items: stretch;
+  gap: 0;
+  margin-top: 1.5rem;
+  width: 500px;
+  max-width: 100%;
+}
+
+/* A message is a grid, whose column would otherwise grow to the text */
+.status {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.status :deep(.p-message-text) {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.list {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-flow: column;
+  margin: 1rem 0;
+}
+
+.list :deep(.p-datatable) {
+  flex: 1;
+  min-height: 0;
 }
 
 /* The box of the small text button beside it, so the lock and the trash line up */
