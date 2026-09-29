@@ -15,6 +15,7 @@ from mascope_backend.api.lib.api_features import (
 )
 from mascope_backend.api.new.cheminfo.config import cheminfo_config
 from mascope_backend.api.new.cheminfo.utils import (
+    explicit_isotope_line,
     to_custom_element_format,
     to_explicit_isotope_format,
 )
@@ -160,6 +161,64 @@ def _annotate_assignment_scores(
         )
 
 
+def _line_fields(raw: dict, formula: str) -> dict:
+    """Which line of its ion a composition result was read at.
+
+    From the finder where it read the m/z as another line than the monoisotopic
+    one; from the formula's own bracketed isotopes where the formula range put
+    one in it, since such a formula is reported as its unlabelled compound at
+    the labelled mass (`explicit_isotope_line`); the monoisotopic line
+    otherwise.
+
+    :param raw: One result of `find_compositions`.
+    :param formula: Its formula, custom elements already restored.
+    :return: ``target_isotope_label``, ``target_isotope_offset`` and
+        ``target_isotope_abundance`` (the line's share of the ion's brightest,
+        None where the finder did not predict it).
+    """
+    if "isotope_label" in raw:
+        return {
+            "target_isotope_label": raw["isotope_label"],
+            "target_isotope_offset": raw["isotope_offset"],
+            "target_isotope_abundance": raw["isotope_abundance"],
+        }
+    label, offset = explicit_isotope_line(formula) or ("M0", 0)
+    return {
+        "target_isotope_label": label,
+        "target_isotope_offset": offset,
+        "target_isotope_abundance": None,
+    }
+
+
+def _one_reading_per_ion(results: list[dict]) -> list[dict]:
+    """One result per compound and mechanism, the closest in mass.
+
+    A compound can reach one search twice under one mechanism: the finder reads
+    the peak as its 13C line, and a formula range holding ``[13C]0-1`` finds the
+    labelled formula, which is reported as the same compound at the same line.
+    The two are one ion; matched against the sample they would be scored twice
+    and listed twice. On a tie the finder's reading is kept, since it knows how
+    bright the line is.
+
+    :param results: The mapped results, in the finder's order.
+    :return: The results kept, in the same order.
+    """
+    best: dict[tuple, tuple[tuple, int]] = {}
+    for index, result in enumerate(results):
+        key = (
+            result["target_compound_formula"],
+            result["ionization_mechanism"]["ionization_mechanism_id"],
+        )
+        rank = (
+            round(abs(result["target_isotope_mz_error_ppm"]), 4),
+            result.get("target_isotope_abundance") is None,
+        )
+        if key not in best or rank < best[key][0]:
+            best[key] = (rank, index)
+    kept = {index for _, index in best.values()}
+    return [result for index, result in enumerate(results) if index in kept]
+
+
 @api_controller()
 async def retrieve_compositions_by_mz(
     mz: float,
@@ -167,6 +226,7 @@ async def retrieve_compositions_by_mz(
     mz_precision: float = cheminfo_config.DEFAULT_MZ_PRECISION,
     formula_ranges: str = cheminfo_config.DEFAULT_FORMULA_RANGE,
     known_only: bool = False,
+    isotopologues: bool = False,
 ) -> dict:
     """
     Find molecular compositions for a given m/z value using Mascope Tools.
@@ -199,12 +259,20 @@ async def retrieve_compositions_by_mz(
     :param known_only: When True, keep only results whose formula matches a known
         reference compound - the suspect-screening prior. Defaults to False.
     :type known_only: bool
+    :param isotopologues: When True, the m/z may be any line of a candidate's
+        ion at least ``cheminfo_config.ISOTOPOLOGUE_FLOOR`` of its brightest,
+        not only its monoisotopic line. Defaults to False, the search as it
+        always was.
+    :type isotopologues: bool
     :return: Metadata and a result array of records containing the following fields:
         - target_compound_formula
         - target_compound_unsaturation
         - ionization_mechanism
-        - target_isotope_mz
-        - target_isotope_mz_error_ppm
+        - target_isotope_mz (the m/z of the line the result was read at)
+        - target_isotope_mz_error_ppm (against that line)
+        - target_isotope_label, target_isotope_offset, target_isotope_abundance
+          (which line that is - "M0" and 0 for the monoisotopic one - and its
+          share of the ion's brightest line; present only with `isotopologues`)
         - known_compounds (list of matching reference-database identities; present
           only when the reference mirror is consulted, see `_annotate_with_reference`)
     :rtype: dict
@@ -246,7 +314,13 @@ async def retrieve_compositions_by_mz(
         max_unsaturation=10000.0,
         max_result_rows=1000,
     )
-    composition_results = find_compositions(mz, config)
+    composition_results = find_compositions(
+        mz,
+        config,
+        isotopologue_floor=(
+            cheminfo_config.ISOTOPOLOGUE_FLOOR if isotopologues else None
+        ),
+    )
 
     # Map Mascope Tools results to the expected response format
     results = []
@@ -254,9 +328,9 @@ async def retrieve_compositions_by_mz(
         try:
             # Convert explicit isotope notation back to custom element
             # notation and re-normalize to Hill order
-            formula = to_custom_element_format(raw["formula"])
+            labelled = to_custom_element_format(raw["formula"])
             formula = to_hill_order(
-                parse_composition(normalize_formula_with_isotopes(formula))
+                parse_composition(normalize_formula_with_isotopes(labelled))
             )
 
             # Find matching ionization mechanism from database.
@@ -272,27 +346,33 @@ async def retrieve_compositions_by_mz(
                 continue
 
             # Compute theoretical ion m/z from neutral mass
-            # and ionization mechanism
+            # and ionization mechanism - unless the finder read the m/z as
+            # another line of the ion, whose m/z it reports
             ion_mech = parse_ionization(ion_mech_str)
             neutral_mass = raw["neutral_mass"]
-            theoretical_mz = neutral_mass + (
-                ion_mech.mass if ion_mech.addition else -ion_mech.mass
+            theoretical_mz = raw.get(
+                "isotope_mz",
+                neutral_mass + (ion_mech.mass if ion_mech.addition else -ion_mech.mass),
             )
 
-            results.append(
-                {
-                    "sample_peak_mz": mz,
-                    "target_compound_formula": formula,
-                    "target_compound_unsaturation": raw.get("unsaturation"),
-                    "ionization_mechanism": db_mech.to_dict(),
-                    "target_isotope_mz": theoretical_mz,
-                    "target_isotope_mz_error_ppm": raw["composition_error_ppm"],
-                }
-            )
+            result = {
+                "sample_peak_mz": mz,
+                "target_compound_formula": formula,
+                "target_compound_unsaturation": raw.get("unsaturation"),
+                "ionization_mechanism": db_mech.to_dict(),
+                "target_isotope_mz": theoretical_mz,
+                "target_isotope_mz_error_ppm": raw["composition_error_ppm"],
+            }
+            if isotopologues:
+                result.update(_line_fields(raw, labelled))
+            results.append(result)
         except Exception:
             runtime.logger.exception(f"Error processing result {raw}")
             # Skip malformed results rather than failing
             continue
+
+    if isotopologues:
+        results = _one_reading_per_ion(results)
 
     results = await _annotate_with_reference(results, known_only=known_only)
 
@@ -378,6 +458,7 @@ async def match_compositions_by_mz(
     formula_ranges: str | None = cheminfo_config.DEFAULT_FORMULA_RANGE,
     ionization_mechanism_ids: list[str] | None = None,
     match_params: BaseMatchParams | None = None,
+    isotopologues: bool = False,
     independent_transaction: bool = False,
     user_id: None | int = None,
     process_id: None | str = None,
@@ -410,6 +491,11 @@ async def match_compositions_by_mz(
         aggregation call so the fit-score annotation sees the same parameters the
         match itself ran with.
     :type match_params: None | BaseMatchParams
+    :param isotopologues: Whether the m/z may be any line of a candidate's ion,
+        not only its monoisotopic one; see `retrieve_compositions_by_mz`. A
+        result read at another line is kept only where the matched ion puts
+        that line on the searched peak, as every result is.
+    :type isotopologues: bool
     :param independent_transaction: Whether this is an independent transaction
     :type independent_transaction: bool
     :param user_id: Current user triggered operation (for user notifications)
@@ -424,6 +510,8 @@ async def match_compositions_by_mz(
         - ionization_mechanism
         - target_isotope_mz
         - target_isotope_mz_error_ppm
+        - target_isotope_label, target_isotope_offset, target_isotope_abundance
+          (with `isotopologues`)
     :rtype: dict
     """
     if match_params is None:
@@ -436,6 +524,7 @@ async def match_compositions_by_mz(
         ionization_mechanism_ids=ionization_mechanism_ids,
         mz_precision=mz_precision,
         formula_ranges=formula_ranges,
+        isotopologues=isotopologues,
     )
 
     cheminfo_data = cheminfo_result.get("data", [])
@@ -462,12 +551,14 @@ async def match_compositions_by_mz(
 
     # Compute matches for the composition results
     # Matches are computed for all ionization mechanisms for each returned formula
-    # and later filtered to keep only the one matching the original composition result
+    # and later filtered to keep only the one matching the original composition result.
+    # Each formula once: a formula read under two mechanisms, or at two lines, is
+    # still one compound, and every compound is matched under every mechanism.
     matches_result = await aggregate_sample_match_compounds(
         sample_item_id=sample_item_id,
-        target_compound_formulas=[
-            info["target_compound_formula"] for info in cheminfo_data
-        ],
+        target_compound_formulas=list(
+            dict.fromkeys(info["target_compound_formula"] for info in cheminfo_data)
+        ),
         ion_mechanism_ids=ionization_mechanism_ids,
         match_params=match_params,
     )

@@ -9,9 +9,13 @@ from mascope_backend.api.new.cheminfo.service import (
     _annotate_assignment_scores,
     _annotate_with_reference,
     _instrument_sigma_ppm,
+    _line_fields,
+    _one_reading_per_ion,
     retrieve_compositions_by_mz,
 )
+from mascope_backend.api.new.cheminfo.utils import explicit_isotope_line
 from mascope_match.params import OrbiMatchParams, TofMatchParams
+from mascope_tools.composition.heuristic_filter import predict_isotopes
 
 
 def assert_cheminfo_query_result_format(result: dict):
@@ -180,3 +184,201 @@ async def test_reference_annotation_runs_on_explicit_opt_in(monkeypatch):
 
     assert [r["target_compound_formula"] for r in annotated] == ["C3H6O3"]
     assert annotated[0]["known_compounds"] == [{"name": "lactic acid"}]
+
+
+# --- Which line of a candidate's ion the searched m/z is ----------------------
+#
+# The search reads the m/z as the monoisotopic line of every candidate's ion
+# unless asked otherwise. A labelled reagent's adduct is read at its labelled
+# line, and with `isotopologues` the m/z may be any line of the ion bright
+# enough to show - its brightest one among them.
+
+
+def _lines(ion: str, charge: int) -> dict[str, float]:
+    """An ion's predicted lines by label: its m/z at each."""
+    mzs, _, labels = predict_isotopes(ion, charge, threshold=1e-4)
+    return {label: float(mz) for mz, label in zip(mzs, labels)}
+
+
+def _ids(mechanisms: list, *notations: str) -> list[str]:
+    return [
+        m.ionization_mechanism_id
+        for m in mechanisms
+        if m.ionization_mechanism in notations
+    ]
+
+
+def _rows_of(formula: str, result: dict) -> list[dict]:
+    return [r for r in result["data"] if r["target_compound_formula"] == formula]
+
+
+# The ion of C10H16O7 with the 15N-nitrate reagent: its labelled line, where the
+# reagent puts 98% of it, and the unlabelled remainder one unit below.
+NITRATE_ADDUCT = _lines("C10H16O10^N", -1)
+
+
+@pytest.mark.asyncio
+async def test_a_labelled_adduct_is_found_at_its_labelled_line(
+    test_ionization_mechanisms: list,
+):
+    """The peak a 15N-nitrate adduct shows most of finds its compound.
+
+    The labelled atom used to be massed as the unlabelled one, 0.997 Da light,
+    so the compound was found one unit below its own peak, at the 2% remainder.
+    """
+    ids = _ids(test_ionization_mechanisms, "[M+^NO3]-")
+    ranges = "C0-20 H0-40 O0-15"
+
+    at_label = await retrieve_compositions_by_mz(
+        mz=NITRATE_ADDUCT["M0"], ionization_mechanism_ids=ids, formula_ranges=ranges
+    )
+    assert _rows_of("C10H16O7", at_label)
+
+    at_remainder = await retrieve_compositions_by_mz(
+        mz=NITRATE_ADDUCT["14N"], ionization_mechanism_ids=ids, formula_ranges=ranges
+    )
+    assert not _rows_of("C10H16O7", at_remainder)
+
+
+@pytest.mark.asyncio
+async def test_isotopologues_find_the_unlabelled_remainder(
+    test_ionization_mechanisms: list,
+):
+    result = await retrieve_compositions_by_mz(
+        mz=NITRATE_ADDUCT["14N"],
+        ionization_mechanism_ids=_ids(test_ionization_mechanisms, "[M+^NO3]-"),
+        formula_ranges="C0-20 H0-40 O0-15",
+        isotopologues=True,
+    )
+    (row,) = _rows_of("C10H16O7", result)
+    assert row["target_isotope_label"] == "14N"
+    assert row["target_isotope_offset"] == -1
+    assert row["target_isotope_abundance"] == pytest.approx(0.02 / 0.98, rel=1e-6)
+    assert row["target_isotope_mz"] == pytest.approx(NITRATE_ADDUCT["14N"], abs=1e-6)
+    assert abs(row["target_isotope_mz_error_ppm"]) < 0.01
+
+
+@pytest.mark.asyncio
+async def test_isotopologues_find_a_dibromide_at_its_brightest_line(
+    test_ionization_mechanisms: list,
+):
+    """A dibromide's 79Br81Br line is twice its monoisotopic one."""
+    target = _lines("C6H3Br2O", -1)["81Br"]
+    query = {
+        "mz": target,
+        "ionization_mechanism_ids": _ids(test_ionization_mechanisms, "[M-H]-"),
+        "formula_ranges": "C0-12 H0-20 O0-4 Br0-2",
+    }
+
+    assert not _rows_of("C6H4Br2O", await retrieve_compositions_by_mz(**query))
+
+    (row,) = _rows_of(
+        "C6H4Br2O",
+        await retrieve_compositions_by_mz(**query, isotopologues=True),
+    )
+    assert row["target_isotope_label"] == "81Br"
+    assert row["target_isotope_offset"] == 2
+    assert row["target_isotope_abundance"] == pytest.approx(1.0)
+    assert row["target_isotope_mz"] == pytest.approx(target, abs=1e-6)
+
+
+@pytest.mark.asyncio
+async def test_a_monoisotopic_search_keeps_its_response_shape(
+    test_ionization_mechanisms: list,
+):
+    result = await retrieve_compositions_by_mz(
+        mz=NITRATE_ADDUCT["M0"],
+        ionization_mechanism_ids=_ids(test_ionization_mechanisms, "[M+^NO3]-"),
+        formula_ranges="C0-20 H0-40 O0-15",
+    )
+    assert result["data"]
+    for row in result["data"]:
+        assert (
+            not {
+                "target_isotope_label",
+                "target_isotope_offset",
+                "target_isotope_abundance",
+            }
+            & row.keys()
+        )
+
+
+@pytest.mark.asyncio
+async def test_a_compound_read_twice_at_one_line_is_one_result(
+    test_ionization_mechanisms: list,
+):
+    """A formula range holding [13C] finds the labelled glucose, which is
+    reported as glucose at its 13C line - the line every isotopologue already
+    reads glucose at. One ion, one row."""
+    target = _lines("C6H13O6", 1)["13C"]
+    result = await retrieve_compositions_by_mz(
+        mz=target,
+        ionization_mechanism_ids=_ids(test_ionization_mechanisms, "[M+H]+"),
+        formula_ranges="C0-12 H0-24 O0-8 [13C]0-1",
+        isotopologues=True,
+    )
+    (row,) = _rows_of("C6H12O6", result)
+    assert row["target_isotope_label"] == "13C"
+    assert row["target_isotope_offset"] == 1
+
+
+def test_the_line_comes_from_the_finder_where_it_read_one():
+    raw = {
+        "formula": "C6H12O6",
+        "isotope_label": "13C",
+        "isotope_offset": 1,
+        "isotope_abundance": 0.065,
+    }
+    assert _line_fields(raw, "C6H12O6") == {
+        "target_isotope_label": "13C",
+        "target_isotope_offset": 1,
+        "target_isotope_abundance": 0.065,
+    }
+
+
+def test_a_bracketed_isotope_names_the_line_it_reads():
+    assert _line_fields({"formula": "[13C]C5H12O6"}, "[13C]C5H12O6") == {
+        "target_isotope_label": "13C",
+        "target_isotope_offset": 1,
+        "target_isotope_abundance": None,
+    }
+    assert _line_fields({"formula": "C6H12O6"}, "C6H12O6")["target_isotope_label"] == (
+        "M0"
+    )
+
+
+@pytest.mark.parametrize(
+    ("formula", "line"),
+    [
+        ("[13C]C5H12O6", ("13C", 1)),
+        ("[13C]2[18O]C4H12O5", ("13C2+18O", 4)),
+        ("[81Br]C6H4BrO", ("81Br", 2)),
+        ("C6H12O6", None),
+        # A labelled reagent's atom is a compound's own, not a line of another.
+        ("C10H16O10^N", None),
+    ],
+)
+def test_explicit_isotope_line(formula, line):
+    assert explicit_isotope_line(formula) == line
+
+
+def test_one_reading_per_ion_keeps_the_closest_and_then_the_measured_line():
+    def row(formula, mechanism, error, abundance=None):
+        return {
+            "target_compound_formula": formula,
+            "ionization_mechanism": {"ionization_mechanism_id": mechanism},
+            "target_isotope_mz_error_ppm": error,
+            "target_isotope_abundance": abundance,
+        }
+
+    closer = row("C6H12O6", "m1", -0.5)
+    further = row("C6H12O6", "m1", 1.5)
+    other_mechanism = row("C6H12O6", "m2", 2.0)
+    measured = row("C3H6O3", "m1", 0.2, abundance=0.03)
+    unmeasured = row("C3H6O3", "m1", -0.2)
+
+    kept = _one_reading_per_ion(
+        [further, closer, other_mechanism, unmeasured, measured]
+    )
+
+    assert kept == [closer, other_mechanism, measured]

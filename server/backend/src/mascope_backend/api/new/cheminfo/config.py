@@ -22,6 +22,15 @@ class ChemInfoConfig(BaseModel):
     # Default formula range for queries
     DEFAULT_FORMULA_RANGE: str = "C0-80 H0-160 O0-50 N0-20"
 
+    # The least share of its ion's brightest line a line may have for a search
+    # asked for isotopologues (`isotopologues=True`) to read a peak as that
+    # line. 1% is the depth the composition finder predicts an envelope to
+    # for scoring (`mascope_tools.composition.config.ISOTOPE_ABUNDANCE_THRESHOLD`):
+    # the 13C line of any carbon compound, a single 34S or 37Cl, the 18O line of
+    # an oxygen-rich ion and the 2% unlabelled remainder of a 15N reagent are all
+    # above it.
+    ISOTOPOLOGUE_FLOOR: float = 0.01
+
     # Debounce delay in milliseconds for frontend API requests
     DEBOUNCE_DELAY_MS: int = 800
 
