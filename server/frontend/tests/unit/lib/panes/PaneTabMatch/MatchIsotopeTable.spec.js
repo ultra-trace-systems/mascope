@@ -2,6 +2,8 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { mount } from '@vue/test-utils'
 import { ref } from 'vue'
 
+import { monoisotopicIsotope } from '@/lib/chem'
+
 // The match tab's isotope table labels each isotope of the visualized ion by how
 // it differs from the ion's M0, and shows the M0's row as the one it opens on. A
 // labelled reagent's atom is bracketed like any substituted isotope, so for the
@@ -11,6 +13,16 @@ import { ref } from 'vue'
 // the row order, which is the backend's m/z order, the remainder was the row the
 // tab opened on. The isotope rows carry no ion formula: the ion they belong to is
 // the visualized one.
+//
+// Which isotope is the M0 is the store's answer (`visualized.isotopeMain`), so
+// the mock derives it with the real rule and these cases read what the table does
+// with it; chem.spec.js pins the rule itself.
+//
+// The DataTable is stubbed, so the stub - not PrimeVue - decides that `rowClass`
+// is a function taking the row. That it is the prop PrimeVue calls, with that
+// signature, was checked by hand against the installed primevue 4.5.4
+// (`datatable/index.mjs`, where `rowClasses` calls `this.rowClass(this.rowData)`)
+// and is not held by anything here.
 
 let visualized
 
@@ -88,7 +100,15 @@ async function mainRowFormulas() {
 }
 
 beforeEach(() => {
-  visualized = { ion: null, isotopes: [], isotopeSelected: null }
+  visualized = {
+    ion: null,
+    isotopes: [],
+    isotopeSelected: null,
+    // The store's own getter, derived by the rule chem.spec.js pins.
+    get isotopeMain() {
+      return monoisotopicIsotope(this.isotopes, this.ion?.target_ion_formula)
+    }
+  }
 })
 
 describe('MatchIsotopeTable substitution labels', () => {

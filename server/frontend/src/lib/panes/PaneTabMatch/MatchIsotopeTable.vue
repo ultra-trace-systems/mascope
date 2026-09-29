@@ -7,7 +7,7 @@ import ProgressSpinner from 'primevue/progressspinner'
 
 import { BaseMatchTag, BaseCopyableField } from '@/lib/base'
 import { num } from '@/lib/formatters'
-import { formatIsotopeFormula, monoisotopicIsotope } from '@/lib/chem'
+import { formatIsotopeFormula } from '@/lib/chem'
 
 import { useApp } from '@/stores'
 
@@ -17,18 +17,16 @@ const app = useApp()
 const ionFormula = () => app.data.match.visualized.ion?.target_ion_formula
 const loading = computed(() => app.data.match.visualized.isotopes === null)
 
-// The isotope the table opens on: the ion's monoisotopic isotopologue, which the
-// ion formula names for a labelled ion. The rows arrive in the backend's m/z
-// order, where the lightest one comes first - the M0 of an unlabelled ion, but
-// for a labelled one the reagent's unlabelled remainder, a couple of percent of
-// the line the ion is measured by.
-const mainIsotopeId = computed(
-  () => monoisotopicIsotope(app.data.match.visualized.isotopes, ionFormula())?.target_isotope_id
-)
+// The ion's M0, which the store derives (`isotopeMain`), not the first row in
+// m/z order: for a labelled ion those are different lines.
+const mainIsotopeId = computed(() => app.data.match.visualized.isotopeMain?.target_isotope_id)
 
-// The M0 row shows as the one the table opens on.
+// The M0's row shows as the one the table opens on. The id is compared only once
+// it exists, so rows without one are not all marked as each other's match.
 const rowClass = (data) =>
-  data?.target_isotope_id === mainIsotopeId.value ? 'main-isotope-row' : ''
+  mainIsotopeId.value != null && data?.target_isotope_id === mainIsotopeId.value
+    ? 'main-isotope-row'
+    : ''
 
 // Compute UI-based match category for display
 const uiMatchCategory = (match) => {
@@ -58,8 +56,6 @@ const uiMatchCategory = (match) => {
       v-model:selection="app.data.match.visualized.isotopeSelected"
       size="small"
       :rowClass="rowClass"
-      sortField="formula"
-      :sortOrder="-1"
       scrollable
       scrollHeight="flex"
     >
@@ -141,8 +137,13 @@ const uiMatchCategory = (match) => {
   overflow: auto;
 }
 
-/* Make the ion's M0 row appear selected (`rowClass`) */
+/* The ion's M0 row (`rowClass`), which the tab opens on. It carries the selected
+   row's background, and an accent edge on top of it: PrimeVue paints the row the
+   user actually selects with that same background, so without the edge a
+   labelled ion with its remainder selected shows two identically selected rows
+   and nothing saying which one the second spectrum belongs to. */
 .isotope-table-container :deep(.p-datatable tbody > tr.main-isotope-row) {
   background-color: var(--p-datatable-row-selected-background) !important;
+  box-shadow: inset 3px 0 0 0 var(--p-primary-color);
 }
 </style>
