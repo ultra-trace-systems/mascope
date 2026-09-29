@@ -21,13 +21,15 @@ vi.mock('@/stores/ui', () => ({ useUi: () => ({ chart: { clear: vi.fn() } }) }))
 vi.mock('@/stores/data/modules/dataset', () => ({ useDataset: () => ({ focused: null }) }))
 vi.mock('@/stores/data/modules/sample', () => ({ useSample: () => ({ focused: null }) }))
 vi.mock('@/stores/data/modules/match', () => ({
-  useMatchCollection: () => ({ focused: {} }),
+  // load() early-returns without a collection id; the getter cases never reach it.
+  useMatchCollection: () => ({ focused: { target_collection_id: 'COLLECTION' } }),
   useMatchIon: () => ({ list: [] })
 }))
 vi.mock('@/stores/data/modules/match/params', () => ({
   useMatchParams: () => ({ ui: {}, db: {}, set: vi.fn() })
 }))
 
+const { api } = await import('@/api')
 const { useMatchVisualized } = await import('@/stores/data/modules/match/visualized')
 
 /** An isotope row as the ion aggregate endpoint returns one. */
@@ -129,5 +131,78 @@ describe('match.visualized isotopeMain identity', () => {
   // already fails the case above, so nothing reaches this one first.
   it('gives back the same object on every read', () => {
     expect(store.isotopeMain === store.isotopeMain).toBe(true)
+  })
+})
+
+// The colour of an isotope is not the store's to invent: the spectra chart picks
+// it when it draws the trace and writes it back onto the row. A reload refetches
+// the rows, so the store carries the colour over from the rows it is replacing -
+// otherwise the swatch in the rating dialog goes blank on every reload and only
+// comes back once the socket has re-streamed the spectra.
+describe('match.visualized isotope colours', () => {
+  /** The rgb() string the spectra chart writes back onto a drawn row. */
+  const TRACE_COLOR = 'rgb(31, 119, 180)'
+
+  /**
+   * Answer the next load with one ion and its isotopes. The ion carries the ids
+   * `load` resolves the following reload from, so reloading needs no arguments.
+   */
+  const serve = (ionId, isotopes) => {
+    api.http.post.mockImplementation(async (url) => {
+      if (!url.endsWith('/ion')) return {}
+      return {
+        match_ions: [{ target_ion_id: ionId, match: { sample_item_id: 'SAMPLE' } }],
+        match_isotopes: isotopes
+      }
+    })
+  }
+
+  /** The colour of each row, in the order the store holds them. */
+  const colors = () => store.isotopes.map((row) => row.color)
+
+  beforeEach(() => {
+    // The ids of the first load, which has no previous response to resolve from.
+    store.ion = { target_ion_id: 'nitrate', match: { sample_item_id: 'SAMPLE' } }
+  })
+
+  it('carries a drawn colour across a reload of the same ion', async () => {
+    serve('nitrate', NITRATE)
+    await store.reload()
+    expect(colors()).toEqual([null, null])
+
+    // The spectra chart draws one of the two lines and colours its row.
+    store.isotopes[0].color = TRACE_COLOR
+
+    await store.reload()
+
+    // The drawn row keeps its colour; the undrawn one has none to keep.
+    expect(colors()).toEqual([TRACE_COLOR, null])
+  })
+
+  it('starts a different ion colourless', async () => {
+    serve('nitrate', NITRATE)
+    await store.reload()
+    store.isotopes[0].color = TRACE_COLOR
+
+    serve('bromine', BROMINE)
+    await store.reload()
+
+    expect(colors()).toEqual([null, null])
+  })
+
+  // The early return for an ion the response carries no match for: it leaves an
+  // empty list, so the next load has no colour to carry over either.
+  it('keeps nothing when the ion comes back unmatched', async () => {
+    serve('nitrate', NITRATE)
+    await store.reload()
+    store.isotopes[0].color = TRACE_COLOR
+
+    api.http.post.mockImplementation(async () => ({ match_ions: [], match_isotopes: [] }))
+    await store.reload()
+    expect(store.isotopes).toEqual([])
+
+    serve('nitrate', NITRATE)
+    await store.reload()
+    expect(colors()).toEqual([null, null])
   })
 })
