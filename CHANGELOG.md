@@ -1267,6 +1267,14 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   spelling `-H+` - says so under the field and leaves Add off, rather than
   failing only once Add is pressed.
 
+- **The Ionization Modes tab of Edit Ionization Settings scrolls once.** Its
+  table was sized by a fixed guess at the room left in the dialog, which
+  overshot it, so on a short screen the table scrolled inside a tab that
+  scrolled too - by more when the create form wrapped in a narrow window. The
+  table now takes the height the form and the search leave and scrolls its own
+  rows, as the mechanisms table does; only when a wrapped form leaves it less
+  than its header and a row does the tab scroll instead.
+
 ## [1.9.0] - 2026.09.24
 
 ### Added
