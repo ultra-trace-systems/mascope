@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { mount } from '@vue/test-utils'
 import { ref } from 'vue'
 
@@ -44,6 +44,7 @@ async function hintsFor(typed) {
   const examples = wrapper.find('#add-mechanism-examples')
   const status = wrapper.find('#add-mechanism-status')
   return {
+    addDisabled: wrapper.find('button-stub[label="Add"]').attributes('disabled') === 'true',
     examples: examples.text(),
     examplesSeverity: examples.attributes('data-severity'),
     status: status.text(),
@@ -89,6 +90,28 @@ describe('PaneIonizationMechanism', () => {
     const stored = await hintsFor('-H+')
     expect(stored.statusSeverity).toBe('secondary')
     expect(stored.examplesSeverity).toBe('secondary')
+  })
+
+  describe('with mechanisms on the server', () => {
+    beforeEach(() => {
+      mechanisms.splice(0, mechanisms.length, { ionization_mechanism: '[M-H]-' })
+    })
+    afterEach(() => {
+      mechanisms.splice(0, mechanisms.length)
+    })
+
+    it.each(['[M-H]-', '-H+'])('refuses %s, which is already there', async (typed) => {
+      const hints = await hintsFor(typed)
+      expect(hints.status).toBe('[M-H]- is already a mechanism')
+      expect(hints.statusSeverity).toBe('error')
+      expect(hints.addDisabled).toBe(true)
+    })
+
+    it('offers to add one that is not', async () => {
+      const hints = await hintsFor('[M+H]+')
+      expect(hints.status).toBe('')
+      expect(hints.addDisabled).toBe(false)
+    })
   })
 })
 

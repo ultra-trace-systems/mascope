@@ -1239,8 +1239,9 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   no longer widens and narrows as you type; the table takes the height the
   dialog leaves and scrolls within it, so the dialog no longer scrolls a few
   pixels; the lock on a shipped mechanism lines up with the trash button of
-  the others; and the shipped mechanisms are listed first, the ones added on
-  the server after them.
+  the others; the shipped mechanisms are listed first, the ones added on the
+  server after them; and a mechanism the server already has, in either
+  spelling, cannot be added again - the field says so and Add stays off.
 
 ## [1.9.0] - 2026.09.24
 
