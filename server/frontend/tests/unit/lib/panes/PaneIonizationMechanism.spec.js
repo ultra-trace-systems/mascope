@@ -4,9 +4,10 @@ import { ref } from 'vue'
 
 import PaneIonizationMechanism from '@/lib/panes/PaneIonizationMechanism.vue'
 
-// The mechanism editor's hint: what is wrong with what is typed, else the one
-// spelling the server will store when that is not what was typed. And the list
-// below it, which offers no delete for a mechanism Mascope ships.
+// The mechanism editor's hints: examples that stay put, and under them what is
+// wrong with what is typed, else the one spelling the server will store when
+// that is not what was typed. And the list below them, shipped mechanisms
+// first, which offers no delete for a mechanism Mascope ships.
 
 const { mechanisms } = vi.hoisted(() => ({ mechanisms: [] }))
 
@@ -32,13 +33,18 @@ const stubs = {
   Column: true
 }
 
-async function hintFor(typed) {
+async function hintsFor(typed) {
   const wrapper = mount(PaneIonizationMechanism, {
     global: { stubs, directives: { tooltip: {} } }
   })
   await wrapper.find('input').setValue(typed)
-  return wrapper.find('.hint').text()
+  return {
+    examples: wrapper.find('#add-mechanism-examples').text(),
+    status: wrapper.find('#add-mechanism-status').text()
+  }
 }
+
+const hintFor = async (typed) => (await hintsFor(typed)).status
 
 describe('PaneIonizationMechanism', () => {
   it.each([
@@ -50,9 +56,16 @@ describe('PaneIonizationMechanism', () => {
   })
 
   it.each(['', '[M+CH4N2O+H]+', '  [M-H]-  '])(
-    'gives examples when %j is stored as it is typed',
+    'says nothing more when %j is stored as it is typed',
     async (typed) => {
-      expect(await hintFor(typed)).toMatch(/^For example/)
+      expect(await hintFor(typed)).toBe('')
+    }
+  )
+
+  it.each(['', '-H+', '[M+H]'])(
+    'gives the examples whatever is typed, %j included',
+    async (typed) => {
+      expect((await hintsFor(typed)).examples).toMatch(/^For example/)
     }
   )
 
@@ -115,5 +128,20 @@ describe('PaneIonizationMechanism list', () => {
     expect(has('sysAddBrNeg', locked)).toBe(true)
     expect(has('ours', deletable)).toBe(true)
     expect(has('ours', locked)).toBe(false)
+  })
+
+  it('lists the shipped mechanisms first, each group in the order it came', () => {
+    const wrapper = mountList([
+      row('ours', '[M+Cl]-', false),
+      row('sysAddBrNeg', '[M+Br]-', true),
+      row('theirs', '[M+I]-', false),
+      row('sysSubHPos', '[M-H]-', true)
+    ])
+
+    const order = wrapper
+      .find('.col')
+      .findAll('[data-row]')
+      .map((cell) => cell.attributes('data-row'))
+    expect(order).toEqual(['sysAddBrNeg', 'sysSubHPos', 'ours', 'theirs'])
   })
 })

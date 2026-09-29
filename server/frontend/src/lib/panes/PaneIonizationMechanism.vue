@@ -47,15 +47,21 @@ const problem = computed(() => {
   return term ? `'${term}' is not a formula; a labelled atom is written with a caret, ^N` : null
 })
 
-// Under the field: what is wrong, else the spelling the server will store when
-// it is not what was typed (a legacy spelling, or terms in another order than
-// the alphabetical one a mechanism is written in), else examples.
-const hint = computed(() => {
+// Under the examples: what is wrong, else the spelling the server will store
+// when it is not what was typed (a legacy spelling, or terms in another order
+// than the alphabetical one a mechanism is written in), else nothing.
+const status = computed(() => {
   if (problem.value) return problem.value
   const text = add.mechanism.trim()
   const stored = text ? standardMechanism(text) : text
-  if (stored !== text) return `Stored as ${stored}`
-  return 'For example [M+H]+, [M-H]-, [M+Br]-, or [M]+. for electron transfer'
+  return stored !== text ? `Stored as ${stored}` : ''
+})
+
+// The shipped mechanisms first, then the ones added on this server, each
+// group in the order the server lists it.
+const mechanisms = computed(() => {
+  const list = app.data.ionization.mechanism.list
+  return [...list.filter((row) => row.shipped), ...list.filter((row) => !row.shipped)]
 })
 
 // reset when create successful
@@ -75,14 +81,15 @@ defineExpose({
 </script>
 
 <template>
-  <menu style="margin-top: 1.5rem">
+  <!-- As wide as the table, so a long message wraps instead of widening the dialog -->
+  <menu style="margin-top: 1.5rem; width: 500px; max-width: 100%">
     <div class="row">
       <FloatLabel style="flex-grow: 1">
         <InputText
           v-model="add.mechanism"
           id="add-mechanism"
           :invalid="!!problem"
-          aria-describedby="add-mechanism-hint"
+          aria-describedby="add-mechanism-examples add-mechanism-status"
           style="width: 100%"
         />
         <label for="add-mechanism">Mechanism*</label>
@@ -99,37 +106,43 @@ defineExpose({
         :disabled="!add.mechanism.trim() || !!problem"
       />
     </div>
+    <Message id="add-mechanism-examples" severity="secondary" size="small" variant="simple">
+      For example [M+H]+, [M-H]-, [M+Br]-, or [M]+. for electron transfer
+    </Message>
+    <!-- Always a line tall, so the table does not move as the message comes and goes -->
     <Message
-      id="add-mechanism-hint"
+      id="add-mechanism-status"
       :severity="problem ? 'error' : 'secondary'"
       size="small"
       variant="simple"
     >
-      {{ hint }}
+      <template v-if="status">{{ status }}</template>
+      <template v-else>&nbsp;</template>
     </Message>
   </menu>
   <section style="margin: 1rem 0">
     <DataTable
-      :value="app.data.ionization.mechanism.list"
+      :value="mechanisms"
       tableStyle="width: 500px"
       scrollable
-      scrollHeight="calc(85vh - 260px)"
+      scrollHeight="calc(85vh - 320px)"
     >
       <Column field="ionization_mechanism_polarity" header="Polarity" width="2rem" sortable />
       <Column field="ionization_mechanism" header="Mechanism" width="40%" sortable />
       <Column field="ionization_mechanism_id" width="2rem">
         <template #body="{ data }">
-          <i
+          <span
             v-if="data.shipped"
-            class="pi pi-lock"
-            style="opacity: 0.4"
+            class="locked"
             role="img"
             aria-label="Shipped with Mascope"
             v-tooltip="{
               value: 'Mascope ships this mechanism, so it cannot be deleted',
               showDelay: 500
             }"
-          />
+          >
+            <i class="pi pi-lock" />
+          </span>
           <Button
             v-else
             v-tooltip="'Delete mechanism'"
@@ -169,5 +182,18 @@ defineExpose({
 <style scoped>
 section :deep(*) {
   overflow-x: hidden !important;
+}
+
+/* The box of the small text button beside it, so the lock and the trash line up */
+.locked {
+  display: inline-flex;
+  vertical-align: bottom;
+  padding: var(--p-button-sm-padding-y) var(--p-button-sm-padding-x);
+  border: 1px solid transparent;
+  opacity: 0.4;
+}
+
+.locked .pi {
+  font-size: var(--p-button-sm-font-size);
 }
 </style>
