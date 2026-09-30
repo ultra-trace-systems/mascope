@@ -4,6 +4,8 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 ## [Unreleased]
 
+## [1.10.0] - 2026.09.30
+
 ### Added
 
 - **Peak assignment names the ions a source makes of itself, each with the
