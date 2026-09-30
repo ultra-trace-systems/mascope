@@ -166,6 +166,35 @@ another worktree's converter — the key is not env-scoped). It then keeps
 sweeping `failed_files/` for the rest of the run, re-uploading the bundle's own
 files up to twice each and reporting by name any that still never made it.
 
+**Two converters on one directory fail the same way, and the guard above does
+not catch it.** A second stack that mounts this env's runtime home into its own
+file-converter puts two converters on one `filestreams/` directory. Whichever
+picks a file up first claims it, and when that is the other stack's converter
+the file was never registered with it, so it fails with the same "not
+registered in file converter service" and lands in `failed_files/`. The
+presence-key guard passes throughout, because a converter *has* connected; it
+is simply not the only one. A rebuild then stalls part-way with a large
+quarantine (seen: 58 of 161 files ingested, 104 quarantined) while the symptom
+points at the race above, which sends you reading the uploader's presence-key
+logic for a fault that is not there.
+
+The two are told apart by whether another converter is running at all, so check
+before starting a rebuild rather than diagnosing afterwards. Nothing should be
+printed:
+
+```sh
+docker ps -q | xargs -r docker inspect \
+  --format '{{.Name}}{{range .Mounts}} {{.Source}}{{end}}' \
+  | grep -F "$(mascope path)/.runtime/env/demo"
+```
+
+Any container named here shares the directory. Rebuild on a host that is not
+running another stack over the same env rather than stopping a live service to
+free it, and remember that this shows only the local daemon: the collision is a
+property of the machine, and the same bundle rebuilds cleanly elsewhere.
+`check_raw_coverage` refuses goldens from a short run, so a collision costs a
+rebuild rather than a corrupted bundle.
+
 ## End-to-end reproducibility test
 
 Location: `server/backend/tests/system/reproducibility/`. It is the asserted
