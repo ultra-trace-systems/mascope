@@ -631,6 +631,19 @@ newest observation and re-points to it once the last three observations
 agree on it; a single re-bound file does not move it. The backfill folds the
 whole history the same way, oldest first, so the row it leaves is the newest.
 
+**Why three.** The two ways to be wrong cost different amounts, so the
+threshold sits on the cheap side. Moving too eagerly is the expensive error:
+one corrected file would drag a whole method's routing with it. Moving too
+slowly is nearly free, because this rung is below the token - a file with a
+token is unaffected either way, and a file without one routes to another row
+of the same chemistry, which is where it would have parked before the rung
+existed. Three is the smallest count that no single re-bind, and no pair of
+them on one afternoon, can reach. It is also fast in practice: a method in
+daily use makes three observations within a day, while a method used twice a
+year is held back for a season, which is the right way round. Set it as a
+named constant and move it on evidence - phase 2's disagreement report
+(section 10) is what would show whether real changes are waiting too long.
+
 **A method name that is a constant is no method name.** Some instruments
 report a fixed configuration name for every acquisition - Tofwerk's
 `currentacquisition.ini` is one, and it covers 82% of the fleet's TOF files
@@ -1036,6 +1049,14 @@ this work and must not be reinterpreted by it:
    restored fleet-wide. A processing status, a registration time, a binding
    rung or a provenance that was never recorded stays NULL, and NULL means
    "before this existed" - the meaning `sample_item.stream_id` already has.
+   `backfill_method_bindings` looks like an exception and is not one: it
+   reads decisions, but it writes none. What it folds is what the items
+   already record, into a table that is a summary of them rather than part
+   of any file's own record, and no item is touched. A summary built that
+   way decides nothing about the files it was built from - only about files
+   that arrive later, which is rule 1. The test to apply to the next
+   backfill is not "is the source a fact" but **"does anything a processed
+   file says come out different."**
 3. **Every file processed from now on records how it was bound** (5.6), so
    the next measurement is a query rather than a reconstruction.
 
