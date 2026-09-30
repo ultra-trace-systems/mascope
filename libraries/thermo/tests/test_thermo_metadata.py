@@ -85,6 +85,8 @@ class TestRawFileMetadata:
             "HighMass",
             "ScanNumber",
             "ScanEventNumber",
+            "SegmentNumber",
+            "PacketCount",
             "ScanType",
             "IsCentroidScan",
         ):

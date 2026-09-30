@@ -4,6 +4,44 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 ## [Unreleased]
 
+### Changed
+
+- **The raw reader is on opentfraw 2.0.0, and the averaged profile no longer
+  depends on how a reader renders the m/z axis.** The reader was held at 1.4.0
+  because 1.4.1 corrected the profile m/z axis and the averaged-centroid heights
+  moved with it. The cause was in Mascope: the averaged profile's output grid
+  was built at the centres of the native frequency cells, which fall between the
+  stored samples, so the averaging read a chord drawn across each peak rather
+  than the measured points - and a raw file keeps only about three points per
+  peak width, so that costs several percent of the apex. The loss also ramped
+  across the mass range, which is why a change of axis moved the heights at all.
+  Each grid point now sits at the mean of the real frequencies in its cell, a
+  position the instrument actually sampled. Measured on a single scan, where the
+  apex must reproduce the instrument's own centroid label because nothing is
+  averaged, that reads 0.992 of the label where cell centres read 0.964; and the
+  bias against the Thermo library now differs by 0.1 percentage points between
+  reader versions, against 1.3 before. **Peak intensities rise by about 3%**:
+  the apex of the measured averaged profile genuinely sits there, and Thermo's
+  averaging convention reports a little less. The difference is stated rather
+  than tuned away, and the demo bundle's goldens move with it.
+- The three single-scan files that only the Thermo library could open are
+  readable again; the fix has been upstream since 1.5.0 and the pin now carries
+  it.
+
+### Added
+
+- Scan statistics report `PacketCount`, `SegmentNumber` and `ScanEventNumber`
+  from the scan index under the OpenTFRaw reader, where they were previously
+  `None` or read from the trailer as a stand-in. They equal the Thermo library's
+  values on every scan measured, and the parity suite now asserts them.
+  `CycleNumber` is the only scan statistic the reader still cannot supply.
+
+### Performance
+
+- Scan selection under the OpenTFRaw reader reads scan metadata without
+  decoding any peaks. On the longest file of the internal regression corpus
+  (1,486 scans) that is 88.9 ms against 19.0 ms.
+
 ## [1.10.0] - 2026.09.30
 
 ### Added

@@ -400,14 +400,16 @@ MS_SCAN_DETECTOR_STATS = {
 }
 
 # SCAN_STAT_FIELDS the OpenTFRaw backend reports as None at the pinned reader
-# version. opentfraw passes the scan-index words behind PacketCount and
-# SegmentNumber to Python from 1.5.0 (as data_size and scan_segment), so those
-# two can be filled whenever the pin moves; it does not decode CycleNumber.
-OPENTFRAW_UNAVAILABLE_SCAN_STATS = (
-    "PacketCount",
-    "SegmentNumber",
-    "CycleNumber",
-)
+# version. Only CycleNumber is left: opentfraw does not decode it anywhere.
+# PacketCount and SegmentNumber are read from the scan index (data_size and
+# scan_segment, exposed from 1.5.0); both equal Thermo's values on every scan
+# of every file here, which test_backend_parity asserts per scan.
+OPENTFRAW_UNAVAILABLE_SCAN_STATS = ("CycleNumber",)
+
+# The scan index writes this where a field was never set. Thermo reports those
+# as -1 for the scan event and 0 for the segment; no file here carries one, so
+# the mapping is a guard rather than something the corpus exercises.
+_SCAN_INDEX_UNSET = 0xFFFF
 
 # Default number of scans sampled by acquisition_parameters(). The trailer is
 # read per scan, so this is a cost/confidence trade: enough spread to catch a
@@ -1141,8 +1143,22 @@ class OpenTFRawBackend:
     # -- scan selection: mirrors thermo.ScanSelector over OpenTFRaw scan dicts --
 
     def _all_scans(self) -> list[dict]:
+        """Every scan's metadata, in scan order, without its peaks.
+
+        ``scan_table()`` reads the scan index and the scan events and no peak
+        data at all, where ``iter_scans()`` decodes every scan's arrays -- for
+        a selection that only ever looks at times, polarities and MS orders,
+        and throws the arrays away. The rows carry the same keys minus ``mz``
+        and ``intensity``; the one caller that wants peaks (:meth:`xic`) reads
+        them per scan, for the scans it selected.
+        """
         if self._scans is None:
-            self._scans = list(self._raw.iter_scans())
+            table = self._raw.scan_table()
+            columns = list(table)
+            self._scans = [
+                dict(zip(columns, values))
+                for values in zip(*(table[name] for name in columns))
+            ]
         return self._scans
 
     @staticmethod
@@ -1392,19 +1408,21 @@ class OpenTFRawBackend:
         # Map the per-scan stats OpenTFRaw exposes onto Thermo's ScanStats field
         # names. StartTime is in minutes, matching Thermo's ScanStats.StartTime.
         # ScanType is the scan filter as opentfraw renders it, and IsCentroidScan
-        # reads that filter's scan data type. ScanEventNumber is the trailer's
-        # "Scan Event:", which counts from 1. The detector fields take the values
-        # ScanStats holds for MS scans (MS_SCAN_DETECTOR_STATS), and the fields
-        # opentfraw does not expose are None, not faked
-        # (OPENTFRAW_UNAVAILABLE_SCAN_STATS). MsType mirrors Thermo's
-        # MSOrder.ToString() ("Ms" / "Ms2").
+        # reads that filter's scan data type. PacketCount, SegmentNumber and
+        # ScanEventNumber come from the scan index, which is where Thermo reads
+        # them too -- the trailer's "Scan Event:" was a stand-in from before the
+        # reader passed the index words to Python, and agrees with them on every
+        # scan measured. The detector fields take the values ScanStats holds for
+        # MS scans (MS_SCAN_DETECTOR_STATS), and the fields opentfraw does not
+        # expose are None, not faked (OPENTFRAW_UNAVAILABLE_SCAN_STATS). MsType
+        # mirrors Thermo's MSOrder.ToString() ("Ms" / "Ms2").
         stats: dict[int, dict] = {}
         for s in self._selected(polarity, t_min, t_max, ms_type):
             scan_number = int(s["scan_number"])
             scan_filter = s["filter_string"] or None
             data_type = parse_scan_filter(scan_filter).data_type
-            trailer = self._raw.scan_parameters(scan_number) or {}
-            scan_event = trailer.get("Scan Event:")
+            scan_event = int(s["scan_event"])
+            segment = int(s["scan_segment"])
             stats[scan_number] = {
                 **dict.fromkeys(SCAN_STAT_FIELDS),
                 **MS_SCAN_DETECTOR_STATS,
@@ -1415,7 +1433,11 @@ class OpenTFRawBackend:
                 "LowMass": float(s["low_mz"]),
                 "HighMass": float(s["high_mz"]),
                 "ScanNumber": scan_number,
-                "ScanEventNumber": None if scan_event is None else int(scan_event) - 1,
+                "PacketCount": int(s["data_size"]),
+                "ScanEventNumber": -1
+                if scan_event == _SCAN_INDEX_UNSET
+                else scan_event,
+                "SegmentNumber": 0 if segment == _SCAN_INDEX_UNSET else segment,
                 "ScanType": scan_filter,
                 "IsCentroidScan": None if data_type is None else data_type == "c",
                 "MsType": "Ms"
@@ -2235,8 +2257,11 @@ class OpenTFRawBackend:
 
         intensities = np.zeros((len(mzs), len(selected)), dtype=np.float64)
         for j, scan in enumerate(selected):
-            scan_mz = np.asarray(scan["mz"], dtype=np.float64)
-            scan_int = np.asarray(scan["intensity"], dtype=np.float64)
+            # The selection carries no peaks (see _all_scans), so read them
+            # here -- only for the scans this chromatogram is over.
+            peaks = self._raw.scan(int(scan["scan_number"]))
+            scan_mz = np.asarray(peaks["mz"], dtype=np.float64)
+            scan_int = np.asarray(peaks["intensity"], dtype=np.float64)
             order = np.argsort(scan_mz)
             scan_mz = scan_mz[order]
             prefix = np.concatenate(([0.0], np.cumsum(scan_int[order])))
