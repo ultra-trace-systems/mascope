@@ -35,7 +35,7 @@ To ensure consistency across backends, the following field sets are enforced:
   - `ScanType` is the scan filter as OpenTFRaw renders it (see [Scan Streams](#scan-streams) for how the renderings differ), and `IsCentroidScan` is read from that filter's scan data type.
   - `ScanEventNumber` is the trailer's `Scan Event:` minus one.
   - The UV, PDA and analog detector fields (`Frequency`, the wavelength fields, `NumberOfChannels`, `IsUniformTime`, `AbsorbanceUnitScale`, `WavelengthStep`) hold the fixed values Thermo's `ScanStats` holds for every MS scan (`MS_SCAN_DETECTOR_STATS`).
-  - A field a backend cannot read is `None`. For OpenTFRaw those are `PacketCount`, `SegmentNumber` and `CycleNumber` (`OPENTFRAW_UNAVAILABLE_SCAN_STATS`), at the pinned reader version. From 1.5.0 it passes the scan index's `data_size` and `scan_segment` to Python ([Sigilweaver/OpenTFRaw#56](https://github.com/Sigilweaver/OpenTFRaw/pull/56)), and on the demo files those equal `PacketCount` and `SegmentNumber` on every scan, so two of the three are fillable whenever the pin moves. `CycleNumber` is still not decoded.
+  - A field a backend cannot read is `None`. For OpenTFRaw that is `CycleNumber` alone (`OPENTFRAW_UNAVAILABLE_SCAN_STATS`), which nothing decodes. `PacketCount`, `SegmentNumber` and `ScanEventNumber` are read from the scan index (`data_size`, `scan_segment`, `scan_event`, exposed from 1.5.0 by [Sigilweaver/OpenTFRaw#56](https://github.com/Sigilweaver/OpenTFRaw/pull/56)), which is where Thermo reads them too; all three equal Thermo's values on every scan measured, and `test_backend_parity` asserts them per scan. `ScanEventNumber` previously came from the trailer's `Scan Event:` as a stand-in, and the two agree on every scan. Where the index holds `0xFFFF` for a field never set, Thermo reports `-1` for the scan event and `0` for the segment; no file here carries one, so that mapping is a guard rather than something the corpus exercises.
 - **The trailer** is the instrument's own table of per-scan acquisition settings (`FT Resolution:`, `AGC Target:`, `Ion Injection Time (ms):` and dozens more), so it is not a fixed field set: its labels depend on the instrument. Both backends report it whole, under the same labels in the same order (`scan_trailer`, `scan_acquisition_settings`). OpenTFRaw reads it with `scan_parameters()`. The values keep each backend's types:
   - The Thermo library gives text: numbers in the machine's number format, rounded to the digits it displays (`0,11`); switches as `On`/`Off` or `Yes`/`No`; an empty string for a section heading such as `=== Mass Calibration: ===:`.
   - OpenTFRaw gives the stored values: numbers at full precision (`0.11146822731511463`), `True`/`False`, and `None` for a section heading.
@@ -50,10 +50,12 @@ All methods returning time values convert internal units (minutes) to **seconds*
 ### File and Instrument Metadata
 
 - **`created()`**: Returns the creation timestamp of the raw data file.
-- **`instrument_details()`**: Returns a dictionary of instrument metadata (e.g., Model, SerialNumber) as defined by `INSTRUMENT_FIELDS`.
+- **`instrument_details()`**: Returns a dictionary of instrument metadata (e.g., Model, SerialNumber) as defined by `INSTRUMENT_FIELDS`. OpenTFRaw fills `Model` and `Name` only. From 2.0.0 it falls back to the InstID block when a file has no embedded instrument method ([Sigilweaver/OpenTFRaw#59](https://github.com/Sigilweaver/OpenTFRaw/issues/59)), so such a file now reports a model where it reported none -- under OpenTFRaw's registry name, which can be shorter than the Thermo library's string (`Q Exactive Plus` against `Q Exactive Plus Orbitrap`). Nothing keys on it: the scan signature does not include the model, and the only readers are the census line `mascope file scans` prints and the file's stored metadata.
 - **`num_scans()`**: Returns the total number of scans in the file.
 
 ### Scan-Level Metadata
+
+Scan selection reads metadata only. The OpenTFRaw backend builds it from `scan_table()`, which reads the scan index and the scan events and touches no peak data; `iter_scans()` would decode every scan's arrays for a selection that only looks at times, polarities and MS orders. On the longest file of the internal regression corpus (1,486 scans) that is 88.9 ms against 19.0 ms, and on a 61-scan file of similar size 22.5 ms against 0.8 ms. `xic()` reads the peaks it needs per scan, for the scans it selected.
 
 - **`polarities()`**: Returns the set of polarities (`+`, `-`) present in the file.
 - **`scan_times(polarity, t_min, t_max, ms_type)`**: Returns the start time in seconds of each selected scan.
@@ -96,10 +98,16 @@ The two backends render some filters differently, because OpenTFRaw does not ren
 
   The signature leaves out the prefix too. The others stay in it, so where a file carries one, the stream keys differ between the backends. On an LTQ FT Ultra file the MS2 stream is `ITMS + c ESI d w Full ms2 ...` under the Thermo library and has no `w` under OpenTFRaw. Scans that differ only in such a token pool into one stream under OpenTFRaw.
 
-  The `lock` and `sid=` issues are still open upstream, but the renderings are no longer the only way to those values. Every scan already carries `is_wideband`, and from 1.6.0 the scan dictionaries also carry `faims_cv` and an `extra` table holding the source-CID energy and the number of lock masses found. A backend that wanted full filter parity could compose the missing tokens from those rather than wait for the filter to carry them.
+  The `lock` and `sid=` issues are still open upstream. The values are partly reachable without the rendering -- every scan carries `is_wideband`, and from 1.6.0 the scan dictionaries carry `faims_cv` and an `extra` table with the source-CID energy and the lock-mass count -- but composing the tokens here was considered and **declined**:
+
+  - `sid=` would not close the gap it exists for. The `extra` entry is a lookup of the trailer's source-CID label, not the scan event, and the one corpus file whose census differs carries no such label at all. Composing it would make the filters agree on the files that never disagreed and still disagree on the one that does, while retiring a gap the parity suite currently states plainly.
+  - `lock` is deliberately outside the signature, so composing it changes no key. Its `extra` entry also falls back from the number of lock masses *found* to the number the method *configured*, which is a different quantity and not the one the Thermo library writes `lock` from.
+  - `cv=` is reachable and is part of the signature, but nothing here acquires with FAIMS: every corpus and demo file reports the voltage off. Rendering it would put untested text into a key that routes.
+
+  So the asymmetric comparison in `test_backend_parity._assert_same_filter` stays as it is: whatever OpenTFRaw writes must agree, and what it omits is allowed. Tightening it is worth revisiting when a FAIMS file or a source-CID file lands in the corpus, or when the upstream issues close.
 - **Precision.** OpenTFRaw writes m/z to four decimals, where the Thermo library follows the file's precision. The parser normalises numbers, so this does not change a key.
 
-On the internal regression corpus, the census agrees between the backends on 181 of the 182 files both read, and the one difference is `sid=`. Three more files, each a single scan, open only in the Thermo library: OpenTFRaw's search for the trailer's layout failed on some files of fewer than five scans ([Sigilweaver/OpenTFRaw#54](https://github.com/Sigilweaver/OpenTFRaw/pull/54)). That is fixed from 1.5.0, so they open once the pin moves.
+On the internal regression corpus, the census agrees between the backends on 181 of the 182 files both read, and the one difference is `sid=`. Three more files, each a single scan, used to open only in the Thermo library: OpenTFRaw's search for the trailer's layout failed on some files of fewer than five scans ([Sigilweaver/OpenTFRaw#54](https://github.com/Sigilweaver/OpenTFRaw/pull/54)). That is fixed from 1.5.0, and the pinned reader now carries the fix, so all 185 open.
 
 ## Underlying Algorithms
 
