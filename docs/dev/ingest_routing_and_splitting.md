@@ -717,6 +717,59 @@ it is new work.
 - **The file list endpoint** already accepts a device token and returns every
   column. The File Agent's status poller reads the new columns (#2169).
 
+### 5.7 What the first fleet measurement showed
+
+Measured once v1.10.0 was deployed and both backfills had run. Read-only SQL
+per site, reproducing the token rule as the code applies it - the token a
+substring of the file name, the mode's polarity among the file's, the
+instrument scope compared folded - and the method key as 5.3 defines it.
+
+**The reconstruction was checked before any result was read.** Against
+`sample_item.ionization_mode_id`, which records what each file actually bound
+to, it agreed on 19,999 of 19,999 comparable files in a 20,000-file sample,
+with no mismatch. What follows therefore describes the rules as they ran, not
+an approximation of them.
+
+**The case for the rung holds, and it is concentrated in one place.** At every
+site but one, a filename token already routes at or near 100% of files, so
+rung 2 would change nothing there. At the exception, 31,842 files carry no
+usable token, and 29,161 of those sit on a method whose binding is
+unambiguous - about 16% of that server, every one of them a file that parks
+for a person today.
+
+**Where a token and a binding both answer, they disagree more often than
+expected, and the disagreements are old.** At one site 56% of files over all
+time, against 3 files in the last ninety days; at another, several hundred
+falling to none. Two sites still disagree on recent files.
+
+**Those disagreements are model churn, not conflicting chemistry.** Each of
+the two has a single disagreeing pair in its newest 20,000 files, and in both
+the two modes are the same chemistry under two rows - the second created
+later, because until recently an existing mode row could not be edited and any
+change meant a new row. Older files bound to the older row; the token now
+matches the newer one. Read as a signal about routing, the percentage above
+mostly measures how much the model has moved.
+
+**The finding that matters is in the design, not the data.** For every
+disagreeing file, a binding for that file's own instrument and method key does
+exist, points at the older row, and is in state `learned`. Not one is
+`ambiguous`. A binding is written once and never re-points: a conflicting
+observation sets `ambiguous` and counts a disagreement, and nothing moves a
+binding to what its method now runs. Seeded from the whole history by
+`backfill_method_bindings`, a binding is anchored to that history for good.
+
+So rung 2 as built would route a future file by what its method ran long ago,
+and the state meant to signal "do not trust this one" is not set on the files
+where it would decide the outcome.
+
+**Limits, since they bound what may be concluded.** `signature_class` comes
+from the scan-stream census in `.props` on disk, so SQL cannot select the exact
+binding row for a given file: the coverage figure is an upper bound, and the
+disagreement check joins on the file's own instrument and method key across
+every signature class recorded for that pair. The comparison is of mode-row
+identity, not of chemistry - which is precisely why the churn reading above
+matters rather than being a detail.
+
 ---
 
 ## 6. Windows: splitting by time and trace
@@ -1223,6 +1276,24 @@ through a short-lived stacked branch, merged as one unit.
     UTC boundaries line up across instruments.
 11. **First declaration channel.** An agent sidecar (cheapest; the aligner
     exists), control-program pairing, or analog-input wiring.
+12. **What a binding learns from, and whether it may change its mind.**
+    Raised by 5.7, and it gates the per-site switch. The design so far reads
+    a method's whole history and fixes a binding on the first answer. The
+    measurement argues for the opposite emphasis: what a method runs *now* is
+    what a future file should route by, and a model that has been changing -
+    new mode rows standing in for edits that were not possible - makes distant
+    history an unreliable teacher. Three moves, the first two complementary:
+    (a) empty `method_binding` and let live learning refill it, which costs
+    nothing today because the table is `shadow` everywhere and has no readers,
+    and leaves it holding current practice only; (b) let a consistent run of
+    newer observations re-point a binding, keeping `ambiguous` for genuine
+    concurrent conflict rather than for drift across years; (c) bound what the
+    backfill folds to a recent window, or drop the backfill. Recommended: (a)
+    now, (b) before rung 2 routes anything, and (c) decided along with (b),
+    since a backfill that seeds from a window is nearly the same mechanism.
+    Whichever is chosen, **already-bound samples are not re-bound**: the
+    ladder applies to files arriving after it is switched on, so the
+    historical rows never have to be reconciled.
 
 ---
 
