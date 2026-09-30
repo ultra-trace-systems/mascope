@@ -2047,10 +2047,35 @@ class OpenTFRawBackend:
         if df <= 0:
             return self._average_profile_in_mz(scans)
 
+        # Quantize the scans' samples into native-density cells, then place each
+        # grid point at the MEAN OF THE REAL FREQUENCIES in its cell rather than
+        # at the cell's centre. Every scan of a file is transformed on the same
+        # FFT bin grid, so a cell holds one sample per scan and they agree to a
+        # few percent of a bin: their mean is a frequency the instrument
+        # actually sampled, and the interpolation below returns the measured
+        # value there instead of a chord across it.
+        #
+        # A synthetic cell centre does not, and the stored profile is far too
+        # sparse to forgive that -- a raw file keeps about 3 points per FWHM, so
+        # a chord drawn across the top of a peak cuts several percent off it.
+        # Measured on a single scan, where the apex must reproduce the
+        # instrument's own centroid label because nothing is averaged: cell
+        # centres read 0.96 of the label, cell means 0.99.
+        #
+        # Worse, the loss is not even constant. Recovering frequency from m/z
+        # leaves a residual scale error, so the phase between the cell lattice
+        # and the samples ramps across the mass range (measured: half a bin end
+        # to end), and the height ripples with it by several percent, in a
+        # pattern that depends on nothing physical -- only on how the reader
+        # happened to write the m/z axis. Anchoring the grid on the samples
+        # removes that dependence: the averaged-centroid bias against the Thermo
+        # library differs by 0.1 percentage points between reader 1.4.0 and
+        # 2.0.0 here, against 1.3 for cell centres.
         f_all = np.concatenate(freqs)
         f0 = float(f_all.min())
-        occupied = np.unique(np.floor((f_all - f0) / df).astype(np.int64))
-        fgrid = f0 + (occupied + 0.5) * df
+        cells = np.floor((f_all - f0) / df).astype(np.int64)
+        _, inverse = np.unique(cells, return_inverse=True)
+        fgrid = np.bincount(inverse, weights=f_all) / np.bincount(inverse)
 
         summed = np.zeros(fgrid.shape, dtype=np.float64)
         for f, (_, intensity, _, _) in zip(freqs, scans):
