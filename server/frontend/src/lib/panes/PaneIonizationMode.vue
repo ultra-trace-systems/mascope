@@ -301,6 +301,10 @@ defineExpose({
         <label for="add-polarity">Polarity*</label>
       </FloatLabel>
 
+      <!-- No placeholder. A FloatLabel rests its label inside the field until
+           something is chosen, and a Select draws its placeholder in that same
+           spot, so the two read on top of each other. Empty means every
+           instrument, which the tooltip and the column say. -->
       <FloatLabel style="flex-grow: 1; min-width: 170px">
         <Select
           v-model="add.instrument"
@@ -308,7 +312,6 @@ defineExpose({
           optionLabel="label"
           optionValue="value"
           showClear
-          placeholder="Every instrument"
           id="add-instrument"
           style="width: 100%"
           v-tooltip="{
