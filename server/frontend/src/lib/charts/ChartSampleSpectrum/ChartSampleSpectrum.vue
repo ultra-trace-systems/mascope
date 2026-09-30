@@ -175,6 +175,10 @@ const layout = computed(() => {
 const config = {
   modeBarButtonsToRemove: ['autoScale', 'resetScale2d', 'pan2d']
 }
+
+// For a container that changes width while its height stays: a splitter
+// divider beside the chart, which the `height` watcher never sees.
+defineExpose({ resize: () => plot.value?.resize?.() })
 </script>
 
 <template>

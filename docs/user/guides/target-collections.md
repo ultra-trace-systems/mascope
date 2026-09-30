@@ -105,7 +105,12 @@ modified, matches may be out of date"*.
   (*Visualize ion match*) to open the **Match** tab for it.
 - **Match tab** — one ion in detail: the matched isotopes with their *m/z* and
   relative abundances, the spectrum around each isotope, and the timeseries of
-  matched peaks across the batch.
+  matched peaks across the batch. It opens on the ion's monoisotopic isotope —
+  the table marks that row, and the first spectrum is drawn around it, with a
+  second one for whichever isotope you select. For a bromine- or chlorine-rich
+  ion that is the lightest line of the cluster rather than the tallest, and for
+  an ion made with a labelled reagent such as 15N-nitrate it is the labelled
+  line rather than the reagent's unlabelled remainder one mass unit below it.
 - **Batch tab** — the batch-wide overview chart. It needs a collection
   selected (it says so until you click one); then it plots the matched
   intensities per sample. Click any data point to jump to that sample's match.

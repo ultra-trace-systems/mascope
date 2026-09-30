@@ -1,0 +1,34 @@
+{
+  "schema_version": 2,
+  "id": "perfluorocarboxylic-acids",
+  "label": "Perfluorocarboxylic acids, C2 to C12",
+  "data_version": "2026.09",
+  "license": "CC-BY-4.0",
+  "references": [
+    {
+      "citation": "C. J. Young, S. Joudan, Y. Tao, J. J. B. Wentzell, J. Liggio, High time resolution ambient observations of gas-phase perfluoroalkyl carboxylic acids: implications for atmospheric sources. Environmental Science & Technology Letters 11 (2024) 1348-1354.",
+      "doi": "10.1021/acs.estlett.4c00897"
+    },
+    {
+      "citation": "M. A. G. Wallace, M. G. Smeltz, J. M. Mattila, et al., A review of sample collection and analytical methods for detecting per- and polyfluoroalkyl substances in indoor and outdoor air. Chemosphere 358 (2024) 142129.",
+      "doi": "10.1016/j.chemosphere.2024.142129"
+    }
+  ],
+  "polarity": "negative",
+  "provenance": {
+    "compiled_from": "The reference engine's known-species families, keeping the species a verified paper reports observed in ambient or indoor air, in a chamber study, or as a mass-spectrometry background; each species cites that paper. Formulas checked against PubChem."
+  },
+  "species": [
+    {"formula": "C2HF3O2", "name": "Trifluoroacetic acid", "reference": "10.1021/acs.estlett.4c00897", "note": "Also outgasses from PFA inlet tubing"},
+    {"formula": "C3HF5O2", "name": "Perfluoropropanoic acid", "reference": "10.1021/acs.estlett.4c00897"},
+    {"formula": "C4HF7O2", "name": "Perfluorobutanoic acid", "reference": "10.1021/acs.estlett.4c00897"},
+    {"formula": "C5HF9O2", "name": "Perfluoropentanoic acid", "reference": "10.1021/acs.estlett.4c00897"},
+    {"formula": "C6HF11O2", "name": "Perfluorohexanoic acid", "reference": "10.1021/acs.estlett.4c00897"},
+    {"formula": "C7HF13O2", "name": "Perfluoroheptanoic acid", "reference": "10.1016/j.chemosphere.2024.142129"},
+    {"formula": "C8HF15O2", "name": "Perfluorooctanoic acid", "reference": "10.1016/j.chemosphere.2024.142129"},
+    {"formula": "C9HF17O2", "name": "Perfluorononanoic acid", "reference": "10.1016/j.chemosphere.2024.142129"},
+    {"formula": "C10HF19O2", "name": "Perfluorodecanoic acid", "reference": "10.1016/j.chemosphere.2024.142129"},
+    {"formula": "C11HF21O2", "name": "Perfluoroundecanoic acid", "reference": "10.1016/j.chemosphere.2024.142129"},
+    {"formula": "C12HF23O2", "name": "Perfluorododecanoic acid", "reference": "10.1016/j.chemosphere.2024.142129"}
+  ]
+}

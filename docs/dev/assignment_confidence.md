@@ -217,7 +217,7 @@ no backend or DB, only `mascope_tools` + tests.
   remaining P1 work.
 - **Validated against all 92 demo target compounds** (confirmed they are genuine
   `target_compound.target_compound_formula` *neutral* formulas — ions are built `compound +
-  ionization`, e.g. `C10H15O5` + `+H+` → `C10H16O5+`). After the radical fail-open, the rule
+  ionization`, e.g. `C10H15O5` + `[M+H]+` → `C10H16O5+`). After the radical fail-open, the rule
   flags exactly **1**: `C6H17NO4` (17 H on a C6NO4 skeleton; max is 15 — impossible for any
   neutral structure), almost certainly a data error.
 - **Data-quality finding for later chemical review** (`analyze carefully afterwards`): four
@@ -337,13 +337,14 @@ no backend or DB, only `mascope_tools` + tests.
   still deferred; this is a step toward it, not its arrival — but the tier and that eventual
   probability are now read off the same number, since evidence is what the calibration maps
   *from*.
-- **One pair of bands for both stages, knowingly.** Stage A's fit is `ion_score_v2`; Stage
-  B's is `score_pattern` (v1, no per-peak SNR), so a single band means slightly different
-  things to each — on the same sweep, holding the upper band at 0.80 would cost Stage B 5.3%
-  of its assigned rows and Stage A only 0.5%. Per-stage bands would fit the data better and
-  are deliberately **not** introduced: the heterogeneity **predates this binding** (it was
-  equally true while the tier sat on the fit) and a second pair of knobs is more apparatus
-  than a directional threshold is worth. Documented, not solved.
+- **One pair of bands for both stages, and now one scale.** The bands were set while Stage
+  A's fit was `ion_score_v2` and Stage B's was `score_pattern` (v1, no per-peak SNR), so a
+  single band meant slightly different things to each — on the sweep, holding the upper
+  band at 0.80 would have cost Stage B 5.3% of its assigned rows and Stage A only 0.5%.
+  That heterogeneity is gone: Stage B's committed readings are measured again as ions
+  through one `compute_match_isotopes` pass with the run's gating, so both stages are
+  tiered on `ion_score_v2`. Per-stage bands, the apparatus this note argued was not worth
+  building, are not needed.
 - **Confidence calibration landed (pipeline; data provisional).**
   `mascope_tools.composition.calibration` turns the arbitration evidence into a calibrated
   **P(correct)** via Platt scaling ([Platt 1999][platt]): `P = sigmoid(a·evidence + b)`, a
@@ -433,20 +434,21 @@ no backend or DB, only `mascope_tools` + tests.
 
   **Adduct panel — use the operative one.** The panel must be the mechanisms actually assigned in
   the data, verified against the `ionization_mechanism` library — **not** the guessed `CHANNELS`
-  in `make_candidates.py`. Only five mechanisms are ever assigned in the demo: `+H+`, `+NH4+`,
-  `+(CH4N2O)H+` (pos) and `-H+`, `+Br-` (neg). An earlier run wrongly included `+HBrBr-` (**not a
-  real mechanism** — a scratch-script invention, ~1 Da off the real `+Br2-`) and `+CO3-` (defined
-  but **never assigned** here); both are excluded below. `+Br2-`/`+Br3-`/`+NO3-`/`+CO3-` are defined
-  but unused in this dataset. `+NH4+` is real — in fact the *most common* positive adduct.
+  in `make_candidates.py`. Only five mechanisms are ever assigned in the demo: `[M+H]+`,
+  `[M+NH4]+`, `[M+CH4N2O+H]+` (pos) and `[M-H]-`, `[M+Br]-` (neg). An earlier run wrongly included
+  `[M+HBrBr]-` (**not a real mechanism** — a scratch-script invention, ~1 Da off the real
+  `[M+Br2]-`) and `[M+CO3]-` (defined but **never assigned** here); both are excluded below.
+  `[M+Br2]-`/`[M+Br3]-`/`[M+NO3]-`/`[M+CO3]-` are defined but unused in this dataset. `[M+NH4]+`
+  is real — in fact the *most common* positive adduct.
 
   Full run (152 files, 13,270 detections). The weight is strongly **adduct-specific** — the
   chemically distinctive bromide corroborates strongly, the generic pos adducts barely:
 
   | adduct | P(real) | P(swap) | LR | log-odds |
   |---|---|---|---|---|
-  | `+Br-`        | 0.535 | 0.105 | **9.8×** | +2.28 |
-  | `+NH4+`       | 0.513 | 0.314 | 2.3× | +0.83 |
-  | `+(CH4N2O)H+` | 0.379 | 0.232 | 2.0× | +0.70 |
+  | `[M+Br]-`       | 0.535 | 0.105 | **9.8×** | +2.28 |
+  | `[M+NH4]+`      | 0.513 | 0.314 | 2.3× | +0.83 |
+  | `[M+CH4N2O+H]+` | 0.379 | 0.232 | 2.0× | +0.70 |
 
   By polarity: neg **9.8×** (bromide is chemically distinctive — mass defect + 1:1 ⁷⁹/⁸¹Br isotope
   pair), pos **2.1×** (the +NH₃/+urea offsets are generic mass differences). So corroboration is a

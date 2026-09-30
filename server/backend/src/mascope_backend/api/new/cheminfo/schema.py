@@ -27,6 +27,18 @@ class CheminfoQueryBody(BaseModel):
             "reference compound (the suspect-screening prior). Defaults to false."
         ),
     )
+    isotopologues: bool = Field(
+        False,
+        description=(
+            "When true, the m/z may be any line of a candidate's ion at least "
+            f"{cheminfo_config.ISOTOPOLOGUE_FLOOR:.0%} of its brightest, not only "
+            "its monoisotopic line: a 13C or 34S line above it, a dibromide's "
+            "brighter 79Br81Br line, or a 15N-labelled reagent's unlabelled "
+            "remainder below it. A result read at another line has that line's "
+            "m/z as its target_isotope_mz, and its m/z error is against that "
+            "line. Defaults to false, the monoisotopic line alone."
+        ),
+    )
 
 
 class CheminfoMatchedQueryBody(CheminfoQueryBody):

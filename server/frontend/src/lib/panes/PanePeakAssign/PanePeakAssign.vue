@@ -1,29 +1,34 @@
 <script setup>
-import { computed, ref, watch } from 'vue'
+import { computed, nextTick, ref, useId, watch } from 'vue'
 
 import Button from 'primevue/button'
-import Select from 'primevue/select'
 import InputText from 'primevue/inputtext'
+import Popover from 'primevue/popover'
+import RadioButton from 'primevue/radiobutton'
 
 import { useApp } from '@/stores'
-import { BaseTierTag, BaseVerdictBadge } from '@/lib/base'
+import { BaseProvisionalMark, BaseTierTag, BaseVerdictBadge } from '@/lib/base'
 import { num } from '@/lib/formatters'
-import { formatIsotopeFormula } from '@/lib/chem'
+import { formatIsotopeFormula, formatIsotopeLabel, neutralKey } from '@/lib/chem'
+import { isIsotopeLine } from '@/lib/isotopeLines'
+import { standardMechanism } from '@/lib/mechanism'
 import {
-  LEDGER_CONFIDENCE_TOOLTIP,
-  LEDGER_P_CORRECT_TOOLTIP,
-  P_CORRECT_TOOLTIP,
-  uncalibratedReason
-} from '@/lib/pCorrect'
+  listingName,
+  listingOf,
+  listingSource,
+  listingTags,
+  listingTooltip
+} from '@/lib/referenceListings'
+import { holdsTierDown, reasonIcon, reasonTooltip, tierReasonsOf } from '@/lib/tierReasons'
 import { EVIDENCE_LEVELS, VERDICT_META } from '@/lib/verification'
 import { useBatchPeakCuration } from './stores/batchPeakCuration.js'
 
 const app = useApp()
 const curation = useBatchPeakCuration()
 
-// Toggles the Sample view's bottom pane between the time series (default) and
-// the Re-search panel. Owned by the parent (PaneTabSample); the inspector only
-// flips it on.
+// Toggles the Sample view's pane under the spectrum between the time series
+// (default) and the composition search. Owned by the parent (PaneTabSample);
+// the inspector only flips it on.
 const showSearch = defineModel('showSearch', { type: Boolean, default: false })
 
 // The committed assignment for the focused peak (from the latest run).
@@ -39,12 +44,11 @@ const engineTierTooltip = computed(() => {
   if (!tier) return null
   const agrees = tier === focusedAssignment.value?.tier
   return (
-    `The producing engine's own tier: ${tier}\n` +
+    `Engine tier: ${tier}, as the engine that made this run rated it\n` +
     (agrees
-      ? 'It agrees with this server’s banding of the evidence.'
-      : 'It differs from this server’s banding of the evidence — the engine ' +
-        'reached this on its own terms (arbitration, corroboration, degeneracy), ' +
-        'which the tier beside it does not account for.')
+      ? "It agrees with Mascope's tier."
+      : "It differs from Mascope's tier, which reads the evidence alone; the engine also " +
+        'weighs arbitration, corroboration and degeneracy.')
   )
 })
 
@@ -62,6 +66,13 @@ watch(
     if (assignment) app.data.peakAssignment.peak.loadDetail(assignment).catch(() => {})
   },
   { immediate: true }
+)
+
+// A row that names an ion and no compound - a peak the source made - is headed
+// by its ion, known exactly, rather than by the word "Unassigned": the role chip
+// beside it says whose the ion is.
+const headlineIsIon = computed(
+  () => !focusedAssignment.value?.assigned_formula && Boolean(focusedAssignment.value?.ion_formula)
 )
 
 // What the card is about when there is no formula to name it by: an unassigned
@@ -136,14 +147,15 @@ const anchorVerdictTooltip = computed(() => {
 // without a formula. Read off the M0, since that is the row being judged.
 const verifiable = computed(() => Boolean(verifyTarget.value?.assigned_formula))
 
-const editing = ref(false) // form open despite an existing verdict (re-verify)
+const editing = ref(false) // verdict buttons shown despite an existing verdict (re-verify)
 const evidenceLevel = ref(null)
 const note = ref('')
 const submitting = ref(false)
 const pendingVerdict = ref(null) // which button is mid-submit
 const denied = ref(false) // 403: not an editor on this sample
 
-// Show the capture form when there is no verdict yet, or the user chose to edit.
+// Show the verdict buttons when there is no verdict yet, or the user chose to
+// change it.
 const showVerifyForm = computed(
   () => verifiable.value && !denied.value && (!verification.value || editing.value)
 )
@@ -154,27 +166,91 @@ function startEdit() {
   editing.value = true
 }
 
+// Each verdict is recorded from a small dialog rather than the card carrying
+// its fields for every peak: any verdict takes a note, and a confirmation also
+// names the evidence level behind it.
+const verdictDialog = ref(null)
+const dialogVerdict = ref(null) // the verdict the open dialog records
+const dialogId = useId()
+// The dialog's wording and submit button, matching the button that opened it.
+const VERDICT_DIALOGS = {
+  confirmed: {
+    verb: 'Confirm',
+    label: 'Confirm',
+    icon: 'pi ph ph-check-circle',
+    severity: 'success'
+  },
+  rejected: {
+    verb: 'Reject',
+    label: 'Reject',
+    icon: 'pi ph ph-x-circle',
+    severity: 'danger'
+  },
+  unsure: {
+    verb: 'Unsure about',
+    label: 'Unsure',
+    icon: 'pi ph ph-question',
+    severity: 'secondary'
+  }
+}
+const dialogMeta = computed(() => VERDICT_DIALOGS[dialogVerdict.value] ?? VERDICT_DIALOGS.confirmed)
+const confirming = computed(() => dialogVerdict.value === 'confirmed')
+// Where focus lands as the dialog opens: on a confirmation, the level already
+// picked when the verdict being changed carries one, else the strongest; on
+// the others, the note. The dialog focuses nothing on its own (Popover only
+// looks for an `[autofocus]` child).
+const autofocusLevel = computed(() => evidenceLevel.value ?? EVIDENCE_LEVELS[0].value)
+
+function openVerdict(verdict, event) {
+  const dialog = verdictDialog.value
+  if (!dialog) return
+  const wasOpen = dialog.visible
+  dialogVerdict.value = verdict
+  dialog.show(event)
+  // Open already, for another verdict: it moves to the button just clicked, and
+  // focus to what this verdict asks for first.
+  if (wasOpen) {
+    nextTick(() => {
+      dialog.alignOverlay?.()
+      dialog.focus?.()
+    })
+  }
+}
+
+// Resolves whether the verdict was recorded.
 async function submitVerdict(verdict) {
+  const confirm = verdict === 'confirmed'
   // Confirm requires an evidence level (also enforced server-side).
-  if (verdict === 'confirmed' && !evidenceLevel.value) return
+  if (confirm && !evidenceLevel.value) return false
   submitting.value = true
   pendingVerdict.value = verdict
   try {
     await app.data.peakAssignment.verification.verify({
       peak_assignment_id: verifyTarget.value.peak_assignment_id,
       verdict,
-      evidence_level: evidenceLevel.value || null,
+      evidence_level: confirm ? evidenceLevel.value : null,
       note: note.value?.trim() || null
     })
     editing.value = false
     note.value = ''
+    return true
   } catch (error) {
     // The http layer already toasts; only 403 changes the UI (hide the control).
     if (error?.response?.status === 403) denied.value = true
+    return false
   } finally {
     submitting.value = false
     pendingVerdict.value = null
   }
+}
+
+// The dialog's own submit. It stays open on a failure, with what was entered,
+// so the verdict can be sent again; a refusal closes it, since the buttons it
+// opened from give way to the note that says editor access is required.
+async function submitDialog() {
+  if (submitting.value || !dialogVerdict.value) return
+  const recorded = await submitVerdict(dialogVerdict.value)
+  if (recorded || denied.value) verdictDialog.value?.hide()
 }
 
 // Fresh form per compound, not per peak: the form judges the family's M0, so
@@ -188,6 +264,8 @@ watch(
     editing.value = false
     evidenceLevel.value = null
     note.value = ''
+    // An open dialog judges the compound it was opened on, and no other.
+    verdictDialog.value?.hide()
   }
 )
 watch(
@@ -199,7 +277,9 @@ watch(
 )
 
 // Arbitration / chemistry provenance: chemical plausibility (Seven Golden
-// Rules), arbitration confidence, calibrated P(correct), and a tie flag.
+// Rules), arbitration confidence and a tie flag. The calibrated P(correct) is
+// in it too, and is not shown: its curve is provisional (step 3.4d of the
+// assignment quality plan), so the API serves it and the card does not.
 // From the detail fetch; the fallback covers pre-slim rows that carry it.
 const provenance = computed(
   () => focusedDetail.value?.provenance ?? focusedAssignment.value?.provenance ?? null
@@ -221,9 +301,10 @@ const storedAlternatives = computed(() => {
   const stored = focusedDetail.value?.alternatives ?? focusedAssignment.value?.alternatives ?? []
   const committed = focusedAssignment.value
   if (!committed?.assigned_formula) return stored
+  const committedNeutral = neutralKey(committed.assigned_formula)
   return stored.filter(
     (alt) =>
-      alt?.assigned_formula !== committed.assigned_formula ||
+      neutralKey(alt?.assigned_formula) !== committedNeutral ||
       (alt?.ion_formula != null && alt.ion_formula !== committed.ion_formula)
   )
 })
@@ -256,7 +337,7 @@ const scoreByFormula = computed(() => {
 //
 // And null for the undo entry, deliberately, however well it measures. That
 // row's control is the undo, and the undo is what a measurement cannot make
-// possible: the satellites this override cleared are restored by compound AND
+// possible: the isotopologues this override cleared are restored by compound AND
 // adduct, and the archive recorded no adduct for them, so an adduct found now
 // will never match the one they were archived under. Committing it would put
 // the formula back on the M0 alone and leave its family unassigned - under a
@@ -305,68 +386,118 @@ const formatFit = (value) =>
 const family = computed(() => app.data.peakAssignment.peak.familyOf(focusedAssignment.value))
 
 // Main isotope (M0) of the family; theoretical abundances are relative to it.
+// A source ion's monoisotopic row is a reagent row that is no other row's line
+// (isIsotopeLine), and heads its lines as an analyte's M0 heads its own.
 const m0 = computed(
-  () => family.value.find((f) => f.role === 'M0' || f.isotope_label === 'M0') ?? null
+  () =>
+    family.value.find(
+      (f) =>
+        f.role === 'M0' || f.isotope_label === 'M0' || (f.role === 'reagent' && !isIsotopeLine(f))
+    ) ?? null
 )
+const isFamilyHead = (iso) =>
+  m0.value != null && iso.peak_assignment_id === m0.value.peak_assignment_id
 
-// Adduct-corroboration signal (P3): present only when the compound was seen via
-// several adducts (co-occurrence) -- winner-only, calibrated assignments. The
-// boost is already folded into p_correct, so the badge is purely informational.
+// Corroboration signal: present only when the same neutral was committed through
+// more than one ionization channel, which is independent evidence for the
+// formula rather than for this peak.
 //
-// The engine writes `provenance.corroboration` onto the M0 winner alone: an
-// isotopologue is the same ion measured at another isotope, not a second sighting
-// of the compound. The evidence is about the formula the family shares, so a
-// focused isotopologue shows its M0's count, flagged inherited. Only the count
-// carries across - the corroborating adducts are named in the M0's provenance,
-// and detail is fetched for the focused assignment alone.
+// Two counts feed it and the run may carry either. `cross_channel` is the one
+// the finished ledger measures - every committed row is grouped by neutral
+// across the channels the run searched - and `corroboration` (P3) is the older
+// per-compound count, which reaches only rows a curated identity claimed and is
+// therefore absent from most of a ledger. Where both exist the first is the
+// second plus whatever the untargeted stage committed of the same neutral, so it
+// is never the smaller number and is preferred.
+//
+// Neither is written onto an isotopologue: it is the same ion measured at
+// another isotope, not a second sighting of the compound. The evidence is about
+// the formula the family shares, so a focused isotopologue shows its M0's count,
+// flagged inherited. Only the count carries across - the channels are named in
+// the M0's provenance, and detail is fetched for the focused assignment alone.
+// The channels are named as the run recorded them, which for a run from before
+// the standard adduct notation is the legacy spelling; both show as the standard.
 const corroboration = computed(() => {
+  const channels = provenance.value?.cross_channel?.channels
+  if (channels?.length) {
+    return {
+      n: channels.length,
+      names: channels.map(standardMechanism),
+      inherited: false
+    }
+  }
   const own = provenance.value?.corroboration
-  if (own?.n_adducts != null) return { ...own, inherited: false }
-  // The slim ledger row carries the count flattened, so the badge is there
-  // before the detail fetch lands - just without the adduct names.
+  if (own?.n_adducts != null) {
+    return {
+      n: own.n_adducts,
+      names: (own.adducts ?? []).map(standardMechanism),
+      inherited: false
+    }
+  }
+  // The slim ledger row carries both counts flattened, so the badge is there
+  // before the detail fetch lands - just without the channel names.
+  const flatChannels = focusedAssignment.value?.corroboration_channels
+  if (flatChannels != null) return { n: flatChannels, names: [], inherited: false }
   const flat = focusedAssignment.value?.corroboration_adducts
-  if (flat != null) return { n_adducts: flat, adducts: [], inherited: false }
+  if (flat != null) return { n: flat, names: [], inherited: false }
   // Same two-step as the ledger's, so the two panes agree about a family whose
   // rows carry provenance inline (a backend predating the slim projection).
+  const m0Channels =
+    m0.value?.corroboration_channels ?? m0.value?.provenance?.cross_channel?.channels?.length
+  if (m0Channels != null) return { n: m0Channels, names: [], inherited: true }
   const fromM0 = m0.value?.corroboration_adducts ?? m0.value?.provenance?.corroboration?.n_adducts
-  return fromM0 != null ? { n_adducts: fromM0, adducts: [], inherited: true } : null
+  return fromM0 != null ? { n: fromM0, names: [], inherited: true } : null
 })
 
 // The badge says "via M0" on its face, not only on hover: the count is the same
 // number the M0 shows, and an isotopologue that displayed it unqualified would read
-// as a peak seen through several adducts in its own right.
+// as a peak seen through several channels in its own right.
+//
+// "channels" rather than "adducts", which is what this said while the count was
+// the curated per-compound one: protonation is in the count and is not an
+// adduct, so the older word named the number wrongly as soon as it changed.
 const corroborationLabel = computed(() => {
   const c = corroboration.value
   if (!c) return ''
-  return `Supported by ${c.n_adducts} adducts${c.inherited ? ' via M0' : ''}`
+  return `Supported by ${c.n} channels${c.inherited ? ' via M0' : ''}`
 })
 
-// The boost is folded into the record that carries the corroboration - the M0's
-// p_correct - and never into a child's, which stays calibrated on its own
-// evidence (engine.py::_fold_adduct_corroboration rewrites M0 winners only). So
-// an inherited badge must not claim the number beside it already accounts for
-// this, which is the one thing the M0's wording does say.
+// The tooltip said whether the count was folded into P(correct) while the card
+// showed that probability; it no longer names a number the card does not show.
 const corroborationTooltip = computed(() => {
   const c = corroboration.value
   if (!c) return ''
   if (c.inherited) {
     return (
-      `The M0 of this isotopologue family was seen via ${c.n_adducts} adducts. ` +
-      "Independent corroborating evidence for the formula, folded into the M0's " +
-      "P(correct) - not into this isotopologue's, which is calibrated on its own."
+      `This isotopologue's M0 was seen through ${c.n} ionization channels: ` +
+      'independent evidence for the formula.'
     )
   }
-  const adducts = (c.adducts ?? []).join(', ')
+  const channels = (c.names ?? []).join(', ')
   return (
-    `Seen via ${c.n_adducts} adducts${adducts ? ` (${adducts})` : ''}. ` +
-    'Independent corroborating evidence, already folded into P(correct).'
+    `Seen through ${c.n} ionization channels${channels ? ` (${channels})` : ''}: ` +
+    'independent evidence for the formula.'
   )
 })
 
-// Compact substitution label (e.g. "[15N]", "[81Br][2H]") from the full
-// isotopologue formula; falls back to the M0/M+1 offset label.
+// Compact substitution label (e.g. "[13C]", "[81Br]2") from the full
+// isotopologue formula; falls back to the M0/M+1 offset label. A source ion's
+// lines name their heavy isotopes in the label alone ("81Br2"), which reads in
+// the same brackets, and its monoisotopic row, which carries no label, is M0.
+//
+// Counted from the family's M0, which for a labelled ion is a bracketed line
+// itself: the ion formula names the labels, so the 15N-nitrate ion's labelled
+// line reads "M0" and the reagent's unlabelled remainder below it "[14N]". Every
+// row the engine writes carries its ion formula; the M0's stands in for a row
+// that recorded none, and the measurement's for a derived family whose rows name
+// no ion.
 const isoLabel = (iso) =>
-  iso.isotope_formula ? formatIsotopeFormula(iso.isotope_formula) : iso.isotope_label || '-'
+  iso.isotope_formula
+    ? formatIsotopeFormula(
+        iso.isotope_formula,
+        iso.ion_formula ?? m0.value?.ion_formula ?? measured.value?.ion_formula
+      )
+    : formatIsotopeLabel(iso.isotope_label) || (isFamilyHead(iso) ? 'M0' : '-')
 
 // Theoretical (predicted) relative abundance of an isotopologue, as a fraction
 // of the family's most abundant isotopologue - the way an isotope table gives
@@ -409,7 +540,7 @@ const focusIsotopePeak = (iso) => {
 
 // Per-isotopologue match quality; M0 is the reference and never "poor".
 const isPoorMatch = (iso) => {
-  if (iso.role === 'M0' || iso.isotope_label === 'M0') return false
+  if (iso.role === 'M0' || iso.isotope_label === 'M0' || isFamilyHead(iso)) return false
   const ab = iso.abundance_error != null ? 1 - Math.min(1, Math.abs(iso.abundance_error)) : 1
   const mz = iso.mz_error_ppm != null ? Math.max(0, 1 - 0.01 * Math.abs(iso.mz_error_ppm)) : 1
   return ab * mz < 0.5
@@ -431,7 +562,9 @@ const altAdduct = (alt) => alt?.scored?.ionization_mechanism ?? null
 const altTooltip = (alt, index) => {
   const fit = altFit(alt)
   const measuring = fit == null && !alt?.scored && scoring.value
+  const kind = alternativeKind(alt)
   const lines = [
+    ...(kind ? [kind.tooltip] : []),
     `fit: ${fit != null ? formatFit(fit) : measuring ? '— measuring' : '— not measured'}`
   ]
   const mzError = altMzError(alt)
@@ -443,6 +576,8 @@ const altTooltip = (alt, index) => {
   // adduct already shows it as its ion formula in the row above.
   if (altAdduct(alt)) lines.push(`adduct: ${altAdduct(alt)}`)
   if (alt.source) lines.push(`source: ${alt.source}`)
+  const listing = listingOf(alt)
+  if (listing) lines.push(listingTooltip(listing))
   // Why this one carries no usable "use this". Said here as well as on the
   // control because the row is where the pointer actually is: the control only
   // fades in on hover and is disabled, and a disabled button dispatches no
@@ -455,7 +590,7 @@ const altTooltip = (alt, index) => {
 // Commit a runner-up as this peak's assignment. The row is edited in place and
 // marked as human-made; the winner it replaces becomes the first close
 // alternative, so the same control undoes the change - and the undo puts the
-// replaced compound's isotopologue satellites back with it, since they were
+// replaced compound's isotopologues back with it, since they were
 // unassigned only because the compound they belonged to was.
 //
 // Deliberately about THIS row, not the family M0 a verdict is redirected to: an
@@ -468,17 +603,19 @@ const curateDenied = ref(false) // 403: not an editor on this sample
 // The server answers 409; the control is withheld rather than offered to fail.
 const derivedRun = computed(() => app.data.peakAssignment.peak.run?.engine === 'batch')
 
-// A derived row with a formula. The rows a run fills - arbitration confidence,
-// P(correct) - are kept on the card for it, with what the ledger has or a
-// placeholder that says why not, so the card reads the same for every sample.
+// A derived row with a formula. The row a run fills - arbitration confidence -
+// is kept on the card for it, with a placeholder that says why the ledger has
+// none, so the card reads the same for every sample.
 const ledgerServed = computed(
   () => derivedRun.value && Boolean(focusedAssignment.value?.assigned_formula)
 )
-// The probability itself: in the detail's provenance on a run's row, on the row
-// itself for a derived one (member_row carries it at the top level).
-const pCorrect = computed(
-  () => provenance.value?.p_correct ?? focusedAssignment.value?.p_correct ?? null
-)
+// Why a row served from the batch ledger shows no arbitration confidence: that
+// number is a run's, from weighing a peak's candidates against each other, and
+// a ledger member carries one identity with nothing to weigh it against.
+const LEDGER_CONFIDENCE_TOOLTIP =
+  'Arbitration confidence comes from an assignment run of this sample, which weighs the ' +
+  "peak's candidates against each other; a row served from the batch ledger carries one " +
+  'identity and no such contest'
 
 // --- On-demand evidence for a derived row -----------------------------------
 // A row derived from the batch ledger carries its fit and its tier, but not what
@@ -546,6 +683,229 @@ const plausibility = computed(
   () => provenance.value?.plausibility ?? measured.value?.plausibility ?? null
 )
 
+// --- Why this tier ------------------------------------------------------------
+// Every row a run commits carries what the tiering pass decided about it
+// (`provenance.tier_reasons`): what took its top tier, or what it kept its tier
+// on. The server writes each reason's sentence and the card shows it as
+// written, with the rule named beside it. A row with none was judged by no such
+// pass - a run from before it, an imported run, a row assigned by hand - and
+// shows nothing rather than a placeholder.
+//
+// A derived row's provenance is its anchor's consensus record, and its tier is
+// a vote across the batch that no rule judged, so it has nothing to show here.
+const tierReasons = computed(() => (derivedRun.value ? [] : tierReasonsOf(provenance.value)))
+
+// An isotopologue carries one reason of its own, that it follows its M0: every
+// question the pass asks was asked of the M0's row, and an isotopologue goes
+// down with it. That answer is what a reader opening the isotopologue wants, so
+// the M0's reasons are shown beneath, marked as the M0's. The M0 is the owner
+// the reason is about, resolved by id, and its detail is fetched like the
+// focused row's own - the store caches it, so stepping around a family fetches
+// it once.
+const reasonsOwner = computed(() => {
+  const own = focusedAssignment.value
+  const owner = verifyTarget.value
+  if (!own || !owner || owner.peak_assignment_id === own.peak_assignment_id) return null
+  return tierReasons.value.some((reason) => reason.rule === 'inherited_from_owner') ? owner : null
+})
+watch(
+  reasonsOwner,
+  (owner) => {
+    // Failures already toast via the http layer; the card keeps its own line.
+    if (owner) app.data.peakAssignment.peak.loadDetail(owner).catch(() => {})
+  },
+  { immediate: true }
+)
+const ownerReasons = computed(() => {
+  const owner = reasonsOwner.value
+  if (!owner) return []
+  const detail = app.data.peakAssignment.peak.detailOf(owner.peak_assignment_id)
+  return tierReasonsOf(detail?.provenance ?? owner.provenance)
+})
+
+// --- Where the mass error sits -------------------------------------------------
+// The ppm error is a distance with no scale. The run measures its own mass
+// calibration over the rows it committed and corroborated, and records every
+// committed row's distance from it in that calibration's widths (`mass_z`):
+// the number its mass gate judged, and what "off calibration" among the
+// reasons is about. Flattened onto the ledger row, so it shows before the
+// detail lands; a derived row and an imported one have none.
+const massZ = computed(() => {
+  const z = focusedAssignment.value?.mass_z ?? provenance.value?.mass_z
+  return typeof z === 'number' && Number.isFinite(z) ? z : null
+})
+// What the distance is measured in, recorded once on the run.
+const massCalibration = computed(() => {
+  const record = app.data.peakAssignment.peak.run?.config?.mass_calibration
+  return record && typeof record === 'object' && !Array.isArray(record) ? record : null
+})
+// Past the distance the gate caps a row at: marked, since that is what a reader
+// scanning the card needs to see. Whether the cap applied is the reasons' to
+// say - an isotopologue that tracks the row lifts it.
+const massZFar = computed(() => {
+  const cap = massCalibration.value?.cap_z
+  return massZ.value != null && typeof cap === 'number' && Math.abs(massZ.value) > cap
+})
+// What each key of the evidence grid says on hover. mass z builds its own,
+// from what the run measured.
+const EVIDENCE_TOOLTIPS = Object.freeze({
+  fit: "How well the peak and its isotope lines match the formula's predicted pattern",
+  mzError: 'Measured minus predicted m/z of the peak, in ppm',
+  abundanceError: 'How far the measured isotope abundances are from the predicted ones',
+  plausibility: 'How chemically plausible the formula is (Seven Golden Rules)',
+  evidence: 'Fit × plausibility: the number the tier is read off',
+  confidence: "This formula's share of the evidence among all candidates for the peak"
+})
+
+// What the line under the formula says on hover, part by part.
+const SOURCE_TOOLTIPS = Object.freeze({
+  database: 'Matched from a target or reference list',
+  untargeted: 'Found by the formula search',
+  manual: 'Assigned by hand',
+  reagent: 'An ion the ionization source made, not a compound of the sample',
+  artifact: 'A side lobe of an intense neighbouring peak'
+})
+const sourceTooltip = (source) =>
+  Object.prototype.hasOwnProperty.call(SOURCE_TOOLTIPS, source) ? SOURCE_TOOLTIPS[source] : null
+
+// The line under the headline: the ion (unless it is the headline), the isotope
+// line the peak is, and where the row came from, each saying what it is on
+// hover.
+const subParts = computed(() => {
+  const row = focusedAssignment.value
+  if (!row) return []
+  const isotope = evidenceRow.value?.isotope_label
+  return [
+    row.ion_formula && !headlineIsIon.value
+      ? { key: 'ion', text: row.ion_formula, tooltip: 'Ion formula' }
+      : null,
+    isotope
+      ? {
+          key: 'isotope',
+          text: formatIsotopeLabel(isotope),
+          tooltip: 'The isotope line of the ion this peak is; M0 is the monoisotopic line'
+        }
+      : null,
+    row.source
+      ? { key: 'source', text: row.source, tooltip: sourceTooltip(row.source), class: 'src' }
+      : null
+  ].filter(Boolean)
+})
+
+// An isotopologue row's hover text: its full isotope formula, how it matched,
+// and what a click does.
+const isoRowTooltip = (iso) =>
+  [
+    iso.isotope_formula || iso.isotope_label,
+    isPoorMatch(iso) ? 'Poor match to the prediction (abundance or m/z off)' : null,
+    'Click to focus this peak'
+  ]
+    .filter(Boolean)
+    .join('\n')
+
+const zFormat = new Intl.NumberFormat('en-US', {
+  minimumFractionDigits: 1,
+  maximumFractionDigits: 1,
+  signDisplay: 'exceptZero'
+})
+const massZTooltip = computed(() => {
+  if (massZ.value == null) return ''
+  const lines = ["The m/z error in widths of the run's own mass calibration at this m/z."]
+  const calibration = massCalibration.value
+  const width = calibration?.gate_sigma_ppm ?? calibration?.sigma_ppm
+  if (typeof width === 'number') {
+    const centre =
+      calibration.centre === 'trend'
+        ? 'a centre that follows m/z'
+        : typeof calibration.mu_ppm === 'number'
+          ? `a centre of ${num.mzError.format(calibration.mu_ppm)} ppm`
+          : 'no centre'
+    lines.push(`The run measured ${centre} and a width of ${num.mzError.format(width)} ppm.`)
+  }
+  const cap = calibration?.cap_z
+  const floor = calibration?.floor_z
+  if (typeof cap === 'number') {
+    lines.push(
+      `Beyond ${cap} widths an uncorroborated row stays at candidate` +
+        (typeof floor === 'number' ? `; beyond ${floor}, below assignability.` : '.')
+    )
+  }
+  return lines.join('\n')
+})
+
+// --- The other readings of this ion ---------------------------------------------
+// Many ions split two ways between a neutral and an adduct - dimethylformamide
+// with a proton is acrolein with ammonium - and no mass, envelope or fit tells
+// the splits apart. The run keeps the readings it did not commit among the
+// alternatives, flagged `same_ion`, and the nitrogen rule reads them. They are
+// listed beside the reasons, which is where "ambiguous nitrogen" points.
+const notationById = computed(() => {
+  const map = new Map()
+  for (const mechanism of app.data.ionization?.mechanism?.list ?? []) {
+    map.set(mechanism.ionization_mechanism_id, mechanism.ionization_mechanism)
+  }
+  return map
+})
+const channelOf = (entry) =>
+  entry?.ionization_mechanism_id != null
+    ? (notationById.value.get(entry.ionization_mechanism_id) ?? null)
+    : null
+// A reading of the row's own neutral is the row's reading again, whatever
+// channel it names - a run that searched a channel twice stored one - so it is
+// left out however it is spelled.
+const sameIonReadings = computed(() => {
+  const own = neutralKey(focusedAssignment.value?.assigned_formula)
+  return alternatives.value.filter(
+    (alt) =>
+      alt?.same_ion === true && alt.assigned_formula && neutralKey(alt.assigned_formula) !== own
+  )
+})
+const SAME_ION_TOOLTIP =
+  'The same ion read as another neutral with another adduct. The two readings share their ' +
+  'mass and isotope pattern, so only a second ionization channel, or the sample showing one ' +
+  'of the molecules far more strongly, can tell them apart.'
+
+// --- How the ion was made, and what a list calls it ----------------------------
+// The mechanism is half of an assignment: the neutral and the ion formula imply
+// it, but a reader should not have to take one from the other to see it.
+const ionization = computed(() => channelOf(focusedAssignment.value))
+const ionizationTooltip = computed(() => {
+  const row = focusedAssignment.value
+  if (!ionization.value) return ''
+  return row?.assigned_formula && row?.ion_formula
+    ? `Ionization mechanism: ${row.assigned_formula} ${ionization.value} → ${row.ion_formula}`
+    : 'Ionization mechanism'
+})
+// What a reference list calls the committed formula: the identities the run
+// matched (in the row's provenance), else the compounds a list holds for it.
+const listedAs = computed(() =>
+  listingOf(focusedDetail.value, provenance.value?.reference_identities)
+)
+
+// Three kinds of close alternative are not simply runners-up, and each says
+// which it is: a reading of the same ion, the reading a neighbour's isotope line
+// took this peak from, and a loaded list's compound that the formula search
+// took the peak from. The last two are also what "use this" puts back.
+const ALTERNATIVE_KINDS = [
+  { key: 'same_ion', label: 'same ion', tooltip: SAME_ION_TOOLTIP },
+  {
+    key: 'displaced_by_claim',
+    label: 'earlier reading',
+    tooltip:
+      "What the run first read this peak as, before a neighbour's isotope line claimed " +
+      'it. Using it puts that reading back.'
+  },
+  {
+    key: 'displaced_by_rival',
+    label: 'list compound',
+    tooltip:
+      "A loaded list's compound for this peak, taken by a formula from the search with more " +
+      'than twice its evidence that also explains its isotope lines. Using it puts the list ' +
+      'compound back.'
+  }
+]
+const alternativeKind = (alt) => ALTERNATIVE_KINDS.find(({ key }) => alt?.[key] === true) ?? null
+
 // A candidate can only be committed when it names both halves of an
 // assignment: the formula and the adduct it was found under. The server
 // refuses the rest with a 422, for the reason a set_assignment call has always
@@ -571,15 +931,13 @@ const promoteBlocked = (alt) => Boolean(alt?.assigned_formula) && !canPromote(al
 // Said on the row as well as on the control, because a disabled button
 // dispatches no mouse events and its own tooltip would seldom be read.
 //
-// Re-search is the way past every one of these states: it searches the peak's
-// composition against the sample's adducts from scratch rather than measuring
-// the formulas this shortlist happens to name, so it can find one this list
-// never held.
-const RESEARCH_HINT = 'Re-search the peak to look wider than this shortlist.'
-const NO_ADDUCT_HINT =
-  'Not assignable to this peak. A formula needs an adduct to go with it, and this ' +
-  `one has none. ${RESEARCH_HINT}`
-const SCORING_HINT = 'Measuring this formula against the peak. One moment.'
+// Find more - the composition search - is the way past every one of these
+// states: it searches the peak's composition against the sample's adducts from
+// scratch rather than measuring the formulas this shortlist happens to name, so
+// it can find one this list never held.
+const RESEARCH_HINT = 'Find more searches wider than this shortlist.'
+const NO_ADDUCT_HINT = `Not assignable to this peak: the formula names no adduct. ${RESEARCH_HINT}`
+const SCORING_HINT = 'Measuring this formula against the peak...'
 
 // One blocked entry is not a candidate the finder listed: the winner an
 // override displaced, which the server archives and pushes back to the head of
@@ -589,14 +947,13 @@ const SCORING_HINT = 'Measuring this formula against the peak. One moment.'
 // trivially, since an imported row may only ever have carried a formula - and
 // then the undo is refused by the same 422.
 //
-// Re-search is worth naming, but not as if it were the undo: it writes a NEW
-// assignment, and the satellites this override unassigned are put back by
-// compound AND adduct, so they stay unassigned.
+// The composition search is worth naming, but not as if it were the undo: it
+// writes a NEW assignment, and the isotopologues this override unassigned are
+// put back by compound AND adduct, so they stay unassigned.
 const NO_ADDUCT_UNDO_HINT =
-  'Cannot be undone here. The assignment this replaced named no adduct, and one is ' +
-  'required to put it back. Re-searching the peak assigns the formula again under a ' +
-  'real adduct, but that is a new assignment: the isotopologues this override cleared ' +
-  'stay cleared.'
+  'Cannot be undone here: the assignment this replaced named no adduct. Find more can ' +
+  'assign the formula again under an adduct, but as a new assignment, and the ' +
+  'isotopologues this override cleared stay cleared.'
 
 // Whether an entry is that archived winner - the one "use this" would undo.
 // Position and formula together: the head is where the server puts it, and the
@@ -726,7 +1083,7 @@ const previousRestorable = computed(() => {
 })
 
 // Two different things wear source 'manual'. A person assigning a peak is one;
-// the other is a satellite the server unassigned because its M0 was reassigned
+// the other is an isotopologue the server unassigned because its M0 was reassigned
 // under it, which is marked 'manual' so the ledger's source filter shows the
 // whole footprint of an override. That row was stripped, not chosen, so the
 // override note would read as a claim nobody made.
@@ -734,14 +1091,18 @@ const previousRestorable = computed(() => {
 // The recorded action decides it once the detail lands. Until then the row's
 // own formula does: curating a peak always puts a formula on it, so a manual
 // row with none was demoted.
+// The action the server records on a row it demoted. Rows demoted by earlier
+// builds carry 'demote_satellite' - a name retired because "satellite" means a
+// signal artifact here - and still have to read as demoted.
+const DEMOTE_ACTIONS = new Set(['demote_isotopologue', 'demote_satellite'])
 const manualDemoted = computed(() => {
   const action = manualOverride.value?.action
-  if (action) return action === 'demote_satellite'
+  if (action) return DEMOTE_ACTIONS.has(action)
   return !focusedAssignment.value?.assigned_formula
 })
 
-// The compound this peak was a satellite of, which is the compound to put back
-// on the M0's own peak to restore it. A satellite carries its M0's formula
+// The compound this peak was an isotopologue of, which is the compound to put
+// back on the M0's own peak to restore it. An isotopologue carries its M0's formula
 // verbatim, so the two keys agree on anything the engine wrote; the fallback is
 // for an imported run that recorded only one of them.
 const demotedOwnerFormula = computed(
@@ -749,14 +1110,14 @@ const demotedOwnerFormula = computed(
     manualOverride.value?.previous_owner_formula ?? manualOverride.value?.previous_formula ?? null
 )
 
-// How many satellites undoing THIS override would put back. They were the same
+// How many isotopologues undoing THIS override would put back. They were the same
 // compound as their M0 seen through a heavy atom, so committing the replaced
 // compound again restores them along with it - the part of "use this to undo" a
 // person would otherwise be surprised by.
 //
 // Counted against the compound the undo would commit, not over the whole
 // archive, because a row curated twice carries the first override's demotions
-// forward: those satellites come back with the compound they were taken under,
+// forward: those isotopologues come back with the compound they were taken under,
 // which is no longer the one the first alternative holds. Matched on the same
 // key the server restores by (formula + mechanism), so an entry this cannot
 // account for is left out of the promise rather than added to it.
@@ -782,21 +1143,43 @@ const demotedCount = computed(() => {
       message: `
         <h1>Peak Inspector</h1>
         <p>
-        The committed assignment for the selected peak: its fitted composition,
-        confidence tier, evidence, isotopologue family and close alternatives.
+        The selected peak's assignment: its formula and ionization, confidence
+        tier and why, evidence, isotope pattern, verification and close
+        alternatives.
         </p>
         <p>
-        Select peaks by clicking them in the spectrum chart, or via the
-        <b>Assignments</b> ledger. Use <b>Re-search</b> to search compositions
-        for the peak on demand.
+        Select a peak in the spectrum or the <b>Assignments</b> ledger.
+        <b>Find more</b> searches other compositions for it.
         </p>`,
       doc: app.ui.help.docUrl('how-it-works/peak-assignment/')
     }"
   >
     <section v-if="focusedAssignment" class="inspector">
       <div class="insp-head">
-        <div class="insp-formula">
-          {{ focusedAssignment.assigned_formula || 'Unassigned' }}
+        <!-- The mechanism beside the neutral, as a chemist writes the pair: it
+             is half of the assignment, and the ion formula under it only
+             implies it. -->
+        <div class="insp-title">
+          <span
+            class="insp-formula"
+            v-tooltip.top="
+              focusedAssignment.assigned_formula
+                ? 'Neutral formula'
+                : headlineIsIon
+                  ? 'Ion formula: the peak names an ion, and no compound of the sample'
+                  : null
+            "
+            >{{
+              focusedAssignment.assigned_formula || focusedAssignment.ion_formula || 'Unassigned'
+            }}</span
+          >
+          <span
+            v-if="ionization"
+            class="insp-ionization"
+            data-testid="ionization"
+            v-tooltip.top="ionizationTooltip"
+            >{{ ionization }}</span
+          >
         </div>
         <!-- Both chips in one box, because the head is `space-between`: a third
              child of it would put this server's tier in the middle of the row
@@ -817,37 +1200,64 @@ const demotedCount = computed(() => {
           />
           <!-- The producing engine's own verdict, spelled out rather than left to
                the marker on the chip above: this is the detail view, and the
-               disagreement is the reason to open an imported row at all.
-               `show-evidence` is off deliberately - the evidence is this server's
-               product and it did not produce this tier, so borrowing it here
-               would pair a number with a band it never put the row in. -->
+               disagreement is the reason to open an imported row at all. It is
+               given no evidence - the evidence is this server's product and did
+               not produce this tier. -->
           <BaseTierTag
             v-if="focusedAssignment.engine_tier"
             :tier="focusedAssignment.engine_tier"
-            :show-evidence="false"
             :tooltip="engineTierTooltip"
           />
+          <BaseProvisionalMark />
         </div>
       </div>
-      <!-- With no formula the headline is the word "Unassigned" and the
-           evidence grid below is empty, so the peak itself has to name the
-           card. -->
+      <!-- With no formula the headline is the word "Unassigned", or the ion a
+           peak the source made is, and the evidence grid below is empty, so
+           the peak itself has to name the card. -->
       <div class="insp-sub" v-if="!focusedAssignment.assigned_formula">{{ peakSummary }}</div>
-      <div
-        class="insp-sub"
-        v-if="
-          focusedAssignment.ion_formula ||
-          focusedAssignment.isotope_label ||
-          focusedAssignment.source
-        "
-      >
-        <span v-if="focusedAssignment.ion_formula">{{ focusedAssignment.ion_formula }}</span>
-        <span v-if="focusedAssignment.isotope_label">
-          &middot; {{ focusedAssignment.isotope_label }}</span
+      <!-- The one place the card names the row's isotope, beside the ion it is
+           a line of; the isotopologue table below marks the same row. Read off
+           the measured row, which labels a derived row's isotope where the row
+           itself names none. An ion that heads the card is not repeated here. -->
+      <div class="insp-sub" v-if="subParts.length">
+        <span
+          v-for="(part, index) in subParts"
+          :key="part.key"
+          :class="part.class"
+          v-tooltip.top="part.tooltip"
+          ><template v-if="index"> &middot; </template>{{ part.text }}</span
         >
-        <span v-if="focusedAssignment.source" class="src">
-          &middot; {{ focusedAssignment.source }}</span
+      </div>
+      <!-- A list's name for the formula is the first thing a reader checks the
+           assignment against, so it is named outright, above the evidence. -->
+      <div v-if="listedAs" class="identity" data-testid="identity">
+        <div
+          v-if="listedAs"
+          class="ev listed"
+          data-testid="listed-as"
+          v-tooltip.top="listingTooltip(listedAs)"
         >
+          <span class="k"
+            >reference list<span v-if="!listedAs.matched" class="potential">
+              &middot; potential</span
+            ></span
+          >
+          <span class="v"><span class="pi ph ph-flask" /> {{ listingName(listedAs) }}</span>
+          <span v-if="listingSource(listedAs)" class="list-source">{{
+            listingSource(listedAs)
+          }}</span>
+          <!-- How the list reads its compounds, background for the siloxanes:
+               said beside the name, explained in the tooltip, never weighed. -->
+          <span v-if="listingTags(listedAs).length" class="list-tags">
+            <span
+              v-for="tag in listingTags(listedAs)"
+              :key="tag"
+              class="list-tag"
+              :data-testid="`list-tag-${tag}`"
+              >{{ tag }}</span
+            >
+          </span>
+        </div>
       </div>
       <div
         class="evidence"
@@ -858,7 +1268,7 @@ const demotedCount = computed(() => {
         }"
       >
         <div class="ev">
-          <span class="k">fit</span>
+          <span class="k" v-tooltip.top="EVIDENCE_TOOLTIPS.fit">fit</span>
           <span class="v">{{ formatFit(focusedAssignment.fit_score) }}</span>
         </div>
         <!-- A derived row's numbers arrive a moment after the row: the family
@@ -879,23 +1289,21 @@ const demotedCount = computed(() => {
           <span class="v">{{ measured.main_peak_note }}</span>
         </div>
         <div class="ev" v-if="evidenceRow.mz_error_ppm != null">
-          <span class="k">m/z error</span>
+          <span class="k" v-tooltip.top="EVIDENCE_TOOLTIPS.mzError">m/z error</span>
           <span class="v">{{ num.mzError.format(evidenceRow.mz_error_ppm) }} ppm</span>
         </div>
+        <div class="ev" v-if="massZ != null" data-testid="mass-z">
+          <span class="k" v-tooltip.top="massZTooltip">mass z</span>
+          <span class="v" :class="{ far: massZFar }">{{ zFormat.format(massZ) }}</span>
+        </div>
         <div class="ev" v-if="evidenceRow.abundance_error != null">
-          <span class="k">abund. error</span>
+          <span class="k" v-tooltip.top="EVIDENCE_TOOLTIPS.abundanceError">abund. error</span>
           <span class="v">{{
             num.relativeAbundanceError.format(evidenceRow.abundance_error)
           }}</span>
         </div>
-        <div class="ev" v-if="evidenceRow.isotope_label">
-          <span class="k">isotope</span>
-          <span class="v">{{ evidenceRow.isotope_label }}</span>
-        </div>
         <div class="ev" v-if="plausibility != null">
-          <span class="k" v-tooltip.top="'Chemical plausibility (Seven Golden Rules)'"
-            >plausibility</span
-          >
+          <span class="k" v-tooltip.top="EVIDENCE_TOOLTIPS.plausibility">plausibility</span>
           <span class="v">{{ formatFit(plausibility) }}</span>
         </div>
         <!-- The product of the two above, and the number this row's tier was
@@ -903,69 +1311,112 @@ const demotedCount = computed(() => {
              chip: when a tier looks surprising, "fit 95%, plausibility 40%" is
              the answer, and the inspector is where a reader goes to find it. -->
         <div class="ev" v-if="evidenceRow.evidence != null">
-          <span
-            class="k"
-            v-tooltip.top="'Evidence (fit x plausibility) - what the tier is banded on'"
-            >evidence</span
-          >
+          <span class="k" v-tooltip.top="EVIDENCE_TOOLTIPS.evidence">evidence</span>
           <span class="v">{{ formatFit(evidenceRow.evidence) }}</span>
         </div>
-        <!-- Arbitration confidence and P(correct) are a run's numbers. A row
-             served from the batch ledger gets both rows all the same, so the
-             card reads the same for every sample: the P(correct) recorded when
-             the sample was folded in, or a dash saying why there is none, and a
-             dash for the confidence, which the ledger has no contest to compute. -->
+        <!-- Arbitration confidence is a run's number. A row served from the
+             batch ledger gets the row all the same, so the card reads the same
+             for every sample: a dash for the confidence, which the ledger has
+             no contest to compute. -->
         <div class="ev" v-if="provenance?.confidence != null || ledgerServed">
-          <span
-            class="k"
-            v-tooltip.top="'Arbitration confidence: winner share of fit x plausibility'"
-            >confidence</span
-          >
+          <span class="k" v-tooltip.top="EVIDENCE_TOOLTIPS.confidence">confidence</span>
           <span class="v" v-if="provenance?.confidence != null"
             >{{ formatFit(provenance.confidence)
             }}<span
               v-if="provenance.is_tie"
               class="tie-flag"
-              v-tooltip.top="'Runner-up too close to call'"
+              v-tooltip.top="'The runner-up is too close to call'"
               >&nbsp;tie</span
             ></span
           >
           <span class="v uncal" v-else v-tooltip.top="LEDGER_CONFIDENCE_TOOLTIP">&mdash;</span>
         </div>
-        <div class="ev" v-if="(provenance && provenance.calibrated !== undefined) || ledgerServed">
-          <span class="k" v-tooltip.top="P_CORRECT_TOOLTIP">P(correct)</span>
-          <span
-            class="v"
-            v-if="pCorrect != null"
-            v-tooltip.top="ledgerServed ? LEDGER_P_CORRECT_TOOLTIP : ''"
-          >
-            {{ formatFit(pCorrect)
-            }}<span
-              v-if="provenance?.calibration?.provisional"
-              class="prov-flag"
-              v-tooltip.top="'Provisional calibration curve - directionally right, not hardened'"
-              >&nbsp;prov.</span
-            ></span
-          >
-          <span
-            v-else-if="ledgerServed"
-            class="v uncal"
-            v-tooltip.top="uncalibratedReason(focusedAssignment, { fromLedger: true })"
-            >&mdash;</span
-          >
-          <span class="v uncal" v-else v-tooltip.top="'No calibration curve for this instrument'"
-            >uncalibrated</span
-          >
-        </div>
       </div>
       <div
-        v-if="corroboration && corroboration.n_adducts > 1"
+        v-if="corroboration && corroboration.n > 1"
         class="corroboration"
         :class="{ inherited: corroboration.inherited }"
         v-tooltip.top="corroborationTooltip"
       >
         <span class="pi ph ph-link-simple" />
         {{ corroborationLabel }}
+      </div>
+      <!-- Why the row holds its tier, in the run's own words. The rule is named
+           first so the list can be scanned; the sentence under it is the
+           server's. A reason that holds the tier down wears the down arrow, and
+           the tier chip above is what says where the row ended up. -->
+      <div
+        v-if="tierReasons.length"
+        class="tier-reasons"
+        v-help.right="{
+          title: 'Why this tier',
+          helpKey: 'assignment-tier-reasons',
+          doc: app.ui.help.docUrl('how-it-works/peak-assignment/#why-a-row-holds-its-tier')
+        }"
+      >
+        <div class="alts-label">Why this tier</div>
+        <ul class="reasons">
+          <li
+            v-for="(reason, i) in tierReasons"
+            :key="`own-${i}`"
+            :class="['reason', { caps: holdsTierDown(reason) }]"
+            v-tooltip.left="reasonTooltip(reason, focusedAssignment.tier)"
+          >
+            <span :class="['pi', 'ph', reasonIcon(reason), 'reason-icon']" />
+            <span class="reason-body">
+              <span class="reason-rule">{{ reason.label }}</span>
+              <span class="reason-detail">{{ reason.detail }}</span>
+            </span>
+          </li>
+          <li
+            v-for="(reason, i) in ownerReasons"
+            :key="`m0-${i}`"
+            :class="['reason', 'inherited', { caps: holdsTierDown(reason) }]"
+            v-tooltip.left="reasonTooltip(reason, reasonsOwner.tier, { viaM0: true })"
+          >
+            <span :class="['pi', 'ph', reasonIcon(reason), 'reason-icon']" />
+            <span class="reason-body">
+              <span class="reason-rule">{{ reason.label }}<span class="via"> via M0</span></span>
+              <span class="reason-detail">{{ reason.detail }}</span>
+            </span>
+          </li>
+        </ul>
+      </div>
+      <!-- The splits of this ion the run did not commit, under the reasons that
+           read them. Shown whether or not a rule capped the row: a second
+           channel settles the count, and the reader should see what it settled. -->
+      <div
+        v-if="sameIonReadings.length"
+        class="same-ion"
+        data-testid="same-ion"
+        v-help.right="{
+          title: 'Same ion, read another way',
+          helpKey: 'assignment-tier-reasons',
+          doc: app.ui.help.docUrl('how-it-works/peak-assignment/#why-a-row-holds-its-tier')
+        }"
+      >
+        <div class="alts-label">Same ion, read another way</div>
+        <ul class="readings">
+          <li
+            v-for="(reading, i) in sameIonReadings"
+            :key="`same-${i}`"
+            class="reading"
+            v-tooltip.left="SAME_ION_TOOLTIP"
+          >
+            <span class="pi ph ph-arrows-left-right reading-icon" />
+            <span class="reading-formula">{{ reading.assigned_formula }}</span>
+            <span v-if="channelOf(reading)" class="reading-channel">
+              through {{ channelOf(reading) }}
+            </span>
+            <span
+              v-if="listingOf(reading)"
+              class="reading-listed"
+              v-tooltip.left="listingTooltip(listingOf(reading))"
+            >
+              <span class="pi ph ph-flask" /> {{ listingName(listingOf(reading)) }}
+            </span>
+          </li>
+        </ul>
       </div>
       <!-- For a lone M0 as much as for a full pattern: this table is where the
            focused peak's m/z is read, and it should be read in the same place
@@ -977,27 +1428,27 @@ const demotedCount = computed(() => {
           message: `
               <h1>Isotopologues</h1>
               <p>
-              The isotope pattern behind this assignment: the main peak (M0)
-              and its isotopologues (M+1, M+2 ...), each with its m/z error and its
-              estimated relative abundance (<b>abu.</b>, as a fraction of the most
-              abundant isotopologue). Labels count from the monoisotopic peak, so
-              a bromine- or chlorine-rich ion reads M0, M+2, M+4 with M0 the
-              lightest peak rather than the tallest.
+              The isotope pattern behind the assignment: the monoisotopic line
+              (M0) and its isotopologues, each named by its heavy isotopes
+              (<b>[13C]</b>, <b>[81Br]2</b>), with its measured m/z, m/z error and
+              predicted relative abundance (<b>abu.</b>, a fraction of the most
+              abundant line). For a bromine- or chlorine-rich ion M0 is the
+              lightest line, not the tallest.
               </p>
               <p>
-              Click a row to focus that peak. Greyed rows with a warning icon are
-              isotopologues whose abundance or m/z fit the prediction poorly.
+              Click a row to focus its peak. A warning icon marks a line whose
+              abundance or m/z fits the prediction poorly.
               </p>`,
           doc: app.ui.help.docUrl('how-it-works/peak-assignment/#the-fit-score-a-pure-measurement')
         }"
       >
         <div class="alts-label">Isotopologues</div>
         <div class="iso-head">
-          <span>iso</span><span>m/z</span><span>ppm</span
+          <span v-tooltip.top="'Isotope line, named by its heavy isotopes'">iso</span
+          ><span v-tooltip.top="'Measured m/z of the peak'">m/z</span
+          ><span v-tooltip.top="'m/z error, in ppm'">ppm</span
           ><span
-            v-tooltip.top="
-              'Estimated relative abundance (fraction of the most abundant isotopologue)'
-            "
+            v-tooltip.top="'Predicted relative abundance, a fraction of the most abundant line'"
             >abu.</span
           >
         </div>
@@ -1010,14 +1461,10 @@ const demotedCount = computed(() => {
               current: iso.sample_peak_id === focusedAssignment.sample_peak_id,
               poor: isPoorMatch(iso)
             }"
-            v-tooltip.left="
-              isPoorMatch(iso)
-                ? 'Poorly matched isotopologue (abundance / m/z off) - click to focus'
-                : 'Focus this isotopologue peak'
-            "
+            v-tooltip.left="isoRowTooltip(iso)"
             @click="focusIsotopePeak(iso)"
           >
-            <span class="iso-label" v-tooltip.left="iso.isotope_formula || iso.isotope_label"
+            <span class="iso-label"
               ><span v-if="isPoorMatch(iso)" class="pi ph ph-warning poor-icon" />{{
                 isoLabel(iso)
               }}</span
@@ -1059,7 +1506,7 @@ const demotedCount = computed(() => {
             }}<template v-if="previousRestorable"
               >, which is now the first close alternative - "use this" on it to undo<template
                 v-if="demotedCount"
-                >, which also puts back the {{ demotedCount }} isotopologue satellite{{
+                >, which also puts back the {{ demotedCount }} isotopologue{{
                   demotedCount === 1 ? '' : 's'
                 }}
                 unassigned with it, except any of them assigned by hand since</template
@@ -1067,12 +1514,12 @@ const demotedCount = computed(() => {
             ><template v-else
               >, which named no adduct itself and so cannot be put back by hand<template
                 v-if="demotedCount"
-                >, and the {{ demotedCount }} isotopologue satellite{{
+                >, and the {{ demotedCount }} isotopologue{{
                   demotedCount === 1 ? '' : 's'
                 }}
                 unassigned with it {{ demotedCount === 1 ? 'stays' : 'stay' }} unassigned</template
               >
-              - re-search this peak to assign it again under a real adduct</template
+              - use Find more to assign it again under a real adduct</template
             ></template
           >. The next assignment run for this sample recomputes the ledger and supersedes the
           change; record a verification to keep the judgement.
@@ -1136,61 +1583,113 @@ const demotedCount = computed(() => {
             @click="startEdit"
           />
         </div>
-        <template v-else-if="showVerifyForm">
-          <div class="verify-buttons">
-            <Button
-              label="Confirm"
-              icon="pi ph ph-check-circle"
-              size="small"
-              severity="success"
-              :disabled="submitting || !evidenceLevel"
-              :loading="submitting && pendingVerdict === 'confirmed'"
-              v-tooltip.top="!evidenceLevel ? 'Pick an evidence level to confirm' : ''"
-              @click="submitVerdict('confirmed')"
-            />
-            <Button
-              label="Reject"
-              icon="pi ph ph-x-circle"
-              size="small"
-              severity="danger"
-              :disabled="submitting"
-              :loading="submitting && pendingVerdict === 'rejected'"
-              @click="submitVerdict('rejected')"
-            />
-            <Button
-              label="Unsure"
-              icon="pi ph ph-question"
-              size="small"
-              severity="secondary"
-              :disabled="submitting"
-              :loading="submitting && pendingVerdict === 'unsure'"
-              @click="submitVerdict('unsure')"
-            />
-          </div>
-          <Select
-            v-model="evidenceLevel"
-            :options="EVIDENCE_LEVELS"
-            optionLabel="label"
-            optionValue="value"
-            placeholder="Evidence level (required to confirm)"
+        <div v-else-if="showVerifyForm" class="verify-buttons">
+          <Button
+            label="Confirm"
+            icon="pi ph ph-check-circle"
             size="small"
-            showClear
-            fluid
+            severity="success"
+            class="verdict-button"
+            aria-haspopup="dialog"
+            :disabled="submitting"
+            :loading="submitting && pendingVerdict === 'confirmed'"
+            v-tooltip.top="'The assignment is right'"
+            @click="openVerdict('confirmed', $event)"
           />
-          <InputText v-model="note" placeholder="Note (optional)" size="small" fluid />
-          <div v-if="editing" class="verify-edit-actions">
-            <Button
-              label="Cancel"
-              size="small"
-              text
-              severity="secondary"
-              @click="editing = false"
-            />
-          </div>
-        </template>
+          <Button
+            label="Reject"
+            icon="pi ph ph-x-circle"
+            size="small"
+            severity="danger"
+            class="verdict-button"
+            aria-haspopup="dialog"
+            :disabled="submitting"
+            :loading="submitting && pendingVerdict === 'rejected'"
+            v-tooltip.top="'The assignment is wrong'"
+            @click="openVerdict('rejected', $event)"
+          />
+          <Button
+            label="Unsure"
+            icon="pi ph ph-question"
+            size="small"
+            severity="secondary"
+            class="verdict-button"
+            aria-haspopup="dialog"
+            :disabled="submitting"
+            :loading="submitting && pendingVerdict === 'unsure'"
+            v-tooltip.top="'The evidence at hand cannot tell'"
+            @click="openVerdict('unsure', $event)"
+          />
+          <Button
+            v-if="editing"
+            label="Cancel"
+            size="small"
+            text
+            severity="secondary"
+            v-tooltip.top="'Keep the verdict as it is'"
+            @click="editing = false"
+          />
+        </div>
         <div v-else-if="denied" class="verify-denied">
           <span class="pi ph ph-lock-simple" /> Editor access is required to verify.
         </div>
+        <!-- No help card in here: the card above covers it, and one inside a
+             popover re-registers on every open. Radio buttons rather than a
+             Select, which would swallow the Escape that closes the dialog. -->
+        <Popover ref="verdictDialog" :aria-label="`${dialogMeta.verb} the assignment`">
+          <div class="verdict-dialog" data-testid="verdict-dialog">
+            <div class="dialog-claim">
+              {{ dialogMeta.verb }}
+              <span class="dialog-formula">{{ verifyTarget?.assigned_formula }}</span>
+            </div>
+            <div
+              v-if="confirming"
+              class="dialog-levels"
+              role="radiogroup"
+              :aria-labelledby="`${dialogId}-levels`"
+            >
+              <span :id="`${dialogId}-levels`" class="alts-label">Evidence level</span>
+              <div v-for="level in EVIDENCE_LEVELS" :key="level.value" class="dialog-level">
+                <RadioButton
+                  v-model="evidenceLevel"
+                  :value="level.value"
+                  :name="`${dialogId}-level`"
+                  :inputId="`${dialogId}-${level.value}`"
+                  :pt="{ input: { autofocus: level.value === autofocusLevel } }"
+                />
+                <label :for="`${dialogId}-${level.value}`">{{ level.label }}</label>
+              </div>
+            </div>
+            <InputText
+              v-model="note"
+              placeholder="Note (optional)"
+              aria-label="Note"
+              size="small"
+              fluid
+              :autofocus="!confirming"
+              @keydown.enter="submitDialog"
+            />
+            <div class="dialog-actions">
+              <Button
+                label="Cancel"
+                size="small"
+                text
+                severity="secondary"
+                @click="verdictDialog?.hide()"
+              />
+              <Button
+                :label="dialogMeta.label"
+                :icon="dialogMeta.icon"
+                size="small"
+                :severity="dialogMeta.severity"
+                data-testid="verdict-submit"
+                :disabled="submitting || (confirming && !evidenceLevel)"
+                :loading="submitting"
+                @click="submitDialog"
+              />
+            </div>
+          </div>
+        </Popover>
       </div>
       <div
         v-if="alternatives.length"
@@ -1212,7 +1711,15 @@ const demotedCount = computed(() => {
             class="alt"
             v-tooltip.left="altTooltip(alt, i)"
           >
-            <span class="f">{{ alt.assigned_formula || alt.ion_formula || '?' }}</span>
+            <span class="f"
+              >{{ alt.assigned_formula || alt.ion_formula || '?'
+              }}<span v-if="alternativeKind(alt)" class="alt-kind">{{
+                alternativeKind(alt).label
+              }}</span
+              ><span v-if="listingOf(alt)" class="alt-listed"
+                ><span class="pi ph ph-flask" /> {{ listingName(listingOf(alt)) }}</span
+              ></span
+            >
             <span class="s">
               <span v-if="altFit(alt) != null"
                 >fit {{ formatFit(altFit(alt))
@@ -1236,7 +1743,13 @@ const demotedCount = computed(() => {
               icon="pi ph ph-hand-pointing"
               :disabled="curating !== null || promoteBlocked(alt)"
               :loading="curating === i"
-              v-tooltip.top="promoteBlocked(alt) ? noAdductHint(alt, i) : ''"
+              v-tooltip.top="
+                promoteBlocked(alt)
+                  ? noAdductHint(alt, i)
+                  : derivedRun
+                    ? 'Pin this identity on the batch peak'
+                    : 'Assign this formula to the peak by hand'
+              "
               @click="promoteAlternative(alt, i)"
             />
           </div>
@@ -1256,7 +1769,7 @@ const demotedCount = computed(() => {
           text
           :severity="showSearch ? 'primary' : 'secondary'"
           icon="pi ph ph-magnifying-glass"
-          v-tooltip.top="'Search compositions for this peak in the panel below'"
+          v-tooltip.top="'Search other compositions for this peak'"
           @click="showSearch = !showSearch"
         />
       </div>
@@ -1300,10 +1813,29 @@ const demotedCount = computed(() => {
   justify-content: space-between;
   gap: 0.75rem;
 }
+/* The formula and its ionization on one baseline; a long pair wraps before it
+   pushes the tier chips off the row. */
+.insp-title {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 0 0.45rem;
+  min-width: 0;
+}
 .insp-formula {
   font-family: var(--font-mono, ui-monospace, monospace);
   font-size: 1.35rem;
   font-weight: 700;
+  overflow-wrap: anywhere;
+}
+/* Second to the neutral it ionized: the same type, lighter and smaller. */
+.insp-ionization {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 1.05rem;
+  font-weight: 600;
+  opacity: 0.6;
+  white-space: nowrap;
+  cursor: default;
 }
 /* This server's tier and the producing engine's, kept adjacent at the right
    edge instead of being spread apart by the head's `space-between`. */
@@ -1339,6 +1871,10 @@ const demotedCount = computed(() => {
 .ev .v {
   font-size: 0.98rem;
   font-variant-numeric: tabular-nums;
+}
+/* Every key of the grid explains itself on hover; the cursor says so. */
+.evidence .ev:not(.measuring) .k {
+  cursor: help;
 }
 .alts {
   display: flex;
@@ -1436,7 +1972,7 @@ const demotedCount = computed(() => {
 
 /* Verification (labelling) capture. Confirm / Reject / Unsure share equal width
    -> equal prominence (reject is a first-class negative label, not an
-   afterthought). */
+   afterthought); Cancel, when changing a verdict, takes only its own. */
 .verify {
   display: flex;
   flex-direction: column;
@@ -1467,12 +2003,44 @@ const demotedCount = computed(() => {
   display: flex;
   gap: 0.4rem;
 }
-.verify-buttons > :deep(.p-button) {
+.verify-buttons > .verdict-button {
   flex: 1;
 }
-.verify-edit-actions {
+/* The verdict dialog: the claim, a confirmation's evidence levels strongest
+   first, a note. */
+.verdict-dialog {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  width: 17rem;
+  max-width: 85vw;
+}
+.dialog-claim {
+  font-size: 0.85rem;
+}
+.dialog-formula {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+.dialog-levels {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+.dialog-level {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.85rem;
+}
+.dialog-level label {
+  cursor: pointer;
+}
+.dialog-actions {
   display: flex;
   justify-content: flex-end;
+  gap: 0.4rem;
 }
 .verify-denied {
   display: inline-flex;
@@ -1553,10 +2121,6 @@ const demotedCount = computed(() => {
   font-weight: 600;
   font-size: 0.72rem;
 }
-.prov-flag {
-  color: var(--state-warning);
-  font-size: 0.66rem;
-}
 /* Adduct-corroboration badge: a real compound seen via several adducts. */
 .corroboration {
   align-self: start;
@@ -1576,13 +2140,156 @@ const demotedCount = computed(() => {
 }
 /* Corroboration read off the family's M0 rather than measured on this peak. The
    badge says so in words too - dimming it instead would borrow the "no value
-   here" idiom the uncalibrated states use, and cost contrast the pill needs. */
+   here" idiom the placeholder values use, and cost contrast the pill needs. */
 .corroboration.inherited {
   border-style: dashed;
+}
+/* Why this tier: one line per reason, the rule over the server's sentence. */
+.tier-reasons {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+.reasons {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+.reason {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.4rem;
+  font-size: 0.8rem;
+  line-height: 1.35;
+  cursor: default;
+}
+.reason-icon {
+  margin-top: 0.15rem;
+  font-size: 0.8rem;
+  opacity: 0.55;
+}
+/* The one mark that says a reason holds the tier down, in the colour the
+   candidate chip wears. */
+.reason.caps .reason-icon {
+  color: var(--state-warning);
+  opacity: 1;
+}
+.reason-body {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.reason-rule {
+  font-weight: 600;
+}
+.reason-detail {
+  opacity: 0.75;
+  overflow-wrap: anywhere;
+}
+/* Read off the M0 rather than recorded on this peak: dashed, as the pane marks
+   every piece of evidence it borrows from another row. */
+.reason.inherited {
+  padding-left: 0.5rem;
+  border-left: 1px dashed var(--p-content-border-color, #e3e6ec);
+}
+.reason .via {
+  font-weight: 400;
+  opacity: 0.6;
 }
 .ev .v.uncal {
   opacity: 0.55;
   font-style: italic;
+}
+/* Past the distance the mass gate caps at, in the colour the candidate chip
+   wears: the reasons below say whether the cap applied. */
+.ev .v.far {
+  color: var(--state-warning);
+}
+/* The same ion's other readings: a list in the reasons' own voice, the
+   formula in the alternatives' type. */
+.same-ion {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+.readings {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+}
+.reading {
+  display: flex;
+  align-items: baseline;
+  gap: 0.4rem;
+  font-size: 0.8rem;
+  cursor: default;
+}
+.reading-icon {
+  font-size: 0.8rem;
+  opacity: 0.55;
+}
+.reading-formula {
+  font-family: var(--font-mono, ui-monospace, monospace);
+}
+.reading-channel {
+  opacity: 0.65;
+}
+/* A list's name for a formula, wherever the card shows one: the flask the
+   search panel marks known compounds with, in the reading's own size. */
+.reading-listed,
+.alt-listed {
+  opacity: 0.75;
+}
+.alt-listed {
+  margin-left: 0.4rem;
+  font-family: var(--p-font-family, inherit);
+  font-size: 0.72rem;
+}
+/* What kind of alternative a row is, beside its formula rather than in a
+   column of its own: the list's columns are the numbers. */
+.alt-kind {
+  margin-left: 0.4rem;
+  padding: 0 0.3rem;
+  border: 1px dashed var(--p-content-border-color, #e3e6ec);
+  border-radius: 0.25rem;
+  font-size: 0.7rem;
+  opacity: 0.7;
+}
+/* A list's name for the formula, in the evidence grid's key/value voice, above
+   it and as wide as the card: it says what the row is, the grid how well. */
+.identity {
+  display: flex;
+  flex-direction: column;
+}
+.identity .listed .v {
+  overflow-wrap: anywhere;
+}
+.identity .potential {
+  text-transform: none;
+  letter-spacing: normal;
+}
+.identity .list-source {
+  font-size: 0.72rem;
+  opacity: 0.6;
+  overflow-wrap: anywhere;
+}
+.identity .list-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+}
+.identity .list-tag {
+  padding: 0 0.3rem;
+  border: 1px dashed var(--p-content-border-color, #e3e6ec);
+  border-radius: 0.25rem;
+  font-size: 0.7rem;
+  opacity: 0.8;
 }
 .alts-list {
   display: flex;

@@ -117,15 +117,21 @@ vi.mock('@/lib/dialogs', () => ({
   PopoverTargetCompoundAdd: { props: ['formula'], template: '<span class="target-add" />' }
 }))
 
-vi.mock('@/lib/panes/PanePeakAssign/preview.js', () => ({
-  usePreview: () => ({ peak: ref(null) })
-}))
+// One preview for the pane and the tests alike: a click on an isotope line puts
+// that line in it for the spectrum chart.
+vi.mock('@/lib/panes/PanePeakAssign/preview.js', async () => {
+  const { reactive } = await import('vue')
+  const preview = reactive({ peak: null })
+  return { usePreview: () => preview }
+})
 
 // PrimeVue's DataTable renders nothing under a plain auto-stub, and its real
 // virtual scroller renders no rows in a zero-height jsdom viewport - either way
 // the row actions under test would never exist. This pair renders each Column's
 // `#body` slot once per row, plus its `#header` slot once: the header is where
 // the curation help card is anchored, and its lifetime is the thing under test.
+// A click on a row selects it, or clears the selection when it is the row
+// selected, as PrimeVue's single selection does without a meta key.
 const Column = {
   name: 'Column',
   props: ['field', 'header', 'sortable', 'expander'],
@@ -134,8 +140,14 @@ const Column = {
 
 const DataTable = {
   name: 'DataTable',
-  props: ['value'],
-  setup(props, { slots }) {
+  props: ['value', 'selection'],
+  emits: ['update:selection'],
+  setup(props, { slots, emit, attrs }) {
+    const select = (row) => {
+      const key = attrs.dataKey
+      const selected = props.selection != null && props.selection[key] === row[key]
+      emit('update:selection', selected ? null : row)
+    }
     const columns = () => {
       const flat = []
       const walk = (nodes) => {
@@ -157,7 +169,7 @@ const DataTable = {
         ...(props.value ?? []).map((row, index) =>
           h(
             'div',
-            { class: 'dt-row', key: index },
+            { class: 'dt-row', key: index, onClick: () => select(row) },
             columns().map((column) =>
               column.children?.body ? column.children.body({ data: row }) : null
             )
@@ -375,6 +387,179 @@ describe('PanePeakSearch stale results after the focus moves', () => {
 
     expect(wrapper.vm.resultsPeakId).toBe(PEAK_A.peak_id)
     expect(handButtons(wrapper)[0].attributes('disabled')).toBeDefined()
+  })
+})
+
+// A candidate found at another line of its ion than the monoisotopic one - its
+// 13C line, a dibromide's brightest line - carries a tag naming that line,
+// because the row otherwise reads as the compound's own mass on a peak it is not.
+describe('PanePeakSearch results read at another line', () => {
+  /** A hit whose pattern puts its 13C line on the searched peak. */
+  function isotopologueHit(formula, mechanism = 'mech-1') {
+    const found = hit(formula, mechanism)
+    found.children = [
+      { mz: 199.12, relative_abundance: 1.0, target_isotope_formula: formula },
+      { mz: 200.1234, relative_abundance: 0.11, target_isotope_formula: `[13C]${formula}` }
+    ]
+    return found
+  }
+
+  it('tags a candidate found at its 13C line with that line', async () => {
+    const wrapper = await mountPane()
+    await deliverResults(wrapper, PEAK_A, [hit('C6H12O6'), isotopologueHit('C9H15O4')])
+
+    const tags = wrapper.findAll('.dt-row .line-tag')
+    expect(tags).toHaveLength(1)
+    expect(tags[0].text()).toBe('[13C]')
+    expect(wrapper.vm.lineTooltip(wrapper.vm.results[1].readAt)).toBe(
+      "Found at the ion's [13C] line (M+1, 11% of its brightest): the peak is this " +
+        'isotopologue of the compound, and the error is against that line'
+    )
+  })
+
+  // A labelled reagent's unlabelled remainder with a 13C sits a few
+  // milli-daltons above the monoisotopic line: another line at its nominal mass.
+  it('tags a line at the monoisotopic nominal mass, naming no offset', async () => {
+    const wrapper = await mountPane()
+    const found = hit('C60H100O50')
+    found.target_ion_formula = 'C60H100O53^N-'
+    found.cheminfo.target_isotope_mz = 1683.51996
+    found.children = [
+      { mz: 1682.5166, relative_abundance: 0.0204, target_isotope_formula: 'C60H100NO53-' },
+      { mz: 1683.51364, relative_abundance: 1.0, target_isotope_formula: '[15N]C60H100O53-' },
+      { mz: 1683.51996, relative_abundance: 0.0134, target_isotope_formula: '[13C]C59H100NO53-' }
+    ]
+    await deliverResults(wrapper, PEAK_A, [found])
+
+    expect(wrapper.find('.dt-row .line-tag').text()).toBe('[13C][14N]')
+    expect(wrapper.vm.lineTooltip(wrapper.vm.results[0].readAt)).toBe(
+      "Found at the ion's [13C][14N] line (1.3% of its brightest): the peak is this " +
+        'isotopologue of the compound, and the error is against that line'
+    )
+  })
+
+  // One composition read under two adducts - at its monoisotopic line under
+  // one, at an isotopologue line under the other - is two rows, and a row key
+  // of the formula alone would make them one.
+  it('keys a composition found under two adducts as two rows', async () => {
+    const wrapper = await mountPane()
+    await deliverResults(wrapper, PEAK_A, [hit('C9H15O4'), isotopologueHit('C9H15O4', 'mech-2')])
+
+    expect(wrapper.findAll('.dt-row')).toHaveLength(2)
+    expect(wrapper.find('.dt').attributes('datakey')).toBe('key')
+    expect(new Set(wrapper.vm.results.map((row) => row.key)).size).toBe(2)
+  })
+
+  it('commits the peak as that isotopologue of the compound', async () => {
+    const wrapper = await mountPane()
+    await deliverResults(wrapper, PEAK_A, [isotopologueHit('C9H15O4')])
+
+    await handButtons(wrapper)[0].trigger('click')
+
+    expect(curate.mock.calls[0][1]).toMatchObject({
+      assigned_formula: 'C9H15O4',
+      isotope_label: 'M+1'
+    })
+  })
+})
+
+// An expanded candidate's isotope lines are rows of the table, under it: one
+// fixed-height row each, which is what lets the table keep scrolling virtually
+// with a long pattern open. A pattern nested in an expansion row was as tall as
+// the pattern, the virtual scroller sliced past the candidate while it was
+// being read, and the view snapped back to the top.
+describe('PanePeakSearch isotope lines under an expanded candidate', () => {
+  /** A hit with a three-line pattern, its lines out of m/z order. */
+  function patternHit(formula, fit) {
+    const found = hit(formula)
+    found.fit_score = fit
+    found.children = [
+      { mz: 201.1268, relative_abundance: 0.11, target_isotope_formula: `[13C]${formula}` },
+      { mz: 200.1234, relative_abundance: 1.0, target_isotope_formula: formula },
+      { mz: 202.1302, relative_abundance: 0.02, target_isotope_formula: `[18O]${formula}` }
+    ]
+    return found
+  }
+
+  const expand = async (wrapper, formula) => {
+    const { key } = wrapper.vm.results.find((row) => row.target_compound_formula === formula)
+    wrapper.vm.expanded = { [key]: true }
+    await wrapper.vm.$nextTick()
+  }
+
+  // What each row is: a candidate's formula, or the m/z of a line under one.
+  const rowNames = (wrapper) =>
+    wrapper.vm.rows.map((row) => (row.parent ? row.mz : row.target_compound_formula))
+
+  it("lists an expanded candidate's lines under it, lightest first", async () => {
+    const wrapper = await mountPane()
+    await deliverResults(wrapper, PEAK_A, [patternHit('C6H12O6', 0.9), patternHit('C9H8O4', 0.5)])
+
+    await expand(wrapper, 'C6H12O6')
+
+    expect(rowNames(wrapper)).toEqual(['C6H12O6', 200.1234, 201.1268, 202.1302, 'C9H8O4'])
+    expect(wrapper.findAll('.dt-row')).toHaveLength(5)
+    // A line is not a candidate: it has no hand button of its own.
+    expect(handButtons(wrapper)).toHaveLength(2)
+  })
+
+  it('keeps the lines under their candidate whatever the sort', async () => {
+    const wrapper = await mountPane()
+    await deliverResults(wrapper, PEAK_A, [patternHit('C9H8O4', 0.9), patternHit('C6H12O6', 0.5)])
+    await expand(wrapper, 'C9H8O4')
+
+    wrapper.vm.sortField = 'target_compound_formula'
+    wrapper.vm.sortOrder = 1
+    await wrapper.vm.$nextTick()
+
+    expect(rowNames(wrapper)).toEqual(['C6H12O6', 'C9H8O4', 200.1234, 201.1268, 202.1302])
+  })
+
+  it('previews a line in the spectrum on a click, and takes it away on a second', async () => {
+    const { usePreview } = await import('@/lib/panes/PanePeakAssign/preview.js')
+    const preview = usePreview()
+    preview.peak = null
+    const wrapper = await mountPane()
+    await deliverResults(wrapper, PEAK_A, [patternHit('C6H12O6', 0.9)])
+    await expand(wrapper, 'C6H12O6')
+
+    const line = () => wrapper.findAll('.dt-row')[2]
+    await line().trigger('click')
+    expect(preview.peak).toMatchObject({ mz: 201.1268, relative_abundance: 0.11 })
+
+    await line().trigger('click')
+    expect(preview.peak).toBeNull()
+
+    // A candidate's row is not a line, and previews nothing.
+    await wrapper.findAll('.dt-row')[0].trigger('click')
+    expect(preview.peak).toBeNull()
+  })
+
+  // The previewed line is the table's selection: PrimeVue makes the rows of a
+  // selectable table focusable and moves between them on the arrow keys, and
+  // Enter or Space on a row selects it as a click does.
+  it('lets the keyboard preview a line, as the table selection', async () => {
+    const { usePreview } = await import('@/lib/panes/PanePeakAssign/preview.js')
+    const preview = usePreview()
+    preview.peak = null
+    const wrapper = await mountPane()
+    await deliverResults(wrapper, PEAK_A, [patternHit('C6H12O6', 0.9)])
+    await expand(wrapper, 'C6H12O6')
+
+    const table = wrapper.findComponent({ name: 'DataTable' })
+    expect(table.attributes('selectionmode')).toBe('single')
+    expect(table.attributes('metakeyselection')).toBe('false')
+    expect(table.props('selection')).toBeNull()
+
+    const [candidate, , line] = wrapper.vm.rows
+    table.vm.$emit('update:selection', line)
+    await wrapper.vm.$nextTick()
+    expect(preview.peak.key).toBe(line.key)
+    expect(table.props('selection').key).toBe(line.key)
+
+    table.vm.$emit('update:selection', candidate)
+    await wrapper.vm.$nextTick()
+    expect(preview.peak.key).toBe(line.key)
   })
 })
 

@@ -167,9 +167,12 @@ describe('BaseRunProvenance', () => {
     expect(wrapper.vm.tierBandsText).toBeNull()
   })
 
-  it('says an import writes no Mascope P(correct), only for imported runs', () => {
-    expect(mountBadge(IMPORTED_RUN).vm.engineTooltip).toContain('no Mascope-calibrated P(correct)')
-    expect(mountBadge(IN_APP_RUN).vm.engineTooltip).not.toContain('P(correct)')
+  // The app shows no calibrated probability while its curve is provisional
+  // (step 3.4d), so no chip says which runs lack one.
+  it('names no calibrated probability, for any run', () => {
+    for (const run of [IMPORTED_RUN, IN_APP_RUN, COPIED_RUN]) {
+      expect(mountBadge(run).vm.engineTooltip).not.toContain('P(correct)')
+    }
   })
 
   it('survives a calibration blob it cannot serialize', () => {
@@ -218,7 +221,6 @@ describe('BaseRunProvenance', () => {
       const tooltip = mountBadge(COPIED_RUN).vm.engineTooltip
 
       expect(tooltip).toContain('re-measured against this sample')
-      expect(tooltip).toContain('no Mascope-calibrated P(correct)')
     })
 
     it('shows its copy manifest where an import shows its calibration', () => {
@@ -276,5 +278,130 @@ describe('BaseRunProvenance: a batch-derived ledger', () => {
     const wrapper = mountBadge(DERIVED_RUN)
     expect(wrapper.text()).not.toContain('calibration')
     expect(wrapper.text()).not.toContain('batch 0.3.0')
+  })
+})
+
+// The chemistry an in-app run searched under, as it recorded it when it started
+// (`config.resolved_profile`). A tier is read against the grid and window that
+// chemistry set, so the chip travels with the run like the engine does.
+describe('BaseRunProvenance: the chemistry', () => {
+  const RESOLVED = {
+    profile: 'BR',
+    profile_label: 'Bromide CIMS',
+    requested_profile: 'auto',
+    context: 'ambient-air',
+    context_label: 'Ambient air',
+    requested_context: 'auto',
+    element_ranges: 'C1-40 H0-80 N0-3 O0-18 S0-1 Cl0-2 Br0-2',
+    element_ranges_source: 'profile',
+    mz_precision_ppm: 3,
+    mz_precision_source: 'profile',
+    secondary_channels: ['[M+CO3]-'],
+    unavailable_channels: []
+  }
+  const withChemistry = (resolved) => ({
+    ...IN_APP_RUN,
+    config: { run_untargeted: true, profile: 'auto', resolved_profile: resolved }
+  })
+
+  // Writes the tooltip's text onto the element, so a test can read it.
+  const mountRecording = (run, props = {}) =>
+    mount(BaseRunProvenance, {
+      props: { run, ...props },
+      global: {
+        stubs: { Tag: TagStub },
+        directives: {
+          tooltip: {
+            mounted: (el, binding) => el.setAttribute('data-tooltip', binding.value ?? ''),
+            updated: (el, binding) => el.setAttribute('data-tooltip', binding.value ?? '')
+          }
+        }
+      }
+    })
+
+  it('names the profile beside the engine, by its key where the row is dense', () => {
+    const tags = mountBadge(withChemistry(RESOLVED)).findAll('.tag')
+    expect(tags.map((tag) => tag.text())).toEqual(['Mascope 0.2.0', 'Bromide CIMS'])
+
+    const compact = mountBadge(withChemistry(RESOLVED), { compact: true }).findAll('.tag')
+    expect(compact.map((tag) => tag.text())).toEqual(['Mascope', 'BR'])
+  })
+
+  it('says what auto meant and what the chemistry set', () => {
+    const chip = mountRecording(withChemistry(RESOLVED)).findAll('.tag')[1]
+    expect(chip.attributes('data-tooltip')).toBe(
+      [
+        "Chemistry profile: Bromide CIMS, read off the sample's ionization mechanisms",
+        "Chemistry context: Ambient air, the profile's own",
+        'Element grid: C1-40 H0-80 N0-3 O0-18 S0-1 Cl0-2 Br0-2',
+        'm/z window: 3 ppm',
+        'Also searched through: [M+CO3]-'
+      ].join('\n')
+    )
+  })
+
+  it('shows the channels of a run recorded in the legacy notation in the standard one', () => {
+    const chip = mountRecording(
+      withChemistry({ ...RESOLVED, secondary_channels: ['+CO3-'], unavailable_channels: ['-H+'] })
+    ).findAll('.tag')[1]
+    const lines = chip.attributes('data-tooltip').split('\n')
+    expect(lines).toContain('Also searched through: [M+CO3]-')
+    expect(lines).toContain('Shown by the spectrum but not configured, so not searched: [M-H]-')
+  })
+
+  it('says which names and values the run was given rather than resolved', () => {
+    const chip = mountRecording(
+      withChemistry({
+        ...RESOLVED,
+        requested_profile: 'BR',
+        requested_context: 'chamber',
+        context: 'chamber',
+        context_label: 'Chamber',
+        element_ranges: 'C0-20 H0-40',
+        element_ranges_source: 'config',
+        mz_precision_ppm: 5,
+        mz_precision_source: 'config',
+        secondary_channels: [],
+        unavailable_channels: ['[M+Br2]-']
+      })
+    ).findAll('.tag')[1]
+    expect(chip.attributes('data-tooltip')).toBe(
+      [
+        'Chemistry profile: Bromide CIMS, named for this run',
+        'Chemistry context: Chamber, named for this run',
+        'Element grid: C0-20 H0-40 (set for this run)',
+        'm/z window: 5 ppm (set for this run)',
+        'Shown by the spectrum but not configured, so not searched: [M+Br2]-'
+      ].join('\n')
+    )
+  })
+
+  it('names the identity profile as the absence it is', () => {
+    const identity = {
+      ...RESOLVED,
+      profile: 'none',
+      profile_label: 'None',
+      requested_profile: 'none',
+      context: 'none',
+      context_label: 'None'
+    }
+    expect(mountBadge(withChemistry(identity)).findAll('.tag')[1].text()).toBe('No profile')
+    expect(mountBadge(withChemistry(identity), { compact: true }).findAll('.tag')[1].text()).toBe(
+      'no profile'
+    )
+    const chip = mountRecording(withChemistry(identity)).findAll('.tag')[1]
+    expect(chip.attributes('data-tooltip')).toContain('Chemistry context: No context')
+  })
+
+  it('shows none for a run that recorded no chemistry', () => {
+    // An import, a run from before profiles, and a config whose record is not one.
+    for (const run of [
+      IMPORTED_RUN,
+      { ...IN_APP_RUN, config: { run_untargeted: true } },
+      { ...IN_APP_RUN, config: { resolved_profile: ['BR'] } },
+      { ...IN_APP_RUN, config: { resolved_profile: { profile: '' } } }
+    ]) {
+      expect(mountBadge(run).find('.chemistry').exists()).toBe(false)
+    }
   })
 })

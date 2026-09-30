@@ -51,13 +51,15 @@ const traces = computed(() => {
 
 // transform raw visualiation data into seperate charts
 const isotopeCharts = computed(() => {
-  // Build array with first isotope and selected isotope (if different)
+  // Build array with the M0 isotope and selected isotope (if different)
   if (app.data.match.visualized.isotopes === null) return []
 
   const isotopeList = []
 
-  if (app.data.match.visualized.isotopes?.[0]) {
-    isotopeList.push(app.data.match.visualized.isotopes[0])
+  // The ion's M0, which the store derives (`isotopeMain`), not the first
+  // isotope in m/z order: for a labelled ion those are different lines.
+  if (app.data.match.visualized.isotopeMain) {
+    isotopeList.push(app.data.match.visualized.isotopeMain)
   }
   if (
     app.data.match.visualized.isotopeSelected &&
@@ -69,17 +71,23 @@ const isotopeCharts = computed(() => {
   // Map over the limited isotope list
   return isotopeList.map((isotope) => {
     // split up the chart's traces by isotope
-    const start = traces.value?.findIndex(
+    // `traces` is an array at every point of its own computed, so these read it
+    // straight: an optional chain here would hand `start` undefined, which the
+    // "not found" test below is not looking for.
+    const start = traces.value.findIndex(
       (trace) => trace.target_isotope_id === isotope.target_isotope_id
     )
-    const nextStart = traces.value?.findIndex(
+    // No trace group for this isotope yet - the figure draws empty rather than
+    // taking `slice(-1)`'s last trace, which belongs to another isotope.
+    if (start === -1) return { ...isotope, traces: [] }
+    const nextStart = traces.value.findIndex(
       ({ target_isotope_id }, index) => target_isotope_id && index > start
     )
     const end =
       nextStart !== -1 // if next isotope found
         ? nextStart // use it as the end of isotope trace data
-        : traces.value?.length // otherwise use all remaining data
-    const isotopeTraces = traces.value?.slice(start, end)
+        : traces.value.length // otherwise use all remaining data
+    const isotopeTraces = traces.value.slice(start, end)
     return {
       // all match isotope fields
       ...isotope,
@@ -88,6 +96,15 @@ const isotopeCharts = computed(() => {
     }
   })
 })
+
+// The isotope's compact label, counted from the ion's M0, which the ion formula
+// names for a labelled ion (see formatIsotopeFormula). The isotope rows carry no
+// ion formula of their own; they are the visualized ion's.
+const isotopeLabel = (isotope) =>
+  formatIsotopeFormula(
+    isotope.target_isotope_formula,
+    app.data.match.visualized.ion?.target_ion_formula
+  )
 
 // compute match category with UI match params
 const getIsotopeCategory = (isotope) => {
@@ -169,7 +186,7 @@ const layout = computed(() => {
             :match-category="getIsotopeCategory(isotopeChart)"
             :alarming="isotopeChart.match?.alarming"
           />
-          {{ formatIsotopeFormula(isotopeChart.target_isotope_formula) }}:
+          {{ isotopeLabel(isotopeChart) }}:
           {{ num.mz.format(isotopeChart.mz) }}
         </h3>
         <!--

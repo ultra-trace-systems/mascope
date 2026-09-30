@@ -1,0 +1,53 @@
+{
+  "schema_version": 2,
+  "id": "isoprene-oxidation-wennberg2018",
+  "label": "Isoprene gas-phase oxidation products (OH/HO2, OH/NO and NO3 pathways)",
+  "data_version": "2026.09",
+  "license": "CC-BY-4.0",
+  "references": [
+    {
+      "citation": "P. O. Wennberg, K. H. Bates, J. D. Crounse, et al., Gas-phase reactions of isoprene and its major oxidation products. Chemical Reviews 118 (2018) 3337-3390.",
+      "doi": "10.1021/acs.chemrev.7b00439"
+    }
+  ],
+  "polarity": "negative",
+  "native_detection": "CF3O-, I- and NO3- CIMS, as the review compiles them",
+  "applies_to_contexts": [
+    "isoprene_ox",
+    "biogenic_soa"
+  ],
+  "provenance": {
+    "compiled_from": "The closed-shell neutrals of the named species of the reduced isoprene mechanism the review sets out (sections 3 to 5: OH, O3 and NO3 chemistry), as the reference engine's isoprene list gathers them.",
+    "verification": "Atom counts checked against the mechanism's reactions, for example C5H8 + OH + NO2 = C5H9NO4 and C5H9NO4 + OH + NO2 = C5H10N2O8.",
+    "caveat": "A formula-level list: positional and E/Z isomers share a formula (ISOPOOH and IEPOX, for example), and the names give the species a formula stands for. The 2-methyltetrols are included as IEPOX-derived species observed in the gas phase by CIMS."
+  },
+  "species": [
+    {"formula": "C5H8", "name": "Isoprene", "conditions": ["precursor"]},
+    {"formula": "C4H6O", "name": "Methyl vinyl ketone / methacrolein (MVK/MACR)", "conditions": ["OH", "NO"]},
+    {"formula": "C5H8O2", "name": "Isoprene hydroxycarbonyls (HC5)", "conditions": ["OH", "NO"]},
+    {"formula": "C5H10O3", "name": "ISOPOOH / IEPOX", "conditions": ["OH", "HO2"]},
+    {"formula": "C5H8O3", "name": "Hydroperoxy-aldehydes (HPALD) / C5 keto-acid isomers", "conditions": ["OH", "isomerization"]},
+    {"formula": "C5H10O4", "name": "Second-generation dihydroxy-hydroperoxide / C5 triols", "conditions": ["OH", "HO2"]},
+    {"formula": "C5H12O4", "name": "2-Methyltetrols (IEPOX-derived)", "conditions": ["OH", "HO2"]},
+    {"formula": "C5H10O5", "name": "IEPOX-derived C5 tetrol-carbonyl / hydroxy-hydroperoxy-diol", "conditions": ["OH", "HO2"]},
+    {"formula": "C4H8O4", "name": "2-Methylglyceric acid / MVK hydroxy-hydroperoxide (isomers)", "conditions": ["OH", "NO", "HO2"]},
+    {"formula": "C4H8O3", "name": "MVK/MACR hydroxy-hydroperoxide precursor / C4 hydroxy-acid", "conditions": ["OH", "HO2"]},
+    {"formula": "C4H6O3", "name": "HMML / methacrylic acid epoxide (MAE)", "conditions": ["OH", "NO"]},
+    {"formula": "C4H6O2", "name": "Methacrylic acid", "conditions": ["OH"]},
+    {"formula": "C3H6O2", "name": "Hydroxyacetone", "conditions": ["OH", "NO"]},
+    {"formula": "C3H4O2", "name": "Methylglyoxal", "conditions": ["OH", "NO"]},
+    {"formula": "C2H4O2", "name": "Glycolaldehyde", "conditions": ["OH", "NO"]},
+    {"formula": "C2H2O2", "name": "Glyoxal", "conditions": ["OH", "NO"]},
+    {"formula": "C5H6O", "name": "3-Methylfuran", "conditions": ["OH"]},
+    {"formula": "C5H9NO4", "name": "Isoprene hydroxynitrates (ISOPN / IHN)", "conditions": ["OH", "NO"]},
+    {"formula": "C5H7NO4", "name": "Isoprene carbonyl nitrates (ICN)", "conditions": ["NO3", "OH", "NO"]},
+    {"formula": "C5H9NO5", "name": "Isoprene nitrooxy-hydroperoxides (INP) / nitrooxy-hydroxyepoxide (INHE)", "conditions": ["NO3", "HO2"]},
+    {"formula": "C5H9NO6", "name": "Isoprene nitrooxy-hydroxy-hydroperoxide (ISOPN + OH, HO2 route)", "conditions": ["OH", "NO", "HO2"]},
+    {"formula": "C5H11NO6", "name": "ISOPN-derived hydroxy-nitrooxy-hydroperoxide (second generation, HO2 route)", "conditions": ["OH", "NO", "HO2"]},
+    {"formula": "C5H10N2O8", "name": "Isoprene dihydroxy-dinitrates (IDHDN)", "conditions": ["OH", "NO"]},
+    {"formula": "C4H7NO5", "name": "MVK / MACR hydroxynitrates (MVKN / MACRN)", "conditions": ["OH", "NO"]},
+    {"formula": "C4H5NO5", "name": "Methacryloyl peroxynitrate (MPAN)", "conditions": ["OH", "NO2"]},
+    {"formula": "C4H7NO4", "name": "MVK/MACR nitrooxy-carbonyl / hydroxy-nitrate isomers (ICN-derived)", "conditions": ["NO3", "OH"]},
+    {"formula": "C5H8N2O7", "name": "Isoprene carbonyl-dinitrate / nitrooxy-carbonyl-nitrate (ICN + OH, NO)", "conditions": ["NO3", "OH", "NO"]}
+  ]
+}

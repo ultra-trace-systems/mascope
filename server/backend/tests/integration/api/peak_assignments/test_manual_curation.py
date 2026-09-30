@@ -73,12 +73,12 @@ def _alternative(mechanism_id: str, **overrides) -> dict:
 
 #: The peaks ``curated_run`` seeds on the shared sample. Named once because the
 #: teardown has to reach rows keyed on them rather than on the run.
-PEAK_IDS = ("cur-1", "cur-2", "cur-3")
+PEAK_IDS = ("cur-1", "cur-2", "cur-3", "cur-4", "cur-5")
 
 
 @pytest_asyncio.fixture
 async def curated_run(async_session_factory, pa_test_data):
-    """A completed run of its own, with an M0, its satellite, and a blank peak.
+    """A completed run of its own, with an M0, its isotopologue, and a blank peak.
 
     Function-scoped and self-deleting: these tests rewrite the rows they touch,
     and the shared ``pa_test_data`` ledger is read by every other module in the
@@ -143,7 +143,7 @@ async def curated_run(async_session_factory, pa_test_data):
                     "calibrated": True,
                     "p_correct": 0.93,
                     "calibration": {"provisional": True},
-                    "corroboration": {"n_adducts": 2, "adducts": ["+H+", "+Na+"]},
+                    "corroboration": {"n_adducts": 2, "adducts": ["[M+H]+", "[M+Na]+"]},
                 },
             )
         )
@@ -165,7 +165,7 @@ async def curated_run(async_session_factory, pa_test_data):
                 tier="assigned",
                 engine_tier="below_assignability",
                 owner_peak_assignment_id=m0_id,
-                # A satellite carries provenance of its own, and no column
+                # An isotopologue carries provenance of its own, and no column
                 # holds it - so a restore that only put the columns back would
                 # lose it. `score_version` is the one key here that no archived
                 # winner snapshot repeats, which makes it the tell.
@@ -425,12 +425,12 @@ async def test_the_override_records_who_changed_it_and_from_what(
 
 
 @pytest.mark.asyncio
-async def test_satellites_of_the_replaced_formula_are_demoted(
+async def test_isotopologues_of_the_replaced_formula_are_demoted(
     editor_client, curated_run, async_session_factory
 ):
-    """A satellite is the same compound as its M0 seen through one heavy atom.
+    """An isotopologue is the same compound as its M0 seen through one heavy atom.
 
-    Once a person has rejected that compound, the satellite has nothing left to
+    Once a person has rejected that compound, the isotopologue has nothing left to
     claim - and leaving it assigned would let one isotopologue family show two
     different formulas.
     """
@@ -553,7 +553,7 @@ async def test_promoting_back_undoes_the_override(
     # Still a curated row: a person decided it, even back to what it was.
     assert row.source == "manual"
     # And the whole family is back with it, not just the M0 - an undo that
-    # left the satellites unassigned would be half an undo.
+    # left the isotopologues unassigned would be half an undo.
     child = await _row(async_session_factory, curated_run["child_id"])
     assert child.assigned_formula == "C6H12O6"
     assert child.owner_peak_assignment_id == curated_run["m0_id"]
@@ -565,15 +565,15 @@ async def test_promoting_back_undoes_the_override(
 
 
 @pytest.mark.asyncio
-async def test_the_demoted_satellites_are_archived_on_their_owner(
+async def test_the_demoted_isotopologues_are_archived_on_their_owner(
     editor_client, curated_run, async_session_factory
 ):
     """Demoting a family is only half of what an override owes it.
 
-    The satellites are stripped from the ledger's point of view, so the record
+    The isotopologues are stripped from the ledger's point of view, so the record
     of what they were has to live somewhere a later edit can find it by a
     primary-key read - which is the M0's own provenance, keyed by the compound
-    they were satellites of.
+    they were isotopologues of.
     """
     await editor_client.patch(
         _url(curated_run, curated_run["m0_id"]),
@@ -590,7 +590,7 @@ async def test_the_demoted_satellites_are_archived_on_their_owner(
     # what a later edit has to commit for this family to come back.
     assert entry["owner_formula"] == "C6H12O6"
     assert entry["owner_ionization_mechanism_id"] == curated_run["mechanism_id"]
-    # One act, one instant. The satellite's own record carries the same
+    # One act, one instant. The isotopologue's own record carries the same
     # timestamp, which is how a restore tells an untouched demotion from a row
     # someone has curated since.
     assert entry["at"] == manual["at"]
@@ -665,10 +665,52 @@ async def test_promoting_the_previous_compound_back_restores_the_family(
 
 
 @pytest.mark.asyncio
-async def test_a_satellite_curated_by_hand_is_not_restored_over(
+async def test_a_row_demoted_under_the_retired_action_name_is_still_restored(
     editor_client, curated_run, async_session_factory
 ):
-    """A person's judgement on the satellite is newer than the undo.
+    """A demotion recorded as ``demote_satellite`` is still a demotion.
+
+    Rows demoted by earlier builds carry that name - retired because
+    "satellite" is this codebase's word for a signal artifact. The restore
+    reads the action to decide whether anyone has curated the row since, so a
+    check against the current name alone would take each of those rows for a
+    hand edit and leave it demoted, reporting a skip for an edit nobody made.
+    """
+    await editor_client.patch(
+        _url(curated_run, curated_run["m0_id"]),
+        json={"action": "promote_alternative", "alternative_index": 0},
+    )
+    async with async_session_factory() as session:
+        child = await session.get(PeakAssignment, curated_run["child_id"])
+        assert child.provenance["manual"]["action"] == "demote_isotopologue"
+        provenance = deepcopy(child.provenance)
+        provenance["manual"]["action"] = "demote_satellite"
+        child.provenance = provenance
+        await session.commit()
+
+    response = await editor_client.patch(
+        _url(curated_run, curated_run["m0_id"]),
+        json={
+            "action": "promote_alternative",
+            "alternative_index": 0,
+            "expected_formula": "C6H12O6",
+        },
+    )
+
+    assert response.status_code == 200
+    child = await _row(async_session_factory, curated_run["child_id"])
+    assert child.assigned_formula == "C6H12O6"
+    assert child.owner_peak_assignment_id == curated_run["m0_id"]
+    m0 = await _row(async_session_factory, curated_run["m0_id"])
+    assert m0.provenance["manual"]["restored"] == [curated_run["child_id"]]
+    assert "restore_skipped" not in m0.provenance["manual"]
+
+
+@pytest.mark.asyncio
+async def test_an_isotopologue_curated_by_hand_is_not_restored_over(
+    editor_client, curated_run, async_session_factory
+):
+    """A person's judgement on the isotopologue is newer than the undo.
 
     Putting the engine's older row back over it would destroy a deliberate act
     in order to reverse an accidental one, so the row is left exactly as its
@@ -713,17 +755,17 @@ async def test_a_satellite_curated_by_hand_is_not_restored_over(
 
 
 @pytest.mark.asyncio
-async def test_a_satellite_whose_row_is_gone_is_reported_not_passed_over(
+async def test_an_isotopologue_whose_row_is_gone_is_reported_not_passed_over(
     editor_client, curated_run, async_session_factory
 ):
-    """An undo that cannot reach a satellite has to say so.
+    """An undo that cannot reach an isotopologue has to say so.
 
     The archive names rows by id out of a JSON blob, and the row can be gone by
     the time the undo runs - deleted, or (in an imported run's provenance)
     never this run's to write in the first place. Passed over in silence the
-    response would report a successful undo while the satellite stayed demoted,
+    response would report a successful undo while the isotopologue stayed demoted,
     with nothing anywhere recording that anything was missed, and the archive
-    entry gone too - a satellite permanently unrestorable and no trace of it.
+    entry gone too - an isotopologue permanently unrestorable and no trace of it.
     """
     await editor_client.patch(
         _url(curated_run, curated_run["m0_id"]),
@@ -770,7 +812,7 @@ async def test_an_archive_entry_that_cannot_be_committed_is_reported_and_kept(
     ``provenance`` is JSON an import may have written, so an archived state can
     be unusable - a formula longer than its column, a fit score outside it.
     Refusing the whole curation over it would be the wrong verdict, since the
-    request is fine, but restoring nothing and saying nothing is how a satellite
+    request is fine, but restoring nothing and saying nothing is how an isotopologue
     goes missing quietly. Unlike a deleted row this one is still standing, so
     the entry stays archived: repair the provenance and the undo works again.
     """
@@ -812,7 +854,7 @@ async def test_an_archive_entry_that_cannot_be_committed_is_reported_and_kept(
 async def test_a_restore_only_fires_for_the_compound_it_was_archived_under(
     editor_client, curated_run, async_session_factory
 ):
-    """A satellite belongs to a compound, not to a row.
+    """An isotopologue belongs to a compound, not to a row.
 
     Committing some third formula is not the compound coming back, so the
     family stays demoted - and the archive rides along to the edit that does
@@ -897,11 +939,76 @@ async def test_a_searched_composition_lands_on_an_unassigned_peak(
 
 
 @pytest.mark.asyncio
-async def test_a_satellite_is_not_committed_as_a_compounds_main_peak(
+async def test_a_source_ions_lines_go_with_it_when_its_peak_is_read_as_a_compound(
     editor_client, curated_run, async_session_factory
 ):
-    """A hit labelled M+1 is a claim about a satellite. Recorded as an M0 it
-    would enter the compound's satellite as the compound itself, which every
+    """The reagent pass makes a source ion's isotope lines its family: each
+    names the ion's row as its owner. A person reading the ion's peak as a
+    compound takes the ion away, so its lines are demoted with it as an
+    analyte's isotopologues are, and what they were is archived on the row
+    that owned them."""
+    ion_id, line_id = gen_id(32), gen_id(32)
+    rows = {
+        ion_id: {"sample_peak_id": "cur-4", "sample_peak_mz": 157.8367},
+        line_id: {
+            "sample_peak_id": "cur-5",
+            "sample_peak_mz": 159.8347,
+            "isotope_label": "81Br",
+            "abundance_error": 0.02,
+            "owner_peak_assignment_id": ion_id,
+        },
+    }
+    async with async_session_factory() as session:
+        for row_id, fields in rows.items():
+            session.add(
+                PeakAssignment(
+                    peak_assignment_id=row_id,
+                    peak_assignment_run_id=curated_run["run_id"],
+                    sample_item_id=curated_run["sample_item_id"],
+                    sample_peak_intensity=2.6e5,
+                    role="reagent",
+                    ion_formula="Br2-",
+                    source="reagent",
+                    tier="unassigned",
+                    provenance={"reagent": {"ion": "[Br2]-", "family": "reagent"}},
+                    **fields,
+                )
+            )
+            # The owner first: the link is a foreign key checked per row.
+            await session.flush()
+        await session.commit()
+
+    response = await editor_client.patch(
+        _url(curated_run, ion_id),
+        json={
+            "action": "set_assignment",
+            "assigned_formula": "C12H22O11",
+            "ionization_mechanism_id": curated_run["mechanism_id"],
+            "ion_formula": "C12H23O11+",
+            "fit_score": 0.93,
+            "mz_error_ppm": -0.8,
+        },
+    )
+
+    assert response.status_code == 200
+    assert line_id in {row["peak_assignment_id"] for row in response.json()["data"]}
+    line = await _row(async_session_factory, line_id)
+    assert (line.role, line.tier, line.source) == ("unassigned", "unassigned", "manual")
+    assert line.ion_formula is None
+    assert line.owner_peak_assignment_id is None
+    assert line.provenance["manual"]["action"] == "demote_isotopologue"
+    owner = await _row(async_session_factory, ion_id)
+    (entry,) = owner.provenance["manual"]["demoted"]
+    assert entry["peak_assignment_id"] == line_id
+    assert entry["provenance"]["reagent"]["ion"] == "[Br2]-"
+
+
+@pytest.mark.asyncio
+async def test_an_isotopologue_is_not_committed_as_a_compounds_main_peak(
+    editor_client, curated_run, async_session_factory
+):
+    """A hit labelled M+1 is a claim about an isotopologue. Recorded as an M0
+    it would enter the compound's isotopologue as the compound itself, which every
     consumer that folds a family onto its M0 would then believe."""
     await editor_client.patch(
         _url(curated_run, curated_run["blank_id"]),
@@ -918,7 +1025,7 @@ async def test_a_satellite_is_not_committed_as_a_compounds_main_peak(
     assert row.role == "iso_child"
     assert row.isotope_label == "M+1"
     # No owner is invented for it: the run arbitrated no family for this
-    # formula, and an ownerless satellite is ordinary engine output anyway.
+    # formula, and an ownerless isotopologue is ordinary engine output anyway.
     assert row.owner_peak_assignment_id is None
 
 
@@ -1112,7 +1219,7 @@ async def test_a_curated_row_is_an_ordinary_ledger_row(editor_client, curated_ru
 
     assert response.status_code == 200
     rows = response.json()["data"]
-    # The promoted M0 and the satellite the override demoted.
+    # The promoted M0 and the isotopologue the override demoted.
     assert {row["sample_peak_id"] for row in rows} == {"cur-1", "cur-2"}
     curated = next(row for row in rows if row["sample_peak_id"] == "cur-1")
     assert curated["assigned_formula"] == "C7H16O5"
@@ -1269,7 +1376,7 @@ async def test_a_candidate_that_names_no_adduct_cannot_be_committed(
 
     assert response.status_code == 422
     # Refused before anything was written: the old winner still stands, adduct
-    # and all, and its satellite was not demoted on the way to the refusal.
+    # and all, and its isotopologue was not demoted on the way to the refusal.
     row = await _row(async_session_factory, curated_run["m0_id"])
     assert row.assigned_formula == "C6H12O6"
     assert row.ionization_mechanism_id == curated_run["mechanism_id"]
@@ -1446,8 +1553,8 @@ async def test_the_same_formula_under_another_adduct_still_demotes_the_family(
     (formula, mechanism) comparison was written for.
 
     A family belongs to a COMPOUND, and a compound is a formula under an adduct:
-    the satellites of C6H12O6 as a protonated ion are not the satellites of the
-    same formula sodiated - a different ion at a different m/z, with different
+    the isotopologues of C6H12O6 as a protonated ion are not those of the same
+    formula sodiated - a different ion at a different m/z, with different
     peaks. Comparing formulas alone would leave the old family standing under an
     adduct their M0 no longer carries, and the ledger would show an isotopologue
     block that no longer belongs to anything.
@@ -1476,7 +1583,7 @@ async def test_the_same_formula_under_another_adduct_still_demotes_the_family(
         )
 
         assert response.status_code == 200
-        assert response.json()["results"] == 2  # the row and its ex-satellite
+        assert response.json()["results"] == 2  # the row and its ex-isotopologue
         child = await _row(async_session_factory, curated_run["child_id"])
         assert child.assigned_formula is None
         assert child.role == "unassigned"
@@ -1500,12 +1607,12 @@ async def test_the_same_formula_under_another_adduct_still_demotes_the_family(
 
 
 @pytest.mark.asyncio
-async def test_a_satellite_row_can_be_curated_on_its_own(
+async def test_an_isotopologue_row_can_be_curated_on_its_own(
     editor_client, curated_run, async_session_factory
 ):
     """Curation is about the row in hand, not the family M0 a verdict is
     redirected to - an alternative index only means something against one row's
-    list. The satellite detaches from a family whose compound it no longer
+    list. The isotopologue detaches from a family whose compound it no longer
     shares, and the M0 it left is untouched.
     """
     async with async_session_factory() as session:
@@ -1550,7 +1657,7 @@ async def test_a_searched_composition_can_replace_an_existing_assignment(
     assert row.assigned_formula == "C12H22O11"
     assert row.alternatives[0]["assigned_formula"] == "C6H12O6"
     assert row.provenance["manual"]["previous_formula"] == "C6H12O6"
-    # And the satellites of the formula it replaced are gone, as for a promote.
+    # And the isotopologues of the formula it replaced are gone, as for a promote.
     child = await _row(async_session_factory, curated_run["child_id"])
     assert child.role == "unassigned"
 
@@ -1580,7 +1687,7 @@ async def test_a_searched_composition_archives_the_winner_it_displaced(
     )
 
     assert response.status_code == 200
-    assert response.json()["results"] == 2  # the curated row and its satellite
+    assert response.json()["results"] == 2  # the curated row and its isotopologue
 
     row = await _row(async_session_factory, curated_run["m0_id"])
     # The whole winner, not just its formula: promoting this entry back has to
@@ -1948,10 +2055,10 @@ class TestTheEnginesOwnTierSurvivesExactlyItsOwnFormula:
         assert row.engine_tier is None
 
     @pytest.mark.asyncio
-    async def test_a_demoted_satellite_loses_it_and_gets_it_back(
+    async def test_a_demoted_isotopologue_loses_it_and_gets_it_back(
         self, editor_client, curated_run, async_session_factory
     ):
-        """The satellite path, which archives and restores the same way."""
+        """The isotopologue path, which archives and restores the same way."""
         await editor_client.patch(
             _url(curated_run, curated_run["m0_id"]),
             json={

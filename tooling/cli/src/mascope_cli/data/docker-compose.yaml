@@ -150,7 +150,14 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
-      start_period: 30s
+      # The backend listens only once its start-up tasks are done, and the
+      # first start that lacks an ionization mechanism Mascope ships builds
+      # that mechanism's target ions for the whole library: about a minute
+      # and a half for all of them on the largest library measured. A start
+      # that is quick ends the period at the first probe that connects, so
+      # its length matters only to a slow one, which the default would mark
+      # unhealthy and so stop the services that wait for this one.
+      start_period: 300s
     tty: true
     # The backend API is intentionally NOT published to a host port. nginx reaches
     # it over the internal Docker network (upstream backend -> backend:8090) and the

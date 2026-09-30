@@ -429,13 +429,13 @@ assignments.groupby("source", dropna=False).size()
 
 Peaks nothing explained carry no source at all (`None`), which is why the
 groupby above passes `dropna=False`. A `manual` row is not necessarily an
-*assigned* one either: when an override displaces a compound, the isotopologue
-satellites of that compound are stripped and end up `source: manual`,
+*assigned* one either: when an override displaces a compound, the
+isotopologues of that compound are stripped and end up `source: manual`,
 `tier: unassigned`, with no formula.
 
 `peak_assignments.detail()` on a curated row returns a `provenance.manual`
 block — `action`, `user_id`, `at`, and `previous` (the displaced winner, kept
-verbatim), plus `manual.demoted`, the archive of the satellites the override
+verbatim), plus `manual.demoted`, the archive of the isotopologues the override
 stripped so committing that compound back restores them.
 
 ### Which engine produced a run
@@ -549,7 +549,7 @@ comes from its flags. For example,
 | -------- | ------------------------------------ | ------------------- |
 | `list()` | List available ionization mechanisms | `pd.DataFrame│None` |
 
-Columns: `ionization_mechanism_id`, `ionization_mechanism` (human-readable name), `ionization_mechanism_polarity`.
+Columns: `ionization_mechanism_id`, `ionization_mechanism` (the mechanism in the standard adduct notation: `[M+H]+`, `[M-H]-`, `[M+Br]-`, `[M]+.` for electron transfer), `ionization_mechanism_polarity`, `shipped` (whether Mascope ships the mechanism, so that every server holds it from its first start).
 
 #### `mascope.cheminfo`
 

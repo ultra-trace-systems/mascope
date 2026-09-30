@@ -29,6 +29,7 @@ from mascope_backend.api.new.notifications.service import (
     keep_processing_outcome,
 )
 from mascope_backend.db import SampleFile, async_session
+from mascope_backend.method_keys import usable_streams
 from mascope_backend.runtime import runtime
 from mascope_backend.socket.records.service import emit_record_updated
 from mascope_file.io import read_props
@@ -63,14 +64,20 @@ def pooled_streams_note(streams: list[dict]) -> str | None:
     shows it is the converter's ``scan_streams``
     (``SampleFileProps.scan_streams``).
 
-    :param streams: The file's scan stream census.
+    :param streams: The file's scan stream census, as
+        :func:`read_scan_streams` returns it: every entry a dict with a dict
+        ``signature``.
     :return: One sentence per pooled polarity, or None when nothing is pooled.
     """
     by_polarity: dict[str, list[str]] = {}
     for stream in streams:
-        signature = stream.get("signature") or {}
+        signature = stream.get("signature", {})
         if signature.get("ms_order") == 1:
-            by_polarity.setdefault(signature.get("polarity"), []).append(
+            # str(): the polarity is only printed here, and a census whose
+            # polarity is a list would otherwise be an unhashable key. The
+            # grouping is what the sentence counts, so a malformed value
+            # reads oddly rather than failing a file's registration.
+            by_polarity.setdefault(str(signature.get("polarity")), []).append(
                 str(stream.get("key"))
             )
     notes = [
@@ -82,24 +89,48 @@ def pooled_streams_note(streams: list[dict]) -> str | None:
     return " ".join(notes) or None
 
 
+async def read_scan_streams(filename: str) -> list[dict] | None:
+    """A stored file's scan-stream census, from its ``.props``.
+
+    **``[]`` and ``None`` mean different things.** ``[]`` is a file that
+    records no census: one converted before the census existed, or by a reader
+    that takes none. Both are ordinary, and nearly every Orbitrap file
+    predating the census is re-processed sooner or later. ``None`` is a
+    ``.props`` that could not be read at all, which is an anomaly worth a line
+    in the log - so the caller can tell the two apart instead of treating
+    every old file as a fault.
+
+    Nothing that reads this may cost the file its processing - registration
+    reads it too, and so does the pipeline - so an unreadable props answers
+    ``None`` rather than raising.
+
+    **The shape is checked here, not by each caller.** Every entry that comes
+    back is a dict whose ``signature`` is a dict, so a caller may walk
+    ``stream["signature"].get(...)`` without guarding each field. A census of
+    another shape is a `.props` file nothing in Mascope wrote; the streams
+    that do not fit are dropped rather than failing the file.
+
+    :param filename: The sample file's stored name.
+    :return: The census, ``[]`` when the file records none, or ``None`` when
+        its ``.props`` could not be read.
+    """
+    try:
+        props = await asyncio.to_thread(read_props, filename)
+        return usable_streams(props.get("scan_streams"))
+    except Exception:  # noqa: BLE001 - a missing census is not a processing error
+        runtime.logger.opt(exception=True).debug(
+            f"Could not read the .props of {filename}"
+        )
+        return None
+
+
 async def read_pooled_streams_note(filename: str) -> str | None:
     """:func:`pooled_streams_note` for a stored file, read from its ``.props``.
-
-    A file converted before the census existed, or by a reader that takes
-    none, has no streams to report. Nothing here may cost the file its
-    processing, so a props file that cannot be read reports nothing either.
 
     :param filename: The sample file's stored name.
     :return: The note, or None.
     """
-    try:
-        props = await asyncio.to_thread(read_props, filename)
-        return pooled_streams_note(props.get("scan_streams") or [])
-    except Exception:  # noqa: BLE001 - a missing census is not a processing error
-        runtime.logger.opt(exception=True).debug(
-            f"No scan stream census readable for {filename}"
-        )
-        return None
+    return pooled_streams_note(await read_scan_streams(filename) or [])
 
 
 async def claim_for_processing(sample_file_ids: list[str], detail: str) -> list[str]:

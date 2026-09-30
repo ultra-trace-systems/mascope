@@ -163,6 +163,11 @@ def member_row(member: Any, anchor: Any) -> dict:
         "p_correct": member.p_correct,
         "p_correct_provisional": None,
         "corroboration_adducts": None,
+        "corroboration_channels": None,
+        "candidate_density": None,
+        # What a list calls the formula, as the member's registry entry
+        # recorded it when a member matched it from one.
+        "reference_listing": identity.get("listing"),
         "batch_peak_id": member.batch_peak_id,
     }
 
@@ -188,7 +193,13 @@ def member_detail(member: Any, anchor: Any) -> dict:
     }
     alternatives = []
     for index, entry in enumerate(anchor.candidates or []):
-        if index == member.candidate or not isinstance(entry, dict):
+        # A source ion's entry names no formula: it is what a claimed member
+        # was, not a reading this peak could take.
+        if (
+            index == member.candidate
+            or not isinstance(entry, dict)
+            or not entry.get("formula")
+        ):
             continue
         share = shares.get(entry.get("formula"), {})
         alternatives.append(
@@ -213,6 +224,7 @@ def member_detail(member: Any, anchor: Any) -> dict:
             "consensus_formula": anchor.consensus_formula,
             "consensus_ion_formula": anchor.consensus_ion_formula,
             "consensus_tier": anchor.consensus_tier,
+            "consensus_role": anchor.consensus_role,
             "support_fraction": anchor.support_fraction,
             "n_present": anchor.n_present,
             "is_ambiguous": bool(anchor.is_ambiguous),

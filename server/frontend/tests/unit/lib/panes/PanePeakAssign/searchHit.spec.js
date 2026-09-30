@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest'
 
 import {
   isotopeOfHit,
+  readLineOfHit,
   curationBodyForHit,
   canCurateHit,
   hitKey
@@ -9,15 +10,15 @@ import {
 
 // Assigning a re-search hit to a peak has to say WHICH isotopologue of the
 // candidate's ion that peak is. The search scores whole ions, so a heavy-isotope
-// satellite is a perfectly ordinary hit - and committing one as an 'M0' would
-// record a compound's satellite as the compound's main peak, which the tier
+// isotopologue is a perfectly ordinary hit - and committing one as an 'M0' would
+// record a compound's isotopologue as the compound's main peak, which the tier
 // histogram, the batch consensus and a family-scoped verdict would all believe.
 
 /** A candidate's predicted isotope pattern: M0, M+1, M+2 by decreasing abundance. */
 const PATTERN = [
   { mz: 180.0634, relative_abundance: 1.0, target_isotope_formula: 'C6H12O6' },
   { mz: 181.0668, relative_abundance: 0.067, target_isotope_formula: '[13C]C5H12O6' },
-  { mz: 182.0692, relative_abundance: 0.009, target_isotope_formula: '[13C2]C4H12O6' }
+  { mz: 182.0692, relative_abundance: 0.009, target_isotope_formula: '[13C]2C4H12O6' }
 ]
 
 const hit = (searchedMz, children = PATTERN) => ({
@@ -33,7 +34,7 @@ describe('isotopeOfHit', () => {
     })
   })
 
-  it('labels a satellite by its nominal offset from M0', () => {
+  it('labels an isotopologue by its nominal offset from M0', () => {
     expect(isotopeOfHit(hit(181.0668)).label).toBe('M+1')
     expect(isotopeOfHit(hit(182.0692)).label).toBe('M+2')
   })
@@ -79,12 +80,157 @@ describe('isotopeOfHit', () => {
   })
 
   // A hit with a pattern but no searched m/z means the main isotopologue: there
-  // is nothing to place, and guessing a satellite would be worse than saying M0.
+  // is nothing to place, and guessing an isotopologue would be worse than saying M0.
   it('reads a hit with no searched m/z as the main isotopologue', () => {
     expect(isotopeOfHit({ children: PATTERN })).toEqual({
       label: 'M0',
       formula: 'C6H12O6'
     })
+  })
+})
+
+// The brackets alone cannot find a labelled ion's M0, because a labelled
+// reagent's atom is bracketed like any substituted isotope: the 15N-nitrate ion
+// C9H16O7^N- is measured by its [15N]C9H16O7- line, and the one formula without
+// a bracket, C9H16NO7-, is the reagent's unlabelled remainder - 2% of that line
+// and one mass unit below it. The ion formula says which brackets are labels,
+// and the search carries it on the hit, not on the hit's isotopologues.
+describe('isotopeOfHit with the ion formula', () => {
+  /** A hit on the ion `ionFormula`, searched at `searchedMz` in its pattern. */
+  const ionHit = (ionFormula, searchedMz, children) => ({
+    ...hit(searchedMz, children),
+    target_ion_formula: ionFormula
+  })
+
+  it('counts a 15N-labelled ion from its labelled line, with the remainder at M-1', () => {
+    const labelled = [
+      { mz: 250.0932, relative_abundance: 0.0204, target_isotope_formula: 'C9H16NO7-' },
+      { mz: 251.0903, relative_abundance: 1.0, target_isotope_formula: '[15N]C9H16O7-' },
+      { mz: 252.0936, relative_abundance: 0.0973, target_isotope_formula: '[13C][15N]C8H16O7-' }
+    ]
+    const at = (mz) => isotopeOfHit(ionHit('C9H16O7^N-', mz, labelled))
+
+    expect(at(251.0903)).toEqual({ label: 'M0', formula: '[15N]C9H16O7-' })
+    expect(at(250.0932)).toEqual({ label: 'M-1', formula: 'C9H16NO7-' })
+    expect(at(252.0936)).toEqual({ label: 'M+1', formula: '[13C][15N]C8H16O7-' })
+  })
+
+  // The 15N nitric acid-nitrate cluster carries two labelled atoms. A line that
+  // names the label once is not its M0 but the M-1, with one atom unlabelled.
+  it('needs every labelled atom of a two-label ion at its label', () => {
+    const cluster = [
+      { mz: 124.984, relative_abundance: 0.0004, target_isotope_formula: 'HN2O6-' },
+      { mz: 125.981, relative_abundance: 0.0408, target_isotope_formula: '[15N]HNO6-' },
+      { mz: 126.9781, relative_abundance: 1.0, target_isotope_formula: '[15N]2HO6-' },
+      { mz: 128.9823, relative_abundance: 0.0123, target_isotope_formula: '[15N]2[18O]HO5-' }
+    ]
+    const at = (mz) => isotopeOfHit(ionHit('HO6^N2-', mz, cluster)).label
+
+    expect(at(126.9781)).toBe('M0')
+    expect(at(125.981)).toBe('M-1')
+    expect(at(124.984)).toBe('M-2')
+    expect(at(128.9823)).toBe('M+2')
+  })
+
+  // At a low resolution the labelled line and the remainder's 13C line, 6 mDa
+  // apart, are one line, and the generator names both.
+  it('reads a merged low-resolution line as the M0 when one of its names is', () => {
+    const merged = '[15N]C9H16O7-/[13C]C8H16NO7-'
+    const lowResolution = [
+      { mz: 250.0932, relative_abundance: 0.0204, target_isotope_formula: 'C9H16NO7-' },
+      { mz: 251.0903, relative_abundance: 1.0, target_isotope_formula: merged }
+    ]
+    const at = (mz) => isotopeOfHit(ionHit('C9H16O7^N-', mz, lowResolution))
+
+    expect(at(251.0903)).toEqual({ label: 'M0', formula: merged })
+    expect(at(250.0932).label).toBe('M-1')
+  })
+
+  // An ion that names no label keeps the line without a bracket as its M0. For
+  // bromoform with bromide that is the lightest line of the cluster, while the
+  // tallest, with two of the four bromines at 81Br, is its M+4.
+  it('counts an unlabelled bromine cluster from its lightest line, not its tallest', () => {
+    const bromine = [
+      { mz: 328.6817, relative_abundance: 0.176, target_isotope_formula: 'CHBr4-' },
+      { mz: 330.6797, relative_abundance: 0.685, target_isotope_formula: '[81Br]CHBr3-' },
+      { mz: 332.6776, relative_abundance: 1.0, target_isotope_formula: '[81Br]2CHBr2-' },
+      { mz: 334.6756, relative_abundance: 0.649, target_isotope_formula: '[81Br]3CHBr-' },
+      { mz: 336.6735, relative_abundance: 0.158, target_isotope_formula: '[81Br]4CH-' }
+    ]
+    const at = (mz) => isotopeOfHit(ionHit('CHBr4-', mz, bromine))
+
+    expect(at(328.6817)).toEqual({ label: 'M0', formula: 'CHBr4-' })
+    expect(at(332.6776)).toEqual({ label: 'M+4', formula: '[81Br]2CHBr2-' })
+  })
+})
+
+// A search that reads the peak as any line of a candidate's ion finds compounds
+// at their 13C line, a dibromide at its brightest line, a 15N reagent's adduct
+// at its unlabelled remainder. The table tags each such row with the line, named
+// as the peak inspector names an isotopologue row, so a row found at a 13C line
+// is not read as the compound's own mass.
+describe('readLineOfHit', () => {
+  it('names nothing for a hit read at its monoisotopic line', () => {
+    expect(readLineOfHit(hit(180.0634))).toBeNull()
+    expect(readLineOfHit({ children: [] })).toBeNull()
+    expect(readLineOfHit(null)).toBeNull()
+  })
+
+  it('names a heavier line by the isotope it substitutes, with its offset and share', () => {
+    expect(readLineOfHit(hit(181.0668))).toEqual({
+      name: '[13C]',
+      offset: 'M+1',
+      share: 0.067
+    })
+  })
+
+  // The pattern's abundances are probabilities, as the isotope rows the search
+  // matches carry them - the brightest line is not 1 - so the share is taken
+  // against the brightest.
+  it('names the brightest line of a dibromide', () => {
+    const dibromophenol = [
+      { mz: 248.8556, relative_abundance: 0.2313, target_isotope_formula: 'C6H3Br2O-' },
+      { mz: 250.8536, relative_abundance: 0.45, target_isotope_formula: '[81Br]C6H3BrO-' },
+      { mz: 252.8515, relative_abundance: 0.2187, target_isotope_formula: '[81Br]2C6H3O-' }
+    ]
+    const at = (mz) => readLineOfHit({ ...hit(mz, dibromophenol), target_ion_formula: 'C6H3Br2O-' })
+
+    expect(at(250.8536)).toEqual({ name: '[81Br]', offset: 'M+2', share: 1.0 })
+    expect(at(252.8515)).toMatchObject({ name: '[81Br]2', offset: 'M+4' })
+    expect(at(252.8515).share).toBeCloseTo(0.486, 6)
+  })
+
+  // Counted from the labelled line, so the reagent's remainder below it is the
+  // named line and the labelled one is the ion's own.
+  it("names a labelled reagent's unlabelled remainder below its labelled line", () => {
+    const labelled = [
+      { mz: 310.078, relative_abundance: 0.0204, target_isotope_formula: 'C10H16NO10-' },
+      { mz: 311.075, relative_abundance: 1.0, target_isotope_formula: '[15N]C10H16O10-' }
+    ]
+    const at = (mz) => readLineOfHit({ ...hit(mz, labelled), target_ion_formula: 'C10H16O10^N-' })
+
+    expect(at(311.075)).toBeNull()
+    expect(at(310.078)).toEqual({ name: '[14N]', offset: 'M-1', share: 0.0204 })
+  })
+
+  // The remainder with a 13C is 6.3 mDa above the labelled line: another line
+  // at the monoisotopic nominal mass, named though its offset is M0.
+  it('names another line at the monoisotopic nominal mass', () => {
+    const labelled = [
+      { mz: 1682.5166, relative_abundance: 0.0204, target_isotope_formula: 'C60H100NO53-' },
+      { mz: 1683.51364, relative_abundance: 1.0, target_isotope_formula: '[15N]C60H100O53-' },
+      { mz: 1683.51996, relative_abundance: 0.0134, target_isotope_formula: '[13C]C59H100NO53-' }
+    ]
+    const at = (mz) => readLineOfHit({ ...hit(mz, labelled), target_ion_formula: 'C60H100O53^N-' })
+
+    expect(at(1683.51364)).toBeNull()
+    expect(at(1683.51996)).toEqual({ name: '[13C][14N]', offset: 'M0', share: 0.0134 })
+  })
+
+  it('names the line by its offset when the pattern gives no formulas or abundances', () => {
+    const bare = [{ mz: 100.0 }, { mz: 102.0 }]
+
+    expect(readLineOfHit(hit(102.0, bare))).toEqual({ name: 'M+2', offset: 'M+2', share: null })
   })
 })
 
@@ -125,7 +271,7 @@ describe('curationBodyForHit', () => {
     expect(curationBodyForHit(HIT)).not.toHaveProperty('plausibility')
   })
 
-  it('carries the isotopologue label through, so a satellite stays a satellite', () => {
+  it('carries the isotopologue label through, so an isotopologue stays one', () => {
     const body = curationBodyForHit({ ...HIT, cheminfo: { target_isotope_mz: 181.0668 } })
 
     expect(body.isotope_label).toBe('M+1')

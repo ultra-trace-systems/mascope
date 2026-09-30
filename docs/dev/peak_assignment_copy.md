@@ -219,17 +219,17 @@ Three details of the shipped shape the copy has to respect:
   override needs no stripping of those keys beyond what the import path already
   does, and a destination reader sees "no calibrated probability" rather than
   one belonging to another formula.
-- **An override demotes the satellites of the formula it replaced** to
+- **An override demotes the isotopologues of the formula it replaced** to
   `unassigned`, marked `source: "manual"` with their own previous winner kept
-  in `alternatives`. Satellites go only when the committed (formula, mechanism)
+  in `alternatives`. Isotopologues go only when the committed (formula, mechanism)
   pair actually differs from the one the row held — a family belongs to a
   compound, and a compound is a formula under an adduct. A copy of a curated
   run therefore carries demoted rows too; under B2 they are re-scored like any
   other row, and an `unassigned` source-row simply has no formula to re-score.
 - **The undo trail would travel as data, but not as an undo — and would not
-  survive being tried.** Each stripped satellite is archived on the M0's
+  survive being tried.** Each stripped isotopologue is archived on the M0's
   `provenance.manual.demoted`, and committing the same (formula, mechanism)
-  back onto that M0 restores the satellites onto their own rows — a real undo
+  back onto that M0 restores the isotopologues onto their own rows — a real undo
   rather than a message that the change was reversed. The archive would ride
   along on a copy like the rest of the manual block (import strips three
   top-level keys and never descends into it). But each entry names a

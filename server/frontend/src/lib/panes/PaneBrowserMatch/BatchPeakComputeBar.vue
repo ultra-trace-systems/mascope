@@ -115,7 +115,10 @@ async function launchSearch() {
       header="Search untargeted"
       :style="{ width: '26rem' }"
     >
-      <PeakAssignConfigForm :hidden="['run_untargeted']" />
+      <PeakAssignConfigForm
+        :hidden="['run_untargeted']"
+        :sample-batch-id="app.data.batch.focusedId"
+      />
       <template #footer>
         <Button label="Cancel" text severity="secondary" @click="searchVisible = false" />
         <Button

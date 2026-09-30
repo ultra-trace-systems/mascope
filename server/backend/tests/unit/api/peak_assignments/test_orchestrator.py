@@ -23,6 +23,7 @@ path rather than reaching Socket.IO.
 """
 
 from contextlib import asynccontextmanager
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pandas as pd
@@ -69,7 +70,9 @@ def _sample() -> MagicMock:
     sample.sample_item_name = "Sample One"
     sample.sample_batch_id = "sb-1"
     sample.filename = "orbi-sample.raw"
-    sample.polarity = "positive"
+    # The single-character form the sample row actually carries (String(1)),
+    # which is what the mechanism join and the profile fallback both read.
+    sample.polarity = "+"
     sample.instrument_function_id = "if-1"
     sample.instrument = "orbi"
     # No calibration record at all is eligible (matching the batch partition
@@ -102,6 +105,20 @@ class _Recorder:
         ctx.__aenter__ = AsyncMock(return_value=session)
         ctx.__aexit__ = AsyncMock(return_value=False)
         return ctx
+
+    def recorded_configs(self) -> list:
+        """The `config` blobs written on the run, in order.
+
+        Read off the compiled statements for the same reason the calibrations
+        are: what matters is that the run row carries the resolution, not that
+        some helper was called.
+        """
+        values = []
+        for statement in self.statements:
+            params = statement.compile().params
+            if "config" in params:
+                values.append(params["config"])
+        return values
 
     def recorded_calibrations(self) -> list:
         """The `confidence_calibration` values written on the run, in order.
@@ -168,18 +185,27 @@ def _patches(
         "apply_params": patch(
             f"{_MOD}.apply_match_params", side_effect=lambda df, _params: df
         ),
-        "fit": patch(f"{_MOD}.score_ions_by_fit", side_effect=lambda df: df),
+        "fit": patch(f"{_MOD}.score_ions_by_fit", side_effect=lambda df, **_kwargs: df),
         "calibration": patch(
             f"{_MOD}.load_calibration", new_callable=AsyncMock, return_value=None
         ),
         "mechanisms": patch(
             f"{_MOD}.fetch_sample_mechanisms",
             new_callable=AsyncMock,
-            return_value=(["im-1"], [MagicMock()]),
+            return_value=(
+                ["im-1"],
+                [
+                    SimpleNamespace(
+                        ionization_mechanism_id="im-1",
+                        ionization_mechanism="[M+H]+",
+                        ionization_mechanism_polarity="+",
+                    )
+                ],
+            ),
         ),
         "ionizations": patch(
             f"{_MOD}._untargeted_ionization_notations",
-            return_value=(["+H+"], {"+H+": "+H+"}),
+            return_value=(["[M+H]+"], {"[M+H]+": "[M+H]+"}),
         ),
         "compositions": patch(
             f"{_MOD}.assign_compositions",
@@ -187,6 +213,17 @@ def _patches(
                 stage_b_matches if stage_b_matches is not None else pd.DataFrame(),
                 {},
             ),
+        ),
+        # The seeded re-score opens the sample file again; these tests declare
+        # their rows rather than measure them, so it stands down and every row
+        # keeps the finder's own fit. Its own wiring is tested separately.
+        "seeded": patch(
+            f"{_MOD}._seeded_fits", new_callable=AsyncMock, return_value={}
+        ),
+        # The file's resolving power lives with its instrument functions in the
+        # database; these files have none, as a file never fitted has none.
+        "resolution": patch(
+            f"{_MOD}._resolution_of", new_callable=AsyncMock, return_value=None
         ),
         "claim": patch(f"{_MOD}.assignment_claim", _claim_stub()),
         "session": patch(f"{_MOD}.async_session", side_effect=recorder.session_factory),
@@ -244,6 +281,15 @@ def _stage_a_rows() -> list[dict]:
             sample_peak_intensity=660.0,
         ),
     ]
+
+
+def _mirror_rows() -> list[dict]:
+    """The same ion as :func:`_stage_a_rows`, matched from a reference list."""
+    rows = _stage_a_rows()
+    for row in rows:
+        row["target_compound_id"] = None
+        row["reference_identities"] = [{"name": "glucose", "source": "a seed list"}]
+    return rows
 
 
 class TestLedgerCompleteness:
@@ -351,13 +397,518 @@ class TestLedgerCompleteness:
             seen_ids.add(row["peak_assignment_id"])
 
 
+class TestTheJudgedLedger:
+    """What the run persists is what the passes that judge it left."""
+
+    @pytest.mark.asyncio
+    async def test_a_peak_whose_line_left_the_ledger_is_persisted_unassigned(self):
+        # An isotopologue released with the reading it belonged to is a peak
+        # nothing explains, and the ledger still has a row for it.
+        from mascope_backend.api.new.peak_assignments import service
+        from mascope_backend.api.new.peak_assignments.config import (
+            PeakAssignmentConfig,
+        )
+
+        judge = service.judge_commits
+
+        def releasing(rows, **kwargs):
+            judged = judge(rows, **kwargs)
+            judged.rows = [row for row in judged.rows if row["role"] == "M0"]
+            return judged
+
+        peaks = _peaks_df([("p1", 181.0707, 10000.0), ("p2", 182.0741, 660.0)])
+        recorder = _Recorder()
+        _start(_patches(recorder, peaks, _stage_a_rows()))
+        patch(f"{_MOD}.judge_commits", side_effect=releasing).start()
+
+        result = await _run(PeakAssignmentConfig(run_untargeted=False))
+
+        by_peak = {row["sample_peak_id"]: row for row in recorder.rows}
+        assert set(by_peak) == {"p1", "p2"}
+        assert by_peak["p1"]["role"] == "M0"
+        assert (by_peak["p2"]["role"], by_peak["p2"]["tier"]) == (
+            "unassigned",
+            "unassigned",
+        )
+        assert result["data"]["database_assigned"] == 1
+        assert result["data"]["unassigned"] == 1
+
+    @pytest.mark.asyncio
+    async def test_the_run_reads_its_lines_off_its_own_peaks_and_resolution(self):
+        from mascope_backend.api.new.peak_assignments.config import (
+            PeakAssignmentConfig,
+        )
+
+        peaks = _peaks_df([("p1", 181.0707, 10000.0), ("p2", 182.0741, 660.0)])
+        recorder = _Recorder()
+        mocks = _start(_patches(recorder, peaks, _stage_a_rows()))
+        mocks["resolution"].return_value = lambda mz: 100_000.0
+
+        await _run(PeakAssignmentConfig(run_untargeted=False))
+
+        mocks["resolution"].assert_awaited_once()
+        assert mocks["resolution"].call_args.args[0].sample_item_id == "si-1"
+        config = recorder.recorded_configs()[-1]
+        # These peaks carry no noise estimate, and the file a resolving power.
+        lines = config["mass_calibration"]["lines"]
+        assert (lines["noise"], lines["resolution"]) == (False, True)
+        assert set(config["mass_calibration"]["isotopologues"]) == {
+            "tracks",
+            "in_doubt",
+            "untracked",
+        }
+
+    @pytest.mark.asyncio
+    async def test_the_passes_are_handed_the_runs_own_bands(self):
+        # A row under the top band names it among its reasons, so the bands the
+        # tiering pass reads are the ones the run tiered on.
+        from mascope_backend.api.new.peak_assignments import service
+        from mascope_backend.api.new.peak_assignments.config import (
+            PeakAssignmentConfig,
+        )
+
+        judge = service.judge_commits
+        handed = {}
+
+        def recording(rows, **kwargs):
+            handed.update(kwargs)
+            return judge(rows, **kwargs)
+
+        peaks = _peaks_df([("p1", 181.0707, 10000.0), ("p2", 182.0741, 660.0)])
+        _start(_patches(_Recorder(), peaks, _stage_a_rows()))
+        patch(f"{_MOD}.judge_commits", side_effect=recording).start()
+
+        await _run(
+            PeakAssignmentConfig(
+                run_untargeted=False, assigned_threshold=0.8, candidate_threshold=0.5
+            )
+        )
+
+        assert handed["tier_bands"] == {"assigned": 0.8, "candidate": 0.5}
+
+    @pytest.mark.asyncio
+    async def test_the_run_records_what_its_claims_did(self):
+        from mascope_backend.api.new.peak_assignments.config import (
+            PeakAssignmentConfig,
+        )
+
+        peaks = _peaks_df([("p1", 181.0707, 10000.0), ("p2", 182.0741, 660.0)])
+        recorder = _Recorder()
+        _start(_patches(recorder, peaks, _stage_a_rows()))
+
+        await _run(PeakAssignmentConfig(run_untargeted=False))
+
+        tiering = recorder.recorded_configs()[-1]["tiering"]
+        assert {
+            key: tiering[key]
+            for key in (
+                "claimed",
+                "claimed_with_their_lines",
+                "claim_rounds",
+                "held",
+                "released",
+                "unapplied",
+            )
+        } == {
+            "claimed": 0,
+            "claimed_with_their_lines": 0,
+            "claim_rounds": 1,
+            "held": {},
+            "released": 0,
+            "unapplied": 0,
+        }
+
+    @pytest.mark.asyncio
+    async def test_a_fragment_of_a_committed_parent_is_persisted_as_the_sources(self):
+        # The fragment claim reads the stages' commits before anything judges
+        # them, and the peak it takes is written once, as the source's ion.
+        from mascope_backend.api.new.peak_assignments.config import (
+            PeakAssignmentConfig,
+        )
+        from mascope_backend.api.new.peak_assignments.engine import FRAGMENTS_KEY
+        from mascope_tools.composition.reagents import FragmentIon, FragmentLadder
+
+        ladder = FragmentLadder(
+            parent="C6H12O6",
+            label="a stated parent",
+            fragments=(FragmentIon("C3H7O3", 1, "[C3H7O3]+", literature_ratio=1.0),),
+            references=("nist",),
+        )
+        fragment = _isotope_row(
+            target_isotope_id="ti-3",
+            target_ion_id="ion-2",
+            target_compound_id="tc-2",
+            compound_formula="C3H6O3",
+            ion_formula="C3H7O3+",
+            mz=91.0390,
+            relative_abundance=1.0,
+            sample_peak_id="p3",
+            sample_peak_intensity=5000.0,
+        )
+        # A reference list's reading, which the claim may take: a compound of
+        # the target library keeps its peak.
+        fragment["target_compound_id"] = None
+        fragment["reference_identities"] = [{"name": "lactic acid", "source": "a list"}]
+        peaks = _peaks_df(
+            [
+                ("p1", 181.0707, 10000.0),
+                ("p2", 182.0741, 660.0),
+                ("p3", 91.0390, 5000.0),
+            ]
+        )
+        recorder = _Recorder()
+        _start(_patches(recorder, peaks, _stage_a_rows() + [fragment]))
+        patch(f"{_MOD}.fragment_ladders_for", return_value=(ladder,)).start()
+
+        await _run(PeakAssignmentConfig(run_untargeted=False))
+
+        by_peak = {row["sample_peak_id"]: row for row in recorder.rows}
+        assert len(recorder.rows) == len(by_peak) == len(peaks)
+        assert by_peak["p1"]["role"] == "M0"
+        claimed = by_peak["p3"]
+        assert (claimed["role"], claimed["assigned_formula"]) == ("reagent", None)
+        assert claimed["ion_formula"] == "C3H7O3+"
+        assert claimed["provenance"]["reagent"]["family"] == "fragment"
+        assert claimed["provenance"]["reagent"]["parent"]["formula"] == "C6H12O6"
+        recorded = recorder.recorded_configs()[-1][FRAGMENTS_KEY]
+        assert (recorded["claimed"], recorded["ladders"]) == (1, ["a stated parent"])
+
+    @pytest.mark.asyncio
+    async def test_a_profile_with_no_ladder_records_no_claim(self):
+        from mascope_backend.api.new.peak_assignments.config import (
+            PeakAssignmentConfig,
+        )
+        from mascope_backend.api.new.peak_assignments.engine import FRAGMENTS_KEY
+
+        peaks = _peaks_df([("p1", 181.0707, 10000.0), ("p2", 182.0741, 660.0)])
+        recorder = _Recorder()
+        _start(_patches(recorder, peaks, _stage_a_rows()))
+
+        await _run(PeakAssignmentConfig(run_untargeted=False))
+
+        assert FRAGMENTS_KEY not in recorder.recorded_configs()[-1]
+
+
+class TestAListHitMeetsTheGrid:
+    """Every peak a list read is put to the formula search, which may keep the
+    list's reading there or let a rival take the peak."""
+
+    RIVAL = {
+        "formula": "C7H16O5",
+        "ion": "C7H17O5+",
+        "ionization_mechanism": "[M+H]+",
+        "fit_score": 0.97,
+        "mz_error_ppm": 0.3,
+    }
+
+    @staticmethod
+    def _kept(rivals):
+        from mascope_tools.composition.finder import (
+            KNOWN_KEPT,
+            KNOWN_RIVALS,
+            ReadingRivals,
+        )
+
+        return {
+            "mz": 181.0707,
+            "formula": "C6H12O6",
+            "ion": "C6H13O6+",
+            "isotope_label": "M0",
+            "other_candidates": "",
+            KNOWN_KEPT: True,
+            KNOWN_RIVALS: ReadingRivals(
+                density=1 + len(rivals),
+                rivals=tuple(rivals),
+                fit_score=0.9,
+                candidates=4,
+                in_grid=True,
+            ),
+        }
+
+    @staticmethod
+    def _taken():
+        """C7H16O5 takes the list's peak, and its envelope claims p2."""
+        from mascope_tools.composition.finder import KNOWN_DISPLACED
+
+        rival = {
+            "formula": "C7H16O5",
+            "ion": "C7H17O5+",
+            "ionization_mechanism": "[M+H]+",
+            "isotopic_pattern_score": 0.95,
+            "composition_error_ppm": 0.3,
+            "candidate_density": 1,
+            "other_candidates": "",
+        }
+        return [
+            {
+                **rival,
+                "mz": 181.0707,
+                "isotope_label": "M0",
+                KNOWN_DISPLACED: {
+                    "peak_mz": 181.0707,
+                    "formula": "C6H12O6",
+                    "ion": "C6H13O6+",
+                    "ionization_mechanism": "[M+H]+",
+                    "fit_score": 0.3,
+                    "evidence": 0.3,
+                    "rival_evidence": 0.95,
+                    "prior": 2.0,
+                },
+            },
+            {**rival, "mz": 182.0741, "isotope_label": "13C"},
+        ]
+
+    def _start_with(self, recorder, rows, stage_a=None):
+        peaks = _peaks_df([("p1", 181.0707, 10000.0), ("p2", 182.0741, 660.0)])
+        return _start(
+            _patches(
+                recorder,
+                peaks,
+                _mirror_rows() if stage_a is None else stage_a,
+                pd.DataFrame(rows),
+            )
+        )
+
+    @pytest.mark.asyncio
+    async def test_each_list_peak_is_put_to_the_search_with_its_reading(self):
+        from mascope_backend.api.new.peak_assignments.config import (
+            PeakAssignmentConfig,
+        )
+        from mascope_tools.composition.finder import ListReading
+
+        recorder = _Recorder()
+        mocks = self._start_with(recorder, [self._kept([])])
+
+        await _run(PeakAssignmentConfig(run_untargeted=True))
+
+        mocks["compositions"].assert_called_once()
+        kwargs = mocks["compositions"].call_args.kwargs
+        # The monoisotopic row only, at its peak, through the channel it was
+        # matched on; its isotopologue's peak is the list's and not searched.
+        assert kwargs["known"] == {
+            181.0707: ListReading(
+                mz=181.0707,
+                formula="C6H12O6",
+                ionization_mechanism="[M+H]+",
+                mz_error_ppm=1.0,
+                keeps_peak=False,
+            )
+        }
+        assert kwargs["targets"] == [181.0707]
+        assert kwargs["known_prior"] == 2.0
+        assert kwargs["closed_shell_rivals"] is True
+
+    @pytest.mark.asyncio
+    async def test_a_target_library_reading_is_asked_to_keep_its_peak(self):
+        from mascope_backend.api.new.peak_assignments.config import (
+            PeakAssignmentConfig,
+        )
+
+        recorder = _Recorder()
+        mocks = self._start_with(recorder, [self._kept([])], stage_a=_stage_a_rows())
+
+        await _run(PeakAssignmentConfig(run_untargeted=True))
+
+        (reading,) = mocks["compositions"].call_args.kwargs["known"].values()
+        # Measured against the grid all the same.
+        assert reading.keeps_peak is True
+
+    @pytest.mark.asyncio
+    async def test_a_kept_reading_counts_its_rivals_and_keeps_its_row(self):
+        from mascope_backend.api.new.peak_assignments.config import (
+            PeakAssignmentConfig,
+        )
+
+        recorder = _Recorder()
+        self._start_with(recorder, [self._kept([self.RIVAL])])
+
+        await _run(PeakAssignmentConfig(run_untargeted=True))
+
+        by_peak = {row["sample_peak_id"]: row for row in recorder.rows}
+        row = by_peak["p1"]
+        assert (row["source"], row["assigned_formula"]) == ("database", "C6H12O6")
+        provenance = row["provenance"]
+        assert provenance["candidate_density"] == 2
+        assert provenance["grid_rivals"]["added"] == 1
+        assert "candidate_density" in {
+            reason["rule"] for reason in provenance["tier_reasons"]
+        }
+        assert row["tier"] == "candidate"
+        assert by_peak["p2"]["role"] == "iso_child"
+        scope = recorder.recorded_configs()[-1]["search_scope"]
+        assert scope["list_hits"] == {
+            "measured": 1,
+            "with_rivals": 1,
+            "taken_by_rivals": 0,
+            "kept_by_lines": 0,
+            "kept_by_library": 0,
+            "prior": 2.0,
+        }
+
+    @pytest.mark.asyncio
+    async def test_a_rival_a_reading_was_held_against_is_recorded(self):
+        from dataclasses import replace
+
+        from mascope_backend.api.new.peak_assignments.config import (
+            PeakAssignmentConfig,
+        )
+        from mascope_tools.composition.finder import HELD_BY_LINES, KNOWN_RIVALS
+
+        kept = self._kept([self.RIVAL])
+        kept[KNOWN_RIVALS] = replace(
+            kept[KNOWN_RIVALS],
+            held_against={
+                "formula": "C7H16O5",
+                "ion": "C7H17O5+",
+                "ionization_mechanism": "[M+H]+",
+                "fit_score": 0.971234,
+                "prior": 2.0,
+                "why": HELD_BY_LINES,
+                "unexplained_lines": [182.0741234],
+            },
+        )
+        recorder = _Recorder()
+        self._start_with(recorder, [kept])
+
+        await _run(PeakAssignmentConfig(run_untargeted=True))
+
+        row = next(row for row in recorder.rows if row["sample_peak_id"] == "p1")
+        assert row["provenance"]["grid_rivals"]["held_against"] == {
+            "formula": "C7H16O5",
+            "ion_formula": "C7H17O5+",
+            "ionization_mechanism": "[M+H]+",
+            "fit_score": 0.9712,
+            "prior": 2.0,
+            "why": "unexplained_lines",
+            "unexplained_lines": [182.07412],
+        }
+        scope = recorder.recorded_configs()[-1]["search_scope"]
+        assert (
+            scope["list_hits"]["kept_by_lines"],
+            scope["list_hits"]["kept_by_library"],
+        ) == (1, 0)
+
+    @pytest.mark.asyncio
+    async def test_a_kept_reading_with_no_rival_keeps_its_tier(self):
+        from mascope_backend.api.new.peak_assignments.config import (
+            PeakAssignmentConfig,
+        )
+
+        recorder = _Recorder()
+        mocks = self._start_with(recorder, [self._kept([])])
+
+        await _run(PeakAssignmentConfig(run_untargeted=True))
+
+        row = next(row for row in recorder.rows if row["sample_peak_id"] == "p1")
+        assert row["tier"] == "assigned"
+        assert row["provenance"]["grid_rivals"]["added"] == 0
+        # The kept reading is no commit of the search's, so nothing re-measures
+        # it.
+        assert mocks["seeded"].call_args.args[2] == set()
+
+    @pytest.mark.asyncio
+    async def test_a_rival_takes_the_peak_and_the_row_names_the_list(self):
+        from mascope_backend.api.new.peak_assignments.config import (
+            PeakAssignmentConfig,
+        )
+
+        recorder = _Recorder()
+        self._start_with(recorder, self._taken())
+
+        result = await _run(PeakAssignmentConfig(run_untargeted=True))
+
+        by_peak = {row["sample_peak_id"]: row for row in recorder.rows}
+        row = by_peak["p1"]
+        assert (row["source"], row["assigned_formula"], row["role"]) == (
+            "untargeted",
+            "C7H16O5",
+            "M0",
+        )
+        first = row["alternatives"][0]
+        assert first["assigned_formula"] == "C6H12O6"
+        assert first["source"] == "database"
+        assert first["target_compound_id"] is None
+        assert first["reference_identities"] == [
+            {"name": "glucose", "source": "a seed list"}
+        ]
+        assert first["displaced_by_rival"] is True
+        reading = row["provenance"]["list_reading"]
+        assert reading["assigned_formula"] == "C6H12O6"
+        assert reading["reference_identities"] == first["reference_identities"]
+        assert (reading["evidence"], reading["rival_evidence"], reading["prior"]) == (
+            0.3,
+            0.95,
+            2.0,
+        )
+        # The list's isotopologue left with it, and the rival's envelope holds
+        # its peak now.
+        assert by_peak["p2"]["source"] == "untargeted"
+        assert by_peak["p2"]["owner_peak_assignment_id"] == row["peak_assignment_id"]
+        scope = recorder.recorded_configs()[-1]["search_scope"]
+        assert scope["list_hits"]["taken_by_rivals"] == 1
+        assert result["data"]["database_assigned"] == 0
+
+    @pytest.mark.asyncio
+    async def test_a_line_the_rival_does_not_claim_is_left_unassigned(self):
+        from mascope_backend.api.new.peak_assignments.config import (
+            PeakAssignmentConfig,
+        )
+
+        recorder = _Recorder()
+        self._start_with(recorder, self._taken()[:1])
+
+        await _run(PeakAssignmentConfig(run_untargeted=True))
+
+        by_peak = {row["sample_peak_id"]: row for row in recorder.rows}
+        assert by_peak["p1"]["assigned_formula"] == "C7H16O5"
+        assert by_peak["p2"]["role"] == "unassigned"
+
+    @pytest.mark.asyncio
+    async def test_a_run_without_the_search_asks_nothing(self):
+        from mascope_backend.api.new.peak_assignments.config import (
+            PeakAssignmentConfig,
+        )
+
+        recorder = _Recorder()
+        mocks = self._start_with(recorder, self._taken())
+
+        await _run(PeakAssignmentConfig(run_untargeted=False))
+
+        mocks["compositions"].assert_not_called()
+        row = next(row for row in recorder.rows if row["sample_peak_id"] == "p1")
+        assert row["source"] == "database"
+        assert "grid_rivals" not in row["provenance"]
+
+    @pytest.mark.asyncio
+    async def test_a_list_peak_on_a_channel_the_search_does_not_run_is_not_asked(
+        self,
+    ):
+        from mascope_backend.api.new.peak_assignments.config import (
+            PeakAssignmentConfig,
+        )
+
+        recorder = _Recorder()
+        mocks = self._start_with(recorder, self._taken())
+        mocks["ionizations"].return_value = (["[M+NH4]+"], {"[M+NH4]+": "im-2"})
+
+        await _run(PeakAssignmentConfig(run_untargeted=True))
+
+        # Nothing else to search either, so the search does not run.
+        mocks["compositions"].assert_not_called()
+        row = next(row for row in recorder.rows if row["sample_peak_id"] == "p1")
+        assert row["source"] == "database"
+
+
 class TestStageHandoff:
     @pytest.mark.asyncio
     async def test_stage_b_is_never_offered_a_peak_stage_a_owns(self):
         """The single-owner invariant across the stage boundary.
 
-        Stage A's peaks must not reach the untargeted search, or two stages could
-        claim the same peak and violate the per-run uniqueness constraint.
+        Stage A's peaks must not be searched, or two stages could claim the same
+        peak and violate the per-run uniqueness constraint. They are still handed
+        to the finder - as isotope-pattern context, which is what lets a Stage B
+        ion's envelope be scored against the whole spectrum - so what says the
+        boundary holds is the target list, not the frame.
         """
         from mascope_backend.api.new.peak_assignments.config import (
             PeakAssignmentConfig,
@@ -376,10 +927,14 @@ class TestStageHandoff:
         await _run(PeakAssignmentConfig(run_untargeted=True))
 
         mocks["compositions"].assert_called_once()
-        offered = mocks["compositions"].call_args.args[0]
-        offered_mz = set(offered["mz"].tolist())
-        # p1/p2 belong to the Stage A ion; only p3 is unexplained.
-        assert offered_mz == {300.1234}
+        call = mocks["compositions"].call_args
+        # The whole spectrum is the context...
+        assert set(call.args[0]["mz"].tolist()) == {181.0707, 182.0741, 300.1234}
+        # ...and what is enumerated is the peak no earlier pass explains and the
+        # list's own peak, where the list's reading is put beside the grid's.
+        # The Stage A ion's isotopologue on p2 is not.
+        assert set(call.kwargs["targets"]) == {300.1234, 181.0707}
+        assert set(call.kwargs["known"]) == {181.0707}
 
     @pytest.mark.asyncio
     async def test_untargeted_stage_is_skipped_when_disabled(self):
@@ -395,6 +950,247 @@ class TestStageHandoff:
         await _run(PeakAssignmentConfig(run_untargeted=False))
 
         mocks["compositions"].assert_not_called()
+
+
+class TestAReferenceMirrorsNitrogenCount:
+    @pytest.mark.asyncio
+    async def test_its_ion_s_other_reading_reaches_the_cross_channel_pass(self):
+        """A list's formula is given its ion's family before the pass reads it.
+
+        Dimethylformamide through [M+H]+ is acrolein through [M+NH4]+, and the run
+        searches both channels. Nothing else saw the neutral, so the count on it
+        is the list's answer and the row is capped - which it can only be if the
+        family was written onto the row before the cross-channel pass ran.
+        """
+        from mascope_backend.api.new.peak_assignments.config import (
+            PeakAssignmentConfig,
+        )
+        from mascope_backend.api.new.peak_assignments.cross_channel import (
+            REASON_AMBIGUOUS_NITROGEN,
+        )
+
+        mz = 74.06004
+        peaks = _peaks_df([("p1", mz, 10000.0)])
+        dimethylformamide = _isotope_row(
+            target_isotope_id="ref-iso-1",
+            target_ion_id="ref-ion-1",
+            target_compound_id=None,
+            compound_formula="C3H7N1O1",
+            ion_formula="C3H8N1O1+",
+            mz=mz,
+            relative_abundance=1.0,
+            sample_peak_id="p1",
+            sample_peak_intensity=10000.0,
+            match_score=0.95,
+            match_mz_error=0.2,
+            ionization="[M+H]+",
+            ionization_mechanism_id="im-1",
+        )
+        dimethylformamide["reference_identities"] = [
+            {"name": "N,N-dimethylformamide", "source": "a seed list"}
+        ]
+        recorder = _Recorder()
+        patches = _patches(recorder, peaks, [dimethylformamide])
+        patches["mechanisms"] = patch(
+            f"{_MOD}.fetch_sample_mechanisms",
+            new_callable=AsyncMock,
+            return_value=(
+                ["im-1", "im-2"],
+                [
+                    SimpleNamespace(
+                        ionization_mechanism_id="im-1",
+                        ionization_mechanism="[M+H]+",
+                        ionization_mechanism_polarity="+",
+                    ),
+                    SimpleNamespace(
+                        ionization_mechanism_id="im-2",
+                        ionization_mechanism="[M+NH4]+",
+                        ionization_mechanism_polarity="+",
+                    ),
+                ],
+            ),
+        )
+        patches["ionizations"] = patch(
+            f"{_MOD}._untargeted_ionization_notations",
+            return_value=(
+                ["[M+H]+", "[M+NH4]+"],
+                {"[M+H]+": "im-1", "[M+NH4]+": "im-2"},
+            ),
+        )
+        _start(patches)
+
+        await _run(PeakAssignmentConfig(run_untargeted=False))
+
+        (row,) = [r for r in recorder.rows if r["sample_peak_id"] == "p1"]
+        assert row["assigned_formula"] == "C3H7N1O1"
+        assert row["target_compound_id"] is None
+        assert [
+            (alternative["assigned_formula"], alternative["ionization_mechanism_id"])
+            for alternative in row["alternatives"]
+            if alternative.get("same_ion")
+        ] == [("C3H4O", "im-2")]
+        assert row["provenance"]["cross_channel"]["ambiguous_nitrogen"] == {
+            "alternative": "C3H4O",
+            "via": "[M+NH4]+",
+        }
+        assert row["tier"] == "candidate"
+        assert REASON_AMBIGUOUS_NITROGEN in {
+            reason["rule"] for reason in row["provenance"]["tier_reasons"]
+        }
+        cross_channel = recorder.recorded_configs()[-1]["cross_channel"]
+        assert (cross_channel["capped"], cross_channel["capped_mirror"]) == (1, 1)
+
+
+class TestTheListsAreReadThroughTheOpenedChannels:
+    """A charge-transfer source declares electron transfer alone and opens
+    methyl loss and proton transfer for itself. The reference lists are read
+    through all three; the target library through the mode's alone."""
+
+    CT = SimpleNamespace(
+        ionization_mechanism_id="im-ct",
+        ionization_mechanism="[M]+.",
+        ionization_mechanism_polarity="+",
+    )
+    METHYL_LOSS = SimpleNamespace(
+        ionization_mechanism_id="im-me",
+        ionization_mechanism="[M-CH3]+",
+        ionization_mechanism_polarity="+",
+    )
+    PROTON = SimpleNamespace(
+        ionization_mechanism_id="im-h",
+        ionization_mechanism="[M+H]+",
+        ionization_mechanism_polarity="+",
+    )
+
+    @staticmethod
+    def _d4(sample_peak_id, mz, relative_abundance, intensity):
+        """D4's methyl-loss ion, the siloxane's base peak on this source,
+        matched from the shipped cyclic-siloxane list."""
+        row = _isotope_row(
+            target_isotope_id=f"ref-iso-{sample_peak_id}",
+            target_ion_id="ref-ion-1",
+            target_compound_id=None,
+            compound_formula="C8H24O4Si4",
+            ion_formula="C7H21O4Si4+",
+            mz=mz,
+            relative_abundance=relative_abundance,
+            sample_peak_id=sample_peak_id,
+            sample_peak_intensity=intensity,
+            match_score=0.95,
+            match_mz_error=0.2,
+            ionization="[M-CH3]+",
+            ionization_mechanism_id="im-me",
+        )
+        row["reference_identities"] = [
+            {"name": "octamethylcyclotetrasiloxane", "source": "cyclic-siloxanes"}
+        ]
+        return row
+
+    def _start_with(self, recorder, peaks, match_rows):
+        patches = _patches(recorder, peaks, match_rows)
+        patches["mechanisms"] = patch(
+            f"{_MOD}.fetch_sample_mechanisms",
+            new_callable=AsyncMock,
+            return_value=(["im-ct"], [self.CT]),
+        )
+        # The deployment's rows for the profile's secondary channels. The
+        # spectrum starts above every probe, so the source's silence there is
+        # the window's and both channels are opened.
+        patches["secondary"] = patch(
+            f"{_MOD}.fetch_mechanisms_by_notation",
+            new_callable=AsyncMock,
+            return_value=[self.METHYL_LOSS, self.PROTON],
+        )
+        patches["ionizations"] = patch(
+            f"{_MOD}._untargeted_ionization_notations",
+            return_value=(
+                ["[M]+.", "[M-CH3]+", "[M+H]+"],
+                {"[M]+.": "im-ct", "[M-CH3]+": "im-me", "[M+H]+": "im-h"},
+            ),
+        )
+        return _start(patches)
+
+    @pytest.mark.asyncio
+    async def test_the_lists_are_read_through_them_and_the_library_is_not(self):
+        from mascope_backend.api.new.peak_assignments.config import (
+            PeakAssignmentConfig,
+        )
+
+        peaks = _peaks_df([("p1", 281.0512, 1.0e6)])
+        recorder = _Recorder()
+        mocks = self._start_with(
+            recorder, peaks, [self._d4("p1", 281.0512, 1.0, 1.0e6)]
+        )
+
+        await _run(PeakAssignmentConfig(run_untargeted=False))
+
+        snapshot = recorder.recorded_configs()[0]["resolved_profile"]
+        assert snapshot["profile"] == "EASYIC_POS"
+        # The workspace named its compounds for the mode it attached them to.
+        assert mocks["known"].await_args.args[2] == ["im-ct"]
+        # A list names a compound, not the channel it is seen through.
+        assert [
+            mechanism.ionization_mechanism_id
+            for mechanism in mocks["reference"].await_args.args[2]
+        ] == ["im-ct", "im-me", "im-h"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "silicon_line, tier", [(False, "candidate"), (True, "assigned")]
+    )
+    async def test_a_reading_through_one_is_held_as_the_search_s_are(
+        self, silicon_line, tier
+    ):
+        from mascope_backend.api.new.peak_assignments.config import (
+            PeakAssignmentConfig,
+        )
+
+        specs = [("p1", 281.0512, 1.0e6)]
+        rows = [self._d4("p1", 281.0512, 1.0, 1.0e6)]
+        if silicon_line:
+            # The 29Si line of its envelope, an isotopologue of its own.
+            specs.append(("p2", 282.0508, 2.0e5))
+            rows.append(self._d4("p2", 282.0508, 0.2, 2.0e5))
+        recorder = _Recorder()
+        self._start_with(recorder, _peaks_df(specs), rows)
+
+        await _run(PeakAssignmentConfig(run_untargeted=False))
+
+        (row,) = [r for r in recorder.rows if r["sample_peak_id"] == "p1"]
+        assert row["assigned_formula"] == "C8H24O4Si4"
+        assert row["ionization_mechanism_id"] == "im-me"
+        assert row["tier"] == tier
+        assert row["provenance"]["minor_channel"] == {
+            "corroborated_by": "isotopologue" if silicon_line else None,
+            "capped": not silicon_line,
+        }
+        # The siloxane's ion reads no other way the run searches, so the gate
+        # keeps it as it keeps any such row.
+        assert row["provenance"]["partner_gate"]["partner"] is False
+
+
+class TestTheRunRow:
+    @pytest.mark.asyncio
+    async def test_it_names_this_engine_and_its_version(self):
+        from mascope_backend.api.new.peak_assignments.config import (
+            IN_APP_ENGINE,
+            PeakAssignmentConfig,
+        )
+        from mascope_backend.api.new.peak_assignments.service import _create_run
+
+        session = MagicMock()
+        session.commit = AsyncMock()
+        ctx = AsyncMock()
+        ctx.__aenter__ = AsyncMock(return_value=session)
+        ctx.__aexit__ = AsyncMock(return_value=False)
+        with patch(f"{_MOD}.async_session", return_value=ctx):
+            run = await _create_run("si-1", PeakAssignmentConfig())
+
+        session.add.assert_called_once_with(run)
+        # The number, not the imported constant: two runs are comparable only
+        # under the same engine, so the version moves on purpose and this test
+        # moves with it.
+        assert (run.engine, run.engine_version) == (IN_APP_ENGINE, "0.5.0")
 
 
 class TestRunFinalization:
@@ -586,6 +1382,204 @@ class TestRunFinalization:
             )
 
         assert mocks["finalize"].await_args.args[:2] == ("run-1", "failed")
+
+
+class TestResolvedProfile:
+    """The chemistry a run searched under is recorded on the run.
+
+    A run whose config says ``profile: "auto"`` records nothing about what auto
+    meant unless the resolution is snapshotted beside it, and the presets are
+    library data that will be revised. Without the snapshot two runs months
+    apart would carry identical configs and incomparable results.
+    """
+
+    @pytest.mark.asyncio
+    async def test_stage_a_stands_in_the_class_width_the_run_resolved(self):
+        # Where the target library matches too few lines to fit a width, the
+        # untargeted stage and the gate stand in the instrument class's. Stage A
+        # has to be told the same width, or it falls back to the fit score's
+        # generic 2 ppm, which on an Orbitrap is several times the instrument's.
+        from mascope_backend.api.new.peak_assignments.config import (
+            PeakAssignmentConfig,
+        )
+
+        peaks = _peaks_df([("p1", 181.0707, 10000.0), ("p2", 182.0741, 660.0)])
+        recorder = _Recorder()
+        mocks = _start(_patches(recorder, peaks, _stage_a_rows()))
+
+        await _run(PeakAssignmentConfig(run_untargeted=False))
+
+        snapshot = recorder.recorded_configs()[0]["resolved_profile"]
+        assert snapshot["fallback_sigma_ppm"] == 0.3  # the sample file is a .raw
+        # The generic positive preset has no reagent, so no pre-pass reading.
+        assert mocks["fit"].call_args.kwargs == {
+            "fallback_sigma_ppm": 0.3,
+            "reagent_offset": None,
+        }
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "library", [True, False], ids=["two library lines", "no library match"]
+    )
+    async def test_a_thin_library_is_scored_at_the_reagent_lines_offset(self, library):
+        # Two library lines, or none, are too few to fit an offset, and this
+        # uronium source's own ions all sit 1.3 ppm low. Stage A scores its ions
+        # there, the untargeted stage is scored there, and the run says why.
+        from mascope_backend.api.new.peak_assignments.config import (
+            PeakAssignmentConfig,
+        )
+        from mascope_tools.composition.reagents import reagent_library
+
+        ladder = {cluster.label: cluster.mz for cluster in reagent_library("UR")}
+        low = 1.0 - 1.3e-6
+        peaks = _peaks_df(
+            [
+                ("p1", 181.0707, 10000.0),
+                ("p2", 182.0741, 660.0),
+                ("p3", 300.1234, 500.0),
+                ("r1", ladder["[CH4N2O+H]+"] * low, 2.0e6),
+                ("r2", ladder["[(CH4N2O)2+H]+"] * low, 3.0e6),
+                ("r3", ladder["[(CH4N2O)3+H]+"] * low, 1.0e5),
+            ]
+        )
+        recorder = _Recorder()
+        mocks = _start(_patches(recorder, peaks, _stage_a_rows() if library else []))
+
+        await _run(PeakAssignmentConfig(profile="UR"))
+
+        if library:
+            offset = mocks["fit"].call_args.kwargs["reagent_offset"]
+            assert (offset.lines, offset.beyond_width) == (3, True)
+            assert offset.mu_ppm == pytest.approx(-1.3, abs=1e-6)
+        scoring = mocks["compositions"].call_args.kwargs["scoring"]
+        assert scoring.mu_ppm == pytest.approx(-1.3, abs=1e-6)
+        recorded = recorder.recorded_configs()[-1]["pattern_scoring"]
+        assert recorded["mu_source"] == "reagent"
+        assert recorded["sigma_source"] == "instrument_class"
+        assert recorded["reagent_lines"] == 3
+        assert recorded["reagent_mu_ppm"] == pytest.approx(-1.3, abs=1e-4)
+        # The reagent's own peaks are still the pre-pass's, not the search's.
+        # The library's monoisotopic peak is searched, with its reading.
+        searched = set(mocks["compositions"].call_args.kwargs["targets"])
+        assert searched == (
+            {181.0707, 300.1234} if library else {181.0707, 182.0741, 300.1234}
+        )
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "context, ceiling",
+        [
+            ("ambient-air", "shipped"),
+            # The identity context sets no ceiling: each source is bounded by
+            # its own row alone.
+            ("none", None),
+        ],
+    )
+    async def test_stage_a_matches_the_reference_under_the_resolved_contexts_ceiling(
+        self, context, ceiling
+    ):
+        from mascope_backend.api.new.peak_assignments.config import (
+            PeakAssignmentConfig,
+        )
+        from mascope_tools.composition.profiles import KNOWN_WINDOW_CEILING
+
+        peaks = _peaks_df([("p1", 181.0707, 10000.0), ("p2", 182.0741, 660.0)])
+        recorder = _Recorder()
+        mocks = _start(_patches(recorder, peaks, _stage_a_rows()))
+
+        await _run(PeakAssignmentConfig(run_untargeted=False, context=context))
+
+        expected = KNOWN_WINDOW_CEILING if ceiling == "shipped" else None
+        assert mocks["reference"].await_args.kwargs == {"known_window": expected}
+        snapshot = recorder.recorded_configs()[0]["resolved_profile"]
+        assert snapshot["known_window"] == (
+            None if expected is None else expected.to_json()
+        )
+
+    @pytest.mark.asyncio
+    async def test_the_resolution_is_stamped_on_the_run(self):
+        from mascope_backend.api.new.peak_assignments.config import (
+            PeakAssignmentConfig,
+        )
+
+        peaks = _peaks_df([("p1", 181.0707, 10000.0), ("p2", 182.0741, 660.0)])
+        recorder = _Recorder()
+        _start(_patches(recorder, peaks, _stage_a_rows()))
+
+        await _run(PeakAssignmentConfig(run_untargeted=False))
+
+        # Twice: once before the stages, so a run that fails still says what it
+        # would have searched, and once after the ledger is built, which is the
+        # earliest the run's own mass calibration can be measured. Both carry
+        # the resolution and it does not change between them.
+        configs = recorder.recorded_configs()
+        assert len(configs) == 2
+        assert configs[0]["resolved_profile"] == configs[1]["resolved_profile"]
+        assert "mass_calibration" not in configs[0]
+        assert configs[1]["mass_calibration"]["committed"] == len(_stage_a_rows())
+        snapshot = configs[0]["resolved_profile"]
+        # '[M+H]+' is diagnostic of nothing, so a positive sample falls back to
+        # the generic positive preset - and says that it did.
+        assert snapshot["profile"] == "ESI_POS"
+        assert snapshot["requested_profile"] == "auto"
+        assert snapshot["element_ranges_source"] == "profile"
+        assert snapshot["mz_precision_ppm"] == 3.0  # the sample file is a .raw
+
+    @pytest.mark.asyncio
+    async def test_it_is_stamped_even_when_the_untargeted_stage_never_runs(self):
+        # A run has to say what it would have searched: the config is what a
+        # later reader compares two runs on, whether or not Stage B fired.
+        from mascope_backend.api.new.peak_assignments.config import (
+            PeakAssignmentConfig,
+        )
+
+        peaks = _peaks_df([("p1", 181.0707, 10000.0)])
+        recorder = _Recorder()
+        _start(_patches(recorder, peaks, []))
+
+        await _run(PeakAssignmentConfig(run_untargeted=False))
+
+        assert "resolved_profile" in recorder.recorded_configs()[0]
+
+    @pytest.mark.asyncio
+    async def test_the_identity_profile_searches_what_it_always_did(self):
+        from mascope_backend.api.new.peak_assignments.config import (
+            PeakAssignmentConfig,
+        )
+
+        peaks = _peaks_df([("p1", 181.0707, 10000.0)])
+        recorder = _Recorder()
+        mocks = _start(_patches(recorder, peaks, []))
+
+        await _run(PeakAssignmentConfig(profile="none"))
+
+        search_config = mocks["compositions"].call_args.args[1]
+        heuristics = mocks["compositions"].call_args.args[2]
+        assert search_config.element_count_ranges == "C0-100 H0-100 O0-100 N0-100"
+        assert search_config.mass_range_ppm == 10.0
+        assert heuristics.use_senior is True
+        assert heuristics.context_ratio_windows == {}
+
+    @pytest.mark.asyncio
+    async def test_a_named_profile_configures_the_search(self):
+        from mascope_backend.api.new.peak_assignments.config import (
+            PeakAssignmentConfig,
+        )
+        from mascope_tools.composition import profiles as presets
+
+        peaks = _peaks_df([("p1", 181.0707, 10000.0)])
+        recorder = _Recorder()
+        mocks = _start(_patches(recorder, peaks, []))
+
+        await _run(PeakAssignmentConfig(profile="BR"))
+
+        search_config = mocks["compositions"].call_args.args[1]
+        heuristics = mocks["compositions"].call_args.args[2]
+        assert search_config.element_count_ranges == presets.resolve_element_ranges(
+            presets.BR, presets.AMBIENT_AIR
+        )
+        assert search_config.mass_range_ppm == 3.0
+        assert heuristics.context_ratio_windows == (presets.AMBIENT_AIR.ratio_windows())
 
 
 class TestEligibilityGate:

@@ -1334,7 +1334,7 @@ about at request time.
   `mascope.ionization.list()` by exact string and leaves every non-match null;
   it does not guarantee that a supplied id is joinable, because it cannot
   determine that. The reason is **normalization**, not scope: the mapping the
-  server applies - `to_mascope_ion_mech`, `to_custom_element_format`,
+  server applies - `mechanism_key`, `to_custom_element_format`,
   `to_explicit_isotope_format` and the `CUSTOM_ELEMENTS` table - is backend-only
   code, and the SDK depends on nothing beyond requests, loguru, pandas, tqdm and
   python-dotenv, so a mechanism the deployment stores in custom-element notation
@@ -1471,7 +1471,11 @@ Each step is its own PR, and each leaves the system shippable:
    to share thresholds), and this engine's `p_correct` beside the
    external one's under `provenance.engine_provenance`. This is the comparison
    the reserved-key rule exists to keep honest, and the notebook is where it is
-   demonstrated.
+   demonstrated. The comparison half exists as a script rather than a notebook:
+   `tooling/assignment_compare/compare_runs.py` takes the latest completed run
+   of two engines per sample, joins them on `sample_peak_id` and reports where
+   they agree, where they read the same ion as different neutral/adduct pairs,
+   and how that varies with peak intensity (its README lists the outputs).
 7. **`peaky publish`** - the consumer, in the peaky repository (out of this
    repo's scope; listed so the sequence has its end state).
 8. **Demo bundle seeds a completed assignment run** - unblocks the v1
@@ -1544,7 +1548,7 @@ document cites it.
    422 is the only fail-fast worth the name.
 
    The alternative was to port the deployment's notation normalizers
-   (`to_mascope_ion_mech`, `to_custom_element_format`,
+   (`mechanism_key`, `to_custom_element_format`,
    `to_explicit_isotope_format`, the `CUSTOM_ELEMENTS` table) into the SDK and
    add a sample-scoped mechanism accessor. It is not worth it: it would
    duplicate chemistry into a package that depends on nothing but requests,
@@ -1563,6 +1567,14 @@ document cites it.
 
    Consequently, **client-side validation in §8.3 does not claim to pre-empt the
    mechanism 422** - it catches shape errors, not chemistry.
+
+   The exact-string floor matches more than it did when this was decided: since
+   the assignment plan's step 3.3b the listing reads every mechanism in the
+   standard adduct notation (`[M-H]-`, `[M+Br]-`), which is how an external
+   engine writes an adduct, so the common case joins without any normalizer. A
+   caller still writing the legacy spelling (`-H+`) resolves null, as does a
+   labelled reagent written in explicit-isotope form (`[M+[15N]O3]-` against a
+   stored `[M+^NO3]-`).
 
    Downstream of this answer, and genuinely open: the mechanism the deployment
    does *not* know at all - auto-register it on import, or leave

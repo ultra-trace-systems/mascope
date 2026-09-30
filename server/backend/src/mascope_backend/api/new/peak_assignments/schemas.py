@@ -9,12 +9,15 @@ from pydantic import (
     BeforeValidator,
     ConfigDict,
     Field,
+    field_validator,
     model_validator,
 )
 
 from mascope_backend.api.new.peak_assignments.config import (
+    DEFAULT_PROFILE,
     MAX_IMPORT_ROWS_PER_REQUEST,
     PeakAssignmentConfig,
+    known_preset_name,
 )
 from mascope_backend.api.new.peak_assignments.tiers import normalize_tier
 
@@ -45,7 +48,15 @@ AssignmentRole = Literal["M0", "iso_child", "reagent", "artifact", "unassigned"]
 # person's. It is in this shared literal - which types the ledger's read filter
 # AND an imported row - so overrides are filterable in the ledger and survive a
 # round trip through export/import (and, later, a copy between samples).
-AssignmentSource = Literal["database", "untargeted", "manual"]
+#
+# 'reagent' is a peer for the same reason and says something different again:
+# the row came from the reagent pre-pass, which assigns no formula but declares
+# the peak to be the source's own chemistry. Filterable in the ledger because
+# "show me what the source made" is the question that separates a bright
+# residual from a real one.
+# ...or the artifact pre-pass, which says the same about the instrument: the
+# peak is ringing around a very intense neighbour rather than a species.
+AssignmentSource = Literal["database", "untargeted", "manual", "reagent", "artifact"]
 
 # A run holds one row per detected peak, so an unbounded read serializes tens
 # of megabytes through Pydantic on the event loop. Clients page instead; the
@@ -134,13 +145,52 @@ class PeakAssignmentRecord(BaseModel):
     #: flattened because the tier chip displays it beside the tier it produced.
     evidence: float | None = None
     #: Calibrated probability the assignment is correct (provenance.p_correct),
-    #: flattened for the ledger's sortable P(correct) column.
+    #: flattened for the API's and the SDK's readers. The app does not show it
+    #: while the curve behind it is provisional (assignment quality plan, step
+    #: 3.4d).
     p_correct: float | None = None
     #: Whether the calibration curve behind p_correct is provisional.
     p_correct_provisional: bool | None = None
     #: Number of adducts corroborating the compound (provenance.corroboration),
     #: flattened for the ledger's corroboration marker.
     corroboration_adducts: int | None = None
+    #: How many of the run's ionization channels committed this row's neutral
+    #: (provenance.cross_channel.channels), flattened for the same marker. The
+    #: mechanical form of the field above and a superset of it: that one counts
+    #: the adducts a curated compound matched through and is therefore null on
+    #: every untargeted row, which is most of a ledger. Unlike that one, this
+    #: count is NOT folded into ``p_correct`` - it is evidence the run recorded,
+    #: not a score it applied.
+    corroboration_channels: int | None = None
+    #: How many formulas this peak's own evidence could not tell apart
+    #: (provenance.candidate_density): 1 means the winner stood alone at the top
+    #: of the run's arbitration, and more is the size of the tie it won from.
+    #: On a list hit of a run that searched, it counts the formula search's
+    #: closed-shell rivals beside the known set's (provenance.grid_rivals).
+    #: Flattened because it cannot be recovered from the row's ``alternatives``,
+    #: which are capped at the run's ``max_alternatives`` - counting those
+    #: counts the cap. Null on an isotopologue, which was predicted from its
+    #: owner rather than searched, and on an imported row: an external engine may
+    #: publish a count of its own inside ``provenance.engine_provenance``, and
+    #: this column deliberately does not read it - the number means what THIS
+    #: engine's arbitration measured, and peaky's is a different measurement
+    #: rendered as text.
+    candidate_density: int | None = None
+    #: How far this row's mass error sits from the run's own fitted centre at
+    #: the row's m/z, in the run's own fitted widths (provenance.mass_z). Flattened because it is
+    #: the one per-row number a reader scanning a whole ledger needs and cannot
+    #: derive: the ppm error beside it means nothing without the calibration the
+    #: run recorded, and a gated row's tier cannot be audited without it.
+    mass_z: float | None = None
+    #: What a reference list calls this row's formula, as the inspector's
+    #: "listed as" field shows it: ``name`` and ``source`` of the first identity
+    #: the run matched from a list, the ``tags`` its lists carry (``background``)
+    #: and the ``total`` of names matched (``listing.reference_listing``, off
+    #: provenance.reference_identities). None on a row no list names; the
+    #: target library's rows carry no identities and so none either. A row
+    #: derived from the batch ledger carries the listing its member's registry
+    #: entry recorded.
+    reference_listing: dict | None = None
     #: The batch peak this row's peak is a member of: carried by a row derived
     #: from the batch ledger (``fold_view``), looked up on read for a run's own
     #: row; None when the peak is not in the ledger. What the sample ledger
@@ -153,6 +203,17 @@ class PeakAssignmentDetailRecord(PeakAssignmentRecord):
 
     alternatives: list | None = None
     provenance: dict | None = None
+    #: The reference-list compounds ``assigned_formula`` is listed as, looked up
+    #: when the row is read and scoped as Stage A matches
+    #: (``service.with_known_compounds``): name, source, licence, InChIKey, the
+    #: source's own id and its cross-references, at most as many as a run keeps.
+    #: Each alternative a list holds carries the same key. Empty where no list
+    #: holds the formula, and None where the row commits none or the lookup could
+    #: not run.
+    known_compounds: list | None = None
+    #: How many records name ``assigned_formula``, the ones past the cap of
+    #: ``known_compounds`` included; 0 where none does.
+    known_compounds_total: int | None = None
 
 
 class PeakAssignmentsResponse(BaseModel):
@@ -339,6 +400,66 @@ class PeakAssignmentQueryParams(BaseModel):
         ),
     )
     offset: int = Field(0, ge=0, description="Rows to skip, for paging.")
+
+
+class ProfilePreviewQueryParams(BaseModel):
+    """The two chemistry names a preview resolves, as a run config names them."""
+
+    profile: str = Field(
+        DEFAULT_PROFILE,
+        description=(
+            "Reagent profile to resolve: 'auto' reads it off each sample's "
+            "ionization mechanisms, or a preset name."
+        ),
+    )
+    context: str = Field(
+        DEFAULT_PROFILE,
+        description=(
+            "Chemistry context to resolve: 'auto' takes each profile's own, or a "
+            "context name."
+        ),
+    )
+
+    @field_validator("profile", "context")
+    @classmethod
+    def _known_name(cls, value: str, info) -> str:
+        """Refuse a name the run config would refuse, with its message."""
+        return known_preset_name(value, info.field_name)
+
+
+class ProfilePreviewRecord(BaseModel):
+    """The chemistry a run would search some of the requested samples under.
+
+    Samples that resolve alike are one record. A run records the same names on
+    itself (``config.resolved_profile``) once it has started; this is the answer
+    before it starts, from the samples' ionization modes alone.
+    """
+
+    profile: str
+    profile_label: str
+    #: The profile's own polarity; ``""`` for the identity profile.
+    profile_polarity: str
+    requested_profile: str
+    context: str
+    context_label: str
+    requested_context: str
+    #: The neutral grid the profile and context give the untargeted stage.
+    element_ranges: str
+    #: The untargeted stage's m/z window, in ppm, for the samples' instrument
+    #: class (or as the run config sets it).
+    mz_precision_ppm: float
+    #: The polarity of the samples this record counts.
+    polarity: str | None = None
+    samples: int
+
+
+class ProfilePreviewResponse(BaseModel):
+    """What a run config's profile and context resolve to, per distinct answer."""
+
+    status: str = "success"
+    message: str
+    results: int
+    data: list[ProfilePreviewRecord]
 
 
 class AssignSamplePeaksBody(BaseModel):
@@ -1032,7 +1153,7 @@ class SetAssignmentBody(BaseModel):
         description=(
             "Which isotopologue of the ion this peak is: 'M0' (or omitted) for "
             "the main one, otherwise 'M+1', 'M+2' ... A row labelled anything "
-            "but M0 is committed as an `iso_child`, so a satellite is never "
+            "but M0 is committed as an `iso_child`, so an isotopologue is never "
             "recorded as a compound's main peak."
         ),
     )
@@ -1055,25 +1176,25 @@ CurateAssignmentBody = Annotated[
 class AssignmentCurationResponse(BaseModel):
     """The rows a manual override rewrote.
 
-    `data[0]` is the curated row. After it come the satellite rows the same
+    `data[0]` is the curated row. After it come the isotopologue rows the same
     edit moved, in two groups and always in this order:
 
-    1. The isotopologue satellites the override **demoted**: the family of the
+    1. The isotopologues the override **demoted**: the family of the
        formula it replaced, stripped to `unassigned` rather than left claiming
        a compound their M0 no longer carries. Empty when the edit commits the
        formula and mechanism the row already held, since then the family still
        stands for exactly what it stood for.
-    2. The satellites it **restored**: the family of the compound now being
+    2. The isotopologues it **restored**: the family of the compound now being
        committed, put back from the archive an earlier override of this row
        left behind. This is what makes promoting the displaced winner back a
-       real undo rather than one that revives the M0 and leaves its satellites
+       real undo rather than one that revives the M0 and leaves its isotopologues
        unassigned and ownerless.
 
-    A demoted satellite that someone has curated by hand since is deliberately
+    A demoted isotopologue that someone has curated by hand since is deliberately
     not restored, and so is not in `data` either - their judgement is newer
     than the undo. How many were left alone that way is in `message`.
     `message` counts a second group apart from those, and it means the
-    opposite: satellites the undo could not put back at all - the row gone from
+    opposite: isotopologues the undo could not put back at all - the row gone from
     this run, or the state archived for it unusable - which are missing from
     `data` not out of restraint towards a row somebody else now owns but
     because the restore did not reach them. The curated row's

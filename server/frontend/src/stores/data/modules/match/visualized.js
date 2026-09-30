@@ -2,6 +2,7 @@ import { ref, computed, reactive, watch } from 'vue'
 import { defineStore } from 'pinia'
 
 import { api } from '@/api'
+import { monoisotopicIsotope } from '@/lib/chem'
 import { debounce, sampleInstrumentType } from '@/lib/utils'
 
 import { useUi } from '@/stores/ui'
@@ -36,6 +37,20 @@ export const useMatchVisualized = defineStore('app.data.match.visualized', () =>
 
   const instrument = computed(() => sample.focused?.instrument)
   const instrumentType = computed(() => sampleInstrumentType(sample.focused))
+
+  /**
+   * The isotope the match tab opens on: the ion's monoisotopic isotopologue,
+   * which the ion formula names for a labelled ion. The endpoint sorts the
+   * isotopes by m/z ascending, so the first of them is the lightest line - the
+   * M0 of an unlabelled ion, but for a labelled one the reagent's unlabelled
+   * remainder, a couple of percent of the line the ion is measured by.
+   *
+   * Derived here rather than in each view, so the isotope table's marked row and
+   * the spectra chart's first figure cannot answer this differently.
+   */
+  const isotopeMain = computed(() =>
+    monoisotopicIsotope(isotopes.value, ion.value?.target_ion_formula)
+  )
 
   // actions
   /**
@@ -99,6 +114,9 @@ export const useMatchVisualized = defineStore('app.data.match.visualized', () =>
   }
 
   async function load({ sampleId, ionId, collectionId, isotopeId, init } = { init: true }) {
+    // Hold on to the rows being replaced: the colours below are read off them,
+    // and the reset on the next line would otherwise be all the lookup could see.
+    const previous = isotopes.value
     isotopes.value = null
     // Resolve IDs from current state or cache
     const sample_item_id =
@@ -137,7 +155,7 @@ export const useMatchVisualized = defineStore('app.data.match.visualized', () =>
       ...isotope,
       // Preserve existing color if isotope was already loaded
       color:
-        isotopes.value?.find((existing) => existing.target_isotope_id === isotope.target_isotope_id)
+        previous?.find((existing) => existing.target_isotope_id === isotope.target_isotope_id)
           ?.color ?? null,
       // Format mz to 4 decimal places
       mz: isotope.mz.toFixed(4)
@@ -204,6 +222,7 @@ export const useMatchVisualized = defineStore('app.data.match.visualized', () =>
     ion,
     isotopes,
     isotopeSelected,
+    isotopeMain,
     instrument,
     instrumentType,
     // actions

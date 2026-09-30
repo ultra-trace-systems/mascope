@@ -14,6 +14,7 @@ from mascope_reference.adapters import (
     HmdbAdapter,
     LipidMapsAdapter,
     NormanAdapter,
+    PeakListAdapter,
     PubChemAdapter,
 )
 
@@ -30,6 +31,7 @@ _ADAPTERS: dict[str, Adapter] = {
         CoconutAdapter(),
         NormanAdapter(),
         CustomAdapter(),
+        PeakListAdapter(),
     )
 }
 

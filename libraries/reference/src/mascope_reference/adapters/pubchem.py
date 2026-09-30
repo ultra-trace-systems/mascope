@@ -11,6 +11,7 @@ from pathlib import Path
 
 from mascope_reference.adapters._io import read_sdf_records
 from mascope_reference.record import ReferenceRecord
+from mascope_reference.scope import MIRROR_WINDOW
 
 
 class PubChemAdapter:
@@ -18,6 +19,7 @@ class PubChemAdapter:
 
     name = "pubchem"
     license = "public-domain"
+    known_window = MIRROR_WINDOW
 
     def parse(self, path: Path) -> Iterator[ReferenceRecord]:
         for fields in read_sdf_records(path):

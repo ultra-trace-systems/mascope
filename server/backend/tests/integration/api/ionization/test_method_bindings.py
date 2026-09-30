@@ -1,0 +1,665 @@
+"""
+Tests: learning which chemistry an acquisition method runs.
+
+Nothing routes on a method binding yet, so what these pin is what the rows
+say. The two that decide whether they will ever be safe to route on are
+unanimity - a key seen with a second chemistry stops being a candidate - and
+the constant method name, which must not become a binding that outranks the
+filename token.
+"""
+
+import pytest
+import pytest_asyncio
+from sqlalchemy import delete, select
+from test_utils import captured_logs
+
+from mascope_backend.api.controllers.sample.files.process import (
+    bindings as bindings_module,
+)
+from mascope_backend.api.controllers.sample.files.process.bindings import (
+    learn_method_bindings,
+)
+from mascope_backend.db import IonizationMode, MethodBinding
+from mascope_backend.db.id import gen_id
+from mascope_backend.method_keys import (
+    METHOD_KEY_COLUMN,
+    binding_digest,
+    method_key,
+    signature_class,
+)
+
+
+ORBI_METHOD = r"C:\Xcalibur\methods\Nitrate_survey.meth"
+ORBI_STREAM = "FTMS - p NSI Full ms [40.0000-600.0000] R=120000"
+
+
+class _File:
+    """The few fields of a sample file the learner reads."""
+
+    def __init__(
+        self,
+        instrument,
+        method_file=ORBI_METHOD,
+        instrument_type="orbi",
+        sample_file_id=None,
+    ):
+        self.instrument = instrument
+        self.instrument_type = instrument_type
+        self.method_file = method_file
+        self.filename = "a-file.raw"
+        self.sample_file_id = sample_file_id or gen_id()
+
+
+@pytest.fixture
+def instrument():
+    """An instrument name no other test shares.
+
+    The binding key is a digest of the instrument, the method name and the
+    signature class, all of which these tests otherwise hold constant - so
+    without this every test would fold into one row and read the one before
+    it as a second observation.
+    """
+    return f"instrument-{gen_id(8)}"
+
+
+def _streams(key=ORBI_STREAM, polarity="-"):
+    return [{"key": key, "signature": {"polarity": polarity, "ms_order": 1}}]
+
+
+@pytest_asyncio.fixture
+async def modes(async_session_factory):
+    """Two modes of one chemistry and one of another, all negative.
+
+    ``twin`` shares ``nitrate``'s mechanisms under a different name, which is
+    what a deployment that has configured the same reagent twice looks like:
+    the two must read as one chemistry.
+    """
+    made = {
+        "nitrate": IonizationMode(
+            ionization_mode_id=gen_id(),
+            ionization_mode_name=f"Nitrate {gen_id(6)}",
+            ionization_mode_polarity="-",
+            ionization_mechanism_ids=["mech-no3", "mech-deprot"],
+        ),
+        "twin": IonizationMode(
+            ionization_mode_id=gen_id(),
+            ionization_mode_name=f"NO3 {gen_id(6)}",
+            ionization_mode_polarity="-",
+            # The same two, written the other way round: one chemistry.
+            ionization_mechanism_ids=["mech-deprot", "mech-no3"],
+        ),
+        "bromide": IonizationMode(
+            ionization_mode_id=gen_id(),
+            ionization_mode_name=f"Bromide {gen_id(6)}",
+            ionization_mode_polarity="-",
+            ionization_mechanism_ids=["mech-br", "mech-deprot"],
+        ),
+    }
+    async with async_session_factory() as session:
+        session.add_all(list(made.values()))
+        await session.commit()
+    yield made
+    async with async_session_factory() as session:
+        ids = [mode.ionization_mode_id for mode in made.values()]
+        await session.execute(
+            delete(MethodBinding).where(MethodBinding.ionization_mode_id.in_(ids))
+        )
+        await session.execute(
+            delete(IonizationMode).where(IonizationMode.ionization_mode_id.in_(ids))
+        )
+        await session.commit()
+
+
+@pytest_asyncio.fixture
+async def binding_of(async_session_factory):
+    """Read back the binding a file and polarity would key on."""
+
+    async def _read(sample_file, polarity="-", streams=None):
+        signature = signature_class(streams, polarity, sample_file.instrument_type)
+        assert signature is not None, "this file teaches nothing; assert on that"
+        digest = binding_digest(
+            sample_file.instrument,
+            method_key(sample_file.method_file),
+            signature,
+        )
+        async with async_session_factory() as session:
+            return (
+                await session.execute(
+                    select(MethodBinding).where(MethodBinding.binding_key == digest)
+                )
+            ).scalar_one_or_none()
+
+    return _read
+
+
+@pytest.mark.asyncio
+async def test_a_routed_file_teaches_its_method(modes, binding_of, instrument):
+    sample_file = _File(instrument)
+    counts = await learn_method_bindings(
+        sample_file, [modes["nitrate"]], source="token", streams=_streams()
+    )
+
+    assert counts["created"] == 1
+    row = await binding_of(sample_file, streams=_streams())
+    assert row is not None
+    assert row.state == "learned"
+    assert row.source == "token"
+    assert row.ionization_mode_id == modes["nitrate"].ionization_mode_id
+    assert row.method_key == "nitrate_survey.meth"
+    assert row.signature_class == ORBI_STREAM
+    assert row.n_streams == 1
+    assert row.n_disagreements == 0
+    assert len(row.chemistry_keys) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_second_file_of_the_same_method_refreshes_one_row(
+    modes, binding_of, instrument
+):
+    for _ in range(3):
+        await learn_method_bindings(
+            _File(instrument), [modes["nitrate"]], source="token", streams=_streams()
+        )
+
+    row = await binding_of(_File(instrument), streams=_streams())
+    assert row.n_streams == 3
+    assert row.state == "learned"
+    assert row.n_disagreements == 0
+
+
+@pytest.mark.asyncio
+async def test_one_file_saying_the_same_thing_again_counts_once(
+    modes, binding_of, instrument
+):
+    """The pipeline retries a recoverable failure, re-binding each attempt."""
+    sample_file = _File(instrument)
+    outcomes = [
+        await learn_method_bindings(
+            sample_file, [modes["nitrate"]], source="token", streams=_streams()
+        )
+        for _ in range(4)
+    ]
+
+    assert outcomes[0]["created"] == 1
+    assert [o["repeated"] for o in outcomes[1:]] == [1, 1, 1]
+    row = await binding_of(sample_file, streams=_streams())
+    assert row.n_streams == 1
+
+
+@pytest.mark.asyncio
+async def test_a_run_s_recorded_set_survives_another_file_in_between(
+    modes, binding_of, instrument
+):
+    """The case the row-level guard cannot catch.
+
+    A retry is tens of seconds after the attempt that failed, and every
+    constant-name TOF file of an instrument now shares one key per polarity,
+    so another file of the same key landing in between is the likely case -
+    and then a comparison with whatever the row last saw counts the retry
+    again.
+    """
+    retried = _File(instrument)
+    recorded: set[str] = set()
+
+    first = await learn_method_bindings(
+        retried,
+        [modes["nitrate"]],
+        source="token",
+        streams=_streams(),
+        recorded=recorded,
+    )
+    # Another file of the same key, as a concurrent ingest would.
+    await learn_method_bindings(
+        _File(instrument), [modes["nitrate"]], source="token", streams=_streams()
+    )
+    # The retry of the first file's run, carrying the same set.
+    again = await learn_method_bindings(
+        retried,
+        [modes["nitrate"]],
+        source="token",
+        streams=_streams(),
+        recorded=recorded,
+    )
+
+    assert first["created"] == 1
+    assert again["repeated"] == 1
+    row = await binding_of(retried, streams=_streams())
+    # The first file and the one in between, not the retry.
+    assert row.n_streams == 2
+
+
+@pytest.mark.asyncio
+async def test_a_census_less_file_of_a_census_bearing_reader_is_logged(
+    modes, instrument
+):
+    """The converter always writes one, so a missing census is an anomaly.
+
+    An unreadable `.props` is a fault, and the method learns nothing from the
+    file, so this line is the only sign of it.
+    """
+    sample_file = _File(instrument, method_file="nitrate.meth", instrument_type="orbi")
+    with captured_logs("DEBUG") as records:
+        counts = await learn_method_bindings(
+            sample_file, [modes["nitrate"]], source="token", streams=None
+        )
+
+    assert counts["no_signature"] == 1
+    warned = [r["message"] for r in records if r["level"].name == "WARNING"]
+    assert any(".props" in message for message in warned), warned
+    assert any(sample_file.filename in message for message in warned), warned
+
+
+@pytest.mark.asyncio
+async def test_a_file_that_simply_records_no_census_does_not_warn(modes, instrument):
+    """Every Orbitrap file predating the census does, and they get re-processed.
+
+    Warning on each would open a monitoring event per file - this logger
+    forwards WARNING and above - telling someone to check a `.props` that is
+    perfectly fine.
+    """
+    sample_file = _File(instrument, method_file="nitrate.meth", instrument_type="orbi")
+    with captured_logs("DEBUG") as records:
+        counts = await learn_method_bindings(
+            sample_file, [modes["nitrate"]], source="token", streams=[]
+        )
+
+    assert counts["no_signature"] == 1
+    assert [r["message"] for r in records if r["level"].name == "WARNING"] == []
+    assert any("no scan-stream census" in r["message"] for r in records)
+
+
+@pytest.mark.asyncio
+async def test_a_retried_run_reports_an_unreadable_props_once(modes, instrument):
+    """Not once per attempt: the marker rides in the run's recorded set."""
+    sample_file = _File(instrument, method_file="nitrate.meth", instrument_type="orbi")
+    recorded: set[str] = set()
+    with captured_logs("DEBUG") as records:
+        for _ in range(4):
+            await learn_method_bindings(
+                sample_file,
+                [modes["nitrate"]],
+                source="token",
+                streams=None,
+                recorded=recorded,
+            )
+
+    warned = [r["message"] for r in records if r["level"].name == "WARNING"]
+    assert len(warned) == 1, warned
+
+
+@pytest.mark.asyncio
+async def test_one_file_coming_back_with_another_chemistry_is_recorded(
+    modes, binding_of, instrument
+):
+    """A person re-bound it: new information, not a retry."""
+    sample_file = _File(instrument)
+    await learn_method_bindings(
+        sample_file, [modes["nitrate"]], source="token", streams=_streams()
+    )
+    counts = await learn_method_bindings(
+        sample_file, [modes["bromide"]], source="explicit", streams=_streams()
+    )
+
+    assert counts["ambiguous"] == 1
+    row = await binding_of(sample_file, streams=_streams())
+    assert len(row.chemistry_keys) == 2
+    assert row.state == "ambiguous"
+
+
+@pytest.mark.asyncio
+async def test_the_same_chemistry_under_another_name_is_not_a_disagreement(
+    modes, binding_of, instrument
+):
+    # Two files, because one file repeating its own chemistry is a retry and
+    # is not counted at all - which is a different rule, pinned separately.
+    await learn_method_bindings(
+        _File(instrument), [modes["nitrate"]], source="token", streams=_streams()
+    )
+    counts = await learn_method_bindings(
+        _File(instrument), [modes["twin"]], source="token", streams=_streams()
+    )
+
+    assert counts["refreshed"] == 1
+    row = await binding_of(_File(instrument), streams=_streams())
+    assert row.state == "learned"
+    assert len(row.chemistry_keys) == 1
+    # And the row does not wander between two modes that mean the same thing.
+    assert row.ionization_mode_id == modes["nitrate"].ionization_mode_id
+
+
+@pytest.mark.asyncio
+async def test_a_second_chemistry_stops_the_key_routing(modes, binding_of, instrument):
+    sample_file = _File(instrument)
+    await learn_method_bindings(
+        sample_file, [modes["nitrate"]], source="token", streams=_streams()
+    )
+    counts = await learn_method_bindings(
+        sample_file, [modes["bromide"]], source="token", streams=_streams()
+    )
+
+    assert counts["ambiguous"] == 1
+    row = await binding_of(sample_file, streams=_streams())
+    assert row.state == "ambiguous"
+    assert len(row.chemistry_keys) == 2
+    assert row.n_disagreements == 1
+    # Never repointed: the file that disagreed routed on a stronger rung and
+    # was processed correctly, so there is nothing to correct here.
+    assert row.ionization_mode_id == modes["nitrate"].ionization_mode_id
+
+
+@pytest.mark.asyncio
+async def test_an_ambiguous_key_does_not_come_back(modes, binding_of, instrument):
+    sample_file = _File(instrument)
+    for mode in ("nitrate", "bromide", "nitrate", "nitrate"):
+        await learn_method_bindings(
+            sample_file, [modes[mode]], source="token", streams=_streams()
+        )
+
+    row = await binding_of(sample_file, streams=_streams())
+    assert row.state == "ambiguous"
+    assert row.n_disagreements == 1
+
+
+@pytest.mark.asyncio
+async def test_a_constant_method_name_keys_on_the_signature_alone(
+    modes, binding_of, instrument
+):
+    # Tofwerk's: the same name for every acquisition, whatever the reagent.
+    # A binding under it would outrank the token the day the reagent changed.
+    sample_file = _File(
+        instrument, method_file="currentacquisition.ini", instrument_type="tof"
+    )
+    await learn_method_bindings(
+        sample_file, [modes["nitrate"]], source="token", streams=[]
+    )
+
+    row = await binding_of(sample_file)
+    assert row is not None
+    assert row.method_key == ""
+    # The polarity alone. Not the file's mass range: a TofDaq file records the
+    # ends of its mass axis, which move with its calibration, so keying on it
+    # gave nearly every file a binding of its own and unanimity was never
+    # tested across files at all.
+    assert row.signature_class == "-"
+
+
+@pytest.mark.asyncio
+async def test_two_methods_of_one_instrument_key_apart(modes, binding_of, instrument):
+    first = _File(instrument, method_file="nitrate.meth")
+    second = _File(instrument, method_file="bromide.meth")
+    await learn_method_bindings(
+        first, [modes["nitrate"]], source="token", streams=_streams()
+    )
+    await learn_method_bindings(
+        second, [modes["bromide"]], source="token", streams=_streams()
+    )
+
+    assert (await binding_of(first, streams=_streams())).state == "learned"
+    assert (await binding_of(second, streams=_streams())).state == "learned"
+
+
+@pytest.mark.asyncio
+async def test_one_method_on_two_instruments_keys_apart(modes, binding_of, instrument):
+    here = _File(f"{instrument}-A")
+    there = _File(f"{instrument}-B")
+    await learn_method_bindings(
+        here, [modes["nitrate"]], source="token", streams=_streams()
+    )
+    await learn_method_bindings(
+        there, [modes["bromide"]], source="token", streams=_streams()
+    )
+
+    # Two instruments running a method of the same name is not one history.
+    assert (await binding_of(here, streams=_streams())).state == "learned"
+    assert (await binding_of(there, streams=_streams())).state == "learned"
+
+
+@pytest.mark.asyncio
+async def test_a_dual_polarity_file_teaches_one_key_per_polarity(
+    async_session_factory, modes, binding_of, instrument
+):
+    positive = IonizationMode(
+        ionization_mode_id=gen_id(),
+        ionization_mode_name=f"Protonation {gen_id(6)}",
+        ionization_mode_polarity="+",
+        ionization_mechanism_ids=["mech-h"],
+    )
+    async with async_session_factory() as session:
+        session.add(positive)
+        await session.commit()
+
+    sample_file = _File(instrument)
+    streams = _streams() + _streams(
+        key="FTMS + p NSI Full ms [50.0000-750.0000]", polarity="+"
+    )
+    counts = await learn_method_bindings(
+        sample_file, [modes["nitrate"], positive], source="token", streams=streams
+    )
+
+    assert counts["created"] == 2
+    negative_row = await binding_of(sample_file, polarity="-", streams=streams)
+    positive_row = await binding_of(sample_file, polarity="+", streams=streams)
+    assert negative_row.signature_class == ORBI_STREAM
+    assert positive_row.signature_class == "FTMS + p NSI Full ms [50.0000-750.0000]"
+
+    async with async_session_factory() as session:
+        await session.execute(
+            delete(MethodBinding).where(
+                MethodBinding.ionization_mode_id == positive.ionization_mode_id
+            )
+        )
+        await session.execute(
+            delete(IonizationMode).where(
+                IonizationMode.ionization_mode_id == positive.ionization_mode_id
+            )
+        )
+        await session.commit()
+
+
+@pytest.mark.asyncio
+async def test_a_person_s_choice_teaches_the_same_key(modes, binding_of, instrument):
+    sample_file = _File(instrument)
+    await learn_method_bindings(
+        sample_file, [modes["nitrate"]], source="explicit", streams=_streams()
+    )
+
+    row = await binding_of(sample_file, streams=_streams())
+    assert row.source == "explicit"
+    assert row.state == "learned"
+
+
+@pytest.mark.asyncio
+async def test_a_rung_below_the_binding_teaches_nothing(modes, binding_of, instrument):
+    sample_file = _File(instrument)
+    counts = await learn_method_bindings(
+        sample_file, [modes["nitrate"]], source="detected", streams=_streams()
+    )
+
+    assert not any(counts.values()), counts
+    assert await binding_of(sample_file, streams=_streams()) is None
+
+
+@pytest.mark.asyncio
+async def test_off_records_nothing(modes, binding_of, monkeypatch, instrument):
+    monkeypatch.setattr(
+        "mascope_backend.api.controllers.sample.files.process.bindings"
+        ".method_binding_mode",
+        lambda: "off",
+    )
+    sample_file = _File(instrument)
+    counts = await learn_method_bindings(
+        sample_file, [modes["nitrate"]], source="token", streams=_streams()
+    )
+
+    assert not any(counts.values()), counts
+    assert await binding_of(sample_file, streams=_streams()) is None
+
+
+@pytest.mark.asyncio
+async def test_a_failed_commit_does_not_stop_the_retry_recording(
+    modes, binding_of, instrument, monkeypatch
+):
+    """The set must only remember what was actually written.
+
+    Marking a digest recorded before the commit means a rolled-back attempt
+    still poisons the run's set, and the retry skips it as a repeat - so the
+    run never teaches its method at all.
+    """
+    sample_file = _File(instrument)
+    recorded: set[str] = set()
+
+    real_session = bindings_module.async_session
+    failing = {"on": True}
+
+    class _FailingCommit:
+        def __init__(self, inner):
+            self._inner = inner
+
+        async def __aenter__(self):
+            self._session = await self._inner.__aenter__()
+            outer = self
+
+            async def commit():
+                if failing["on"]:
+                    raise RuntimeError("the transaction went away")
+                await type(outer._session).commit(outer._session)
+
+            self._session.commit = commit
+            return self._session
+
+        async def __aexit__(self, *exc):
+            return await self._inner.__aexit__(*exc)
+
+    monkeypatch.setattr(
+        bindings_module, "async_session", lambda: _FailingCommit(real_session())
+    )
+
+    first = await learn_method_bindings(
+        sample_file,
+        [modes["nitrate"]],
+        source="token",
+        streams=_streams(),
+        recorded=recorded,
+    )
+    assert not any(first.values()), first
+
+    failing["on"] = False
+    again = await learn_method_bindings(
+        sample_file,
+        [modes["nitrate"]],
+        source="token",
+        streams=_streams(),
+        recorded=recorded,
+    )
+
+    assert again["created"] == 1, again
+    assert (await binding_of(sample_file, streams=_streams())) is not None
+
+
+@pytest.mark.asyncio
+async def test_a_failure_never_costs_the_file_its_processing(
+    modes, monkeypatch, instrument
+):
+    # Every ingest calls this. A broken recorder must not stop a file being
+    # processed, so the caller is not asked to guard it.
+    monkeypatch.setattr(
+        "mascope_backend.api.controllers.sample.files.process.bindings.async_session",
+        _boom,
+    )
+    counts = await learn_method_bindings(
+        _File(instrument), [modes["nitrate"]], source="token", streams=_streams()
+    )
+    assert not any(counts.values()), counts
+
+
+def _boom(*args, **kwargs):
+    raise RuntimeError("the database is gone")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("polarity", ["+", "-"])
+async def test_a_reader_that_takes_no_census_keys_on_polarity(
+    async_session_factory, polarity, binding_of, instrument
+):
+    """Every file of one TOF method and polarity shares one binding."""
+    mode = IonizationMode(
+        ionization_mode_id=gen_id(),
+        ionization_mode_name=f"Ambient {gen_id(6)}",
+        ionization_mode_polarity=polarity,
+        ionization_mechanism_ids=[polarity],
+    )
+    async with async_session_factory() as session:
+        session.add(mode)
+        await session.commit()
+
+    for _ in range(3):
+        await learn_method_bindings(
+            _File(instrument, method_file="a.meth", instrument_type="tof"),
+            [mode],
+            source="token",
+            streams=[],
+        )
+
+    row = await binding_of(
+        _File(instrument, method_file="a.meth", instrument_type="tof"),
+        polarity=polarity,
+    )
+    assert row.signature_class == polarity
+    assert row.n_streams == 3
+
+    async with async_session_factory() as session:
+        await session.execute(
+            delete(MethodBinding).where(
+                MethodBinding.ionization_mode_id == mode.ionization_mode_id
+            )
+        )
+        await session.execute(
+            delete(IonizationMode).where(
+                IonizationMode.ionization_mode_id == mode.ionization_mode_id
+            )
+        )
+        await session.commit()
+
+
+@pytest.mark.asyncio
+async def test_a_census_less_file_of_a_census_bearing_reader_teaches_nothing(
+    async_session_factory, modes, instrument
+):
+    """Converted before the census existed: what it measured is not known.
+
+    A stand-in would key this method apart from the census that every file
+    converted since carries, and split its history between the two.
+    """
+    sample_file = _File(instrument, method_file="nitrate.meth", instrument_type="orbi")
+    counts = await learn_method_bindings(
+        sample_file, [modes["nitrate"]], source="token", streams=[]
+    )
+
+    assert counts["no_signature"] == 1
+    assert counts["created"] == 0
+    async with async_session_factory() as session:
+        rows = (
+            (
+                await session.execute(
+                    select(MethodBinding).where(MethodBinding.instrument == instrument)
+                )
+            )
+            .scalars()
+            .all()
+        )
+    assert rows == []
+
+
+@pytest.mark.asyncio
+async def test_a_key_longer_than_its_column_is_stored_clipped(
+    modes, binding_of, instrument
+):
+    """The column is clipped; the digest is not, so two such keys differ."""
+    long_name = "m" * (METHOD_KEY_COLUMN + 40) + ".meth"
+    sample_file = _File(instrument, method_file=long_name)
+    await learn_method_bindings(
+        sample_file, [modes["nitrate"]], source="token", streams=_streams()
+    )
+
+    row = await binding_of(sample_file, streams=_streams())
+    assert len(row.method_key) == METHOD_KEY_COLUMN

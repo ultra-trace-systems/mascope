@@ -42,8 +42,15 @@ const family = computed(() => app.data.peakAssignment.peak.familyOf(focusedAssig
 
 // Compact substitution label (e.g. "[13C]") from the isotopologue formula, with
 // the offset label ("M0", "M+1") as the fallback for untargeted isotopologues.
+// Counted from the family's M0, which the ion formula names for a labelled ion
+// (see formatIsotopeFormula): the row's own, or its M0's when it recorded none.
 const isoLabel = (iso) =>
-  iso.isotope_formula ? formatIsotopeFormula(iso.isotope_formula) : iso.isotope_label || null
+  iso.isotope_formula
+    ? formatIsotopeFormula(
+        iso.isotope_formula,
+        iso.ion_formula ?? app.data.peakAssignment.peak.m0Of(iso)?.ion_formula
+      )
+    : iso.isotope_label || null
 
 // The peaks to plot: the assignment family if there is one (so the whole
 // envelope's time course shows), otherwise just the focused peak (so even an
@@ -192,8 +199,15 @@ const layout = computed(() => ({
   margin: { l: 60, r: 10, t: 45, b: 45 },
   dragmode: 'zoom',
   showlegend: true,
-  legend: { x: 1, y: 1 }
+  // Inside the plot, at its top right: outside it, the legend takes its width
+  // off the plot, and the time series no longer lines up with the spectrum
+  // above it, which has the same margins and no legend.
+  legend: { x: 1, xanchor: 'right', y: 1, yanchor: 'top' }
 }))
+
+// For a container that changes width while its height stays: a splitter
+// divider beside the chart, which the `height` watcher never sees.
+defineExpose({ resize: () => plot.value?.resize?.() })
 </script>
 
 <template>

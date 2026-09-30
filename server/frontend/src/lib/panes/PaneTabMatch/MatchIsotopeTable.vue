@@ -17,6 +17,17 @@ const app = useApp()
 const ionFormula = () => app.data.match.visualized.ion?.target_ion_formula
 const loading = computed(() => app.data.match.visualized.isotopes === null)
 
+// The ion's M0, which the store derives (`isotopeMain`), not the first row in
+// m/z order: for a labelled ion those are different lines.
+const mainIsotopeId = computed(() => app.data.match.visualized.isotopeMain?.target_isotope_id)
+
+// The M0's row shows as the one the table opens on. The id is compared only once
+// it exists, so rows without one are not all marked as each other's match.
+const rowClass = (data) =>
+  mainIsotopeId.value != null && data?.target_isotope_id === mainIsotopeId.value
+    ? 'main-isotope-row'
+    : ''
+
 // Compute UI-based match category for display
 const uiMatchCategory = (match) => {
   if (!match) return
@@ -44,8 +55,7 @@ const uiMatchCategory = (match) => {
       selectionMode="single"
       v-model:selection="app.data.match.visualized.isotopeSelected"
       size="small"
-      sortField="formula"
-      :sortOrder="-1"
+      :rowClass="rowClass"
       scrollable
       scrollHeight="flex"
     >
@@ -72,11 +82,12 @@ const uiMatchCategory = (match) => {
         </template>
       </Column>
 
-      <!-- formula Column -->
+      <!-- formula Column: counted from the ion's M0, which the ion formula
+           names for a labelled ion (see formatIsotopeFormula) -->
       <Column header="Substitution" field="formula" style="width: 8rem">
         <template #body="{ data }">
           <span v-tooltip="data.target_isotope_formula">
-            {{ formatIsotopeFormula(data.target_isotope_formula) }}
+            {{ formatIsotopeFormula(data.target_isotope_formula, ionFormula()) }}
           </span>
         </template>
       </Column>
@@ -126,8 +137,13 @@ const uiMatchCategory = (match) => {
   overflow: auto;
 }
 
-/* Make first row appear selected */
-.isotope-table-container :deep(.p-datatable tbody > tr:first-child) {
+/* The ion's M0 row (`rowClass`), which the tab opens on. It carries the selected
+   row's background, and an accent edge on top of it: PrimeVue paints the row the
+   user actually selects with that same background, so without the edge a
+   labelled ion with its remainder selected shows two identically selected rows
+   and nothing saying which one the second spectrum belongs to. */
+.isotope-table-container :deep(.p-datatable tbody > tr.main-isotope-row) {
   background-color: var(--p-datatable-row-selected-background) !important;
+  box-shadow: inset 3px 0 0 0 var(--p-primary-color);
 }
 </style>

@@ -76,6 +76,7 @@ def _anchor(**overrides):
         consensus_formula="C6H12O6",
         consensus_ion_formula="C6H13O6+",
         consensus_tier="assigned",
+        consensus_role=None,
         support_fraction=0.67,
         n_present=3,
         is_ambiguous=0,

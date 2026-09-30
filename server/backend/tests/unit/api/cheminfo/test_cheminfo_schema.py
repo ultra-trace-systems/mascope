@@ -63,3 +63,19 @@ def test_cheminfo_matched_query_invalid():
     # Test invalid m/z type
     with pytest.raises(ValidationError):
         CheminfoMatchedQueryBody(mz="hundred")
+
+
+def test_isotopologues_defaults_to_the_monoisotopic_line(cheminfo_query_data):
+    """A caller that says nothing gets the search it always had."""
+    assert CheminfoQueryBody(**cheminfo_query_data).isotopologues is False
+
+
+def test_isotopologues_can_be_asked_for(cheminfo_matched_query_data):
+    body = CheminfoMatchedQueryBody(**cheminfo_matched_query_data, isotopologues=True)
+    assert body.isotopologues is True
+
+
+@pytest.mark.parametrize("value", ["all", "brightest", 0.01])
+def test_isotopologues_is_a_yes_or_no(cheminfo_query_data, value):
+    with pytest.raises(ValidationError):
+        CheminfoQueryBody(**cheminfo_query_data, isotopologues=value)

@@ -2,6 +2,1331 @@
 
 Notable changes to Mascope are documented here. Versions follow the date-based scheme `YYYY.MM.DD-<hash>` produced by the release workflow, and releases are pinned with a semantic version tag `vX.Y.Z`.
 
+## [Unreleased]
+
+## [1.10.0] - 2026.09.30
+
+### Added
+
+- **Peak assignment names the ions a source makes of itself, each with the
+  literature that names it.** The reagent pre-pass claims, beside a CIMS
+  reagent's own ladder, the ions a discharge makes of the air it ionizes -
+  N2+, N3+, N4+, O2+, NO+ and NO2+ with their hydrates and the protonated
+  water ladder in positive mode; hydroxide, superoxide, ozonide, carbonate,
+  bicarbonate, nitrite and nitrate with their hydrates, and nitrate and
+  bicarbonate clustered with nitric acid in negative, nitrite and nitrate
+  except on an iodide source, where bare nitrate is how nitric acid shows -
+  and the fluoranthene beam's ions on an Orbitrap's EASY-IC source. Every
+  claimed row records the ion's family and the works that name that ion, cited
+  only where a work names it. An ion no work names is claimed only where
+  Mascope's test spectra show it in every file of a set, which the row then
+  says: bromide's trimer, BrO-, bromate and Br-(HBr), urea's protonated
+  trimer, and C14H10+. and C15H12+., two polycyclic aromatic ions the
+  charge-transfer beam carries, so a PAH of those compositions is not read as
+  an analyte on that source. The reagent ladders' other rungs are no longer
+  claimed - the higher halide clusters and their hydrates, the iodine oxide
+  clusters, the bromide precursors' anions, the urea multimers above the
+  trimer and those carrying ammonium, and the fluoranthene dimer. Ions a work
+  reads as an analyte's are left to the stages: ammonia's NH4+ and its
+  hydrates, bromide with HO2, formate and acetate, trifluoroacetate with CF3-
+  and CF3O-, and the cyclic siloxanes. On a wide-window charge-transfer
+  acquisition these ions carry most of the signal, its base peak N3+ among
+  them, which the mode's calibration compounds had matched as an analyte.
+  Fragments of an analyte are claimed after the stages: alpha-pinene's C7H9+,
+  C6H9+, C6H8+., C6H7+, C6H5+ and C5H7+ where a monoterpene is committed, the
+  fragment is no taller than three times the height the literature gives it,
+  and no reading of its ion names a molecule the sample shows on a peak of its
+  own - which keeps protonated benzene benzene's where benzene's radical
+  cation is there. The charge-transfer profile gains a methyl-loss channel,
+  `[M-CH3]+`, gated as hydride abstraction is, whose mechanism Mascope ships
+  with the rest. The offset a thin library is scored at stays read off the
+  reagent's ladder and the beam, not the air's low-mass ions (assignment
+  quality plan, step 3.3).
+
+- **A reference list can say how it reads its compounds, and the shipped
+  cyclic-siloxane list reads them as background.** A list's header may carry
+  `tags`; the one tag, `background`, reaches every compound the list loads,
+  and the peak pane shows it beside the list's name, with what it means on
+  hover. The tier does not weigh it: the siloxanes are a background of most
+  instruments and the analytes of an indoor-air study, and whether they are
+  background in a dataset is the batch's question. The list's data version
+  moves to 2026.09.3, so the next `mascope reference seed` loads the tag
+  (assignment quality plan, step 3.3).
+
+- **The peak browser shows what a reference list calls each formula.** A
+  *listed as* column beside the formula names the compound the run matched
+  from a list, the list it comes from and the list's tags (*background* on
+  the cyclic siloxanes), with how many more names the run matched - what the
+  inspector's reference-list field says, without opening the inspector. The
+  batch ledger shows the same for its consensus formula, where a sample's run
+  matched it from a list; a ledger folded before this shows it once rebuilt.
+  Ledger rows carry it as `reference_listing` in the API (assignment quality
+  plan, step 3.4d).
+
+- **The peak browser can show a neutral as one row.** A compound committed
+  through more than one ionization channel - `[M+H]+` and `[M+NH4]+`, `[M-H]-`
+  and `[M+Br]-` - was a row per ion, scattered through the ledger by m/z.
+  *Group by formula*, in the ledger's view menu, makes it one row headed by its
+  strongest reading, with the other readings a click away under it, each
+  keeping its own tier and verdict. Off by default; the filters apply before
+  the grouping, and the counts still count readings (assignment quality plan,
+  step 3.4d).
+
+- **A reference list is read through the channels a run opens.** Stage A
+  matched a list's compounds only through the ionization mechanisms the
+  sample's mode declares, so on a charge-transfer source, whose mode declares
+  electron transfer alone, nothing named the cyclic siloxanes' methyl-loss
+  ions, their base peaks there, or their protonated molecules beside them. A
+  list is now also read through the secondary channels the run opened for
+  itself, and a reading through one is held to the rules the untargeted
+  search's readings through it are: capped at candidate unless its own
+  isotope lines or the same compound through one of the mode's own channels
+  corroborate it, and, through a channel that needs its compound shown
+  elsewhere, standing only where the sample commits the compound through one
+  of the mode's own channels. The list's compound stays the row's where the
+  partner gate would have moved a search's row to another reading of the ion;
+  that reading stays on the row as a rival, and the run's partner-gate summary
+  counts such rows (`list_kept`). The target library is still read through the
+  mode's mechanisms alone, and a list read through a secondary channel the
+  mode declares keeps its tier. The run-less ingest fold reads the same
+  channels (assignment quality plan, step 3.3f).
+
+- **Peak assignment reads a charge-transfer source.** On an Orbitrap, a mode
+  with no reagent whose mechanisms include electron transfer, `[M]+.` or
+  `[M]-.`, the way that instrument's EASY-IC source is declared, resolves to a
+  charge-transfer profile of its polarity instead of the generic ESI one: a
+  hydrocarbon-sized grid under
+  the ambient-air prior, the fluoranthene beam claimed by the reagent pass, and
+  the channels such a source also runs - hydride abstraction (`[M-H]+`) and proton
+  transfer in positive mode, deprotonation in negative - opened as secondary
+  channels where the spectrum shows the source runs them, or where the
+  acquisition could not have shown it, and capped at candidate without
+  corroboration. A channel the mode declares itself, proton transfer beside
+  electron transfer, is the mode's own and is not capped. Such a channel's reading
+  of an ion electron transfer also reads stands only where the sample commits its
+  molecule through one of the mode's own channels, and between two such
+  readings the one whose molecule the sample shows wins: tropylium reads as
+  toluene less a hydride because toluene is seen through electron transfer, not as
+  protonated C7H6, which the heavier mechanism would otherwise make it. The
+  reading set aside stays on the row, marked as not borne out, and is no
+  rival to the one that was. The rule is read after the mass gate, so a
+  partner is a reading that gate left committed and a reading it lifts stays
+  under that gate's ceiling, and a batch search reads it over its own rows. An
+  electron-transfer mode on any other instrument, an ambient-ion stream, keeps
+  the ESI profile, as does a mode with
+  only protonation or deprotonation. Mascope ships the mechanism of each such
+  channel, `[M-H]+` included. Read on a chamber dataset measured
+  on that source, where the ESI grid with no prior had committed formulas no
+  atmosphere makes on 357 of the negative batch's 373 assigned neutrals
+  (assignment quality plan, step 3.1).
+
+- **Peak assignment can read a formate adduct on a negative reagent source.**
+  The nitrate, 15N-nitrate, bromide and iodide profiles open a formate channel,
+  `[M+HCOO]-`, the way they open carbonate: where the spectrum shows formate, its
+  dimer with formic acid or its cluster with the reagent's acid, and on a
+  nitrate source also where the acquisition starts above every carrier the
+  source makes. A peak that reads both as a deprotonated acid and as the
+  formate adduct of a molecule 46 Da lighter is one ion read two ways, and
+  every acid reads that way: the formate reading is the row's only where the
+  lighter molecule is itself committed through one of the mode's own channels,
+  which also corroborates it, and otherwise the acid reading stands with the
+  formate reading kept on the row as one the sample did not bear out. On a
+  chamber dataset the engine had committed a
+  series of C11 acids at the top tier, a quarter of one batch's assigned
+  intensity, every one of them a C10 oxidation product plus formic acid
+  (assignment quality plan, step 3.2). Mascope ships the channel's `[M+HCOO]-`
+  mechanism.
+
+- **Mascope now ships curated atmospheric CIMS reference lists, and
+  `mascope reference seed` loads them.** The lists:
+  - a monoterpene HOM list (Kang 2021), split into its closed-shell molecules
+    and an opt-in list of its RO and RO2 radicals
+  - mass spectrometry background contaminants (Keller et al. 2008)
+  - atmospheric inorganics, reactive iodine, nitrated phenols,
+    perfluorocarboxylic acids, cyclic siloxanes, organophosphate esters and
+    organophosphorus insecticides
+  - the atmospheric organics example list
+
+- **A reference source now records how its compounds may be matched, and
+  `mascope reference deactivate` takes a source out.**
+  - **What a load records:** a window (the elements a formula may carry, and its
+    largest carbon count and mass), whether its radicals may be matched, and the
+    polarity its compounds are detected in.
+  - **Defaults:** a public database loads at the atmospheric window, C, H, N, O
+    and S with at most 40 carbons and 700 Da. A hand-authored CSV, a list file and
+    the shipped lists load unbounded, and a list file's header names its own
+    radical allowance and polarity. Sources loaded before this release are
+    migrated to the atmospheric window.
+  - **Setting them:** `reference sync` takes `--elements`, `--max-carbon`,
+    `--max-mass`, `--allow-radicals` and `--polarity`. `reference sources` names
+    the window each adapter writes, and `reference status` what each load
+    recorded.
+  - **Seeding:** `reference seed` also brings the row of a list that is already
+    loaded up to date with the list, so running it once after upgrading records
+    each shipped list's own values.
+  - **Deactivating:** `mascope reference deactivate <source>` leaves no version of
+    a source active without deleting it; on a server, run
+    `python -m mascope_backend.db.scripts.reference_deactivate` inside the backend
+    container.
+  - Peak assignment reads all three (see the next entry).
+
+- **Peak assignment matches each reference source inside its own window, and
+  brings in the families no formula grid reaches.** Stage A used to match every
+  loaded reference formula inside one window (C, H, N, O and S, at most 40 carbons
+  and 700 Da), so the siloxane, organophosphate, perfluorinated acid and iodine lists
+  matched nothing.
+  - **Each source's own window,** under a ceiling the sample's chemistry context
+    sets. Every shipped context opens Si, P, F, Cl, Br and I at 40 carbons and
+    700 Da, and the identity context `none` sets none. A database mirror stays at
+    its own window.
+  - **Radicals** only from a source that allows them.
+  - **Polarity:** a source detected in one polarity is not matched against a sample
+    measured in the other.
+  - A formula carries the identities of the sources that admit it and no others,
+    and a run records the ceiling as `known_window` in its resolved profile.
+  - **New lists:** isoprene's gas-phase oxidation products (Wennberg et al. 2018,
+    27 formulas) and the linear siloxanes L3 to L5; the cyclic siloxane list gains D7
+    and D8. Run `reference_seed` after upgrading, so the lists already loaded record
+    their own windows, radical allowances and polarities, and the new lists load.
+
+- **The batch peaks selected in the ledger now show as a filter chip.** In
+  Assignments mode the topbar's chips gained one for the Batch peaks ledger's
+  selection - the species the batch chart plots - named by formula (or m/z) as
+  the chart's legend names them, or counted when there are several, with the
+  names in its tooltip. Removing the chip, or clearing all filters, deselects
+  them. A selection kept while the browser shows targets gets no chip and is
+  left alone, since nothing on screen plots it there.
+
+- **A sample's peaks now carry their own noise estimate over the API.** The
+  `/samples/{id}/peaks` response and the SDK's `get_peaks` frame gained a
+  `signal_to_noise` column beside `mz`, `area` and `height`; it is null
+  throughout for a file that stores no estimate, which is an absent measurement
+  and not a peak measured to be noise-free. The engine already scores an
+  isotope line's absence against the peak's noise rather than against its
+  predicted abundance alone, and it read that estimate off an internal path no
+  API client could reach. An outside engine scoring the same spectrum - a
+  reference run, a re-analysis, a comparison - can now reach it too, and so
+  judge a faint line the way Mascope judges it.
+
+- **The measured mass accuracy of a sample is now part of the public
+  `mascope_tools` library** (`mascope_tools.composition.fit_mass_accuracy` and
+  the width a fit score is judged at, `scoring_sigma_ppm`). The fit answers how
+  well a mass has to agree on this sample - a median and a robust spread over
+  the sample's own matched ions, falling back to the instrument class where too
+  few matched - and every candidate's mass term is scored against it. It lived
+  inside the server, so anything else scoring the same spectrum had to
+  re-implement it, and a comparison between two engines then partly measured
+  the difference between their two fits. There is now one.
+
+- **The untargeted stage now searches every unexplained peak, not the 300 most
+  intense.** The cap was there because the composition search cost grew with the
+  number of peaks fed to it, and on a dense spectrum it left most of the sample
+  unsearched: on one gate set 4,181 of the peaks the reference engine commits an
+  analyte on were never offered to the stage at all. A blank ledger row then
+  meant one of two things - searched and unexplained, or never looked at - and
+  nothing recorded which. The cap is now unset by default, the 5,000-peak
+  ceiling stays as the hard bound on what a single request can schedule, and
+  peaks left unsearched for either reason are recorded rather than merely
+  omitted: a per-sample run stamps `search_scope` on its own config, and a batch
+  search - which has one config for many samples - counts them in its result.
+  Both log it. Setting the cap explicitly still works, for a caller that wants a
+  run cut short.
+
+- **An isotope envelope is now scored against the whole spectrum, and an
+  isotopologue belongs to the peak that owns it.** The untargeted stage used to
+  hand the composition finder only the peaks it was about to search, and that
+  set was capped at the 300 most intense unexplained peaks - so an ion's
+  predicted isotope pattern was checked against at most 300 peaks, a fraction
+  of a dense spectrum, and an isotopologue outside that set simply was not found.
+  The peak it sits on was then searched on its own account and got a
+  composition of its own, which is how an engine ends up committing an analyte
+  on a peak that is another ion's isotopologue. The whole peak list is now the
+  pattern context while the same remainder is what gets searched, so an
+  isotopologue is found wherever it sits - below the stage's intensity threshold,
+  past its cap, or on a peak an earlier pass already owns - at no extra search
+  cost, because the cost scales with what is enumerated rather than with what
+  is looked at. Isotopologue rows are also written by the monoisotopic row that
+  claims them and name it from the start: an isotopologue whose ion commits no
+  monoisotopic peak is not written at all, and its peak stays unassigned rather
+  than becoming a row that says a peak belongs to an envelope the ledger never
+  committed. Step 1.5 of `docs/dev/assignment_quality_plan.md`.
+
+- **Instrument ringing is now labelled as ringing.** A very intense centroid in
+  an FT spectrum leaves sidelobes around itself, a fraction of a percent of its
+  height a few tens of ppm to either side. The peak detector already removes
+  the ones it can see when it detects them, but a run averages one sample's own
+  time window rather than the file's summed heights, and a ratio that failed
+  the test there can pass it here. Those peaks are now claimed before either
+  assignment stage and written with `role = artifact` - no assigned formula, so
+  they weigh on no tier and no cross-sample vote, and no ion formula either,
+  because a sidelobe is not an ion and naming one would invent a species to
+  explain a detector's response. The pass runs on FT data only, matching the
+  peak detector's own decision not to look for sidelobes in TOF spectra.
+
+- **The ions the source makes are now recognised as the source's, not the
+  sample's.** A chemical-ionization reagent clusters with itself, with water
+  and with the acid it sheds, and those ions are the brightest peaks in the
+  spectrum - the top ten of every sample on the assignment gate, most of the
+  total signal - without being sample chemistry at all. A reagent library is
+  now matched against the peak list before either assignment stage runs, and
+  the peaks it claims are taken out of what those stages may assign. They come
+  back as rows with `role = reagent` and `source = reagent`, naming the ion
+  formula, which is known exactly, and no assigned formula, because there is no
+  analyte: such a row counts toward no cross-sample formula vote and no
+  confidence tier, so a bright source background stops reading as either an
+  unexplained residual or - the worse failure - a phantom analyte that an
+  untargeted search happily fits a neutral to. Isotopologues of a
+  claimed ion are claimed too, predicted from the ion's own envelope and gated
+  on intensity, so a peak with an analyte co-eluting on top of it is left
+  alone. What a claim is matched against is the sample's own reagent ions
+  rather than a fixed tolerance: the source's base ions are found first and say
+  where that spectrum puts the reagent's masses, and every other rung is then
+  claimed at the instrument's own precision against a mass they have corrected.
+  That keeps a genuinely miscalibrated ladder - one gate set's bromide ions sit
+  about 10 ppm out across every rung - while refusing an ambient compound that
+  merely lands near a reagent mass. What the library will *not* claim matters
+  as much as what it will: a
+  cluster of the reagent with anything the sample supplied IS the analyte's
+  adduct channel, so the reagent's organic-acid clusters stay out, the urea
+  monomer's ammonium adduct stays out because that ion is ambient ammonia, and
+  the iodine oxides stay out because they are iodic acid - the signature
+  analyte of an iodide deployment - while the bromine oxides are reagent and
+  are claimed. Step 1.4 of `docs/dev/assignment_quality_plan.md`.
+
+- **The untargeted search decides which reading of an ion wins, instead of
+  inheriting the order it enumerated the mechanisms in.** Compositions that
+  combine into the same ion - `X.[M+NH4]+` and `(X+NH3).[M+H]+`, or a reagent
+  adduct and the deprotonated reagent-acid adduct of the same anion - are one
+  hypothesis split two ways rather than two candidates: they sit at one mass,
+  predict one isotope envelope and score identically, so no spectrum can
+  separate them. They are now collapsed into one family, scored once, and
+  ranked by policy. First the neutral should be a molecule: where the fragment
+  between two readings carries a half-integer DBE of its own, as HCO3 does, one
+  of the two neutrals is an odd-electron radical and the molecule is by far the
+  likelier analyte. Then, among the readings that key does not separate -
+  the ammonium and reagent-cluster families, where both neutrals are molecules
+  and it says nothing - the reading whose mechanism carries the mass wins,
+  because that is the chemistry a chemical-ionization source runs, and reading
+  the reagent into the analyte's own formula invents a neutral nobody sampled.
+  Neither key is a filter: where a radical is the only reading of an ion it is
+  still committed, which is what a nitrate source measuring RO2 requires. The
+  displaced readings are kept on the committed row as alternatives flagged
+  `same_ion`, carrying the winner's own fit and mass error because the ion is
+  the same one, so the ledger records that the split was a choice and says what
+  the alternative was. Hypotheses the measurement *can* separate break their
+  ties on the data at every step - score, then mass error, then chemical
+  plausibility, then the formula - and never on row order. Step 1.3 of
+  `docs/dev/assignment_quality_plan.md`.
+
+- **The untargeted stage searches the adduct channels the source is actually
+  running, and only those.** A reagent profile now carries the secondary
+  channels its chemistry can produce - ammonium for the urea and ESI presets,
+  carbonate and dibromide for bromide, carbonate for nitrate, sodium and
+  potassium in the ESI presets only - and each is switched on per sample by its
+  own fingerprint: the carrier's cluster ions matched against that spectrum
+  above an intensity floor. A channel the source does not show is not searched
+  however the mechanism panel is configured, which is what keeps an adduct
+  channel from absorbing unexplained mass; on the measured spectra the ammonium
+  cluster is present and sodium's is not. A channel the spectrum shows but the
+  deployment has no mechanism row for is reported instead, since only that one
+  is worth fixing by configuration. An opportunistic channel is additive: it
+  takes peaks the declared chemistry leaves unexplained and never displaces a
+  reading a declared mechanism won, and a winner on one is capped at
+  `candidate` unless a confirmed isotopologue or the same neutral on a declared
+  channel corroborates it. The run records every channel considered, whether it
+  was found, on which cluster ion, how far off its mass and at what fraction of
+  the base peak. A channel whose probes all lie outside the acquisition's own
+  mass range is recorded as unobservable rather than absent - the spectrum was
+  never asked - and each channel declares what to do then; the nitrate profiles
+  default their carbonate channel on, because that source makes no carbonate
+  carrier above m/z 126 and an acquisition starting higher can never show it.
+  Carbonate's probes include its clusters with the reagent's own acid, built
+  from the profile's reagent formula so a labelled reagent's label follows into
+  them, which brings the channel within reach of a window starting at m/z 120.
+  Step 1.2 of `docs/dev/assignment_quality_plan.md`.
+
+- **The untargeted assignment stage searches the chemistry the sample was
+  measured with, instead of one universal element box.** A run now resolves an
+  *assignment profile*: a reagent profile (bromide, uronium, nitrate,
+  15N-nitrate, iodide, or the generic ESI preset of the polarity) read off the
+  sample's ionization mechanisms, paired with a chemistry context (ambient air,
+  chamber, indoor air, headspace, combustion, water, food, uronium) that says
+  what was sampled. The pair decides the element grid the search enumerates -
+  the reagent's grid narrowed by the matrix's heteroatom caps, with carbon
+  floored at one - the m/z window (3 ppm on an Orbitrap, 20 ppm on a TOF,
+  instead of 10 ppm everywhere), and a set of Van Krevelen ratio windows that
+  gate candidates on effective counts (silicon counting as carbon, halogens as
+  hydrogen) above a three-carbon floor. That replaces
+  `C0-100 H0-100 O0-100 N0-100` at 10 ppm with a search that cannot reach the
+  nitrogen-stuffed, oxygen-lattice and carbon-free formulas which made up a
+  measured 13-17% of committed answers. The run config gains `profile` and
+  `context` (both `auto` by default, `none` for the identity profile that
+  reproduces the previous behaviour exactly), `formula_ranges` and
+  `mz_precision_ppm` become optional overrides, and the resolved chemistry is
+  snapshotted onto the run so a result stays readable after a preset is
+  revised. Presets are library data in `mascope_tools.composition.profiles`,
+  ported from the reference engine's own profiles; step 1.1 of
+  `docs/dev/assignment_quality_plan.md`.
+
+- **Two peak-assignment engines can be compared peak by peak on the same
+  samples.** `tooling/assignment_compare/compare_runs.py` reads, per sample,
+  the latest completed run of each engine through the SDK - the in-app run
+  and one published through `runs/import` - joins the two ledgers on
+  `sample_peak_id` and classifies every peak: the same formula, the same ion
+  under another neutral/adduct split, a different formula, or committed by
+  one engine only. Its summary carries each engine's tiers, the share of its
+  assigned rows the other engine does not confirm, mass-error statistics, a
+  chemistry sanity check on the committed formulas and agreement by peak
+  intensity, as JSON and as Markdown tables. `--engine-b-before <timestamp>`
+  reads the second engine's newest run created before that instant instead,
+  so a reference that has been re-published can still be read as it was.
+
+- **The peak inspector names the ionization and what a reference list calls
+  the formula.** Its heading names the ionization mechanism the ion was read
+  through, after the formula. Above the evidence it shows the reference-list
+  compound the run matched the formula from, or - marked *potential* - a
+  compound a list holds for a formula the run reached through the formula
+  search. The same names appear beside the other readings of the ion and
+  beside the close alternatives, and a formula many compounds share says how
+  many. The assignment detail endpoint returns them as `known_compounds`, with
+  `known_compounds_total`, on the row and on each alternative a list holds.
+  They are scoped as the run matches: the sample's polarity, each source's
+  window under the run's ceiling, radicals only from a source that allows
+  them, and the licences the deployment matches against.
+
+- **Mascope now ships the chemistries it knows.** Every deployment named its
+  ionization modes itself, so one reagent is spelled many ways and nothing
+  could refer to "nitrate" as such - across the production fleet, fifty
+  separate mode rows mean uronium and twenty-six mean nitrate. Eleven
+  system-owned modes now carry one identity per chemistry, the same on every
+  server: nitrate and 15N-labelled nitrate, bromide, iodide, deprotonation and
+  ambient for negative polarity; uronium, ammonium and 15N-labelled ammonium,
+  protonation and ambient for positive. Routing a file by the acquisition
+  method it was measured under needs one such identity to route to.
+
+  They are created at start, after the ionization mechanisms they declare,
+  which Mascope ships too.
+
+  A seeded mode changes nothing on its own. It carries no filename token, so
+  no file name routes to one, and no target collections, so none calibrates or
+  matches anything; the ionization settings leave it out until the deployment
+  adopts it by giving it a calibration collection, after which it is listed
+  like any other mode. Its name, token, polarity and mechanisms are what say
+  which chemistry it is and cannot be edited, and it cannot be deleted; its
+  collections are the deployment's own. Modes a deployment made are untouched,
+  keep their names, and are still listed, edited and deleted as before.
+
+- **Mascope ships the ionization mechanisms its chemistry needs.** A run
+  searches a channel only where the server holds its mechanism, and a fresh
+  server held none: it searched nothing an operator had not typed in, and
+  seeded none of the shipped ionization modes either, since a mode is seeded
+  only where its mechanisms exist. Every server now creates at start each
+  mechanism the shipped modes declare and every secondary channel an
+  assignment profile can open - hydride abstraction, methyl loss, proton
+  transfer, deprotonation, carbonate, formate, the dibromide and diiodide
+  clusters, ammonium, sodium and potassium - and then all eleven shipped
+  modes, so a fresh server searches under the same chemistry as any other from
+  its first run (assignment quality plan, step 3.3e).
+
+  A mechanism is created the way one added under Ionization mechanisms is,
+  with the target ions of every compound already in the library, so the first
+  start after the upgrade takes longer on a server with a large library, once:
+  about a minute and a half on the largest library measured, and each
+  mechanism logs its count and time. The backend's healthcheck gives a start
+  five minutes before a failed probe counts, where it gave thirty seconds,
+  so that a slow first start is not reported unhealthy and the services that
+  wait on it are not stopped. A mechanism the server already holds, in either
+  spelling, keeps its own row and id.
+
+  The shipped mechanisms cannot be deleted, since the next start would only
+  create them again, and the ionization settings show a lock in place of
+  their delete button. A row of a shipped mechanism stored under the wrong
+  polarity, which no mode can hold, is reported at start and can be deleted,
+  after which the next start creates the mechanism as shipped.
+
+- **Mascope now learns which chemistry each acquisition method runs.** Every
+  file that routes - by its filename token, or because someone chose its mode -
+  says one true thing about the method it was measured under, and that is now
+  recorded against the method rather than thrown away. The aim is a file that
+  routes on its method alone, so that a site can stop naming its files to say
+  what the reagent was.
+
+  **Nothing routes on this yet.** The records are written and not read: what
+  they would have decided has to be compared with what the tokens decided, on
+  real traffic, before anything is switched over. The setting
+  `backend.method_binding` is `"shadow"` by default, which is that; `"off"`
+  records nothing.
+
+  Two rules decide what can ever be trusted to route, and both are already in
+  force. A method is only a routing key while everything it has been seen with
+  agrees on one chemistry - seen with a second, it stops being a candidate and
+  the token keeps deciding, which on the production fleet holds back about one
+  Orbitrap method in forty. And a configuration name an instrument reports for
+  every acquisition it takes, whatever the reagent, is treated as no method
+  name at all, because a binding learned from one would outrank the token the
+  day the reagent changed.
+
+  A server that has been running for years already holds the evidence. Run
+  `mascope prod db script run backfill_method_bindings` (`DRY_RUN=1` first) to
+  read it out of the files already routed, instead of waiting for the next few
+  weeks of uploads.
+
+- **The scan stream census can be filled in for files converted before it
+  existed.** A method binding is keyed on what a file's scans measured, and
+  that census is recorded once, when a file is converted. A file converted
+  before it shipped carries none, and `backfill_method_bindings` skips exactly
+  those - which on a server that has been running for years is its whole
+  Orbitrap history, the part where a method name tells chemistries apart at
+  all. The evidence is still on disk, in the raw data kept beside each
+  converted sample, so `mascope prod db script run backfill_scan_stream_census`
+  (`DRY_RUN=1` first) reopens the files that carry no census and records what
+  they measured. Nothing is re-converted, no sample changes and no database row
+  is touched. Reading a raw file per census is slow, so the run is bounded and
+  resumable: a file that has a census is never reopened, `CENSUS_LIMIT=<n>`
+  caps how many files one run reads, and a file that could not be filled is
+  marked so the next run moves past it instead of retrying the same head of
+  the list - `CENSUS_RETRY=1` tries those again once whatever stopped them has
+  been dealt with. `DRY_RUN=1` reports the counts and reads a handful of files
+  to show what a census looks like, rather than reading them all to write
+  none. Run it before the method binding backfill, or run that one again
+  afterwards.
+
+- **An ionization mode can belong to one instrument.** A mode left as "Every
+  instrument" behaves exactly as every mode did before. Set to an instrument, its
+  filename token is only matched against that instrument's files - so two
+  instruments can use the same token in their file names and mean a different
+  chemistry by it, and a mode only ever run on one instrument stops competing
+  for every other instrument's names. Where an instrument has its own mode for a
+  polarity and a shared mode also matches, the instrument's own wins as long as
+  its token covers the shared one - the same token, or a longer one - so one
+  scoped mode can be added without scoping everything else to keep the tokens
+  apart. The other way round is refused when it is set up: a shared token more
+  specific than an instrument's own would match the same files in that polarity
+  and leave them waiting for someone. A name carrying two unrelated tokens is
+  still left for someone to decide.
+
+  A token now has to be unique among the modes that could match one file rather
+  than unique outright: one unscoped mode per token, one per token and
+  instrument, and a scoped mode may share a token with an unscoped one.
+  Overlapping tokens stay refused whatever their polarities, as they were
+  before. The instrument is matched however its name was recorded, since the
+  same instrument arrives spelled more than one way. Set it under Ionization
+  settings, on a mode that has already routed files as well. It does not
+  restrict a mode someone picks by hand, and it cannot be set on a mode Mascope
+  ships: those carry no filename token, so a scope could not change how anything
+  routes.
+
+- **The composition search finds a compound at any of its isotopologue
+  lines.** *Find more* read the searched peak as the monoisotopic line of every
+  candidate's ion, so a peak that is another line of a compound's ion never
+  found that compound: a dibromide shows its 79Br81Br line twice as bright as
+  its monoisotopic one, and a peak one unit above a compound is its 13C line.
+  The search now reads the peak as any line of each candidate's ion at least 1%
+  of the brightest - a 13C, 34S, 37Cl or 18O line, or a 15N reagent's unlabelled
+  remainder one unit below its labelled line. A candidate found at another line
+  is tagged with it (`[13C]`, `[81Br]`), its m/z error is against that line, and
+  the hand button assigns the peak as that isotopologue of the compound. That
+  finds about twice as many candidates, most of which score low because the
+  spectrum lacks their monoisotopic line. The API's composition search reads
+  every line when asked with `isotopologues: true` (the default, false, keeps the
+  monoisotopic line alone); a result read at another line has that line's m/z
+  as its `target_isotope_mz`.
+
+### Changed
+
+- **Peak assignment still ships off, and the assignment work in these notes
+  stays dark until a deployment opts in.** The engine at 0.5.0 with tiering
+  rule set 9, the chemistry profiles, the reference seed lists and the
+  inspector are all behind `peak_assignment`, which has been `false` since
+  1.8.0: with it off the assignment views stay hidden, the write routes answer
+  403 and nothing is assigned on ingest, so an upgrade changes nothing here by
+  itself. Targeted matching is unchanged either way. A deployment that wants
+  the feature sets `peak_assignment = true` under `[meta]` in its env config;
+  the shipped reference lists load only when `reference seed` is run.
+
+- **The app no longer shows the calibrated probability, and it says the tiers
+  are provisional.** The peak browser's P(correct) column and the peak
+  inspector's P(correct) row are gone while the calibration curve behind them
+  is provisional: a probability read off a curve nobody has verified is the
+  one number on the page a reader would take at its word. The engine still
+  computes it, and the API and the SDK still serve `p_correct` and
+  `p_correct_provisional`. The channel count that sat beside it moves beside
+  the ionization, whose channels it counts. The tier column of both ledgers
+  and the inspector's tier row carry a *provisional* mark saying the tiering
+  rules are still being developed and a peak's tier can change between engine
+  versions; it goes when those rules are settled (assignment quality plan,
+  step 3.4d).
+
+- **Ionization mechanisms are written in the standard adduct notation.**
+  `[M+H]+`, `[M-H]-`, `[M+Br]-`, `[M-H]+`, `[M+CH4N2O+H]+`, `[M]+.`: what is
+  added to or removed from the molecule inside the brackets, and the ion's own
+  charge after them. The mechanism editor, the inspector, the match tables, the
+  exports and the SDK show every mechanism that way, one stored in the older
+  spelling included. That spelling, `<operation><moiety><moiety charge>`, put
+  the charge of the species moved last rather than the ion's (`-H+` is
+  `[M-H]-`, and `-H-` is `[M-H]+`); it is still accepted when a mechanism is
+  created, until 2.0, and is stored in the standard one, and a mechanism the
+  deployment already holds in the other spelling is refused as a duplicate.
+  The terms are kept in alphabetical order, so a mechanism has one spelling
+  however it is typed: `[M+H+CH4N2O]+` is stored as `[M+CH4N2O+H]+`, and
+  refused where that is already held. The editor now says what is wrong with a
+  mechanism as it is typed, or the spelling it will be stored in. A stored
+  mechanism in neither spelling, a free-text label an older validator let
+  through, is left out of a peak assignment run and reported once in the log
+  rather than failing the run. What neither spelling can say is refused rather
+  than approximated: a dimer (`[2M+H]+`), a doubly charged ion (`[M+2H]2+`) or
+  a mechanism that both adds and removes (`[M+Na-2H]-`). The shipped
+  chemistries, the chemistry profiles' fingerprints and secondary channels and
+  the provisional corroboration weights are spelled in it, and a weight keyed
+  in either spelling applies to an adduct written in the other; where a
+  calibration holds both spellings of one adduct, the standard one applies
+  (assignment quality plan, step 3.3b). **For callers of
+  `mascope_tools`:** `parse_ionization` reads both notations and refuses a
+  string in neither, such as `H+` with no leading sign, which it used to read as
+  deprotonation; `mascope_tools.composition.mechanism_notation` converts between
+  the two.
+- **Upgrading rewrites every stored mechanism in the standard adduct
+  notation**, and the keys of a stored calibration's corroboration weights
+  with them; a downgrade writes them back in the older spelling. A row is
+  written as the application reads it, stripped and with its terms in order,
+  and every spelling deployments store is already written that way, so a
+  round trip leaves those rows as they were. A mechanism that reads as
+  neither spelling, and two rows of one mechanism, are left as they are and
+  named in the migration's output with what to do; until two such rows are
+  merged, a peak assignment run searches the mechanism once. Where a
+  calibration holds both spellings of one adduct, the standard one is kept,
+  as it is the one that applies. What a run recorded about itself keeps the
+  spelling it was recorded in and is shown in the standard one (assignment
+  quality plan, step 3.3b).
+
+- **Between two readings of an ion that the sample both bears out, the one it
+  shows more strongly wins.** On a charge-transfer source, an ion read through
+  proton transfer and through hydride abstraction as two molecules that the
+  sample also commits through electron transfer is now read as the molecule the
+  sample shows more strongly - on the brighter peak, among the rows that commit
+  it at candidate or better through the mode's own channels - instead of the one
+  whose mechanism carries more mass. On a certified mixture the benzyl cation
+  had read as protonated C7H6, which the mixture does not hold, because a trace
+  of C7H6 is seen beside toluene at 27 to 31 times its height; it now reads as
+  toluene less a hydride. The weaker reading stays on the row. Where its
+  molecule's peak is a tenth as bright or less, it is marked `outweighed` and
+  the ion counts as settled (`same_ion_settled`, by `partner`); closer than
+  that, the row is held at candidate with it named (`ambiguous_adduct`). The
+  row records what the two were weighed on in `provenance.partner_gate.contest`,
+  and the run what the gate decided and at what margin in `config.partner_gate`.
+  A reading through one of the mode's own channels keeps its formula. The same
+  weighing reaches every row: a second channel no longer settles a reading whose
+  rival molecule the sample also commits through one of the mode's own channels,
+  unless the sample shows the row's own molecule ten times as brightly or more,
+  so such a row is held at candidate and the reason says the sample shows the
+  rival too. Another peak of the same ion is no observation of either molecule.
+  So on an ESI source, whose one channel of its own is protonation, the row's
+  molecule has nothing through that channel to be weighed on, and such a row is
+  held at candidate however faint the rival. A formula a target library writes
+  its own way, such as `C6H4(CH3)2`, now counts as the molecule it spells when
+  channels are compared. `config.tiering` records rule set 7 (assignment
+  quality plan, step 3.1c).
+
+- **A rival has to be shown ten times as strongly to doubt a reading through
+  one of the mode's own channels.** The rule above held such a reading at
+  candidate wherever the sample also showed the rival's molecule, unless the
+  row's own molecule was shown ten times as brightly. It now reads the same
+  margin from the other side: a reading through a channel the mode declares is
+  settled by its second channel unless the sample shows the rival's molecule
+  ten times as brightly as the row's own or more, or shows the row's own
+  molecule through no other of the mode's channels. On a nitrate source,
+  pinonic acid deprotonated, whose formate reading's molecule nopinone is seen
+  through the nitrate adduct at about twice the acid's own, is assigned again,
+  while glycolic acid, against formaldehyde seen a hundred times as brightly,
+  stays a candidate with the rival named. The row records the rival it weighed
+  with the ratio (`same_ion_settled`, by `second_channel`, with `ratio`), its
+  reason says the sample shows the rival too, and the run counts such rows
+  (`shown_rival_weighed` in `config.cross_channel`). A reading through a
+  channel the run opened for itself keeps the contest's margin, a declared
+  channel keeps its formula as before, and an ESI row whose molecule is seen
+  through no other channel of the mode's own is still held however faint the
+  rival. `config.tiering` records rule set 8 (assignment quality plan, step
+  3.1d).
+
+- **A formula the search found on one peak is a candidate at most.** The top
+  tier now needs something besides the formula's one peak to have seen it: a
+  line of its own isotope pattern committed with it, a second ionization
+  channel committing the same molecule, or a list it was matched from. A row
+  the formula search elected with none of the three is held at candidate with
+  the reason `lone_peak` (*one peak only* in the inspector), whatever its fit:
+  a faint line matches its isotope pattern perfectly by having no other line to
+  match, and on a TOF its mass error is judged against a width of several ppm.
+  An isotope line whose mass error does not follow the row's does not count,
+  since the mass gate already reads it as another peak inside the matching
+  window. A row that keeps the top tier says what it stands on, `second_line`
+  naming the line, `corroborated` the channels or `on_a_list` the list's
+  compound, so every assigned row names its second observation. The rows it
+  takes are the dim ones: on a customer chamber dataset they were 5 to 44% of a
+  batch's assigned rows and under 5% of its assigned intensity.
+  `config.tiering` records rule set 9 (assignment quality plan, step 3.4b).
+
+- **The peak inspector is more compact and has a column of its own, and the
+  tier chip names the tier alone.**
+  - **Find more**, the composition search, starts from the focused sample's
+    chemistry profile: left empty, its m/z precision and formula range are
+    the window and the grid a run of the sample would search at, and the
+    fields show them.
+  - **The time series** draws its legend inside the plot, so it lines up
+    with the spectrum above it.
+  - **Hover text:** every key of the evidence grid, the line under the
+    formula, the isotopologue columns, the verdict buttons and *use this*
+    say what they are, and the tier chip says what its tier means. The
+    help cards are shorter, and *Why this tier* has one of its own.
+  - **The Sample tab** puts the inspector in a column of its own, the tab's
+    full height, beside the spectrum over the time series (or the
+    composition search). The column's width is remembered, and the
+    spectrum's share of the rows keeps the split set before.
+  - **The tier chip** no longer prints the evidence beside the tier as a
+    percentage, which read as the chance that the assignment is right.
+    Hovering the chip gives the evidence, and the inspector shows it beside
+    the fit score.
+  - **The inspector** names a row's isotope once, in the line under the
+    formula, rather than again in the evidence grid.
+  - **Verifying in the inspector:** each verdict opens a small dialog for an
+    optional note, and *Confirm*'s also asks for the evidence level. The
+    card no longer shows either field for every peak.
+
+- **The formula search can take a peak a reference list matched.** A run
+  that searches formulas now holds an election on every peak it assigned
+  from a reference list. The list's compound is one candidate beside the
+  formulas the element ranges hold for that mass, and its place on the list
+  counts for it: a closed-shell rival takes the peak only where its
+  evidence, fit times chemical plausibility, is more than twice the
+  compound's and ahead of it by more than a tie, and where it also explains
+  the compound's own isotope lines that track it, such as a siloxane's
+  silicon lines. The rival's row then lists the compound first among its
+  alternatives, marked `displaced_by_rival`, so promoting it restores the
+  list's reading, and records the weighing in `provenance.list_reading`. The
+  compound's isotopologues leave with it. A compound of the sample's target
+  library keeps its peak, and its rivals still count. A kept compound names
+  the rival it was held against in `provenance.grid_rivals.held_against`,
+  and the run counts the peaks rivals took and the ones they did not in
+  `search_scope.list_hits`.
+
+- **A compound matched from a list meets the formula search's rivals for its
+  peak.** When a run searches formulas, it now also asks the search about
+  every peak it assigned from the target library or a reference list: the
+  formulas the element ranges hold for that mass are scored beside the
+  list's, and the closed-shell ones the evidence cannot tell apart are added
+  to the row's candidate density. The density rule then holds such a row at
+  candidate unless a second ionization channel committed the same neutral,
+  and its reason names the rivals. Radicals do not count. The row records
+  `provenance.grid_rivals`, and the run records `search_scope.list_hits`.
+
+- **The peak assignment engine is version 0.5.0**, and results from it are
+  not comparable with a 0.4.0 run of the same sample. The version is stamped
+  on every run this server computes, so the two are told apart in the run
+  selector and in any export; a sample assigned before the upgrade keeps its
+  old run and is re-assigned to get the new one. What changed under it is how
+  a committed row earns its tier: the fit judges a candidate at the sample's
+  own mass width and noise, the mass gate calibrates on the run's own
+  commits, a neutral seen through two channels corroborates itself, a
+  compound matched from a list competes with the formula search, a peak an
+  assigned compound's isotope pattern predicts is read as its isotopologue,
+  and every committed row says why it holds its tier. Measured against a
+  reference engine on 43 samples from four instruments and four ionization
+  chemistries, the share of assigned rows the reference contradicts is 0.7 to
+  3.8% on the Orbitrap sets and 2.7 to 5.1% on the time-of-flight sets, and
+  on every set the assigned rows the reference commits on are confirmed to
+  within 20%.
+
+- **A halogen molecule read through a halide is no longer held at assigned.**
+  IBr read through bromide is the polyhalide anion IBr2-, which a halide source
+  makes from the halogens of the air it samples and from its own, so a run now
+  caps at candidate a row whose neutral is made only of halogens (I2, IBr, ICl,
+  Br2) when it is read through a halide or dihalide channel, and its
+  isotopologues follow. The row keeps its formula, the tier reason is
+  `polyhalide_cluster` ("polyhalide: air or source" in the peak inspector), and
+  a second ionization channel does not lift it. A compound of the workspace's
+  target library is exempt. `config.tiering` records rule set 5.
+
+- **A peak whose ion another molecule explains as well is no longer held at
+  assigned, whatever the reagent.** Two readings of one ion - dimethylformamide
+  with a proton and acrolein with ammonium, a bromide cluster and the
+  deprotonated molecule that holds the hydrogen bromide - have the same mass,
+  isotope pattern and fit. A run now caps at candidate a row whose ion also
+  reads as a closed-shell molecule through another of its channels, unless a
+  second channel committed the same neutral, and its isotopologues follow. The
+  reason is `ambiguous_nitrogen` where the two readings put a different number
+  of nitrogen atoms on the compound, two nitrogen-carrying adducts against each
+  other included, and `ambiguous_adduct` ("ambiguous adduct") where they do not.
+  A reading that is a radical is no rival, and a compound of the workspace's
+  target library is exempt. Where a second channel, the target library or a
+  radical settles the question, the row says which (`same_ion_settled`, "same
+  ion, settled"). `config.tiering` records rule set 6.
+
+- **A row under the top tier names the band its evidence falls short of,
+  first.** The tier is read off the evidence (fit x plausibility) before any
+  rule, so a row the bands put below assignability used to list only what it
+  stood on - a second channel, no close rival - with nothing saying why it
+  stood low. Its first reason is now `evidence_band` ("evidence band"), such
+  as "evidence 8% (fit 8% x plausibility 100%) is under the candidate band of
+  45%".
+
+- **An ionization mode that declares a channel its chemistry profile also
+  opens searches it once, and the channel stays secondary.** Searched twice,
+  every reading through it came back as another reading of its own ion.
+  Declaring a channel lets the run search it and match target compounds
+  through it; it does not make an opportunistic reagent, such as carbonate on
+  a nitrate source, the mode's own. An uncorroborated winner through it is
+  still held at candidate, as on a mode that does not declare it.
+
+- **A nitrate cluster of a neutral with no oxygen is no longer held at
+  assigned.** Nitrate holds on to a molecule by hydrogen bonds from its
+  oxygen-bearing groups, so a run now caps at candidate a row read through a
+  nitrate channel (the plain or 15N-labelled ion, or its clusters with nitric
+  acid) whose neutral carries no oxygen, and its isotopologues follow. The row
+  keeps its formula, the tier reason is `oxygen_free_cluster` ("no oxygen to
+  cluster on" in the peak inspector), and a second ionization channel does not
+  lift it. A compound of the workspace's target library is exempt; a formula
+  from a reference list is not. Carbonate clusters are not judged this way.
+  `config.tiering` records rule set 4.
+
+- **A peak an assigned compound's isotope pattern predicts is read as that
+  compound's isotopologue, and an isotopologue whose mass error misses its
+  parent's is no longer held at assigned.** A run caps a monoisotopic row at
+  candidate when a committed neighbour's isotope pattern predicts a line on
+  its peak and the peak is no more than twice that line's height. Where the
+  neighbour is held at assigned, the run now reads the peak as the
+  neighbour's isotopologue instead, at candidate, with the formula it had
+  committed there as the row's first alternative. The peak keeps its reading
+  where it is a compound of the target library, where another channel of the
+  run committed its neutral, where the neighbour already holds a line there,
+  or where its mass error does not follow the neighbour's. The claimed row's
+  own isotopologues go with it where the neighbour's pattern predicts their
+  lines too, and are left unassigned where it does not, and the mass gate,
+  the cross-channel pass and the tiering pass then run again over what the
+  claims left. Whether an isotopologue follows its parent is now judged with
+  what its line can deliver. Within the instrument class's precision it
+  tracks and corroborates, as before. Beyond that, but within what the line's
+  own signal-to-noise and a peak close beside it explain (read off the file's
+  resolving power), it is in doubt: held at candidate, and never taken lower
+  for its distance from the calibration. Beyond that too, it is capped like
+  any other row and held at candidate at least. `config.mass_calibration`
+  records how the isotopologues followed (`isotopologues`), what their lines
+  were read with (`lines`) and the rows each verdict held (`capped_in_doubt`,
+  `capped_untracked`), and a row's `mass_gate` block records its `tracking`.
+  `config.tiering` (rule set 3) records `claimed`, `claimed_with_their_lines`,
+  `released`, the rows `held` back by reason and the `claim_rounds` the run
+  took, and a claimed row carries `provenance.envelope_claim`. The tier
+  reasons gain `envelope_claim`, `isotopologue_in_doubt` and
+  `isotopologue_untracked`, which the peak inspector names.
+
+- **A sample whose target library is too thin to measure a mass offset is
+  scored at the offset its reagent ions show.** Both assignment stages score a
+  mass error from the offset the target library's matched lines put the sample
+  at, and a sample matching fewer than eight of them was scored as if it sat
+  on its nominal masses, however far off it was. Where that happens, the run now
+  scores the sample at the median mass error of the lines the reagent pre-pass
+  claimed, if at least three were claimed and the median is larger than the
+  width the sample is scored at; the width stays the instrument class's. It is
+  the median of every claimed line, isotopologues included, not the correction
+  the pre-pass claims against: that one comes from the source's brightest ions,
+  which on an Orbitrap can sit a ppm or two from where the rest of the spectrum
+  does. A library that fits its own offset keeps it, because the reagent lines
+  sit at the low end of the range and need not agree with it.
+  `config.pattern_scoring` records `mu_source: reagent` where the offset came
+  from them, and `reagent_lines` and `reagent_mu_ppm` wherever the pre-pass
+  ran. The batch-wide untargeted search runs no pre-pass and is unchanged.
+
+- **The assignment mass gate caps a target library's line off calibration like
+  any other.** A run caps a committed row more than three widths from its own
+  fitted mass calibration at candidate, and more than six at below
+  assignability, unless something beyond the mass fit stands behind it. A
+  compound of the workspace's target library counted as such corroboration, so
+  none of its lines was ever capped. A list names a compound, not where each of
+  its lines has to sit, and the lines that exemption held at the top tier were
+  the ones a mass error has reason to doubt: isotopologues three widths off a
+  monoisotopic row on calibration, a weak M+2 or one half of a partly resolved
+  pair. Only an isotopologue that tracks its parent's mass error now exempts a
+  row; a library's rows still anchor the calibration they are judged against.
+  `config.mass_calibration` records `capped_curated`, the library rows the gate
+  capped, and a library row an isotopologue tracks records
+  `corroborated_by: isotopologue` rather than `curated`.
+
+- **The assignment mass gate judges a row at its own m/z where the run's
+  calibration drifts with mass.** A run measures its mass calibration over its
+  own corroborated commits and caps an uncorroborated row that sits more than
+  three widths from it. That centre was one offset for the whole range, and on
+  an Orbitrap the residual below about m/z 120 is closer to a fixed offset in
+  mDa, which grows in ppm as the mass falls: on one instrument every sample's
+  commits sit near 0 ppm above m/z 120 and at -1.4 ppm below m/z 80, so a
+  small ion on calibration read four widths off it. The run now also fits
+  `ppm = a + b * 1000 / mz` over its committed monoisotopic rows and judges at
+  that line where peaky's rules accept it: the slope beyond three standard
+  errors, the residual RMS at most 0.8 of the constant model's, `|b|` at most
+  0.5 mDa, five kept rows in each half of the fitted range, and the centre
+  held at the edges of the m/z the rows covered. Anything else keeps the
+  constant centre exactly. The width stays one number, floored by 0.03 mDa at
+  low mass where a trend is judged. `config.mass_calibration` records the
+  `centre` it judged at (`trend` or `constant`), the `trend` and the rule that
+  refused one (`trend_refused`). In `mascope_tools`, `mass_accuracy` gains
+  `fit_mass_trend`, `MassTrend` and `trend_width_floor_ppm`.
+
+- **A reference list's match now has its nitrogen count questioned like a
+  search result's.** The reagent-nitrogen rule caps a reading whose ion reads
+  equally well as a neutral with a different nitrogen count, the nitrogen
+  moved between the analyte and a reagent that carries it, unless a second
+  ionization channel saw the same neutral. It read the finder's same-ion
+  alternatives, which a Stage A row never had, so a formula from a loaded
+  reference list went unquestioned: dimethylformamide through `+H+` took peaks
+  that are equally acrolein through `+NH4+`. A reference mirror's row now
+  carries the other readings of its ion that the untargeted search would have
+  held - built under the run's element box and heuristic filter, stored as
+  `same_ion` alternatives ahead of its rivals, with the row's own fit and mass
+  error - and the rule asks its nitrogen count from both sides, since a list,
+  unlike the election, can put the nitrogen on the analyte. A compound of the
+  workspace's target library stays exempt. The automatic assignment at sample
+  ingest, which folds Stage A's rows into the batch ledger without a run, now
+  runs the same check through the channels a run would read, so the batch
+  ledger does not show such a row as assigned where a run holds it at
+  candidate. An imported ledger is untouched. `config.cross_channel` counts the
+  reference rows among the ambiguous and capped readings as
+  `ambiguous_nitrogen_mirror` and `capped_mirror`. In `mascope_tools`,
+  `heuristic_filter.propose_same_ion_readings` builds such a family for any
+  reading, and `grid.admits` asks whether a search's grid would hold one
+  composition.
+
+- **"Satellite" means a signal artifact in the assignment layer, never an
+  isotopologue.** Peak detection uses the word for the FT side lobes it flags
+  around an intense peak, and the assignment engine, manual curation, the peak
+  inspector, the SDK's docstrings and the developer docs had drifted into
+  calling isotopologue rows satellites as well. They now say isotopologue, and
+  the inspector's undo note counts "isotopologues" rather than "isotopologue
+  satellites". Two recorded values change with the word. A run's
+  `config.cross_channel` counts the isotopologue rows the reagent-N rule capped
+  as `capped_isotopologues`, beside step 2.4's tiering counts of the same name;
+  runs written before this carry that count as `capped_satellites`, and nothing
+  in Mascope reads it back from a stored run, so a script reading stored run
+  configs should accept either name. A row stripped by a manual override now
+  records `provenance.manual.action` as `demote_isotopologue`; rows demoted
+  earlier carry `demote_satellite`, and both the restore and the inspector read
+  either as a demotion, so undoing an older override still puts its
+  isotopologues back. In `mascope_tools.composition.reagents`,
+  `ReagentHit.is_satellite`, `DEFAULT_SATELLITE_MIN_RELATIVE`,
+  `DEFAULT_SATELLITE_MAX_EXCESS` and the claim's `satellite_min_relative` /
+  `satellite_max_excess` parameters take their `isotopologue` names.
+
+- **Every committed peak assignment now says why it holds the tier it holds.**
+  `provenance.tier_reasons` is a list of `{rule, detail, caps}`: a row that was
+  demoted names what took it, and a row that was not names what it kept its tier
+  on. The evidence bands are unchanged and remain the floor - the new rules only
+  ever demote, so no row ends above what its evidence earned.
+
+- **The peak inspector shows why an assignment holds its tier.** Under *Why
+  this tier* it lists each reason the run recorded - the rule by name, the
+  run's own sentence about the row beneath it, and a mark on every reason that
+  holds the tier down. An isotopologue follows its M0, so the M0's reasons are
+  shown beneath its own. A row no rule judged - an imported run, a run from
+  before the reasons existed, a row assigned by hand or served from the batch
+  ledger - shows no list.
+
+- **The assignment launchers let you choose the chemistry a run searches
+  under, and say what it will be.**
+  - **Choosing it:** *Assign peaks* and the batch's *Search untargeted* offer
+    the chemistry profile (how the sample was ionized) and the chemistry
+    context (what was sampled), both on *Auto* by default.
+  - **What Auto means:** each launcher says what *Auto* resolves to for the
+    sample, or for each group of the batch's samples. Where the samples share
+    them, the formula range and m/z precision fields show the grid and the
+    window the run would search at.
+  - **A warning:** a named profile of the other polarity from the samples is
+    flagged.
+  - **Remembered:** the choice is kept with the other launch settings, and
+    *Reset to defaults* puts both back on *Auto*.
+  - **On the run:** a run in the run selector names the profile it searched
+    under. Hovering the name shows the context, the element grid, the m/z
+    window and the extra channels searched.
+  - **API:** `GET /api/params` lists the profiles and contexts a run may name.
+    `GET /api/peak-assignments/sample/{sample_item_id}/profile-preview` and
+    `GET /api/peak-assignments/batch/{sample_batch_id}/profile-preview`
+    resolve them without starting a run, with each answer's element grid
+    (`element_ranges`) and m/z window (`mz_precision_ppm`, from the samples'
+    instrument class).
+
+- **The peak inspector shows where an assignment's mass error sits, and the
+  other readings of its ion.**
+  - ***mass z***, beside the m/z error, is the row's distance from the run's
+    own mass calibration at its m/z, counted in the calibration's widths. It is
+    marked when it is past the distance the mass gate caps a row at.
+  - ***Same ion, read another way***, under *Why this tier*, lists the neutrals
+    the same ion reads as through the run's other channels. No mass or isotope
+    pattern tells those readings apart.
+  - The close alternatives now mark a same-ion reading, the reading an
+    isotopologue claim replaced, and a list compound the formula search took
+    the peak from.
+
+- **Reagent and artifact peaks have chips of their own in the assignment
+  ledger.** A peak the ionization source made, or a ringing side lobe, used to
+  show as a pale *unassigned* chip with a small icon, and was filtered and
+  sorted among the peaks nothing explained. It now shows a *reagent* or
+  *artifact* chip. The strip above the ledger counts each role apart from the
+  tiers and from the other, and the tier column sorts them after the tiers.
+
+- **A run now measures its own mass accuracy and says where each of its
+  assignments sits in it.** A sample's assignments do not scatter around zero
+  ppm; they scatter around the offset that acquisition sat at, with the spread
+  that instrument achieved that day. Both are now fitted from the run's own
+  corroborated assignments - the ones a curated identity proposed, or whose
+  isotope envelope the spectrum confirmed, counting an isotope peak as
+  confirmation only when its own mass error tracks its parent's within the
+  instrument's precision, since on a crowded spectrum a peak that is nobody's
+  isotopologue lands inside the matching window by coincidence - and every
+  assigned peak records
+  `mass_z`, its distance from that centre in the run's own widths. An
+  assignment resting on the mass fit alone and sitting more than three of those
+  widths out is capped at "candidate" (reason `off_calibration`) and more than
+  six at "below assignability"; the formula stays on the peak, because what is
+  withdrawn is the confidence, not the reading. A corroborated assignment is
+  never demoted for its mass error, and a run with too few corroborated
+  assignments to measure a calibration gates nothing and records that it stood
+  down. The run stores the calibration beside the scoring it searched at.
+
+- **A sample's mass offset is no longer reported as zero when it was never
+  measured.** `mascope_tools.composition.fit_mass_accuracy` answered `(0.0,
+  None)` for a sample with too few matched ions to fit anything, so a caller
+  could not tell "this sample is centred" from "nothing was measured here" -
+  opposite claims, differing by more than an Orbitrap's whole accuracy. The
+  offset and the width are now reported separately, each absent where it was
+  not measured, so a caller decides for itself what to do about a sample whose
+  accuracy is unknown instead of being handed a zero that looks like a
+  measurement. Both still need the same number of anchors: an offset looks like
+  the easier of the two to measure and is not, because an anchor set too small
+  to say how wide it is cannot say where its centre is either.
+
+- **An untargeted assignment is now judged the way a database assignment is,
+  and "assigned" means the same thing on both.** The untargeted search scored a
+  formula by averaging its errors over the isotope lines it found, so a formula
+  that predicted three lines and found one scored as well as one that predicted
+  one and found it - and a peak with nothing but its own line, which is 80-99%
+  of what the stage commits, could be called assigned on its mass alone. Every
+  formula the search commits to is now measured again as an ion against the
+  sample's own spectrum: a predicted line that is missing where the noise says
+  it should have been visible counts against the assignment, one below the
+  noise does not, and the mass is judged at the width the instrument actually
+  delivers rather than at a fixed five parts per million. The same measurement
+  now also decides which reading of a peak wins, so a formula whose lines
+  cannot be in the spectrum stops taking peaks from one whose lines are there.
+  Measured against a reference engine on 43 samples: the share of assigned-tier
+  rows the reference contradicts falls on every Orbitrap set (73% at the start
+  of this work, 41.5% after stage 1, 35.4% now on the sparse set; 57%, 24.3%
+  and 18.9% on the dense one), what the reference confirms is unchanged or
+  better, and confident and contradicted rows now score differently enough to
+  tell apart. Fewer rows are called assigned as a result - a third of them on
+  the dense set - and no row loses its formula, only the confidence attached to
+  it. A time-of-flight sample gains 300-700 committed analytes, because its
+  masses are no longer judged against an Orbitrap's precision. Re-assign a
+  sample to get the new reading; existing runs are unchanged.
+
+- **The peak assignment engine is version 0.4.0**, and results from it are not
+  comparable with a 0.3.0 run of the same sample. The version is stamped on
+  every run this server computes, so the two are told apart in the run selector
+  and in any export; a sample assigned before the upgrade keeps its old run and
+  is re-assigned to get the new one. What changed under it is the whole of the
+  search: the element ranges and mass window now come from the ionization
+  mode's chemistry rather than from one unbounded default, the source's own
+  reagent clusters and ringing artifacts are labelled before any formula is
+  proposed, a committed formula claims its own heavy-isotope isotopologues, two
+  candidates that describe the same ion are decided by policy instead of by
+  enumeration order, and every unexplained peak is searched rather than the 300
+  brightest. Measured against a reference engine on 43 samples from four
+  instruments and four ionization chemistries, the share of assigned-tier rows
+  the reference contradicts falls from 73% to 42% on the sparse Orbitrap set
+  and from 57% to 24% on the dense one, and the share of the reference's own
+  confident peaks recovered with the same formula rises from 39% to 96% and
+  from 12% to 95%.
+
+- **The untargeted composition search enumerates the formulas its element
+  ranges allow once per mass band instead of once per peak.** It walked the
+  element-count tree from the root for every peak, using that peak's mass window
+  as the pruning bound - so the same tree was walked thousands of times for one
+  spectrum, and on the densest gate sample that was 90% of the stage's time.
+  The compositions a set of element ranges allows do not depend on the peak;
+  only the window into them does. They are now enumerated once, sorted by mass,
+  and each peak is answered by bisecting into them, in ascending mass bands so
+  that a wide element box over a TOF's mass range never has to be held whole.
+  Searching a whole spectrum went from 133 to 39 seconds on the densest TOF
+  sample and from 27 to 5.6 on the densest Orbitrap one, which is what makes
+  searching every peak affordable. Answers are unchanged, with one deliberate
+  exception: where a peak has more candidate formulas than the result cap
+  allows, the ones kept are now the closest in mass rather than whichever the
+  search happened to reach first.
+
+- **A reagent row reads like a row: it shows its ion, and an ion's isotope
+  lines are its family.** A peak the source made names its ion and no
+  compound, and the assignment ledger's formula column read only the compound,
+  so a reagent row showed a dash where a reader looks first, and the inspector
+  headed it "Unassigned". The column and the inspector's headline now show the
+  ion, written with its charge as an analyte's ion is (`Br-`, `C16H10+`; the
+  pre-pass wrote it bare, which read as a neutral). The pass also wrote each
+  line of a claimed ion's isotope pattern as a reagent row of its own, so the
+  ledger listed an ion's heavier lines beside it as more unexplained source
+  peaks. Each line now names the ion's monoisotopic row as its owner, keeping
+  the reagent role, and carries how far its height sits from the pattern's
+  prediction; the ledger folds the lines under the ion, counted in its +N
+  marker, and the inspector lists them in its isotopologue table with their
+  predicted abundances. A fragment's lines fold under the fragment the same
+  way. No tier and no count moves: the reagent chip still counts every peak
+  the source accounts for. Assigning a compound to an ion's peak by hand now
+  unassigns its lines with it, as it does an analyte's isotopologues. An
+  imported run's reagent rows stay rows of their own - the import still
+  accepts an owner only on an isotopologue. The batch-peaks ledger reads a
+  reagent peak the same way (below).
+
+- **The batch-peaks ledger reads a peak the source made as the ion it is.**
+  A batch peak whose members the reagent or artifact pass claimed carried no
+  formula to vote on, so it read as unassigned. Where more of its members were
+  claimed than assigned a formula, its consensus now takes the role they
+  carry, with their ion: the Formula column shows the ion
+  (`Br-`), the tier column the *reagent* or *artifact* chip, the strip above
+  the ledger counts it under that chip, the tier filter narrows to it, and an
+  ion's isotope lines fold under it as an isotopologue folds under its
+  compound. The ledger's CSV export and the API's ledger rows carry the role
+  as `consensus_role`. A sample's count of assigned members in the sample
+  browser still counts formulas alone, and the batch untargeted search no
+  longer writes over a reagent member. A ledger folded before this reads its
+  reagent peaks once rebuilt, since the fold did not record their ions
+  (assignment quality plan, step 3.4d).
+
+### Fixed
+
+- **An isotope keeps its colour when the match tab reloads the same ion.** The
+  spectra chart picks each isotope's colour as it draws the trace and writes it
+  back onto the row, and the store meant to carry that colour over the rows a
+  reload replaces. It read the colour off the list it was in the middle of
+  reassigning, which the same function had already emptied, so every reloaded
+  row came back colourless and the swatch in the rating dialog went blank until
+  the socket re-streamed the spectra. The store now reads the colours off the
+  rows it is replacing, taken before the reset. Removing an ion's instrument
+  params blanked the swatch by a second route, which the same reload also fixes:
+  it started one reload without waiting for it and then a second, and because a
+  reload clears the isotopes before it awaits anything, the second found no rows
+  to read the colours off. It now reloads once, which also stops the spectra
+  being fetched and re-streamed twice.
+
+- **A sample's properties survive a write that does not finish.** `.props`
+  was rewritten in place, so a process that died between truncating it and
+  writing the new content left the file empty - and it holds the sample's m/z
+  calibration fit, which costs a refit rather than a reread. The properties
+  are now written beside the old ones and renamed over them, through the same
+  helper the runtime state file uses: the content is flushed to disk before
+  the rename, each writer gets its own temporary, the file keeps the
+  permissions it had, and on Windows the rename waits out a reader holding the
+  file open instead of failing the write.
+
+- **`-H-` means what the notation says.** The composition library read `-H-`
+  as deprotonation, one electron mass off the anion and the opposite polarity
+  from the one the mechanism validator stores it under: a hydride removed
+  leaves a cation. It now follows the grammar like every other mechanism, so
+  `-H-` is the `[M-H]+` of a charge-transfer source and deprotonation is
+  `-H+`, as the notation help has said since July. No deployment stored a
+  `-H-` row, so no assignment on a server changes; the evaluation scripts under
+  `tooling/score_eval` that spelled deprotonation the old way now write `-H+`.
+  **Breaking for callers of `mascope_tools.composition.utils.parse_ionization`**
+  that spelled deprotonation `-H-` themselves: peaky did, as a workaround from
+  the time `-H+` was read as a cation, and that fix and this change reach it
+  in the same `mascope-tools` release, so peaky drops the workaround and
+  requires that release.
+
+- **A target library entry keeps its own line however its formula is
+  written.** Stage A compared candidates' formulas as text, and a loaded
+  reference list writes its neutrals in Hill order while a library holds what
+  a person typed. A monitor's `CH3COOH`, `NH3` or `H2SO4` met the list's
+  `C2H4O2`, `H3N` or `H2O4S` on its own peak as a second hypothesis: the tie
+  between the two fell to alphabetical order, so the list's copy took the line,
+  the library's entry sat beside it as an alternative, and the candidate-density
+  rule counted the copy as a rival and capped the row. Stage A now compares a
+  formula's composition, and a reference list's copy of a reading the library
+  makes on the same peak through the same mechanism is dropped before the peak
+  is arbitrated: the library's row owns the line and the list's names ride
+  along in its provenance. On the assignment gate this was 27 rows on three
+  sets, 12 of them capped.
+
+- **A labelled ion is now read from its labelled line, and Stage A no longer
+  writes an isotopologue whose ion won no main peak.** A labelled reagent's atom
+  is written in brackets like any substituted isotope, so for a 15N-nitrate ion
+  the engine took the one line without a bracket for the ion's monoisotopic
+  line: the reagent's unlabelled remainder, 2% of the labelled line and one mass
+  unit below it. The ion's own line was then its "M+1", and where the remainder
+  found no peak, that line was an isotopologue of an M0 that won nothing and was
+  written with no owner. A labelled ion's monoisotopic line is now the one whose
+  brackets name exactly its labels. And an isotopologue whose ion did not win
+  its monoisotopic peak is left out, the rule the untargeted stage already kept
+  for its own rows: such a row said a peak belongs to an envelope whose ion the
+  ledger never commits, and the peak now goes to the untargeted stage instead.
+
+- **A peak assigned by hand from the composition search now counts a labelled
+  ion from its labelled line, as the assignment engine does.** Committing a
+  search result to a peak records which isotopologue of the ion the peak is,
+  counted from the ion's monoisotopic line, and the search pane took that line
+  to be the one isotopologue formula without a bracket. For a 15N-nitrate ion
+  that is the reagent's unlabelled remainder, 2% of the labelled line and one
+  mass unit below it, so the ion's own line was committed as its "M+1" and the
+  remainder as its "M0". The monoisotopic line is now the isotopologue whose
+  brackets name exactly the labels in the ion's formula.
+
+- **The isotopologue tables now count a labelled ion's lines from its labelled
+  line.** The peak inspector's isotopologue table, the ledger's unfolded
+  isotopologue rows, the assignment time series, and the match tab's isotope
+  table and spectrum headings labelled each line by the isotopes in its
+  brackets, and the line without a bracket "M0". A labelled reagent's atom is
+  bracketed like any substituted isotope, so for a 15N-nitrate ion the reagent's
+  unlabelled remainder, 2% of the labelled line and one mass unit below it, read
+  "M0", and the ion's own line read "[15N]". Each line is now labelled by how it
+  differs from the line whose brackets name exactly the ion's labels, the M0 the
+  assignment engine counts from: that line reads "M0", its 13C line "[13C]", and
+  the remainder "[14N]", its labelled atom at 14N. An ion without a label reads
+  as before. A run stored before the engine counted a labelled ion from its
+  labelled line keeps the rows it wrote, so where it made the remainder the
+  family's M0 row, the table now labels that row "[14N]"; re-running the sample
+  commits the labelled line as the M0.
+
+- **The match tab now opens on the ion's monoisotopic line rather than its
+  lightest one.** The spectrum the tab drew first, and the isotope row it showed
+  as the selected one, were the first of the ion's isotopes in m/z order. For an
+  unlabelled ion that is the M0 - a bromine or chlorine cluster included, whose
+  M0 is its lightest line and its tallest line an M+2 or beyond. A labelled
+  reagent's atom is bracketed like any substituted isotope, so for a 15N-nitrate
+  ion the lightest line is the reagent's unlabelled remainder, 2% of the line
+  the ion is measured by and one mass unit below it, and the tab opened on the
+  remainder. Both now read the M0 the way the assignment engine's
+  `monoisotopic_row` does: the line whose brackets name exactly the ion's
+  labels, with the lightest line standing in where no line carries the marker
+  that tells them apart. An unlabelled ion opens where it always did. One
+  spelling still reads differently on the two sides: where an imported run
+  wrote its M0 in the ion's own caret notation rather than in brackets, the
+  tab opens on that line while the run's own rows count from the line below
+  it. The isotope table's *Substitution* header also loses the tint of a
+  sorted column. The table declared itself sorted by a field the isotope rows
+  do not carry, so the comparator never moved a row and the tint announced an
+  ordering that was not there; the rows were, and remain, in m/z order.
+
+- **A loaded reference database no longer widens the mass width a TOF sample is
+  scored and gated at.** Stage A matches a reference list's formulas in the
+  same frame as the workspace's target library. On a TOF most of those pairings
+  are lines the wide match window reaches by chance.
+  - **Scoring width.** It was fitted over every line Stage A matched. With the
+    shipped seed loaded, over 90% of those lines were the seed's, and the width
+    both stages score at more than doubled on every TOF test set (one went from
+    2.6 to 6.5 ppm). A candidate several ppm off then scored like a correct one,
+    and thousands of untargeted elections moved.
+  - **Mass gate.** It counted every Stage A row as corroborated by its curation.
+    The seed's chance lines therefore widened the gate's own calibration and
+    were exempt from its cap.
+  - **Now.** The width is fitted over the target library's lines alone, and only
+    the target library's rows count as curated. A reference list's row is
+    corroborated the way a search result is, by an isotopologue that tracks it.
+    Without one, a row off calibration is capped, on the run-less ingest fold as
+    well as in a run.
+  - **Fallback width.** A sample whose target library matches too few lines to
+    fit a width is now scored in Stage A at the instrument class's width, as the
+    untargeted stage already was, instead of at a generic 2 ppm.
+
+- **An isotope pattern is now anchored on the ion's own line, so a bright peak
+  is no longer lost to a faint neighbour two mass units above it.** The matcher
+  normalised a predicted envelope to the predictor's first line and matched that
+  line before any other. Isotope predictions come back ordered by abundance, so
+  for an ion with no heavy-isotope-rich element that line IS the monoisotopic
+  one and the assumption held by accident - but for a dibromide the first line
+  sits two mass units above the ion. The envelope was then anchored on whatever
+  small peak happened to be there, and the real peak measured thousands of
+  percent too bright for its own monoisotopic line and went unmatched, while the
+  pattern still scored well enough to win. The peak the candidate was proposed
+  for got no assignment at all. On a bromide-source Orbitrap that cost 21 peaks
+  their assignment across six samples, some of them thousands of counts.
+  Anchoring on the monoisotopic line - the peak the composition search started
+  from - removes the class. Two requirements go with it, because anchoring
+  separated what used to be one row: a pattern is evidence only if both the
+  ion's own line and the line the prediction leads with are observed, and a
+  candidate whose pattern scored nothing is not committed at all. Without them
+  the same phantom returns from the other side, winning the peak it used to
+  swallow with no isotope envelope behind it.
+
+- **An untargeted assignment could be committed carrying another composition's
+  isotope pattern.** The candidates and their matched envelopes were ranked by
+  two separate sorts, one of them unstable, which agree only while no two
+  candidates tie on the pattern score - and a tie is ordinary, since every
+  candidate whose envelope matched nothing scores the same. Where they
+  disagreed, the committed row took a runner-up's matched masses, intensities
+  and errors: its isotopologues, its mass error and its fit all belonged to a
+  different formula. Both lists now come from one computed order.
+
+- **A labelled reagent's own atom no longer breaks the untargeted search.**
+  Keeping the isotope label on a mechanism like `+^NO3-` put the reagent's
+  `^N` into the ion formulas the finder builds, and pyteomics - which every
+  element-counting helper hands a formula to - cannot parse the caret symbol
+  at all, so a 15N-nitrate sample failed its run outright on the first
+  isotopologue. `to_pyteomics` now converts the caret form as well as the
+  bracket-first one, and the ion formula is rebuilt in the notation it arrived
+  in rather than pyteomics', so an isotopologue of a labelled ion carries both
+  labels (`[13C]C14H13O10^N-`). Two other callers that would have raised the
+  same way - the candidate sort key and the isotope-label extraction - are
+  fixed by the same change.
+
+- **Deprotonated candidates are scored at the anion mass, and a labelled
+  reagent adduct keeps its label in the untargeted search.** The composition
+  finder read the trailing sign of a mechanism notation as the ion's charge,
+  so `-H+` (deprotonation) produced a cation and every deprotonated candidate's
+  predicted monoisotopic peak sat two electron masses light - a 2-5 ppm phantom
+  mass error that biased the winner towards wrong formulas under a wide window
+  and mis-tiered the right ones under a tight one, on every negative-mode
+  chemistry. The trailing sign is now the charge of the moiety added or
+  removed, and the ion's charge follows from the direction. The same parser
+  also dropped the isotope label from a bracketed mechanism (`+[15N]O3-`, the
+  explicit form of `+^NO3-`), massing the 15N-nitrate reagent as the unlabelled
+  one, 0.997 Da light, so every candidate on that channel fitted the wrong
+  adduct mass; the label is now kept, and a labelled isotope the finder cannot
+  mass is refused instead of silently unlabelled. Both affect the peak
+  assignment engine's untargeted stage and the on-demand composition search.
+
+- **The Ionization Mechanisms tab of Edit Ionization Settings sits still.**
+  The examples under the mechanism field sit under it rather than beside it,
+  on a line of their own, with what is wrong or how the mechanism will be
+  stored on a line below that is cut short rather than wrapped, so the dialog
+  no longer widens and narrows as you type; the table takes the height the
+  dialog leaves and scrolls within it, so the dialog no longer scrolls a few
+  pixels; the lock on a shipped mechanism lines up with the trash button of
+  the others; and the shipped mechanisms are listed first, the ones added on
+  the server after them.
+
+- **Edit Ionization Settings refuses a mechanism the server already has, in
+  either spelling.** Typing one that exists - `[M-H]-`, or its legacy
+  spelling `-H+` - says so under the field and leaves Add off, rather than
+  failing only once Add is pressed.
+
+- **The Ionization Modes tab of Edit Ionization Settings scrolls once.** Its
+  table was sized by a fixed guess at the room left in the dialog, which
+  overshot it, so on a short screen the table scrolled inside a tab that
+  scrolled too - by more when the create form wrapped in a narrow window. The
+  table now takes the height the form and the search leave and scrolls its own
+  rows, as the mechanisms table does; only when a wrapped form leaves it less
+  than its header and a row does the tab scroll instead. The mechanisms table
+  keeps the same floor, where on a very short screen it had shrunk away with
+  no scrollbar to reach its rows.
+
+- **An expanded result of the composition search can be scrolled through.**
+  Expanding a candidate with a long isotope pattern and scrolling down snapped
+  the view back to the top, so the rest of the pattern could not be read: the
+  results table renders only the rows in view, sliced by a fixed row height,
+  and the pattern nested under the candidate was as tall as the pattern. The
+  candidate's isotope lines now unfold as rows under it, the way the peak
+  ledger unfolds isotopologues, each with its abundance, m/z, error and match
+  score; a click on a line, or Enter on it from the keyboard, still previews it
+  in the spectrum, and sorting keeps every candidate's lines under it.
+
+- **The composition search answers for a wide element box under adducts far
+  apart in mass.** A search enumerated every composition across the whole
+  range of neutral masses its ionization mechanisms reach - 64 Da for a
+  15N-nitrate, nitrate and deprotonation trio - and where the element box held
+  more of them than one grid may, a CHNO box with S, Cl and Br at m/z 700 for
+  one, it came back with no candidates at all. It now enumerates only the
+  narrow window each mechanism reads, and each isotopologue line.
+
 ## [1.9.0] - 2026.09.24
 
 ### Added

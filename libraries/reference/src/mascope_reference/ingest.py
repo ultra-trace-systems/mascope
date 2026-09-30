@@ -6,6 +6,11 @@ inserts them as ``reference_compound`` rows pointing at that source row. The
 new load becomes the active version of its source and any prior active load of
 the same source is deactivated, so queries see exactly one version per source
 while older loads stay on disk for reproducibility (``prune=True`` drops them).
+:func:`deactivate` takes a source's active load out without a replacement.
+
+The source row also records how the load's compounds may be matched - its
+window, its radical allowance and its polarity (:mod:`mascope_reference.scope`) -
+as the adapter says of the dump unless the caller says otherwise.
 
 Runs against a synchronous SQLAlchemy engine - it is driven by the CLI, off the
 request path, and streams so a multi-gigabyte dump never lands in memory.
@@ -18,7 +23,7 @@ from hashlib import sha1
 from pathlib import Path
 from typing import Callable
 
-from sqlalchemy import delete, insert, update
+from sqlalchemy import delete, insert, select, update
 from sqlalchemy.engine import Engine
 
 from mascope_reference.adapters.base import Adapter
@@ -33,6 +38,7 @@ from mascope_reference.schema import (
     reference_compound,
     reference_source,
 )
+from mascope_reference.scope import SourceScope, scope_of
 
 
 DEFAULT_BATCH_SIZE = 5000
@@ -56,6 +62,17 @@ class IngestResult:
     reference_source_id: int
     ingested: int
     skipped: int
+    #: What the source row records about how the compounds may be matched.
+    scope: SourceScope
+
+
+@dataclass(frozen=True)
+class DeactivatedLoad:
+    """A load :func:`deactivate` took out."""
+
+    source: str
+    version: str
+    record_count: int
 
 
 def _fit_native_id(value: str) -> str:
@@ -143,6 +160,7 @@ def ingest(
     activate: bool = True,
     prune: bool = False,
     progress: Callable[[int], None] | None = None,
+    scope: SourceScope | None = None,
 ) -> IngestResult:
     """Ingest one source dump as a new versioned load.
 
@@ -162,6 +180,10 @@ def ingest(
         inactive) loads of the same source and their compounds.
     :param progress: Optional callback invoked with the running inserted count
         after each batch.
+    :param scope: What the source row records about how the compounds may be
+        matched. Defaults to what the adapter says of the dump
+        (:func:`mascope_reference.scope.scope_of`): the mirror window for a
+        database, unbounded for a list.
     :return: An :class:`IngestResult` summarizing the load.
     :raises FileNotFoundError: If ``path`` does not exist.
     :raises EmptyIngest: If an activating load yielded no usable records. The
@@ -171,6 +193,8 @@ def ingest(
         raise FileNotFoundError(f"Reference dump not found: {path}")
 
     name = source_name or adapter.name
+    if scope is None:
+        scope = scope_of(adapter, path)
     ingested = 0
     skipped = 0
     with engine.begin() as conn:
@@ -188,6 +212,7 @@ def ingest(
                 record_count=0,
                 is_active=False,
                 ingested_at=datetime.now(timezone.utc),
+                **scope.row_values(),
             )
             .returning(reference_source.c.reference_source_id)
         ).scalar_one()
@@ -244,6 +269,50 @@ def ingest(
         reference_source_id=source_id,
         ingested=ingested,
         skipped=skipped,
+        scope=scope,
+    )
+
+
+def deactivate(engine: Engine, source_name: str) -> DeactivatedLoad | None:
+    """Take a source's active load out, leaving no version of it active.
+
+    Nothing is deleted: the load and its compounds stay, inactive, so
+    ``mascope reference activate`` brings the version back and a re-seed of a
+    shipped list finds nothing active and loads it again.
+
+    :param engine: Synchronous engine for the target database.
+    :param source_name: The source's provenance name.
+    :return: The load taken out, or None when the source had no active load.
+    """
+    with engine.begin() as conn:
+        active = conn.execute(
+            select(
+                reference_source.c.reference_source_id,
+                reference_source.c.version,
+                reference_source.c.record_count,
+            )
+            .where(reference_source.c.name == source_name)
+            .where(reference_source.c.is_active.is_(True))
+            .order_by(reference_source.c.reference_source_id.desc())
+        ).all()
+        if not active:
+            return None
+        conn.execute(
+            update(reference_source)
+            .where(
+                reference_source.c.reference_source_id.in_(
+                    [row.reference_source_id for row in active]
+                )
+            )
+            .values(is_active=False)
+        )
+    # One version is active at a time; were there ever more, the newest is the
+    # one a person would name.
+    newest = active[0]
+    return DeactivatedLoad(
+        source=source_name,
+        version=newest.version,
+        record_count=newest.record_count or 0,
     )
 
 

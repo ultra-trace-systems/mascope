@@ -7,6 +7,7 @@ samples, targets, and analysis matches.
 
 from datetime import datetime as dt
 from datetime import timezone
+from functools import lru_cache
 from typing import Optional
 
 from fastapi_users.db import (
@@ -746,9 +747,9 @@ class SampleBatch(Base):
         # split the day's samples across two batches.
         #
         # `polarity` is in the key because the name alone does not identify the
-        # mode: it embeds `ionization_mode_name`, which carries no uniqueness
-        # (only `ionization_mode_token` does), so an admin who names the
-        # positive and negative variant alike renders one name for both. Two
+        # mode: it embeds `ionization_mode_name`, which carries no uniqueness,
+        # so an admin who names the positive and negative variant alike renders
+        # one name for both. Two
         # modes sharing a name AND a polarity still collapse onto one batch -
         # separating those needs the mode id on the batch.
         #
@@ -1212,6 +1213,47 @@ class TargetIon(Base):
     )
 
 
+class StandardMechanism(TypeDecorator):
+    """``IonizationMechanism.ionization_mechanism``: read in the standard adduct
+    notation, whichever notation the row holds.
+
+    A mechanism is stored as ``[M-H]-``, the spelling the write validator
+    answers, but a row written before that holds the legacy ``-H+`` until a
+    migration rewrites it. Every reader goes through the column type, so the
+    listing, the engine's channel tables, the match records and the exports see
+    one spelling for one mechanism either way; text that reads as neither
+    notation is read as it is, so a row the write rules refuse is still
+    reported for what it is.
+
+    Writes and comparisons pass through unconverted: the validator has already
+    answered the standard spelling, and a lookup by spelling has to reach the
+    row as it is stored, which is what ``mechanism_spellings`` is for.
+    """
+
+    impl = String
+    cache_ok = True
+
+    def process_result_value(self, value, dialect):
+        if value is None:
+            return value
+        return _read_mechanism(value)
+
+
+@lru_cache(maxsize=1024)
+def _read_mechanism(value: str) -> str:
+    """A stored mechanism in the standard notation, once per spelling.
+
+    Every row of a query that selects the column comes through here, the
+    target-isotope and match-record listings once per isotope or ion, and a
+    deployment holds a few dozen spellings at most.
+    """
+    # Imported here: the composition package pulls in the finder's
+    # dependencies, which nothing else that loads the models needs.
+    from mascope_tools.composition.mechanism_notation import mechanism_key
+
+    return mechanism_key(value)
+
+
 class IonizationMechanism(Base):
     """Ionization mechanism table."""
 
@@ -1219,7 +1261,9 @@ class IonizationMechanism(Base):
 
     ionization_mechanism_id: Mapped[str] = mapped_column(String(16), primary_key=True)
     ionization_mechanism_polarity: Mapped[str] = mapped_column(String(1))
-    ionization_mechanism: Mapped[str] = mapped_column(String(256), unique=True)
+    ionization_mechanism: Mapped[str] = mapped_column(
+        StandardMechanism(256), unique=True
+    )
 
     # Relationships
     target_ion = relationship(
@@ -1236,11 +1280,26 @@ class IonizationMode(Base):
 
     ionization_mode_id: Mapped[str] = mapped_column(String(16), primary_key=True)
     ionization_mode_name: Mapped[str] = mapped_column(String(256))
-    ionization_mode_token: Mapped[Optional[str]] = mapped_column(
-        String(256), unique=True
-    )
+    ionization_mode_token: Mapped[Optional[str]] = mapped_column(String(256))
+    # The instrument this mode belongs to, or NULL for every instrument. A
+    # filter on the automatic rungs, not on a person's choice: it decides which
+    # modes a file name's tokens are matched against, so the same token can
+    # mean one chemistry on one instrument and another elsewhere, and a mode
+    # that is only ever run on one instrument stops competing for every other
+    # instrument's file names. Where a scoped and an unscoped mode match one
+    # polarity and the scoped token covers the shared one, the instrument's own
+    # wins; a name carrying two different tokens stays ambiguous.
+    instrument: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     ionization_mode_polarity: Mapped[str] = mapped_column(String(1))
     ionization_mechanism_ids: Mapped[list[str]] = mapped_column(JSON)
+    # The chemistry this row stands for, the same string on every server, for
+    # the modes Mascope ships (mascope_backend.ionization_catalogue). NULL on a
+    # mode the deployment made, which is every mode it names itself. A row that
+    # has one owns its name, polarity and mechanisms: only its target
+    # collections are the deployment's to set.
+    system_key: Mapped[Optional[str]] = mapped_column(
+        String(64), nullable=True, unique=True
+    )
     calibration_collection_id: Mapped[Optional[str]] = mapped_column(
         String(16),
         ForeignKey("target_collection.target_collection_id", ondelete="SET NULL"),
@@ -1261,6 +1320,127 @@ class IonizationMode(Base):
         foreign_keys=[diagnostic_collection_id],
         back_populates="diagnostic_ionization_modes",
     )
+
+    # Declared after the columns so the indexes can name `instrument` itself,
+    # which an expression index needs.
+    __table_args__ = (
+        # A token is unique among the modes that could match the same file,
+        # which is not the same as unique outright. An instrument runs several
+        # chemistries and two instruments name theirs in their own way, so a
+        # site has to be able to spell "nitrate" the same in the file names of
+        # two instruments and mean a different mode by it (#1463). Measured on
+        # the production fleet: 13 of 16 instruments on one server have run
+        # more than one chemistry, one of them 55.
+        #
+        # Two partial indexes rather than one on (token, instrument), because
+        # Postgres counts NULLs as distinct: a plain composite would let two
+        # unscoped modes share a token, which is the ambiguity this whole rule
+        # exists to prevent.
+        Index(
+            "uq_ionization_mode_token_global",
+            "ionization_mode_token",
+            unique=True,
+            postgresql_where=text("instrument IS NULL"),
+        ),
+        # Folded, like every other comparison of an instrument name
+        # (`method_keys.instrument_key`): `ORBI-1` and `orbi-1` are one
+        # instrument, so two modes scoped to those spellings must not both
+        # claim a token.
+        Index(
+            "uq_ionization_mode_token_per_instrument",
+            "ionization_mode_token",
+            func.lower(instrument),
+            unique=True,
+            postgresql_where=text("instrument IS NOT NULL"),
+        ),
+    )
+
+
+class MethodBinding(Base):
+    """What chemistry an acquisition method has been seen to run.
+
+    One row per (instrument, method key, signature class): the identity
+    ``mascope_backend.method_keys`` builds, digested into ``binding_key`` so
+    that the uniqueness is a single short index rather than one over three
+    wide columns. The readable columns beside it are what a person reads.
+
+    The row is learned from files that routed on a stronger rung - a
+    declaration, a person's choice, or the filename token - and is what lets a
+    later file of the same method route without a token
+    (``docs/dev/ingest_routing_and_splitting.md``, section 5.3).
+
+    ``chemistry_keys`` is the history the routing decision rests on: the
+    distinct chemistries this key has been seen with. A key routes only while
+    that list holds exactly one, so a method used with two reagent bottles
+    stops routing rather than picking whichever was seen last.
+    """
+
+    __tablename__ = "method_binding"
+    __table_args__ = (UniqueConstraint("binding_key", name="uq_method_binding_key"),)
+
+    method_binding_id: Mapped[str] = mapped_column(String(16), primary_key=True)
+    # Digest of the three columns below; see method_keys.binding_digest.
+    binding_key: Mapped[str] = mapped_column(String(64))
+    instrument: Mapped[str] = mapped_column(String(64))
+    # "" when the instrument reported no method name, or one that never
+    # varies. Such a binding keys on the signature class alone and yields to
+    # the filename token.
+    method_key: Mapped[str] = mapped_column(String(256))
+    signature_class: Mapped[str] = mapped_column(String(512))
+    # The mode a file of this method binds to. SET NULL rather than CASCADE:
+    # the history in chemistry_keys is still worth keeping when a mode is
+    # deleted, and a row with no mode routes nothing.
+    ionization_mode_id: Mapped[Optional[str]] = mapped_column(
+        String(16),
+        ForeignKey("ionization_mode.ionization_mode_id", ondelete="SET NULL"),
+        index=True,
+    )
+    #: Distinct chemistry keys seen, in the order first seen. More than one
+    #: means the key separates nothing and rung 2 is skipped for it.
+    chemistry_keys: Mapped[list[str]] = mapped_column(JSON, default=list)
+    #: "learned" while the key has been seen with one chemistry, "ambiguous"
+    #: once it has been seen with a second. A person confirming a binding
+    #: adds a third value, with the column that records who; neither exists
+    #: until there is a way to confirm one.
+    state: Mapped[str] = mapped_column(String(16))
+    #: The rung that last taught this binding - "declared", "explicit" or
+    #: "token" - or "history" for a row the backfill script read out of
+    #: already-routed files, where the rung each of them took is not recorded.
+    source: Mapped[str] = mapped_column(String(16))
+    first_seen: Mapped[dt] = mapped_column(TIMESTAMP(timezone=True))
+    last_seen: Mapped[dt] = mapped_column(TIMESTAMP(timezone=True))
+    #: Observations that taught this binding, one per (file, polarity). NOT a
+    #: count of distinct files: a file re-processed weeks later, or re-bound
+    #: by a person, is counted again. A file repeating what it already said -
+    #: which is what the pipeline's retries do - is not, via the two columns
+    #: below. A rung that wants distinct files must count them from the
+    #: ACQUISITION sample items, as the backfill script does.
+    n_streams: Mapped[int] = mapped_column(Integer, default=0)
+    #: The file, and the chemistry, of the last observation folded in. A
+    #: repeat of both is ignored; the same file with another chemistry is a
+    #: person re-binding it, and counts. Only a CONSECUTIVE repeat - another
+    #: file of this key in between defeats the comparison - so what keeps the
+    #: pipeline's retries from counting four times is a set shared by the
+    #: attempts of one run, not this.
+    #:
+    #: Deliberately NOT a foreign key. It is a marker, not a reference:
+    #: nothing joins it, and a value left behind by a deleted file answers
+    #: the only question asked of it - "did this file already say this?" -
+    #: exactly as a NULL would. A foreign key would also make every
+    #: observation take a lock on a sample_file row, on the ingest path.
+    last_sample_file_id: Mapped[Optional[str]] = mapped_column(
+        String(16), nullable=True
+    )
+    last_chemistry_key: Mapped[Optional[str]] = mapped_column(
+        String(512), nullable=True
+    )
+    #: Times an observation contradicted the chemistry this row holds. The
+    #: row is never repointed by one: it goes ambiguous instead, and a key
+    #: that keeps disagreeing is a method run with more than one reagent.
+    n_disagreements: Mapped[int] = mapped_column(Integer, default=0)
+
+    # Relationships
+    ionization_mode = relationship("IonizationMode")
 
 
 class TargetIsotope(Base):
@@ -1998,6 +2178,12 @@ class BatchPeak(Base):
     consensus_tier: Mapped[str] = mapped_column(
         String(24), server_default=text("'unassigned'")
     )
+    # The role that accounts for the anchor: ``reagent`` or ``artifact`` where
+    # more of its members were claimed for one than were assigned a formula
+    # (see ``compute_consensus``), NULL otherwise. The tier stays
+    # ``unassigned``, as the per-sample row's does: no compound was assigned,
+    # and the role says what the peak is instead.
+    consensus_role: Mapped[Optional[str]] = mapped_column(String(16))
     best_fit_score: Mapped[Optional[float]] = mapped_column(Float)
     # Fraction of DETECTED members whose assignment agrees with consensus_formula.
     support_fraction: Mapped[Optional[float]] = mapped_column(Float)
@@ -2207,6 +2393,10 @@ class ReferenceSource(Base):
     rows over time (versioned loads for reproducibility); ``is_active`` marks the
     one that queries read, and re-ingesting a source flips the previous load
     inactive.
+
+    It also records how the source's compounds may be matched, written when the
+    source is loaded (``mascope_reference.scope``): a database mirror at the
+    atmospheric window, a list someone authored unbounded.
     """
 
     __tablename__ = "reference_source"
@@ -2220,6 +2410,23 @@ class ReferenceSource(Base):
     record_count: Mapped[int] = mapped_column(Integer, default=0)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
     ingested_at: Mapped[dt] = mapped_column(TIMESTAMP(timezone=True))
+    # The formulas the source may contribute: an object of elements, max_carbon
+    # and max_mass, where a null field is unbounded on that axis. A row that
+    # names none is bounded at the atmospheric window a database mirror loads
+    # at; only a load that says so writes an unbounded one.
+    known_window: Mapped[dict] = mapped_column(
+        JSON,
+        server_default=text(
+            """'{"elements": ["C", "H", "N", "O", "S"], "max_carbon": 40, "max_mass": 700.0}'"""
+        ),
+    )
+    # Whether the source's odd-electron formulas may be matched.
+    allow_radicals: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default=text("false")
+    )
+    # The polarity the compounds are detected in: positive or negative, NULL for
+    # both.
+    polarity: Mapped[Optional[str]] = mapped_column(String(8))
 
     # Relationships
     reference_compound = relationship(
@@ -2280,7 +2487,7 @@ class AssignmentCalibration(Base):
     Moves the assignment-confidence calibration out of the in-code registry so a curve can be
     (re)fit per deployment -- e.g. a user runs known standards + near-mass decoys on their
     instrument -- without a code change. Holds the Platt parameters ``a``/``b`` plus the
-    per-adduct corroboration log-odds (keyed by adduct notation, e.g. ``{"+Br-": 2.28}``) and the
+    per-adduct corroboration log-odds (keyed by adduct notation, e.g. ``{"[M+Br]-": 2.28}``) and the
     provenance mirrored from :class:`mascope_tools.composition.calibration.Calibration`.
 
     Keyed by ``(instrument, score_version)`` because a curve is only valid for the fit-score
@@ -2400,6 +2607,7 @@ class BatchPeakRunAnchor(Base):
     consensus_ion_formula: Mapped[Optional[str]] = mapped_column(String(4096))
     ionization_mechanism_id: Mapped[Optional[str]] = mapped_column(String(16))
     consensus_tier: Mapped[str] = mapped_column(String(24))
+    consensus_role: Mapped[Optional[str]] = mapped_column(String(16))
     best_fit_score: Mapped[Optional[float]] = mapped_column(Float)
     support_fraction: Mapped[Optional[float]] = mapped_column(Float)
     n_present: Mapped[int] = mapped_column(Integer)
@@ -2620,6 +2828,7 @@ __all__ = [
     "TargetIsotope",
     "IonizationMechanism",
     "IonizationMode",
+    "MethodBinding",
     "MatchSample",
     "MatchCollection",
     "MatchCompound",

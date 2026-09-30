@@ -9,17 +9,24 @@ classification and window state.
 
 import datetime
 import importlib
+import inspect
 import json
 import os
+import re
 import urllib.error
+from pathlib import Path
 
 import pytest
 import typer
+import yaml
 
+import mascope_cli
 import mascope_cli.cmd.prod.auto_update as au
 
 
 prod_main = importlib.import_module("mascope_cli.cmd.prod.main")
+
+DATA_DIR = Path(mascope_cli.__file__).resolve().parent / "data"
 
 _HEAD = "abc123def456"
 
@@ -129,6 +136,28 @@ def test_wait_healthy_becomes_healthy(monkeypatch):
     monkeypatch.setattr(au, "health_status", lambda c: next(statuses))
     monkeypatch.setattr(au, "_sleep", lambda s: None)
     assert au.wait_healthy("backend", timeout=60, interval=1) is True
+
+
+def _seconds(duration: str) -> int:
+    """A compose duration (``"300s"``, ``"1m30s"``) in seconds."""
+    parts = re.findall(r"(\d+)([hms])", duration)
+    assert "".join(n + unit for n, unit in parts) == duration, duration
+    return sum(int(n) * {"h": 3600, "m": 60, "s": 1}[unit] for n, unit in parts)
+
+
+def test_the_wait_lasts_as_long_as_the_backend_healthcheck():
+    """The updater must not give up on a start the container still counts as
+    starting: a first start that builds ions for a large library is slow, not
+    broken, and the stack it waits on is the one the compose file describes."""
+    compose = yaml.safe_load(
+        (DATA_DIR / "docker-compose.yaml").read_text(encoding="utf-8")
+    )
+    check = compose["services"]["backend"]["healthcheck"]
+    window = _seconds(check["start_period"]) + check["retries"] * _seconds(
+        check["interval"]
+    )
+
+    assert inspect.signature(au.wait_healthy).parameters["timeout"].default >= window
 
 
 def test_wait_healthy_times_out(monkeypatch):

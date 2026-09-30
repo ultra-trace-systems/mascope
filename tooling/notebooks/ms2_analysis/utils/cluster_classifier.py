@@ -29,7 +29,7 @@ class ClusterClassifier:
     :type data: DataExtractor
     :param compositions: CompositionMap object with composition assignments for MS2 peaks.
     :type compositions: CompositionMap
-    :param reagent: Ionization reagent formula with charge (e.g. "+[15N]O3-").
+    :param reagent: Ionization reagent formula with charge (e.g. "[M+[15N]O3]-").
     :type reagent: str
     """
 

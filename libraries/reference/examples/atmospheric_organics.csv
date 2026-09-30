@@ -20,13 +20,13 @@ Succinic acid,C4H6O4,Kawamura and Ikushima 1993
 Methylmalonic acid,C4H6O4,Kawamura and Ikushima 1993
 Malic acid,C4H6O5,
 Meso-erythritol,C4H10O4,
-2-Methylglyceric acid,C4H8O4,Claeys et al. 2004
+2-Methylglyceric acid,C4H8O4,Edney et al. 2005
 Tartaric acid,C4H6O6,
 Glutaric acid,C5H8O4,Kawamura and Ikushima 1993
 Methylsuccinic acid,C5H8O4,Kawamura and Ikushima 1993
 Dimethylmalonic acid,C5H8O4,Kawamura and Ikushima 1993
 2-Oxoglutaric acid,C5H6O5,
-3-Hydroxyglutaric acid,C5H8O5,Claeys et al. 2004
+3-Hydroxyglutaric acid,C5H8O5,Claeys et al. 2007
 2-Methylthreitol,C5H12O4,Claeys et al. 2004
 2-Methylerythritol,C5H12O4,Claeys et al. 2004
 cis C5-alkene triol,C5H10O3,Wang et al. 2005
@@ -36,12 +36,12 @@ Adipic acid,C6H10O4,Kawamura and Ikushima 1993
 Citric acid,C6H8O7,
 Isocitric acid,C6H8O7,
 Levoglucosan,C6H10O5,Simoneit et al. 1999
-Mannosan,C6H10O5,Simoneit et al. 1999
-Galactosan,C6H10O5,Simoneit et al. 1999
-4-Nitrocatechol,C6H5NO4,Iinuma et al. 2010
+Mannosan,C6H10O5,Clemente et al. 2024
+Galactosan,C6H10O5,Clemente et al. 2024
+4-Nitrocatechol,C6H5NO4,Kitanovski et al. 2012
 Pimelic acid,C7H12O4,Kawamura and Ikushima 1993
 3-Methyladipic acid,C7H12O4,Kawamura and Ikushima 1993
-Terebic acid,C7H10O4,Claeys et al. 2009
+Terebic acid,C7H10O4,Yasmeen et al. 2010
 Benzoic acid,C7H6O2,
 Salicylic acid,C7H6O3,
 4-Hydroxybenzoic acid,C7H6O3,
@@ -50,7 +50,7 @@ Gallic acid,C7H6O5,
 Suberic acid,C8H14O4,Kawamura and Ikushima 1993
 Norpinic acid,C8H12O4,Yu et al. 1999
 Terpenylic acid,C8H12O4,Claeys et al. 2009
-Diaterpenylic acid,C8H12O5,Claeys et al. 2009
+2-Hydroxyterpenylic acid,C8H12O5,Claeys et al. 2009
 3-MBTCA,C8H12O6,Szmigielski et al. 2007
 Phthalic acid,C8H6O4,Kawamura and Ikushima 1993
 Isophthalic acid,C8H6O4,

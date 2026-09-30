@@ -37,6 +37,9 @@ Table(
     Column("record_count", Integer),
     Column("is_active", Boolean),
     Column("ingested_at", DateTime(timezone=True)),
+    Column("known_window", JSON),
+    Column("allow_radicals", Boolean),
+    Column("polarity", String),
 )
 
 Table(

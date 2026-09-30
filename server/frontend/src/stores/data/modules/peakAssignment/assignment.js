@@ -4,6 +4,7 @@ import { defineStore } from 'pinia'
 import { api } from '@/api'
 import { useData } from '@/lib/store'
 import { peakAssignmentEnabled } from '@/lib/features'
+import { isIsotopeLine } from '@/lib/isotopeLines'
 
 import { useSample } from '../sample'
 import { usePeakAssignmentRun } from './run'
@@ -73,7 +74,7 @@ async function loadAssignments(sampleItemId, runId) {
 
 /**
  * The M0 of a row's isotopologue family - the row itself unless it is a
- * child, in which case its owner.
+ * line of another row's pattern (see isIsotopeLine), in which case its owner.
  *
  * The M0 is what the whole family is *about*: an M+1 peak is not a separate
  * finding, it is the same compound seen through one heavy atom. Anything that
@@ -94,8 +95,64 @@ async function loadAssignments(sampleItemId, runId) {
  */
 export function familyM0(assignment, byId) {
   if (!assignment) return null
-  if (assignment.role !== 'iso_child') return assignment
+  if (!isIsotopeLine(assignment)) return assignment
   return byId?.get(assignment.owner_peak_assignment_id) ?? assignment
+}
+
+/**
+ * The lines of each row's isotope pattern - an analyte's M+1, M+2 ..., a source
+ * ion's heavier lines (see isIsotopeLine) - grouped by their owner's
+ * peak_assignment_id, in the order the ledger holds them.
+ *
+ * @param {Array<Object>} records the run's ledger rows
+ * @returns {Map<string, Array<Object>>} owner id -> its lines
+ */
+export function linesByOwner(records) {
+  const map = new Map()
+  for (const record of records ?? []) {
+    if (isIsotopeLine(record) && record.owner_peak_assignment_id != null) {
+      const siblings = map.get(record.owner_peak_assignment_id) ?? []
+      siblings.push(record)
+      map.set(record.owner_peak_assignment_id, siblings)
+    }
+  }
+  return map
+}
+
+/**
+ * The ledger's tier histogram: one count per tier, and one per role that
+ * accounts for a peak without a formula.
+ *
+ * iso_child isotopologues are folded into their M0 and NOT counted, so the tiers
+ * count assigned formulas (and unassigned peaks), not every isotopologue peak. A
+ * reagent or artifact peak is counted under its role, each apart from the other
+ * and from every tier: the engine writes those rows at tier `unassigned`, and
+ * counting them there would put the source's own brightest ions among the peaks
+ * nothing explained. A reagent ion's isotope lines carry the reagent role and
+ * are counted with it: a role counts the peaks the source accounts for, though
+ * the ledger folds the lines under their ion as it folds an analyte's.
+ *
+ * @param {Array<Object>} records the run's ledger rows
+ * @returns {Object<string, number>} counts by tier and by role
+ */
+export function tierHistogram(records) {
+  const counts = {
+    assigned: 0,
+    candidate: 0,
+    below_assignability: 0,
+    unassigned: 0,
+    reagent: 0,
+    artifact: 0
+  }
+  for (const record of records ?? []) {
+    if (record.role === 'iso_child') continue
+    if (record.role === 'reagent' || record.role === 'artifact') {
+      counts[record.role] += 1
+    } else {
+      counts[record.tier] = (counts[record.tier] ?? 0) + 1
+    }
+  }
+  return counts
 }
 
 // Peak ASSIGNMENTS for the focused sample + focused run.
@@ -220,18 +277,7 @@ export const usePeakAssignment = defineStore('app.data.peakAssignment', () => {
     return map
   })
 
-  // iso_child rows (M+1, M+2 ...) grouped by their M0 owner's peak_assignment_id.
-  const childrenByOwner = computed(() => {
-    const map = new Map()
-    for (const record of data.list.value) {
-      if (record.role === 'iso_child' && record.owner_peak_assignment_id != null) {
-        const siblings = map.get(record.owner_peak_assignment_id) ?? []
-        siblings.push(record)
-        map.set(record.owner_peak_assignment_id, siblings)
-      }
-    }
-    return map
-  })
+  const childrenByOwner = computed(() => linesByOwner(data.list.value))
 
   // Isotopologue children of an M0 assignment (by its peak_assignment_id).
   const childrenOf = (peakAssignmentId) =>
@@ -262,7 +308,7 @@ export const usePeakAssignment = defineStore('app.data.peakAssignment', () => {
   // a different row's list would commit whatever happened to sit there.
   //
   // Reloads the run rather than patching the row from the response: an override
-  // also demotes the satellites of the formula it replaced, and the ledger, the
+  // also demotes the isotopologues of the formula it replaced, and the ledger, the
   // spectrum colouring and the tier histogram all read the one list. The reload
   // clears the detail cache with it (see the watch above), so the inspector
   // re-fetches the alternatives the override rewrote.
@@ -283,28 +329,8 @@ export const usePeakAssignment = defineStore('app.data.peakAssignment', () => {
     return byId.value.get(peakAssignmentId) ?? null
   }
 
-  // Confidence-tier histogram for the run summary. iso_child isotopologues are
-  // folded into their M0 and NOT counted, so the tiers count assigned formulas
-  // (and unassigned peaks), not every isotopologue peak. Roles reagent/artifact
-  // are counted separately (orthogonal to tier).
-  const tierCounts = computed(() => {
-    const counts = {
-      assigned: 0,
-      candidate: 0,
-      below_assignability: 0,
-      unassigned: 0,
-      reagent: 0
-    }
-    for (const record of data.list.value) {
-      if (record.role === 'iso_child') continue
-      if (record.role === 'reagent' || record.role === 'artifact') {
-        counts.reagent += 1
-      } else {
-        counts[record.tier] = (counts[record.tier] ?? 0) + 1
-      }
-    }
-    return counts
-  })
+  // Confidence-tier histogram for the run summary (see tierHistogram).
+  const tierCounts = computed(() => tierHistogram(data.list.value))
 
   return {
     ...data,

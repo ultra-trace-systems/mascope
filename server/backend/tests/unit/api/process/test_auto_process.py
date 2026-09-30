@@ -170,15 +170,21 @@ def status():
     """The processing-status writer, recorded instead of written.
 
     Also stubs the scan stream census, which would read the file's props
-    from the filestore. Request the fixture by name to read what was
-    recorded: ``[(status, detail), ...]`` in order via :func:`_recorded`.
+    from the filestore, and the method-binding learner, which would write to
+    the database. Request the fixture by name to read what was recorded:
+    ``[(status, detail), ...]`` in order via :func:`_recorded`.
     """
     with (
         patch(f"{_SVC}.record_processing_status", new_callable=AsyncMock) as record,
-        patch(f"{_SVC}.read_pooled_streams_note", new_callable=AsyncMock) as note,
+        patch(f"{_SVC}.read_scan_streams", new_callable=AsyncMock) as census,
+        patch(f"{_SVC}.pooled_streams_note") as note,
+        patch(f"{_SVC}.learn_method_bindings", new_callable=AsyncMock) as learn,
     ):
+        census.return_value = []
         note.return_value = None
         record.note = note
+        record.census = census
+        record.learn = learn
         yield record
 
 
@@ -889,6 +895,36 @@ async def test_retries_recoverable_error_then_succeeds():
 
 
 @pytest.mark.asyncio
+async def test_every_attempt_of_a_run_shares_one_recorded_binding_set():
+    """So a retried run teaches its method once, not once per attempt.
+
+    The row-level guard cannot do this: the backoffs are tens of seconds, so
+    another file of the same key is easily learned in between and the
+    comparison with whatever the row last saw misses.
+    """
+    from mascope_backend.api.controllers.sample.files.process import service
+    from mascope_backend.api.lib.exceptions.api_exceptions import ApiException
+
+    ok = {"message": "done", "_notification_data": {}}
+    body = AsyncMock(side_effect=[ApiException("busy", {}, 503), ok])
+
+    with (
+        patch(f"{_SVC}._auto_process_sample_file", new=body),
+        patch(f"{_SVC}._delete_partial_acquisition_items", new=AsyncMock()),
+        patch.object(service, "_AUTO_PROCESS_RETRY_DELAYS_S", (0, 0, 0)),
+        patch(f"{_NOTIF}.handle_notifications", new_callable=AsyncMock),
+        patch(f"{_UTILS}.handle_reloads", new_callable=AsyncMock),
+    ):
+        await service.auto_process_sample_file(
+            sample_file_id="sf-retry", independent_transaction=True
+        )
+
+    passed = [call.kwargs["recorded_bindings"] for call in body.call_args_list]
+    assert len(passed) == 2
+    assert passed[0] is passed[1]
+
+
+@pytest.mark.asyncio
 async def test_retries_raw_pool_timeout():
     """An unwrapped SQLAlchemy pool timeout is recoverable too."""
     from sqlalchemy.exc import TimeoutError as SQLAlchemyTimeoutError
@@ -1409,6 +1445,37 @@ async def test_an_unverified_record_holds_back_the_whole_file(status):
         "calibration_failed",
         "The m/z calibration failed. Matching and peak assignment were skipped.",
     )
+
+
+@pytest.mark.asyncio
+async def test_a_routed_file_teaches_its_method_binding(status):
+    """What the file bound to is recorded against its acquisition method."""
+    census = [{"key": "FTMS - p NSI Full ms", "signature": {"polarity": "-"}}]
+    status.census.return_value = census
+    _start_single()
+
+    await _run_pipeline()
+
+    status.learn.assert_awaited_once()
+    call = status.learn.await_args
+    assert call.kwargs["source"] == "token"
+    assert call.kwargs["streams"] == census
+
+
+@pytest.mark.asyncio
+async def test_a_file_a_person_routed_teaches_its_method_binding(status):
+    """A chosen mode is evidence about the method too, on a stronger rung."""
+    _start_single()
+    chosen = _make_ionization_mode(ionization_mode_name="Nitrate")
+
+    with patch(
+        f"{_SVC}.fetch_ionization_modes",
+        new_callable=AsyncMock,
+        return_value=[chosen],
+    ):
+        await _run_pipeline(ionization_mode_ids=["im-001"])
+
+    assert status.learn.await_args.kwargs["source"] == "explicit"
 
 
 @pytest.mark.asyncio

@@ -1,4 +1,10 @@
-"""Tests for the bulk known-composition provider (Stage A input)."""
+"""Tests for the bulk known-composition provider (Stage A input).
+
+What a source contributes is bounded by what its row records: its window under
+the context's ceiling, its radical allowance, and its polarity against the
+sample's. A row seeded here without a window reads as the column's default says,
+at the mirror window.
+"""
 
 from datetime import datetime, timezone
 
@@ -13,8 +19,13 @@ from sqlalchemy.ext.asyncio import (  # noqa: E402
     create_async_engine,
 )
 
-from mascope_reference.known import iter_known_compositions  # noqa: E402
+from mascope_reference.known import (  # noqa: E402
+    iter_known_compositions,
+    known_listings,
+)
 from mascope_reference.schema import reference_compound, reference_source  # noqa: E402
+from mascope_reference.scope import MIRROR_WINDOW, UNBOUNDED  # noqa: E402
+from mascope_tools.composition.known_window import KnownWindow  # noqa: E402
 
 
 def _seed(sync_engine, source_rows):
@@ -30,6 +41,11 @@ def _seed(sync_engine, source_rows):
                     record_count=len(compounds),
                     is_active=source.get("is_active", True),
                     ingested_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+                    known_window=(
+                        source["window"].to_json() if "window" in source else None
+                    ),
+                    allow_radicals=source.get("allow_radicals", False),
+                    polarity=source.get("polarity"),
                 )
                 .returning(reference_source.c.reference_source_id)
             ).scalar_one()
@@ -120,51 +136,151 @@ async def test_charged_rows_are_excluded(sync_engine, db_path):
     assert {k.formula for k in result} == {"C10H16O3", "C9H14O4"}
 
 
+#: What the shipped lists bring that no formula grid reaches.
+_FAMILIES = [
+    {"formula": "C10H16O3", "mass": 184.11},  # CHO - inside every window
+    {"formula": "C8H24O4Si4", "mass": 296.08},  # D4
+    {"formula": "C6H15O4P", "mass": 182.07},  # triethyl phosphate
+    {"formula": "C8HF15O2", "mass": 413.97},  # PFOA
+]
+_CEILING = KnownWindow(
+    frozenset({"C", "H", "N", "O", "S", "Si", "P", "F", "Cl", "Br", "I"}),
+    max_carbon=40,
+    max_mass=700.0,
+)
+
+
 @pytest.mark.asyncio
-async def test_atmospheric_element_bound(sync_engine, db_path):
+async def test_a_mirror_is_held_to_its_window_while_a_list_brings_its_families(
+    sync_engine, db_path
+):
     _seed(
         sync_engine,
         [
+            ({"name": "a-list", "window": UNBOUNDED}, [dict(c) for c in _FAMILIES]),
             (
-                {"name": "s"},
-                [
-                    {"formula": "C10H16O3", "mass": 184.11},  # CHO - kept
-                    {
-                        "formula": "C8HF15O2",
-                        "mass": 413.97,
-                    },  # has F - dropped by default
-                ],
-            )
+                {"name": "a-mirror", "window": MIRROR_WINDOW},
+                [dict(c, id=f"m-{c['formula']}") for c in _FAMILIES],
+            ),
         ],
     )
-    default = {k.formula for k in await _known(db_path)}
-    assert default == {"C10H16O3"}
-    # Disabling the element filter lets the fluorinated compound through.
-    widened = {k.formula for k in await _known(db_path, elements=None)}
-    assert widened == {"C10H16O3", "C8HF15O2"}
+    result = {k.formula: k for k in await _known(db_path, ceiling=_CEILING)}
+    assert set(result) == {"C10H16O3", "C8H24O4Si4", "C6H15O4P", "C8HF15O2"}
+    # A formula carries the identities of the sources that admit it, and only
+    # those: the mirror holds D4 too, outside its window, and lends it nothing.
+    assert {i.source for i in result["C8H24O4Si4"].identities} == {"a-list"}
+    assert {i.source for i in result["C10H16O3"].identities} == {"a-list", "a-mirror"}
 
 
 @pytest.mark.asyncio
-async def test_carbon_and_mass_bounds(sync_engine, db_path):
+async def test_a_row_that_records_no_window_is_bounded_like_a_mirror(
+    sync_engine, db_path
+):
+    _seed(sync_engine, [({"name": "legacy"}, [dict(c) for c in _FAMILIES])])
+    assert {k.formula for k in await _known(db_path)} == {"C10H16O3"}
+
+
+@pytest.mark.asyncio
+async def test_the_ceiling_bounds_even_an_unbounded_list(sync_engine, db_path):
     _seed(
         sync_engine,
         [
             (
-                {"name": "s"},
+                {"name": "a-list", "window": UNBOUNDED},
                 [
                     {"formula": "C10H16O3", "mass": 184.11},
-                    {"formula": "C50H2O2", "mass": 620.0},  # too many carbons
-                    {"formula": "C12H10O2", "mass": 800.0},  # too heavy
+                    {"formula": "C50H2O2", "mass": 634.0},  # too many carbons
+                    {"formula": "C40H70O30", "mass": 1030.4},  # too heavy
+                    {
+                        "formula": "C2H6Se",
+                        "mass": 109.96,
+                    },  # dimethyl selenide: Se is not opened
                 ],
             )
         ],
     )
-    kept = {k.formula for k in await _known(db_path, max_carbon=40, max_mass=700.0)}
+    kept = {k.formula for k in await _known(db_path, ceiling=_CEILING)}
     assert kept == {"C10H16O3"}
-    loosened = {
-        k.formula for k in await _known(db_path, max_carbon=None, max_mass=None)
+    # With no ceiling - the identity context - the list is its own bound.
+    unbounded = {k.formula for k in await _known(db_path, ceiling=None)}
+    assert unbounded == {"C10H16O3", "C50H2O2", "C40H70O30", "C2H6Se"}
+
+
+@pytest.mark.asyncio
+async def test_a_sources_own_bound_holds_under_a_wider_ceiling(sync_engine, db_path):
+    _seed(
+        sync_engine,
+        [
+            (
+                {
+                    "name": "a-bounded-list",
+                    "window": KnownWindow(
+                        frozenset({"C", "H", "O", "Si"}), max_carbon=8
+                    ),
+                },
+                [dict(c) for c in _FAMILIES]
+                + [{"formula": "C10H30O5Si5", "mass": 370.09}],  # D5: ten carbons
+            )
+        ],
+    )
+    kept = {k.formula for k in await _known(db_path, ceiling=_CEILING)}
+    assert kept == {"C8H24O4Si4"}
+
+
+@pytest.mark.asyncio
+async def test_radicals_come_only_from_a_source_that_allows_them(sync_engine, db_path):
+    radicals = [
+        {"formula": "HO2", "mass": 32.998},
+        {"formula": "C10H15O8", "mass": 263.077},  # an RO2
+        {"formula": "C10H16O8", "mass": 264.085},  # its closed-shell neighbour
+    ]
+    _seed(
+        sync_engine,
+        [
+            ({"name": "no-radicals", "window": UNBOUNDED}, [dict(c) for c in radicals]),
+            (
+                {"name": "radicals", "window": UNBOUNDED, "allow_radicals": True},
+                [dict(c, id=f"r-{c['formula']}") for c in radicals[:1]],
+            ),
+        ],
+    )
+    result = {k.formula: k for k in await _known(db_path, ceiling=_CEILING)}
+    assert set(result) == {"HO2", "C10H16O8"}
+    assert {i.source for i in result["HO2"].identities} == {"radicals"}
+
+
+@pytest.mark.asyncio
+async def test_a_source_detected_in_the_other_polarity_contributes_nothing(
+    sync_engine, db_path
+):
+    _seed(
+        sync_engine,
+        [
+            (
+                {"name": "positive-list", "window": UNBOUNDED, "polarity": "positive"},
+                [{"formula": "C8H24O4Si4", "mass": 296.08}],
+            ),
+            (
+                {"name": "negative-list", "window": UNBOUNDED, "polarity": "negative"},
+                [{"formula": "C8HF15O2", "mass": 413.97}],
+            ),
+            (
+                {"name": "both-list", "window": UNBOUNDED},
+                [{"formula": "C2HF3O2", "mass": 113.99}],
+            ),
+        ],
+    )
+    negative = {
+        k.formula for k in await _known(db_path, ceiling=_CEILING, polarity="negative")
     }
-    assert loosened == {"C10H16O3", "C50H2O2", "C12H10O2"}
+    assert negative == {"C8HF15O2", "C2HF3O2"}
+    positive = {
+        k.formula for k in await _known(db_path, ceiling=_CEILING, polarity="positive")
+    }
+    assert positive == {"C8H24O4Si4", "C2HF3O2"}
+    # A sample whose polarity is not known is matched against every source.
+    unknown = {k.formula for k in await _known(db_path, ceiling=_CEILING)}
+    assert unknown == {"C8H24O4Si4", "C8HF15O2", "C2HF3O2"}
 
 
 @pytest.mark.asyncio
@@ -256,8 +372,130 @@ async def test_known_state_fingerprint_tracks_active_sources(sync_engine, db_pat
             after = await known_state_fingerprint(s)
             assert len(after) == 2
             assert after != before
+            # Bringing a source's scope up to date without reloading it changes
+            # it too: what the known set holds depends on the row's window.
+            await s.execute(
+                update(reference_source)
+                .where(reference_source.c.name == "src-a")
+                .values(known_window=UNBOUNDED.to_json(), allow_radicals=True)
+            )
+            refreshed = await known_state_fingerprint(s)
+            assert refreshed != after
+            await s.execute(
+                update(reference_source)
+                .where(reference_source.c.name == "src-a")
+                .values(polarity="negative")
+            )
+            assert await known_state_fingerprint(s) != refreshed
             # Deactivating everything empties it - the no-mirror fast path.
             await s.execute(update(reference_source).values(is_active=False))
             assert await known_state_fingerprint(s) == ()
     finally:
         await engine.dispose()
+
+
+async def _listings(db_path, formulas, **kw):
+    engine = create_async_engine(f"sqlite+aiosqlite:///{db_path}")
+    try:
+        async with async_sessionmaker(engine)() as s:
+            return await known_listings(s, formulas, **kw)
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_a_formula_is_named_by_what_its_sources_hold(sync_engine, db_path):
+    _seed(
+        sync_engine,
+        [
+            (
+                {"name": "list-a", "window": UNBOUNDED},
+                [{"formula": "C3H7NO", "mass": 73.05, "name": "dimethylformamide"}],
+            ),
+            (
+                {"name": "list-b", "window": UNBOUNDED},
+                [{"formula": "C3H7NO", "mass": 73.05, "name": "propanamide"}],
+            ),
+        ],
+    )
+    # Keyed by the formula as asked, however it was spelled.
+    listings = await _listings(db_path, ["C3H7N1O1", "C9H9N"], ceiling=_CEILING)
+    assert set(listings) == {"C3H7N1O1"}
+    listing = listings["C3H7N1O1"]
+    assert [i.name for i in listing.identities] == ["dimethylformamide", "propanamide"]
+    assert [i.source for i in listing.identities] == ["list-a", "list-b"]
+    assert listing.total == 2
+
+
+@pytest.mark.asyncio
+async def test_a_listing_is_scoped_as_stage_a_matches(sync_engine, db_path):
+    # Every row here names a formula Stage A would not match for a negative
+    # sample under the ceiling, and so names nothing.
+    _seed(
+        sync_engine,
+        [
+            (
+                {"name": "positive-list", "window": UNBOUNDED, "polarity": "positive"},
+                [{"formula": "C8H24O4Si4", "mass": 296.08}],
+            ),
+            (
+                {"name": "no-radicals", "window": UNBOUNDED},
+                [{"formula": "C10H15O8", "mass": 263.077}],
+            ),
+            (
+                {"name": "mirror"},
+                [{"formula": "C4H11PS", "mass": 122.03}],
+            ),
+            (
+                {"name": "charged", "window": UNBOUNDED},
+                [{"formula": "C4H12N", "mass": 74.1, "charge": 1}],
+            ),
+            (
+                {"name": "closed-list", "window": UNBOUNDED, "license": "restricted"},
+                [{"formula": "C2HF3O2", "mass": 113.99, "license": "restricted"}],
+            ),
+        ],
+    )
+    formulas = ["C8H24O4Si4", "C10H15O8", "C4H11PS", "C4H12N", "C2HF3O2"]
+    listings = await _listings(
+        db_path,
+        formulas,
+        ceiling=_CEILING,
+        polarity="negative",
+        licenses={"public-domain"},
+    )
+    assert listings == {}
+    # Without the sample's polarity or the deployment's licences, the rows those
+    # held back name their formulas. What each source's own row bounds - its
+    # radicals, its window - and a charged row still name nothing.
+    assert set(await _listings(db_path, formulas)) == {"C8H24O4Si4", "C2HF3O2"}
+
+
+@pytest.mark.asyncio
+async def test_a_listing_counts_past_its_cap(sync_engine, db_path):
+    _seed(
+        sync_engine,
+        [
+            (
+                {"name": "s"},
+                [
+                    {
+                        "formula": "C10H16O3",
+                        "mass": 184.11,
+                        "name": f"iso-{i}",
+                        "id": f"x{i}",
+                    }
+                    for i in range(10)
+                ],
+            )
+        ],
+    )
+    listing = (await _listings(db_path, ["C10H16O3"], max_identities=3))["C10H16O3"]
+    assert [i.name for i in listing.identities] == ["iso-0", "iso-1", "iso-2"]
+    assert listing.total == 10
+
+
+@pytest.mark.asyncio
+async def test_nothing_to_look_up_asks_nothing(sync_engine, db_path):
+    assert await _listings(db_path, []) == {}
+    assert await _listings(db_path, ["not a formula"]) == {}

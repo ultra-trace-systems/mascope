@@ -13,8 +13,8 @@ import { useApp } from '@/stores'
 /**
  * The per-sample verdict form for one ledger row, shown from the Verdict
  * column's popover: the sample ledger's counterpart of the batch ledger's
- * BatchPeakVerdictPopover, and the same form the peak inspector carries, so
- * an unverified row can be judged where it is read.
+ * BatchPeakVerdictPopover, recording the same verdict the peak inspector
+ * records, so an unverified row can be judged where it is read.
  *
  * A verdict is about the compound, so it is recorded on the family's M0
  * whichever member the row is - the verification store redirects, as it does

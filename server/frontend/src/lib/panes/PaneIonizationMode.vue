@@ -4,6 +4,7 @@
  *
  * Allows adding, editing and deleting ionization modes.
  */
+import { choicesForScope, instrumentChoices } from '@/lib/ionizationModes'
 import { reactive, computed, watch, ref } from 'vue'
 
 import DataTable from 'primevue/datatable'
@@ -38,7 +39,11 @@ const add = reactive({
   ionization_mode_polarity: null,
   ionization_mechanism_ids: [],
   calibration_collection_id: null,
-  diagnostic_collection_id: null
+  diagnostic_collection_id: null,
+  // null: every instrument, as every mode was before a mode could belong to
+  // one. Set it and this mode's token is only matched against that
+  // instrument's file names.
+  instrument: null
 })
 
 const edited = ref(null)
@@ -50,6 +55,7 @@ const resetFields = () => {
   add.ionization_mechanism_ids = []
   add.calibration_collection_id = null
   add.diagnostic_collection_id = null
+  add.instrument = null
 }
 
 const resetEdit = () => {
@@ -71,6 +77,17 @@ const calibrationCollections = computed(() =>
 const diagnosticCollections = computed(() =>
   app.data.target.collection.list.filter((c) => c.target_collection_type === 'DIAGNOSTICS')
 )
+
+// Every instrument that has files, for scoping a mode to one of them. Cleared
+// means every instrument.
+// One entry per instrument, however its name was recorded. /instruments groups
+// by the exact spelling, so ORBI-1 and orbi-1 arrive as two rows while the
+// scope treats them as one instrument - offering both would invite a second
+// mode "for the other one" that the unique index refuses anyway.
+// Both live in lib/ionizationModes.js, beside the folded key they compare on,
+// so they can be tested without mounting this pane.
+const instrumentOptions = computed(() => instrumentChoices(app.data.instrument.list))
+const optionsFor = (instrument) => choicesForScope(instrumentOptions.value, instrument)
 
 // Filter mechanisms by selected polarity
 const availableMechanisms = computed(() => {
@@ -104,7 +121,8 @@ const editHasChanges = computed(() => {
     JSON.stringify([...e.ionization_mechanism_ids].sort()) !==
       JSON.stringify([...o.ionization_mechanism_ids].sort()) ||
     e.calibration_collection_id !== o.calibration_collection_id ||
-    e.diagnostic_collection_id !== o.diagnostic_collection_id
+    e.diagnostic_collection_id !== o.diagnostic_collection_id ||
+    e.instrument !== o.instrument
   )
 })
 
@@ -118,6 +136,7 @@ const mode = {
       ionization_mechanism_ids: [...data.ionization_mechanism_ids],
       calibration_collection_id: data.calibration_collection_id,
       diagnostic_collection_id: data.diagnostic_collection_id,
+      instrument: data.instrument ?? null,
       // Store original values to detect changes
       _original: {
         ionization_mode_name: data.ionization_mode_name,
@@ -125,7 +144,8 @@ const mode = {
         ionization_mode_polarity: data.ionization_mode_polarity,
         ionization_mechanism_ids: [...data.ionization_mechanism_ids],
         calibration_collection_id: data.calibration_collection_id,
-        diagnostic_collection_id: data.diagnostic_collection_id
+        diagnostic_collection_id: data.diagnostic_collection_id,
+        instrument: data.instrument ?? null
       }
     }
   },
@@ -281,6 +301,28 @@ defineExpose({
         <label for="add-polarity">Polarity*</label>
       </FloatLabel>
 
+      <!-- No placeholder. A FloatLabel rests its label inside the field until
+           something is chosen, and a Select draws its placeholder in that same
+           spot, so the two read on top of each other. Empty means every
+           instrument, which the tooltip and the column say. -->
+      <FloatLabel style="flex-grow: 1; min-width: 170px">
+        <Select
+          v-model="add.instrument"
+          :options="instrumentOptions"
+          optionLabel="label"
+          optionValue="value"
+          showClear
+          id="add-instrument"
+          style="width: 100%"
+          v-tooltip="{
+            value:
+              'Limit this mode to one instrument, so its filename token is only matched against the files of that instrument. Leave empty to apply to every instrument.',
+            showDelay: 500
+          }"
+        />
+        <label for="add-instrument">Instrument</label>
+      </FloatLabel>
+
       <FloatLabel style="flex-grow: 2; min-width: 200px">
         <MultiSelect
           v-model="add.ionization_mechanism_ids"
@@ -347,7 +389,8 @@ defineExpose({
               ionization_mode_polarity: add.ionization_mode_polarity,
               ionization_mechanism_ids: add.ionization_mechanism_ids,
               calibration_collection_id: add.calibration_collection_id,
-              diagnostic_collection_id: add.diagnostic_collection_id
+              diagnostic_collection_id: add.diagnostic_collection_id,
+              instrument: add.instrument
             })
         "
         :disabled="
@@ -361,7 +404,7 @@ defineExpose({
     </menu>
   </Fieldset>
 
-  <section style="margin: 1rem 0">
+  <section class="list">
     <DataTable
       :value="
         app.data.ionization.mode.list.filter(
@@ -372,10 +415,11 @@ defineExpose({
       :globalFilterFields="[
         'ionization_mode_name',
         'ionization_mode_token',
-        'ionization_mode_polarity'
+        'ionization_mode_polarity',
+        'instrument'
       ]"
       scrollable
-      scrollHeight="calc(85vh - 350px)"
+      scrollHeight="flex"
       tableStyle="min-width: 800px"
     >
       <Column header="Name" style="min-width: 150px">
@@ -397,6 +441,22 @@ defineExpose({
             style="width: 100%"
           />
           <span v-else>{{ data.ionization_mode_token || '' }}</span>
+        </template>
+      </Column>
+
+      <Column header="Instrument" style="min-width: 150px">
+        <template #body="{ data }">
+          <Select
+            v-if="editing(data) && !data.system_key"
+            v-model="edited.instrument"
+            :options="optionsFor(edited.instrument)"
+            optionLabel="label"
+            optionValue="value"
+            showClear
+            placeholder="Every instrument"
+            style="width: 100%"
+          />
+          <span v-else>{{ data.instrument || 'Every instrument' }}</span>
         </template>
       </Column>
 
@@ -578,6 +638,22 @@ defineExpose({
 .row {
   display: flex;
   align-items: flex-start;
+}
+
+/* The table takes the height the form and the search leave in the panel, and
+   scrolls its own rows. It keeps its header and a row, though: should a
+   wrapped form leave less, the panel scrolls instead. */
+.list {
+  flex: 1;
+  min-height: 7rem;
+  display: flex;
+  flex-flow: column;
+  margin: 1rem 0;
+}
+
+.list :deep(.p-datatable) {
+  flex: 1;
+  min-height: 0;
 }
 
 .mechanism-tag {

@@ -35,20 +35,20 @@ describe('BaseTierTag manual mark', () => {
   // The mark is additional to the tier, not a tier of its own: a curated row
   // still carries whatever tier its evidence earns under the run's bands, and
   // the chip has to keep saying so.
-  it('keeps showing the tier and evidence it was given', () => {
+  it('keeps showing the tier it was given', () => {
     const wrapper = mountTag({ tier: 'assigned', evidence: 0.91, source: 'manual' })
 
-    expect(wrapper.find('.tag').text()).toContain('91%')
+    expect(wrapper.find('.tag').text()).toBe('assigned')
   })
 
-  // The number is the evidence, not the fit, and the two come apart exactly
-  // where it matters: a chemically implausible formula can fit beautifully. The
-  // chip must never pair a low tier with the high fit that did not earn it.
-  it('shows the evidence that produced the tier, not the fit', () => {
+  // A percentage beside the tier reads as the chance the assignment is right,
+  // which the evidence is not. The chip names the tier; the hover text gives
+  // the evidence it was banded on, named as the product it is.
+  it('names the tier alone, and the evidence on hover as what it is', () => {
     const wrapper = mountTag({ tier: 'below_assignability', evidence: 0.38 })
 
-    expect(wrapper.find('.tag').text()).toContain('38%')
-    expect(wrapper.vm.autoTooltip).toContain('fit x plausibility')
+    expect(wrapper.find('.tag').text()).toBe('below')
+    expect(wrapper.vm.autoTooltip).toContain('Evidence 38% (fit × plausibility)')
   })
 
   // A tier that was not derived from a single number carries no number. The
@@ -64,8 +64,34 @@ describe('BaseTierTag manual mark', () => {
   it('explains in hover text that the next run supersedes it', () => {
     const wrapper = mountTag({ tier: 'candidate', source: 'manual' })
 
-    expect(wrapper.vm.autoTooltip).toContain('by hand')
-    expect(wrapper.vm.autoTooltip).toContain('superseded')
+    expect(wrapper.vm.autoTooltip).toContain('Assigned by hand')
+    expect(wrapper.vm.autoTooltip).toContain('the next assignment run supersedes this')
+  })
+
+  // Hover says what the tier means, and where the row came from in words a
+  // reader knows rather than as the stage's key.
+  it('says what the tier means and how the row was found', () => {
+    const wrapper = mountTag({ tier: 'candidate', evidence: 0.52, source: 'untargeted' })
+
+    expect(wrapper.vm.autoTooltip).toBe(
+      [
+        'Candidate: a plausible formula with weaker support',
+        'Evidence 52% (fit × plausibility)',
+        'Found by the formula search'
+      ].join('\n')
+    )
+  })
+
+  it('says an isotopologue holds the tier of its M0', () => {
+    const wrapper = mountTag({ tier: 'assigned', source: 'database', role: 'iso_child' })
+
+    expect(wrapper.vm.autoTooltip).toBe(
+      [
+        'Assigned: strong evidence for this formula',
+        'Matched from a target or reference list',
+        'An isotopologue: it holds the tier of its M0'
+      ].join('\n')
+    )
   })
 
   // A curated row still gets the hand at any tier its fit earns, including the
@@ -85,7 +111,7 @@ describe('BaseTierTag manual mark', () => {
   })
 })
 
-// Curating a peak also strips the isotopologue satellites of the formula its M0
+// Curating a peak also strips the isotopologues of the formula its M0
 // no longer holds, and the backend leaves source = 'manual' on each stripped row
 // so the ledger's source filter shows the whole footprint of one override. Those
 // rows are a person's doing without anyone having chosen a formula for them -
@@ -98,7 +124,7 @@ describe('BaseTierTag demoted mark', () => {
     const wrapper = mountTag(demoted)
 
     expect(wrapper.find('[data-testid="manual-mark"]').exists()).toBe(false)
-    expect(wrapper.vm.autoTooltip).not.toContain('chose this formula')
+    expect(wrapper.vm.autoTooltip).not.toContain('Assigned by hand')
   })
 
   // Marked rather than left bare: without a mark the row is indistinguishable
@@ -108,8 +134,8 @@ describe('BaseTierTag demoted mark', () => {
     const wrapper = mountTag(demoted)
 
     expect(wrapper.find('[data-testid="demoted-mark"]').exists()).toBe(true)
-    expect(wrapper.vm.autoTooltip).toContain('its M0 was reassigned by hand')
-    expect(wrapper.vm.autoTooltip).toContain('superseded')
+    expect(wrapper.vm.autoTooltip).toContain('Unassigned by hand, with its M0')
+    expect(wrapper.vm.autoTooltip).toContain('the next assignment run supersedes this')
   })
 
   // The chip's own label comes from the bucketed tier, so the mark is decided on
@@ -132,5 +158,75 @@ describe('BaseTierTag demoted mark', () => {
       expect(wrapper.find('[data-testid="demoted-mark"]').exists(), String(source)).toBe(false)
       expect(wrapper.find('[data-testid="manual-mark"]').exists(), String(source)).toBe(false)
     }
+  })
+})
+
+// A reagent or artifact peak is accounted for by what made it. Its row sits at
+// tier `unassigned` because no compound was assigned, and a chip saying so would
+// read as a peak nothing explained - so the role is the chip.
+describe('BaseTierTag reagent and artifact peaks', () => {
+  const roleIcon = (wrapper) => wrapper.find('.role-icon')
+
+  it('shows the role in place of the tier, with no evidence', () => {
+    for (const role of ['reagent', 'artifact']) {
+      const wrapper = mountTag({ tier: 'unassigned', evidence: 0.5, role, source: role })
+
+      expect(wrapper.find('.tag').text()).toBe(role)
+      expect(wrapper.find('.tag').text()).not.toContain('unassigned')
+      // The chip is the role, so no second mark repeats it.
+      expect(roleIcon(wrapper).exists()).toBe(false)
+    }
+  })
+
+  // The class is what colours the chip: the role's own colour, the spectrum's,
+  // rather than the recessive dashed style an unassigned chip wears.
+  it("wears the role's class, not the tier's", () => {
+    for (const role of ['reagent', 'artifact']) {
+      const classes = mountTag({ tier: 'unassigned', role }).find('.tag').classes()
+
+      expect(classes).toEqual(expect.arrayContaining(['role', role]))
+      expect(classes).not.toContain('tier')
+      expect(classes).not.toContain('unassigned')
+    }
+    const tier = mountTag({ tier: 'unassigned', role: 'unassigned' }).find('.tag').classes()
+    expect(tier).toEqual(expect.arrayContaining(['tier', 'unassigned']))
+    expect(tier).not.toContain('role')
+  })
+
+  it('says what made the peak, and that it is not counted as a compound', () => {
+    const reagent = mountTag({ tier: 'unassigned', role: 'reagent', source: 'reagent' })
+    expect(reagent.vm.autoTooltip).toBe(
+      [
+        'Reagent: an ion the ionization source made, of its reagent, the air or its calibrant, or by breaking an analyte',
+        "Counted apart from the sample's compounds"
+      ].join('\n')
+    )
+
+    const artifact = mountTag({ tier: 'unassigned', role: 'artifact' })
+    expect(artifact.vm.autoTooltip).toBe(
+      [
+        'Artifact: a ringing side lobe of a very intense neighbouring peak',
+        "Counted apart from the sample's compounds"
+      ].join('\n')
+    )
+  })
+
+  it('keeps the tier on an isotopologue, marked as one', () => {
+    const wrapper = mountTag({ tier: 'assigned', evidence: 0.9, role: 'iso_child' })
+
+    expect(wrapper.find('.tag').text()).toContain('assigned')
+    expect(roleIcon(wrapper).exists()).toBe(true)
+  })
+
+  it('leaves a monoisotopic row and an unknown role on their tier', () => {
+    for (const role of ['M0', 'unassigned', 'constructor', null]) {
+      const wrapper = mountTag({ tier: 'candidate', role })
+      expect(wrapper.find('.tag').text(), String(role)).toBe('candidate')
+    }
+  })
+
+  it('yields to an explicit tooltip here too', () => {
+    const wrapper = mountTag({ tier: 'unassigned', role: 'reagent', tooltip: 'say this' })
+    expect(wrapper.vm.autoTooltip).toBe('say this')
   })
 })

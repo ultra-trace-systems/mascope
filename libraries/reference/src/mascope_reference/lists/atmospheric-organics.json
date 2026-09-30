@@ -1,0 +1,153 @@
+{
+  "schema_version": 2,
+  "id": "atmospheric-organics",
+  "label": "Atmospheric organic tracers: acids, terpene and isoprene oxidation products, biomass-burning tracers",
+  "data_version": "2026.09",
+  "license": "CC-BY-4.0",
+  "references": [
+    {
+      "citation": "K. Kawamura, K. Ikushima, Seasonal changes in the distribution of dicarboxylic acids in the urban atmosphere. Environmental Science & Technology 27 (1993) 2227-2235.",
+      "doi": "10.1021/es00047a033"
+    },
+    {
+      "citation": "J. Yu, D. R. Cocker, R. J. Griffin, R. C. Flagan, J. H. Seinfeld, Gas-phase ozone oxidation of monoterpenes: gaseous and particulate products. Journal of Atmospheric Chemistry 34 (1999) 207-258.",
+      "doi": "10.1023/A:1006254930583"
+    },
+    {
+      "citation": "J. Yu, R. J. Griffin, D. R. Cocker, et al., Observation of gaseous and particulate products of monoterpene oxidation in forest atmospheres. Geophysical Research Letters 26 (1999) 1145-1148.",
+      "doi": "10.1029/1999GL900169"
+    },
+    {
+      "citation": "M. Claeys, B. Graham, G. Vas, et al., Formation of secondary organic aerosols through photooxidation of isoprene. Science 303 (2004) 1173-1176.",
+      "doi": "10.1126/science.1092805"
+    },
+    {
+      "citation": "E. O. Edney, T. E. Kleindienst, M. Jaoui, et al., Formation of 2-methyl tetrols and 2-methylglyceric acid in secondary organic aerosol from laboratory irradiated isoprene/NOX/SO2/air mixtures and their detection in ambient PM2.5 samples collected in the eastern United States. Atmospheric Environment 39 (2005) 5281-5289.",
+      "doi": "10.1016/j.atmosenv.2005.05.031"
+    },
+    {
+      "citation": "W. Wang, I. Kourtchev, B. Graham, et al., Characterization of oxygenated derivatives of isoprene related to 2-methyltetrols in Amazonian aerosols using trimethylsilylation and gas chromatography/ion trap mass spectrometry. Rapid Communications in Mass Spectrometry 19 (2005) 1343-1351.",
+      "doi": "10.1002/rcm.1940"
+    },
+    {
+      "citation": "F. Paulot, J. D. Crounse, H. G. Kjaergaard, et al., Unexpected epoxide formation in the gas-phase photooxidation of isoprene. Science 325 (2009) 730-733.",
+      "doi": "10.1126/science.1172910"
+    },
+    {
+      "citation": "M. Claeys, R. Szmigielski, I. Kourtchev, et al., Hydroxydicarboxylic acids: markers for secondary organic aerosol from the photooxidation of alpha-pinene. Environmental Science & Technology 41 (2007) 1628-1634.",
+      "doi": "10.1021/es0620181"
+    },
+    {
+      "citation": "M. Claeys, Y. Iinuma, R. Szmigielski, et al., Terpenylic acid and related compounds from the oxidation of alpha-pinene: implications for new particle formation and growth above forests. Environmental Science & Technology 43 (2009) 6976-6982.",
+      "doi": "10.1021/es9007596"
+    },
+    {
+      "citation": "F. Yasmeen, R. Vermeylen, R. Szmigielski, et al., Terpenylic acid and related compounds: precursors for dimers in secondary organic aerosol from the ozonolysis of alpha- and beta-pinene. Atmospheric Chemistry and Physics 10 (2010) 9383-9392.",
+      "doi": "10.5194/acp-10-9383-2010"
+    },
+    {
+      "citation": "R. Szmigielski, J. D. Surratt, Y. Gómez-González, et al., 3-methyl-1,2,3-butanetricarboxylic acid: an atmospheric tracer for terpene secondary organic aerosol. Geophysical Research Letters 34 (2007).",
+      "doi": "10.1029/2007GL031338"
+    },
+    {
+      "citation": "B. R. T. Simoneit, J. J. Schauer, C. G. Nolte, et al., Levoglucosan, a tracer for cellulose in biomass burning and atmospheric particles. Atmospheric Environment 33 (1999) 173-182.",
+      "doi": "10.1016/S1352-2310(98)00145-9"
+    },
+    {
+      "citation": "Á. Clemente, E. Yubero, J. F. Nicolás, et al., Organic tracers in fine and coarse aerosols at an urban Mediterranean site: contribution of biomass burning and biogenic emissions. Environmental Science and Pollution Research 31 (2024) 25216-25226.",
+      "doi": "10.1007/s11356-024-32789-x"
+    },
+    {
+      "citation": "Z. Kitanovski, I. Grgić, R. Vermeylen, et al., Liquid chromatography tandem mass spectrometry method for characterization of monoaromatic nitro-compounds in atmospheric particulate matter. Journal of Chromatography A 1268 (2012) 35-43.",
+      "doi": "10.1016/j.chroma.2012.10.021"
+    },
+    {
+      "citation": "E. S. Saltzman, D. L. Savoie, R. G. Zika, J. M. Prospero, Methane sulfonic acid in the marine atmosphere. Journal of Geophysical Research: Oceans 88 (1983) 10897-10902.",
+      "doi": "10.1029/JC088iC15p10897"
+    }
+  ],
+  "provenance": {
+    "compiled_from": "libraries/reference/examples/atmospheric_organics.csv, the custom adapter's worked example. A row cites a DOI where that paper names the compound; the references above also cover the rows whose paper could not be read in full."
+  },
+  "species": [
+    {"formula": "CH2O2", "name": "Formic acid"},
+    {"formula": "C2H4O2", "name": "Acetic acid"},
+    {"formula": "C2H4O2", "name": "Glycolaldehyde"},
+    {"formula": "C2H2O2", "name": "Glyoxal"},
+    {"formula": "C2H2O3", "name": "Glyoxylic acid"},
+    {"formula": "C2H4O3", "name": "Glycolic acid"},
+    {"formula": "C2H2O4", "name": "Oxalic acid"},
+    {"formula": "C3H6O2", "name": "Propionic acid"},
+    {"formula": "C3H6O2", "name": "Hydroxyacetone"},
+    {"formula": "C3H4O2", "name": "Methylglyoxal"},
+    {"formula": "C3H4O3", "name": "Pyruvic acid"},
+    {"formula": "C3H6O3", "name": "Lactic acid"},
+    {"formula": "C3H6O4", "name": "Glyceric acid"},
+    {"formula": "C3H8O3", "name": "Glycerol"},
+    {"formula": "C3H4O4", "name": "Malonic acid"},
+    {"formula": "C4H4O4", "name": "Maleic acid"},
+    {"formula": "C4H4O4", "name": "Fumaric acid"},
+    {"formula": "C4H6O4", "name": "Succinic acid"},
+    {"formula": "C4H6O4", "name": "Methylmalonic acid"},
+    {"formula": "C4H6O5", "name": "Malic acid"},
+    {"formula": "C4H10O4", "name": "Meso-erythritol"},
+    {"formula": "C4H8O4", "name": "2-Methylglyceric acid", "reference": "10.1016/j.atmosenv.2005.05.031"},
+    {"formula": "C4H6O6", "name": "Tartaric acid"},
+    {"formula": "C5H8O4", "name": "Glutaric acid"},
+    {"formula": "C5H8O4", "name": "Methylsuccinic acid"},
+    {"formula": "C5H8O4", "name": "Dimethylmalonic acid"},
+    {"formula": "C5H6O5", "name": "2-Oxoglutaric acid"},
+    {"formula": "C5H8O5", "name": "3-Hydroxyglutaric acid", "reference": "10.1021/es0620181"},
+    {"formula": "C5H12O4", "name": "2-Methylthreitol", "reference": "10.1126/science.1092805"},
+    {"formula": "C5H12O4", "name": "2-Methylerythritol", "reference": "10.1126/science.1092805"},
+    {"formula": "C5H10O3", "name": "cis C5-alkene triol", "reference": "10.1002/rcm.1940"},
+    {"formula": "C5H10O3", "name": "Isoprene epoxydiol (IEPOX)", "reference": "10.1126/science.1172910"},
+    {"formula": "C6H10O4", "name": "Adipic acid"},
+    {"formula": "C6H10O4", "name": "2-Methylglutaric acid"},
+    {"formula": "C6H8O7", "name": "Citric acid"},
+    {"formula": "C6H8O7", "name": "Isocitric acid"},
+    {"formula": "C6H10O5", "name": "Levoglucosan", "reference": "10.1016/S1352-2310(98)00145-9"},
+    {"formula": "C6H10O5", "name": "Mannosan", "reference": "10.1007/s11356-024-32789-x"},
+    {"formula": "C6H10O5", "name": "Galactosan", "reference": "10.1007/s11356-024-32789-x"},
+    {"formula": "C6H5NO4", "name": "4-Nitrocatechol", "reference": "10.1016/j.chroma.2012.10.021"},
+    {"formula": "C7H12O4", "name": "Pimelic acid"},
+    {"formula": "C7H12O4", "name": "3-Methyladipic acid"},
+    {"formula": "C7H10O4", "name": "Terebic acid", "reference": "10.5194/acp-10-9383-2010"},
+    {"formula": "C7H6O2", "name": "Benzoic acid"},
+    {"formula": "C7H6O3", "name": "Salicylic acid"},
+    {"formula": "C7H6O3", "name": "4-Hydroxybenzoic acid"},
+    {"formula": "C7H6O4", "name": "Protocatechuic acid"},
+    {"formula": "C7H6O5", "name": "Gallic acid"},
+    {"formula": "C8H14O4", "name": "Suberic acid"},
+    {"formula": "C8H12O4", "name": "Norpinic acid"},
+    {"formula": "C8H12O4", "name": "Terpenylic acid", "reference": "10.1021/es9007596"},
+    {"formula": "C8H12O5", "name": "2-Hydroxyterpenylic acid", "reference": "10.1021/es9007596"},
+    {"formula": "C8H12O6", "name": "3-MBTCA", "reference": "10.1029/2007GL031338"},
+    {"formula": "C8H6O4", "name": "Phthalic acid"},
+    {"formula": "C8H6O4", "name": "Isophthalic acid"},
+    {"formula": "C8H6O4", "name": "Terephthalic acid"},
+    {"formula": "C8H8O3", "name": "Vanillin", "reference": "10.1016/S1352-2310(98)00145-9"},
+    {"formula": "C8H8O4", "name": "Vanillic acid", "reference": "10.1016/S1352-2310(98)00145-9"},
+    {"formula": "C9H16O4", "name": "Azelaic acid"},
+    {"formula": "C9H14O4", "name": "Pinic acid", "reference": "10.1029/1999GL900169"},
+    {"formula": "C9H14O3", "name": "Norpinonic acid", "reference": "10.1029/1999GL900169"},
+    {"formula": "C9H8O3", "name": "p-Coumaric acid"},
+    {"formula": "C9H8O4", "name": "Caffeic acid"},
+    {"formula": "C9H10O4", "name": "Syringaldehyde", "reference": "10.1016/S1352-2310(98)00145-9"},
+    {"formula": "C9H10O5", "name": "Syringic acid", "reference": "10.1016/S1352-2310(98)00145-9"},
+    {"formula": "C10H18O4", "name": "Sebacic acid"},
+    {"formula": "C10H16", "name": "alpha-Pinene"},
+    {"formula": "C10H16", "name": "Limonene"},
+    {"formula": "C10H16O", "name": "Camphor"},
+    {"formula": "C10H14O", "name": "Verbenone"},
+    {"formula": "C10H14O", "name": "Myrtenal"},
+    {"formula": "C10H16O2", "name": "Pinonaldehyde", "reference": "10.1029/1999GL900169"},
+    {"formula": "C10H16O3", "name": "Pinonic acid", "reference": "10.1029/1999GL900169"},
+    {"formula": "C10H16O3", "name": "Limononic acid"},
+    {"formula": "C10H16O4", "name": "10-Hydroxypinonic acid"},
+    {"formula": "C10H10O4", "name": "Ferulic acid"},
+    {"formula": "CH4O3S", "name": "Methanesulfonic acid", "reference": "10.1029/JC088iC15p10897"},
+    {"formula": "H2O4S", "name": "Sulfuric acid"},
+    {"formula": "HNO3", "name": "Nitric acid"}
+  ]
+}

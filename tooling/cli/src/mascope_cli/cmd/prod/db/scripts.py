@@ -73,6 +73,9 @@ _FORWARDED_ENV_VARS = [
     "MASCOPE_REQUIRE_PASSWORD_CHANGE_DRY_RUN",
     # clear_password_change_requirement
     "MASCOPE_CLEAR_PASSWORD_CHANGE_EMAILS",
+    # backfill_scan_stream_census
+    "CENSUS_LIMIT",
+    "CENSUS_RETRY",
 ]
 
 # Runs inside the backend container (`<container_python> -c ...`) and prints

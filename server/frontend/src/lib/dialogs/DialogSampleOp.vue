@@ -183,7 +183,8 @@ const ionization = computed(() => {
     return ionizationModeChoices({
       modes: app.data.ionization.mode.list,
       filename: input.filename,
-      polarity: input.polarity
+      polarity: input.polarity,
+      instrument: input.instrument
     })
   }
   const assigned = app.data.ionization.mode.list.find(

@@ -1,15 +1,20 @@
 """Versioned ingest tests against a SQLite mirror."""
 
+import json
 from pathlib import Path
 
 import pytest
 from sqlalchemy import func, select
 
+from mascope_reference.adapters.custom import CustomAdapter
+from mascope_reference.adapters.peaklist import PeakListAdapter
 from mascope_reference.adapters.pubchem import PubChemAdapter
 from mascope_reference.ingest import (
+    DeactivatedLoad,
     EmptyIngest,
     _fit_inchikey,
     _fit_native_id,
+    deactivate,
     ingest,
 )
 from mascope_reference.schema import (
@@ -17,6 +22,7 @@ from mascope_reference.schema import (
     reference_compound,
     reference_source,
 )
+from mascope_reference.scope import MIRROR_WINDOW, UNBOUNDED, SourceScope
 
 
 SDF_TWO = """> <PUBCHEM_COMPOUND_CID>
@@ -236,3 +242,120 @@ def test_prefixed_inchikey_is_normalized_and_junk_is_dropped():
     # Too long to be a key even after stripping: dropped, never truncated, since a
     # mangled key would merge two unrelated compounds during de-duplication.
     assert _fit_inchikey("X" * 40) is None
+
+
+# --- What a load writes about how its compounds may be matched ---------------------
+
+
+def _source_scope(conn, version: str) -> SourceScope:
+    row = conn.execute(
+        select(
+            reference_source.c.known_window,
+            reference_source.c.allow_radicals,
+            reference_source.c.polarity,
+        ).where(reference_source.c.version == version)
+    ).one()
+    return SourceScope.from_row(row)
+
+
+def test_a_database_mirror_loads_at_the_mirror_window(sync_engine, tmp_path):
+    path = _write(tmp_path, "pubchem.sdf", SDF_TWO)
+    result = ingest(sync_engine, PubChemAdapter(), path, version="v1")
+    assert result.scope == SourceScope(MIRROR_WINDOW)
+    with sync_engine.connect() as conn:
+        assert _source_scope(conn, "v1") == SourceScope(MIRROR_WINDOW)
+
+
+def test_a_hand_authored_list_loads_unbounded(sync_engine, tmp_path):
+    path = _write(tmp_path, "list.csv", "name,formula\nD4,C8H24O4Si4\n")
+    ingest(sync_engine, CustomAdapter(), path, version="v1", source_name="my-list")
+    with sync_engine.connect() as conn:
+        assert _source_scope(conn, "v1") == SourceScope(UNBOUNDED)
+
+
+def test_a_list_file_loads_unbounded_as_its_header_says(sync_engine, tmp_path):
+    data = {
+        "schema_version": 2,
+        "id": "iodine",
+        "label": "Iodine",
+        "data_version": "v1",
+        "license": "CC-BY-4.0",
+        "references": [{"citation": "A paper.", "doi": "10.1234/t.1"}],
+        "polarity": "negative",
+        "allow_radicals": True,
+        "species": [{"formula": "HIO3"}, {"formula": "IO2"}],
+    }
+    path = _write(tmp_path, "iodine.json", json.dumps(data))
+    ingest(sync_engine, PeakListAdapter(), path, version="v1", source_name="iodine")
+    with sync_engine.connect() as conn:
+        assert _source_scope(conn, "v1") == SourceScope(
+            UNBOUNDED, allow_radicals=True, polarity="negative"
+        )
+
+
+def test_a_scope_the_caller_names_is_written_over_the_adapters(sync_engine, tmp_path):
+    path = _write(tmp_path, "pubchem.sdf", SDF_TWO)
+    widened = SourceScope(MIRROR_WINDOW).overridden(elements="C,H,N,O,S,Si,P")
+    ingest(sync_engine, PubChemAdapter(), path, version="v1", scope=widened)
+    with sync_engine.connect() as conn:
+        assert _source_scope(conn, "v1") == widened
+
+
+# --- Deactivation ------------------------------------------------------------------
+
+
+def _loads(conn) -> list[tuple[str, bool]]:
+    return [
+        (row.version, row.is_active)
+        for row in conn.execute(
+            select(reference_source.c.version, reference_source.c.is_active).order_by(
+                reference_source.c.reference_source_id
+            )
+        )
+    ]
+
+
+def test_deactivate_takes_the_active_load_out_and_keeps_its_compounds(
+    sync_engine, tmp_path
+):
+    path = _write(tmp_path, "pubchem.sdf", SDF_TWO)
+    ingest(sync_engine, PubChemAdapter(), path, version="v1")
+    ingest(sync_engine, PubChemAdapter(), path, version="v2")
+
+    taken = deactivate(sync_engine, "pubchem")
+
+    assert taken == DeactivatedLoad(source="pubchem", version="v2", record_count=2)
+    with sync_engine.connect() as conn:
+        assert _loads(conn) == [("v1", False), ("v2", False)]
+        # Nothing is deleted: the load can be brought back.
+        assert (
+            conn.execute(select(func.count()).select_from(reference_compound)).scalar()
+            == 4
+        )
+
+
+def test_deactivate_leaves_other_sources_active(sync_engine, tmp_path):
+    path = _write(tmp_path, "pubchem.sdf", SDF_TWO)
+    ingest(sync_engine, PubChemAdapter(), path, version="1", source_name="list-a")
+    ingest(sync_engine, PubChemAdapter(), path, version="1", source_name="list-b")
+
+    deactivate(sync_engine, "list-a")
+
+    with sync_engine.connect() as conn:
+        active = (
+            conn.execute(
+                select(reference_source.c.name).where(
+                    reference_source.c.is_active.is_(True)
+                )
+            )
+            .scalars()
+            .all()
+        )
+    assert active == ["list-b"]
+
+
+def test_deactivating_a_source_with_nothing_active_says_so(sync_engine, tmp_path):
+    assert deactivate(sync_engine, "pubchem") is None
+    path = _write(tmp_path, "pubchem.sdf", SDF_TWO)
+    ingest(sync_engine, PubChemAdapter(), path, version="v1", activate=False)
+    assert deactivate(sync_engine, "pubchem") is None

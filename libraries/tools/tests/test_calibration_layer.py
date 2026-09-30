@@ -24,6 +24,7 @@ from mascope_tools.composition.calibration import (
     apply_corroboration,
     calibration_error,
     calibration_for,
+    corroboration_by_mechanism,
     discrimination_auc,
     fit_calibration,
     holdout_split,
@@ -165,12 +166,18 @@ def test_registry_only_ships_orbitrap():
 
 # --- adduct corroboration odds-update -------------------------------------------------
 
-WEIGHTS = {"+Br-": 2.28, "+NH4+": 0.83, "+(CH4N2O)H+": 0.70, "+H+": 0.0, "-H+": 0.0}
+WEIGHTS = {
+    "[M+Br]-": 2.28,
+    "[M+NH4]+": 0.83,
+    "[M+CH4N2O+H]+": 0.70,
+    "[M+H]+": 0.0,
+    "[M-H]-": 0.0,
+}
 
 
 def test_corroboration_raises_probability_with_a_strong_adduct():
     # a weak-ish 0.6 assignment corroborated by a bromide adduct should rise
-    p = apply_corroboration(0.6, ["+Br-"], WEIGHTS)
+    p = apply_corroboration(0.6, ["[M+Br]-"], WEIGHTS)
     assert p > 0.6
     # matches the closed-form odds update: logit(0.6) + 2.28
     z = np.log(0.6 / 0.4) + 2.28
@@ -179,12 +186,49 @@ def test_corroboration_raises_probability_with_a_strong_adduct():
 
 def test_corroboration_generic_adduct_barely_moves_it():
     # deprotonation carries ~0 log-odds -> essentially unchanged
-    assert apply_corroboration(0.6, ["-H+"], WEIGHTS) == pytest.approx(0.6, abs=1e-9)
+    assert apply_corroboration(0.6, ["[M-H]-"], WEIGHTS) == pytest.approx(0.6, abs=1e-9)
+
+
+def test_corroboration_matches_an_adduct_to_its_weight_by_mechanism():
+    # Weights keyed in the legacy notation, as a stored calibration may be,
+    # apply to the same adducts written in the standard one, and back.
+    legacy = {"+Br-": 2.28, "-H+": 0.0}
+    assert apply_corroboration(0.6, ["[M+Br]-"], legacy) == pytest.approx(
+        apply_corroboration(0.6, ["[M+Br]-"], WEIGHTS)
+    )
+    assert apply_corroboration(0.6, ["+Br-"], WEIGHTS) > 0.6
+    # A mechanism of several terms, whichever order they are written in.
+    assert apply_corroboration(0.6, ["[M+H+CH4N2O]+"], WEIGHTS) == pytest.approx(
+        apply_corroboration(0.6, ["[M+CH4N2O+H]+"], WEIGHTS)
+    )
+
+
+@pytest.mark.parametrize(
+    "weights",
+    [
+        {"[M+Br]-": 2.0, "+Br-": 1.0},
+        {"+Br-": 1.0, "[M+Br]-": 2.0},
+        {"+Br-": 1.0, "[M+Br]-": 2.0, "[M+Br]- ": 3.0},
+    ],
+)
+def test_a_weight_in_the_standard_notation_wins_over_a_legacy_one(weights):
+    # Both spellings of one adduct in one calibration: the standard one decides,
+    # whichever comes first, as it does once the migration has kept it alone.
+    assert corroboration_by_mechanism(weights) == {"[M+Br]-": 2.0}
+    assert apply_corroboration(0.5, ["[M+Br]-"], weights) == pytest.approx(
+        apply_corroboration(0.5, ["[M+Br]-"], {"[M+Br]-": 2.0})
+    )
+
+
+def test_weights_already_keyed_come_back_as_they_were():
+    keyed = corroboration_by_mechanism({"+Br-": 2.28, "-H+": 0.0, "unknown": 1.0})
+    assert keyed == {"[M+Br]-": 2.28, "[M-H]-": 0.0, "unknown": 1.0}
+    assert corroboration_by_mechanism(keyed) == keyed
 
 
 def test_corroboration_sums_multiple_adducts():
-    p1 = apply_corroboration(0.5, ["+NH4+"], WEIGHTS)
-    p2 = apply_corroboration(0.5, ["+NH4+", "+(CH4N2O)H+"], WEIGHTS)
+    p1 = apply_corroboration(0.5, ["[M+NH4]+"], WEIGHTS)
+    p2 = apply_corroboration(0.5, ["[M+NH4]+", "[M+CH4N2O+H]+"], WEIGHTS)
     assert p2 > p1  # two corroborating adducts lift more than one
 
 
@@ -198,17 +242,19 @@ def test_corroboration_is_capped():
 
 def test_corroboration_noops_when_uncalibrated_or_empty():
     assert (
-        apply_corroboration(None, ["+Br-"], WEIGHTS) is None
+        apply_corroboration(None, ["[M+Br]-"], WEIGHTS) is None
     )  # uncalibrated stays None
     assert apply_corroboration(0.7, [], WEIGHTS) == 0.7  # nothing corroborating
-    assert apply_corroboration(0.7, ["+Br-"], None) == 0.7  # no weights configured
+    assert apply_corroboration(0.7, ["[M+Br]-"], None) == 0.7  # no weights configured
     assert apply_corroboration(0.7, ["unknown"], WEIGHTS) == 0.7  # unweighted adduct
 
 
 def test_provisional_orbitrap_carries_corroboration_weights():
     cal = calibration_for("orbi")
     assert cal.corroboration_weights is not None
-    assert cal.corroboration_weights["+Br-"] > cal.corroboration_weights["+NH4+"] > 0
+    assert (
+        cal.corroboration_weights["[M+Br]-"] > cal.corroboration_weights["[M+NH4]+"] > 0
+    )
 
 
 def test_provisional_orbitrap_records_when_it_was_fit():
@@ -225,7 +271,7 @@ def test_provisional_orbitrap_records_when_it_was_fit():
 def test_recalibrate_fits_and_reports_change():
     scores, labels = _separated_labels(n=400, seed=1)
     current = Calibration(
-        a=1.0, b=0.0, instrument="orbi", corroboration_weights={"+Br-": 2.28}
+        a=1.0, b=0.0, instrument="orbi", corroboration_weights={"[M+Br]-": 2.28}
     )
     out = recalibrate(
         scores, labels, instrument="orbi", source="user verifications", current=current
@@ -236,7 +282,7 @@ def test_recalibrate_fits_and_reports_change():
     # a curve fit on the labels should calibrate them at least as well as an arbitrary prior
     assert out["after_ece"] <= out["before_ece"] + 1e-6
     # corroboration weights are carried forward (refit separately, not from verdicts)
-    assert out["calibration"].corroboration_weights == {"+Br-": 2.28}
+    assert out["calibration"].corroboration_weights == {"[M+Br]-": 2.28}
 
 
 def test_recalibrate_stays_provisional_without_strong_evidence():

@@ -53,6 +53,7 @@ from mascope_backend.api.new.peak_assignments.config import (
     IN_APP_ENGINE,
     PEAK_ASSIGNMENT_ENGINE_VERSION,
 )
+from mascope_backend.api.new.peak_assignments.listing import consensus_listing
 from mascope_backend.db import (
     BatchPeak,
     BatchPeakOccurrence,
@@ -153,6 +154,7 @@ def anchor_snapshot_row(run_id: str, anchor: Any, members: Iterable[Any]) -> dic
         "consensus_ion_formula": anchor.consensus_ion_formula,
         "ionization_mechanism_id": anchor.ionization_mechanism_id,
         "consensus_tier": anchor.consensus_tier,
+        "consensus_role": anchor.consensus_role,
         "best_fit_score": anchor.best_fit_score,
         "support_fraction": anchor.support_fraction,
         "n_present": anchor.n_present,
@@ -177,6 +179,7 @@ def snapshot_anchor_meta(row: Any, sample_batch_id: str) -> dict:
         "consensus_ion_formula": row.consensus_ion_formula,
         "ionization_mechanism_id": row.ionization_mechanism_id,
         "consensus_tier": row.consensus_tier,
+        "consensus_role": row.consensus_role,
         "best_fit_score": row.best_fit_score,
         "support_fraction": row.support_fraction,
         "n_present": row.n_present,
@@ -185,6 +188,12 @@ def snapshot_anchor_meta(row: Any, sample_batch_id: str) -> dict:
         "max_intensity": row.max_intensity,
         "isotopologue_of": row.isotopologue_of,
         "curated": bool(row.curated),
+        "reference_listing": consensus_listing(
+            row.candidates,
+            row.consensus_formula,
+            row.consensus_ion_formula,
+            row.ionization_mechanism_id,
+        ),
         "batch_peak_run_id": row.batch_peak_run_id,
     }
 

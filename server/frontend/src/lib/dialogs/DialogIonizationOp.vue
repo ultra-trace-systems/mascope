@@ -50,10 +50,10 @@ watch(visible, () => {
     v-model:visible="visible"
     header="Edit Ionization Settings"
     modal
-    style="max-width: 80vw; min-height: 85vh"
+    style="max-width: 80vw; height: 85vh"
     contentStyle="flex-grow: 1; display: flex; flex-flow: column; gap: 0.5rem; justify-content: space-between"
   >
-    <Tabs v-model:value="tab">
+    <Tabs v-model:value="tab" class="fill">
       <TabList>
         <Tab
           value="modes"
@@ -93,26 +93,33 @@ watch(visible, () => {
                   form ions detected by the mass spectrometer.
                 </p>
                 <p>
-                  A mechanism describes a single charge-forming reaction as an
-                  operation, a modification formula, and the charge of the
-                  transferred species: a leading <code>+</code> (add) or
-                  <code>-</code> (remove), the formula added or removed
-                  (e.g. <code>H</code> or <code>Br</code>), and a trailing
-                  <code>+</code> or <code>-</code> giving that species' charge.
-                  The <em>ion</em> polarity is not written directly &mdash; it
-                  follows from the two signs: adding a positively charged species
-                  or removing a negatively charged one yields a positive ion, and
-                  vice versa.
+                  A mechanism is written in the standard adduct notation: what is
+                  added to or removed from the molecule <code>M</code>, inside the
+                  brackets, and the charge of the ion after them.
                 </p>
                 <ul>
-                  <li><code>+H+</code> &mdash; protonation, <code>[M+H]+</code> (positive)</li>
+                  <li><code>[M+H]+</code> &mdash; protonation (positive)</li>
+                  <li><code>[M-H]-</code> &mdash; deprotonation (negative)</li>
+                  <li><code>[M+Br]-</code> &mdash; bromide adduct (negative)</li>
                   <li>
-                    <code>-H+</code> &mdash; deprotonation, i.e. removal of a
-                    proton (<code>H+</code>), giving <code>[M-H]-</code> (negative)
+                    <code>[M-H]+</code> &mdash; hydride abstraction (positive)
                   </li>
-                  <li><code>+Br-</code> &mdash; bromide adduct, <code>[M+Br]-</code> (negative)</li>
-                  <li>a bare <code>+</code> or <code>-</code> &mdash; electron transfer</li>
+                  <li>
+                    <code>[M+CH4N2O+H]+</code> &mdash; a urea cluster, one term
+                    per species added, saved in alphabetical order (positive)
+                  </li>
+                  <li>
+                    <code>[M]+.</code> or <code>[M]-.</code> &mdash; electron
+                    transfer, the dot marking the radical ion
+                  </li>
                 </ul>
+                <p>
+                  The older spelling (<code>+H+</code>, <code>-H+</code>,
+                  <code>+Br-</code>, a bare <code>+</code>) is still accepted and
+                  stored in the standard one. Its trailing sign is the charge of
+                  the species moved, not of the ion, so <code>-H+</code> is
+                  <code>[M-H]-</code>.
+                </p>
           `,
               { layer, doc: app.ui.help.docUrl('concepts/#ionization-modes-and-mechanisms') }
             )
@@ -120,12 +127,12 @@ watch(visible, () => {
           >Ionization Mechanisms</Tab
         >
       </TabList>
-      <TabPanels>
-        <TabPanel value="modes">
+      <TabPanels class="fill panels">
+        <TabPanel value="modes" class="fill">
           <PaneIonizationMode ref="modesPaneRef" />
         </TabPanel>
 
-        <TabPanel value="mechanisms">
+        <TabPanel value="mechanisms" class="fill">
           <PaneIonizationMechanism ref="mechanismsPaneRef" />
         </TabPanel>
       </TabPanels>
@@ -136,3 +143,21 @@ watch(visible, () => {
     </menu>
   </Dialog>
 </template>
+
+<style scoped>
+/* The dialog is a fixed height; the tabs take what the Close menu leaves, and
+   each pane fills its panel, its table scrolling within it. The panel scrolls
+   only should the content around a table not leave it room. */
+.fill,
+.panels > :deep(.fill) {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-flow: column;
+}
+
+/* A tab panel is not given this component's scope, hence the :deep above */
+.panels {
+  overflow-y: auto;
+}
+</style>

@@ -37,6 +37,8 @@ from typing import Mapping, Sequence
 
 import numpy as np
 
+from mascope_tools.composition.mechanism_notation import mechanism_key
+
 
 @dataclass(frozen=True)
 class Calibration:
@@ -61,7 +63,7 @@ class Calibration:
     fit_utc: str | None = None  # when it was fit (ISO-8601)
     source: str | None = None  # dataset / reference provenance it was fit from
     provisional: bool = True  # True until fit on a curated, sufficient dataset
-    # {adduct notation -> log-odds boost}; e.g. {"+Br-": 2.28, "+NH4+": 0.83}
+    # {adduct notation -> log-odds boost}; e.g. {"[M+Br]-": 2.28, "[M+NH4]+": 0.83}
     corroboration_weights: Mapping[str, float] | None = field(default=None)
 
     def params(self) -> tuple[float, float]:
@@ -71,6 +73,29 @@ class Calibration:
 # A corroboration boost is capped so a compound seen via many adducts can't drive p_correct
 # arbitrarily to 1 (the per-adduct LRs assume rough independence, which weakens as they stack).
 DEFAULT_CORROBORATION_CAP = 3.0
+
+
+def corroboration_by_mechanism(
+    weights: Mapping[str, float] | None,
+) -> dict[str, float]:
+    """The weights keyed by mechanism (:func:`mechanism_key`) rather than by spelling.
+
+    Two keys may name one adduct, ``"+Br-"`` beside ``"[M+Br]-"``. The first key
+    written in the standard notation wins, and the first key otherwise: that is the one
+    the notation migration keeps, so a calibration scores the same before the migration
+    and after it. Weights already keyed come back as they were, so a caller applying one
+    calibration many times keys it once."""
+    by_mechanism: dict[str, float] = {}
+    written_standard: set[str] = set()
+    for adduct, weight in (weights or {}).items():
+        key = mechanism_key(adduct)
+        standard = adduct.strip().startswith("[")
+        if key in by_mechanism and (key in written_standard or not standard):
+            continue
+        by_mechanism[key] = weight
+        if standard:
+            written_standard.add(key)
+    return by_mechanism
 
 
 def apply_corroboration(
@@ -88,10 +113,15 @@ def apply_corroboration(
     (protonation/deprotonation) carry ~0, distinctive ones (e.g. bromide) carry more, so a strong
     corroborator lifts a weak assignment while a generic one barely moves a strong one. Returns
     ``p_correct`` unchanged when it is ``None`` (uncalibrated), or when there are no weights or no
-    observed corroborating adducts."""
+    observed corroborating adducts. An adduct and a weight are matched by mechanism, not by
+    spelling, so weights keyed ``"+Br-"`` apply to ``"[M+Br]-"``
+    (:func:`corroboration_by_mechanism`)."""
     if p_correct is None or not weights or not observed_adducts:
         return p_correct
-    delta = float(sum(weights.get(a, 0.0) for a in observed_adducts))
+    by_mechanism = corroboration_by_mechanism(weights)
+    delta = float(
+        sum(by_mechanism.get(mechanism_key(a), 0.0) for a in observed_adducts)
+    )
     if delta == 0.0:
         return p_correct
     delta = max(-cap, min(cap, delta))
@@ -490,12 +520,11 @@ def recalibrate(
 # and _corroboration_metrics.json). Distinctive reagent adducts corroborate strongly, generic
 # protonation/deprotonation ~0. PROVISIONAL, instrument+library specific -- refit per deployment.
 PROVISIONAL_ORBITRAP_CORROBORATION = {
-    "+Br-": 2.28,
-    "+NH4+": 0.83,
-    "+(CH4N2O)H+": 0.70,
-    "+H+": 0.0,
-    "-H+": 0.0,
-    "-H-": 0.0,
+    "[M+Br]-": 2.28,
+    "[M+NH4]+": 0.83,
+    "[M+CH4N2O+H]+": 0.70,
+    "[M+H]+": 0.0,
+    "[M-H]-": 0.0,
 }
 
 PROVISIONAL_ORBITRAP = Calibration(

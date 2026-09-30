@@ -1,0 +1,228 @@
+"""The two notations a mechanism is written in, and the map between them.
+
+What is pinned:
+
+- the standard notation's trailing sign is the ion's charge, so ``[M-H]-`` is
+  deprotonation and ``[M-H]+`` hydride abstraction, and each reads as the
+  legacy spelling of the same mechanism does (``-H+`` and ``-H-``);
+- the map is exact in the direction a stored row travels: every legacy
+  spelling a deployment stores converts to a standard one and back to itself,
+  and a standard spelling is stored as that round trip writes it, so a
+  downgrade followed by an upgrade leaves every row as it was;
+- one mechanism has one spelling: its terms are written in alphabetical order
+  whichever order they were typed in, and every spelling the fleet stores is
+  already written so;
+- what neither notation can say is refused with the reason, not approximated.
+"""
+
+import itertools
+
+import pytest
+
+from mascope_tools.composition.calibration import PROVISIONAL_ORBITRAP_CORROBORATION
+from mascope_tools.composition.mechanism_notation import (
+    MechanismNotationError,
+    MechanismParts,
+    legacy_notation,
+    mechanism_key,
+    parse_mechanism,
+    standard_notation,
+)
+from mascope_tools.composition.profiles import REAGENT_PROFILES
+from mascope_tools.composition.reagents import SECONDARY_CHANNELS
+
+
+#: Every legacy spelling the fleet's servers store, with its standard one.
+STORED = [
+    ("+", "[M]+."),
+    ("-", "[M]-."),
+    ("+H+", "[M+H]+"),
+    ("-H+", "[M-H]-"),
+    ("+Br-", "[M+Br]-"),
+    ("+Br2-", "[M+Br2]-"),
+    ("+Br3-", "[M+Br3]-"),
+    ("+I-", "[M+I]-"),
+    ("+I2-", "[M+I2]-"),
+    ("+I3-", "[M+I3]-"),
+    ("+NO3-", "[M+NO3]-"),
+    ("+^NO3-", "[M+^NO3]-"),
+    ("+CO3-", "[M+CO3]-"),
+    ("+HSO4-", "[M+HSO4]-"),
+    ("+(HNO3)NO3-", "[M+HNO3+NO3]-"),
+    ("+NH4+", "[M+NH4]+"),
+    ("+^NH4+", "[M+^NH4]+"),
+    ("+Na+", "[M+Na]+"),
+    ("+C4H11N+", "[M+C4H11N]+"),
+    ("+(CH4N2O)H+", "[M+CH4N2O+H]+"),
+    ("+(CH4N2O)2H+", "[M+(CH4N2O)2H]+"),
+    ("+(C3H6O)H+", "[M+C3H6O+H]+"),
+    ("+(C6H10O2)H+", "[M+C6H10O2+H]+"),
+    ("+(C6H15N)H+", "[M+C6H15N+H]+"),
+]
+
+#: Spellings no deployment stores yet that the map must still carry both ways.
+UNUSUAL = [
+    ("-H-", "[M-H]+"),
+    ("-CH3-", "[M-CH3]+"),
+    ("+[15N]O3-", "[M+[15N]O3]-"),
+    ("+((CH3CH2)2NH)H+", "[M+(CH3CH2)2NH+H]+"),
+    ("+(H)(H2O)H2O+", "[M+H+H2O+H2O]+"),
+    ("+(H2O)2H+", "[M+(H2O)2H]+"),
+    ("+(CH3)3C+", "[M+(CH3)3C]+"),
+    ("+((A))(B)+", "[M+(A)+(B)]+"),
+    ("+(CH4N2O)+", "[M+(CH4N2O)]+"),
+]
+
+#: A mechanism typed with its terms in another order, in either notation, and
+#: the one spelling it is stored and shown in.
+OUT_OF_ORDER = [
+    ("[M+H+CH4N2O]+", "[M+CH4N2O+H]+"),
+    ("+(H)CH4N2O+", "[M+CH4N2O+H]+"),
+    ("[M+NO3+HNO3]-", "[M+HNO3+NO3]-"),
+    ("[M+H2O+H]+", "[M+H+H2O]+"),
+    ("+(H2O)(H2O)H+", "[M+H+H2O+H2O]+"),
+    ("+(A)(B)+", "[M+(B)+A]+"),
+    # A term that opens with a group reads as the terms it holds, wherever
+    # it stands among the others.
+    ("[M+(B)C+(A)]+", "[M+(A)+B+C]+"),
+    ("[M+(H2O)Na+K]+", "[M+H2O+K+Na]+"),
+    ("[M+K+(H2O)Na]+", "[M+H2O+K+Na]+"),
+    ("+(K)(H2O)Na+", "[M+H2O+K+Na]+"),
+    ("+((H2O)Na)K+", "[M+H2O+K+Na]+"),
+    ("[M+(H2O)H+NH4]+", "[M+H+H2O+NH4]+"),
+    ("[M+NH4+(H2O)H]+", "[M+H+H2O+NH4]+"),
+]
+
+#: Terms to write mechanisms of in every order, the grouped and the
+#: multiplied among them.
+TERMS = ["H", "K", "H2O", "(H2O)Na", "(H2O)2", "(CH3)3C", "((A)B)C", "(A)", "^NO3"]
+
+
+@pytest.mark.parametrize(("legacy", "standard"), STORED + UNUSUAL)
+def test_a_legacy_spelling_converts_and_comes_back_as_it_was(legacy, standard):
+    assert standard_notation(legacy) == standard
+    assert legacy_notation(standard) == legacy
+    assert standard_notation(standard) == standard
+    assert legacy_notation(legacy) == legacy
+
+
+@pytest.mark.parametrize(("legacy", "standard"), STORED + UNUSUAL)
+def test_both_spellings_are_one_mechanism(legacy, standard):
+    assert parse_mechanism(legacy) == parse_mechanism(standard)
+    assert mechanism_key(legacy) == mechanism_key(standard) == standard
+
+
+@pytest.mark.parametrize(("typed", "stored"), OUT_OF_ORDER)
+def test_terms_typed_in_another_order_are_the_same_mechanism(typed, stored):
+    assert standard_notation(typed) == stored
+    assert mechanism_key(typed) == stored
+    assert parse_mechanism(typed) == parse_mechanism(stored)
+    assert standard_notation(legacy_notation(stored)) == stored
+
+
+@pytest.mark.parametrize(
+    "terms",
+    [
+        combination
+        for count in (2, 3)
+        for combination in itertools.combinations(TERMS, count)
+    ],
+)
+def test_every_order_of_the_terms_is_one_spelling(terms):
+    written = {
+        standard_notation("[M" + "".join("+" + term for term in order) + "]+")
+        for order in itertools.permutations(terms)
+    }
+    assert len(written) == 1
+    (stored,) = written
+    assert standard_notation(stored) == stored
+    assert standard_notation(legacy_notation(stored)) == stored
+
+
+def _table_notations():
+    for profile in REAGENT_PROFILES.values():
+        yield from profile.detection
+        yield from profile.secondary_adducts
+    for channels in SECONDARY_CHANNELS.values():
+        yield from (channel.notation for channel in channels)
+    yield from PROVISIONAL_ORBITRAP_CORROBORATION
+
+
+@pytest.mark.parametrize("notation", sorted(set(_table_notations())))
+def test_the_library_spells_its_tables_as_mechanisms_are_compared(notation):
+    # A mode's mechanisms are keyed before they meet these tables, which are
+    # read as they are written.
+    assert mechanism_key(notation) == notation
+
+
+@pytest.mark.parametrize(
+    ("notation", "addition", "moiety", "charge", "moiety_charge"),
+    [
+        ("[M+H]+", True, "H", 1, 1),
+        ("[M-H]-", False, "H", -1, 1),
+        ("[M-H]+", False, "H", 1, -1),
+        ("[M+Br]-", True, "Br", -1, -1),
+        ("[M-CH3]+", False, "CH3", 1, -1),
+        ("[M+CH4N2O+H]+", True, "(CH4N2O)H", 1, 1),
+        # Electron transfer: an electron, charge -1, removed or attached.
+        ("[M]+.", False, "", 1, -1),
+        ("[M]-.", True, "", -1, -1),
+    ],
+)
+def test_the_trailing_sign_is_the_ions_charge(
+    notation, addition, moiety, charge, moiety_charge
+):
+    parts = parse_mechanism(notation)
+    assert parts == MechanismParts(addition=addition, moiety=moiety, charge=charge)
+    assert parts.moiety_charge == moiety_charge
+    assert parts.polarity == ("+" if charge > 0 else "-")
+    assert parts.electron_transfer is (not moiety)
+
+
+@pytest.mark.parametrize(
+    ("typed", "stored"),
+    [
+        # A term that opens with a group reads the same as the group standing
+        # alone, and is stored so that a downgrade does not split it.
+        ("[M+(CH4N2O)H]+", "[M+CH4N2O+H]+"),
+        ("[M+(CH4N2O)2+H]+", "[M+(CH4N2O)2+H]+"),
+        ("[M+(A)+B]+", "[M+(A)+B]+"),
+        ("  [M+H]+  ", "[M+H]+"),
+    ],
+)
+def test_a_standard_spelling_is_stored_as_its_round_trip_writes_it(typed, stored):
+    assert standard_notation(typed) == stored
+    assert standard_notation(legacy_notation(stored)) == stored
+
+
+@pytest.mark.parametrize(
+    ("notation", "reason"),
+    [
+        ("[M]+", "radical"),
+        ("[M+H]+.", "only electron transfer"),
+        ("[2M+H]+", "one"),
+        ("[M+2H]2+", "singly charged"),
+        ("[M+H]", "singly charged"),
+        ("[M+Na-2H]-", "both adds and removes"),
+        ("[M+2H2O+H]+", "as a formula"),
+        ("[M++H]+", "added with"),
+        ("[M+ H]+", "not a formula"),
+        ("[M+(CH4N2O+H]+", "unbalanced"),
+        ("[M+A)(B]+", "unbalanced"),
+        ("+A)(B+", "unbalanced"),
+        ("H+", "standard adduct notation"),
+        ("+H", "standard adduct notation"),
+        ("++", "standard adduct notation"),
+        ("", "standard adduct notation"),
+        ("+H!-", "not a formula"),
+    ],
+)
+def test_what_neither_notation_says_is_refused_with_the_reason(notation, reason):
+    with pytest.raises(MechanismNotationError, match=reason):
+        parse_mechanism(notation)
+
+
+def test_a_key_leaves_unreadable_text_as_it_is():
+    assert mechanism_key("  not a mechanism ") == "not a mechanism"
+    assert mechanism_key("+Br-") == mechanism_key("[M+Br]-")
+    assert mechanism_key("+Br-") != mechanism_key("+I-")

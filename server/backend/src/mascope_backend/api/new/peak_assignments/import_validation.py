@@ -259,9 +259,12 @@ def unknown_peak_ids(
     return unknown
 
 
-#: The role a row must carry to reference an owner. Owner linkage models one
-#: thing - an isotopologue pointing at the M0 it belongs to - and the
-#: in-app engine builds it that way structurally.
+#: The role a row must carry to reference an owner. An import's owner linkage
+#: models one thing - an isotopologue pointing at the M0 it belongs to - which
+#: the in-app engine builds structurally. The in-app reagent pass also links a
+#: source ion's isotope lines to its monoisotopic row (``reagent_pass``); an
+#: import does not offer that shape, so a publishing engine's reagent rows stay
+#: rows of their own.
 OWNED_ROLE = "iso_child"
 
 

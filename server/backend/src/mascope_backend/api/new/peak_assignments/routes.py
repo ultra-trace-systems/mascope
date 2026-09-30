@@ -24,6 +24,7 @@ from mascope_backend.api.new.peak_assignments.alternatives_scoring import (
 from mascope_backend.api.new.peak_assignments.config import (
     MAX_IMPORT_BODY_BYTES,
     MAX_IMPORT_ROWS_PER_REQUEST,
+    PeakAssignmentConfig,
     peak_assignment_enabled,
 )
 from mascope_backend.api.new.peak_assignments.curation import curate_assignment
@@ -33,6 +34,9 @@ from mascope_backend.api.new.peak_assignments.derived_evidence import (
 from mascope_backend.api.new.peak_assignments.import_service import (
     abandon_import_run,
     import_assignment_run,
+)
+from mascope_backend.api.new.peak_assignments.profile_preview import (
+    preview_profiles,
 )
 from mascope_backend.api.new.peak_assignments.schemas import (
     AlternativeScoresResponse,
@@ -50,6 +54,8 @@ from mascope_backend.api.new.peak_assignments.schemas import (
     PeakAssignmentQueryParams,
     PeakAssignmentRunsResponse,
     PeakAssignmentsResponse,
+    ProfilePreviewQueryParams,
+    ProfilePreviewResponse,
     RecalibrateResponse,
     VerifyAssignmentBody,
 )
@@ -69,6 +75,7 @@ from mascope_backend.api.new.peak_assignments.visualization import (
     visualize_composition_focus,
 )
 from mascope_backend.api.new.workspaces.dependencies import (
+    check_batch_access,
     check_sample_access,
     require_sample_role,
 )
@@ -287,6 +294,78 @@ async def get_peak_assignment_runs_route(
     return PeakAssignmentRunsResponse.model_validate(result)
 
 
+def _profile_preview_response(previews: list[dict]) -> ProfilePreviewResponse:
+    """The preview envelope, its message naming how many answers there are."""
+    return ProfilePreviewResponse(
+        message=(
+            f"Resolved to {len(previews)} "
+            f"chemistr{'ies' if len(previews) != 1 else 'y'}"
+        ),
+        results=len(previews),
+        data=previews,
+    )
+
+
+@peak_assignments_router.get(
+    "/sample/{sample_item_id}/profile-preview",
+    response_model=ProfilePreviewResponse,
+)
+@api_route(token_access=True)
+async def preview_sample_profile_route(
+    sample_item_id: str,
+    query_params: ProfilePreviewQueryParams = Query(),
+    user: User = Depends(current_active_user),
+) -> ProfilePreviewResponse:
+    """
+    Say what a run's chemistry profile and context would resolve to on a sample.
+
+    A run resolves them when it starts and records the answer on itself; this
+    answers before anything starts, from the sample's ionization mode, so a
+    launcher can name what ``auto`` means. Nothing is written. Returns 404 for a
+    sample that does not exist.
+
+    :param sample_item_id: The unique identifier of the sample.
+    :param query_params: The profile and context a run config would name.
+    :param user: The current authenticated user. Requires workspace guest role.
+    :return: The resolution, as one record.
+    """
+    await check_sample_access(sample_item_id, user, "guest")
+    config = PeakAssignmentConfig(**query_params.model_dump())
+    return _profile_preview_response(
+        await preview_profiles(config, sample_item_id=sample_item_id)
+    )
+
+
+@peak_assignments_router.get(
+    "/batch/{sample_batch_id}/profile-preview",
+    response_model=ProfilePreviewResponse,
+)
+@api_route(token_access=True)
+async def preview_batch_profiles_route(
+    sample_batch_id: str,
+    query_params: ProfilePreviewQueryParams = Query(),
+    user: User = Depends(current_active_user),
+) -> ProfilePreviewResponse:
+    """
+    Say what a run's chemistry profile and context would resolve to over a batch.
+
+    The batch's untargeted search resolves them per sample, and a batch can hold
+    more than one ionization mode, so the answer is one record per distinct
+    resolution with the number of samples it covers. Nothing is written. A batch
+    with no samples resolves to no records; one that does not exist is a 404.
+
+    :param sample_batch_id: The unique identifier of the batch.
+    :param query_params: The profile and context a run config would name.
+    :param user: The current authenticated user. Requires workspace guest role.
+    :return: The resolutions, the most samples first.
+    """
+    await check_batch_access(sample_batch_id, user, "guest")
+    config = PeakAssignmentConfig(**query_params.model_dump())
+    return _profile_preview_response(
+        await preview_profiles(config, sample_batch_id=sample_batch_id)
+    )
+
+
 @peak_assignments_router.get(
     "/sample/{sample_item_id}/verifications",
     response_model=AssignmentVerificationsResponse,
@@ -384,24 +463,24 @@ async def curate_assignment_route(
     and its calibration metadata) do not survive the edit: they are this
     server's judgement about the arbitration that produced the previous winner.
 
-    **Isotopologue satellites follow their M0's compound, in both
-    directions.** The satellites of the formula being replaced are demoted to
+    **Isotopologue rows follow their M0's compound, in both
+    directions.** The isotopologues of the formula being replaced are demoted to
     `unassigned`, keeping their own previous winner in their `alternatives`:
     they were the same compound seen through one heavy atom, and that compound
     is no longer what their M0 carries. The reverse of that is the undo -
     committing a compound this row was overridden away from **restores the
-    satellites that earlier override stripped**, so promoting the displaced
+    isotopologues that earlier override stripped**, so promoting the displaced
     winner back really puts the family back instead of reviving the M0 alone
-    and leaving its satellites unassigned and ownerless. Neither happens when
+    and leaving its isotopologues unassigned and ownerless. Neither happens when
     the edit commits the formula and mechanism the row already held: the family
     still stands for what it stood for, so it is left alone.
 
-    **A satellite a person has curated by hand since it was demoted is never
+    **An isotopologue a person has curated by hand since it was demoted is never
     overwritten** by such a restore - their judgement is the newer one, and a
     restore that replaced it with the engine's older row would destroy a
     deliberate act to reverse an accidental one. Those rows stay exactly as
     they were left, and `message` says how many were skipped for that reason.
-    `message` reports a second and opposite group beside them: satellites the
+    `message` reports a second and opposite group beside them: isotopologues the
     undo could not put back at all - their row gone from this run, or the state
     archived for them not committable - which is a restore that failed rather
     than one withheld on purpose, so the two counts must not be read as the
@@ -438,8 +517,8 @@ async def curate_assignment_route(
     :param body: The curation action and its payload.
     :param user: The current authenticated user. Requires workspace editor role.
     :param membership: Workspace membership with editor role on the sample.
-    :return: The curated row first, then the satellite rows the override
-        demoted, then the ones it restored. Satellites left alone because
+    :return: The curated row first, then the isotopologue rows the override
+        demoted, then the ones it restored. Isotopologues left alone because
         someone had curated them by hand are counted in `message` but not
         returned, and so are the ones the restore could not reach at all -
         absent from `data` for the opposite reason, since nothing about them

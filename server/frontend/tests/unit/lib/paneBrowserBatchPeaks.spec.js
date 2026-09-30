@@ -1,9 +1,10 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { mount } from '@vue/test-utils'
-import { reactive } from 'vue'
+import { reactive, ref } from 'vue'
 import { createPinia, setActivePinia } from 'pinia'
 
 import { MAX_SELECTED_BATCH_PEAKS } from '@/stores/data/modules/batchPeak/ledger'
+import { TIERING_PROVISIONAL } from '@/lib/tiers'
 
 // The tier strip and the tier column's sort: both read the confidence order out
 // of @/lib/tiers, and both used to be wrong in the same direction (alphabetical,
@@ -25,11 +26,22 @@ let notificationHandlers
 
 vi.mock('@/stores', () => ({ useApp: () => app }))
 
-vi.mock('@/lib/base', () => ({
+vi.mock('@/lib/base', async () => ({
   BaseTabbedPanel: { template: '<div><slot name="menu" /><slot /></div>' },
-  BaseTierTag: true,
-  BaseCopyableField: true,
-  BaseVerdictBadge: true
+  // Rendered, so a test that renders the cells can read the chip's role and
+  // the formula a cell would copy.
+  BaseTierTag: {
+    name: 'BaseTierTag',
+    props: ['tier', 'role'],
+    template: '<span class="tier-tag" :data-tier="tier" :data-role="role" />'
+  },
+  BaseCopyableField: {
+    props: ['field', 'tooltip'],
+    template: '<span class="copyable" :data-tooltip="tooltip">{{ field }}<slot /></span>'
+  },
+  BaseVerdictBadge: true,
+  // Real: the tier header's provisional mark is read off what it draws.
+  BaseProvisionalMark: (await vi.importActual('@/lib/base/BaseProvisionalMark.vue')).default
 }))
 vi.mock('@/lib/panes/PaneBrowserMatch/BatchPeakVerdictPopover.vue', () => ({
   default: { name: 'BatchPeakVerdictPopover', template: '<div class="verdict-popover-stub" />' }
@@ -280,7 +292,7 @@ describe('PaneBrowserBatchPeaks tier strip', () => {
     peak('bp-4', 'unassigned', null)
   ]
 
-  it('renders one chip per tier in confidence order, with counts', async () => {
+  it('renders one chip per tier in confidence order, then one per role, with counts', async () => {
     wrapper = await mountPane({ peaks })
     const chips = wrapper.findAll('.tier-stat')
 
@@ -288,14 +300,43 @@ describe('PaneBrowserBatchPeaks tier strip', () => {
       '2 assigned',
       '1 candidate',
       '0 below',
-      '1 unassigned'
+      '1 unassigned',
+      '0 reagent',
+      '0 artifact'
     ])
+    // Set off from the tiers: what follows is not a confidence.
+    expect(chips[4].classes()).toContain('roles-start')
   })
 
-  it('has no reagent chip - a batch peak carries no role to put in one', async () => {
-    wrapper = await mountPane({ peaks })
+  // Step 3.3c's follow-up, built in 3.4d: an anchor whose members the reagent
+  // pre-pass claimed carries the role and the ion, and counts under its role
+  // rather than as a peak nothing explained.
+  it('counts an anchor a source role accounts for under its role', async () => {
+    wrapper = await mountPane({
+      peaks: [
+        ...peaks,
+        peak('bp-br', 'unassigned', null, {
+          mz: 78.9189,
+          consensus_formula: null,
+          consensus_role: 'reagent',
+          consensus_ion_formula: 'Br-'
+        }),
+        peak('bp-ring', 'unassigned', null, {
+          mz: 400.1,
+          consensus_formula: null,
+          consensus_role: 'artifact'
+        })
+      ]
+    })
+    const counts = wrapper.findAll('.tier-stat').map((chip) => chip.text())
 
-    expect(wrapper.text()).not.toContain('reagent')
+    expect(counts).toContain('1 unassigned')
+    expect(counts).toContain('1 reagent')
+    expect(counts).toContain('1 artifact')
+
+    await wrapper.findAll('.tier-stat')[4].trigger('click')
+    expect(wrapper.vm.filters.consensus_tier.constraints[0].value).toBe('reagent')
+    expect(wrapper.vm.rows.map((row) => row.batch_peak_id)).toEqual(['bp-br'])
   })
 
   it('filters the table by writing the tier filter the column menu reads', async () => {
@@ -345,6 +386,121 @@ describe('PaneBrowserBatchPeaks tier strip', () => {
     expect(classes[0]).toContain('active')
     expect(classes[0]).not.toContain('dim')
     expect(classes[1]).toContain('dim')
+  })
+})
+
+// The cells of an anchor a source role accounts for: the ion in the formula
+// column, the role as the chip, and the tier column sorting it after the tiers.
+describe('PaneBrowserBatchPeaks reagent anchors', () => {
+  const REAGENT = peak('bp-br', 'unassigned', null, {
+    mz: 78.9189,
+    consensus_formula: null,
+    consensus_role: 'reagent',
+    consensus_ion_formula: 'Br-'
+  })
+  const ARTIFACT = peak('bp-ring', 'unassigned', null, {
+    mz: 400.1,
+    consensus_formula: null,
+    consensus_role: 'artifact'
+  })
+  const BARE = peak('bp-bare', 'unassigned', null, { mz: 250.1, consensus_formula: null })
+
+  async function rendered(peaks) {
+    const tableRows = ref([])
+    app = makeApp({ peaks })
+    localStorage.clear()
+    setActivePinia(createPinia())
+    const mounted = mount(PaneBrowserBatchPeaks, {
+      global: {
+        stubs: {
+          ...GLOBAL_STUBS,
+          DataTable: {
+            ...DataTableStub,
+            watch: {
+              value: { handler: (value) => (tableRows.value = value), immediate: true }
+            }
+          },
+          Column: {
+            ...ColumnStub,
+            setup: () => ({ rows: tableRows }),
+            template:
+              '<div class="column-stub" :data-field="field">' +
+              '<template v-for="(row, i) in rows" :key="i">' +
+              '<div class="stub-cell"><slot name="body" :data="row" /></div></template></div>'
+          }
+        },
+        directives: { tooltip: {}, help: {} }
+      }
+    })
+    await mounted.vm.$nextTick()
+    return mounted
+  }
+  const cells = (field) =>
+    wrapper
+      .findAll('.column-stub')
+      .find((column) => column.attributes('data-field') === field)
+      .findAll('.stub-cell')
+
+  it("shows a reagent anchor's ion where an analyte's formula would be", async () => {
+    wrapper = await rendered([REAGENT, ARTIFACT, BARE])
+    const byId = Object.fromEntries(
+      wrapper.vm.rows.map((row, index) => [row.batch_peak_id, cells('consensus_formula')[index]])
+    )
+
+    expect(byId['bp-br'].find('.copyable').text()).toBe('Br-')
+    expect(byId['bp-br'].find('.copyable').attributes('data-tooltip')).toMatch(/Ion formula/)
+    // An artifact names no ion, and its chip says what it is: a dash, not the
+    // "unassigned" a peak nothing explained reads.
+    expect(byId['bp-ring'].text()).toBe('—')
+    expect(byId['bp-bare'].text()).toBe('unassigned')
+  })
+
+  it('hands the role to the chip', async () => {
+    wrapper = await rendered([REAGENT, BARE])
+    const byId = Object.fromEntries(
+      wrapper.vm.rows.map((row, index) => [
+        row.batch_peak_id,
+        cells('consensus_tier')[index].find('.tier-tag')
+      ])
+    )
+
+    expect(byId['bp-br'].attributes('data-role')).toBe('reagent')
+    expect(byId['bp-br'].attributes('data-tier')).toBe('unassigned')
+    expect(byId['bp-bare'].attributes('data-role')).toBeUndefined()
+  })
+
+  it('sorts the roles after the tiers, in the strip order', async () => {
+    wrapper = await mountPane({ peaks: [ARTIFACT, REAGENT, BARE, peak('bp-a', 'assigned', 0.9)] })
+
+    expect(wrapper.vm.rows.map((row) => row.batch_peak_id)).toEqual([
+      'bp-a',
+      'bp-bare',
+      'bp-br',
+      'bp-ring'
+    ])
+  })
+
+  it('finds the ion with the formula search', async () => {
+    wrapper = await mountPane({ peaks: [REAGENT, peak('bp-a', 'assigned', 0.9)] })
+
+    wrapper.vm.filters.consensus_formula.constraints[0].value = 'Br'
+    await wrapper.vm.$nextTick()
+    expect(wrapper.vm.rows.map((row) => row.batch_peak_id)).toEqual(['bp-br'])
+  })
+
+  it('folds a reagent line under its ion, as an isotopologue folds', async () => {
+    const line = peak('bp-81br', 'unassigned', null, {
+      mz: 80.9168,
+      consensus_formula: null,
+      consensus_role: 'reagent',
+      consensus_ion_formula: 'Br-',
+      isotopologue_of: 'bp-br'
+    })
+    wrapper = await mountPane({ peaks: [REAGENT, line] })
+
+    expect(wrapper.vm.rows.map((row) => row.batch_peak_id)).toEqual(['bp-br'])
+    // One reagent species, its line folded into it.
+    expect(wrapper.findAll('.tier-stat').map((chip) => chip.text())).toContain('1 reagent')
   })
 })
 
@@ -455,11 +611,17 @@ describe('PaneBrowserBatchPeaks tier ordering', () => {
       'm/z',
       'Intensity',
       'Formula',
+      'Listed as',
       'Tier',
+      // The tiering is still being built, and the tier header says so.
+      TIERING_PROVISIONAL.label,
       'Samples',
       '' // the verdict header is an icon
     ])
     for (const [, tip] of tips) expect(tip.length).toBeGreaterThan(20)
+    expect(tips.find(([label]) => label === TIERING_PROVISIONAL.label)[1]).toBe(
+      TIERING_PROVISIONAL.tooltip
+    )
     expect(tips.find(([label]) => label === 'm/z')[1]).toMatch(/anchor/i)
     expect(tips.find(([label]) => label === 'Intensity')[1]).toMatch(/any sample/)
     expect(tips.find(([label]) => label === 'Formula')[1]).toMatch(/consensus/i)
@@ -529,6 +691,80 @@ describe('PaneBrowserBatchPeaks tier ordering', () => {
 // the write into the selection is where the size has to be settled - and every
 // route into it has to land in the same place, or the ones that do not become
 // the way to get an unbounded selection anyway.
+// What a reference list calls the consensus formula (step 3.4d), off the
+// flattened field the ledger row carries.
+describe('PaneBrowserBatchPeaks reference-list column', () => {
+  const LISTING = {
+    name: 'decamethylcyclopentasiloxane',
+    source: 'cyclic-siloxanes',
+    tags: ['background'],
+    total: 2
+  }
+
+  // Renders the cells: the stub table hands its rows to every column through a
+  // ref, as the sample ledger's spec does.
+  async function renderedCells(peaks) {
+    const tableRows = ref([])
+    app = makeApp({ peaks })
+    localStorage.clear()
+    setActivePinia(createPinia())
+    const rendered = mount(PaneBrowserBatchPeaks, {
+      global: {
+        stubs: {
+          ...GLOBAL_STUBS,
+          DataTable: {
+            ...DataTableStub,
+            watch: {
+              value: { handler: (value) => (tableRows.value = value), immediate: true }
+            }
+          },
+          Column: {
+            ...ColumnStub,
+            setup: () => ({ rows: tableRows }),
+            template:
+              '<div class="column-stub" :data-field="field">' +
+              '<template v-for="(row, i) in rows" :key="i">' +
+              '<div class="stub-cell"><slot name="body" :data="row" /></div></template></div>'
+          }
+        },
+        directives: { tooltip: {}, help: {} }
+      }
+    })
+    await rendered.vm.$nextTick()
+    return rendered
+  }
+
+  it('shows the name, the list and its tag on a listed batch peak', async () => {
+    wrapper = await renderedCells([
+      peak('bp-1', 'assigned', 0.9, { reference_listing: LISTING }),
+      peak('bp-2', 'assigned', 0.8, { mz: 200.1 })
+    ])
+    const column = wrapper
+      .findAll('.column-stub')
+      .find((col) => col.attributes('data-field') === 'listingName')
+    const [listed, unlisted] = column.findAll('.stub-cell')
+
+    expect(listed.find('.listing-name').text()).toBe('decamethylcyclopentasiloxane +1')
+    expect(listed.find('.listing-source').text()).toBe('cyclic-siloxanes')
+    expect(listed.find('[data-testid="list-tag-background"]').exists()).toBe(true)
+    expect(unlisted.text()).toBe('')
+  })
+
+  it('reads the listing onto the row, and sorts on its name', async () => {
+    wrapper = await mountPane({
+      peaks: [
+        peak('bp-1', 'assigned', 0.9, { reference_listing: LISTING }),
+        peak('bp-2', 'assigned', 0.8, { mz: 200.1 })
+      ]
+    })
+    const rows = new Map(wrapper.vm.rows.map((row) => [row.batch_peak_id, row]))
+
+    expect(rows.get('bp-1').listingName).toBe('decamethylcyclopentasiloxane +1')
+    expect(rows.get('bp-2').listingName).toBeNull()
+    expect(columnFor('listingName').props('sortable')).toBe(true)
+  })
+})
+
 describe('PaneBrowserBatchPeaks selection cap', () => {
   const many = (n) => Array.from({ length: n }, (_, i) => peak(`bp-${i}`, 'assigned', 0.9))
 

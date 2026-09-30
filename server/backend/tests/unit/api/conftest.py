@@ -52,42 +52,42 @@ async def test_ionization_mechanisms(
             IonizationMechanism(
                 ionization_mechanism_id=gen_test_id(),
                 ionization_mechanism_polarity="-",
-                ionization_mechanism="-H+",
+                ionization_mechanism="[M-H]-",
             ),
             IonizationMechanism(
                 ionization_mechanism_id=gen_test_id(),
                 ionization_mechanism_polarity="-",
-                ionization_mechanism="+Br-",
+                ionization_mechanism="[M+Br]-",
             ),
             IonizationMechanism(
                 ionization_mechanism_id=gen_test_id(),
                 ionization_mechanism_polarity="-",
-                ionization_mechanism="+NO3-",
+                ionization_mechanism="[M+NO3]-",
             ),
             IonizationMechanism(
                 ionization_mechanism_id=gen_test_id(),
                 ionization_mechanism_polarity="+",
-                ionization_mechanism="+H+",
+                ionization_mechanism="[M+H]+",
             ),
             IonizationMechanism(
                 ionization_mechanism_id=gen_test_id(),
                 ionization_mechanism_polarity="+",
-                ionization_mechanism="+(CH4N2O)H+",
+                ionization_mechanism="[M+CH4N2O+H]+",
             ),
             IonizationMechanism(
                 ionization_mechanism_id=gen_test_id(),
                 ionization_mechanism_polarity="+",
-                ionization_mechanism="+",
+                ionization_mechanism="[M]+.",
             ),
             IonizationMechanism(
                 ionization_mechanism_id=gen_test_id(),
                 ionization_mechanism_polarity="-",
-                ionization_mechanism="-",
+                ionization_mechanism="[M]-.",
             ),
             IonizationMechanism(
                 ionization_mechanism_id=gen_test_id(),
                 ionization_mechanism_polarity="-",
-                ionization_mechanism="+^NO3-",
+                ionization_mechanism="[M+^NO3]-",
             ),
         ]
 

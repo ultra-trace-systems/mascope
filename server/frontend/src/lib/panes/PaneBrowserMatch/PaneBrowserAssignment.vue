@@ -14,6 +14,7 @@ import { getApiErrorMessage, isRefusedRequest } from '@/api/utils'
 import {
   BaseCopyableField,
   BaseLoadError,
+  BaseProvisionalMark,
   BaseTabbedPanel,
   BaseTierTag,
   BaseVerdictBadge
@@ -21,13 +22,16 @@ import {
 import { PeakAssignConfigForm } from '@/lib/dialogs'
 import { usePeakAssignParams } from '@/lib/peakAssignParams'
 import { num } from '@/lib/formatters'
-import { formatIsotopeFormula } from '@/lib/chem'
+import { formatIsotopeFormula, formatIsotopeLabel, neutralKey } from '@/lib/chem'
+import { isIsotopeLine } from '@/lib/isotopeLines'
 import {
-  LEDGER_P_CORRECT_TOOLTIP,
-  P_CORRECT_TOOLTIP,
-  uncalibratedReason as reasonForNoPCorrect
-} from '@/lib/pCorrect'
-import { tierBucket, tierRank } from '@/lib/tiers'
+  ledgerListing,
+  listingName,
+  listingSource,
+  listingTags,
+  listingTooltip
+} from '@/lib/referenceListings'
+import { ROLE_BUCKETS, bucketOf as bucketFor, bucketRank, tierRank } from '@/lib/tiers'
 import { prettyTrim } from '@/lib/utils'
 import { scrollVirtualRowIntoView } from '@/lib/virtualScroll'
 import { useApp } from '@/stores'
@@ -44,7 +48,7 @@ const runs = computed(() => app.data.peakAssignment.run)
 const assignments = computed(() => app.data.peakAssignment.peak)
 const tierCounts = computed(() => assignments.value.tierCounts)
 
-// Map ionization_mechanism_id -> readable notation (e.g. "+H+", "+Br-"), for
+// Map ionization_mechanism_id -> readable notation (e.g. "[M+H]+", "[M+Br]-"), for
 // the ledger's ionization column. The assignment carries only the id.
 const mechById = computed(() => {
   const map = new Map()
@@ -211,13 +215,13 @@ function focusPeak(assignment) {
 // batch-peaks pane, which is the point of sharing it - two ledgers side by side
 // that ranked tiers differently would be worse than either being wrong alone.
 
-// Histogram bucket for a row: reagent/artifact roles are their own bucket,
-// matching the counts strip and the spectrum coloring. Tier ranking itself
-// lives in @/lib/tiers so this ledger and the batch-peak ledger cannot drift.
-function bucketOf(row) {
-  if (row.role === 'reagent' || row.role === 'artifact') return 'reagent'
-  return tierBucket(row.tier)
-}
+// The roles that account for a peak without a formula (a reagent's ion, an
+// artifact's ringing) are buckets of their own after the tiers, filtered,
+// counted and sorted apart from the peaks nothing explained. The buckets and
+// their ranks live in @/lib/tiers so this ledger and the batch-peak ledger
+// cannot drift.
+const bucketOf = (row) => bucketFor(row.tier, row.role)
+const rankOf = (row) => bucketRank(row.tier, row.role)
 
 // Active tier filters (empty = show all); clicking a histogram chip toggles it.
 const activeTiers = reactive(new Set())
@@ -230,6 +234,46 @@ function toggleTier(key) {
 // plus unassigned/reagent peaks, which keeps this a flat, fixed-height list
 // compatible with virtual scrolling. Toggle to unfold (see below).
 const showIsotopologues = ref(false)
+
+// --- One row per neutral --------------------------------------------------------
+
+// A run that searches several ionization channels can commit the same neutral
+// through more than one of them - [M+H]+ and [M+NH4]+, [M-H]- and [M+Br]- - and
+// the ledger lists each as a row of its own, at its own m/z, scattered through
+// the table. Grouped, the neutral is one row: its strongest reading heads it,
+// by the ledger's resting order (tier, then fit), and the others sit under it,
+// shown when the reader opens the group from the head's ionization cell, the
+// way an isotopologue family sits under its M0. Off by default: a row per ion is
+// what a reader matching the ledger against the spectrum needs.
+//
+// Grouped on what the rows show, so the filters apply first: a tier chip or the
+// verdict filter narrows the rows, and what is left of a neutral groups. Only an
+// analyte's formula groups; a source ion or a peak nothing explained names no
+// neutral of the sample.
+const groupByFormula = ref(false)
+// The groups the reader opened, by neutral. Kept while grouping stays on, so a
+// re-sort or a filter does not close them.
+const openGroups = reactive(new Set())
+const toggleGroup = (key) => {
+  if (openGroups.has(key)) openGroups.delete(key)
+  else openGroups.add(key)
+}
+watch(groupByFormula, (on) => {
+  if (!on) openGroups.clear()
+})
+const groupKeyOf = (row) =>
+  row.assigned_formula && !ROLE_BUCKETS.includes(row.role) ? neutralKey(row.assigned_formula) : ''
+// What the head's toggle says: the channels it would show, and what clicking
+// does.
+const groupTooltip = (row) => {
+  const channels = (row.channelRows ?? []).map((channel) => channel.mech ?? 'another channel')
+  const shown = openGroups.has(row.groupKey)
+  return (
+    `Also read through ${channels.join(', ')}: the same neutral, as ` +
+    `${channels.length === 1 ? 'another ion' : 'other ions'}. Click to ` +
+    `${shown ? 'fold' : 'show'} ${channels.length === 1 ? 'it' : 'them'} under this row`
+  )
+}
 
 // --- Sorting ----------------------------------------------------------------
 
@@ -272,11 +316,37 @@ const collator = new Intl.Collator(undefined, { numeric: true })
 // as missing, which is what PrimeVue's isEmpty() did.
 const isBlank = (value) => value == null || value === ''
 
+// What the formula column shows: the analyte, or on a row with none, the ion
+// the peak is - a source ion's, written with its charge - since the ion is known
+// exactly and the role chip beside it says whose it is. A row with neither
+// shows a dash.
+const formulaOf = (row) => row.assigned_formula || row.ion_formula || null
+const ION_TOOLTIP = 'Ion formula: the peak names an ion, and no compound of the sample'
+
+// What a reference list calls the formula, beside it: the first name the run
+// matched from a list, that list and the list's tags, as the inspector's
+// "listed as" field reads it. It is the reading a reader asks of a row first,
+// and it used to take the inspector to see. The row carries it flattened
+// (`reference_listing`), since a ledger row serves no provenance.
+const LISTING_HEADER_TOOLTIP =
+  'What a reference list calls the formula: the first name the run matched from a list, ' +
+  "that list, and the list's tags. A formula match names candidate compounds; it is not an " +
+  'identification.'
+
+// What a column sorts on, where that is not the field it is named by: the
+// formula column shows a source ion's formula on a row with no analyte (see
+// formulaOf), and sorts on what it shows; the listing sorts on its name.
+const SORT_VALUES = {
+  assigned_formula: (row) => formulaOf(row),
+  listing: (row) => (row.listing ? listingName(row.listing) : null)
+}
+
 function compareBy(field, order) {
   const dir = order === -1 ? -1 : 1
+  const valueOf = SORT_VALUES[field] ?? ((row) => row[field])
   return (a, b) => {
-    const av = a[field]
-    const bv = b[field]
+    const av = valueOf(a)
+    const bv = valueOf(b)
     if (isBlank(av) && isBlank(bv)) return 0
     if (isBlank(av)) return 1
     if (isBlank(bv)) return -1
@@ -292,15 +362,59 @@ function compareBy(field, order) {
 // table (third click on a sorted header) falls back to.
 const byConfidence = (a, b) => a.tierRank - b.tierRank || (b.fit_score ?? -1) - (a.fit_score ?? -1)
 
+// The isotope lines of a row, as rows under it: an analyte's isotopologues, a
+// source ion's heavier lines (isIsotopeLine), ordered by m/z among themselves.
+// `underChannel` marks the lines of a grouped channel's row, indented a step
+// further than the row they follow.
+function isotopologuesOf(parent, underChannel = false) {
+  return assignments.value
+    .childrenOf(parent.peak_assignment_id)
+    .slice()
+    .sort((a, b) => (a.sample_peak_mz ?? 0) - (b.sample_peak_mz ?? 0))
+    .map((child) => {
+      // Corroboration is written onto the M0 winner alone: an isotopologue is
+      // the same ion measured at another isotope, not a second sighting of
+      // the compound, so it never carries a count of its own. The evidence is
+      // about the formula the family shares, so the isotopologue shows its
+      // parent's count and the marker says where it came from.
+      const own =
+        child.corroboration_channels ??
+        child.provenance?.cross_channel?.channels?.length ??
+        child.corroboration_adducts ??
+        child.provenance?.corroboration?.n_adducts
+      return {
+        ...child,
+        tierRank: parent.tierRank,
+        // No `engineTierRank` here on purpose. Only the parents are sorted -
+        // children are spliced in under whichever parent they belong to,
+        // whatever the sort - so a rank on a child would never be read, and
+        // one derived from the child's OWN tier would contradict the line
+        // above it, which exists precisely so a family sorts as one block.
+        // The chip in the column body renders `engine_tier` directly.
+        // An isotopologue is its M0's formula measured again; the listing is
+        // on the M0's row, not repeated on each line.
+        listing: null,
+        corrobAdducts: own ?? parent.corrobAdducts,
+        // True whenever the count on this row is the parent's, independent of
+        // whether it clears the marker's threshold, so the row stays
+        // self-describing to anything that reads it below that threshold.
+        corrobInherited: own == null && parent.corrobAdducts > 0,
+        mech: mechById.value.get(child.ionization_mechanism_id) ?? null,
+        isChild: true,
+        underChannel
+      }
+    })
+}
+
 // Table rows. Parents (M0 + unassigned/reagent) are filtered by the active
-// chips, then ordered by the sorted column with confidence breaking ties. When
-// unfolded, each parent's iso_child isotopologues are inserted right after it,
-// ordered by m/z among themselves - a family is one block wherever its parent
-// lands, which is the only arrangement in which the indented child rows can be
-// read at all.
+// chips, grouped by neutral when that is on, then ordered by the sorted column
+// with confidence breaking ties. When unfolded, each parent's isotope lines are
+// inserted right after it, and an open group's other channels after those, each
+// with its own lines - a family is one block wherever its parent lands, which
+// is the only arrangement in which the indented child rows can be read at all.
 const rows = computed(() => {
   const parents = assignments.value.list
-    .filter((row) => row.role !== 'iso_child')
+    .filter((row) => !isIsotopeLine(row))
     .filter((row) => activeTiers.size === 0 || activeTiers.has(bucketOf(row)))
     .filter(
       (row) =>
@@ -309,106 +423,113 @@ const rows = computed(() => {
     )
     .map((row) => ({
       ...row,
-      tierRank: tierRank(row.tier),
+      tierRank: rankOf(row),
       // Null where the producing engine stated no tier, and null rather than a
       // rank so `compareBy` sorts those rows last in both directions - "this
       // engine said nothing" is not a position on the scale. Guarded because
       // tierRank(null) would answer with the 'unassigned' rank and put every
       // in-app row at one end of a column it has no opinion in.
       engineTierRank: row.engine_tier != null ? tierRank(row.engine_tier) : null,
-      // The calibrated probability for the sortable P(correct) column; null for
-      // untargeted / uncalibrated (rendered as "-", never 0%). The ledger rows
-      // carry it flattened (`p_correct`); the `provenance` fallback covers rows
-      // from a backend that predates the slim ledger projection.
-      pCorrect: row.p_correct ?? row.provenance?.p_correct ?? null,
-      pProvisional: row.p_correct_provisional ?? row.provenance?.calibration?.provisional ?? false,
-      corrobAdducts: row.corroboration_adducts ?? row.provenance?.corroboration?.n_adducts ?? 0,
+      listing: ledgerListing(row.reference_listing),
+      // The ledger-measured channel count first: it reaches every committed
+      // row, where the curated per-compound count reaches only what Stage A
+      // claimed - a handful of rows on most samples and none at all on many.
+      // Where both exist the first is a superset of the second, so preferring
+      // it never shrinks the marker.
+      corrobAdducts:
+        row.corroboration_channels ??
+        row.provenance?.cross_channel?.channels?.length ??
+        row.corroboration_adducts ??
+        row.provenance?.corroboration?.n_adducts ??
+        0,
       corrobInherited: false,
       mech: mechById.value.get(row.ionization_mechanism_id) ?? null,
-      isChild: false
+      isChild: false,
+      isChannel: false
     }))
+
+  // One row per neutral: the strongest reading heads its group and carries the
+  // others, which leave the top level.
+  let heads = parents
+  if (groupByFormula.value) {
+    const groups = new Map()
+    for (const row of parents) {
+      const key = groupKeyOf(row)
+      if (!key) continue
+      if (groups.has(key)) groups.get(key).push(row)
+      else groups.set(key, [row])
+    }
+    const grouped = new Set()
+    for (const [key, group] of groups) {
+      if (group.length < 2) continue
+      group.sort(byConfidence)
+      const [head, ...others] = group
+      head.groupKey = key
+      head.channelRows = others.map((row) => ({ ...row, isChannel: true }))
+      for (const row of others) grouped.add(row)
+    }
+    heads = parents.filter((row) => !grouped.has(row))
+  }
+
   const byColumn = sortField.value ? compareBy(sortField.value, sortOrder.value) : null
-  parents.sort(byColumn ? (a, b) => byColumn(a, b) || byConfidence(a, b) : byConfidence)
-  if (!showIsotopologues.value) return parents
+  heads.sort(byColumn ? (a, b) => byColumn(a, b) || byConfidence(a, b) : byConfidence)
 
   const result = []
-  for (const parent of parents) {
-    result.push(parent)
-    const children = assignments.value
-      .childrenOf(parent.peak_assignment_id)
-      .slice()
-      .sort((a, b) => (a.sample_peak_mz ?? 0) - (b.sample_peak_mz ?? 0))
-      .map((child) => {
-        // Adduct corroboration is written onto the M0 winner alone: an isotopologue
-        // is the same ion measured at another isotope, not a second sighting of
-        // the compound, so it never carries a count of its own. The evidence is
-        // about the formula the family shares, so the isotopologue shows its
-        // parent's count and the marker says where it came from.
-        const own = child.corroboration_adducts ?? child.provenance?.corroboration?.n_adducts
-        return {
-          ...child,
-          tierRank: parent.tierRank,
-          // No `engineTierRank` here on purpose. Only the parents are sorted -
-          // children are spliced in under whichever parent they belong to,
-          // whatever the sort - so a rank on a child would never be read, and
-          // one derived from the child's OWN tier would contradict the line
-          // above it, which exists precisely so a family sorts as one block.
-          // The chip in the column body renders `engine_tier` directly.
-          pCorrect: child.p_correct ?? child.provenance?.p_correct ?? null,
-          pProvisional:
-            child.p_correct_provisional ?? child.provenance?.calibration?.provisional ?? false,
-          corrobAdducts: own ?? parent.corrobAdducts,
-          // True whenever the count on this row is the parent's, independent of
-          // whether it clears the marker's threshold, so the row stays
-          // self-describing to anything that reads it below that threshold.
-          corrobInherited: own == null && parent.corrobAdducts > 0,
-          mech: mechById.value.get(child.ionization_mechanism_id) ?? null,
-          isChild: true
-        }
-      })
-    result.push(...children)
+  for (const head of heads) {
+    result.push(head)
+    if (showIsotopologues.value) result.push(...isotopologuesOf(head))
+    if (head.channelRows && openGroups.has(head.groupKey)) {
+      for (const channel of head.channelRows) {
+        result.push(channel)
+        if (showIsotopologues.value) result.push(...isotopologuesOf(channel, true))
+      }
+    }
   }
   return result
 })
 
-// Label for an unfolded isotopologue child row (compact substitution label,
-// falling back to the offset label).
-const childLabel = (row) =>
-  row.isotope_formula ? formatIsotopeFormula(row.isotope_formula) : row.isotope_label || 'iso'
+// The head each grouped row sits under, so a peak focused elsewhere finds its
+// row even while its group is folded.
+const headOfGrouped = computed(() => {
+  const heads = new Map()
+  for (const row of rows.value) {
+    for (const channel of row.channelRows ?? []) {
+      heads.set(channel.peak_assignment_id, row.peak_assignment_id)
+    }
+  }
+  return heads
+})
 
-// Calibrated probability formatter for the P(correct) column.
-const pctFmt = new Intl.NumberFormat('en-US', { style: 'percent', maximumFractionDigits: 0 })
+// Label for an unfolded isotopologue child row (compact substitution label,
+// falling back to the offset label). Counted from the family's M0, which the ion
+// formula names for a labelled ion (see formatIsotopeFormula): the row's own,
+// or its M0's when the row recorded none. A source ion's line names its heavy
+// isotopes in its label alone, and reads in the same brackets.
+const childLabel = (row) =>
+  row.isotope_formula
+    ? formatIsotopeFormula(
+        row.isotope_formula,
+        row.ion_formula ?? assignments.value.m0Of(row)?.ion_formula
+      )
+    : formatIsotopeLabel(row.isotope_label) || 'iso'
 
 // A borrowed count is parenthesised, so an isotopologue does not read at a glance as
 // a peak seen through several adducts in its own right.
 const corrobLabel = (row) =>
   row.corrobInherited ? `(${row.corrobAdducts})` : `${row.corrobAdducts}`
 
-// Why a row shows no calibrated probability, and what one served from the batch
-// ledger is: shared with the inspector through @/lib/pCorrect, so the ledger's
-// cells and the inspector's row cannot drift apart on the same fact. A sample
-// with no run of its own is served from the batch ledger (run engine 'batch'):
-// its P(correct) is the one recorded when the sample was folded in, and a
-// missing one is the ledger's to explain rather than the instrument's.
-const fromLedger = computed(() => assignments.value.run?.engine === 'batch')
-const uncalibratedReason = (row) => reasonForNoPCorrect(row, { fromLedger: fromLedger.value })
-const pCorrectTooltip = (row) =>
-  row.pCorrect != null && fromLedger.value ? LEDGER_P_CORRECT_TOOLTIP : ''
-
-// The header says what the column is, in one line. What a dash means is on the
-// dash, where the reason can be the row's own.
-const pCorrectHeaderTooltip = P_CORRECT_TOOLTIP
-
-// Tooltip for the adduct-corroboration marker. An isotopologue shows the count its
-// M0 was corroborated by, so it has to say both that the evidence is the
-// family's and that the boost is in the M0's P(correct) - the engine folds it
-// into the record carrying the corroboration and never into a child's, so
-// the number this marker sits beside does not include it.
+// Tooltip for the corroboration marker, beside the ionization it counts
+// channels of. An isotopologue shows the count its M0 was corroborated by, so
+// it says the evidence is the family's.
+//
+// The marker sat beside the P(correct) column until that column was taken out
+// of the app (step 3.4d of the assignment quality plan): the calibrated
+// probability is read off a curve nobody has verified yet, and the tooltip no
+// longer names a number the page does not show.
 const corrobTooltip = (row) =>
   row.corrobInherited
-    ? `Supported by ${row.corrobAdducts} adducts, via the M0 of this isotopologue family ` +
-      "(folded into the M0's P(correct), not into this row's)"
-    : `Supported by ${row.corrobAdducts} adducts (already folded into P(correct))`
+    ? `Supported by ${row.corrobAdducts} channels, via the M0 of this isotopologue family`
+    : `Supported by ${row.corrobAdducts} channels`
 
 // Two-way selection tied to the focused peak: clicking a row focuses its peak,
 // and focusing a peak elsewhere (spectrum click, inspector) highlights its row.
@@ -421,12 +542,15 @@ const selectedRow = computed({
     // and for isotopologue children when unfolded).
     const exact = rows.value.find((r) => String(r.sample_peak_id) === String(focused.peak_id))
     if (exact) return exact
-    // Folded: a focused isotopologue child maps to its M0 row.
+    // Folded: a focused isotopologue child maps to its M0 row, and a row of a
+    // folded group - or a line of one - to the group's head.
     const assignment = assignments.value.forPeak(focused.peak_id)
-    const ownerId = assignment?.role === 'iso_child' ? assignment.owner_peak_assignment_id : null
-    return ownerId != null
-      ? (rows.value.find((r) => r.peak_assignment_id === ownerId) ?? null)
-      : null
+    const ownerId = isIsotopeLine(assignment)
+      ? assignment.owner_peak_assignment_id
+      : (assignment?.peak_assignment_id ?? null)
+    if (ownerId == null) return null
+    const rowOf = (id) => (id != null ? rows.value.find((r) => r.peak_assignment_id === id) : null)
+    return rowOf(ownerId) ?? rowOf(headOfGrouped.value.get(ownerId)) ?? null
   },
   set: (row) => {
     // Clicking the selected row again de-selects it, and PrimeVue says so by
@@ -562,8 +686,8 @@ const breadcrumb = computed(() => {
         <h1>Assignments</h1>
         <p>
         Every peak in the selected sample with its committed assignment from the
-        selected run: formula, ionization, confidence tier and calibrated
-        P(correct).
+        selected run: formula, ionization and confidence tier. The tiering is
+        still being developed, and the tier column says so.
         </p>
         <p>
         Click a row to focus the peak in the spectrum and inspector. Use the
@@ -635,13 +759,17 @@ const breadcrumb = computed(() => {
           doc: app.ui.help.docUrl('how-it-works/peak-assignment/#confidence-tiers')
         }"
       >
+        <!-- The four tiers count the sample's compounds and the peaks nothing
+             explained; the two roles after them count the peaks the source and
+             the instrument made, which are neither. -->
         <button
           v-for="t in [
             { key: 'assigned', label: 'assigned', count: tierCounts.assigned },
             { key: 'candidate', label: 'candidate', count: tierCounts.candidate },
-            { key: 'reagent', label: 'reagent', count: tierCounts.reagent },
             { key: 'below_assignability', label: 'below', count: tierCounts.below_assignability },
-            { key: 'unassigned', label: 'unassigned', count: tierCounts.unassigned }
+            { key: 'unassigned', label: 'unassigned', count: tierCounts.unassigned },
+            { key: 'reagent', label: 'reagent', count: tierCounts.reagent },
+            { key: 'artifact', label: 'artifact', count: tierCounts.artifact }
           ]"
           :key="t.key"
           type="button"
@@ -649,6 +777,7 @@ const breadcrumb = computed(() => {
           :class="[
             t.key === 'below_assignability' ? 'below' : t.key,
             {
+              'roles-start': t.key === ROLE_BUCKETS[0],
               active: activeTiers.has(t.key),
               dim: activeTiers.size && !activeTiers.has(t.key)
             }
@@ -676,7 +805,7 @@ const breadcrumb = computed(() => {
           aria-haspopup="dialog"
           :aria-controls="viewMenuOpen ? 'assignment-view-menu' : undefined"
           :aria-expanded="viewMenuOpen"
-          v-tooltip.top="'View options: isotopologue rows, verdict filter'"
+          v-tooltip.top="'View options: isotopologue rows, grouping by formula, verdict filter'"
           @click="toggleViewMenu"
           :pt="
             app.ui.help.top(
@@ -686,6 +815,9 @@ const breadcrumb = computed(() => {
               How this ledger reads, rather than what it is reading. <b>Isotopologues</b>
               unfolds each compound's isotopologue peaks - folded into the <b>+N</b>
               marker by default - as indented rows under their main peak (M0).
+              <b>Group by formula</b> makes a neutral read through several
+              ionization channels one row, headed by its strongest reading; the
+              arrow beside its ionization shows the others under it.
               <b>Verdict</b> narrows the table to one verification verdict.
               </p>
               <p>
@@ -722,6 +854,15 @@ const breadcrumb = computed(() => {
                 :pt="{ input: { autofocus: true } }"
               />
               <label for="unfold-iso">Isotopologues</label>
+            </div>
+            <div
+              class="unfold-toggle"
+              v-tooltip.top="
+                'One row per neutral formula: its other ionization channels fold under its strongest reading'
+              "
+            >
+              <ToggleSwitch v-model="groupByFormula" inputId="group-formula" />
+              <label for="group-formula">Group by formula</label>
             </div>
             <!-- Chips rather than a dropdown, and the same shape as the tier
                  chips this menu hangs off. A Select here would be a second
@@ -826,7 +967,7 @@ const breadcrumb = computed(() => {
         </Column>
         <Column field="assigned_formula" header="formula" sortable style="min-width: 6rem">
           <template #body="{ data }">
-            <span v-if="data.isChild" class="child-cell">
+            <span v-if="data.isChild" class="child-cell" :class="{ deeper: data.underChannel }">
               <span class="child-caret">&#8627;</span>
               <span
                 class="child-label"
@@ -834,14 +975,27 @@ const breadcrumb = computed(() => {
                 >{{ childLabel(data) }}</span
               >
             </span>
+            <!-- The same neutral read through another channel, under the row
+                 that heads its group: indented, and named again so the row
+                 reads on its own. -->
+            <span
+              v-else-if="data.isChannel"
+              class="child-cell channel-cell"
+              v-tooltip.top="'The same neutral, read through another ionization channel'"
+            >
+              <span class="child-caret">&#8627;</span>
+              <span class="formula">{{ formulaOf(data) }}</span>
+              <span v-if="isoCount(data)" class="iso-count">+{{ isoCount(data) }}</span>
+            </span>
             <!-- The formula is the one cell in the ledger a reader wants out of
                  the app - into a search, a note, a target list - so it carries
                  the same hover-to-copy affordance as the batch ledger's. The
                  isotopologue count rides in the slot, outside what gets copied. -->
             <BaseCopyableField
-              v-else-if="data.assigned_formula"
+              v-else-if="formulaOf(data)"
               class="formula"
-              :field="data.assigned_formula"
+              :field="formulaOf(data)"
+              :tooltip="data.assigned_formula ? null : ION_TOOLTIP"
             >
               <span
                 v-if="isoCount(data)"
@@ -855,15 +1009,80 @@ const breadcrumb = computed(() => {
             <span v-else class="formula">&mdash;</span>
           </template>
         </Column>
+        <!-- What a reference list calls the formula: the name, its list, and
+             the list's tags (background for the siloxanes), all in one line so
+             the row keeps its height. The tooltip names every name the run
+             matched, as the inspector's does. -->
+        <Column field="listing" sortable style="min-width: 8rem">
+          <template #header>
+            <span v-tooltip.top="LISTING_HEADER_TOOLTIP">listed as</span>
+          </template>
+          <template #body="{ data }">
+            <span
+              v-if="data.listing"
+              class="listing"
+              data-testid="listed-as"
+              v-tooltip.top="listingTooltip(data.listing)"
+            >
+              <span class="listing-name">{{ listingName(data.listing) }}</span>
+              <span v-if="listingSource(data.listing)" class="listing-source">{{
+                listingSource(data.listing)
+              }}</span>
+              <span
+                v-for="tag in listingTags(data.listing)"
+                :key="tag"
+                class="listing-tag"
+                :data-testid="`list-tag-${tag}`"
+                >{{ tag }}</span
+              >
+            </span>
+            <span v-else-if="!data.isChild" class="no-listing">&mdash;</span>
+          </template>
+        </Column>
         <Column field="mech" sortable style="min-width: 5rem">
           <template #header>
             <span v-tooltip.top="'Ionization mechanism (adduct)'">ionization</span>
           </template>
           <template #body="{ data }">
             <span class="mech">{{ data.mech || '—' }}</span>
+            <!-- How many of the run's channels committed the row's neutral:
+                 evidence for the formula, beside the channel it was read
+                 through. -->
+            <span
+              v-if="data.corrobAdducts > 1"
+              class="corrob-mark"
+              v-tooltip.top="corrobTooltip(data)"
+              ><span class="pi ph ph-link-simple" />{{ corrobLabel(data) }}</span
+            >
+            <!-- A group's head opens its other channels here, beside the
+                 channel it was read through. -->
+            <button
+              v-if="data.channelRows?.length"
+              type="button"
+              class="group-toggle"
+              data-testid="group-toggle"
+              :aria-expanded="openGroups.has(data.groupKey)"
+              :aria-label="
+                `${openGroups.has(data.groupKey) ? 'Fold' : 'Show'} the other ` +
+                `${data.channelRows.length === 1 ? 'channel' : 'channels'} of ${data.assigned_formula}`
+              "
+              v-tooltip.top="groupTooltip(data)"
+              @click.stop="toggleGroup(data.groupKey)"
+            >
+              <span
+                :class="[
+                  'pi',
+                  openGroups.has(data.groupKey) ? 'pi-chevron-down' : 'pi-chevron-right'
+                ]"
+              />+{{ data.channelRows.length }}
+            </button>
           </template>
         </Column>
-        <Column field="tierRank" header="tier" sortable style="min-width: 7rem">
+        <Column field="tierRank" sortable style="min-width: 7rem">
+          <template #header>
+            <span>tier</span>
+            <BaseProvisionalMark />
+          </template>
           <template #body="{ data }">
             <BaseTierTag
               :tier="data.tier"
@@ -890,49 +1109,9 @@ const breadcrumb = computed(() => {
             <BaseTierTag
               v-if="data.engine_tier"
               :tier="data.engine_tier"
-              :show-evidence="false"
               :tooltip="engineTierTooltip(data)"
             />
             <span v-else class="no-engine-tier">&mdash;</span>
-          </template>
-        </Column>
-        <Column field="pCorrect" sortable style="min-width: 6.5rem">
-          <template #header>
-            <span
-              v-tooltip.top="pCorrectHeaderTooltip"
-              v-help.top="{
-                title: 'P(correct)',
-                helpKey: 'assignment-p-correct',
-                doc: app.ui.help.docUrl(
-                  'how-it-works/peak-assignment/#calibrated-confidence-probability-of-being-correct'
-                )
-              }"
-              >P(correct)</span
-            >
-          </template>
-          <template #body="{ data }">
-            <span
-              v-if="data.pCorrect != null"
-              class="pcorrect"
-              v-tooltip.top="pCorrectTooltip(data)"
-            >
-              {{ pctFmt.format(data.pCorrect)
-              }}<span
-                v-if="data.pProvisional"
-                class="prov"
-                v-tooltip.top="'Provisional calibration curve'"
-                >*</span
-              >
-            </span>
-            <span v-else class="pcorrect uncal" v-tooltip.top="uncalibratedReason(data)"
-              >&mdash;</span
-            >
-            <span
-              v-if="data.corrobAdducts > 1"
-              class="corrob-mark"
-              v-tooltip.top="corrobTooltip(data)"
-              ><span class="pi ph ph-link-simple" />{{ corrobLabel(data) }}</span
-            >
           </template>
         </Column>
         <Column style="min-width: 3rem">
@@ -988,7 +1167,7 @@ const breadcrumb = computed(() => {
     </div>
 
     <Dialog v-model:visible="configVisible" modal header="Assign peaks" :style="{ width: '26rem' }">
-      <PeakAssignConfigForm />
+      <PeakAssignConfigForm :sample-item-id="app.data.sample.focusedId" />
       <template #footer>
         <Button label="Cancel" text severity="secondary" @click="configVisible = false" />
         <Button label="Assign" icon="pi ph ph-magic-wand" :loading="submitting" @click="launch" />
@@ -1001,9 +1180,38 @@ const breadcrumb = computed(() => {
 /* A row the producing engine stated no tier on. Recessive, because it is the
    majority of the column on most runs - an engine typically tiers only the
    peaks it committed a formula to - and a column of full-strength dashes would
-   read as missing data rather than as "no opinion here". */
-.no-engine-tier {
+   read as missing data rather than as "no opinion here". A row no list names
+   is the same case in the listing column. */
+.no-engine-tier,
+.no-listing {
   opacity: 0.4;
+}
+
+/* The listing: one line, the name first and cut short rather than wrapped, so
+   the virtual scroller's fixed row height holds; the list and its tags after
+   it, recessive, as the inspector shows them. */
+.listing {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.35rem;
+  max-width: 18rem;
+  white-space: nowrap;
+}
+.listing-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+.listing-source {
+  font-size: 0.72rem;
+  opacity: 0.6;
+}
+.listing-tag {
+  padding: 0 0.3rem;
+  border: 1px dashed var(--p-content-border-color, #e3e6ec);
+  border-radius: 0.25rem;
+  font-size: 0.7rem;
+  opacity: 0.8;
 }
 
 /* The panel body is a column: the launch-error banner and the tier strip take
@@ -1084,8 +1292,13 @@ const breadcrumb = computed(() => {
 .tier-stat.candidate b {
   color: var(--state-warning);
 }
-.tier-stat.reagent b {
+.tier-stat.reagent b,
+.tier-stat.artifact b {
   color: #8a5ed0;
+}
+/* Set off from the tiers: what follows is not a confidence. */
+.tier-stat.roles-start {
+  margin-left: 0.4rem;
 }
 .tier-stat.below b,
 .tier-stat.unassigned b {
@@ -1120,17 +1333,7 @@ const breadcrumb = computed(() => {
   order: 1;
 }
 
-.pcorrect {
-  font-variant-numeric: tabular-nums;
-}
-.pcorrect.uncal {
-  opacity: 0.45;
-}
-.pcorrect .prov {
-  color: var(--state-warning);
-  margin-left: 0.05rem;
-}
-/* Adduct-corroboration marker beside P(correct). */
+/* Channel-corroboration marker beside the ionization. */
 .corrob-mark {
   display: inline-flex;
   align-items: center;
@@ -1218,6 +1421,37 @@ const breadcrumb = computed(() => {
   align-items: baseline;
   gap: 0.35rem;
   padding-left: 0.9rem;
+}
+/* An isotopologue of a grouped channel's row, a step under that row. */
+.child-cell.deeper {
+  padding-left: 1.8rem;
+}
+.channel-cell .formula {
+  opacity: 0.8;
+}
+
+/* The head's toggle for its other channels: quiet until hovered, like the row's
+   other small controls. */
+.group-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.1rem;
+  margin-left: 0.4rem;
+  padding: 0 0.25rem;
+  border: 1px solid var(--p-content-border-color, #e3e6ec);
+  border-radius: 4px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: 0.7rem;
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+}
+.group-toggle .pi {
+  font-size: 0.6rem;
+}
+.group-toggle:hover {
+  background: var(--p-content-hover-background);
 }
 .child-caret {
   opacity: 0.4;

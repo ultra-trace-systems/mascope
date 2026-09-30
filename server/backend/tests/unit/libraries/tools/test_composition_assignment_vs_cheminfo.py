@@ -5,17 +5,31 @@ import pytest
 
 from mascope_backend.api.new.cheminfo.config import cheminfo_config
 from mascope_backend.api.new.cheminfo.utils import (
-    to_cheminfo_ionization_format,
     to_custom_element_format,
     to_explicit_isotope_format,
 )
 from mascope_tools.composition import CompositionSearchConfig
 from mascope_tools.composition.finder import find_compositions
+from mascope_tools.composition.mechanism_notation import parse_mechanism
 from mascope_tools.composition.utils import (
     normalize_formula_with_isotopes,
     parse_composition,
     to_hill_order,
 )
+
+
+def _cheminfo_ionization(mechanism: str) -> str:
+    """A mechanism as ChemInfo's ``ionizations`` parameter writes it.
+
+    ``<ion polarity>(<moiety>)<operation>``, the operation ``-1`` for a moiety
+    removed and empty for one added: ``[M+H]+`` is ``+(H)``, ``[M-H]-`` is
+    ``-(H)-1``, ``[M+Br]-`` is ``-(Br)`` and ``[M]+.`` is ``+()``.
+    """
+    parts = parse_mechanism(mechanism)
+    if parts.electron_transfer:
+        return f"{parts.polarity}()"
+    moiety, _ = to_explicit_isotope_format(parts.moiety)
+    return f"{parts.polarity}({moiety}){'' if parts.addition else '-1'}"
 
 
 def _normalize_formula(formula: str) -> str:
@@ -42,9 +56,7 @@ def _fetch_cheminfo_formulas(
 ) -> set[str]:
     """Fetch candidate formulas from ChemInfo for a given m/z and formula ranges."""
     explicit_ranges, _ = to_explicit_isotope_format(formula_ranges)
-    ionizations = ",".join(
-        [to_cheminfo_ionization_format(i) for i in ionization_mechanisms]
-    )
+    ionizations = ",".join(_cheminfo_ionization(i) for i in ionization_mechanisms)
 
     params = {
         "mass": mz,
@@ -111,7 +123,7 @@ class TestDirectCompositionAssignment:
         (539.75763, "C15H12Br4O2", "Br0-4"),
     ]
 
-    IONIZATION_MECHANISMS = ["-"]
+    IONIZATION_MECHANISMS = ["[M]-."]
 
     @pytest.mark.parametrize(
         "mz, expected_formula, formula_ranges_addition", TEST_CASES
@@ -162,23 +174,23 @@ class TestIonizationMechanismCompositionAssignment:
     # (m/z, expected_neutral_formula, ionization_mechanism, formula_ranges_addition)
     # m/z values computed from known neutral masses using the specified mechanism.
     TEST_CASES = [
-        # +H+ (protonation, [M+H]+)
-        (47.01276, "CH2O2", "+H+", ""),
-        (64.00292, "HNO3", "+H+", ""),
-        (64.99995, "[15N]HO3", "+H+", "[15N]0-1"),
-        (91.03897, "C3H6O3", "+H+", ""),
-        # + (electron loss, M+)
-        (46.00493, "CH2O2", "+", ""),
-        (47.00829, "[13C]H2O2", "+", "[13C]0-1"),
-        (62.99509, "HNO3", "+", ""),
-        # -H+ (H removal, [M-H]-)
-        (89.02441, "C3H6O3", "-H+", ""),
-        # +Br- (bromide adduct, [M+Br]-)
-        (124.92437, "CH2O2", "+Br-", ""),
-        # +NO3- (nitrate adduct, [M+NO3]-)
-        (107.99384, "CH2O2", "+NO3-", ""),
-        # +(CH4N2O)H+ (uronium adduct, [M+uronium+H]+)
-        (124.03528, "HNO3", "+(CH4N2O)H+", ""),
+        # protonation, [M+H]+
+        (47.01276, "CH2O2", "[M+H]+", ""),
+        (64.00292, "HNO3", "[M+H]+", ""),
+        (64.99995, "[15N]HO3", "[M+H]+", "[15N]0-1"),
+        (91.03897, "C3H6O3", "[M+H]+", ""),
+        # electron loss, [M]+.
+        (46.00493, "CH2O2", "[M]+.", ""),
+        (47.00829, "[13C]H2O2", "[M]+.", "[13C]0-1"),
+        (62.99509, "HNO3", "[M]+.", ""),
+        # H removal, [M-H]-
+        (89.02441, "C3H6O3", "[M-H]-", ""),
+        # bromide adduct, [M+Br]-
+        (124.92437, "CH2O2", "[M+Br]-", ""),
+        # nitrate adduct, [M+NO3]-
+        (107.99384, "CH2O2", "[M+NO3]-", ""),
+        # uronium adduct, [M+CH4N2O+H]+
+        (124.03528, "HNO3", "[M+CH4N2O+H]+", ""),
     ]
 
     @pytest.mark.parametrize(

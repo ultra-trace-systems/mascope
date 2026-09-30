@@ -206,12 +206,12 @@ def stubbed_engine(monkeypatch, folded_batch):
     by canned answers keyed on the sample being searched or measured."""
     samples = folded_batch["samples"]
     by_id = {sample_id: name for name, sample_id in samples.items()}
-    calls = {"search": [], "score": []}
+    calls = {"search": [], "score": [], "seeded_fits": []}
 
     def load_peaks(sample):
         return _frame(_PEAKS[by_id[sample.sample_item_id]])
 
-    def assign(peaks, config, heuristics=None, targets=None):
+    def assign(peaks, config, heuristics=None, targets=None, scoring=None):
         calls["search"].append(list(targets))
         return _canned_matches()
 
@@ -229,7 +229,14 @@ def stubbed_engine(monkeypatch, folded_batch):
         return ["H+"], {"H+": "mech-h"}
 
     async def match_params(sample_item_id):
-        return SimpleNamespace(isotope_abundance_threshold=0.01)
+        return SimpleNamespace(isotope_abundance_threshold=0.01, mz_tolerance=5)
+
+    async def seeded_fits(sample, params, seeds):
+        # The search's own re-score: the finder's reading measured again as an
+        # ion, which is what the rows are tiered on. Canned here for the same
+        # reason the finder is - these tests are about the pass, not the fit.
+        calls["seeded_fits"].append((by_id[sample.sample_item_id], set(seeds)))
+        return {seed: 0.88 for seed in seeds}
 
     async def seeded(sample, seeds, params):
         calls["score"].append((by_id[sample.sample_item_id], set(seeds)))
@@ -248,6 +255,7 @@ def stubbed_engine(monkeypatch, folded_batch):
     monkeypatch.setattr(batch_untargeted, "_untargeted_ionization_notations", notations)
     monkeypatch.setattr(batch_untargeted, "default_match_params", match_params)
     monkeypatch.setattr(batch_untargeted, "score_seeds", seeded)
+    monkeypatch.setattr(batch_untargeted, "_seeded_fits", seeded_fits)
     return calls
 
 
@@ -312,10 +320,50 @@ async def test_the_search_runs_on_the_brightest_member_and_annotates_the_anchor(
     s1 = await _members(async_session_factory, samples["S1"])
     assert role_name(s1["p1"].role) == "M0"
     assert tier_name(s1["p1"].tier) == "assigned"
-    assert s1["p1"].fit_score == pytest.approx(0.92)
+    # The fit is the re-score's (0.88), not the finder's ranking score (0.92):
+    # the searched sample's own rows are tiered the same way the propagated
+    # ones are, so one anchor's members are all on one scale.
+    assert s1["p1"].fit_score == pytest.approx(0.88)
+    assert [name for name, _ in stubbed_engine["seeded_fits"]] == ["S1"]
     assert role_name(s1["p2"].role) == "iso_child"
     assert s1["p2"].owner_batch_peak_id == glucose.batch_peak_id
     assert s1["p3"].candidate is None
+
+
+async def test_a_secondary_channel_the_mode_declares_is_searched_once(
+    folded_batch, stubbed_engine, monkeypatch
+):
+    # The urea profile names [M+NH4]+ secondary. A mode that declares it already
+    # searches it, and searched again every neutral through it would come back
+    # as another reading of its own ion - on the batch path as on a run.
+    proton = SimpleNamespace(
+        ionization_mechanism="H+", ionization_mechanism_id="mech-h"
+    )
+    ammonium = SimpleNamespace(
+        ionization_mechanism="[M+NH4]+", ionization_mechanism_id="mech-nh4"
+    )
+    searched = []
+
+    async def mechanisms(sample):
+        return ["mech-h", "mech-nh4"], [proton, ammonium]
+
+    async def secondary(notations, polarity):
+        return [ammonium] if "[M+NH4]+" in notations else []
+
+    def notations(mechs):
+        searched.append([mechanism.ionization_mechanism_id for mechanism in mechs])
+        return ["H+"], {"H+": "mech-h"}
+
+    monkeypatch.setattr(batch_untargeted, "fetch_sample_mechanisms", mechanisms)
+    monkeypatch.setattr(batch_untargeted, "fetch_mechanisms_by_notation", secondary)
+    monkeypatch.setattr(batch_untargeted, "_untargeted_ionization_notations", notations)
+
+    await run_batch_untargeted_search(
+        folded_batch["batch_id"], PeakAssignmentConfig(profile="UR")
+    )
+
+    assert ["mech-h", "mech-nh4"] in searched
+    assert all(ids.count("mech-nh4") == 1 for ids in searched)
 
 
 async def test_the_other_sample_is_measured_and_takes_a_fit_of_its_own(

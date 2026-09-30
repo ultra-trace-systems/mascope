@@ -1,28 +1,87 @@
 import re
+from collections.abc import Mapping
+from functools import lru_cache
 
 from pyteomics.mass import Composition, calculate_mass
 
 from mascope_tools.composition.config import ELECTRON_MASS
 from mascope_tools.composition.custom_elements import CUSTOM_ELEMENTS
 from mascope_tools.composition.exceptions import CompositionFinderException
+from mascope_tools.composition.mechanism_notation import (
+    MechanismNotationError,
+    parse_mechanism,
+)
 from mascope_tools.composition.models import (
     Atom,
     IonizationMechanism,
 )
 
 
-def to_pyteomics(formula: str) -> str:
-    """Convert bracket-first isotope notation to Pyteomics element-first.
-    e.g. '[15N]O3' -> 'N[15]O3'
-    """
-    return re.sub(r"\[(\d+)([A-Z][a-z]?)\]", r"\2[\1]", formula)
-
-
 # Caret-prefixed heavy isotopes used for labelled reagents, e.g. '^N' = 15N (the
-# 15N-labelled nitrate reagent '+^NO3-'). pyteomics masses isotopes via 'N[15]'
+# 15N-labelled nitrate reagent '[M+^NO3]-'). pyteomics masses isotopes via 'N[15]'
 # notation and cannot mass the bare '^N' symbol, so map them for mass computation.
 # Derived from the single custom-element registry (custom_elements.py).
 CARET_ISOTOPES = {sym: ce.pyteomics_isotope for sym, ce in CUSTOM_ELEMENTS.items()}
+
+#: The inverse: the caret symbol a pyteomics isotope token stands for. Used to
+#: put a formula back into the notation the rest of the system writes, so a
+#: round trip through pyteomics does not leave 'N[15]' where '^N' went in.
+PYTEOMICS_CARET_ISOTOPES = {token: sym for sym, token in CARET_ISOTOPES.items()}
+
+_BRACKET_ISOTOPE = re.compile(r"\[(\d+)([A-Z][a-z]?)\]")
+_CARET_ISOTOPE = re.compile(r"\^([A-Z][a-z]?)")
+
+
+def to_pyteomics(formula: str) -> str:
+    """Convert this codebase's isotope notations to Pyteomics element-first.
+
+    Two notations reach here and pyteomics parses neither: the bracket-first
+    form of an ordinary isotope (``'[15N]O3'``), which it merely spells
+    differently, and the caret form of a labelled-reagent custom element
+    (``'^NO3'``), which it rejects outright. The second is why a formula built
+    from a labelled adduct has to pass through here before any pyteomics call.
+
+    A caret symbol with no custom element behind it is left alone, so pyteomics
+    raises on it rather than this function inventing a mass for it.
+
+    Examples
+    --------
+    >>> to_pyteomics("[15N]O3")
+    'N[15]O3'
+    >>> to_pyteomics("C15H13O10^N")
+    'C15H13O10N[15]'
+    >>> to_pyteomics("C6H12O6")
+    'C6H12O6'
+
+    :param formula: Formula in bracket-first and/or caret notation.
+    :return: The same formula in the notation pyteomics parses.
+    """
+    formula = _BRACKET_ISOTOPE.sub(r"\2[\1]", formula)
+    return _CARET_ISOTOPE.sub(
+        lambda match: CARET_ISOTOPES.get(f"^{match.group(1)}", match.group(0)),
+        formula,
+    )
+
+
+def from_pyteomics_symbol(symbol: str) -> str:
+    """The spelling this codebase writes for a pyteomics element symbol.
+
+    Only the labelled-reagent tokens move: ``'N[15]'`` is written ``'^N'``
+    everywhere outside a pyteomics call. An ordinary isotope token is left as
+    pyteomics spells it, which is what the formulas built from it already
+    carry.
+
+    Examples
+    --------
+    >>> from_pyteomics_symbol("N[15]")
+    '^N'
+    >>> from_pyteomics_symbol("C")
+    'C'
+
+    :param symbol: A pyteomics element symbol.
+    :return: The symbol as this codebase writes it.
+    """
+    return PYTEOMICS_CARET_ISOTOPES.get(symbol, symbol)
 
 
 def composition_mass(composition: Composition) -> float:
@@ -35,6 +94,49 @@ def composition_mass(composition: Composition) -> float:
     return total
 
 
+@lru_cache(maxsize=512)
+def ionization_composition(formula: str) -> dict[str, int]:
+    """The adduct's element counts, parsed once per mechanism.
+
+    Parsed with :func:`parse_composition` rather than raw pyteomics so custom
+    labelled elements like ``'^N'`` (the 15N-nitrate reagent) survive; pyteomics
+    rejects the bare ``'^N'`` symbol. Cached because a search asks for the same
+    handful of mechanisms once per candidate it reports.
+    """
+    return dict(parse_composition(formula)) if formula else {}
+
+
+def combine_counts_and_ionization(
+    counts: Mapping[str, int], ionization_mechanism: IonizationMechanism
+) -> str:
+    """Combine neutral element counts and an ionization into an ion formula.
+
+    The counts-first half of :func:`combine_formula_and_ionization`, for a caller
+    that already holds the composition and would otherwise print it only to have
+    it parsed straight back. Keys must be in pyteomics notation (``'N[15]'``, not
+    ``'[15N]'``), which is what the string path produces; :func:`to_hill_order`
+    normalizes them on the way out either way.
+
+    :param counts: The neutral's element counts.
+    :param ionization_mechanism: The adduct to add or subtract.
+    :return: The ion formula in Hill notation, with a trailing charge sign.
+    """
+    combined = {symbol: count for symbol, count in counts.items() if count}
+    sign = 1 if ionization_mechanism and ionization_mechanism.addition else -1
+    adduct = (
+        ionization_composition(ionization_mechanism.formula)
+        if ionization_mechanism
+        else {}
+    )
+    for symbol, count in adduct.items():
+        combined[symbol] = combined.get(symbol, 0) + sign * count
+
+    charge_sign = (
+        "+" if ionization_mechanism and ionization_mechanism.charge > 0 else "-"
+    )
+    return to_hill_order(combined) + charge_sign
+
+
 def combine_formula_and_ionization(
     formula: str, ionization_mechanism: IonizationMechanism
 ) -> str:
@@ -42,25 +144,9 @@ def combine_formula_and_ionization(
     Combine a neutral formula and ionization into a single ion formula in Hill notation.
     """
     # Parse formula (Pyteomics requires element-first notation)
-    comp_formula = Composition(formula=to_pyteomics(formula))
-    # Parse the adduct with parse_composition (not raw pyteomics) so custom
-    # labelled elements like '^N' (the 15N-nitrate reagent) survive; pyteomics
-    # rejects the bare '^N' symbol.
-    comp_ionization = (
-        parse_composition(ionization_mechanism.formula)
-        if ionization_mechanism
-        else Composition(formula="")
+    return combine_counts_and_ionization(
+        Composition(formula=to_pyteomics(formula)), ionization_mechanism
     )
-    if ionization_mechanism.addition:
-        combined_composition = comp_formula + comp_ionization
-    else:
-        combined_composition = comp_formula - comp_ionization
-
-    charge_sign = (
-        "+" if ionization_mechanism and ionization_mechanism.charge > 0 else "-"
-    )
-    ion_formula = to_hill_order(combined_composition) + charge_sign
-    return ion_formula
 
 
 def parse_composition(formula_string: str, multiplier: int = 1) -> Composition:
@@ -199,48 +285,65 @@ def assert_valid_formula(formula: str) -> None:
         ) from exc
 
 
-def to_hill_order(elements: dict) -> str:
+@lru_cache(maxsize=4096)
+def normalize_symbol(symbol: str) -> str:
+    """Canonicalize an element symbol to the bracket-first isotope notation.
+
+    Accepts both ``[15N]`` and ``N[15]`` and answers ``[15N]``, so a formula that
+    came back from pyteomics is spelled the way the rest of the system writes it.
+    Cached: the symbols are a closed set of a few dozen and this is called once
+    per element of every formula the composition search reports.
+    """
+    # Accept both [15N] and N[15] and canonicalize to [15N].
+    bracket_first = re.fullmatch(r"\[(\d+)([A-Z][a-z]?)\]", symbol)
+    if bracket_first:
+        return symbol
+
+    element_first = re.fullmatch(r"([A-Z][a-z]?)\[(\d+)\]", symbol)
+    if element_first:
+        element, mass_num = element_first.groups()
+        return f"[{mass_num}{element}]"
+
+    return symbol
+
+
+@lru_cache(maxsize=4096)
+def hill_sort_key(symbol: str) -> tuple[int, str, int, int, str]:
+    """Sort key placing carbon first, hydrogen second, the rest alphabetically.
+
+    Expects an already-normalized symbol (see :func:`normalize_symbol`). Cached
+    for the same reason.
+    """
+    bracket_match = re.fullmatch(r"\[(\d+)([A-Z][a-z]?)\]", symbol)
+    if bracket_match:
+        mass_num, element = bracket_match.groups()
+        priority = 0 if element == "C" else 1 if element == "H" else 2
+        return (priority, element, 0, int(mass_num), symbol)
+
+    plain_match = re.fullmatch(r"([A-Z][a-z]?)", symbol)
+    if plain_match:
+        element = plain_match.group(1)
+        priority = 0 if element == "C" else 1 if element == "H" else 2
+        return (priority, element, 1, 0, symbol)
+
+    return (3, symbol, 1, 0, symbol)
+
+
+def to_hill_order(elements: Mapping[str, int]) -> str:
     """Convert a dictionary of elements to Hill notation string."""
     # For empty formula, return '()'
     if not elements:
         return "()"
-    # Filter out zero and negative counts (can be if -H- is the ionization mechanism)
+    # Filter out zero and negative counts (a subtractive mechanism such as
+    # [M-H]- can leave one)
     elements = {k: v for k, v in elements.items() if v > 0}
 
-    def normalize_symbol(symbol: str) -> str:
-        # Accept both [15N] and N[15] and canonicalize to [15N].
-        bracket_first = re.fullmatch(r"\[(\d+)([A-Z][a-z]?)\]", symbol)
-        if bracket_first:
-            return symbol
-
-        element_first = re.fullmatch(r"([A-Z][a-z]?)\[(\d+)\]", symbol)
-        if element_first:
-            element, mass_num = element_first.groups()
-            return f"[{mass_num}{element}]"
-
-        return symbol
-
-    normalized_elements = {}
+    normalized_elements: dict[str, int] = {}
     for symbol, count in elements.items():
         normalized_symbol = normalize_symbol(symbol)
         normalized_elements[normalized_symbol] = (
             normalized_elements.get(normalized_symbol, 0) + count
         )
-
-    def hill_sort_key(symbol: str) -> tuple[int, str, int, int, str]:
-        bracket_match = re.fullmatch(r"\[(\d+)([A-Z][a-z]?)\]", symbol)
-        if bracket_match:
-            mass_num, element = bracket_match.groups()
-            priority = 0 if element == "C" else 1 if element == "H" else 2
-            return (priority, element, 0, int(mass_num), symbol)
-
-        plain_match = re.fullmatch(r"([A-Z][a-z]?)", symbol)
-        if plain_match:
-            element = plain_match.group(1)
-            priority = 0 if element == "C" else 1 if element == "H" else 2
-            return (priority, element, 1, 0, symbol)
-
-        return (3, symbol, 1, 0, symbol)
 
     atomic_symbols = sorted(normalized_elements.keys(), key=hill_sort_key)
     formula = "".join(
@@ -333,57 +436,91 @@ def to_hill_notation(counts: dict[str, int]) -> str:
     return "".join(parts)
 
 
+_BRACKET_ISOTOPE = re.compile(r"\[(\d+)([A-Z][a-z]?)\]")
+
+#: Bracketed isotope token -> the caret custom element it denotes, for every
+#: labelled element the finder knows: "[15N]" -> "^N".
+_CARET_BY_BRACKET = {
+    f"[{ce.labelled_massnumber}{ce.base_element}]": symbol
+    for symbol, ce in CUSTOM_ELEMENTS.items()
+}
+
+
+def _caret_labelled(moiety: str) -> str:
+    """Rewrite bracketed labelled isotopes in a mechanism's moiety to caret form.
+
+    A mechanism reaches the finder in explicit-isotope notation ("[M+[15N]O3]-"),
+    but `parse_composition` reads a bracketed token as its base element - "[15N]"
+    as N - and the label is lost: the labelled nitrate reagent was massed as the
+    unlabelled one, 0.997 Da light, and every candidate on that channel was a
+    formula fitting the wrong adduct mass. The caret form ("^N") is what the
+    custom-element machinery masses and predicts correctly, so the token is
+    rewritten to it; a bracketed isotope with no custom element is refused
+    rather than silently unlabelled.
+
+    :param moiety: The mechanism's moiety, e.g. "[15N]O3" or "(CH4N2O)H".
+    :raises CompositionFinderException: A bracketed isotope the finder cannot
+        mass.
+    :return: The moiety with labelled isotopes in caret notation.
+    """
+
+    def replace(match: re.Match) -> str:
+        token = match.group(0)
+        symbol = _CARET_BY_BRACKET.get(token)
+        if symbol is None:
+            raise CompositionFinderException(
+                f"Unsupported labelled isotope {token!r} in ionization mechanism: "
+                f"the finder can mass only {sorted(_CARET_BY_BRACKET)}"
+            )
+        return symbol
+
+    return _BRACKET_ISOTOPE.sub(replace, moiety)
+
+
 def parse_ionization(ionization_string: str) -> IonizationMechanism:
-    """Parse ionization mechanism string from Mascope format into an IonizationMechanism object.
+    """Parse an ionization mechanism, written in either notation.
+
+    The standard adduct notation puts the ion's charge last: ``[M+H]+``
+    protonates, ``[M-H]-`` deprotonates, ``[M+Br]-`` attaches bromide,
+    ``[M-H]+`` removes a hydride and leaves the cation a charge-transfer
+    source makes, and ``[M]+.`` / ``[M]-.`` are electron transfer. The legacy
+    ``<operation><moiety><moiety charge>`` spelling of each (``+H+``, ``-H+``,
+    ``+Br-``, ``-H-``, ``+``, ``-``) reads the same; see
+    :mod:`mascope_tools.composition.mechanism_notation`.
 
     :param ionization_string: String representing the ionization mechanism.
     :type ionization_string: str
     :raises CompositionFinderException: If the ionization is unsupported.
-    :return: Parsed IonizationMechanism object.
+    :return: Parsed IonizationMechanism object, carrying the string as given.
     :rtype: IonizationMechanism
     """
     ionization_string = ionization_string.strip()
-    formula = ""
-    mass = ELECTRON_MASS
-    if ionization_string == "+":
-        # Abstract electron being kicked out
-        addition = False
-        charge = 1
-    elif ionization_string == "-":
-        # Abstract electron being added
-        addition = True
-        charge = -1
-    elif ionization_string == "-H-":
-        # Deprotonation
-        addition = False
-        formula = "H"
-        charge = -1
-        mass = calculate_mass(formula="H")
+    try:
+        parts = parse_mechanism(ionization_string)
+    except MechanismNotationError as error:
+        raise CompositionFinderException(
+            f"Unsupported ionization mechanism: '{ionization_string}'. {error}"
+        ) from error
+
+    if parts.electron_transfer:
+        formula = ""
+        mass = ELECTRON_MASS
     else:
-        # Regex pattern: start charge, base, end charge
-        pattern = r"^([+-])?(.*?)([+-])?$"
+        composition = parse_composition(_caret_labelled(parts.moiety))
+        formula = to_hill_order(composition)
+        # The moiety's mass accounts for its own charge's electron - the
+        # proton in "[M+H]+" and "[M-H]-", the bromide in "[M+Br]-". The ion
+        # a removed proton leaves is the anion, one electron heavier than a
+        # cation would be, and the ion a removed hydride leaves is the cation.
+        mass = composition_mass(composition) - ELECTRON_MASS * parts.moiety_charge
 
-        match = re.match(pattern, ionization_string)
-        if match:
-            addition = match.group(1) == "+"
-            composition = parse_composition(match.group(2))
-            formula = to_hill_order(composition)
-            charge = 1 if match.group(3) == "+" else -1
-            mass = composition_mass(composition) - ELECTRON_MASS * charge
-        else:
-            raise CompositionFinderException(
-                f"Unsupported ionization mechanism: '{ionization_string}'"
-            )
-
-    ionization_mech = IonizationMechanism(
+    return IonizationMechanism(
         mascope_notation=ionization_string,
-        addition=addition,
+        addition=parts.addition,
         formula=formula,
         mass=mass,
-        charge=charge,
+        charge=parts.charge,
     )
-
-    return ionization_mech
 
 
 def parse_bool(val):

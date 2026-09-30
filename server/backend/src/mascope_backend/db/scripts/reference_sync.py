@@ -17,7 +17,10 @@ registered adapter name (``custom`` for hand-authored lists - see
 ``docs/dev/reference_data_authoring.md``).
 
 This is the same versioned, idempotent-by-replacement ingest the CLI runs; it
-just executes where the chemistry dependencies live.
+just executes where the chemistry dependencies live. The source row records how
+the compounds may be matched - a database at the mirror window, a list
+unbounded - and ``--elements``, ``--max-carbon``, ``--max-mass``,
+``--allow-radicals`` and ``--polarity`` override it, as they do for the CLI.
 """
 
 import argparse
@@ -29,6 +32,7 @@ from sqlalchemy.pool import NullPool
 from mascope_backend.db.secrets import postgres_password
 from mascope_backend.runtime import runtime
 from mascope_reference import get_adapter, ingest
+from mascope_reference.scope import UNBOUNDED_TOKEN, scope_of
 
 
 def _sync_engine():
@@ -71,6 +75,36 @@ def main() -> None:
         action="store_true",
         help="Ingest without activating (does not replace the current version).",
     )
+    parser.add_argument(
+        "--elements",
+        help=(
+            "Elements a formula of this source may carry, comma-separated "
+            f"(C,H,N,O,S,Si), or '{UNBOUNDED_TOKEN}'. Default: the adapter's window."
+        ),
+    )
+    parser.add_argument(
+        "--max-carbon", help=f"Largest carbon count, or '{UNBOUNDED_TOKEN}'."
+    )
+    parser.add_argument(
+        "--max-mass", help=f"Largest monoisotopic mass in Da, or '{UNBOUNDED_TOKEN}'."
+    )
+    parser.add_argument(
+        "--allow-radicals",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help=(
+            "Whether this source's odd-electron formulas may be matched. Default: "
+            "not for a database or a CSV; a list file's own header decides for it."
+        ),
+    )
+    parser.add_argument(
+        "--polarity",
+        choices=["positive", "negative", "both"],
+        help=(
+            "The polarity this source's compounds are detected in. Default: both "
+            "for a database or a CSV; a list file's own header decides for it."
+        ),
+    )
     args = parser.parse_args()
 
     try:
@@ -79,6 +113,16 @@ def main() -> None:
         raise SystemExit(str(error))
     if not args.file.exists():
         raise SystemExit(f"Reference dump not found: {args.file}")
+    try:
+        scope = scope_of(adapter, args.file).overridden(
+            elements=args.elements,
+            max_carbon=args.max_carbon,
+            max_mass=args.max_mass,
+            allow_radicals=args.allow_radicals,
+            polarity=args.polarity,
+        )
+    except ValueError as error:
+        raise SystemExit(str(error))
 
     engine = _sync_engine()
     runtime.logger.info(
@@ -102,6 +146,7 @@ def main() -> None:
             activate=not args.stage,
             prune=args.prune,
             progress=_report_progress,
+            scope=scope,
         )
     finally:
         engine.dispose()
@@ -111,6 +156,7 @@ def main() -> None:
         f"(version '{result.version}', source_id={result.reference_source_id}, "
         f"{result.skipped:,} skipped)."
     )
+    runtime.logger.info(f"Matched as: {result.scope.describe()}.")
 
 
 if __name__ == "__main__":

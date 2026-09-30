@@ -1,8 +1,11 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { mount } from '@vue/test-utils'
+import { flushPromises, mount } from '@vue/test-utils'
 import { ref } from 'vue'
 
 import { num } from '@/lib/formatters'
+import { isIsotopeLine } from '@/lib/isotopeLines'
+import { EVIDENCE_LEVELS } from '@/lib/verification'
+import { TIERING_PROVISIONAL } from '@/lib/tiers'
 
 // The inspector card for a peak with no committed formula. Two states reach it:
 // a ledger row of tier `unassigned` (a real assignment row, just formula-less),
@@ -18,6 +21,7 @@ const verify = vi.fn(() => Promise.resolve(null))
 const curate = vi.fn(() => Promise.resolve(null))
 const loadAltScores = vi.fn(() => Promise.resolve([]))
 const loadEvidence = vi.fn(() => Promise.resolve(null))
+const loadDetail = vi.fn(() => Promise.resolve())
 
 let focusedPeak
 let focusedAssignment
@@ -27,6 +31,9 @@ let verdictRecord
 // one detail record the inspector fetches (for the focused assignment only).
 let familyRows
 let detailRecord
+// Detail fetched for a row other than the focused one: the M0 of a focused
+// isotopologue, whose tier reasons the card shows beneath the isotopologue's.
+let otherDetails
 // The focused sample's run record; `{ engine: 'batch' }` is a derived ledger.
 let runRecord
 // The on-demand measurement of the finder's formula-only shortlist: null until
@@ -37,6 +44,8 @@ let scoringNow
 let evidenceRecord
 let evidenceKey
 let measuringNow
+// The deployment's ionization mechanisms, which name an alternative's channel.
+let mechanisms
 
 const helpStub = {
   set: vi.fn(),
@@ -65,10 +74,13 @@ function makeApp() {
         peak: {
           forPeak: () => focusedAssignment,
           // Keyed by id rather than answering every caller: the inspector loads
-          // detail for the focused assignment alone, so anything it reads off
-          // another family member has to come from that member's slim row.
+          // detail for the focused assignment, and for the M0 of an isotopologue
+          // whose tier reasons follow it, so anything else it reads off another
+          // family member has to come from that member's slim row.
           detailOf: (id) =>
-            id != null && id === focusedAssignment?.peak_assignment_id ? detailRecord : null,
+            id != null && id === focusedAssignment?.peak_assignment_id
+              ? detailRecord
+              : (otherDetails.get(id) ?? null),
           familyOf: () => familyRows ?? (focusedAssignment ? [focusedAssignment] : []),
           run: runRecord,
           // Stands in for the store's family resolution over whatever `ledger`
@@ -76,8 +88,8 @@ function makeApp() {
           // stores/data/modules/peakAssignment/assignment.spec.js; what matters
           // here is that the inspector asks for it and uses the answer.
           m0Of: (row) =>
-            row?.role === 'iso_child' ? (ledger.get(row.owner_peak_assignment_id) ?? row) : row,
-          loadDetail: () => Promise.resolve(),
+            isIsotopeLine(row) ? (ledger.get(row.owner_peak_assignment_id) ?? row) : row,
+          loadDetail,
           // The scores are keyed by assignment id like the detail is, and the
           // pane must not read another row's measurement onto this one.
           altScoresOf: (id) =>
@@ -91,7 +103,8 @@ function makeApp() {
         },
         verification: { forAssignment: () => verdictRecord, verify },
         anchorContext: { overlayFor: () => anchorVerdictRecord }
-      }
+      },
+      ionization: { mechanism: { list: mechanisms } }
     },
     ui: { help: helpStub }
   }
@@ -111,26 +124,67 @@ vi.mock('@/lib/panes/PanePeakAssign/stores/batchPeakCuration.js', () => ({
 
 // Stubbed rather than auto-stubbed: the badge renders nothing of its own for a
 // null record, which would make "no badge" pass even with the block still there.
-vi.mock('@/lib/base', () => ({
+vi.mock('@/lib/base', async () => ({
   BaseTierTag: { props: ['tier'], template: '<span class="tier-tag" />' },
-  BaseVerdictBadge: { props: ['record', 'compact'], template: '<span class="verdict-badge" />' }
+  BaseVerdictBadge: { props: ['record', 'compact'], template: '<span class="verdict-badge" />' },
+  // Real: the tier row's provisional mark is read off what it draws.
+  BaseProvisionalMark: (await vi.importActual('@/lib/base/BaseProvisionalMark.vue')).default
 }))
+
+// The verdict dialog renders its content only while shown, as Popover does, so
+// a test reads what the card shows before a verdict is clicked and after. The
+// two calls that move an open dialog to another button are recorded.
+const alignOverlay = vi.fn()
+const focusDialog = vi.fn()
+const PopoverStub = {
+  data: () => ({ visible: false }),
+  methods: {
+    show() {
+      this.visible = true
+    },
+    hide() {
+      this.visible = false
+    },
+    alignOverlay,
+    focus: focusDialog
+  },
+  template: '<div v-if="visible" class="popover" role="dialog"><slot /></div>'
+}
 
 const GLOBAL_STUBS = {
   Button: { props: ['label'], template: '<button><slot />{{ label }}</button>' },
-  Select: true,
-  InputText: true
+  InputText: {
+    props: ['modelValue'],
+    emits: ['update:modelValue'],
+    template:
+      '<input class="input-text" :value="modelValue" ' +
+      '@input="$emit(\'update:modelValue\', $event.target.value)" />'
+  },
+  Popover: PopoverStub,
+  // Marks the input Popover would focus, which the component names through
+  // the input's passthrough options.
+  RadioButton: {
+    props: ['modelValue', 'value', 'inputId', 'name', 'pt'],
+    emits: ['update:modelValue'],
+    template:
+      '<input type="radio" :id="inputId" :name="name" :value="value" ' +
+      ':checked="modelValue === value" :data-autofocus="pt?.input?.autofocus ? \'\' : null" ' +
+      '@change="$emit(\'update:modelValue\', value)" />'
+  }
 }
 
 const { default: PanePeakAssign } = await import('@/lib/panes/PanePeakAssign/PanePeakAssign.vue')
 
 // `recordTooltips` swaps the inert tooltip directive for one that writes its
 // text onto the element, for the tests that read what a value says on hover.
-async function mountPane({ recordTooltips = false } = {}) {
+async function mountPane({ recordTooltips = false, recordHelp = false } = {}) {
   const record = (el, binding) => el.setAttribute('data-tooltip', binding.value ?? '')
   const tooltip = recordTooltips ? { mounted: record, updated: record } : {}
+  // `recordHelp` writes the help card's key onto the element it is bound to.
+  const recordCard = (el, binding) => el.setAttribute('data-help', binding.value?.helpKey ?? '')
+  const help = recordHelp ? { mounted: recordCard, updated: recordCard } : {}
   const wrapper = mount(PanePeakAssign, {
-    global: { stubs: GLOBAL_STUBS, directives: { tooltip, help: {} } }
+    global: { stubs: GLOBAL_STUBS, directives: { tooltip, help } }
   })
   await wrapper.vm.$nextTick()
   return wrapper
@@ -187,11 +241,13 @@ beforeEach(() => {
   familyRows = null
   runRecord = null
   detailRecord = null
+  otherDetails = new Map()
   altScoreRecords = null
   scoringNow = false
   evidenceRecord = null
   evidenceKey = null
   measuringNow = false
+  mechanisms = []
 })
 afterEach(() => vi.clearAllMocks())
 
@@ -277,6 +333,230 @@ describe('PanePeakAssign verification gating', () => {
   })
 })
 
+// Every verdict may carry a note, and a confirmation also names the evidence
+// behind it. So the card shows the three verdicts, and each asks for the rest
+// in a small dialog of its own.
+describe('PanePeakAssign verdict dialog', () => {
+  const ROW = assignment({ formula: 'C10H12', tier: 'assigned' })
+  const verdictButton = (wrapper, label) =>
+    wrapper.findAll('.verify-buttons button').find((button) => button.text() === label)
+  const dialog = (wrapper) => wrapper.find('[data-testid="verdict-dialog"]')
+  const submit = (wrapper) => dialog(wrapper).find('[data-testid="verdict-submit"]')
+  const level = (wrapper, value) => dialog(wrapper).find(`input[type="radio"][value="${value}"]`)
+  const noteField = (wrapper) => dialog(wrapper).find('input.input-text')
+
+  beforeEach(() => {
+    focusedAssignment = ROW
+  })
+
+  it('shows the three verdicts, and asks for the evidence only once Confirm is clicked', async () => {
+    const wrapper = await mountPane()
+
+    expect(wrapper.findAll('.verify-buttons .verdict-button').map((b) => b.text())).toEqual([
+      'Confirm',
+      'Reject',
+      'Unsure'
+    ])
+    expect(dialog(wrapper).exists()).toBe(false)
+    expect(wrapper.find('input[type="radio"]').exists()).toBe(false)
+    expect(wrapper.find('input.input-text').exists()).toBe(false)
+
+    await verdictButton(wrapper, 'Confirm').trigger('click')
+
+    expect(dialog(wrapper).text()).toContain('Confirm C10H12')
+    expect(
+      dialog(wrapper)
+        .findAll('label')
+        .map((label) => label.text())
+    ).toEqual(EVIDENCE_LEVELS.map(({ label }) => label))
+    expect(noteField(wrapper).exists()).toBe(true)
+    expect(verify).not.toHaveBeenCalled()
+  })
+
+  it('asks for a note on a rejection, and records it with no level', async () => {
+    const wrapper = await mountPane()
+    // Picked in a Confirm dialog that was then left without confirming.
+    wrapper.vm.evidenceLevel = 'msms'
+
+    await verdictButton(wrapper, 'Reject').trigger('click')
+    expect(verify).not.toHaveBeenCalled()
+    expect(dialog(wrapper).text()).toContain('Reject C10H12')
+    expect(dialog(wrapper).find('input[type="radio"]').exists()).toBe(false)
+    expect(submit(wrapper).text()).toBe('Reject')
+    expect(submit(wrapper).attributes('disabled')).toBeUndefined()
+
+    await noteField(wrapper).setValue(' the adduct is wrong ')
+    await submit(wrapper).trigger('click')
+    await flushPromises()
+
+    expect(verify.mock.calls).toEqual([
+      [
+        {
+          peak_assignment_id: 'pa-1',
+          verdict: 'rejected',
+          evidence_level: null,
+          note: 'the adduct is wrong'
+        }
+      ]
+    ])
+    expect(dialog(wrapper).exists()).toBe(false)
+  })
+
+  it('asks the same of an unsure, which may go without a note', async () => {
+    const wrapper = await mountPane()
+
+    await verdictButton(wrapper, 'Unsure').trigger('click')
+    expect(dialog(wrapper).text()).toContain('Unsure about C10H12')
+    await submit(wrapper).trigger('click')
+    await flushPromises()
+
+    expect(verify.mock.calls).toEqual([
+      [{ peak_assignment_id: 'pa-1', verdict: 'unsure', evidence_level: null, note: null }]
+    ])
+  })
+
+  it('focuses the note where no level is asked for', async () => {
+    const wrapper = await mountPane()
+    await verdictButton(wrapper, 'Reject').trigger('click')
+
+    expect(noteField(wrapper).attributes('autofocus')).toBeDefined()
+  })
+
+  it('will not confirm until a level is picked, then records it with the note', async () => {
+    const wrapper = await mountPane()
+    await verdictButton(wrapper, 'Confirm').trigger('click')
+
+    expect(submit(wrapper).text()).toBe('Confirm')
+    expect(submit(wrapper).attributes('disabled')).toBeDefined()
+
+    await level(wrapper, 'pattern').trigger('change')
+    await noteField(wrapper).setValue('  both adducts line up  ')
+    expect(submit(wrapper).attributes('disabled')).toBeUndefined()
+
+    await submit(wrapper).trigger('click')
+    await flushPromises()
+
+    expect(verify.mock.calls).toEqual([
+      [
+        {
+          peak_assignment_id: 'pa-1',
+          verdict: 'confirmed',
+          evidence_level: 'pattern',
+          note: 'both adducts line up'
+        }
+      ]
+    ])
+    expect(dialog(wrapper).exists()).toBe(false)
+  })
+
+  it('records from the note with Enter', async () => {
+    const wrapper = await mountPane()
+    await verdictButton(wrapper, 'Confirm').trigger('click')
+    await level(wrapper, 'msms').trigger('change')
+
+    await noteField(wrapper).trigger('keydown', { key: 'Enter' })
+    await flushPromises()
+
+    expect(verify.mock.calls[0][0]).toMatchObject({ verdict: 'confirmed', evidence_level: 'msms' })
+    expect(dialog(wrapper).exists()).toBe(false)
+  })
+
+  // One dialog serves the three buttons: clicked while it is open for another
+  // verdict, it asks what this one asks, beside the button just clicked.
+  it('turns to the verdict clicked while it is open for another', async () => {
+    const wrapper = await mountPane()
+    await verdictButton(wrapper, 'Confirm').trigger('click')
+    expect(alignOverlay).not.toHaveBeenCalled()
+
+    await verdictButton(wrapper, 'Reject').trigger('click')
+    await flushPromises()
+
+    expect(dialog(wrapper).text()).toContain('Reject C10H12')
+    expect(dialog(wrapper).find('input[type="radio"]').exists()).toBe(false)
+    expect(alignOverlay).toHaveBeenCalledTimes(1)
+    expect(focusDialog).toHaveBeenCalledTimes(1)
+  })
+
+  it('keeps the dialog and what was entered when the verdict fails', async () => {
+    verify.mockRejectedValueOnce(new Error('network'))
+    const wrapper = await mountPane()
+    await verdictButton(wrapper, 'Confirm').trigger('click')
+    await level(wrapper, 'msms').trigger('change')
+    await noteField(wrapper).setValue('matches the standard')
+
+    await submit(wrapper).trigger('click')
+    await flushPromises()
+
+    expect(dialog(wrapper).exists()).toBe(true)
+    expect(level(wrapper, 'msms').element.checked).toBe(true)
+    expect(noteField(wrapper).element.value).toBe('matches the standard')
+  })
+
+  it('closes on a refusal, where the card says editor access is required', async () => {
+    verify.mockRejectedValueOnce({ response: { status: 403 } })
+    const wrapper = await mountPane()
+    await verdictButton(wrapper, 'Reject').trigger('click')
+
+    await submit(wrapper).trigger('click')
+    await flushPromises()
+
+    expect(dialog(wrapper).exists()).toBe(false)
+    expect(wrapper.find('.verify-denied').text()).toContain('Editor access is required to verify')
+  })
+
+  it('focuses the strongest level on a fresh confirmation', async () => {
+    const wrapper = await mountPane()
+    await verdictButton(wrapper, 'Confirm').trigger('click')
+
+    const focused = dialog(wrapper).findAll('input[data-autofocus]')
+    expect(focused.map((input) => input.attributes('value'))).toEqual([EVIDENCE_LEVELS[0].value])
+    expect(noteField(wrapper).attributes('autofocus')).toBeUndefined()
+  })
+
+  it('opens on the verdict being changed, its level picked and focused', async () => {
+    verdictRecord = { ...VERDICT, note: 'matches the standard' }
+    const wrapper = await mountPane()
+
+    await wrapper.find('.verify-current button').trigger('click')
+    await verdictButton(wrapper, 'Confirm').trigger('click')
+
+    expect(level(wrapper, 'msms').element.checked).toBe(true)
+    expect(
+      dialog(wrapper)
+        .findAll('input[data-autofocus]')
+        .map((i) => i.attributes('value'))
+    ).toEqual(['msms'])
+    expect(noteField(wrapper).element.value).toBe('matches the standard')
+  })
+
+  it('offers a way back to the verdict as it was while changing it', async () => {
+    verdictRecord = VERDICT
+    const wrapper = await mountPane()
+    await wrapper.find('.verify-current button').trigger('click')
+
+    await verdictButton(wrapper, 'Cancel').trigger('click')
+
+    expect(wrapper.find('.verify-buttons').exists()).toBe(false)
+    expect(wrapper.find('.verdict-badge').exists()).toBe(true)
+  })
+
+  it('closes when the focus moves to another compound', async () => {
+    const wrapper = await mountPane()
+    await verdictButton(wrapper, 'Confirm').trigger('click')
+
+    focusedAssignment = {
+      ...ROW,
+      peak_assignment_id: 'pa-2',
+      sample_peak_id: 'p-9',
+      assigned_formula: 'C6H6'
+    }
+    focusedPeak.value = { ...PEAK, peak_id: 'p-9' }
+    await wrapper.vm.$nextTick()
+
+    expect(dialog(wrapper).exists()).toBe(false)
+  })
+})
+
 // Adduct corroboration is written onto the M0 winner alone: an isotopologue is the
 // same ion measured at another isotope, not a second sighting of the compound,
 // so the backend leaves its provenance without one by construction. The badge
@@ -328,21 +608,18 @@ describe('PanePeakAssign adduct corroboration', () => {
     // The qualifier is on the badge's face, not only in the tooltip: the count is
     // the same number the M0 shows, and unqualified it would read as this peak
     // having been seen through three adducts itself.
-    expect(badge(wrapper).text()).toContain('Supported by 3 adducts via M0')
+    expect(badge(wrapper).text()).toContain('Supported by 3 channels via M0')
   })
 
-  // The engine folds the boost into the record carrying the corroboration - the
-  // M0's p_correct - and never into a child's, which stays calibrated on its
-  // own evidence. The inspector renders that isotopologue's own P(correct) directly
-  // above this badge, so claiming the boost is in it would be false.
-  it('does not claim the boost is in the P(correct) of the isotopologue itself', async () => {
+  // The card no longer shows the calibrated probability (step 3.4d), so the
+  // badge names no number the card does not show.
+  it("says the evidence is the M0's, and names no probability", async () => {
     focusIsotopologue(3)
     const wrapper = await mountPane()
 
     expect(wrapper.vm.corroborationTooltip).toBe(
-      'The M0 of this isotopologue family was seen via 3 adducts. ' +
-        "Independent corroborating evidence for the formula, folded into the M0's " +
-        "P(correct) - not into this isotopologue's, which is calibrated on its own."
+      "This isotopologue's M0 was seen through 3 ionization channels: independent evidence " +
+        'for the formula.'
     )
   })
 
@@ -353,7 +630,7 @@ describe('PanePeakAssign adduct corroboration', () => {
     familyRows = [{ ...M0, corroboration_adducts: 5 }, focusedAssignment]
     const wrapper = await mountPane()
 
-    expect(badge(wrapper).text()).toContain('Supported by 2 adducts')
+    expect(badge(wrapper).text()).toContain('Supported by 2 channels')
     expect(badge(wrapper).text()).not.toContain('via M0')
     expect(badge(wrapper).classes()).not.toContain('inherited')
   })
@@ -366,7 +643,7 @@ describe('PanePeakAssign adduct corroboration', () => {
     familyRows = [{ ...M0, provenance: { corroboration: { n_adducts: 4 } } }, ISOTOPOLOGUE]
     const wrapper = await mountPane()
 
-    expect(badge(wrapper).text()).toContain('Supported by 4 adducts via M0')
+    expect(badge(wrapper).text()).toContain('Supported by 4 channels via M0')
     expect(badge(wrapper).classes()).toContain('inherited')
   })
 
@@ -390,13 +667,29 @@ describe('PanePeakAssign adduct corroboration', () => {
     focusedAssignment = { ...M0, corroboration_adducts: 2 }
     familyRows = [focusedAssignment, ISOTOPOLOGUE]
     detailRecord = {
-      provenance: { corroboration: { n_adducts: 2, adducts: ['+H+', '+Na+'], boost: 0.4 } }
+      provenance: { corroboration: { n_adducts: 2, adducts: ['[M+H]+', '[M+Na]+'], boost: 0.4 } }
     }
     const wrapper = await mountPane()
 
-    expect(badge(wrapper).text()).toContain('Supported by 2 adducts')
+    expect(badge(wrapper).text()).toContain('Supported by 2 channels')
     expect(badge(wrapper).classes()).not.toContain('inherited')
-    expect(wrapper.vm.corroborationTooltip).toContain('Seen via 2 adducts (+H+, +Na+)')
+    expect(wrapper.vm.corroborationTooltip).toContain(
+      'Seen through 2 ionization channels ([M+H]+, [M+Na]+)'
+    )
+  })
+
+  // A run recorded before the standard adduct notation names its channels in
+  // the legacy spelling, and they read as the standard one.
+  it('names the adducts of a run recorded in the legacy notation in the standard one', async () => {
+    focusedAssignment = { ...M0, corroboration_adducts: 2 }
+    detailRecord = {
+      provenance: { corroboration: { n_adducts: 2, adducts: ['+H+', '-H-'], boost: 0.4 } }
+    }
+    const wrapper = await mountPane()
+
+    expect(wrapper.vm.corroborationTooltip).toContain(
+      'Seen through 2 ionization channels ([M+H]+, [M-H]+)'
+    )
   })
 
   // The count is flattened onto every ledger row, so the M0's own badge is there
@@ -405,10 +698,63 @@ describe('PanePeakAssign adduct corroboration', () => {
     focusedAssignment = { ...M0, corroboration_adducts: 2 }
     const wrapper = await mountPane()
 
-    expect(badge(wrapper).text()).toContain('Supported by 2 adducts')
+    expect(badge(wrapper).text()).toContain('Supported by 2 channels')
     expect(badge(wrapper).classes()).not.toContain('inherited')
     // No adduct names to give yet, so the tooltip promises none.
-    expect(wrapper.vm.corroborationTooltip).toContain('Seen via 2 adducts.')
+    expect(wrapper.vm.corroborationTooltip).toContain('Seen through 2 ionization channels:')
+  })
+
+  // The ledger-measured channel count is what reaches an untargeted row: the
+  // curated per-compound count is null on all of them, which is most of a
+  // ledger, so without this the badge is absent from nearly every peak.
+  it('shows the badge for an untargeted row, from the channels it was seen in', async () => {
+    focusedAssignment = { ...M0, corroboration_adducts: null, corroboration_channels: 3 }
+    const wrapper = await mountPane()
+
+    expect(badge(wrapper).text()).toContain('Supported by 3 channels')
+    expect(badge(wrapper).classes()).not.toContain('inherited')
+  })
+
+  // The channels are named as the run recorded them, and no probability is.
+  it('names the channels, and no probability', async () => {
+    focusedAssignment = { ...M0, corroboration_channels: 2 }
+    detailRecord = { provenance: { cross_channel: { channels: ['[M+H]+', '[M+NH4]+'] } } }
+    const wrapper = await mountPane()
+
+    expect(wrapper.vm.corroborationTooltip).toBe(
+      'Seen through 2 ionization channels ([M+H]+, [M+NH4]+): independent evidence for the formula.'
+    )
+  })
+
+  // Where a curated row carries both, the channel count is the superset - the
+  // adducts Stage A matched plus whatever the untargeted stage committed of the
+  // same neutral - so it is the one to show.
+  it('prefers the channel count over the curated one', async () => {
+    focusedAssignment = { ...M0, corroboration_adducts: 2, corroboration_channels: 3 }
+    const wrapper = await mountPane()
+
+    expect(badge(wrapper).text()).toContain('Supported by 3 channels')
+  })
+
+  // An isotopologue carries neither count, and inherits whichever its M0 has.
+  it('inherits the family channel count onto a focused isotopologue', async () => {
+    focusedAssignment = ISOTOPOLOGUE
+    familyRows = [{ ...M0, corroboration_channels: 3 }, ISOTOPOLOGUE]
+    const wrapper = await mountPane()
+
+    expect(badge(wrapper).text()).toContain('Supported by 3 channels via M0')
+    expect(badge(wrapper).classes()).toContain('inherited')
+    expect(wrapper.vm.corroborationTooltip).not.toContain('P(correct)')
+  })
+
+  // The badge is gated on more than one, and a capped `ambiguous_nitrogen` row
+  // is exactly the one-channel case: the rule that capped it fires only when
+  // nothing else saw the neutral.
+  it('says nothing for a row seen in one channel only', async () => {
+    focusedAssignment = { ...M0, corroboration_channels: 1 }
+    const wrapper = await mountPane()
+
+    expect(badge(wrapper).exists()).toBe(false)
   })
 
   it('leaves a peak with no family and no corroboration alone', async () => {
@@ -416,6 +762,249 @@ describe('PanePeakAssign adduct corroboration', () => {
     const wrapper = await mountPane()
 
     expect(badge(wrapper).exists()).toBe(false)
+  })
+})
+
+// Every row a run commits carries what the tiering pass decided about it. The
+// card names each rule and shows the server's sentence as written; what it adds
+// is the mark on a reason that holds the tier down, and, on an isotopologue -
+// which carries only "follows its M0" itself - the M0's own reasons.
+describe('PanePeakAssign tier reasons', () => {
+  const RADICAL = {
+    rule: 'odd_electron',
+    detail: 'C10H11 is an odd-electron neutral - a radical rather than a molecule',
+    caps: true
+  }
+  const RIVALS = {
+    rule: 'candidate_density',
+    detail: '3 formulas this peak could not separate',
+    caps: true
+  }
+  const SECOND_CHANNEL = {
+    rule: 'corroborated',
+    detail: 'the same neutral is committed through 2 of the run channels',
+    caps: false
+  }
+  const NO_RIVAL = {
+    rule: 'no_close_rival',
+    detail: 'the evidence separates this formula from every other candidate',
+    caps: false
+  }
+  const follows = (caps) => ({
+    rule: 'inherited_from_owner',
+    detail: 'an isotopologue of a reading judged on its own monoisotopic row',
+    caps
+  })
+
+  const M0 = {
+    peak_assignment_id: 'pa-1',
+    sample_item_id: 'si-1',
+    sample_peak_id: 'p-1',
+    sample_peak_mz: 200.12345,
+    sample_peak_intensity: 12345,
+    assigned_formula: 'C10H11',
+    tier: 'candidate',
+    role: 'M0',
+    fit_score: 0.9
+  }
+
+  const reasons = (wrapper) => wrapper.findAll('.tier-reasons .reason')
+  const rules = (wrapper) => reasons(wrapper).map((row) => row.find('.reason-rule').text())
+  const loadedIds = () => loadDetail.mock.calls.map(([row]) => row?.peak_assignment_id)
+
+  it('names each reason and shows the sentence the server wrote', async () => {
+    focusedAssignment = M0
+    detailRecord = { provenance: { tier_reasons: [RADICAL, RIVALS] } }
+    const wrapper = await mountPane()
+
+    expect(rules(wrapper)).toEqual(['radical neutral', 'rivals left standing'])
+    expect(reasons(wrapper)[0].find('.reason-detail').text()).toBe(RADICAL.detail)
+    expect(reasons(wrapper)[1].find('.reason-detail').text()).toBe(RIVALS.detail)
+  })
+
+  it('marks the reasons that hold the tier down, and only those', async () => {
+    focusedAssignment = M0
+    detailRecord = { provenance: { tier_reasons: [RADICAL, NO_RIVAL] } }
+    const wrapper = await mountPane()
+
+    expect(reasons(wrapper)[0].classes()).toContain('caps')
+    expect(reasons(wrapper)[1].classes()).not.toContain('caps')
+  })
+
+  it('lists what an assigned row kept its tier on, none of it capping', async () => {
+    focusedAssignment = { ...M0, assigned_formula: 'C10H12', tier: 'assigned' }
+    detailRecord = { provenance: { tier_reasons: [SECOND_CHANNEL, NO_RIVAL] } }
+    const wrapper = await mountPane({ recordTooltips: true })
+
+    expect(rules(wrapper)).toEqual(['second channel', 'no close rival'])
+    for (const row of reasons(wrapper)) {
+      expect(row.classes()).not.toContain('caps')
+      expect(row.attributes('data-tooltip')).toBe(
+        'Caps nothing: this row holds the tier its evidence earned'
+      )
+    }
+  })
+
+  // `caps` is what a rule would take, so what it did is read off the tier the
+  // row actually holds.
+  it('says a capping reason holds a candidate row there', async () => {
+    focusedAssignment = M0
+    detailRecord = { provenance: { tier_reasons: [RADICAL] } }
+    const wrapper = await mountPane({ recordTooltips: true })
+
+    expect(reasons(wrapper)[0].attributes('data-tooltip')).toBe(
+      'Holds this row at candidate - it cannot be assigned while this stands'
+    )
+  })
+
+  it('says a capping reason took nothing from a row its evidence put lower', async () => {
+    focusedAssignment = { ...M0, tier: 'below_assignability' }
+    detailRecord = { provenance: { tier_reasons: [RADICAL] } }
+    const wrapper = await mountPane({ recordTooltips: true })
+
+    expect(reasons(wrapper)[0].attributes('data-tooltip')).toBe(
+      'Would hold this row at candidate, but its evidence already puts it lower'
+    )
+  })
+
+  // A run from before the pass, an imported run, a row a person assigned: no
+  // rule judged them, and a heading over an empty list would say one had.
+  it('shows nothing on a row no tiering pass judged', async () => {
+    focusedAssignment = M0
+    detailRecord = { provenance: { plausibility: 0.8 } }
+    const wrapper = await mountPane()
+
+    expect(wrapper.find('.tier-reasons').exists()).toBe(false)
+  })
+
+  it('shows nothing before the detail arrives', async () => {
+    focusedAssignment = M0
+    const wrapper = await mountPane()
+
+    expect(wrapper.find('.tier-reasons').exists()).toBe(false)
+  })
+
+  // A derived row serves its anchor's consensus record as provenance, and its
+  // tier is a vote across the batch that no rule judged. Whatever that record
+  // carries is not a reason for THIS row's tier.
+  it('shows nothing on a row served from the batch ledger', async () => {
+    runRecord = { engine: 'batch' }
+    focusedAssignment = { ...M0, batch_peak_id: 'bp-1' }
+    detailRecord = { provenance: { tier_reasons: [RADICAL] } }
+    const wrapper = await mountPane()
+
+    expect(wrapper.find('.tier-reasons').exists()).toBe(false)
+  })
+
+  it('keeps a rule this build does not know, by its key', async () => {
+    focusedAssignment = M0
+    detailRecord = {
+      provenance: {
+        tier_reasons: [{ rule: 'series_anchor', detail: 'no series member', caps: true }]
+      }
+    }
+    const wrapper = await mountPane()
+
+    expect(rules(wrapper)).toEqual(['series anchor'])
+    expect(reasons(wrapper)[0].classes()).toContain('caps')
+  })
+
+  it("shows an isotopologue's M0 reasons beneath its own, marked as the M0's", async () => {
+    focusedAssignment = isotopologue(M0)
+    familyRows = [M0, focusedAssignment]
+    detailRecord = { provenance: { tier_reasons: [follows(true)] } }
+    otherDetails.set(M0.peak_assignment_id, { provenance: { tier_reasons: [RADICAL, RIVALS] } })
+    const wrapper = await mountPane({ recordTooltips: true })
+    const rows = reasons(wrapper)
+
+    expect(rows).toHaveLength(3)
+    expect(rows[0].find('.reason-rule').text()).toBe('follows its M0')
+    expect(rows[0].classes()).toContain('caps')
+    expect(rows[0].classes()).not.toContain('inherited')
+    for (const row of rows.slice(1)) {
+      expect(row.classes()).toContain('inherited')
+      expect(row.find('.reason-rule').text()).toContain('via M0')
+      expect(row.attributes('data-tooltip')).toBe(
+        'Holds the M0 at candidate - it cannot be assigned while this stands. ' +
+          'Recorded on the M0, which this isotopologue follows.'
+      )
+    }
+    expect(rows[1].find('.reason-detail').text()).toBe(RADICAL.detail)
+  })
+
+  // The band caps nothing, yet it is why the M0 stands where it does, so it is
+  // marked on the isotopologue's card as on the M0's own.
+  it("marks the M0's evidence band as holding it down", async () => {
+    const band = {
+      rule: 'evidence_band',
+      detail: 'evidence 30% (fit 30% x plausibility 100%) is under the candidate band of 45%',
+      caps: false,
+      band: 'below_assignability'
+    }
+    const m0 = { ...M0, tier: 'below_assignability' }
+    focusedAssignment = isotopologue(m0)
+    familyRows = [m0, focusedAssignment]
+    detailRecord = { provenance: { tier_reasons: [follows(true)] } }
+    otherDetails.set(m0.peak_assignment_id, { provenance: { tier_reasons: [band, NO_RIVAL] } })
+    const wrapper = await mountPane()
+    const inherited = reasons(wrapper).filter((row) => row.classes().includes('inherited'))
+
+    expect(inherited.map((row) => row.find('.reason-rule').text())).toEqual([
+      'evidence band via M0',
+      'no close rival via M0'
+    ])
+    expect(inherited.map((row) => row.classes().includes('caps'))).toEqual([true, false])
+  })
+
+  it("fetches the M0's detail for an isotopologue that follows it", async () => {
+    focusedAssignment = isotopologue(M0)
+    familyRows = [M0, focusedAssignment]
+    detailRecord = { provenance: { tier_reasons: [follows(false)] } }
+    await mountPane()
+
+    expect(loadedIds()).toContain(M0.peak_assignment_id)
+  })
+
+  it('shows its own line alone until the M0 detail lands', async () => {
+    focusedAssignment = isotopologue(M0)
+    familyRows = [M0, focusedAssignment]
+    detailRecord = { provenance: { tier_reasons: [follows(true)] } }
+    const wrapper = await mountPane()
+
+    expect(rules(wrapper)).toEqual(['follows its M0'])
+  })
+
+  // The run recorded no owner for it, so there is no M0 whose answer it carries,
+  // and nothing to fetch.
+  it('fetches nothing more for an isotopologue with no owner recorded', async () => {
+    focusedAssignment = {
+      ...M0,
+      peak_assignment_id: 'pa-orphan',
+      role: 'iso_child',
+      owner_peak_assignment_id: null,
+      isotope_label: 'M+1'
+    }
+    detailRecord = {
+      provenance: {
+        tier_reasons: [
+          { rule: 'not_measured', detail: 'an isotopologue with no owner recorded', caps: false }
+        ]
+      }
+    }
+    const wrapper = await mountPane()
+
+    expect(rules(wrapper)).toEqual(['not measured'])
+    expect(new Set(loadedIds())).toEqual(new Set(['pa-orphan']))
+  })
+
+  it('fetches no M0 for an isotopologue whose run recorded no reasons', async () => {
+    focusedAssignment = isotopologue(M0)
+    familyRows = [M0, focusedAssignment]
+    detailRecord = { provenance: {} }
+    const wrapper = await mountPane()
+
+    expect(wrapper.find('.tier-reasons').exists()).toBe(false)
+    expect(loadedIds()).not.toContain(M0.peak_assignment_id)
   })
 })
 
@@ -657,7 +1246,7 @@ describe('PanePeakAssign manual curation', () => {
     // alone would seldom be reachable.
     const reason = wrapper.vm.altTooltip(ALTERNATIVES[3])
     expect(reason).toContain('Not assignable to this peak')
-    expect(reason).toContain('Re-search the peak')
+    expect(reason).toContain('Find more searches wider')
     expect(wrapper.vm.altTooltip(ALTERNATIVES[0])).not.toContain('Not assignable')
   })
 
@@ -745,8 +1334,8 @@ describe('PanePeakAssign manual curation', () => {
 
   /**
    * The manual block of a row curated away from C6H12O6, archiving one demoted
-   * satellite per entry in `demoted` - keyed, as the server keys the restore,
-   * on the compound the satellite was taken under.
+   * isotopologue per entry in `demoted` - keyed, as the server keys the restore,
+   * on the compound the isotopologue was taken under.
    */
   function override(demoted = []) {
     return {
@@ -778,8 +1367,8 @@ describe('PanePeakAssign manual curation', () => {
     const wrapper = await mountPane()
 
     const note = wrapper.find('.manual-note').text()
-    expect(note).toContain('puts back the 2 isotopologue satellites unassigned with it')
-    // The restore skips a satellite someone has curated since, so the note must
+    expect(note).toContain('puts back the 2 isotopologues unassigned with it')
+    // The restore skips an isotopologue someone has curated since, so the note must
     // not promise all of them come back.
     expect(note).toContain('except any of them assigned by hand since')
   })
@@ -796,19 +1385,19 @@ describe('PanePeakAssign manual curation', () => {
     expect(wrapper.find('.manual-note').text()).not.toContain('isotopologue')
   })
 
-  it('counts one restored satellite in the singular', async () => {
+  it('counts one restored isotopologue in the singular', async () => {
     focusedAssignment = { ...focusedAssignment, source: 'manual' }
     detailRecord = { ...focusedAssignment, provenance: override([{}]) }
     const wrapper = await mountPane()
 
-    expect(wrapper.find('.manual-note').text()).toContain('the 1 isotopologue satellite ')
+    expect(wrapper.find('.manual-note').text()).toContain('the 1 isotopologue ')
   })
 
   // Curating one row twice carries the first override's archive forward, so the
-  // archive can hold satellites taken under a compound the undo would not
+  // archive can hold isotopologues taken under a compound the undo would not
   // commit. Those come back with THEIR compound, not with this one - counting
   // them here would promise peaks the click does not touch.
-  it('counts only the satellites the first alternative would bring back', async () => {
+  it('counts only the isotopologues the first alternative would bring back', async () => {
     focusedAssignment = { ...focusedAssignment, source: 'manual' }
     detailRecord = {
       ...focusedAssignment,
@@ -820,7 +1409,7 @@ describe('PanePeakAssign manual curation', () => {
     }
     const wrapper = await mountPane()
 
-    expect(wrapper.find('.manual-note').text()).toContain('the 1 isotopologue satellite ')
+    expect(wrapper.find('.manual-note').text()).toContain('the 1 isotopologue ')
   })
 
   // `source` rides on the slim ledger row while provenance waits on the detail
@@ -841,13 +1430,13 @@ describe('PanePeakAssign manual curation', () => {
   })
 })
 
-// The backend marks a stripped satellite 'manual' too, so the ledger's source
+// The backend marks a stripped isotopologue 'manual' too, so the ledger's source
 // filter shows the whole footprint of an override rather than only the row that
 // gained a formula. Such a row had nothing assigned to it: it was cleared
 // because its M0 was reassigned under it. Read as an override it claimed a
 // person had picked this peak's (absent) formula "in place of" the compound it
 // had actually belonged to, which inverts the relationship.
-describe('PanePeakAssign a satellite stripped by an override', () => {
+describe('PanePeakAssign an isotopologue stripped by an override', () => {
   const DEMOTED = {
     ...assignment({ formula: null }),
     peak_assignment_id: 'pa-c1',
@@ -857,7 +1446,7 @@ describe('PanePeakAssign a satellite stripped by an override', () => {
   }
   const PROVENANCE = {
     manual: {
-      action: 'demote_satellite',
+      action: 'demote_isotopologue',
       reason: 'owner_overridden',
       previous_formula: 'C6H12O6',
       previous_owner_formula: 'C6H12O6'
@@ -886,16 +1475,31 @@ describe('PanePeakAssign a satellite stripped by an override', () => {
     expect(note).toContain('Assigning C6H12O6 there again restores this row')
   })
 
-  // A satellite carries its M0's formula verbatim, so the engine writes both
+  // An isotopologue carries its M0's formula verbatim, so the engine writes both
   // keys with the same value; an imported run may carry only one of them.
   it('falls back to the formula the row itself held', async () => {
     detailRecord = {
       ...DEMOTED,
-      provenance: { manual: { action: 'demote_satellite', previous_formula: 'C6H12O6' } }
+      provenance: { manual: { action: 'demote_isotopologue', previous_formula: 'C6H12O6' } }
     }
     const wrapper = await mountPane()
 
     expect(wrapper.find('.manual-note').text()).toContain('isotopologue of C6H12O6')
+  })
+
+  // Rows demoted by earlier builds carry the action's retired name, and are no
+  // less demoted for it: read as an override, the note would claim a person
+  // picked this row's (absent) formula in place of its compound.
+  it('reads the retired demote_satellite action as a demotion', async () => {
+    detailRecord = {
+      ...DEMOTED,
+      provenance: { manual: { ...PROVENANCE.manual, action: 'demote_satellite' } }
+    }
+    const wrapper = await mountPane()
+    const note = wrapper.find('.manual-note').text()
+
+    expect(note).toContain('Unassigned by hand')
+    expect(note).not.toContain('in place of')
   })
 
   // `source` is on the slim row and the action is not, so the note has to pick
@@ -956,7 +1560,7 @@ describe('PanePeakAssign manual note marks', () => {
     }
     detailRecord = {
       ...focusedAssignment,
-      provenance: { manual: { action: 'demote_satellite', previous_owner_formula: 'C6H12O6' } }
+      provenance: { manual: { action: 'demote_isotopologue', previous_owner_formula: 'C6H12O6' } }
     }
     const wrapper = await mountPane()
 
@@ -973,7 +1577,7 @@ describe('PanePeakAssign manual note marks', () => {
 // undo entry - is refused by the same 422 that refuses any adductless
 // candidate. So the undo is not merely inconvenient here, it does not exist:
 // re-searching assigns the formula under a real adduct, which is a new
-// assignment, and the satellites this override unassigned are restored by
+// assignment, and the isotopologues this override unassigned are restored by
 // compound AND mechanism, so they stay unassigned.
 describe('PanePeakAssign an override whose previous winner named no adduct', () => {
   // `_previous_winner` drops the keys it has no value for, so an adductless
@@ -1029,16 +1633,16 @@ describe('PanePeakAssign an override whose previous winner named no adduct', () 
     expect(curate).not.toHaveBeenCalled()
   })
 
-  // The undo entry is not a candidate the finder listed, and re-searching does
-  // not put its family back - so it says what it cannot do and what re-search
-  // gives instead, rather than wearing the ordinary shortlist wording.
-  it('says why the undo cannot be done here, and what re-search gives instead', async () => {
+  // The undo entry is not a candidate the finder listed, and searching again
+  // does not put its family back - so it says what it cannot do and what the
+  // search gives instead, rather than wearing the ordinary shortlist wording.
+  it('says why the undo cannot be done here, and what the search gives instead', async () => {
     const wrapper = await mountPane()
     const reason = wrapper.vm.altTooltip(PREVIOUS, 0)
 
     expect(reason).toContain('Cannot be undone here')
-    expect(reason).toContain('The assignment this replaced named no adduct')
-    expect(reason).toContain('that is a new assignment')
+    expect(reason).toContain('the assignment this replaced named no adduct')
+    expect(reason).toContain('as a new assignment')
     expect(reason).toContain('stay cleared')
     expect(reason).not.toContain('Not assignable to this peak')
   })
@@ -1048,7 +1652,7 @@ describe('PanePeakAssign an override whose previous winner named no adduct', () 
     const reason = wrapper.vm.altTooltip(SHORTLIST, 1)
 
     expect(reason).toContain('Not assignable to this peak')
-    expect(reason).toContain('Re-search the peak to look wider than this shortlist')
+    expect(reason).toContain('Find more searches wider than this shortlist')
     expect(reason).not.toContain('Cannot be undone here')
   })
 
@@ -1068,7 +1672,7 @@ describe('PanePeakAssign an override whose previous winner named no adduct', () 
 
     expect(note).toContain('in place of C6H12O6')
     expect(note).toContain('cannot be put back by hand')
-    expect(note).toContain('the 1 isotopologue satellite unassigned with it stays unassigned')
+    expect(note).toContain('the 1 isotopologue unassigned with it stays unassigned')
     expect(note).not.toContain('on it to undo')
   })
 
@@ -1083,7 +1687,7 @@ describe('PanePeakAssign an override whose previous winner named no adduct', () 
     const note = wrapper.find('.manual-note').text()
 
     expect(note).toContain('on it to undo')
-    expect(note).toContain('puts back the 1 isotopologue satellite')
+    expect(note).toContain('puts back the 1 isotopologue ')
     expect(note).not.toContain('cannot be put back')
   })
 
@@ -1092,7 +1696,7 @@ describe('PanePeakAssign an override whose previous winner named no adduct', () 
   // refusal on the common case, so the wording stays the ordinary one.
   // The measurement can find an adduct for the displaced winner as readily as
   // for any other formula, and letting it enable the control would be the card
-  // contradicting its own note: the satellites this override cleared are put
+  // contradicting its own note: the isotopologues this override cleared are put
   // back by compound AND adduct, and were archived with none, so an adduct
   // found now can never match. The undo stays refused, and stays explained.
   it('will not let a measurement turn the undo entry into a working control', async () => {
@@ -1269,7 +1873,9 @@ describe('PanePeakAssign scoring the formula-only shortlist', () => {
     expect(wrapper.vm.altTooltip(wrapper.vm.alternatives[1], 1)).toContain('measuring')
     // The control is still disabled, but for a reason that will pass.
     expect(blockedButtons(wrapper)).toHaveLength(2)
-    expect(wrapper.vm.noAdductHint(wrapper.vm.alternatives[1], 1)).toContain('One moment')
+    expect(wrapper.vm.noAdductHint(wrapper.vm.alternatives[1], 1)).toContain(
+      'Measuring this formula against the peak'
+    )
   })
 
   // A measured entry names both halves of an assignment, so the control the
@@ -1339,7 +1945,7 @@ describe('PanePeakAssign scoring the formula-only shortlist', () => {
     const reason = wrapper.vm.noAdductHint(wrapper.vm.alternatives[1], 1)
 
     expect(reason).toContain('None of this sample')
-    expect(reason).toContain('Re-search the peak to look wider than this shortlist')
+    expect(reason).toContain('Find more searches wider than this shortlist')
     expect(blockedButtons(wrapper)).toHaveLength(2)
   })
 
@@ -1499,6 +2105,109 @@ describe('PanePeakAssign batch curation on a derived row', () => {
   })
 })
 
+// The isotopologue table labels each line by how it differs from the family's M0.
+// A labelled reagent's atom is bracketed like any substituted isotope, so for the
+// 15N-nitrate ion C9H16O7^N- the M0 is [15N]C9H16O7-, and the only line without
+// a bracket, C9H16NO7-, is the reagent's unlabelled remainder one mass unit
+// below it. Read off the brackets alone, that remainder was the "M0" and the M0
+// was "[15N]"; the ion formula on the rows says which brackets are labels.
+describe('PanePeakAssign isotopologue labels', () => {
+  const ION = 'C9H16O7^N-'
+
+  /** A labelled family as the engine commits it: every row names its ion. */
+  function labelledFamily() {
+    const m0 = {
+      ...assignment({ formula: 'C9H16O4', tier: 'assigned', mz: 251.0903 }),
+      ion_formula: ION,
+      isotope_label: 'M0',
+      isotope_formula: '[15N]C9H16O7-'
+    }
+    const line = (id, mz, label, formula) => ({
+      ...isotopologue(m0),
+      peak_assignment_id: id,
+      sample_peak_id: `p-${id}`,
+      sample_peak_mz: mz,
+      isotope_label: label,
+      isotope_formula: formula
+    })
+    return [
+      line('pa-rem', 250.0932, 'M-1', 'C9H16NO7-'),
+      m0,
+      line('pa-13c', 252.0936, 'M+1', '[13C][15N]C8H16O7-')
+    ]
+  }
+
+  const labels = (wrapper) =>
+    wrapper.findAll('.isotopologues .iso-label').map((cell) => cell.text())
+
+  it('counts a labelled family from its labelled line, the remainder at 14N', async () => {
+    familyRows = labelledFamily()
+    focusedAssignment = familyRows[1]
+    const wrapper = await mountPane()
+
+    expect(labels(wrapper)).toEqual(['[14N]', 'M0', '[13C]'])
+  })
+
+  // An imported run need not repeat the ion formula on every isotopologue.
+  it("reads a row that names no ion through its M0's", async () => {
+    familyRows = labelledFamily().map((row) =>
+      row.role === 'iso_child' ? { ...row, ion_formula: null } : row
+    )
+    focusedAssignment = familyRows[1]
+    const wrapper = await mountPane()
+
+    expect(labels(wrapper)).toEqual(['[14N]', 'M0', '[13C]'])
+  })
+
+  // A derived family's formulas come from the measurement, which names the ion
+  // it measured; the rows themselves may name none.
+  it("reads a derived family's measured formulas through the measured ion", async () => {
+    runRecord = { engine: 'batch' }
+    const [remainder, m0] = labelledFamily().map((row) => ({
+      ...row,
+      ion_formula: null,
+      isotope_label: null,
+      isotope_formula: null
+    }))
+    familyRows = [remainder, m0]
+    focusedAssignment = m0
+    evidenceKey = m0.peak_assignment_id
+    evidenceRecord = {
+      peak_assignment_id: m0.peak_assignment_id,
+      sample_peak_id: m0.sample_peak_id,
+      ion_formula: ION,
+      isotopologues: [
+        { isotope_label: 'M-1', isotope_formula: 'C9H16NO7-', sample_peak_id: 'p-pa-rem' },
+        { isotope_label: 'M0', isotope_formula: '[15N]C9H16O7-', sample_peak_id: 'p-1' }
+      ]
+    }
+    const wrapper = await mountPane()
+
+    expect(labels(wrapper)).toEqual(['[14N]', 'M0'])
+  })
+
+  it('keeps the brackets of an unlabelled family', async () => {
+    const m0 = {
+      ...assignment({ formula: 'CHBr3', tier: 'assigned', mz: 328.6817 }),
+      ion_formula: 'CHBr4-',
+      isotope_formula: 'CHBr4-'
+    }
+    familyRows = [
+      m0,
+      {
+        ...isotopologue(m0),
+        sample_peak_mz: 332.6776,
+        isotope_label: 'M+4',
+        isotope_formula: '[81Br]2CHBr2-'
+      }
+    ]
+    focusedAssignment = m0
+    const wrapper = await mountPane()
+
+    expect(labels(wrapper)).toEqual(['M0', '[81Br]2'])
+  })
+})
+
 describe('PanePeakAssign on-demand evidence for a derived row', () => {
   const derivedM0 = () => ({
     ...assignment({ formula: 'C6H12O6', tier: 'assigned' }),
@@ -1545,31 +2254,21 @@ describe('PanePeakAssign on-demand evidence for a derived row', () => {
     loadEvidence.mockClear()
   })
 
-  // A derived row reads like a run's: the rows a run fills are there, with what
-  // the ledger has or a dash that says why not, so the card keeps its shape
-  // whether the sample has a run of its own or is served from the batch ledger.
-  it('keeps the confidence and P(correct) rows on a ledger-served row', async () => {
+  // A derived row reads like a run's: the row a run fills is there, with a dash
+  // that says why the ledger has none, so the card keeps its shape whether the
+  // sample has a run of its own or is served from the batch ledger. The
+  // probability the ledger recorded is not shown, as a run's is not.
+  it('keeps the confidence row, and no probability, on a ledger-served row', async () => {
     focusedAssignment = { ...derivedM0(), p_correct: 0.87, source: 'database' }
     const wrapper = await mountPane({ recordTooltips: true })
 
     const rows = Object.fromEntries(
       wrapper.findAll('.evidence .ev').map((ev) => [ev.find('.k').text(), ev.find('.v')])
     )
-    expect(rows['P(correct)'].text()).toContain('87')
-    expect(rows['P(correct)'].attributes('data-tooltip')).toMatch(/batch ledger/)
+    expect(rows).not.toHaveProperty('P(correct)')
+    expect(wrapper.find('.evidence').text()).not.toContain('87')
     expect(rows.confidence.text()).toBe('—')
     expect(rows.confidence.attributes('data-tooltip')).toMatch(/assignment run/)
-  })
-
-  it('explains a missing P(correct) on a ledger-served row', async () => {
-    focusedAssignment = { ...derivedM0(), p_correct: null, source: 'untargeted' }
-    const wrapper = await mountPane({ recordTooltips: true })
-
-    const p = wrapper.findAll('.evidence .ev').find((ev) => ev.find('.k').text() === 'P(correct)')
-    expect(p.find('.v').text()).toBe('—')
-    expect(p.find('.v').attributes('data-tooltip')).toBe(
-      'Untargeted assignment - no calibrated probability'
-    )
   })
 
   // The isotopologue table is where the focused peak's m/z is read, so it is
@@ -1623,7 +2322,8 @@ describe('PanePeakAssign on-demand evidence for a derived row', () => {
     )
     const grid = wrapper.find('.evidence').text()
     expect(grid).toContain(num.mzError.format(1.1))
-    expect(grid).toContain('M+1')
+    // The row names no isotope of its own; the measurement labels it.
+    expect(wrapper.find('.insp-sub').text()).toContain('M+1')
   })
 
   it('asks nothing for a run of its own, whose rows carry their numbers', async () => {
@@ -1698,5 +2398,714 @@ describe('PanePeakAssign on-demand evidence for a derived row', () => {
     expect(grid).toContain('main peak')
     expect(grid).toContain('M+2 predicted at m/z 238.7537')
     expect(grid).not.toContain('not measured')
+  })
+})
+
+// Where a row's mass error sits against the run's own calibration, in that
+// calibration's widths: the number the run's mass gate judged, which the ppm
+// error beside it cannot say without the run's width.
+describe('PanePeakAssign mass z', () => {
+  const ROW = {
+    ...assignment({ formula: 'C6H12O6', tier: 'assigned' }),
+    mz_error_ppm: 0.42,
+    mass_z: 1.26
+  }
+  const CALIBRATION = {
+    mu_ppm: 0.12,
+    sigma_ppm: 0.25,
+    gate_sigma_ppm: 0.3,
+    anchors: 212,
+    centre: 'constant',
+    cap_z: 3,
+    floor_z: 6
+  }
+  const massZ = (wrapper) => wrapper.find('[data-testid="mass-z"]')
+  const withCalibration = (calibration) => ({
+    engine: 'mascope',
+    config: { mass_calibration: calibration }
+  })
+
+  it('shows the distance right after the ppm error, from the ledger row', async () => {
+    focusedAssignment = ROW
+    runRecord = withCalibration(CALIBRATION)
+    const wrapper = await mountPane({ recordTooltips: true })
+
+    expect(massZ(wrapper).find('.v').text()).toBe('+1.3')
+    expect(massZ(wrapper).find('.v').classes()).not.toContain('far')
+    const keys = wrapper.findAll('.evidence .ev .k').map((key) => key.text())
+    expect(keys.indexOf('mass z')).toBe(keys.indexOf('m/z error') + 1)
+    expect(massZ(wrapper).find('.k').attributes('data-tooltip')).toBe(
+      [
+        "The m/z error in widths of the run's own mass calibration at this m/z.",
+        'The run measured a centre of 0.12 ppm and a width of 0.30 ppm.',
+        'Beyond 3 widths an uncorroborated row stays at candidate; beyond 6, below ' +
+          'assignability.'
+      ].join('\n')
+    )
+  })
+
+  it('reads it off the detail for a row that carries none, marked past the cap', async () => {
+    focusedAssignment = { ...ROW, mass_z: undefined }
+    detailRecord = { provenance: { mass_z: -3.4 } }
+    runRecord = withCalibration(CALIBRATION)
+    const wrapper = await mountPane()
+
+    expect(massZ(wrapper).find('.v').text()).toBe('-3.4')
+    expect(massZ(wrapper).find('.v').classes()).toContain('far')
+  })
+
+  it('names a centre that follows m/z rather than a number', async () => {
+    focusedAssignment = ROW
+    runRecord = withCalibration({ ...CALIBRATION, centre: 'trend' })
+    const wrapper = await mountPane({ recordTooltips: true })
+
+    expect(massZ(wrapper).find('.k').attributes('data-tooltip')).toContain(
+      'The run measured a centre that follows m/z and a width of 0.30 ppm.'
+    )
+  })
+
+  it('says only what the number is where the run recorded no calibration', async () => {
+    focusedAssignment = { ...ROW, mass_z: 9.5 }
+    runRecord = { engine: 'mascope', config: {} }
+    const wrapper = await mountPane({ recordTooltips: true })
+
+    // No cap to be past: nothing on the run says where it is.
+    expect(massZ(wrapper).find('.v').classes()).not.toContain('far')
+    expect(massZ(wrapper).find('.k').attributes('data-tooltip')).toBe(
+      "The m/z error in widths of the run's own mass calibration at this m/z."
+    )
+  })
+
+  it('shows no row where the run measured none', async () => {
+    focusedAssignment = { ...ROW, mass_z: null }
+    runRecord = withCalibration(CALIBRATION)
+    const wrapper = await mountPane()
+
+    expect(massZ(wrapper).exists()).toBe(false)
+  })
+})
+
+// The readings of the committed ion that the run did not commit: the same ion
+// split another way between neutral and adduct, which no mass or envelope tells
+// apart, and which the nitrogen rule among the reasons is about.
+describe('PanePeakAssign the same ion read another way', () => {
+  const COMMITTED = {
+    ...assignment({ formula: 'C3H7NO', tier: 'candidate' }),
+    ion_formula: 'C3H8NO+',
+    ionization_mechanism_id: 'm-h'
+  }
+  const AMBIGUOUS = {
+    rule: 'ambiguous_nitrogen',
+    detail: 'C3H8NO+ reads as C3H4O through [M+NH4]+ as well',
+    caps: true
+  }
+  const SAME_ION = {
+    assigned_formula: 'C3H4O',
+    ion_formula: 'C3H8NO+',
+    ionization_mechanism_id: 'm-nh4',
+    fit_score: 0.9,
+    same_ion: true
+  }
+  const RIVAL = { assigned_formula: 'C2H5N3', ion_formula: 'C2H6N3+', fit_score: 0.4 }
+  const readings = (wrapper) => wrapper.findAll('[data-testid="same-ion"] .reading')
+  const blocks = (wrapper) =>
+    [...wrapper.find('section.inspector').element.children].map((node) => node.classList[0])
+
+  beforeEach(() => {
+    focusedAssignment = COMMITTED
+    mechanisms = [
+      { ionization_mechanism_id: 'm-h', ionization_mechanism: '[M+H]+' },
+      { ionization_mechanism_id: 'm-nh4', ionization_mechanism: '[M+NH4]+' }
+    ]
+  })
+
+  it('lists the readings the run did not commit, with their channels, under the reasons', async () => {
+    detailRecord = {
+      provenance: { tier_reasons: [AMBIGUOUS] },
+      alternatives: [SAME_ION, RIVAL]
+    }
+    const wrapper = await mountPane({ recordTooltips: true })
+
+    expect(readings(wrapper)).toHaveLength(1)
+    expect(readings(wrapper)[0].find('.reading-formula').text()).toBe('C3H4O')
+    expect(readings(wrapper)[0].find('.reading-channel').text()).toBe('through [M+NH4]+')
+    expect(readings(wrapper)[0].attributes('data-tooltip')).toContain(
+      'The same ion read as another neutral with another adduct.'
+    )
+    const order = blocks(wrapper)
+    expect(order.indexOf('same-ion')).toBe(order.indexOf('tier-reasons') + 1)
+  })
+
+  it('lists them on a row no rule judged too', async () => {
+    detailRecord = { alternatives: [SAME_ION] }
+    const wrapper = await mountPane()
+
+    expect(wrapper.find('.tier-reasons').exists()).toBe(false)
+    expect(readings(wrapper)).toHaveLength(1)
+  })
+
+  it('shows nothing for an ion with no other reading', async () => {
+    detailRecord = { provenance: { tier_reasons: [AMBIGUOUS] }, alternatives: [RIVAL] }
+    const wrapper = await mountPane()
+
+    expect(wrapper.find('[data-testid="same-ion"]').exists()).toBe(false)
+  })
+
+  it('names a reading by its formula alone where the channel is not listed', async () => {
+    detailRecord = {
+      alternatives: [{ ...SAME_ION, ionization_mechanism_id: 'm-retired' }]
+    }
+    const wrapper = await mountPane()
+
+    expect(readings(wrapper)[0].find('.reading-formula').text()).toBe('C3H4O')
+    expect(readings(wrapper)[0].find('.reading-channel').exists()).toBe(false)
+  })
+
+  it('marks each kind of close alternative, and says what it is on hover', async () => {
+    detailRecord = {
+      alternatives: [
+        SAME_ION,
+        { ...RIVAL, assigned_formula: 'C4H9NO', displaced_by_claim: true },
+        { ...RIVAL, assigned_formula: 'C3H9NO', displaced_by_rival: true },
+        RIVAL
+      ]
+    }
+    const wrapper = await mountPane({ recordTooltips: true })
+    const rows = wrapper.findAll('.alt')
+
+    expect(
+      rows.map((row) => (row.find('.alt-kind').exists() ? row.find('.alt-kind').text() : null))
+    ).toEqual(['same ion', 'earlier reading', 'list compound', null])
+    const firstLines = rows.map((row) => row.attributes('data-tooltip').split('\n')[0])
+    expect(firstLines[0]).toContain('The same ion read as another neutral')
+    expect(firstLines[1]).toContain("before a neighbour's isotope line claimed it")
+    expect(firstLines[2]).toContain("A loaded list's compound for this peak")
+    expect(firstLines[3]).toBe('fit: 40%')
+  })
+})
+
+// What the row is, named outright above the evidence: the ionization the ion
+// was read through, and what a reference list calls the formula.
+describe('PanePeakAssign ionization and reference lists', () => {
+  const DMF = {
+    ...assignment({ formula: 'C3H7NO', tier: 'below_assignability' }),
+    ion_formula: 'C3H8NO+',
+    ionization_mechanism_id: 'm-h',
+    source: 'database'
+  }
+  const LISTED = { name: 'N,N-Dimethylformamide', source: 'contaminants-list' }
+  const ACROLEIN = { name: 'Acrolein', source: 'organics-list' }
+  const field = (wrapper, id) => wrapper.find(`[data-testid="${id}"]`)
+
+  beforeEach(() => {
+    focusedAssignment = DMF
+    mechanisms = [
+      { ionization_mechanism_id: 'm-h', ionization_mechanism: '[M+H]+' },
+      { ionization_mechanism_id: 'm-nh4', ionization_mechanism: '[M+NH4]+' }
+    ]
+  })
+
+  it('names the ionization after the formula, and says on hover what it made of it', async () => {
+    const wrapper = await mountPane({ recordTooltips: true })
+    const title = [...wrapper.find('.insp-head .insp-title').element.children]
+
+    expect(title.map((node) => node.textContent)).toEqual(['C3H7NO', '[M+H]+'])
+    expect(title[1].dataset.testid).toBe('ionization')
+    expect(field(wrapper, 'ionization').attributes('data-tooltip')).toBe(
+      'Ionization mechanism: C3H7NO [M+H]+ → C3H8NO+'
+    )
+  })
+
+  it('stands above the evidence, the list line with the list name alone', async () => {
+    detailRecord = { provenance: { reference_identities: [LISTED] }, known_compounds: [] }
+    const wrapper = await mountPane()
+    const order = [...wrapper.find('section.inspector').element.children].map(
+      (node) => node.classList[0]
+    )
+
+    expect(order.indexOf('identity')).toBe(order.indexOf('evidence') - 1)
+    expect(field(wrapper, 'identity').findAll('.ev').length).toBe(1)
+    expect(wrapper.findAll('[data-testid="ionization"]').length).toBe(1)
+  })
+
+  // The line under the formula names the isotope beside the ion it is a line
+  // of, and the isotopologue table marks the same row; a third place in the
+  // evidence grid said it again.
+  it('names the isotope once, in the line under the formula', async () => {
+    focusedAssignment = { ...DMF, isotope_label: 'M0' }
+    const wrapper = await mountPane()
+
+    expect(wrapper.find('.insp-sub').text()).toMatch(/^C3H8NO\+\s*·\s*M0\s*·\s*database$/)
+    expect(wrapper.findAll('.evidence .ev .k').map((key) => key.text())).not.toContain('isotope')
+  })
+
+  it('leaves the ionization out where the deployment does not list the mechanism', async () => {
+    focusedAssignment = { ...DMF, ionization_mechanism_id: 'm-retired' }
+    const wrapper = await mountPane()
+    expect(field(wrapper, 'ionization').exists()).toBe(false)
+  })
+
+  it('names the compound a list matched, and its list', async () => {
+    detailRecord = { provenance: { reference_identities: [LISTED] }, known_compounds: [] }
+    const wrapper = await mountPane({ recordTooltips: true })
+    const listed = field(wrapper, 'listed-as')
+
+    expect(listed.find('.k').text()).toBe('reference list')
+    expect(listed.find('.v').text()).toBe('N,N-Dimethylformamide')
+    expect(listed.find('.list-source').text()).toBe('contaminants-list')
+    expect(listed.attributes('data-tooltip')).toContain(
+      'The run matched this formula from a reference list.'
+    )
+  })
+
+  it('shows the tag a list reads its compounds by, beside the name', async () => {
+    const d4 = {
+      name: 'Octamethylcyclotetrasiloxane (D4)',
+      source: 'cyclic-siloxanes',
+      xrefs: { tags: ['background'] }
+    }
+    detailRecord = { provenance: { reference_identities: [d4] }, known_compounds: [] }
+    const wrapper = await mountPane({ recordTooltips: true })
+    const listed = field(wrapper, 'listed-as')
+
+    expect(listed.find('[data-testid="list-tag-background"]').text()).toBe('background')
+    expect(listed.attributes('data-tooltip')).toContain(
+      'The cyclic-siloxanes list tags it background'
+    )
+  })
+
+  it('shows no tag where the list carries none', async () => {
+    detailRecord = { provenance: { reference_identities: [LISTED] }, known_compounds: [] }
+    const wrapper = await mountPane()
+    expect(field(wrapper, 'listed-as').find('.list-tags').exists()).toBe(false)
+  })
+
+  it('names a formula a list holds that the run did not match from it as potential', async () => {
+    focusedAssignment = { ...DMF, source: 'untargeted' }
+    detailRecord = { provenance: {}, known_compounds: [LISTED] }
+    const wrapper = await mountPane({ recordTooltips: true })
+    const listed = field(wrapper, 'listed-as')
+
+    expect(listed.find('.k').text()).toContain('potential')
+    expect(listed.find('.v').text()).toBe('N,N-Dimethylformamide')
+    expect(listed.attributes('data-tooltip')).toContain('the name is a lead to check')
+  })
+
+  it("prefers the run's own match to the lookup", async () => {
+    detailRecord = {
+      provenance: { reference_identities: [LISTED] },
+      known_compounds: [ACROLEIN]
+    }
+    const wrapper = await mountPane()
+    expect(field(wrapper, 'listed-as').find('.v').text()).toBe('N,N-Dimethylformamide')
+    expect(field(wrapper, 'listed-as').find('.potential').exists()).toBe(false)
+  })
+
+  it('shows no list line where no list names the formula', async () => {
+    detailRecord = { provenance: {}, known_compounds: [] }
+    const wrapper = await mountPane()
+    expect(field(wrapper, 'listed-as').exists()).toBe(false)
+    // Nor an empty block, which would still take its gap in the card.
+    expect(field(wrapper, 'identity').exists()).toBe(false)
+  })
+
+  it('names what a list calls another reading of the ion', async () => {
+    detailRecord = {
+      provenance: {},
+      alternatives: [
+        {
+          assigned_formula: 'C3H4O',
+          ion_formula: 'C3H8NO+',
+          ionization_mechanism_id: 'm-nh4',
+          same_ion: true,
+          known_compounds: [ACROLEIN]
+        }
+      ]
+    }
+    const wrapper = await mountPane({ recordTooltips: true })
+    const reading = wrapper.find('[data-testid="same-ion"] .reading')
+
+    expect(reading.find('.reading-listed').text()).toBe('Acrolein')
+    expect(reading.find('.reading-listed').attributes('data-tooltip')).toContain(
+      'Acrolein (organics-list)'
+    )
+  })
+
+  it('names what a list calls a close alternative, on the row and on hover', async () => {
+    detailRecord = {
+      provenance: {},
+      alternatives: [
+        { assigned_formula: 'C4H11N', fit_score: 0.3, reference_identities: [ACROLEIN] },
+        { assigned_formula: 'C2H5N3', fit_score: 0.2 }
+      ]
+    }
+    const wrapper = await mountPane({ recordTooltips: true })
+    const rows = wrapper.findAll('.alt')
+
+    expect(rows[0].find('.alt-listed').text()).toBe('Acrolein')
+    expect(rows[0].attributes('data-tooltip')).toContain(
+      'The run matched this formula from a reference list.'
+    )
+    expect(rows[1].find('.alt-listed').exists()).toBe(false)
+  })
+
+  it('leads the reasons with the band that set the tier', async () => {
+    detailRecord = {
+      provenance: {
+        tier_reasons: [
+          {
+            rule: 'evidence_band',
+            detail: 'evidence 8% (fit 8% x plausibility 100%) is under the candidate band of 45%',
+            caps: false,
+            band: 'below_assignability'
+          },
+          {
+            rule: 'corroborated',
+            detail: 'the same neutral is committed through 2 of the run channels',
+            caps: false
+          }
+        ]
+      }
+    }
+    const wrapper = await mountPane({ recordTooltips: true })
+    const reasons = wrapper.findAll('.tier-reasons .reason')
+
+    expect(reasons.map((row) => row.find('.reason-rule').text())).toEqual([
+      'evidence band',
+      'second channel'
+    ])
+    expect(reasons[0].classes()).toContain('caps')
+    expect(reasons[0].attributes('data-tooltip')).toBe(
+      "Sets this row's tier: the reasons below can only lower it further"
+    )
+  })
+})
+
+describe('PanePeakAssign the row read again', () => {
+  const ROW = {
+    ...assignment({ formula: 'C15H32O', tier: 'candidate' }),
+    ion_formula: 'C16H32O4-',
+    ionization_mechanism_id: 'm-co3'
+  }
+
+  beforeEach(() => {
+    focusedAssignment = ROW
+    mechanisms = [
+      { ionization_mechanism_id: 'm-co3', ionization_mechanism: '[M+CO3]-' },
+      { ionization_mechanism_id: 'm-h', ionization_mechanism: '[M-H]-' }
+    ]
+  })
+
+  it("leaves the row's own reading out of the same ion's readings, however it is spelled", async () => {
+    // A run that searched a channel twice stored the row's own reading as
+    // another reading of its ion; a spelling with explicit ones is still it.
+    detailRecord = {
+      alternatives: [
+        {
+          assigned_formula: 'C15H32O1',
+          ion_formula: 'C16H32O4-',
+          ionization_mechanism_id: 'm-co3',
+          same_ion: true
+        },
+        {
+          assigned_formula: 'C16H33O4',
+          ion_formula: 'C16H32O4-',
+          ionization_mechanism_id: 'm-h',
+          same_ion: true
+        }
+      ]
+    }
+    const wrapper = await mountPane()
+    const readings = wrapper.findAll('[data-testid="same-ion"] .reading-formula')
+
+    expect(readings.map((reading) => reading.text())).toEqual(['C16H33O4'])
+  })
+
+  it('offers no close alternative that restates the row in another spelling', async () => {
+    detailRecord = {
+      alternatives: [
+        { assigned_formula: 'C15H32O1', ion_formula: 'C16H32O4-', fit_score: 0.9 },
+        { assigned_formula: 'C14H30O2', ion_formula: 'C15H30O5-', fit_score: 0.4 }
+      ]
+    }
+    const wrapper = await mountPane()
+
+    expect(wrapper.findAll('.alt .f').map((cell) => cell.text())).toEqual(['C14H30O2'])
+  })
+
+  it('leaves out the own reading even where the ledger row carries no ion formula', async () => {
+    // Without the row's ion the close alternatives keep the entry, as a
+    // different ion could be behind it; the same ion's readings still know it
+    // is the row's own neutral.
+    focusedAssignment = { ...ROW, ion_formula: null }
+    detailRecord = {
+      alternatives: [
+        {
+          assigned_formula: 'C15H32O',
+          ion_formula: 'C16H32O4-',
+          ionization_mechanism_id: 'm-co3',
+          same_ion: true
+        },
+        {
+          assigned_formula: 'C16H33O4',
+          ion_formula: 'C16H32O4-',
+          ionization_mechanism_id: 'm-h',
+          same_ion: true
+        }
+      ]
+    }
+    const wrapper = await mountPane()
+    const readings = wrapper.findAll('[data-testid="same-ion"] .reading-formula')
+
+    expect(readings.map((reading) => reading.text())).toEqual(['C16H33O4'])
+  })
+
+  it('names the count of a formula the lists hold past the names it carries', async () => {
+    detailRecord = {
+      provenance: {},
+      known_compounds: [{ name: 'Hexadecanol isomer', source: 'organics-list' }],
+      known_compounds_total: 12
+    }
+    const wrapper = await mountPane({ recordTooltips: true })
+    const listed = wrapper.find('[data-testid="listed-as"]')
+
+    expect(listed.find('.v').text()).toBe('Hexadecanol isomer +11')
+    expect(listed.attributes('data-tooltip')).toContain('and 11 more the lists hold for it')
+  })
+})
+
+// Every part of the card a reader can wonder about says what it is on hover,
+// in the fewest words that say it.
+describe('PanePeakAssign hover text', () => {
+  const ROW = {
+    ...assignment({ formula: 'C10H16O6', tier: 'candidate' }),
+    ion_formula: 'C10H16NO9-',
+    isotope_label: 'M0',
+    source: 'untargeted',
+    mz_error_ppm: 0.31,
+    abundance_error: 0.04
+  }
+  const tip = (element) => element.attributes('data-tooltip')
+  const key = (wrapper, name) =>
+    wrapper.findAll('.evidence .ev .k').find((element) => element.text() === name)
+
+  beforeEach(() => {
+    focusedAssignment = ROW
+  })
+
+  it('names the neutral, the ion, its isotope line and how it was found', async () => {
+    const wrapper = await mountPane({ recordTooltips: true })
+    const parts = wrapper.findAll('.insp-sub span')
+
+    expect(tip(wrapper.find('.insp-formula'))).toBe('Neutral formula')
+    expect(parts.map(tip)).toEqual([
+      'Ion formula',
+      'The isotope line of the ion this peak is; M0 is the monoisotopic line',
+      'Found by the formula search'
+    ])
+  })
+
+  it('says what fit, m/z error and abundance error measure', async () => {
+    const wrapper = await mountPane({ recordTooltips: true })
+
+    expect(tip(key(wrapper, 'fit'))).toBe(
+      "How well the peak and its isotope lines match the formula's predicted pattern"
+    )
+    expect(tip(key(wrapper, 'm/z error'))).toBe('Measured minus predicted m/z of the peak, in ppm')
+    expect(tip(key(wrapper, 'abund. error'))).toBe(
+      'How far the measured isotope abundances are from the predicted ones'
+    )
+  })
+
+  // The calibrated probability leaves the card while its curve is provisional
+  // (step 3.4d): not on a calibrated row, not as an "uncalibrated" placeholder,
+  // and not as a provisional flag.
+  it('shows no calibrated probability, calibrated or not', async () => {
+    for (const provenance of [
+      { calibrated: true, p_correct: 0.91, calibration: { provisional: true } },
+      { calibrated: false, p_correct: null }
+    ]) {
+      detailRecord = { provenance }
+      const wrapper = await mountPane({ recordTooltips: true })
+      const keys = wrapper.findAll('.evidence .ev .k').map((element) => element.text())
+
+      expect(keys).not.toContain('P(correct)')
+      expect(wrapper.text()).not.toMatch(/uncalibrated|prov\.|91%/)
+    }
+  })
+
+  // The tier row says the tiering is still being built, beside the chips.
+  it('marks the tier row provisional', async () => {
+    const wrapper = await mountPane({ recordTooltips: true })
+    const mark = wrapper.find('.insp-tiers [data-testid="tiering-provisional"]')
+
+    expect(mark.exists()).toBe(true)
+    expect(mark.text()).toBe(TIERING_PROVISIONAL.label)
+    expect(tip(mark)).toBe(TIERING_PROVISIONAL.tooltip)
+  })
+
+  it("names the isotopologue table's columns", async () => {
+    const wrapper = await mountPane({ recordTooltips: true })
+
+    expect(wrapper.findAll('.iso-head span').map(tip)).toEqual([
+      'Isotope line, named by its heavy isotopes',
+      'Measured m/z of the peak',
+      'm/z error, in ppm',
+      'Predicted relative abundance, a fraction of the most abundant line'
+    ])
+  })
+
+  // One tooltip per row: the label inside it no longer carries a second one.
+  it('gives an isotopologue row its formula, its match and what a click does', async () => {
+    const poor = {
+      ...ROW,
+      peak_assignment_id: 'pa-2',
+      sample_peak_id: 'p-2',
+      role: 'iso_child',
+      isotope_label: 'M+1',
+      isotope_formula: '[13C]C9H16NO9-',
+      abundance_error: 0.9,
+      mz_error_ppm: 40
+    }
+    familyRows = [ROW, poor]
+    const wrapper = await mountPane({ recordTooltips: true })
+    const rows = wrapper.findAll('.iso-row')
+
+    expect(tip(rows[1])).toBe(
+      [
+        '[13C]C9H16NO9-',
+        'Poor match to the prediction (abundance or m/z off)',
+        'Click to focus this peak'
+      ].join('\n')
+    )
+    expect(rows[1].find('.iso-label').attributes('data-tooltip')).toBeUndefined()
+  })
+
+  it('says what each verdict records', async () => {
+    const wrapper = await mountPane({ recordTooltips: true })
+
+    expect(wrapper.findAll('.verify-buttons .verdict-button').map(tip)).toEqual([
+      'The assignment is right',
+      'The assignment is wrong',
+      'The evidence at hand cannot tell'
+    ])
+  })
+
+  it('says what use this does on an alternative it can commit', async () => {
+    detailRecord = {
+      alternatives: [
+        { assigned_formula: 'C9H12N2O5', fit_score: 0.41, ionization_mechanism_id: 'm-no3' }
+      ]
+    }
+    const wrapper = await mountPane({ recordTooltips: true })
+
+    expect(tip(wrapper.find('.alt-use'))).toBe('Assign this formula to the peak by hand')
+  })
+
+  it('opens its own card on the reasons and on the same ion readings', async () => {
+    detailRecord = {
+      provenance: { tier_reasons: [{ rule: 'no_close_rival', detail: 'none', caps: false }] },
+      alternatives: [
+        {
+          assigned_formula: 'C9H14O7',
+          ion_formula: 'C10H16NO9-',
+          ionization_mechanism_id: 'm-other',
+          same_ion: true
+        }
+      ]
+    }
+    const wrapper = await mountPane({ recordHelp: true })
+
+    expect(wrapper.find('.tier-reasons').attributes('data-help')).toBe('assignment-tier-reasons')
+    expect(wrapper.find('[data-testid="same-ion"]').attributes('data-help')).toBe(
+      'assignment-tier-reasons'
+    )
+  })
+})
+
+// A peak the source made names its ion and no compound. The card is headed by
+// the ion, known exactly, rather than by "Unassigned", and the ion's isotope
+// lines - reagent rows the pass links to its monoisotopic row - are its
+// isotopologue table, read against the prediction each line carries.
+describe('PanePeakAssign a peak the source made', () => {
+  /** A bromide dimer as the reagent pass writes it: the ion, and its lines. */
+  function dimer() {
+    const ion = {
+      peak_assignment_id: 'pa-ion',
+      sample_peak_id: 'p-1',
+      sample_peak_mz: 157.8367,
+      sample_peak_intensity: 2.57e5,
+      assigned_formula: null,
+      ion_formula: 'Br2-',
+      isotope_label: null,
+      role: 'reagent',
+      source: 'reagent',
+      tier: 'unassigned',
+      mz_error_ppm: 0.4,
+      abundance_error: null
+    }
+    ledger.set(ion.peak_assignment_id, ion)
+    const line = (id, mz, height, label, error) => ({
+      ...ion,
+      peak_assignment_id: id,
+      sample_peak_id: `p-${id}`,
+      sample_peak_mz: mz,
+      sample_peak_intensity: height,
+      isotope_label: label,
+      owner_peak_assignment_id: ion.peak_assignment_id,
+      abundance_error: error
+    })
+    // 81Br is predicted at 1.946 of the monoisotopic line and 81Br2 at 0.946;
+    // the first reads 5 % high.
+    return [
+      ion,
+      line('pa-81', 159.8347, 2.57e5 * 1.946 * 1.05, '81Br', 0.05),
+      line('pa-81x2', 161.8326, 2.57e5 * 0.946, '81Br2', 0)
+    ]
+  }
+
+  it('heads the card with the ion, and does not repeat it under the headline', async () => {
+    familyRows = dimer()
+    focusedAssignment = familyRows[0]
+    const wrapper = await mountPane({ recordTooltips: true })
+
+    const headline = wrapper.find('.insp-formula')
+    expect(headline.text()).toBe('Br2-')
+    expect(headline.attributes('data-tooltip')).toMatch(/names an ion, and no compound/)
+    const subs = wrapper.findAll('.insp-sub').map((node) => node.text())
+    expect(subs.at(-1)).toBe('reagent')
+  })
+
+  it("names a line's isotope in brackets beside where it came from", async () => {
+    familyRows = dimer()
+    focusedAssignment = familyRows[1]
+    const wrapper = await mountPane()
+
+    expect(wrapper.find('.insp-formula').text()).toBe('Br2-')
+    expect(wrapper.findAll('.insp-sub').at(-1).text()).toMatch(/^\[81Br\]\s*·\s*reagent$/)
+  })
+
+  it("lists the ion's lines as its isotopologues, against their predictions", async () => {
+    familyRows = dimer()
+    focusedAssignment = familyRows[0]
+    const wrapper = await mountPane()
+
+    const labels = wrapper.findAll('.isotopologues .iso-label').map((cell) => cell.text())
+    expect(labels).toEqual(['M0', '[81Br]', '[81Br]2'])
+    // Fractions of the most abundant line, here the first heavy one.
+    const shares = wrapper.findAll('.isotopologues .iso-rel').map((cell) => cell.text())
+    expect(shares).toEqual(['51.4%', '100%', '48.6%'])
+  })
+
+  it('still names an analyte by its formula, the ion under it', async () => {
+    focusedAssignment = {
+      ...assignment({ formula: 'C3H7NO', tier: 'assigned' }),
+      ion_formula: 'C3H8NO+',
+      source: 'database'
+    }
+    const wrapper = await mountPane()
+
+    expect(wrapper.find('.insp-formula').text()).toBe('C3H7NO')
+    expect(wrapper.findAll('.insp-sub').at(-1).text()).toMatch(/^C3H8NO\+\s*·\s*database$/)
   })
 })

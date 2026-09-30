@@ -16,16 +16,18 @@ import { api } from '@/api'
 import { BaseTierTag, BaseMatchTag } from '@/lib/base'
 import { PopoverTargetCompoundAdd } from '@/lib/dialogs'
 import { num } from '@/lib/formatters'
+import { formatIsotopeFormula } from '@/lib/chem'
 import { peakAssignmentEnabled } from '@/lib/features'
-import { isFormulaRange, usePeakAssignParams } from '@/lib/peakAssignParams'
+import { fetchProfilePreview, isFormulaRange, usePeakAssignParams } from '@/lib/peakAssignParams'
 
 import { usePreview } from './preview.js'
-import { canCurateHit, curationBodyForHit, hitKey } from './searchHit.js'
+import { canCurateHit, curationBodyForHit, hitKey, readLineOfHit } from './searchHit.js'
 
 // On-demand composition search for the focused peak. Lives in the Sample view's
-// bottom pane, shown in place of the time series while "Re-search" is active
-// (mounted only then, so it searches whenever it is on screen). Extracted from
-// PanePeakAssign so the inspector stays a compact committed-assignment card.
+// pane under the spectrum, shown in place of the time series while "Re-search"
+// is active (mounted only then, so it searches whenever it is on screen).
+// Extracted from PanePeakAssign so the inspector stays a compact
+// committed-assignment card.
 
 const app = useApp()
 const preview = usePreview()
@@ -54,7 +56,10 @@ const rootHelp = {
     <h1>Composition Search</h1>
     <p>
     Search candidate compositions for the selected peak from its m/z value, the
-    chosen ionization mechanisms and the allowed ranges of atom counts.
+    chosen ionization mechanisms and the allowed ranges of atom counts. The peak
+    may be any line of a candidate's ion at least 1% of its brightest: a
+    compound is found at its 13C, 34S or 81Br line as well as at its
+    monoisotopic one.
     </p>
     ${
       props.embedded
@@ -67,7 +72,7 @@ const rootHelp = {
           or the Assignments ledger. Close the search to return to the time series.
           </p>`
     }`,
-  doc: app.ui.help.docUrl('how-it-works/peak-assignment/#the-two-stages')
+  doc: app.ui.help.docUrl('how-it-works/peak-assignment/#searching-one-peak')
 }
 
 // One card for the whole results table: the icon-only column headers and the
@@ -80,20 +85,51 @@ const resultsHelp = {
     <b>DBE</b> is the degree of unsaturation.${
       peakAssignmentEnabled
         ? ` The seal column shows each
-    candidate's fit score and confidence tier, the atom column its chemical
-    plausibility, and a flask names a match in a public reference database.`
+    candidate's confidence tier and sorts by its fit score, the atom column its
+    chemical plausibility, and a flask names a match in a public reference
+    database.`
         : ` The seal column shows each candidate's match score.`
     }
     A database icon marks formulas that already exist among your target compounds.
     </p>
     <p>
-    Expand a row to see the candidate's full theoretical isotope pattern, and
-    click an isotope row to preview it in the spectrum chart. The <b>+</b>
-    button adds a candidate to the open target collection.
+    A tag beside a formula, such as <code>[13C]</code> or <code>[81Br]</code>,
+    marks a candidate found at another line of its ion than the monoisotopic
+    one: the peak is that isotopologue of the compound, and the error is
+    against that line.
+    </p>
+    <p>
+    Expand a row to list the candidate's theoretical isotope lines under it,
+    with each line's abundance and a crosshair on the one within tolerance of
+    the searched peak, and click a line to preview it in the spectrum chart.
+    The <b>+</b> button adds a candidate to the open target collection.
     </p>`,
   doc: peakAssignmentEnabled
     ? app.ui.help.docUrl('how-it-works/peak-assignment/#the-fit-score-a-pure-measurement')
     : app.ui.help.docUrl('how-it-works/matching/')
+}
+
+const sharePercent = new Intl.NumberFormat('en-US', {
+  style: 'percent',
+  maximumSignificantDigits: 2
+})
+
+/**
+ * Hover text for the tag of a candidate read at another line of its ion. A
+ * line at the monoisotopic nominal mass has no offset worth naming.
+ *
+ * @param {{name: string, offset: string, share: number|null}} line see readLineOfHit
+ * @returns {string} the text
+ */
+function lineTooltip(line) {
+  const place = [
+    line.offset !== 'M0' ? line.offset : null,
+    line.share != null ? `${sharePercent.format(line.share)} of its brightest` : null
+  ].filter(Boolean)
+  return (
+    `Found at the ion's ${line.name} line${place.length ? ` (${place.join(', ')})` : ''}: ` +
+    'the peak is this isotopologue of the compound, and the error is against that line'
+  )
 }
 
 // The hand button's own card, rendered from the shared docs snippet rather than
@@ -146,11 +182,44 @@ const isFormulaRangeValid = computed(
 
 onMounted(() => store.ensureLoaded())
 
+// Emptied, the field goes back to the chemistry profile's grid.
 const updateFormulaRange = () => {
-  if (isFormulaRangeValid.value && formulaRangeModel.value) {
-    params.formula_ranges = formulaRangeModel.value.trim()
-  }
+  if (!isFormulaRangeValid.value) return
+  params.formula_ranges = formulaRangeModel.value?.trim() || null
 }
+
+// What an empty field searches with: the focused sample's chemistry profile,
+// its element grid and its instrument's m/z window - what a run of the sample
+// would use - asked of the server as the launcher asks it, and asked again
+// when the sample or the chosen profile or context changes. A value typed in
+// overrides it here as it would in the run.
+const resolved = ref(null)
+let resolveRequest = 0
+watch(
+  () => [app.data.sample.focusedId, params.profile, params.context],
+  async ([sampleItemId, profile, context]) => {
+    const request = ++resolveRequest
+    resolved.value = null
+    if (!sampleItemId) return
+    try {
+      const [record] = await fetchProfilePreview({ sampleItemId }, { profile, context })
+      if (request === resolveRequest) resolved.value = record ?? null
+    } catch {
+      // The fields then say where a value would come from, and the search
+      // waits for one typed in.
+    }
+  },
+  { immediate: true }
+)
+const mzPrecision = computed(
+  () => params.mz_precision_ppm ?? resolved.value?.mz_precision_ppm ?? null
+)
+const formulaRange = computed(() => params.formula_ranges ?? resolved.value?.element_ranges ?? null)
+const FROM_PROFILE = 'From the chemistry profile'
+const mzPrecisionPlaceholder = computed(() =>
+  resolved.value?.mz_precision_ppm != null ? String(resolved.value.mz_precision_ppm) : FROM_PROFILE
+)
+const formulaRangePlaceholder = computed(() => resolved.value?.element_ranges ?? FROM_PROFILE)
 
 // The reset control clears exactly the two fields this pane shows. The record
 // is shared, so resetting everything from here would silently discard a peak
@@ -185,22 +254,21 @@ app.ui.notification.on('match_compositions_by_mz', (payload) => {
         const existing = app.data.target.compound.list.filter(
           ({ target_compound_formula }) => target_compound_formula === res.target_compound_formula
         )
-        return { ...res, existing }
+        return { ...res, existing, readAt: readLineOfHit(res), key: hitKey(res) }
       })
     }
     loading.value = false
   }
 })
 
-// Follow the store into the text box. This is no longer only the defaults
-// landing: the launcher dialog binds the same field and so does the reset
-// button, so the committed range can change while this pane is mounted.
+// Follow the store into the text box: the launcher dialog binds the same field
+// and so does the reset button, so the committed range can change while this
+// pane is mounted. A range put back to the profile's empties the box.
 watch(
   () => params.formula_ranges,
   (newValue) => {
-    if (newValue != null && formulaRangeModel.value !== newValue) {
-      formulaRangeModel.value = newValue
-    }
+    const shown = newValue ?? ''
+    if (formulaRangeModel.value !== shown) formulaRangeModel.value = shown
   }
 )
 
@@ -226,8 +294,8 @@ watchDebounced(
     return {
       peakFocused: app.data.peak.focused ? app.data.peak.focused.mz : null,
       sampleId: app.data.sample.focusedId,
-      mzPrecision: params.mz_precision_ppm,
-      formulaRange: params.formula_ranges,
+      mzPrecision: mzPrecision.value,
+      formulaRange: formulaRange.value,
       ionMechanismIds: ionMechs.value.map((m) => m.ionization_mechanism_id).join(',')
     }
   },
@@ -261,6 +329,10 @@ watchDebounced(
         ),
         mz_precision: deps.mzPrecision,
         formula_ranges: deps.formulaRange,
+        // Any line of a candidate's ion may be the peak, not only its
+        // monoisotopic one: a peak searched can be a compound's 13C or 81Br
+        // line, and a candidate found at another line is tagged with it.
+        isotopologues: true,
         match_params: app.data.match.params.typeDefaults
       },
       {
@@ -288,8 +360,7 @@ function getIsotopeRows(data) {
     0
   return data.children.map((record) => ({
     ...record,
-    close:
-      (Math.abs(record.mz - app.data.peak.focused?.mz) * 1e6) / record.mz < params.mz_precision_ppm,
+    close: (Math.abs(record.mz - app.data.peak.focused?.mz) * 1e6) / record.mz < mzPrecision.value,
     abundance_reference: mainIsotopeAbundance,
     intensity_reference: mainIsotopeIntensity
   }))
@@ -310,6 +381,84 @@ function knownCompoundsTooltip(known) {
 }
 
 const expanded = ref({})
+
+// --- Rows -------------------------------------------------------------------
+// An expanded candidate lists its isotope lines as rows of the table, under
+// it, rather than as a table nested in an expansion row. The results scroll
+// virtually - the scroller renders the rows in view, sliced by a fixed row
+// height - and a nested table is as tall as the candidate's isotope pattern,
+// which that slicing cannot allow for: scrolling through a long pattern moved
+// the slice past the candidate, the candidate left the page, the table shrank,
+// and the view snapped back to the top. A line as a row of its own is one
+// fixed-height row among the others, the arrangement the peak ledger unfolds
+// its isotopologues in for the same reason.
+//
+// The sort is therefore the pane's, not the table's: PrimeVue sorting the flat
+// rows would tear the lines away from their candidate. `lazy` hands sorting
+// back, and `rows` orders the candidates and puts each one's lines under it.
+const ROW_HEIGHT = 35.5
+const scrollHeightPx = computed(() => Math.max(120, props.height - 120))
+const sortField = ref(peakAssignmentEnabled ? 'fit_score' : 'match_score')
+const sortOrder = ref(-1)
+
+// Numeric collation, as PrimeVue's own sort had it: C9H14O4 before C10H16O4.
+const collator = new Intl.Collator(undefined, { numeric: true })
+const isBlank = (value) => value == null || value === ''
+
+// What a column sorts on: the field it names, read along its path, except the
+// database column, which counts the target compounds it names.
+function sortValue(row, field) {
+  if (field === 'existing') return row.existing?.length ?? 0
+  return field.split('.').reduce((value, key) => value?.[key], row)
+}
+
+// One column's order, blanks last either way. The sort is stable, so
+// candidates the column cannot tell apart keep the order the search gave them.
+function compareBy(field, order) {
+  const dir = order === -1 ? -1 : 1
+  return (a, b) => {
+    const av = sortValue(a, field)
+    const bv = sortValue(b, field)
+    if (isBlank(av) && isBlank(bv)) return 0
+    if (isBlank(av)) return 1
+    if (isBlank(bv)) return -1
+    if (typeof av === 'string' && typeof bv === 'string') return collator.compare(av, bv) * dir
+    return av < bv ? -dir : av > bv ? dir : 0
+  }
+}
+
+// A candidate's isotope lines, lightest first, as rows under it: each keeps
+// its candidate (`parent`) and has a key of its own.
+function linesOf(hit) {
+  return getIsotopeRows(hit)
+    .sort((a, b) => a.mz - b.mz)
+    .map((line) => ({ ...line, key: `${hit.key}|${line.mz}`, parent: hit }))
+}
+
+const rows = computed(() => {
+  const candidates = [...results.value]
+  if (sortField.value) candidates.sort(compareBy(sortField.value, sortOrder.value))
+  return candidates.flatMap((hit) => (expanded.value[hit.key] ? [hit, ...linesOf(hit)] : [hit]))
+})
+
+// A line's name, as the peak inspector names an isotopologue row: M0, [13C],
+// [81Br]2, or [14N] for a labelled reagent's unlabelled remainder.
+const lineName = (line) =>
+  formatIsotopeFormula(line.target_isotope_formula, line.parent.target_ion_formula) || '-'
+
+// The line previewed in the spectrum chart is the table's selection, so a row
+// takes focus and the keyboard reaches the lines: the arrow keys move between
+// rows, and Enter or Space previews a line as a click does. Selecting the line
+// already previewed takes the preview away. A candidate is not a line, and
+// selecting one changes nothing.
+const previewedLine = computed({
+  get: () => preview.peak ?? null,
+  set: (row) => {
+    if (!row) preview.peak = null
+    else if (row.parent) preview.peak = row
+  }
+})
+const rowClass = (row) => (row.parent ? 'line-row' : undefined)
 
 const fitPercent = new Intl.NumberFormat('en-US', {
   style: 'percent',
@@ -347,7 +496,7 @@ const derivedRun = computed(() => app.data.peakAssignment.peak.run?.engine === '
 // new peak's ledger row, and `set_assignment` commits the composition it is
 // given without ever comparing it to the peak's m/z. Unguarded, one click there
 // records a formula hundreds of daltons off on the newly focused peak, tiered
-// from the other peak's fit score, and demotes the satellites of the formula
+// from the other peak's fit score, and demotes the isotopologues of the formula
 // that peak really had - silently, with a success toast.
 //
 // Compared against the target row's own peak, not against the focused peak:
@@ -404,7 +553,12 @@ watch(
        so the pane is absent rather than showing a "No peak selected" card.
        As a takeover of the time-series pane it always renders, otherwise
        "Re-search" would open onto nothing with no way back. -->
-  <div class="search-pane" v-if="!embedded || app.data.peak.list.length > 0" v-help.top="rootHelp">
+  <div
+    class="search-pane"
+    v-if="!embedded || app.data.peak.list.length > 0"
+    v-help.top="rootHelp"
+    :style="{ '--row-height': `${ROW_HEIGHT}px` }"
+  >
     <header class="search-head">
       <div class="search-title">
         <span class="pi ph ph-magnifying-glass" />
@@ -435,6 +589,8 @@ watch(
             The mass tolerance of the search, in ppm: a candidate is kept when a
             theoretical isotope of its ion lands within this window of the peak's
             m/z. Widening it finds more candidates, but more ambiguous ones.
+            Left empty, it is the window a run of this sample would use, set by
+            its chemistry profile and instrument.
             </p>
           `)
         "
@@ -444,6 +600,7 @@ watch(
           inputId="mzPrecision"
           :min="1"
           :max="store.limits.max_mz_precision_ppm"
+          :placeholder="mzPrecisionPlaceholder"
           fluid
         />
         <label for="mzPrecision">m/z precision</label>
@@ -457,7 +614,8 @@ watch(
             Allowed element counts for candidate formulas, as space-separated
             ranges &mdash; e.g. <code>C0-80 H0-160 [15N]0-1</code>, isotopes in
             brackets. Narrowing the ranges makes the search faster and keeps
-            chemically irrelevant candidates out.
+            chemically irrelevant candidates out. Left empty, it is the grid of
+            the sample's chemistry profile.
             </p>
           `)
         "
@@ -467,6 +625,7 @@ watch(
           id="formulaRange"
           fluid
           :invalid="!isFormulaRangeValid"
+          :placeholder="formulaRangePlaceholder"
           @blur="updateFormulaRange"
           @keydown.enter="updateFormulaRange"
           v-tooltip.bottom="{
@@ -518,21 +677,53 @@ watch(
         @click="store.reset(RESETTABLE)"
       />
     </menu>
+    <!-- The rows are `rows`: the candidates in the pane's sort, each expanded
+         one followed by its isotope lines (see the script). The expander is
+         PrimeVue's, and with no #expansion template it only flips
+         `expanded`; a line's own expander is hidden. -->
     <DataTable
       v-if="!loading && results.length > 0"
-      :value="results"
-      dataKey="target_compound_formula"
-      :sortField="peakAssignmentEnabled ? 'fit_score' : 'match_score'"
-      :sortOrder="-1"
+      :value="rows"
+      dataKey="key"
+      lazy
+      v-model:sortField="sortField"
+      v-model:sortOrder="sortOrder"
       scrollable
-      :scrollHeight="`${Math.max(120, height - 120)}px`"
+      :scrollHeight="`${scrollHeightPx}px`"
       size="small"
       v-model:expandedRows="expanded"
-      :virtualScrollerOptions="{ itemSize: 35.5 }"
+      :virtualScrollerOptions="{ itemSize: ROW_HEIGHT }"
+      :rowClass="rowClass"
+      selectionMode="single"
+      :metaKeySelection="false"
+      v-model:selection="previewedLine"
       :pt="app.ui.help.top(resultsHelp)"
     >
       <Column expander />
-      <Column field="target_compound_formula" header="Formula" sortable />
+      <Column field="target_compound_formula" header="Formula" sortable>
+        <template #body="{ data }">
+          <span v-if="data.parent" class="line-cell">
+            <span
+              class="pi ph ph-crosshair line-close"
+              :class="{ hidden: !data.close }"
+              v-tooltip.left="data.close ? 'Within tolerance of the searched peak' : null"
+            />
+            {{ lineName(data) }}
+            <span class="line-share">{{
+              num.relativeAbundance.format(data.relative_abundance)
+            }}</span>
+          </span>
+          <template v-else>
+            {{ data.target_compound_formula }}
+            <span
+              v-if="data.readAt"
+              class="line-tag"
+              v-tooltip.top="{ value: lineTooltip(data.readAt), showDelay: 300 }"
+              >{{ data.readAt.name }}</span
+            >
+          </template>
+        </template>
+      </Column>
       <Column field="cheminfo.target_compound_unsaturation" sortable>
         <template #header>
           <span v-tooltip="{ value: 'Degree of unsaturation', showDelay: 500 }"><b>DBE</b></span>
@@ -540,24 +731,36 @@ watch(
       </Column>
       <Column field="cheminfo.target_isotope_mz" header="Isotope m/z" sortable>
         <template #body="{ data }">
-          {{ num.mz.format(data.cheminfo.target_isotope_mz) }}
+          {{ num.mz.format(data.parent ? data.mz : data.cheminfo.target_isotope_mz) }}
         </template>
       </Column>
       <Column field="cheminfo.ionization_mechanism.ionization_mechanism" header="Mech." sortable />
       <Column field="cheminfo.target_isotope_mz_error_ppm" header="Error (ppm)" sortable>
         <template #body="{ data }">
-          {{ num.mzError.format(data.cheminfo.target_isotope_mz_error_ppm) }}
+          {{
+            num.mzError.format(
+              data.parent ? data.match_mz_error : data.cheminfo.target_isotope_mz_error_ppm
+            )
+          }}
         </template>
       </Column>
       <Column v-if="peakAssignmentEnabled" field="fit_score" sortable>
         <template #header>
           <span
             class="pi ph ph-seal-check"
-            v-tooltip="{ value: 'Fit score & confidence tier', showDelay: 500 }"
+            v-tooltip="{ value: 'Confidence tier, sorted by fit score', showDelay: 500 }"
           />
         </template>
         <template #body="{ data }">
-          <BaseTierTag :tier="data.tier" :evidence="data.evidence" :source="data.source" />
+          <!-- A line has no tier of its own: it shows how well it matched. -->
+          <BaseMatchTag
+            v-if="data.parent"
+            :match-score="data.match_score"
+            :match-category="data.match_category"
+            :alarming="data.alarming"
+            nofade
+          />
+          <BaseTierTag v-else :tier="data.tier" :evidence="data.evidence" :source="data.source" />
         </template>
       </Column>
       <Column v-if="peakAssignmentEnabled" field="plausibility" sortable>
@@ -568,7 +771,9 @@ watch(
           />
         </template>
         <template #body="{ data }">
-          {{ data.plausibility != null ? formatFit(data.plausibility) : '—' }}
+          <template v-if="!data.parent">
+            {{ data.plausibility != null ? formatFit(data.plausibility) : '—' }}
+          </template>
         </template>
       </Column>
       <!-- Legacy scoring: what this search has always reported. The backend
@@ -598,7 +803,7 @@ watch(
         </template>
         <template #body="{ data }">
           <span
-            v-if="data.existing.length > 0"
+            v-if="data.existing?.length > 0"
             class="ph pi ph-database"
             v-tooltip.left="
               `Found in DB: ${data.existing
@@ -662,7 +867,7 @@ watch(
           </span>
         </template>
         <template #body="{ data }">
-          <div class="row-actions">
+          <div v-if="!data.parent" class="row-actions">
             <!-- The Button is disabled when no run covers the peak, or while
                  the rows on screen still belong to the previously focused one,
                  and a disabled PrimeVue button receives no mouse events - so
@@ -692,58 +897,6 @@ watch(
           </div>
         </template>
       </Column>
-      <template #expansion="{ data }">
-        <DataTable
-          :value="getIsotopeRows(data)"
-          dataKey="mz"
-          selectionMode="single"
-          v-model:selection="preview.peak"
-          sortField="mz"
-          size="small"
-          style="margin-left: 3rem; margin-right: 10rem"
-        >
-          <Column field="close" sortable>
-            <template #header>
-              <span class="pi pi-info-circle" v-tooltip.left="'Peak info'" />
-            </template>
-            <template #body="{ data }">
-              <span
-                class="pi ph ph-crosshair"
-                v-if="data.close"
-                v-tooltip.left="'Within tolerance of searched peak'"
-              />
-            </template>
-          </Column>
-          <Column field="relative_abundance" header="Rel. Abu." sortable>
-            <template #body="{ data }">
-              {{ num.relativeAbundance.format(data.relative_abundance) }}
-            </template>
-          </Column>
-          <Column field="mz" header="Isotope m/z" sortable>
-            <template #body="{ data }">
-              {{ num.mz.format(data.mz) }}
-            </template>
-          </Column>
-          <Column field="match_mz_error" header="Error (ppm)" sortable>
-            <template #body="{ data }">
-              {{ num.mzError.format(data.match_mz_error) }}
-            </template>
-          </Column>
-          <Column field="match_score" sortable>
-            <template #header>
-              <span class="pi ph ph-seal-percent" v-tooltip="'Match score'" />
-            </template>
-            <template #body="{ data }">
-              <BaseMatchTag
-                :match-score="data?.match_score"
-                :match-category="data?.match_category"
-                :alarming="data?.alarming"
-                nofade
-              />
-            </template>
-          </Column>
-        </DataTable>
-      </template>
     </DataTable>
     <div v-else-if="!app.data.peak.focused" class="center search-placeholder">
       <div class="col" style="gap: 1rem; max-width: 45ch; text-align: center">
@@ -808,6 +961,45 @@ watch(
 .reset-params {
   flex: 0 0 auto;
   align-self: center;
+}
+/* The line a candidate was read at, beside its formula: quiet enough that a
+   table of them still reads as formulas, present enough that a row found at a
+   13C line is not taken for the compound's own mass. */
+.line-tag {
+  margin-left: 0.35rem;
+  padding: 0 0.3rem;
+  border-radius: 4px;
+  font-size: 0.75rem;
+  background: var(--p-content-hover-background, rgba(127, 127, 127, 0.12));
+  white-space: nowrap;
+}
+/* An expanded candidate's isotope line, a row under it: indented, and a click
+   previews it in the spectrum chart. Its row has the expander column like
+   every row, with nothing to expand, and the virtual scroller's row height,
+   which its own content would fall short of. A candidate's row is selectable
+   only so the keyboard can pass through it, and says so by its cursor. */
+.line-cell {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.35rem;
+  padding-left: 0.9rem;
+  white-space: nowrap;
+}
+.line-close.hidden {
+  visibility: hidden;
+}
+.line-share {
+  opacity: 0.6;
+  font-size: 0.85em;
+}
+.search-pane :deep(tr.line-row) {
+  height: var(--row-height);
+}
+.search-pane :deep(.p-datatable-tbody > tr:not(.line-row)) {
+  cursor: default;
+}
+.search-pane :deep(tr.line-row .p-datatable-row-toggle-button) {
+  visibility: hidden;
 }
 /* The element the curation help card is registered on. It is a hook for the
    directive and nothing else, so with its glyph gone it takes up no space -

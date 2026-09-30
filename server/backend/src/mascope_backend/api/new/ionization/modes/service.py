@@ -20,6 +20,7 @@ from mascope_backend.db import (
     async_session,
 )
 from mascope_backend.db.id import gen_id
+from mascope_backend.ionization_catalogue import SYSTEM_MODE_EDITABLE_FIELDS
 from mascope_backend.socket.records.service import (
     emit_record_created,
     emit_record_deleted,
@@ -28,9 +29,27 @@ from mascope_backend.socket.records.service import (
 
 from .util import (
     fetch_all_ionization_modes,
+    fetch_listable_ionization_modes,
     resolve_ionization_modes_by_tokens,
     token_is_unique,
 )
+
+
+def _mechanism_set(ionization_mechanism_ids) -> set:
+    """The mechanisms of a mode, as what they are: a set.
+
+    The order they arrive in carries no meaning, and neither does a repeat.
+    Both the protection check and the rematch decision read them this way, and
+    read them through here so the two cannot drift apart.
+    """
+    return set(ionization_mechanism_ids or [])
+
+
+def _same_value(field: str, incoming, current) -> bool:
+    """Whether an update leaves a field as it was."""
+    if field == "ionization_mechanism_ids":
+        return _mechanism_set(incoming) == _mechanism_set(current)
+    return incoming == current
 
 
 @api_controller()
@@ -53,7 +72,10 @@ async def create_ionization_mode(
     async with async_session() as session:
         # Step 1: Check for token conflicts if provided
         if ionization_mode_data.ionization_mode_token:
-            if not await token_is_unique(ionization_mode_data.ionization_mode_token):
+            if not await token_is_unique(
+                ionization_mode_data.ionization_mode_token,
+                instrument=ionization_mode_data.instrument,
+            ):
                 raise ValueError(
                     f"Ionization mode with similar token as '{ionization_mode_data.ionization_mode_token}' already exists"
                 )
@@ -95,46 +117,25 @@ async def create_ionization_mode(
 
 
 @api_controller()
-async def get_ionization_mode(
-    ionization_mode_id: str | None = None,
-    token: str | None = None,
-) -> dict:
+async def get_ionization_mode(ionization_mode_id: str) -> dict:
     """
-    Retrieves a single ionization mode either by ID or by token. One of them must be provided, but not both.
+    Retrieves a single ionization mode by ID.
 
-    Steps:
-    1. Validate input parameters to ensure that either an ID or token is provided, but not both.
-    2. Construct a query to fetch the ionization mode based on the provided parameter.
-    3. Execute the query and fetch the result.
-    4. Check if the ionization mode exists. If not, raise a NotFoundException.
-    5. Return the ionization mode's details as a dictionary.
+    By ID alone: a token no longer identifies one mode, since two instruments
+    may each have one of their own for the same token (#1463). To find the mode
+    a file belongs to, resolve its name with
+    :func:`resolve_ionization_modes_by_tokens`, which knows the instrument.
 
-    :param ionization_mode_id: Unique ID of the ionization mode to retrieve directly.
-    :param token: Token of the ionization mode to retrieve.
+    :param ionization_mode_id: Unique ID of the ionization mode to retrieve.
     :return: The requested ionization mode's details.
     """
     async with async_session() as session:
-        # Validate input parameters
-        if ionization_mode_id and token:
-            raise ValueError("Provide either ionization_mode_id or token, not both.")
-
-        if not ionization_mode_id and not token:
-            raise ValueError("Provide either ionization_mode_id or token.")
-
-        # Construct query based on parameters
-        if ionization_mode_id:
-            stmt = select(IonizationMode).where(
+        label = f"with ID {ionization_mode_id}"
+        result = await session.execute(
+            select(IonizationMode).where(
                 IonizationMode.ionization_mode_id == ionization_mode_id
             )
-            label = f"with ID {ionization_mode_id}"
-        else:  # token
-            stmt = select(IonizationMode).where(
-                IonizationMode.ionization_mode_token == token
-            )
-            label = f"with token '{token}'"
-
-        # Execute query
-        result = await session.execute(stmt)
+        )
         ionization_mode = result.scalar_one_or_none()
 
         # Check existence
@@ -149,13 +150,22 @@ async def get_ionization_mode(
 
 
 @api_controller()
-async def get_ionization_modes() -> dict:
+async def get_ionization_modes(include_system: bool = False) -> dict:
     """
-    Retrieves all ionization modes
+    Retrieves the ionization modes.
 
+    The modes Mascope ships that this deployment has not adopted are left out
+    unless asked for: without target collections such a mode calibrates and
+    matches nothing. Asking for them is how one is adopted in the first place.
+
+    :param include_system: Whether to include unadopted seeded modes.
     :return: A dictionary containing total results count and a list of ionization modes.
     """
-    ionization_modes = await fetch_all_ionization_modes()
+    ionization_modes = await (
+        fetch_all_ionization_modes()
+        if include_system
+        else fetch_listable_ionization_modes()
+    )
 
     return {
         "message": "Ionization modes retrieved successfully.",
@@ -223,12 +233,50 @@ async def update_ionization_mode(
                 f"Ionization mode with ID {ionization_mode_id} not found"
             )
         update_data = ionization_mode_data.model_dump(exclude_unset=True)
-        # Check for token conflicts if being updated
-        new_token = update_data.get("ionization_mode_token")
-        if new_token and new_token != ionization_mode.ionization_mode_token:
-            if not await token_is_unique(new_token, ignore_id=ionization_mode_id):
+
+        # A mode Mascope ships owns its chemistry: the name, token, polarity
+        # and mechanisms say which chemistry it is and read the same on every
+        # server. Its target collections are the deployment's own data.
+        # Compared by value, so a request that echoes the whole mode back to
+        # change one collection is not refused for the fields it did not touch.
+        if ionization_mode.system_key:
+            protected = [
+                field
+                for field, value in update_data.items()
+                if field not in SYSTEM_MODE_EDITABLE_FIELDS
+                and not _same_value(field, value, getattr(ionization_mode, field))
+            ]
+            if protected:
                 raise ValueError(
-                    f"Ionization mode with similar token as '{new_token}'"
+                    f"Ionization mode '{ionization_mode.ionization_mode_name}' is one "
+                    f"Mascope ships, so {', '.join(sorted(protected))} cannot be "
+                    "changed. Its calibration and diagnostic collections can."
+                )
+            # The echoed list matched as a set, which a reordered or repeated
+            # one also does. Dropping it here keeps the stored definition
+            # exactly as seeded, so it reads the same on every server.
+            update_data.pop("ionization_mechanism_ids", None)
+
+        # Check for token conflicts if the token or its scope is being
+        # updated. The scope matters as much as the token: widening a mode from
+        # one instrument to all of them can collide a token that was fine while
+        # only that instrument's names were matched against it.
+        effective_token = update_data.get(
+            "ionization_mode_token", ionization_mode.ionization_mode_token
+        )
+        effective_instrument = update_data.get("instrument", ionization_mode.instrument)
+        changed = (
+            effective_token != ionization_mode.ionization_mode_token
+            or effective_instrument != ionization_mode.instrument
+        )
+        if effective_token and changed:
+            if not await token_is_unique(
+                effective_token,
+                ignore_id=ionization_mode_id,
+                instrument=effective_instrument,
+            ):
+                raise ValueError(
+                    f"Ionization mode with similar token as '{effective_token}'"
                     " already exists"
                 )
 
@@ -283,9 +331,10 @@ async def update_ionization_mode(
 
         # Determine which fields are changing (used to flag affected batches).
         # Computed against the current entity before the values are applied below.
-        mechanisms_changed = "ionization_mechanism_ids" in update_data and set(
-            update_data["ionization_mechanism_ids"]
-        ) != set(ionization_mode.ionization_mechanism_ids)
+        mechanisms_changed = "ionization_mechanism_ids" in update_data and (
+            _mechanism_set(update_data["ionization_mechanism_ids"])
+            != _mechanism_set(ionization_mode.ionization_mechanism_ids)
+        )
         calibration_changed = (
             "calibration_collection_id" in update_data
             and update_data["calibration_collection_id"]
@@ -346,6 +395,16 @@ async def update_ionization_mode(
                         continue
                     case "ionization_mechanism_ids" | "ionization_mode_polarity":
                         # Mechanisms and polarity can be updated (triggers rematch)
+                        continue
+                    case "instrument":
+                        # The scope only decides which file names this mode's
+                        # token is matched against from now on. It renames
+                        # nothing - an acquisition batch is named after the
+                        # mode, not its scope - and rebinds nothing, since a
+                        # sample item holds the mode it was bound to. Refusing
+                        # it here would make the feature unreachable on exactly
+                        # the modes it is for: any mode that has ever routed a
+                        # file has acquisition batches.
                         continue
                     case _:
                         if getattr(ionization_mode, key) != value:
@@ -412,6 +471,12 @@ async def delete_ionization_mode(ionization_mode_id: str) -> dict:
         if not ionization_mode:
             raise NotFoundException(
                 f"Ionization mode with ID '{ionization_mode_id}' not found"
+            )
+
+        if ionization_mode.system_key:
+            raise ValueError(
+                f"Ionization mode '{ionization_mode.ionization_mode_name}' is one "
+                "Mascope ships and cannot be deleted"
             )
 
         # Step 2: Check for associations with samples
