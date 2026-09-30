@@ -170,6 +170,11 @@ def test_resolve_version_ignores_workspace_placeholder(no_repo, monkeypatch):
         ("v2.0.0-rc.9", "v2.0.0-rc.10"),
         # the dot is optional and must not change the ordering
         ("v2.0.0-rc1", "v2.0.0-rc2"),
+        # X.Y.Z compares numerically too: 1.9 < 1.10, where a string sort says
+        # the opposite. The first release to need it is v1.10.0.
+        ("v1.9.0", "v1.10.0"),
+        ("v1.9.0", "v1.10.0-rc.1"),
+        ("v1.10.0", "v1.10.1"),
         # ... and X.Y.Z still dominates the suffix
         ("v1.9.9", "v2.0.0-alpha.1"),
         ("v2.0.0", "v2.0.1-rc.1"),
