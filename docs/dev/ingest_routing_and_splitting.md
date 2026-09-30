@@ -136,11 +136,11 @@ one. #2153 fixed the ordering: its tests fail on the code before it.
 
 The internal fleet regression corpus is 201 de-identified files from every
 production site, internal only. It holds 185 Orbitrap files, of which OpenTFRaw
-reads 182. The other 3 are single-scan files that fail in OpenTFRaw's search
-for the trailer's layout
-([Sigilweaver/OpenTFRaw#54](https://github.com/Sigilweaver/OpenTFRaw/pull/54));
-the Thermo library reads them. A read-only census grouped
-every file's scans by Thermo filter string:
+reads 182 at the pinned version. The other 3 are single-scan files that failed
+in OpenTFRaw's search for the trailer's layout
+([Sigilweaver/OpenTFRaw#54](https://github.com/Sigilweaver/OpenTFRaw/pull/54),
+fixed upstream in 1.5.0); the Thermo library reads them. A read-only census
+grouped every file's scans by Thermo filter string:
 
 - **180 files hold a single scan stream.**
 - **2 files hold several**, and both switch polarity.

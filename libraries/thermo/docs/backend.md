@@ -35,7 +35,7 @@ To ensure consistency across backends, the following field sets are enforced:
   - `ScanType` is the scan filter as OpenTFRaw renders it (see [Scan Streams](#scan-streams) for how the renderings differ), and `IsCentroidScan` is read from that filter's scan data type.
   - `ScanEventNumber` is the trailer's `Scan Event:` minus one.
   - The UV, PDA and analog detector fields (`Frequency`, the wavelength fields, `NumberOfChannels`, `IsUniformTime`, `AbsorbanceUnitScale`, `WavelengthStep`) hold the fixed values Thermo's `ScanStats` holds for every MS scan (`MS_SCAN_DETECTOR_STATS`).
-  - A field a backend cannot read is `None`. For OpenTFRaw those are `PacketCount`, `SegmentNumber` and `CycleNumber` (`OPENTFRAW_UNAVAILABLE_SCAN_STATS`). It decodes the scan-index words behind the first two but does not pass them to Python ([Sigilweaver/OpenTFRaw#56](https://github.com/Sigilweaver/OpenTFRaw/pull/56)).
+  - A field a backend cannot read is `None`. For OpenTFRaw those are `PacketCount`, `SegmentNumber` and `CycleNumber` (`OPENTFRAW_UNAVAILABLE_SCAN_STATS`), at the pinned reader version. From 1.5.0 it passes the scan index's `data_size` and `scan_segment` to Python ([Sigilweaver/OpenTFRaw#56](https://github.com/Sigilweaver/OpenTFRaw/pull/56)), and on the demo files those equal `PacketCount` and `SegmentNumber` on every scan, so two of the three are fillable whenever the pin moves. `CycleNumber` is still not decoded.
 - **The trailer** is the instrument's own table of per-scan acquisition settings (`FT Resolution:`, `AGC Target:`, `Ion Injection Time (ms):` and dozens more), so it is not a fixed field set: its labels depend on the instrument. Both backends report it whole, under the same labels in the same order (`scan_trailer`, `scan_acquisition_settings`). OpenTFRaw reads it with `scan_parameters()`. The values keep each backend's types:
   - The Thermo library gives text: numbers in the machine's number format, rounded to the digits it displays (`0,11`); switches as `On`/`Off` or `Yes`/`No`; an empty string for a section heading such as `=== Mass Calibration: ===:`.
   - OpenTFRaw gives the stored values: numbers at full precision (`0.11146822731511463`), `True`/`False`, and `None` for a section heading.
@@ -95,9 +95,11 @@ The two backends render some filters differently, because OpenTFRaw does not ren
   - the `{segment,event}` prefix.
 
   The signature leaves out the prefix too. The others stay in it, so where a file carries one, the stream keys differ between the backends. On an LTQ FT Ultra file the MS2 stream is `ITMS + c ESI d w Full ms2 ...` under the Thermo library and has no `w` under OpenTFRaw. Scans that differ only in such a token pool into one stream under OpenTFRaw.
+
+  The `lock` and `sid=` issues are still open upstream, but the renderings are no longer the only way to those values. Every scan already carries `is_wideband`, and from 1.6.0 the scan dictionaries also carry `faims_cv` and an `extra` table holding the source-CID energy and the number of lock masses found. A backend that wanted full filter parity could compose the missing tokens from those rather than wait for the filter to carry them.
 - **Precision.** OpenTFRaw writes m/z to four decimals, where the Thermo library follows the file's precision. The parser normalises numbers, so this does not change a key.
 
-On the internal regression corpus, the census agrees between the backends on 181 of the 182 files both read, and the one difference is `sid=`. Three more files, each a single scan, open only in the Thermo library: OpenTFRaw's search for the trailer's layout fails on some files of fewer than five scans ([Sigilweaver/OpenTFRaw#54](https://github.com/Sigilweaver/OpenTFRaw/pull/54)).
+On the internal regression corpus, the census agrees between the backends on 181 of the 182 files both read, and the one difference is `sid=`. Three more files, each a single scan, open only in the Thermo library: OpenTFRaw's search for the trailer's layout failed on some files of fewer than five scans ([Sigilweaver/OpenTFRaw#54](https://github.com/Sigilweaver/OpenTFRaw/pull/54)). That is fixed from 1.5.0, so they open once the pin moves.
 
 ## Underlying Algorithms
 
