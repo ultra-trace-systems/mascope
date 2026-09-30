@@ -14,8 +14,9 @@ dependencies = [
     # profile m/z axis per chunk, which moves the averaged-centroid heights
     # average_centroids takes from the profile apex: measured against the Thermo
     # library on the demo raws, the median bias goes from -0.1% to +1.2%, past
-    # the goldens' 1% intensity tolerance. Moving on means re-tuning
-    # average_profile and producing a new bundle.
+    # the goldens' 1% intensity tolerance. Re-measured on 2.0.0: the same
+    # +1.2%, so waiting for a newer reader does not help. Moving on means
+    # re-tuning average_profile and producing a new bundle.
     "opentfraw==1.4.0",
     "pythonnet~=3.1",
     "xarray>=2026.7.0",

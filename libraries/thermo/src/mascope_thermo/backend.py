@@ -399,9 +399,10 @@ MS_SCAN_DETECTOR_STATS = {
     "Frequency": 0.0,
 }
 
-# SCAN_STAT_FIELDS the OpenTFRaw backend reports as None. opentfraw decodes the
-# scan-index words behind PacketCount and SegmentNumber but does not pass them
-# to Python, and does not decode CycleNumber.
+# SCAN_STAT_FIELDS the OpenTFRaw backend reports as None at the pinned reader
+# version. opentfraw passes the scan-index words behind PacketCount and
+# SegmentNumber to Python from 1.5.0 (as data_size and scan_segment), so those
+# two can be filled whenever the pin moves; it does not decode CycleNumber.
 OPENTFRAW_UNAVAILABLE_SCAN_STATS = (
     "PacketCount",
     "SegmentNumber",
