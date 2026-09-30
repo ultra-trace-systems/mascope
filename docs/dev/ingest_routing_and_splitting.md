@@ -818,14 +818,18 @@ mostly measures how much the model has moved.
 **The finding that matters is in the design, not the data.** For every
 disagreeing file, a binding for that file's own instrument and method key does
 exist, points at the older row, and is in state `learned`. Not one is
-`ambiguous`. A binding is written once and never re-points: a conflicting
-observation sets `ambiguous` and counts a disagreement, and nothing moves a
-binding to what its method now runs. Seeded from the whole history by
-`backfill_method_bindings`, a binding is anchored to that history for good.
+`ambiguous` - and that is the rule working, not failing. Agreement is judged
+on the chemistry (5.3), both rows name the same one, so there was no
+disagreement to record and the key is correctly still routable.
 
-So the method rung as built would route a future file by what its method ran long ago,
-and the state meant to signal "do not trust this one" is not set on the files
-where it would decide the outcome.
+What no rule covered is the row. A binding is written once and, while the
+chemistry holds, nothing moves it: the mode it points at is the first one its
+method was seen with. Seeded from the whole history by
+`backfill_method_bindings`, it is therefore anchored to the oldest row of a
+chemistry whose rows have since been replaced - so the method rung as built
+would route a future file to a row its site has stopped using, while every
+state on the binding reads healthy, because by the measure those states use
+it is.
 
 **Limits, since they bound what may be concluded.** `signature_class` comes
 from the scan-stream census in `.props` on disk, so SQL cannot select the exact
