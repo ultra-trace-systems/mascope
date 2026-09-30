@@ -403,7 +403,14 @@ MS_SCAN_DETECTOR_STATS = {
 # version. Only CycleNumber is left: opentfraw does not decode it anywhere.
 # PacketCount and SegmentNumber are read from the scan index (data_size and
 # scan_segment, exposed from 1.5.0); both equal Thermo's values on every scan
-# of every file here, which test_backend_parity asserts per scan.
+# measured, which test_backend_parity asserts per scan.
+#
+# How strong that is differs by field. PacketCount and ScanEventNumber are
+# checked against values that actually vary -- the packet size differs per scan,
+# and two corpus files run eight and four scan events, so the event was compared
+# across 0..7 and a mapping off by a constant would have shown. Every file in
+# reach is in segment 0, so SegmentNumber's agreement says the field is read
+# from the right place but cannot rule out a constant offset.
 OPENTFRAW_UNAVAILABLE_SCAN_STATS = ("CycleNumber",)
 
 # The scan index writes this where a field was never set. Thermo reports those

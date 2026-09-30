@@ -121,6 +121,28 @@ demo files:
 | cell centres | 0.964 | 0.937 | 0.986 |
 | **cell means** | **0.992** | 0.981 | 0.999 |
 
+The loss is not a scale factor, which is what makes it worth removing. Split by
+m/z, the same labels give:
+
+| m/z | 82-200 | 200-257 | 257-327 | 327-430 | 430-750 | spread |
+| --- | --- | --- | --- | --- | --- | --- |
+| cell centres | 0.978 | 0.966 | 0.961 | 0.965 | 0.954 | 2.36 pp |
+| **cell means** | 0.993 | 0.992 | 0.992 | 0.992 | 0.992 | **0.08 pp** |
+
+So the old grid moved intensities against each other across the mass range by a
+couple of percent, distorting the shape of a spectrum rather than its scale.
+That the pattern is an artefact and not the instrument is settled by sampling
+the cells' lower edges instead, a pure half-bin phase shift: the bands come out
+in a different order again (2.09 pp spread, and the 430-750 band becomes the
+*highest*).
+
+Neighbouring peaks are barely affected, because the phase ramps over the whole
+mass range and so is almost identical two daltons apart. An isotope ratio is
+therefore near-blind to this: measured against the known 79Br/81Br abundance
+ratio over the same 491 mono-brominated ions, the cell-mean grid is closer to
+truth on 49.5% of them, which is a coin flip. Cross-mass comparisons gain;
+isotope patterns do not.
+
 The second reason is worse than the loss itself. Recovering frequency from m/z
 leaves a residual scale error, so the phase between the cell lattice and the
 samples **ramps across the mass range** -- half a bin end to end -- and the

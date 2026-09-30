@@ -20,7 +20,14 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   apex must reproduce the instrument's own centroid label because nothing is
   averaged, that reads 0.992 of the label where cell centres read 0.964; and the
   bias against the Thermo library now differs by 0.1 percentage points between
-  reader versions, against 1.3 before. **Peak intensities rise by about 3%**:
+  reader versions, against 1.3 before. The loss was also **mass-dependent** -
+  across five m/z bands it ran from 0.978 to 0.954, a 2.4 percentage-point
+  spread, so it moved intensities against each other across the mass range and
+  distorted the shape of a spectrum, not just its scale. That spread is now
+  0.08. Neighbouring peaks were barely affected, so isotope patterns are
+  unchanged by this: against the known 79Br/81Br abundance ratio the new grid
+  is closer to truth on 49.5% of the same ions, a coin flip. **Peak intensities
+  rise by about 3%**:
   the apex of the measured averaged profile genuinely sits there, and Thermo's
   averaging convention reports a little less. The difference is stated rather
   than tuned away, and the demo bundle's goldens move with it.
