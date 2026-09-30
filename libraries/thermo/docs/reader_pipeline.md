@@ -86,7 +86,9 @@ frequency. The steps (`average_profile`, the frequency branch):
    method, `_mz_to_freq`). Frequency is calibration-independent.
 2. Build the output grid as the **union of the scans' frequencies, quantized to
    the native FFT-bin spacing** -- occupied cells only, so it is bounded and
-   matches the point density Thermo emits (~30k points).
+   matches the point density Thermo emits (~30k points). Each grid point sits at
+   the **mean of the real frequencies in its cell**, not at the cell's centre;
+   see 3.1.1.
 3. Linear-interpolate each scan onto the frequency grid and sum. Because the
    peaks are aligned, this is the true mean shape (times `scans_combined`) with
    no integral rescaling.
@@ -94,6 +96,40 @@ frequency. The steps (`average_profile`, the frequency branch):
 
 Falls back to a constant-ppm m/z grid only for non-FTMS data or when the
 conversion parameters are unavailable.
+
+### 3.1.1 Why the grid points sit on the samples, not on cell centres
+
+A raw file keeps a *reduced* profile: about **3 points per FWHM**, not the
+transient's full spectrum. At that density, where the output grid falls relative
+to the stored samples is not a detail. A grid point placed at a cell's centre
+lands between two samples, so the interpolation in step 3 returns a chord drawn
+across the peak instead of the measured value, and the apex read off it comes
+out low.
+
+Every scan of a file is transformed on the same FFT bin grid, so a cell holds
+one sample per scan and they agree to within a few percent of a bin. Their mean
+is therefore a frequency the instrument actually sampled, and interpolating
+there returns what it measured.
+
+The single-scan case measures this, because with one scan nothing is averaged
+and the apex must reproduce that scan's own centroid label -- the instrument's
+own fit, which the Thermo library reports verbatim. Over 41,323 labels of ten
+demo files:
+
+| output grid | apex / label (median) | p10 | p90 |
+| --- | --- | --- | --- |
+| cell centres | 0.964 | 0.937 | 0.986 |
+| **cell means** | **0.992** | 0.981 | 0.999 |
+
+The second reason is worse than the loss itself. Recovering frequency from m/z
+leaves a residual scale error, so the phase between the cell lattice and the
+samples **ramps across the mass range** -- half a bin end to end -- and the
+interpolation loss ramps with it, rippling the heights by several percent in a
+pattern set by nothing physical, only by how the reader chose to write the m/z
+axis. That is what made reader 1.4.1's axis correction look like a height
+change: measured against the Thermo library over 29,493 matched peaks, the
+averaged-centroid bias differs by 1.3 percentage points between reader 1.4.0 and
+2.0.0 on cell centres, and by 0.1 on cell means.
 
 ### 3.2 Aligning the averaged profile to the calibrated m/z
 
@@ -196,11 +232,16 @@ labels:
    threaded through from the binning/merge.)
 6. **Source peak height from the profile apex** (`_heights_from_profile_apex`):
    the ppm-bin intensity sum runs ~5-6% high versus Thermo, because Thermo's
-   height comes from re-centroiding the averaged profile (whose apex carries a
-   small interpolation loss). So the heights are taken from the
-   frequency-averaged profile apex (section 3), which matches Thermo to ~1-2%.
-   This uses the **real** profile (`reconstruct=False`) to avoid recursion with
-   the reconstruction (section 5).
+   height comes from re-centroiding the averaged profile. So the heights are
+   taken from the frequency-averaged profile apex (section 3). On a single scan
+   that reproduces the instrument's own centroid label to 0.8% (section 3.1.1).
+   On an averaged spectrum it reads **about 3% above Thermo**, consistently
+   across the intensity range -- the apex of the measured averaged profile
+   genuinely sits there, and Thermo's averaging convention reports a little
+   less. Matching Thermo exactly would mean reproducing its convention, which is
+   not something this pipeline can derive, so the difference is left standing
+   and stated rather than tuned away. This uses the **real** profile
+   (`reconstruct=False`) to avoid recursion with the reconstruction (section 5).
 
 This is an *approximation* of Thermo's re-centroiding, so parity here is "very
 close" not "exact": m/z to sub-0.1 ppm, summed intensity within a few percent,
@@ -289,7 +330,8 @@ Display endpoints (spectrum/match views in the server controllers) pass
 | Per-scan centroid m/z / resolution / S:N | Exact (same binary stream); sub-0.0002 ppm m/z |
 | Per-scan profile m/z (after alignment) | Within a few ppm (real measured residual) |
 | Averaged centroid m/z | Sub-0.1 ppm (matched peaks) |
-| Averaged centroid intensity (profile-apex) | ~1-2% |
+| Averaged centroid intensity (profile-apex) | ~3% high, and flat across the intensity range (section 6, step 6) |
+| Single-scan centroid intensity (profile-apex) | 0.8% of the instrument's own label |
 | Averaged S:N above-threshold count | Tracks Thermo (via n/sqrt(N)) |
 | Reconstructed profile vs centroids | Overlays exactly (<0.2 ppm) |
 | XIC | rtol 1e-4 |
