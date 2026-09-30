@@ -251,7 +251,11 @@ def _parse_standard(notation: str) -> MechanismParts:
             f"Ionization mechanism {notation!r}: only electron transfer, "
             "'[M]+.' or '[M]-.', carries the radical dot."
         )
-    if not re.fullmatch(r"(?:[+-][^+-]+)+", inside):
+    # The inner quantifier is possessive. A term can only end where the next
+    # sign begins or where the string does, so giving characters back never
+    # turns a failure into a match - and without that the engine retries every
+    # split of an unbounded value, which is what a caller sends.
+    if not re.fullmatch(r"(?:[+-][^+-]++)+", inside):
         raise MechanismNotationError(
             f"Ionization mechanism {notation!r}: each term inside the brackets "
             "is added with '+' or removed with '-', as in '[M+H]+' or '[M-H]-'."
