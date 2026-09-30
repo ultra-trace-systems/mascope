@@ -174,9 +174,8 @@ the file was never registered with it, so it fails with the same "not
 registered in file converter service" and lands in `failed_files/`. The
 presence-key guard passes throughout, because a converter *has* connected; it
 is simply not the only one. A rebuild then stalls part-way with a large
-quarantine (seen: 58 of 161 files ingested, 104 quarantined) while the symptom
-points at the race above, which sends you reading the uploader's presence-key
-logic for a fault that is not there.
+quarantine while the symptom points at the race above, which sends you reading
+the uploader's presence-key logic for a fault that is not there.
 
 The two are told apart by whether another converter is running at all, so check
 before starting a rebuild rather than diagnosing afterwards. Nothing should be
@@ -188,10 +187,20 @@ docker ps -q | xargs -r docker inspect \
   | grep -F "$(mascope path)/.runtime/env/demo"
 ```
 
-Any container named here shares the directory. Rebuild on a host that is not
-running another stack over the same env rather than stopping a live service to
-free it, and remember that this shows only the local daemon: the collision is a
-property of the machine, and the same bundle rebuilds cleanly elsewhere.
+A stack that mounts the env matches twice, its backend as well as its file
+converter. **Only the converter consumes `filestreams/`**, so it is the one that
+collides; a backend sharing the directory is harmless, and the second line is
+not a second offender.
+
+Rebuild on a host that is not running another stack over the same env, rather
+than stopping a live service to free it: the collision is a property of the
+machine, and the same bundle rebuilds cleanly elsewhere. Measured both ways on
+one branch and one bundle, changing nothing but the host: where the check named
+a converter, 58 of 161 files ingested and 104 were quarantined; where it named
+nothing, 161 of 161 with none quarantined, first attempt, and that host's own
+stack stayed up throughout. Note also that the check sees only the local
+daemon.
+
 `check_raw_coverage` refuses goldens from a short run, so a collision costs a
 rebuild rather than a corrupted bundle.
 
