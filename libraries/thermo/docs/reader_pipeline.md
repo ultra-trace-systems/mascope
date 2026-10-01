@@ -293,9 +293,8 @@ floor). It is not the raw measured signal.
 So Mascope keeps **two** profiles and the choice is deliberate:
 
 - **Real measured profile** (`average_profile(reconstruct=False)`, the default)
-  -- the frequency-averaged signal of section 3. It carries the genuine per-peak
-  freq->m/z residual (a few ppm). Used by the **quantitative** path (the
-  instrument-function fit, peak heights).
+  -- the frequency-averaged signal of section 3. Used by the **quantitative**
+  path (the instrument-function fit, peak heights).
 - **Reconstructed profile** (`average_profile(reconstruct=True)`,
   `_reconstruct_profile`) -- one Gaussian per averaged centroid (center = m/z,
   height = intensity, FWHM = m/z / resolution), summed on a per-peak sample grid
@@ -303,9 +302,34 @@ So Mascope keeps **two** profiles and the choice is deliberate:
   **overlays the centroids exactly** and matches Thermo's reconstructed profile.
   Used for **display**, so the rendered profile and the centroid markers line up.
 
-Using the reconstruction everywhere would break the instrument fit (it needs the
-real measured peak shapes); using the real profile for display would show the
-profile a few ppm off the centroid markers. Hence the split.
+Using the reconstruction everywhere would break the instrument fit: it needs the
+real measured peak shapes.
+
+### 5.1 The alignment reason for the split has expired
+
+The split was also justified the other way round -- that the real profile plotted
+under the centroid markers would sit a few ppm off them, because the reader
+converted the profile to m/z with the base polynomial only and left Thermo's
+per-scan compensations out. **That is no longer true from reader 2.0.0**, which
+applies them itself:
+
+| | per-scan profile apex minus its label | averaged profile apex minus its averaged centroid |
+| --- | --- | --- |
+| reader 1.4.0 | -4.60 ppm median, -5.40 below m/z 200 | -- |
+| reader 2.0.0 | **-0.001 ppm** median, +-0.1 ppm in every band | **0.065 ppm** median absolute |
+
+The per-scan axis is in fact byte-for-byte the Thermo library's: 0.000000 ppm
+over every point of a scan, where 1.4.0 differed by up to 3.3 ppm. Against a
+4-8 ppm FWHM, a tenth of a ppm is not a visible offset.
+
+So the reconstruction is no longer needed to make the rendered profile line up
+with its centroids, and showing the measured signal is now an option. What the
+reconstruction still buys is smoothness: a raw file keeps only about three points
+per FWHM, so the real profile renders as a few-point polyline rather than a
+curve. What it costs is honesty -- it draws a symmetric Gaussian over whatever
+was actually measured, so a shoulder, an asymmetry or an unresolved neighbour
+disappears from the picture. Which to show is a product call, not a constraint
+of the reader any more.
 
 ---
 

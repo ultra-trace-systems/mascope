@@ -2169,14 +2169,20 @@ class OpenTFRawBackend:
     ) -> np.ndarray:
         """Correct the profile m/z axis to match the file's centroid labels.
 
-        OpenTFRaw converts the frequency-domain profile to m/z with the base
-        polynomial coefficients only; Thermo additionally applies per-scan
-        calibration compensations, leaving OpenTFRaw's profile m/z offset by
-        ~10-20 ppm (m/z dependent) while the centroid labels carry the fully
-        calibrated m/z. We use the centroids as a reference: match the strongest
-        well-separated profile peaks to their nearest centroid, reject outliers,
-        and fit a low-order m/z correction. Returns the corrected grid, or the
-        original grid unchanged when there is too little signal to fit reliably.
+        What is left to correct is small. The reader's own per-scan profile m/z
+        is byte-for-byte Thermo's from 2.0.0 (measured: 0.000000 ppm over every
+        point of a scan, where 1.4.0 differed by up to 3.3 ppm and left the
+        profile apex ~5 ppm below its label at low m/z). What remains is this
+        module's own doing: the averaged profile is built in the frequency
+        domain and converted back with ONE scan's calibration, so the other
+        scans' compensations are dropped. Measured on the demo files, the fit
+        below then moves the axis by about half a ppm at the bottom of the range
+        and a couple of tenths at the top.
+
+        The centroids are the reference: match the strongest well-separated
+        profile peaks to their nearest centroid, reject outliers, and fit a
+        low-order m/z correction. Returns the corrected grid, or the original
+        grid unchanged when there is too little signal to fit reliably.
         """
         if grid.size == 0:
             return grid
