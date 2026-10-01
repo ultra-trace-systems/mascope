@@ -70,6 +70,12 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   names ran past the 4096-character column, which rolled back the whole
   mechanism at every start. When the names do not fit, the most abundant ones
   that do are kept (#1360).
+- **A failed target compound create or delete no longer leaks a database
+  connection.** These controllers open a session of their own and only ever
+  committed it, so any failure before the commit left the connection checked
+  out until the garbage collector terminated it, logging "The garbage collector
+  is trying to clean up non-checked-in connection". Every failed target
+  collection save in 1.10.0 leaked one. The session is now closed on every path.
 
 ## [1.10.0] - 2026.09.30
 
