@@ -101,6 +101,7 @@ async def _compute(
     incomplete_ids=(),
     user=_USER,
     converter_available=True,
+    rebuild_side_effect=None,
 ):
     """Run match_compute_batch over ``samples`` with a stubbed per-sample step.
 
@@ -143,6 +144,8 @@ async def _compute(
         patch(f"{_MOD}.request_peak_detection", new_callable=AsyncMock) as rebuild,
     ):
         token.return_value = "token-1"
+        if rebuild_side_effect is not None:
+            rebuild.side_effect = rebuild_side_effect
         if not converter_available:
             converter.side_effect = HTTPException(
                 status_code=503, detail="File converter service is not available."
@@ -433,6 +436,21 @@ class TestSummaryLevel:
 
         await _compute(samples, [_wrapped_stale()], converter_available=False)
 
+        assert summary_levels == ["warning"]
+
+    @pytest.mark.asyncio
+    async def test_one_file_left_unqueued_still_warns(self, summary_levels):
+        """Every file has to be queued: the one that was not stays broken."""
+        samples = [_make_sample("s1"), _make_sample("s2")]
+
+        result, _, rebuilds = await _compute(
+            samples,
+            [_wrapped_stale(), _wrapped_stale()],
+            rebuild_side_effect=[None, RuntimeError("emit failed")],
+        )
+
+        assert len(rebuilds) == 2
+        assert result["data"]["peak_rebuilds_queued"] == 1
         assert summary_levels == ["warning"]
 
     @pytest.mark.asyncio
