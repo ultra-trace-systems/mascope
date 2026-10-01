@@ -42,6 +42,8 @@ from mascope_tools.composition.utils import (
 ISOTOPE_ABUNDANCE_THRESHOLD = 0.00001  # 0.001 %
 # Low/TOF resolution constant
 RESOLUTION_LOW = 1e4
+# The column a low resolution isotope's joined formulae are stored in
+ISOTOPE_FORMULA_LENGTH = TargetIsotope.__table__.c.target_isotope_formula.type.length
 
 
 class SkipIonizationMechanism(Exception):
@@ -672,6 +674,34 @@ def _multinomial_coeff(n: int, counts: list[int]) -> int:
     return result
 
 
+def _join_isotope_formulae(formulae: np.ndarray, intensities: np.ndarray) -> str:
+    """Join the formulae of the isotopologues one low resolution line merges.
+
+    For a large ion carrying bromine or chlorine a line can merge hundreds of
+    isotopologues, and their names run past the column; one such row fails the
+    insert of every ion built with it, which leaves a whole mechanism
+    uncreated. The label tells which isotopologues make up the line, so when
+    it does not fit, the most abundant names that do are kept, in m/z order,
+    and the rest are dropped.
+
+    :param formulae: The formulae of the isotopologues in the line, by m/z.
+    :param intensities: Their relative abundances.
+    :return: The formulae joined by "/", at most ``ISOTOPE_FORMULA_LENGTH`` long.
+    """
+    joined = "/".join(formulae.tolist())
+    if len(joined) <= ISOTOPE_FORMULA_LENGTH:
+        return joined
+    kept = np.zeros(formulae.size, dtype=bool)
+    length = -1  # no separator before the first name
+    for index in np.argsort(-intensities, kind="stable"):
+        added = len(formulae[index]) + 1
+        if length + added > ISOTOPE_FORMULA_LENGTH:
+            continue
+        kept[index] = True
+        length += added
+    return "/".join(formulae[kept].tolist())
+
+
 def group_target_isotopes(
     masses: list, probs: list, formulae: list, resolution: float
 ) -> tuple[list, list, list]:
@@ -682,7 +712,8 @@ def group_target_isotopes(
     The width of the group/bin is defined as dmz = FWHM / 2 = m/z / resolution / 2.
 
     The isotope formulae are concatenated with "/" separator for all isotopes
-    that fall within the same bin.
+    that fall within the same bin, up to what the column holds
+    (:func:`_join_isotope_formulae`).
 
     :param masses: High resolution target isotope m/z
     :type masses: list
@@ -742,7 +773,7 @@ def group_target_isotopes(
         # Store grouped values
         mz_grouped.append(mz_bin_center)
         intensity_grouped.append(intensity_total)
-        formula_grouped.append("/".join(formula_bin.tolist()))
+        formula_grouped.append(_join_isotope_formulae(formula_bin, intensity_bin))
 
         # Move to the next bin, skipping all processed values
         i += np.sum(bin_mask)
