@@ -350,11 +350,12 @@ async def create_target_compound(
                     existing_compound.pop("target_compound_id")
                     for existing_compound in existing_compounds
                 ]
-                # Check for identical target compounds
-                for i, existing_compound in enumerate(existing_compounds[:-1]):
+                # Check for identical target compounds. ``j``, not ``i``: ``i``
+                # is this compound's place in the request, which keys its log.
+                for j, existing_compound in enumerate(existing_compounds[:-1]):
                     if any(
                         existing_compound == another_existing_compound
-                        for another_existing_compound in existing_compounds[i + 1 :]
+                        for another_existing_compound in existing_compounds[j + 1 :]
                     ):
                         # the database is inconsistent with two identical target compounds
                         raise RuntimeError("Duplicate target compound in database")
