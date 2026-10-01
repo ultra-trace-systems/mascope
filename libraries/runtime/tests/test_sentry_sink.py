@@ -26,12 +26,16 @@ class _FakeScope:
     def __init__(self):
         self.level = None
         self.tags = {}
+        self.extras = {}
 
     def set_level(self, value):
         self.level = value
 
     def set_tag(self, key, value):
         self.tags[key] = value
+
+    def set_extra(self, key, value):
+        self.extras[key] = value
 
     def __enter__(self):
         return self
@@ -204,6 +208,24 @@ def test_sink_captures_exception(fake_sentry):
     assert fake_sentry.last_scope.level == "error"
     assert fake_sentry.last_scope.tags["log_level"] == "ERROR"
     assert fake_sentry.last_scope.tags["logger"] == "app.module"
+
+
+def test_sink_keeps_the_log_line_beside_the_exception(fake_sentry):
+    """The line names what failed - a file, a batch - and the exception alone
+    rarely does; dropping it left raw file failures unattributable."""
+    err = OSError(22, "Invalid argument")
+    rl._sentry_sink(
+        _msg(
+            level="ERROR",
+            message="Failed to process file run_042.raw (1048576 bytes)",
+            exc=_Exc(OSError, err, None),
+        )
+    )
+
+    assert fake_sentry.captured == [("exc", (OSError, err, None))]
+    assert fake_sentry.last_scope.extras == {
+        "log_message": "Failed to process file run_042.raw (1048576 bytes)"
+    }
 
 
 def test_sink_captures_message_without_exception(fake_sentry):
