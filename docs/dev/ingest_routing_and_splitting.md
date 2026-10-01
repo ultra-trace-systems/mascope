@@ -637,9 +637,14 @@ and `bindings.follow_row` as the one rule both the learner and the backfill
 apply. Any observation agreeing with the row clears the run, so the
 threshold counts the last three and not three spread over a year; an
 ambiguous key is left alone, since it routes nothing. The backfill's merge
-into a row live learning already made takes the history's row when the
-history holds the newer file, which is what makes the re-run move the rows
-every server has learned in shadow - and what makes a second run free. A
+into a row live learning already made takes the history's row when the file
+that row last learned from still has items the backfill reads - so the
+history held everything the row knew, and more. Not a comparison of
+`last_seen`: the row's is the wall clock when a file was processed and the
+history's is a file's acquisition time, and a file is always processed after
+it is acquired, so comparing them would drop the history for exactly the
+rows the re-run exists to move. This is what makes the re-run move the rows
+every server has learned in shadow, and what makes a second run free. A
 count of files naming another row is deliberately not a disagreement:
 `n_disagreements` stays a count of chemistries, so a report of unreliable
 keys does not list every site that has renamed a mode.
