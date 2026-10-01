@@ -380,6 +380,20 @@ The versions describe the server as it runs when asked. A result it stored earli
 
 The attribute is best effort, in two ways. A server that predates it (`GET /api/provenance` answers 404) returns its frames without the attribute, and the load succeeds as before. And pandas does not reliably carry `attrs` through `concat`, `merge` or `copy`, so read it from the frame the loader returned - the same caveat `attrs["run"]` and `attrs["batch_peaks"]` live with.
 
+#### Keeping it when you save a frame
+
+`attrs` live only on the DataFrame: saving it as CSV or Excel drops them without a word. Write the block beside the file instead:
+
+```python
+import json
+
+peaks.to_csv("peaks.csv", index=False)
+with open("peaks.provenance.json", "w", encoding="utf-8") as f:
+    json.dump(peaks.attrs["provenance"], f, indent=2)
+```
+
+Parquet keeps `attrs` inside the file - `peaks.to_parquet("peaks.parquet")`, and `pd.read_parquet` brings them back - as long as pandas is 2.1 or newer and `pyarrow` is installed, neither of which the SDK itself requires.
+
 ## Peak Assignments
 
 Mascope's **peak-centric assignment** engine assigns a composition to *every*
