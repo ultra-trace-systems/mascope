@@ -122,6 +122,47 @@ async def test_a_computed_store_is_served_without_reading_the_file(
     assert result.is_timeseries_computed.values.all()
 
 
+class TestCheckPeakStore:
+    """A store peak detection has just written, read back as matching reads it.
+
+    Asked after a rebuild: a store that still disagrees with its file will
+    fail matching again, and the refresh that meets it will queue the same
+    rebuild again, so it has to be told apart from one that is merely old.
+    """
+
+    @pytest.mark.asyncio
+    async def test_a_store_the_file_reads_back_passes(
+        self, monkeypatch, write_peak_store
+    ):
+        write_peak_store(SCAN_TIMES, MZ_VALUES, SUM_AREAS, SUM_HEIGHTS)
+        _stub_reader(monkeypatch, SCAN_TIMES)
+
+        assert await m_compute.check_peak_store(SIGNAL_TEST_FILENAME) is None
+
+    @pytest.mark.asyncio
+    async def test_a_store_the_file_does_not_read_back_is_refused(
+        self, monkeypatch, write_peak_store
+    ):
+        write_peak_store(SCAN_TIMES, MZ_VALUES, SUM_AREAS, SUM_HEIGHTS)
+        _stub_reader(monkeypatch, SCAN_TIMES[1:])
+
+        with pytest.raises(m_compute.StalePeakStoreError, match="scan counts differ"):
+            await m_compute.check_peak_store(SIGNAL_TEST_FILENAME)
+
+    @pytest.mark.asyncio
+    async def test_a_store_without_peaks_does_not_read_the_file(self, monkeypatch):
+        """A blank measurement's store has no peak to read the file back for."""
+        empty = xr.Dataset(coords={"mz": np.array([]), "time": SCAN_TIMES})
+        monkeypatch.setattr(m_io, "load_peak_data", lambda _filename: empty)
+
+        async def refuse(*args, **kwargs):
+            raise AssertionError("the file was read for a store without peaks")
+
+        monkeypatch.setattr(m_compute, "get_peak_timeseries", refuse)
+
+        assert await m_compute.check_peak_store(SIGNAL_TEST_FILENAME) is None
+
+
 class TestCheckStoredScanAxis:
     """The check itself, away from the zarr round-trip."""
 

@@ -1066,6 +1066,31 @@ def check_stored_scan_axis(
         raise _stale("their scan times do not line up")
 
 
+async def check_peak_store(base_filename: str) -> None:
+    """Refuse a peak store the sample file does not read back, as matching would.
+
+    Peak detection is what repairs a stale store, so a store it has just
+    written is expected to pass - and one that does not is a fault rather than
+    the routine after-an-upgrade state: matching its samples fails again, and
+    the refresh that meets it queues the same rebuild again. Asked right after
+    a rebuild, it is the one place that can tell the two apart.
+
+    The file is read back for one m/z, the way ``load_peak_timeseries`` reads
+    it, since the scan axis does not depend on the peak.
+
+    :param base_filename: Sample file filename
+    :type base_filename: str
+    :raises StalePeakStoreError: If the store's scan axis is not the file's
+    :return: None
+    """
+    stored = await asyncio.to_thread(m_io.load_peak_data, base_filename)
+    if not stored.mz.size:
+        # A blank measurement's store holds no peak to read the file back for
+        return
+    live = await get_peak_timeseries(base_filename, stored.mz.values[:1])
+    check_stored_scan_axis(live.time.values, stored.time.values)
+
+
 async def load_peak_timeseries(
     base_filename: str,
     mzs: list[float],

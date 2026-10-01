@@ -88,10 +88,12 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   built, every file of it already queued for the rebuild that rematches its
   samples, now logs its summary at info rather than warning: after an upgrade
   that was most batches on a server, each opening an issue of its own. A
-  server no file has reached yet no longer warns at every start that it has
-  no instruments. An exception event now carries the line it was logged with,
-  which names what failed - a file the converter could not process, now with
-  its size - where the event used to hold the exception alone.
+  rebuild that leaves its store still disagreeing with the file is warned
+  about by the worker that ran it instead. A server no file has reached yet no
+  longer warns at every start that it has no instruments. An exception event
+  now carries the line it was logged with, which names what failed - a file
+  the converter could not process, now with its size and how long ago it was
+  last written - where the event used to hold the exception alone.
 
 ## [1.10.0] - 2026.09.30
 
