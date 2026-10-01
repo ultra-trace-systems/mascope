@@ -4,6 +4,8 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 ## [Unreleased]
 
+## [1.10.1] - 2026.10.01
+
 ### Changed
 
 - **The demo dataset is now bundle v1.3.0**
