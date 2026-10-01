@@ -35,7 +35,6 @@ from mascope_backend.api.controllers.target.ions.target_ions_controller import (
 from mascope_backend.api.models.target.compounds.target_compound_pydantic_model import (
     TargetCompoundBase,
 )
-from mascope_backend.db import IonizationMechanism, TargetCompound
 from mascope_backend.db.id import gen_id
 
 
@@ -98,10 +97,10 @@ async def test_a_failed_compound_delete_returns_its_connection(opened_sessions):
 async def test_a_failed_ion_create_returns_its_connection(opened_sessions):
     """The commit itself fails here: neither the compound nor the mechanism
     the ions reference is stored."""
-    compound = TargetCompound(
+    compound = db_module.TargetCompound(
         target_compound_id=gen_id(), target_compound_formula="CH4N2O"
     )
-    mechanism = IonizationMechanism(
+    mechanism = db_module.IonizationMechanism(
         ionization_mechanism_id=gen_id(),
         ionization_mechanism_polarity="-",
         ionization_mechanism="[M+Br2]-",
