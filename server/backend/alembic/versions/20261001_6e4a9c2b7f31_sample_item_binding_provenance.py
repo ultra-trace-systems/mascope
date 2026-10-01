@@ -67,8 +67,16 @@ def upgrade() -> None:
     # Validated as it is added, which scans the table under an ACCESS
     # EXCLUSIVE lock: seconds on the largest production sample_item, and
     # migrations run with the app stopped.
+    # op.f, because the models' naming convention is
+    # ck_%(table_name)s_%(constraint_name)s and it is applied to a plain
+    # string: an unwrapped name arrives as
+    # ck_sample_item_ck_sample_item_bound_by_rung. Upgrade and downgrade would
+    # agree with each other, and the drift test does not compare check
+    # constraints, so only a created-from-models database would disagree -
+    # and then the revision that adds the detection rung would drop a
+    # constraint by the models' name and fail on every migrated server.
     op.create_check_constraint(
-        _RUNG_CHECK,
+        op.f(_RUNG_CHECK),
         "sample_item",
         "bound_by IS NULL OR bound_by IN ('declared', 'explicit', 'token', 'method')",
     )
@@ -89,7 +97,7 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    op.drop_constraint(_RUNG_CHECK, "sample_item", type_="check")
+    op.drop_constraint(op.f(_RUNG_CHECK), "sample_item", type_="check")
     op.drop_index(_BINDING_INDEX, table_name="sample_item")
     op.drop_constraint(_BINDING_FK, "sample_item", type_="foreignkey")
     op.drop_column("sample_item", "method_binding_id")

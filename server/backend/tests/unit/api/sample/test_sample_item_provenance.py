@@ -134,6 +134,96 @@ async def test_a_rung_outside_the_vocabulary_is_refused():
         )
 
 
+def _stored_item(**overrides):
+    """A stored ACQUISITION item, as the update controller reads one back."""
+    from datetime import datetime, timezone
+
+    from mascope_backend.db import SampleItem
+
+    fields = {
+        "sample_item_id": "si-0001",
+        "sample_batch_id": "sb-001",
+        "sample_file_id": "sf-001",
+        "sample_item_name": "2026-10-01 09:30:00",
+        "sample_item_type": "ACQUISITION",
+        "sample_item_attributes": {},
+        "filter_id": None,
+        "tic": 1.0,
+        "polarity": "-",
+        "ionization_mode_id": "im-token",
+        "t0": 0.0,
+        "t1": 1.0,
+        "locked": 1,
+        "bound_by": "token",
+        "method_binding_id": "mb-000000000001",
+        "sample_item_utc_created": datetime(2026, 10, 1, tzinfo=timezone.utc),
+    }
+    return SampleItem(**(fields | overrides))
+
+
+async def _updated(stored, **changes):
+    """Apply an update to a stored item, as the PATCH route would."""
+    from mascope_backend.api.controllers.sample.items.sample_items_controller import (
+        update_sample_item,
+    )
+    from mascope_backend.api.models.sample.items.sample_item_pydantic_model import (
+        SampleItemUpdate,
+    )
+
+    payload = {
+        "sample_batch_id": stored.sample_batch_id,
+        "sample_file_id": stored.sample_file_id,
+        "sample_item_name": stored.sample_item_name,
+        # ACQUISITION is system-managed, so an update must name a type a
+        # person may set - which is itself part of why the stale provenance
+        # is reachable at all.
+        "sample_item_type": "UNKNOWN",
+        "sample_item_attributes": {},
+        "tic": stored.tic,
+        "polarity": stored.polarity,
+        "ionization_mode_id": stored.ionization_mode_id,
+        "t0": stored.t0,
+        "t1": stored.t1,
+    }
+    session = AsyncMock()
+    session.get.return_value = stored
+    context = AsyncMock()
+    context.__aenter__ = AsyncMock(return_value=session)
+    context.__aexit__ = AsyncMock(return_value=False)
+    with patch(f"{_ITEMS}.async_session", return_value=context):
+        await update_sample_item(
+            sample_item_id=stored.sample_item_id,
+            sample_item=SampleItemUpdate(**(payload | changes)),
+        )
+    return stored
+
+
+@pytest.mark.asyncio
+async def test_a_hand_set_mode_clears_the_rung_that_decided_the_old_one():
+    """Otherwise a token gets the credit for a mode somebody typed.
+
+    And on a method item the binding would name a different mode from the
+    item, which is the shape a re-pointed binding leaves behind - so a hand
+    edit would be read as one by the report that looks for them.
+    """
+    stored = await _updated(_stored_item(), ionization_mode_id="im-by-hand")
+
+    assert stored.ionization_mode_id == "im-by-hand"
+    assert (stored.bound_by, stored.method_binding_id) == (None, None)
+
+
+@pytest.mark.asyncio
+async def test_an_update_that_leaves_the_mode_alone_keeps_the_rung():
+    """Renaming a sample says nothing about how its chemistry was decided."""
+    stored = await _updated(_stored_item(), sample_item_name="renamed")
+
+    assert stored.sample_item_name == "renamed"
+    assert (stored.bound_by, stored.method_binding_id) == (
+        "token",
+        "mb-000000000001",
+    )
+
+
 @pytest.mark.asyncio
 async def test_the_insert_names_the_provenance_for_every_row():
     """A row with no rung is written as having none, not left out."""

@@ -20,8 +20,18 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   way: the rung is a decision, not a fact a raw file holds, so it is never
   filled in after the event. Re-processing a file under the modes its own
   samples held carries their rung forward unchanged for the same reason -
-  copying a decision forward is nobody's decision. Nothing about how a file is
-  routed changes.
+  copying a decision forward is nobody's decision. Editing a sample's
+  ionization mode by hand clears the rung, since what is recorded is how
+  automatic processing routed a file and an edited sample is no longer that.
+  Nothing about how a file is routed changes.
+
+  One side effect worth knowing if you compare numbers across the release:
+  re-processing a file under the modes its own samples held no longer counts
+  as an observation of what its acquisition method runs. It did before, and it
+  was counted as though a person had vouched for it. The observation was
+  already recorded when that mode was first matched or chosen, so nothing is
+  lost, but the observation counts on an acquisition method will grow more
+  slowly than they did.
 
 ## [1.10.1] - 2026.10.01
 

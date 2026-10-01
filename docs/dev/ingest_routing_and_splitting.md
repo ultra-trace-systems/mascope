@@ -774,6 +774,13 @@ it is new work.
     that reads one, and `method_binding_id` is indexed because the query that
     reads it reads by binding - which items a binding bound, and whether it
     still names their mode.
+  - **A hand edit clears it.** Changing an item's `ionization_mode_id`
+    through the item API sets both columns back to NULL: what they answer is
+    how automatic processing routed a file, and an edited item is not that.
+    Leaving them would credit a token with a mode somebody typed, and on a
+    method item the binding would then name a different mode from the item -
+    the same shape a re-pointed binding (5.3) leaves behind, so a hand edit
+    would read as one.
   - **A kept mode keeps its rung.** A file no token binds is re-processed
     under the modes its own items held, and that path is not only the file
     somebody chose a chemistry for: a file a token bound months ago reaches
@@ -1219,7 +1226,13 @@ Needed before any rung can be provisional or park.
   3. the rung, behind `backend.method_binding = "route"` per site: the
      token, then a learned binding that is unanimous, keyed on a real method
      name and whose row applies to the instrument, else park. The file's
-     processing detail says it was bound by its acquisition method;
+     processing detail says it was bound by its acquisition method. This is
+     also what first writes `sample_item.method_binding_id`, and the id has
+     to be checked against the table as the item is created rather than
+     trusted from an earlier read: a re-process reads a file's kept modes
+     during validation and inserts its items minutes later, and `ON DELETE
+     SET NULL` only rewrites rows that already exist, so a binding deleted in
+     between would fail that file's processing on the foreign key;
   4. a disagreement report, a db script listing the keys whose binding row
      differs from what the token maps to today - what a person reads before
      confirming a binding, and the seed of the confirm flow that fills
