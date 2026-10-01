@@ -509,6 +509,16 @@ currently provisional and hand-fit
 
 ## 7. FAIR
 
+> **Superseded by [fair_roadmap.md](fair_roadmap.md)**, which takes the
+> whole-system view this section could only take from one subsystem. It keeps
+> this section's central point - FAIR is acceptance criteria on work already
+> planned, not a separate workstream - and corrects it in three places: the
+> reference-data and peak-assignment subsystems have since closed part of I3
+> and of the provenance gap, F/A are dismissed too quickly below, and the R2
+> provenance block and the batch export's missing context are built (FAIR
+> Phase 0, [handoff_fair_phase0.md](handoff_fair_phase0.md)). The table here
+> remains accurate for the ionization-owned rows (R1, R3, I1, I2).
+
 Current state is close to zero. An exhaustive search for
 `mzML|mzTab|PSI-MS|OBO|ontolog|ORCID|RO-Crate|ISA-Tab|schema.org|JSON-LD|ChEBI`
 across the repo returns only `CITATION.cff` hits - which identify *the software*,
