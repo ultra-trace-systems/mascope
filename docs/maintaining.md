@@ -1135,6 +1135,38 @@ user documentation, the packages that build it and the assets vendored under
 distributions installed in the server image). A new vendored asset needs its
 licence file next to it, or the docs build has nothing to carry for it.
 
+### Deployment identity
+
+Each deployment has an id that names it in the provenance of everything it
+exports: the *Provenance* sheet of a batch's *Batch data* spreadsheet, and the
+`df.attrs["provenance"]` of the frames the SDK's loaders return
+(`GET /api/provenance`). Records are keyed by ids that are unique within one
+deployment only, so the deployment id is what tells two deployments' exports
+apart.
+
+Nothing needs setting. On its first start the backend generates an id and
+keeps it in `deployment.json` at the root of the env's filestore, and every
+later start reads it back. The filestore is where the id belongs: it is
+persistent in every deployment, and the [off-site backup](#backups) copies it
+with the database dumps, so a restored deployment keeps its name. To choose
+the name yourself, set it in the env's config toml:
+
+```toml
+[backend]
+deployment_id = "example-lab"   # 1-64 letters, digits, ".", "_" or "-"
+```
+
+A configured id wins over the generated one and is read at start. Set one, too,
+when a deployment is copied and both copies go on recording data - an env
+synced to a second host, or a backup restored beside the original: the copy
+carries the original's `deployment.json`, and without an id of its own it
+exports under the original's name.
+
+The file is never written over. If the backend finds it but cannot read an id
+from it, it logs a warning at start and exports name no deployment until the
+file is repaired, moved aside (the next start generates a new id), or
+`deployment_id` is set.
+
 ### Where a deployment's settings live
 
 | Path | What |
@@ -1145,6 +1177,7 @@ licence file next to it, or the docs build has nothing to carry for it.
 | `$MASCOPE_PATH/.runtime/secrets/` | `postgres_password.txt`, `jwt_secret_key.txt`, `server_owner_secret_key.txt`, `mfa_encryption_key.txt`, TLS cert/key, `backup.env` |
 | `$MASCOPE_PATH/.runtime/database/backups/prod/` | database dumps (incl. pre-migration) |
 | `$MASCOPE_PATH/.runtime/update/` | `state.json` (pending update), `status.log` |
+| the env's filestore, `deployment.json` | the generated [deployment id](#deployment-identity), unless `[backend] deployment_id` is set |
 
 ## Troubleshooting
 

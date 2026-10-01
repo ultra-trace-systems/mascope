@@ -122,6 +122,15 @@ filestreams = './filestreams'
 # memory. A written-out list freezes the vocabulary, so re-check it after an
 # upgrade that adds a source - its tag will not be in your list.
 # reference_licenses = ["public-domain", "CC-BY-4.0", "CC0", "open", "custom"]
+# Deployment identity: the name this deployment carries in the provenance of
+# everything it exports (the batch spreadsheet's Provenance sheet, the SDK's
+# frames). Unset (the default), the backend generates one on its first start
+# and keeps it with the data, in deployment.json at the root of the filestore,
+# so it survives updates and a restore from backup. Set it to choose the name,
+# or to give a copy of a deployment (an env synced elsewhere, a backup restored
+# beside the original) a name of its own. 1-64 letters, digits, ".", "_" or
+# "-", starting with a letter or digit. Read at start.
+# deployment_id = "example-lab"
 # scripts
 run = "uv run mascope-backend run api-server"
 
