@@ -77,6 +77,10 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   is trying to clean up non-checked-in connection". Every failed target
   collection save in 1.10.0 leaked one. The session is now closed on every path,
   including a request cancelled while it saves.
+- **Creating several target compounds reports each one under its own entry.**
+  A compound matching two stored ones - one by CAS number, one by name and
+  formula - had its result written over another compound's entry in the
+  response's message log, and its own entry left empty.
 
 ## [1.10.0] - 2026.09.30
 
