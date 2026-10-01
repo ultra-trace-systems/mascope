@@ -384,10 +384,11 @@ land there, or a decision to re-fork - not something we merge ourselves.
 
 **The accessors are already released upstream, and we already have them.** PR
 #18 (merge `8594c6bf`, 2026-07-08) first shipped in **upstream v1.3.0**.
-`libraries/thermo/pyproject.toml:11` now pins `opentfraw~=1.3` and the lock
-resolves **1.3.7**, so the whole surface below is live today. (This section
-originally described the bump as pending work; see "Picking this up" at the top
-for what that means for Phase 0 item 2 and for the revalidation it skipped.)
+`libraries/thermo/pyproject.toml` now pins `opentfraw==1.4.0` exactly, for the
+reason its comment gives, so the whole surface below is live today. (This
+section originally described the bump as pending work; see "Picking this up" at
+the top for what that means for Phase 0 item 2 and for the revalidation it
+skipped.)
 
 Relative to the old 1.2.0 the Python surface gains 8 members, 0 removals, 0
 renames, 0 signature changes: `sample_info`, `instrument_method_text()`,

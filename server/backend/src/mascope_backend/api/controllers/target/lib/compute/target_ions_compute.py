@@ -3,6 +3,7 @@ Functions for target ions and target isotopes generation.
 """
 
 import re
+from collections.abc import Sequence
 from itertools import combinations_with_replacement
 from itertools import product as cartesian_product
 from math import comb
@@ -42,6 +43,10 @@ from mascope_tools.composition.utils import (
 ISOTOPE_ABUNDANCE_THRESHOLD = 0.00001  # 0.001 %
 # Low/TOF resolution constant
 RESOLUTION_LOW = 1e4
+# The column a low resolution isotope's joined formulae are stored in
+TARGET_ISOTOPE_FORMULA_LENGTH = (
+    TargetIsotope.__table__.c.target_isotope_formula.type.length
+)
 
 
 class SkipIonizationMechanism(Exception):
@@ -672,6 +677,44 @@ def _multinomial_coeff(n: int, counts: list[int]) -> int:
     return result
 
 
+def fit_isotope_names(
+    names: Sequence[str], limit: int, abundances: Sequence[float] | None = None
+) -> str:
+    """Join the names of the isotopologues one line merges, within a column.
+
+    At a low resolution one line merges every isotopologue in its bin, and for
+    a large ion carrying bromine or chlorine that is hundreds of names - past
+    the column they are stored in, where one row too long fails the insert of
+    everything written with it. The label tells which isotopologues make up
+    the line, so whole names are taken, the most abundant first, until the
+    next one does not fit, and are joined in their own order. When not even
+    the first fits, it is cut to the limit.
+
+    :param names: The isotopologues' names, in the order the label lists them.
+    :param limit: The most characters the label may hold.
+    :param abundances: The isotopologues' abundances, to take the most
+        abundant first; without them, names are taken from the front.
+    :return: The names joined by "/", at most ``limit`` long.
+    """
+    joined = "/".join(names)
+    if len(joined) <= limit:
+        return joined
+    order = range(len(names))
+    if abundances is not None:
+        # Stable, so names of equal abundance are taken in their own order.
+        order = sorted(order, key=lambda index: -abundances[index])
+    kept = []
+    length = -1  # no separator before the first name
+    for index in order:
+        length += len(names[index]) + 1
+        if length > limit:
+            break
+        kept.append(index)
+    if not kept:
+        return names[order[0]][:limit]
+    return "/".join(names[index] for index in sorted(kept))
+
+
 def group_target_isotopes(
     masses: list, probs: list, formulae: list, resolution: float
 ) -> tuple[list, list, list]:
@@ -682,7 +725,9 @@ def group_target_isotopes(
     The width of the group/bin is defined as dmz = FWHM / 2 = m/z / resolution / 2.
 
     The isotope formulae are concatenated with "/" separator for all isotopes
-    that fall within the same bin.
+    that fall within the same bin, the most abundant first up to what the
+    column holds (:func:`fit_isotope_names`). The line's m/z and abundance
+    count every isotope in the bin, named or not.
 
     :param masses: High resolution target isotope m/z
     :type masses: list
@@ -742,7 +787,11 @@ def group_target_isotopes(
         # Store grouped values
         mz_grouped.append(mz_bin_center)
         intensity_grouped.append(intensity_total)
-        formula_grouped.append("/".join(formula_bin.tolist()))
+        formula_grouped.append(
+            fit_isotope_names(
+                formula_bin.tolist(), TARGET_ISOTOPE_FORMULA_LENGTH, intensity_bin
+            )
+        )
 
         # Move to the next bin, skipping all processed values
         i += np.sum(bin_mask)

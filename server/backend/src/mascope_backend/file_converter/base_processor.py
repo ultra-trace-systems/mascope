@@ -3,6 +3,7 @@
 
 import os
 import shutil
+import time
 from abc import ABC, ABCMeta, abstractmethod
 from datetime import datetime as dt
 from datetime import timedelta, timezone
@@ -56,6 +57,26 @@ def with_file_context(prop_getter) -> callable:
         return prop
 
     return wrapper
+
+
+def describe_file_state(path) -> str:
+    """A file's size and how long ago it was last written, for a failure report.
+
+    A file the converter cannot open may be one it picked up too early. The
+    watcher holds a file until its size is stable across a poll, so one that
+    gets through mid-write belongs to a writer that paused longer than that,
+    and its size alone looks like any damaged file's - the time since its last
+    write is what tells the two apart.
+
+    :param path: The file.
+    :return: ``"<n> bytes, last written <s> s ago"``, or ``"size unknown"``
+        when the file cannot be read.
+    """
+    try:
+        st = os.stat(path)
+    except OSError:
+        return "size unknown"
+    return f"{st.st_size} bytes, last written {time.time() - st.st_mtime:.1f} s ago"
 
 
 #: A wall clock that occurs twice: the clocks went back over it, so the same
@@ -757,7 +778,8 @@ class BaseFileProcessor(Thread, ABC, metaclass=FileProcessorMeta):
                         )
                     else:
                         runtime.logger.exception(
-                            f"Failed to process file {Path(self.file_to_process).name}"
+                            f"Failed to process file {Path(self.file_to_process).name} "
+                            f"({describe_file_state(self.file_to_process)})"
                         )
 
                     # CRITICAL: Finalize BEFORE error emission to ensure file is closed

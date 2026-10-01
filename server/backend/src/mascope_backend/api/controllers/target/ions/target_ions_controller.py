@@ -46,6 +46,7 @@ from mascope_backend.db import (
     TargetIon,
     TargetIsotope,
     async_session,
+    owned_session,
 )
 from mascope_backend.runtime import runtime
 from mascope_backend.socket.records.service import emit_record_reload
@@ -300,34 +301,34 @@ async def create_target_ions(
     :rtype: dict
     """
     # Step 1: Initialize session if operation is an independent transaction.
-    if independent_transaction:
-        session = async_session()
+    async with owned_session(independent_transaction, session) as session:
+        # Step 2: Generate target ions and isotopes from the compound composition.
+        (
+            target_ions,
+            target_isotopes,
+        ) = generate_target_ions_from_composition(
+            target_compound, ionization_mechanisms
+        )
 
-    # Step 2: Generate target ions and isotopes from the compound composition.
-    (
-        target_ions,
-        target_isotopes,
-    ) = generate_target_ions_from_composition(target_compound, ionization_mechanisms)
+        # Step 3: Persist generated ions and isotopes
+        for target_isotope in target_isotopes:
+            # Add the isotopes to be committed to the db
+            session.add(target_isotope)
+        for target_ion in target_ions:
+            # Add the ions to be committed to the db
+            session.add(target_ion)
 
-    # Step 3: Persist generated ions and isotopes
-    for target_isotope in target_isotopes:
-        # Add the isotopes to be committed to the db
-        session.add(target_isotope)
-    for target_ion in target_ions:
-        # Add the ions to be committed to the db
-        session.add(target_ion)
+        if independent_transaction:
+            await session.commit()
+        else:
+            await session.flush()
 
-    if independent_transaction:
-        await session.commit()
-    else:
-        await session.flush()
-
-    # Step 4: Return created entities and message logs
-    return {
-        "created_ions": [ion.to_dict() for ion in target_ions],
-        "created_isotopes": [isotope.to_dict() for isotope in target_isotopes],
-        "message_logs": {},  # TODO_target_compound_management Populate with relevant log messages
-    }
+        # Step 4: Return created entities and message logs
+        return {
+            "created_ions": [ion.to_dict() for ion in target_ions],
+            "created_isotopes": [isotope.to_dict() for isotope in target_isotopes],
+            "message_logs": {},  # TODO_target_compound_management Populate with relevant log messages
+        }
 
 
 @api_controller()

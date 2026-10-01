@@ -399,14 +399,24 @@ MS_SCAN_DETECTOR_STATS = {
     "Frequency": 0.0,
 }
 
-# SCAN_STAT_FIELDS the OpenTFRaw backend reports as None. opentfraw decodes the
-# scan-index words behind PacketCount and SegmentNumber but does not pass them
-# to Python, and does not decode CycleNumber.
-OPENTFRAW_UNAVAILABLE_SCAN_STATS = (
-    "PacketCount",
-    "SegmentNumber",
-    "CycleNumber",
-)
+# SCAN_STAT_FIELDS the OpenTFRaw backend reports as None at the pinned reader
+# version. Only CycleNumber is left: opentfraw does not decode it anywhere.
+# PacketCount and SegmentNumber are read from the scan index (data_size and
+# scan_segment, exposed from 1.5.0); both equal Thermo's values on every scan
+# measured, which test_backend_parity asserts per scan.
+#
+# How strong that is differs by field. PacketCount and ScanEventNumber are
+# checked against values that actually vary -- the packet size differs per scan,
+# and two corpus files run eight and four scan events, so the event was compared
+# across 0..7 and a mapping off by a constant would have shown. Every file in
+# reach is in segment 0, so SegmentNumber's agreement says the field is read
+# from the right place but cannot rule out a constant offset.
+OPENTFRAW_UNAVAILABLE_SCAN_STATS = ("CycleNumber",)
+
+# The scan index writes this where a field was never set. Thermo reports those
+# as -1 for the scan event and 0 for the segment; no file here carries one, so
+# the mapping is a guard rather than something the corpus exercises.
+_SCAN_INDEX_UNSET = 0xFFFF
 
 # Default number of scans sampled by acquisition_parameters(). The trailer is
 # read per scan, so this is a cost/confidence trade: enough spread to catch a
@@ -1140,8 +1150,22 @@ class OpenTFRawBackend:
     # -- scan selection: mirrors thermo.ScanSelector over OpenTFRaw scan dicts --
 
     def _all_scans(self) -> list[dict]:
+        """Every scan's metadata, in scan order, without its peaks.
+
+        ``scan_table()`` reads the scan index and the scan events and no peak
+        data at all, where ``iter_scans()`` decodes every scan's arrays -- for
+        a selection that only ever looks at times, polarities and MS orders,
+        and throws the arrays away. The rows carry the same keys minus ``mz``
+        and ``intensity``; the one caller that wants peaks (:meth:`xic`) reads
+        them per scan, for the scans it selected.
+        """
         if self._scans is None:
-            self._scans = list(self._raw.iter_scans())
+            table = self._raw.scan_table()
+            columns = list(table)
+            self._scans = [
+                dict(zip(columns, values))
+                for values in zip(*(table[name] for name in columns))
+            ]
         return self._scans
 
     @staticmethod
@@ -1391,19 +1415,21 @@ class OpenTFRawBackend:
         # Map the per-scan stats OpenTFRaw exposes onto Thermo's ScanStats field
         # names. StartTime is in minutes, matching Thermo's ScanStats.StartTime.
         # ScanType is the scan filter as opentfraw renders it, and IsCentroidScan
-        # reads that filter's scan data type. ScanEventNumber is the trailer's
-        # "Scan Event:", which counts from 1. The detector fields take the values
-        # ScanStats holds for MS scans (MS_SCAN_DETECTOR_STATS), and the fields
-        # opentfraw does not expose are None, not faked
-        # (OPENTFRAW_UNAVAILABLE_SCAN_STATS). MsType mirrors Thermo's
-        # MSOrder.ToString() ("Ms" / "Ms2").
+        # reads that filter's scan data type. PacketCount, SegmentNumber and
+        # ScanEventNumber come from the scan index, which is where Thermo reads
+        # them too -- the trailer's "Scan Event:" was a stand-in from before the
+        # reader passed the index words to Python, and agrees with them on every
+        # scan measured. The detector fields take the values ScanStats holds for
+        # MS scans (MS_SCAN_DETECTOR_STATS), and the fields opentfraw does not
+        # expose are None, not faked (OPENTFRAW_UNAVAILABLE_SCAN_STATS). MsType
+        # mirrors Thermo's MSOrder.ToString() ("Ms" / "Ms2").
         stats: dict[int, dict] = {}
         for s in self._selected(polarity, t_min, t_max, ms_type):
             scan_number = int(s["scan_number"])
             scan_filter = s["filter_string"] or None
             data_type = parse_scan_filter(scan_filter).data_type
-            trailer = self._raw.scan_parameters(scan_number) or {}
-            scan_event = trailer.get("Scan Event:")
+            scan_event = int(s["scan_event"])
+            segment = int(s["scan_segment"])
             stats[scan_number] = {
                 **dict.fromkeys(SCAN_STAT_FIELDS),
                 **MS_SCAN_DETECTOR_STATS,
@@ -1414,7 +1440,11 @@ class OpenTFRawBackend:
                 "LowMass": float(s["low_mz"]),
                 "HighMass": float(s["high_mz"]),
                 "ScanNumber": scan_number,
-                "ScanEventNumber": None if scan_event is None else int(scan_event) - 1,
+                "PacketCount": int(s["data_size"]),
+                "ScanEventNumber": -1
+                if scan_event == _SCAN_INDEX_UNSET
+                else scan_event,
+                "SegmentNumber": 0 if segment == _SCAN_INDEX_UNSET else segment,
                 "ScanType": scan_filter,
                 "IsCentroidScan": None if data_type is None else data_type == "c",
                 "MsType": "Ms"
@@ -1882,16 +1912,20 @@ class OpenTFRawBackend:
         average: bool = False,
         reconstruct: bool = False,
     ) -> tuple[np.ndarray, np.ndarray, int]:
-        # reconstruct=True returns a Thermo-style profile reconstructed as one
-        # Gaussian per centroid (center=m/z, height=intensity, FWHM=m/z/res).
-        # Thermo's AverageScans profile *is* such a reconstruction (verified:
-        # profile local-maxima count == centroid count exactly, baseline floor
-        # ~1e-10 of base peak, peaks Gaussian to <1%); it overlays the centroids
-        # exactly and is the right choice for *display*. The default
-        # reconstruct=False returns the real measured profile, which is what the
-        # instrument-function fit needs -- the fit gets too few quality peaks off
-        # the reconstruction (its idealised shape/grid), so the real, faithful
-        # signal must drive the quantitative path.
+        # reconstruct=True returns a profile drawn as one Gaussian per centroid
+        # (center=m/z, height=intensity, FWHM=m/z/res), which overlays the
+        # centroids exactly because that is how it is built. It is Mascope's own
+        # choice for *display*, NOT an imitation of the vendor: Thermo's
+        # AverageScans profile is the measured signal resampled, not synthesised
+        # from its centroid list. Measured, a profile drawn from centroids
+        # reproduces them exactly (this path: apex/centroid 1.00000, fitted
+        # FWHM/nominal 1.00000), where AverageScans gives 1.012 and 0.970 with
+        # real spread. See reader_pipeline.md section 5.2.
+        #
+        # The default reconstruct=False returns the real measured profile, which
+        # is what the instrument-function fit needs -- the fit gets too few
+        # quality peaks off the reconstruction (its idealised shape/grid), so the
+        # real, faithful signal must drive the quantitative path.
         if reconstruct:
             num_combined = len(scan_indices)
             masses, intensities, resolutions, _ = self.average_centroids(
@@ -2046,10 +2080,35 @@ class OpenTFRawBackend:
         if df <= 0:
             return self._average_profile_in_mz(scans)
 
+        # Quantize the scans' samples into native-density cells, then place each
+        # grid point at the MEAN OF THE REAL FREQUENCIES in its cell rather than
+        # at the cell's centre. Every scan of a file is transformed on the same
+        # FFT bin grid, so a cell holds one sample per scan and they agree to a
+        # few percent of a bin: their mean is a frequency the instrument
+        # actually sampled, and the interpolation below returns the measured
+        # value there instead of a chord across it.
+        #
+        # A synthetic cell centre does not, and the stored profile is far too
+        # sparse to forgive that -- a raw file keeps about 3 points per FWHM, so
+        # a chord drawn across the top of a peak cuts several percent off it.
+        # Measured on a single scan, where the apex must reproduce the
+        # instrument's own centroid label because nothing is averaged: cell
+        # centres read 0.96 of the label, cell means 0.99.
+        #
+        # Worse, the loss is not even constant. Recovering frequency from m/z
+        # leaves a residual scale error, so the phase between the cell lattice
+        # and the samples ramps across the mass range (measured: half a bin end
+        # to end), and the height ripples with it by several percent, in a
+        # pattern that depends on nothing physical -- only on how the reader
+        # happened to write the m/z axis. Anchoring the grid on the samples
+        # removes that dependence: the averaged-centroid bias against the Thermo
+        # library differs by 0.1 percentage points between reader 1.4.0 and
+        # 2.0.0 here, against 1.3 for cell centres.
         f_all = np.concatenate(freqs)
         f0 = float(f_all.min())
-        occupied = np.unique(np.floor((f_all - f0) / df).astype(np.int64))
-        fgrid = f0 + (occupied + 0.5) * df
+        cells = np.floor((f_all - f0) / df).astype(np.int64)
+        _, inverse = np.unique(cells, return_inverse=True)
+        fgrid = np.bincount(inverse, weights=f_all) / np.bincount(inverse)
 
         summed = np.zeros(fgrid.shape, dtype=np.float64)
         for f, (_, intensity, _, _) in zip(freqs, scans):
@@ -2114,14 +2173,20 @@ class OpenTFRawBackend:
     ) -> np.ndarray:
         """Correct the profile m/z axis to match the file's centroid labels.
 
-        OpenTFRaw converts the frequency-domain profile to m/z with the base
-        polynomial coefficients only; Thermo additionally applies per-scan
-        calibration compensations, leaving OpenTFRaw's profile m/z offset by
-        ~10-20 ppm (m/z dependent) while the centroid labels carry the fully
-        calibrated m/z. We use the centroids as a reference: match the strongest
-        well-separated profile peaks to their nearest centroid, reject outliers,
-        and fit a low-order m/z correction. Returns the corrected grid, or the
-        original grid unchanged when there is too little signal to fit reliably.
+        What is left to correct is small. The reader's own per-scan profile m/z
+        is byte-for-byte Thermo's from 2.0.0 (measured: 0.000000 ppm over every
+        point of a scan, where 1.4.0 differed by up to 3.3 ppm and left the
+        profile apex ~5 ppm below its label at low m/z). What remains is this
+        module's own doing: the averaged profile is built in the frequency
+        domain and converted back with ONE scan's calibration, so the other
+        scans' compensations are dropped. Measured on the demo files, the fit
+        below then moves the axis by about half a ppm at the bottom of the range
+        and a couple of tenths at the top.
+
+        The centroids are the reference: match the strongest well-separated
+        profile peaks to their nearest centroid, reject outliers, and fit a
+        low-order m/z correction. Returns the corrected grid, or the original
+        grid unchanged when there is too little signal to fit reliably.
         """
         if grid.size == 0:
             return grid
@@ -2209,8 +2274,11 @@ class OpenTFRawBackend:
 
         intensities = np.zeros((len(mzs), len(selected)), dtype=np.float64)
         for j, scan in enumerate(selected):
-            scan_mz = np.asarray(scan["mz"], dtype=np.float64)
-            scan_int = np.asarray(scan["intensity"], dtype=np.float64)
+            # The selection carries no peaks (see _all_scans), so read them
+            # here -- only for the scans this chromatogram is over.
+            peaks = self._raw.scan(int(scan["scan_number"]))
+            scan_mz = np.asarray(peaks["mz"], dtype=np.float64)
+            scan_int = np.asarray(peaks["intensity"], dtype=np.float64)
             order = np.argsort(scan_mz)
             scan_mz = scan_mz[order]
             prefix = np.concatenate(([0.0], np.cumsum(scan_int[order])))

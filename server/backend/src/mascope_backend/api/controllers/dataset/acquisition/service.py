@@ -335,7 +335,9 @@ async def get_acquisition_dataset(
 
 
 @api_controller()
-async def create_acquisition_datasets(user_id: int | None = None) -> dict:
+async def create_acquisition_datasets(
+    user_id: int | None = None, instruments_expected: bool = False
+) -> dict:
     """
     Auto-creates missing per-instrument workspaces and current-year ACQUISITION
     datasets for all instruments that have sample files.
@@ -345,6 +347,11 @@ async def create_acquisition_datasets(user_id: int | None = None) -> dict:
     - For each instrument: ensure workspace exists, ensure current-year dataset exists
     - Emit socket events for newly created resources
 
+    :param user_id: The user the datasets are created for, if any.
+    :param instruments_expected: Whether the caller has just stored a sample
+        file, so that finding no instrument means the file is not visible -
+        an inconsistency, warned about. Otherwise (at startup, or on request)
+        a server no file has reached yet is in a normal state.
     :return: Summary of created datasets
     :rtype: dict
     """
@@ -353,7 +360,10 @@ async def create_acquisition_datasets(user_id: int | None = None) -> dict:
         instruments := [i["instrument"] for i in (await get_instruments())["data"]]
     ):
         message = "No instruments found to create acquisition datasets"
-        runtime.logger.warning(message)
+        if instruments_expected:
+            runtime.logger.warning(message)
+        else:
+            runtime.logger.info(message)
         return {"message": message, "results": 0, "data": []}
 
     current_year = datetime.now(timezone.utc).year

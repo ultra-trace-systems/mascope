@@ -19,6 +19,7 @@ import pytest_asyncio
 from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
+import mascope_backend.api.controllers.ionization_mechanisms.ionization_mechanisms_controller as mechanisms_controller
 import mascope_backend.db as db_module
 import mascope_backend.db.admin.ionization.ensure_system_modes as seed_module
 from mascope_backend.db import (
@@ -280,6 +281,49 @@ async def test_a_mechanism_that_fails_is_created_at_the_next_start(
             )
         )
     assert bromide_ions == 1
+
+
+@pytest.mark.asyncio
+async def test_a_compound_whose_ions_cannot_be_stored_does_not_block_a_mechanism(
+    fresh_db, monkeypatch
+):
+    """A mechanism is added with every compound's ions in one flush, so one
+    row too long for its column would fail the mechanism - at every start.
+    That compound goes without ions under it instead, and says so."""
+    generate = mechanisms_controller.generate_target_ions_from_composition
+
+    def overlong_for_one(compound, mechanisms):
+        target_ions, target_isotopes = generate(compound, mechanisms)
+        if compound.target_compound_id == "cmpOverlong":
+            for target_ion in target_ions:
+                target_ion.target_ion_formula = "C" * 300
+        return target_ions, target_isotopes
+
+    monkeypatch.setattr(
+        mechanisms_controller, "generate_target_ions_from_composition", overlong_for_one
+    )
+    warnings = []
+    monkeypatch.setattr(
+        mechanisms_controller.runtime.logger, "warning", warnings.append
+    )
+    await _add(fresh_db, _compound(), _compound("cmpOverlong", "C10H18O3"))
+
+    counts = await ensure_system_ionization()
+
+    assert counts["mechanisms"]["failed"] == 0
+    assert counts["mechanisms"]["created"] == len(_SHIPPED)
+    async with fresh_db() as session:
+        held = dict(
+            (
+                await session.execute(
+                    select(TargetIon.target_compound_id, func.count()).group_by(
+                        TargetIon.target_compound_id
+                    )
+                )
+            ).all()
+        )
+    assert held == {"cmpPinonic": len(_SHIPPED)}
+    assert sum("cmpOverlong" in line for line in warnings) == len(_SHIPPED)
 
 
 @pytest.mark.asyncio

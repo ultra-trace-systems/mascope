@@ -256,6 +256,10 @@ def _sentry_sink(message) -> None:
             scope.set_tag("log_level", level_name)
             scope.set_tag("logger", name)
             if exc is not None:
+                # The event is the exception; the line logged with it is where
+                # the call site names what it was doing - which file, which
+                # batch - and the exception alone rarely says.
+                scope.set_extra("log_message", record["message"])
                 sentry_sdk.capture_exception((exc.type, exc.value, exc.traceback))
             else:
                 sentry_sdk.capture_message(record["message"])

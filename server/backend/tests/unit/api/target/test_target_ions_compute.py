@@ -4,6 +4,8 @@ import os
 import pytest
 
 from mascope_backend.api.controllers.target.lib.compute.target_ions_compute import (
+    TARGET_ISOTOPE_FORMULA_LENGTH,
+    fit_isotope_names,
     generate_target_ions_from_composition,
     group_target_isotopes,
 )
@@ -173,6 +175,80 @@ def test_group_target_isotopes_terminates_on_nonpositive_mz():
         [-0.000549, 0.0, 18.0106], [0.5, 0.2, 0.3], ["a", "b", "c"], 1e4
     )
     assert len(masses) == len(probs) == len(formulae) == 3
+
+
+def test_group_target_isotopes_joins_the_formulae_of_a_line():
+    """Isotopologues in one bin share a line, labelled by all their names."""
+    _, _, formulae = group_target_isotopes(
+        [100.0, 100.001, 200.0], [0.5, 0.2, 0.3], ["a", "b", "c"], 1e4
+    )
+    assert formulae == ["a/b", "c"]
+
+
+def test_group_target_isotopes_keeps_the_most_abundant_names_that_fit():
+    """A line merging more names than the column holds keeps the most abundant
+    whole names, in m/z order, rather than failing the insert of the ion."""
+    name = "x" * 99
+    count = TARGET_ISOTOPE_FORMULA_LENGTH // 100 + 10
+    masses = [100.0 + i * 1e-6 for i in range(count)]
+    # The least abundant names come first by m/z, so keeping from the front
+    # would keep the wrong ones.
+    probs = [float(i + 1) for i in range(count)]
+    formulae = [f"{i:03d}{name}"[:100] for i in range(count)]
+
+    _, _, (label,) = group_target_isotopes(masses, probs, formulae, 1e4)
+
+    assert len(label) <= TARGET_ISOTOPE_FORMULA_LENGTH
+    kept = label.split("/")
+    assert kept == sorted(kept)
+    assert kept == formulae[count - len(kept) :]
+    # Every name is 100 characters, plus a separator after all but the last.
+    assert len(kept) == (TARGET_ISOTOPE_FORMULA_LENGTH + 1) // 101
+
+
+def test_fit_isotope_names_stops_at_the_first_name_that_does_not_fit():
+    """A shorter, less abundant name never takes the place of a more abundant
+    one that did not fit: the label is the most abundant names, in order."""
+    names = ["dddd", "aaaaaaaa", "bbbbbbbbbbbbbbb", "cc"]
+    abundances = [0.1, 0.5, 0.3, 0.05]
+
+    assert fit_isotope_names(names, 20, abundances) == "aaaaaaaa"
+    # Without abundances the names are taken from the front.
+    assert fit_isotope_names(names, 20) == "dddd/aaaaaaaa"
+    assert fit_isotope_names(names, 100, abundances) == "/".join(names)
+
+
+def test_fit_isotope_names_cuts_a_first_name_longer_than_the_limit():
+    """A label is never left empty: a most abundant name that alone runs past
+    the limit is cut to it."""
+    assert fit_isotope_names(["x" * 30, "y" * 30], 20, [0.4, 0.6]) == "y" * 20
+    assert fit_isotope_names(["x" * 30, "y" * 30], 20) == "x" * 20
+
+
+def test_a_large_halogenated_ion_fits_its_isotope_formulae_to_the_column():
+    """A bromide-adduct mechanism on a large chlorinated, sulfur-bearing
+    compound merges enough isotopologues into a low resolution line to run
+    past the column; the mechanism then could not be created at all."""
+    compound = TargetCompound(
+        target_compound_id="unit-large", target_compound_formula="C50H70Cl4N10O10S2"
+    )
+    mechanism = IonizationMechanism(
+        ionization_mechanism_id="unit-mech",
+        ionization_mechanism_polarity="-",
+        ionization_mechanism="[M+Br2]-",
+    )
+
+    _, target_isotopes = generate_target_ions_from_composition(compound, [mechanism])
+
+    low = [i.target_isotope_formula for i in target_isotopes if i.resolution == "LOW"]
+    assert low
+    assert max(len(formula) for formula in low) <= TARGET_ISOTOPE_FORMULA_LENGTH
+    high = {i.target_isotope_formula for i in target_isotopes if i.resolution == "HIGH"}
+    named = {name for formula in low for name in formula.split("/")}
+    # Every high resolution isotopologue falls in exactly one line, so a label
+    # set that names fewer of them than there are is the cap at work: this
+    # compound does run past the column, and the test is not passing vacuously.
+    assert named < high
 
 
 @pytest.mark.parametrize("bad_formula", ["xyz", "136.1252", "Zz", "^C"])

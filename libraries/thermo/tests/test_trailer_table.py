@@ -45,15 +45,15 @@ class _ScriptedRaw:
     def __init__(self, trailers: list[dict | None]):
         self._trailers = trailers
 
-    def iter_scans(self):
-        for scan_number in range(1, len(self._trailers) + 1):
-            yield {
-                "scan_number": scan_number,
-                "ms_level": 1,
-                "polarity": "+",
-                "retention_time": scan_number / 60,
-                "total_ion_current": 1e6,
-            }
+    def scan_table(self):
+        scan_numbers = list(range(1, len(self._trailers) + 1))
+        return {
+            "scan_number": scan_numbers,
+            "ms_level": [1] * len(scan_numbers),
+            "polarity": ["+"] * len(scan_numbers),
+            "retention_time": [n / 60 for n in scan_numbers],
+            "total_ion_current": [1e6] * len(scan_numbers),
+        }
 
     def scan_parameters(self, scan_number):
         return self._trailers[scan_number - 1]

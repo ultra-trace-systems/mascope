@@ -5,9 +5,6 @@ from fastapi import HTTPException
 from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from mascope_backend.api.controllers.ionization_mechanisms.ionization_mechanisms_controller import (
-    get_ionization_mechanisms,
-)
 from mascope_backend.api.controllers.sample.batches.status.service import (
     update_sample_batch_status,
 )
@@ -32,6 +29,7 @@ from mascope_backend.db import (
     TargetCompound,
     TargetCompoundInTargetCollection,
     async_session,
+    owned_session,
 )
 from mascope_backend.db.id import gen_id
 from mascope_backend.socket.records.service import emit_record_reload
@@ -247,157 +245,162 @@ async def create_target_compound(
     :return: Return created target compounds, skipped compounds (already existing) and message log
     :rtype: dict
     """
-    if independent_transaction:
-        session = async_session()
+    async with owned_session(independent_transaction, session) as session:
+        # initialize list of targets to return
+        target_compound_ids = []
+        existing_target_compounds = []
+        # initalized lists of targets to create
+        target_compounds_to_create = []
+        # Initialize message log
+        message_log = {}
+        # Ionization mechanisms are the same for every compound in this call;
+        # fetched once on first need instead of per created compound
+        ionization_mechanisms: list[IonizationMechanism] | None = None
 
-    # initialize list of targets to return
-    target_compound_ids = []
-    existing_target_compounds = []
-    # initalized lists of targets to create
-    target_compounds_to_create = []
-    # Initialize message log
-    message_log = {}
-    # Ionization mechanisms are the same for every compound in this call;
-    # fetched once on first need instead of per created compound
-    ionization_mechanisms: list[IonizationMechanism] | None = None
-
-    for i, target_compound in enumerate(target_compounds):
-        # Initialize messages list
-        message_log[i + 1] = {
-            "status_code": 0,
-            "messages": [],
-        }
-        # STEP 1: check if the compound record is already in the database (similar name and formula or CAS number)
-        existing_compounds = await session.execute(
-            select(TargetCompound).filter(
-                or_(
-                    # Similar CAS number
-                    and_(
-                        TargetCompound.cas_number is not None,
-                        (
-                            TargetCompound.cas_number
-                            == norm(target_compound.cas_number)
-                            if target_compound.cas_number
-                            else None
+        for i, target_compound in enumerate(target_compounds):
+            # Initialize messages list
+            message_log[i + 1] = {
+                "status_code": 0,
+                "messages": [],
+            }
+            # STEP 1: check if the compound record is already in the database (similar name and formula or CAS number)
+            existing_compounds = await session.execute(
+                select(TargetCompound).filter(
+                    or_(
+                        # Similar CAS number
+                        and_(
+                            TargetCompound.cas_number is not None,
+                            (
+                                TargetCompound.cas_number
+                                == norm(target_compound.cas_number)
+                                if target_compound.cas_number
+                                else None
+                            ),
                         ),
-                    ),
-                    # Similar name and formula
-                    and_(
-                        func.lower(TargetCompound.target_compound_formula)
-                        == norm(target_compound.target_compound_formula, lower=True),
-                        func.lower(TargetCompound.target_compound_name)
-                        == norm(target_compound.target_compound_name, lower=True),
-                    ),
+                        # Similar name and formula
+                        and_(
+                            func.lower(TargetCompound.target_compound_formula)
+                            == norm(
+                                target_compound.target_compound_formula, lower=True
+                            ),
+                            func.lower(TargetCompound.target_compound_name)
+                            == norm(target_compound.target_compound_name, lower=True),
+                        ),
+                    )
                 )
             )
-        )
-        existing_compounds = existing_compounds.scalars().all()
-        existing_target_compounds += existing_compounds
-        if len(existing_compounds) == 0:
-            # save the new compound for creation if it doesn't exist
-            target_compound = TargetCompound(
-                target_compound_id=gen_id(),
-                target_compound_name=norm(target_compound.target_compound_name),
-                target_compound_formula=norm(target_compound.target_compound_formula),
-                cas_number=(
-                    norm(target_compound.cas_number)
-                    if target_compound.cas_number
-                    else None
-                ),
-            )
-
-            target_compounds_to_create.append(target_compound)
-            target_compound_ids.append(target_compound.target_compound_id)
-
-            message_log[i + 1]["status_code"] = 201
-            message_log[i + 1]["messages"].append(
-                f"New target compound with target_compound_id: {target_compound.target_compound_id} created"
-            )
-        elif len(existing_compounds) == 1:
-            # use the existing compound record if it does exist
-            target_compound_old = existing_compounds[0]
-            # Check if CAS number update needed
-            if (
-                target_compound_old.cas_number is None
-                and target_compound.cas_number is not None
-            ):
-                target_compound_old.cas_number = target_compound.cas_number
-                await update_target_compound(
-                    [TargetCompoundUpdate(**target_compound_old.to_dict())]
+            existing_compounds = existing_compounds.scalars().all()
+            existing_target_compounds += existing_compounds
+            if len(existing_compounds) == 0:
+                # save the new compound for creation if it doesn't exist
+                target_compound = TargetCompound(
+                    target_compound_id=gen_id(),
+                    target_compound_name=norm(target_compound.target_compound_name),
+                    target_compound_formula=norm(
+                        target_compound.target_compound_formula
+                    ),
+                    cas_number=(
+                        norm(target_compound.cas_number)
+                        if target_compound.cas_number
+                        else None
+                    ),
                 )
-            target_compound = target_compound_old
-            target_compound_ids.append(target_compound.target_compound_id)
 
-            message_log[i + 1]["status_code"] = 200
-            message_log[i + 1]["messages"].append(
-                f"Existing target compound {target_compound.target_compound_name} with target_compound_id: {target_compound.target_compound_id} used"
-            )
-            continue  # as ions & isotopes are already there in this case
-        else:
-            # More than one matching compound in the database
-            # It is possible to arrive here if there are compound(s) that:
-            #   1) Have the same CAS number as the one to be created; AND
-            #   2) Another compound that has the same name and formula but not CAS number as the one to be created
-            # Let's check to be sure there are no actual duplicates in the database
-            target_compound = existing_compounds[0]
-            # Convert to dicts
-            existing_compounds = [
-                existing_compound.to_dict() for existing_compound in existing_compounds
-            ]
-            # Pop target compound ids for dict comparison afterwards
-            _ = [
-                existing_compound.pop("target_compound_id")
-                for existing_compound in existing_compounds
-            ]
-            # Check for identical target compounds
-            for i, existing_compound in enumerate(existing_compounds[:-1]):
-                if any(
-                    existing_compound == another_existing_compound
-                    for another_existing_compound in existing_compounds[i + 1 :]
+                target_compounds_to_create.append(target_compound)
+                target_compound_ids.append(target_compound.target_compound_id)
+
+                message_log[i + 1]["status_code"] = 201
+                message_log[i + 1]["messages"].append(
+                    f"New target compound with target_compound_id: {target_compound.target_compound_id} created"
+                )
+            elif len(existing_compounds) == 1:
+                # use the existing compound record if it does exist
+                target_compound_old = existing_compounds[0]
+                # Check if CAS number update needed
+                if (
+                    target_compound_old.cas_number is None
+                    and target_compound.cas_number is not None
                 ):
-                    # the database is inconsistent with two identical target compounds
-                    raise RuntimeError("Duplicate target compound in database")
-            # No duplicates, let's proceed
-            target_compound_ids.append(target_compound.target_compound_id)
-            message_log[i + 1]["status_code"] = 200
-            message_log[i + 1]["messages"].append(
-                f"Existing target compound {target_compound.target_compound_name} with target_compound_id: {target_compound.target_compound_id} used"
+                    target_compound_old.cas_number = target_compound.cas_number
+                    await update_target_compound(
+                        [TargetCompoundUpdate(**target_compound_old.to_dict())]
+                    )
+                target_compound = target_compound_old
+                target_compound_ids.append(target_compound.target_compound_id)
+
+                message_log[i + 1]["status_code"] = 200
+                message_log[i + 1]["messages"].append(
+                    f"Existing target compound {target_compound.target_compound_name} with target_compound_id: {target_compound.target_compound_id} used"
+                )
+                continue  # as ions & isotopes are already there in this case
+            else:
+                # More than one matching compound in the database
+                # It is possible to arrive here if there are compound(s) that:
+                #   1) Have the same CAS number as the one to be created; AND
+                #   2) Another compound that has the same name and formula but not CAS number as the one to be created
+                # Let's check to be sure there are no actual duplicates in the database
+                target_compound = existing_compounds[0]
+                # Convert to dicts
+                existing_compounds = [
+                    existing_compound.to_dict()
+                    for existing_compound in existing_compounds
+                ]
+                # Pop target compound ids for dict comparison afterwards
+                _ = [
+                    existing_compound.pop("target_compound_id")
+                    for existing_compound in existing_compounds
+                ]
+                # Check for identical target compounds. ``j``, not ``i``: ``i``
+                # is this compound's place in the request, which keys its log.
+                for j, existing_compound in enumerate(existing_compounds[:-1]):
+                    if any(
+                        existing_compound == another_existing_compound
+                        for another_existing_compound in existing_compounds[j + 1 :]
+                    ):
+                        # the database is inconsistent with two identical target compounds
+                        raise RuntimeError("Duplicate target compound in database")
+                # No duplicates, let's proceed
+                target_compound_ids.append(target_compound.target_compound_id)
+                message_log[i + 1]["status_code"] = 200
+                message_log[i + 1]["messages"].append(
+                    f"Existing target compound {target_compound.target_compound_name} with target_compound_id: {target_compound.target_compound_id} used"
+                )
+                continue  # as ions & isotopes are already there in this case
+
+            # STEP2: Proceed to creating new target compound record and generating target ions and isotopes for the compound
+            # Add the compound to session (before creating ions that reference it)
+            session.add(target_compound)
+
+            # Create target ions for the compound
+            # Read as rows, not through the listing controller: its response
+            # carries fields computed for the API (``shipped``) that are not
+            # columns, and the model does not accept them back.
+            if ionization_mechanisms is None:
+                ionization_mechanisms = (
+                    await session.scalars(select(IonizationMechanism))
+                ).all()
+
+            await create_target_ions(
+                target_compound=target_compound,
+                ionization_mechanisms=ionization_mechanisms,
+                independent_transaction=False,
+                session=session,
             )
-            continue  # as ions & isotopes are already there in this case
 
-        # STEP2: Proceed to creating new target compound record and generating target ions and isotopes for the compound
-        # Add the compound to session (before creating ions that reference it)
-        session.add(target_compound)
+        if independent_transaction:
+            await session.commit()
 
-        # Create target ions for the compound
-        if ionization_mechanisms is None:
-            ionization_mechanisms_data = await get_ionization_mechanisms()
-            ionization_mechanisms = [
-                IonizationMechanism(**ionization_mechanism_dict)
-                for ionization_mechanism_dict in ionization_mechanisms_data["data"]
-            ]
+            # reload target.compound list (compound not in any collections yet)
+            await emit_record_reload(record_type="target_compound")
+        else:
+            await session.flush()
 
-        await create_target_ions(
-            target_compound=target_compound,
-            ionization_mechanisms=ionization_mechanisms,
-            independent_transaction=False,
-            session=session,
-        )
-
-    if independent_transaction:
-        await session.commit()
-
-        # reload target.compound list (compound not in any collections yet)
-        await emit_record_reload(record_type="target_compound")
-    else:
-        await session.flush()
-
-    return {
-        "target_compound_ids": target_compound_ids,
-        "created_compounds": target_compounds_to_create,
-        "existing_compounds": existing_target_compounds,
-        "message_logs": message_log,
-    }
+        return {
+            "target_compound_ids": target_compound_ids,
+            "created_compounds": target_compounds_to_create,
+            "existing_compounds": existing_target_compounds,
+            "message_logs": message_log,
+        }
 
 
 @api_controller()
@@ -662,75 +665,74 @@ async def delete_target_compound(
     :return: Success message with deleted compound name
     :rtype: dict[str, str]
     """
-    if independent_transaction:
-        session = async_session()
+    async with owned_session(independent_transaction, session) as session:
+        # Fetch the target compound
+        target_compound = await session.get(TargetCompound, target_compound_id)
+        if not target_compound:
+            raise NotFoundException(
+                f"Target compound with ID '{target_compound_id}' not found"
+            )
 
-    # Fetch the target compound
-    target_compound = await session.get(TargetCompound, target_compound_id)
-    if not target_compound:
-        raise NotFoundException(
-            f"Target compound with ID '{target_compound_id}' not found"
-        )
-
-    # Fetch the target collections where the deleting compound was present
-    result = await session.execute(
-        select(TargetCompoundInTargetCollection.target_collection_id).filter(
-            TargetCompoundInTargetCollection.target_compound_id == target_compound_id
-        )
-    )
-    affected_target_collection_ids = result.scalars().all()
-
-    # Resolve the batches using those collections before the delete cascades
-    affected_batch_ids: list[str] = []
-    if affected_target_collection_ids:
+        # Fetch the target collections where the deleting compound was present
         result = await session.execute(
-            select(TargetCollectionInSampleBatch.sample_batch_id)
-            .where(
-                TargetCollectionInSampleBatch.target_collection_id.in_(
-                    affected_target_collection_ids
-                )
+            select(TargetCompoundInTargetCollection.target_collection_id).filter(
+                TargetCompoundInTargetCollection.target_compound_id
+                == target_compound_id
             )
-            .distinct()
         )
-        affected_batch_ids = result.scalars().all()
+        affected_target_collection_ids = result.scalars().all()
 
-    # Delete the compound (associations removed by cascade)
-    await session.delete(target_compound)
-
-    if independent_transaction:
-        await session.commit()
-
-        # The cascade wiped the compound's match rows in every batch using it;
-        # flag those batches pending rematch. Nested callers (e.g. formula
-        # updates, collection deletion) set the flag themselves.
-        if affected_batch_ids:
-            await update_sample_batch_status(
-                affected_batch_ids, "rematch", independent_transaction=True
+        # Resolve the batches using those collections before the delete cascades
+        affected_batch_ids: list[str] = []
+        if affected_target_collection_ids:
+            result = await session.execute(
+                select(TargetCollectionInSampleBatch.sample_batch_id)
+                .where(
+                    TargetCollectionInSampleBatch.target_collection_id.in_(
+                        affected_target_collection_ids
+                    )
+                )
+                .distinct()
             )
+            affected_batch_ids = result.scalars().all()
 
-        # Emit reload events
-        reload_events = []
+        # Delete the compound (associations removed by cascade)
+        await session.delete(target_compound)
 
-        # 1. Reload for each affected collection (both stores subscribed to same rooms)
-        for collection_id in affected_target_collection_ids:
-            reload_events.extend(
-                [
-                    emit_record_reload(
-                        record_type="target_collection", room=collection_id
-                    ),  # target.collection store detailed
-                    emit_record_reload(
-                        record_type="match_ion", room=collection_id
-                    ),  # match.ion store list
-                ]
-            )
+        if independent_transaction:
+            await session.commit()
 
-        # 2. Reload compound list globally
-        reload_events.append(emit_record_reload(record_type="target_compound"))
-        if reload_events:
-            await asyncio.gather(*reload_events)
-    else:
-        await session.flush()
+            # The cascade wiped the compound's match rows in every batch using it;
+            # flag those batches pending rematch. Nested callers (e.g. formula
+            # updates, collection deletion) set the flag themselves.
+            if affected_batch_ids:
+                await update_sample_batch_status(
+                    affected_batch_ids, "rematch", independent_transaction=True
+                )
 
-    return {
-        "message": f"Target compound '{target_compound.target_compound_name}' was deleted.",
-    }
+            # Emit reload events
+            reload_events = []
+
+            # 1. Reload for each affected collection (both stores subscribed to same rooms)
+            for collection_id in affected_target_collection_ids:
+                reload_events.extend(
+                    [
+                        emit_record_reload(
+                            record_type="target_collection", room=collection_id
+                        ),  # target.collection store detailed
+                        emit_record_reload(
+                            record_type="match_ion", room=collection_id
+                        ),  # match.ion store list
+                    ]
+                )
+
+            # 2. Reload compound list globally
+            reload_events.append(emit_record_reload(record_type="target_compound"))
+            if reload_events:
+                await asyncio.gather(*reload_events)
+        else:
+            await session.flush()
+
+        return {
+            "message": f"Target compound '{target_compound.target_compound_name}' was deleted.",
+        }

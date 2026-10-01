@@ -318,6 +318,10 @@ def test_scan_statistics_match_thermo(monkeypatch, path):
         assert o["LowMass"] == pytest.approx(t["LowMass"], rel=1e-9)
         assert o["HighMass"] == pytest.approx(t["HighMass"], rel=1e-9)
         assert o["ScanNumber"] == t["ScanNumber"]
+        # The scan-index fields: the packet size, and the acquisition's segment
+        # and event this scan belongs to.
+        assert o["PacketCount"] == t["PacketCount"]
+        assert o["SegmentNumber"] == t["SegmentNumber"]
         assert o["ScanEventNumber"] == t["ScanEventNumber"]
         assert o["IsCentroidScan"] == t["IsCentroidScan"]
         _assert_same_filter(o["ScanType"], t["ScanType"])

@@ -4,6 +4,99 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 ## [Unreleased]
 
+## [1.10.1] - 2026.10.01
+
+### Changed
+
+- **The demo dataset is now bundle v1.3.0**
+  ([10.5281/zenodo.23077479](https://doi.org/10.5281/zenodo.23077479)), rebuilt
+  with the reader on opentfraw 2.0.0 so its goldens match what the pipeline now
+  produces. Same 161 acquisitions and the same reference data; the goldens move
+  only in intensity, by about 3.8% at the median, while every peak's m/z is
+  unchanged to the last digit. `mascope demo` picks it up by default, and 1.2.1
+  stays registered so a pinned run still resolves.
+- **The raw reader is on opentfraw 2.0.0, and the averaged profile no longer
+  depends on how a reader renders the m/z axis.** The reader was held at 1.4.0
+  because 1.4.1 corrected the profile m/z axis and the averaged-centroid heights
+  moved with it. The cause was in Mascope: the averaged profile's output grid
+  was built at the centres of the native frequency cells, which fall between the
+  stored samples, so the averaging read a chord drawn across each peak rather
+  than the measured points - and a raw file keeps only about three points per
+  peak width, so that costs several percent of the apex. The loss also ramped
+  across the mass range, which is why a change of axis moved the heights at all.
+  Each grid point now sits at the mean of the real frequencies in its cell, a
+  position the instrument actually sampled. Measured on a single scan, where the
+  apex must reproduce the instrument's own centroid label because nothing is
+  averaged, that reads 0.992 of the label where cell centres read 0.964; and the
+  bias against the Thermo library now differs by 0.1 percentage points between
+  reader versions, against 1.3 before. The loss was also **mass-dependent** -
+  across five m/z bands it ran from 0.978 to 0.954, a 2.4 percentage-point
+  spread, so it moved intensities against each other across the mass range and
+  distorted the shape of a spectrum, not just its scale. That spread is now
+  0.08. Neighbouring peaks were barely affected, so isotope patterns are
+  unchanged by this: against the known 79Br/81Br abundance ratio the new grid
+  is closer to truth on 49.5% of the same ions, a coin flip. **Peak intensities
+  rise by about 3%**:
+  the apex of the measured averaged profile genuinely sits there, and Thermo's
+  averaging convention reports a little less. The difference is stated rather
+  than tuned away, and the demo bundle's goldens move with it.
+- The three single-scan files that only the Thermo library could open are
+  readable again; the fix has been upstream since 1.5.0 and the pin now carries
+  it.
+
+### Added
+
+- Scan statistics report `PacketCount`, `SegmentNumber` and `ScanEventNumber`
+  from the scan index under the OpenTFRaw reader, where they were previously
+  `None` or read from the trailer as a stand-in. They equal the Thermo library's
+  values on every scan measured, and the parity suite now asserts them.
+  `CycleNumber` is the only scan statistic the reader still cannot supply.
+
+### Performance
+
+- Scan selection under the OpenTFRaw reader reads scan metadata without
+  decoding any peaks. On the longest file of the internal regression corpus
+  (1,486 scans) that is 88.9 ms against 19.0 ms.
+
+### Fixed
+
+- **Creating a target compound works again.** Since 1.10.0, adding a new
+  compound - directly, by saving a target collection that adds one, or by
+  editing a compound's formula, which creates it again - failed with "'shipped'
+  is an invalid keyword argument for IonizationMechanism": the compound's ions
+  were built from the ionization mechanism listing, whose response now carries
+  the computed `shipped` flag. The mechanisms are read as rows instead.
+- **A shipped ionization mechanism no longer fails to be created on a server
+  holding large compounds.** A low resolution isotope line names every
+  isotopologue it merges, and for a large halogenated ion under `[M+Br2]-` the
+  names ran past the 4096-character column, which rolled back the whole
+  mechanism at every start. When the names do not fit, the most abundant ones
+  that do are kept (#1360). More generally, a compound whose ions still would
+  not fit their columns no longer blocks a new mechanism: it goes without ions
+  under that mechanism, and a warning names it.
+- **A failed target compound create or delete no longer leaks a database
+  connection.** These controllers open a session of their own and only ever
+  committed it, so any failure before the commit left the connection checked
+  out until the garbage collector terminated it, logging "The garbage collector
+  is trying to clean up non-checked-in connection". Every failed target
+  collection save in 1.10.0 leaked one. The session is now closed on every path,
+  including a request cancelled while it saves.
+- **Creating several target compounds reports each one under its own entry.**
+  A compound matching two stored ones - one by CAS number, one by name and
+  formula - had its result written over another compound's entry in the
+  response's message log, and its own entry left empty.
+- **Error monitoring reports less of what needs nobody, and says more about
+  what does.** A batch whose only failures are peak data an older Mascope
+  built, every file of it already queued for the rebuild that rematches its
+  samples, now logs its summary at info rather than warning: after an upgrade
+  that was most batches on a server, each opening an issue of its own. A
+  rebuild that leaves its store still disagreeing with the file is warned
+  about by the worker that ran it instead. A server no file has reached yet no
+  longer warns at every start that it has no instruments. An exception event
+  now carries the line it was logged with, which names what failed - a file
+  the converter could not process, now with its size and how long ago it was
+  last written - where the event used to hold the exception alone.
+
 ## [1.10.0] - 2026.09.30
 
 ### Added

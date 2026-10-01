@@ -24,6 +24,9 @@ from mascope_backend.api.controllers.match.lib.match_score_v2 import (
     ion_score_v2,
     sample_noise_floor,
 )
+from mascope_backend.api.controllers.target.lib.compute.target_ions_compute import (
+    fit_isotope_names,
+)
 from mascope_backend.api.new.peak_assignments.tiers import (
     TIER_ASSIGNED,
     TIER_BELOW_ASSIGNABILITY,
@@ -695,18 +698,14 @@ def fit_isotope_formula(value) -> str | None:
     carries bromine or nitrogen the names run past the column, and a single row
     too long fails the insert of the whole run. The column is a label the
     inspector renders, not a record of every contributor, so whole names are
-    kept from the front and the rest are dropped.
+    kept from the front and the rest are dropped (:func:`fit_isotope_names`,
+    which the generator fits its own column with). The label carries no
+    abundances, so the front - the lightest names - is what is kept.
     """
     text = _str_or_none(value)
-    if text is None or len(text) <= ISOTOPE_FORMULA_LENGTH:
-        return text
-    kept = ""
-    for name in text.split("/"):
-        joined = f"{kept}/{name}" if kept else name
-        if len(joined) > ISOTOPE_FORMULA_LENGTH:
-            break
-        kept = joined
-    return kept or text[:ISOTOPE_FORMULA_LENGTH]
+    if text is None:
+        return None
+    return fit_isotope_names(text.split("/"), ISOTOPE_FORMULA_LENGTH)
 
 
 def _isotope_offset_label(iso_mz: float, main_mz: float | None) -> str | None:

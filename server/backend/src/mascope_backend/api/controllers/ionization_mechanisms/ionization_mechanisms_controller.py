@@ -2,6 +2,8 @@
 Ionization mechanisms controller for managing ionization mechanism operations.
 """
 
+from functools import lru_cache
+
 from fastapi import HTTPException
 from pydantic import ValidationError
 from sqlalchemy import (
@@ -236,11 +238,18 @@ async def add_ionization_mechanism(session, ionization_mechanism) -> tuple[int, 
     because on a library of a thousand-odd compounds the round trips, not
     the isotope patterns, are most of the time.
 
+    That one flush is also why a compound whose rows do not fit their columns
+    is left out rather than added: one row too long fails the flush, and with
+    it the mechanism and every other compound's ions - for a mechanism Mascope
+    ships, at every start. Such a compound goes without ions under this
+    mechanism, which it could not hold anyway, and is logged.
+
     :param session: The session to add them in.
     :param ionization_mechanism: The ``IonizationMechanism`` row, id and all.
     :return: How many compounds the library holds, and how many target ions
         were built for them (a mechanism that cannot apply to a compound, such
-        as a loss of atoms it lacks, builds none for it).
+        as a loss of atoms it lacks, builds none for it, and neither does one
+        whose rows would not fit).
     :rtype: tuple[int, int]
     """
     session.add(ionization_mechanism)
@@ -251,11 +260,54 @@ async def add_ionization_mechanism(session, ionization_mechanism) -> tuple[int, 
         target_ions, target_isotopes = generate_target_ions_from_composition(
             target_compound, [ionization_mechanism]
         )
+        overlong = _overlong_value([*target_ions, *target_isotopes])
+        if overlong is not None:
+            runtime.logger.warning(
+                f"Target compound '{target_compound.target_compound_formula}' "
+                f"({target_compound.target_compound_id}) gets no ions under "
+                f"ionization mechanism {ionization_mechanism.ionization_mechanism}: "
+                f"{overlong} does not fit its column."
+            )
+            continue
         session.add_all(target_ions)
         session.add_all(target_isotopes)
         ions += len(target_ions)
     await session.flush()
     return len(target_compounds), ions
+
+
+@lru_cache(maxsize=None)
+def _bounded_columns(model) -> tuple[tuple[str, int], ...]:
+    """
+    The columns of a model's table that hold strings of a bounded length.
+
+    :param model: An ORM model class.
+    :return: Each such column's key and length.
+    """
+    return tuple(
+        (column.key, column.type.length)
+        for column in model.__table__.columns
+        if getattr(column.type, "length", None)
+    )
+
+
+def _overlong_value(rows) -> str | None:
+    """
+    Where the first string too long for its column is among rows to be added.
+
+    :param rows: ORM rows, not yet added.
+    :return: The column and the lengths, for a log line; None when every value
+        fits.
+    """
+    for row in rows:
+        for key, length in _bounded_columns(type(row)):
+            value = getattr(row, key)
+            if isinstance(value, str) and len(value) > length:
+                return (
+                    f"{row.__tablename__}.{key} "
+                    f"({len(value)} characters, {length} allowed)"
+                )
+    return None
 
 
 @api_controller()

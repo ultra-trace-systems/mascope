@@ -1898,7 +1898,22 @@ async def match_compute_batch(
             "file(s); the samples using them will rematch on their own once "
             "it finishes."
         )
-    if failed_samples_count > 0 or aggregation_failed:
+    # Every failure is a store an older Mascope built, and every such file is
+    # queued for the detection that rebuilds it and rematches its samples: the
+    # batch repairs itself and nobody has anything to do. After an upgrade
+    # that is most batches on the server, and the message names the batch, so
+    # at WARNING each would open an error-monitoring issue of its own.
+    repairing_itself = (
+        not aggregation_failed
+        and set(failure_reason_counts) == {STALE_PEAK_STORE_REASON}
+        and rebuilds_queued == len(stale_peak_store_files)
+    )
+    # A rebuild that does not repair its store is warned about by the worker
+    # that ran it (PeakRecomputeWorker._check_rebuilt_store), so trusting the
+    # queue here does not leave such a file unreported.
+    if repairing_itself:
+        runtime.logger.info(message)
+    elif failed_samples_count > 0 or aggregation_failed:
         # One aggregated warning per problem batch; the per-sample failures
         # above are logged at INFO.
         runtime.logger.warning(message)

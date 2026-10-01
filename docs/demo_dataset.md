@@ -166,6 +166,44 @@ another worktree's converter — the key is not env-scoped). It then keeps
 sweeping `failed_files/` for the rest of the run, re-uploading the bundle's own
 files up to twice each and reporting by name any that still never made it.
 
+**Two converters on one directory fail the same way, and the guard above does
+not catch it.** A second stack that mounts this env's runtime home into its own
+file-converter puts two converters on one `filestreams/` directory. Whichever
+picks a file up first claims it, and when that is the other stack's converter
+the file was never registered with it, so it fails with the same "not
+registered in file converter service" and lands in `failed_files/`. The
+presence-key guard passes throughout, because a converter *has* connected; it
+is simply not the only one. A rebuild then stalls part-way with a large
+quarantine while the symptom points at the race above, which sends you reading
+the uploader's presence-key logic for a fault that is not there.
+
+The two are told apart by whether another converter is running at all, so check
+before starting a rebuild rather than diagnosing afterwards. Nothing should be
+printed:
+
+```sh
+docker ps -q | xargs -r docker inspect \
+  --format '{{.Name}}{{range .Mounts}} {{.Source}}{{end}}' \
+  | grep -F "$(mascope path)/.runtime/env/demo"
+```
+
+A stack that mounts the env matches twice, its backend as well as its file
+converter. **Only the converter consumes `filestreams/`**, so it is the one that
+collides; a backend sharing the directory is harmless, and the second line is
+not a second offender.
+
+Rebuild on a host that is not running another stack over the same env, rather
+than stopping a live service to free it: the collision is a property of the
+machine, and the same bundle rebuilds cleanly elsewhere. Measured both ways on
+one branch and one bundle, changing nothing but the host: where the check named
+a converter, 58 of 161 files ingested and 104 were quarantined; where it named
+nothing, 161 of 161 with none quarantined, first attempt, and that host's own
+stack stayed up throughout. Note also that the check sees only the local
+daemon.
+
+`check_raw_coverage` refuses goldens from a short run, so a collision costs a
+rebuild rather than a corrupted bundle.
+
 ## End-to-end reproducibility test
 
 Location: `server/backend/tests/system/reproducibility/`. It is the asserted
@@ -392,7 +430,7 @@ The published artifact is a zip of `<BUNDLE>`. The sign-off report lives outside
 
 ### E. Add an MS2 acquisition
 
-Every bundle so far is MS1-only (1.2.1: 161 Orbitrap acquisitions, no MS2
+Every bundle so far is MS1-only (1.3.0: 161 Orbitrap acquisitions, no MS2
 scans), so nothing that runs against a demo stack reads MS2. On it
 `/api/samples/{id}/ms2/summary` reports `ms2_scan_count: 0` and
 `/ms2/centroids` answers 400. The SDK contract suite's `TestMs2Contract`

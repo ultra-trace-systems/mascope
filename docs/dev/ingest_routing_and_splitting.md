@@ -1,17 +1,31 @@
 # Automatic ingest: chemistry routing and acquisition splitting - design
 
-Status: **phases 0 and 1 shipped; phase 2 started** (2026-09-25). Written for issue #2098
-("Split files into samples by scan attributes"), which carries the checklist
-of pull requests. The decisions in section 12 are open.
+Status: **phases 0 and 1 shipped; phase 2 learned and measured, its rung
+next; phase 8 added** (2026-09-30). Written for issue #2098 ("Split files
+into samples by scan attributes"), which carries the checklist of pull
+requests. Decisions 1, 2, 4, 9 and 12 in section 12 are settled; the rest are
+open.
 
 ## Picking this up
 
 The feature: when a file arrives, Mascope works out on its own
 
-- **which chemistry applies**, per part of the file, without a filename token;
+- **which chemistry applies**, per part of the file, from what the file
+  carries - its acquisition method and scan parameters - without a filename
+  token or any configuration by the person who uploaded it;
 - **how to split it by scan type**: MS order, polarity, scan range, scan mode,
   and the rest of what the instrument was told to measure;
 - optionally, **how to split it by time or by a signal trace**.
+
+The unit a person sees is the **chemistry profile**: a shipped, system-owned
+description of one chemistry that carries everything the pipeline needs -
+the adduct panel, the reagent-ion library that anchors the m/z calibration
+and diagnoses the spectrum, and the evidence that recognises it. A regular
+user picks a profile once, when a file first arrives from an unseen method,
+and never edits one. Ionization modes with filename tokens, hand-typed
+mechanisms and hand-built calibrant collections remain, as the advanced path
+for exotic chemistries and calibration standards. Section 5.1 says how far
+the profile has been built.
 
 The design in one paragraph. A physical acquisition (`sample_file`) is
 partitioned into **streams**: scans that share a scan signature and a
@@ -25,36 +39,41 @@ Chemistry is bound by a ladder of evidence, strongest rung first (section
 
 0. a declaration;
 1. an explicit choice;
-2. a learned binding on the acquisition method;
+2. a method binding a person has confirmed;
 3. the filename token, matched within the instrument's own modes;
+4. a method binding learned from the files before it;
 5. detection from the reagent ions.
 
-(There is no rung 4. An instrument default was planned there and dropped -
-section 5.2 says why.)
+The token is the advanced path's override: it outranks what the system has
+learned and yields to what a person has confirmed. (Rung 4 once held an
+instrument default, since dropped - section 5.2 says why.)
 
 Detection also audits every other rung. Anything unresolved is parked as
-"needs a chemistry", visibly, instead of failing silently.
+"needs a chemistry", visibly, with a suggestion where detection has one,
+instead of failing silently.
 
-Read sections 1 and 2 for the problem and the evidence, 3 for the model, and
-10 for the plan and how it lands. Every pull request for this work updates
-the table below and ticks its item on #2098.
+Read sections 1 and 2 for the problem and the evidence, 3 for the model, 5.1
+for the profile, and 10 for the plan and how it lands. Section 9.1 carries
+the three rules that keep already-processed files as they are. Every pull
+request for this work updates the table below and ticks its item on #2098.
 
 | Phase | Content | State |
 |---|---|---|
 | 0 | Stop losing information: method identity, stream census, token-rule and notification fixes | shipped |
 | 1 | Per-file processing state, persistent notifications, "needs a chemistry" | shipped (#2164, #2166-#2169) |
-| 2 | Method bindings: routing without tokens | started; the seeded modes and the learning have shipped, nothing routes on a binding yet, section 10 marks each item as it ships |
+| 2 | Method bindings: routing without tokens | learned in shadow on every server (#2193, #2196, #2206, #2226) and measured (5.7); provenance, the row-following learner and the rung itself remain, section 10 lists them |
+| 8 | Chemistry profiles as the unit: complete the seeded profiles, list them, a profile-first surface, batches named after the profile | open; built right after phase 2 |
 | 3 | The part contract: stream and window honoured by every consumer | open |
 | 4 | Per-stream state: calibration, instrument function, one item per stream, MS2 | open |
-| 5 | Chemistry detection: audit first, then provisional binding | open |
+| 5 | Chemistry detection: audit first, then provisional binding | open; its reagent libraries are on `develop`, so it is unblocked and follows phase 8 |
 | 6 | Recipes: time and trace windows, preview and apply | open |
 | 7 | Declarations from the instrument side, MS2-only parts | open |
 
 Related designs, and how this one relates to them (section 13):
 
 - `ionization_method_config.md`: method identity and routing order.
-- `chemistry_profiles.md`: on `epic/assignment-quality`; the profiles
-  themselves.
+- `chemistry_profiles.md`: the profiles themselves, and the versioned row a
+  seeded profile migrates into (5.1).
 - `multi_sample_items_per_file.md`: on
   `claude/multi-sample-file-generation-31b141`; windows.
 - The setup-simplification proposal of 2026-09-03: a private design page.
@@ -136,11 +155,12 @@ one. #2153 fixed the ordering: its tests fail on the code before it.
 
 The internal fleet regression corpus is 201 de-identified files from every
 production site, internal only. It holds 185 Orbitrap files, of which OpenTFRaw
-reads 182. The other 3 are single-scan files that fail in OpenTFRaw's search
-for the trailer's layout
-([Sigilweaver/OpenTFRaw#54](https://github.com/Sigilweaver/OpenTFRaw/pull/54));
-the Thermo library reads them. A read-only census grouped
-every file's scans by Thermo filter string:
+reads all 185 at the pinned version. Three of them, each a single scan, failed
+in OpenTFRaw's search for the trailer's layout when the census was taken
+([Sigilweaver/OpenTFRaw#54](https://github.com/Sigilweaver/OpenTFRaw/pull/54),
+fixed upstream in 1.5.0 and carried by the pin since); the numbers below still
+describe the 182 the census covered. A read-only census
+grouped every file's scans by Thermo filter string:
 
 - **180 files hold a single scan stream.**
 - **2 files hold several**, and both switch polarity.
@@ -275,8 +295,8 @@ threshold on one ion's trace finds it.
   files: identical stores, identical items.
 - **Routing should be learned on the acquisition method.** Detection audits
   every binding and suggests one on first contact; it never binds silently.
-- **Instrument plus polarity is not a safe implicit key.** It stays available
-  only as an explicit, admin-set default.
+- **Instrument plus polarity is not a safe implicit key**, and an instrument
+  has no default chemistry to fall back on either (5.2).
 - **Time and trace splitting serve two different needs:**
   - chemistry epochs, where a control program switches reagents inside one
     file;
@@ -461,45 +481,76 @@ every existing item keeps its meaning. Copy and move carry it.
 
 ## 5. Chemistry binding
 
-### 5.1 What a binding points at
+### 5.1 What a binding points at: the chemistry profile
 
-A binding points at an **ionization mode**, because every downstream
-consumer reads one: mechanisms, calibrant collection, diagnostic collection
-and, on the epic, the resolved profile.
+A binding points at a **chemistry profile**. In storage a profile is an
+**ionization mode** row, because every downstream consumer reads one -
+mechanisms, calibrant collection, diagnostic collection and, for assignment,
+the resolved profile - and a profile is the seeded, system-owned kind of that
+row: a fixed identity (`system_key`) that reads the same on every server, a
+name, a polarity, its mechanisms and its collections. A site's own modes are
+the same row without a `system_key`, and stay bindable. They are the advanced
+path, not a second mechanism.
 
-A fresh instance needs something to bind to, so the chemistry presets ship
-as **seeded, system-owned modes**. That is step 3 of the setup-simplification
-proposal. It uses the `mascope_tools.composition.profiles` presets on
-`epic/assignment-quality` (BR, UR, NO3, NO3_15N, IODIDE, ESI_POS, ESI_NEG)
-together with their cluster libraries.
+What a regular user needs from a profile, and how far each part is built
+(2026-09-30):
 
-When versioned `reagent_profile` rows (assignment quality plan step 3.5) or
-`IonizationSetup` (`ionization_method_config.md` Phase 1) exist, bindings
-migrate to them. Nothing here depends on that.
+| A profile carries | State |
+|---|---|
+| Its identity, name, polarity and adduct panel (mechanisms) | shipped in #2193: eleven chemistries seeded at every start (`mascope_backend.ionization_catalogue`, `db.admin.ionization.ensure_system_modes`) |
+| Its calibrant collection: the reagent-ion library as m/z anchors | not built; a seeded row carries none, and a site adopts one by pointing a hand-built collection at it |
+| Its diagnostic collection: the reagent ions to look for | not built |
+| Its place in the browser | not built; the listing hides an unadopted profile unless asked (`include_system`), and the frontend never asks, so Choose chemistry cannot offer one |
+| Recognition: a fingerprint, and a hint on the method name | phase 5, and a measurement in phase 8 |
+
+The first row is what made the method binding measurable at all: judged on the mode
+record, a third of the fleet's Orbitrap files look ambiguous; judged on the
+chemistry a profile names, three in a hundred (2.4). The next three rows are
+phase 8, which is what makes a profile usable on the day a server is
+installed. Until it ships, a fresh server processes its first file only after
+someone has built a mode the advanced way.
+
+The versioned `reagent_profile` row of `chemistry_profiles.md` (section 3.1
+there) is the same object with an element grid and a matrix context beside
+it. The seeded mode's `system_key` is the identity that migrates into it; a
+binding then points at the profile row, and nothing in the ladder changes.
 
 ### 5.2 The ladder
 
 Rungs are tried per stream, strongest first. The first rung that yields
 exactly one mode binds.
 
-| Rung | Source | Writes | Teaches rung 2? |
+| Rung | Source | Writes | Teaches the method binding? |
 |---|---|---|---|
 | 0. Declared | The acquisition's own record: a control-program journal, an agent-uploaded sidecar, a mapped analog input (phase 7) | `declared`, confirmed | yes |
 | 1. Explicit | A person: manual processing, re-routing, a review decision | `explicit`, confirmed | yes |
-| 2. Method binding | `method_binding` on (instrument, method identity, signature class) | `method`, with the binding's own state | - |
-| 3. Filename token | Today's rule, evaluated per stream polarity and requiring one mode per polarity | `token`, learned | yes |
-| ~~4. Instrument default~~ | ~~An admin-set default for (instrument, polarity)~~ - **dropped, see below** | - | - |
+| 2. Method binding, confirmed | `method_binding` on (instrument, method identity, signature class), once a person has confirmed it | `method`, confirmed | - |
+| 3. Filename token | Today's rule, evaluated per stream polarity and requiring one mode per polarity; the advanced path's override | `token`, learned | yes |
+| 4. Method binding, learned | The same row while it is only learned: unanimous on one chemistry, keyed on a real method name, its row applicable to the instrument | `method`, learned | - |
 | 5. Detected | Section 5.4, only when its guards pass | `detected`, **provisional** | only after review |
 | none | - | stream parked as `needs_chemistry` | - |
 
-**There is no instrument-default rung, and #1463 is not one.** The rung was
-planned as an admin-set default per (instrument, polarity): what an instrument
-runs, for a file nothing else identifies. Measured on the production fleet
+**Why a learned binding sits below the token, and a confirmed one above.**
+The order was first decided the other way round (decision 2), on the strength
+of the method key. The first fleet measurement (5.7) showed where each order
+would act: every file the binding could gain is a file no token binds, and every
+file where the two could disagree is one a token already routes. Above the
+token, a learned binding could only re-route what routes today; below it, it
+routes what parks today and changes nothing else. A person's confirmation is
+a different kind of evidence - it says what the method is, whatever a file
+was named - so a confirmed binding outranks the token, as an explicit choice
+does. Confirmation does not exist yet; it arrives with the disagreement
+report of phase 2.
+
+**Rung 4 holds the learned binding. The instrument default once planned
+there was dropped, and #1463 is not one.** The default was to be admin-set
+per (instrument, polarity): what an instrument runs, for a file nothing else
+identifies. Measured on the production fleet
 before building it, that is a fiction. On the largest server 13 of its 16
 instruments have run more than one chemistry - the busiest has run 55 - and 78
 of its 116 modes carry a token. An instrument does not have *a* chemistry; it
 switches between them, and a default would bind a file to whichever one was set
-last. Rung 4 fires precisely when no other evidence exists, so a stale default
+last. A default fires precisely when no other evidence exists, so a stale one
 would route files wrongly with nobody looking, and it was to be written
 `confirmed`, which is not reviewed.
 
@@ -510,7 +561,7 @@ stops competing for every other instrument's names. That is rung 3 getting
 sharper rather than a rung below it. It also opens the way to per-instrument
 configuration beyond chemistry (`ionization_method_config.md`).
 
-A site that genuinely runs one chemistry per instrument is served by rung 2
+A site that genuinely runs one chemistry per instrument is served by rung 4
 once its method has been seen once, which is the same outcome without a
 standing setting to go stale.
 
@@ -565,11 +616,34 @@ two chemistries, one per polarity.
 - **A key routes only while its history agrees on one chemistry.** Learning
   records the set of chemistries a key has been seen with; the binding routes
   only while that set holds exactly one. A key seen with a second chemistry is
-  marked `ambiguous` and rung 2 is skipped for it from then on, so the token
+  marked `ambiguous` and the binding is skipped for it from then on, so the token
   decides as it did before. This is not the same as the disagreement counting
   below, which acts on a binding that already exists: a key that was never
   unanimous must not become a routing binding in the first place. On the fleet
   as measured in 2.4 this holds back 18 of 408 Orbitrap keys.
+
+**A binding follows what its method runs now.** Unanimity is judged on the
+chemistry, so two mode rows for one chemistry - a site's old row and the one
+that replaced it, or its own row and the profile it adopted - never make a
+key ambiguous, and the row the binding points at is what its files bind to,
+batch name and collections included. As first built the row was the first
+one seen and never moved (5.7). The binding now also records the row of its
+newest observation and re-points to it once the last three observations
+agree on it; a single re-bound file does not move it. The backfill folds the
+whole history the same way, oldest first, so the row it leaves is the newest.
+
+**Why three.** The two ways to be wrong cost different amounts, so the
+threshold sits on the cheap side. Moving too eagerly is the expensive error:
+one corrected file would drag a whole method's routing with it. Moving too
+slowly is nearly free, because this rung is below the token - a file with a
+token is unaffected either way, and a file without one routes to another row
+of the same chemistry, which is where it would have parked before the rung
+existed. Three is the smallest count that no single re-bind, and no pair of
+them on one afternoon, can reach. It is also fast in practice: a method in
+daily use makes three observations within a day, while a method used twice a
+year is held back for a season, which is the right way round. Set it as a
+named constant and move it on evidence - phase 2's disagreement report
+(section 10) is what would show whether real changes are waiting too long.
 
 **A method name that is a constant is no method name.** Some instruments
 report a fixed configuration name for every acquisition - Tofwerk's
@@ -666,9 +740,8 @@ it is new work.
 - **Only ambiguous and unobservable streams park.** A parked stream has
   converted peaks but no items; resolving it resumes the pipeline from
   binding.
-  - Until the ladder has more rungs than the token, every file the token
-    binds to nothing parks. Since #2167 that is the whole file, at status
-    `needs_chemistry`.
+  - Until rung 4 routes, every file the token binds to nothing parks. Since
+    #2167 that is the whole file, at status `needs_chemistry`.
 
 ### 5.6 Processing state and notifications
 
@@ -690,6 +763,12 @@ it is new work.
     `calibrated`) as `failed`.
   - `sample_file_utc_created` records when the converter registered the file
     (#482). Unlike `processing_updated_utc`, no later stage overwrites it.
+  - Every ACQUISITION item the pipeline makes records **how it was bound**:
+    `bound_by` (`declared`, `explicit`, `token` or `method`) and, for a
+    method, the binding row. NULL on an item made before this existed. Phase
+    4 carries both to the stream. The first fleet measurement (5.7) had to
+    rebuild the token rule in SQL and validate it on a sample because nothing
+    recorded it.
 - **Notifications** become rows: recipient, kind, severity, payload, read,
   resolved.
   - Processing events for an instrument address the device sponsor and the
@@ -716,6 +795,69 @@ it is new work.
       an agent's the device sponsor.
 - **The file list endpoint** already accepts a device token and returns every
   column. The File Agent's status poller reads the new columns (#2169).
+
+### 5.7 What the first fleet measurement showed
+
+Measured once v1.10.0 was deployed and both backfills had run. Read-only SQL
+per site, reproducing the token rule as the code applies it - the token a
+substring of the file name, the mode's polarity among the file's, the
+instrument scope compared folded - and the method key as 5.3 defines it.
+
+**The reconstruction was checked before any result was read.** Against
+`sample_item.ionization_mode_id`, which records what each file actually bound
+to, it agreed on 19,999 of 19,999 comparable files in a 20,000-file sample,
+with no mismatch. What follows therefore describes the rules as they ran, not
+an approximation of them.
+
+**The case for the rung holds, and it is concentrated in one place.** At every
+site but one, a filename token already routes at or near 100% of files, so
+the method rung would change nothing there. At the exception, 31,842 files carry no
+usable token, and 29,161 of those sit on a method whose binding is
+unambiguous - about 16% of that server, every one of them a file that parks
+for a person today.
+
+**Where a token and a binding both answer, they disagree more often than
+expected, and the disagreements are old.** At one site 56% of files over all
+time, against 3 files in the last ninety days; at another, several hundred
+falling to none. Two sites still disagree on recent files.
+
+**Those disagreements are model churn, not conflicting chemistry.** Each of
+the two has a single disagreeing pair in its newest 20,000 files, and in both
+the two modes are the same chemistry under two rows - the second created
+later, because until recently an existing mode row could not be edited and any
+change meant a new row. Older files bound to the older row; the token now
+matches the newer one. Read as a signal about routing, the percentage above
+mostly measures how much the model has moved.
+
+**The finding that matters is in the design, not the data.** For every
+disagreeing file, a binding for that file's own instrument and method key does
+exist, points at the older row, and is in state `learned`. Not one is
+`ambiguous` - and that is the rule working, not failing. Agreement is judged
+on the chemistry (5.3), both rows name the same one, so there was no
+disagreement to record and the key is correctly still routable.
+
+What no rule covered is the row. A binding is written once and, while the
+chemistry holds, nothing moves it: the mode it points at is the first one its
+method was seen with. Seeded from the whole history by
+`backfill_method_bindings`, it is therefore anchored to the oldest row of a
+chemistry whose rows have since been replaced - so the method rung as built
+would route a future file to a row its site has stopped using, while every
+state on the binding reads healthy, because by the measure those states use
+it is.
+
+**Limits, since they bound what may be concluded.** `signature_class` comes
+from the scan-stream census in `.props` on disk, so SQL cannot select the exact
+binding row for a given file: the coverage figure is an upper bound, and the
+disagreement check joins on the file's own instrument and method key across
+every signature class recorded for that pair. The comparison is of mode-row
+identity, not of chemistry - which is precisely why the churn reading above
+matters rather than being a detail.
+
+**What follows from it** is decision 12, and it is settled: a learned binding
+routes below the token (5.2), follows its method's newest row (5.3), and the
+table is neither emptied nor windowed. The disagreement the measurement found
+becomes a report a person reads before confirming a binding, and the
+confirmed binding is the one that outranks the token.
 
 ---
 
@@ -880,7 +1022,7 @@ same hysteresis and dwell logic as a trace.
   semantics.
 - **Multi-stream files** are rebuilt by the maintenance script, dry-run
   first.
-- **Tokens keep working** as rung 3, and they teach rung 2.
+- **Tokens keep working** as rung 3, and they teach rung 4.
   - Browser upload stops rejecting token-less names only when the server
     announces the capability. The file then parks rather than being refused,
     the same capability pattern as `files_uploads_under_reported_instrument`.
@@ -893,6 +1035,43 @@ same hysteresis and dwell logic as a trace.
     the token model.
   - Under the ladder, some of its 41 non-routing specimens *should* start
     routing by method binding. Each needs a recorded expectation.
+
+### 9.1 Files already processed stay as they are
+
+Three rules, because the fleet's history was acquired under every state of
+this work and must not be reinterpreted by it:
+
+1. **A rule change applies to files processed after it ships.** A file's
+   items are rewritten only by an explicit re-process or bind, which run the
+   rules current at that moment. Switching a site to the ladder re-binds
+   nothing.
+2. **Backfill facts the raw file holds, never decisions.** The method name,
+   the scan census and the instrument type were facts, and they have been
+   restored fleet-wide. A processing status, a registration time, a binding
+   rung or a provenance that was never recorded stays NULL, and NULL means
+   "before this existed" - the meaning `sample_item.stream_id` already has.
+   `backfill_method_bindings` looks like an exception and is not one: it
+   reads decisions, but it writes none. What it folds is what the items
+   already record, into a table that is a summary of them rather than part
+   of any file's own record, and no item is touched. A summary built that
+   way decides nothing about the files it was built from - only about files
+   that arrive later, which is rule 1. The test to apply to the next
+   backfill is not "is the source a fact" but **"does anything a processed
+   file says come out different."**
+3. **Every file processed from now on records how it was bound** (5.6), so
+   the next measurement is a query rather than a reconstruction.
+
+What that leaves in place, and what happens to it:
+
+| Legacy | Treatment |
+|---|---|
+| Orbitrap files ingested between the reader switch and #2155, with no method name | restored from the file header by `populate_orbitrap_method_file`, run on every server |
+| Files converted before the census existed | restored from the retained raw data by `backfill_scan_stream_census`; a few dozen files fleet-wide had no raw data left or could not be read, and stay without one |
+| Files processed before phase 1, with no status or registration time | NULL, shown as no status |
+| Items bound under the token rule before #2158, or calibrated in the order before #2153 | as bound; a re-process applies the current rules |
+| Items bound to one of several mode rows for a chemistry | as bound; the binding follows the newest row for the files that arrive later, and a retired mode keeps its batches |
+| Bindings the backfill read from history (`source = history`) | kept; they carry no per-file rung, and provenance starts with the item columns |
+| Files with no acquisition sample | parked, or older than the parked state; an explicit bind routes them under the current rules |
 
 ---
 
@@ -1009,9 +1188,23 @@ Needed before any rung can be provisional or park.
   is `"shadow"`, so nothing reads the rows back; the backfills are
   `mascope prod db script run backfill_scan_stream_census`, which gives the
   Orbitrap history a signature class to be keyed on, and then
-  `mascope prod db script run backfill_method_bindings`. What remains is the rung
-  that consults them, behind the value that switches it on per site, and the
-  conflicts as review items.
+  `mascope prod db script run backfill_method_bindings`. Both have run on
+  every production server, and the first fleet measurement is in 5.7. What
+  remains, in order:
+  1. provenance on every ACQUISITION item (5.6), one migration;
+  2. the learner and the backfill follow the newest row (5.3), then the
+     backfill re-run on every server - it merges;
+  3. the rung, behind `backend.method_binding = "route"` per site: the
+     token, then a learned binding that is unanimous, keyed on a real method
+     name and whose row applies to the instrument, else park. The file's
+     processing detail says it was bound by its acquisition method;
+  4. a disagreement report, a db script listing the keys whose binding row
+     differs from what the token maps to today - what a person reads before
+     confirming a binding, and the seed of the confirm flow that fills
+     rung 2;
+  5. the switch, on the internal server first, the one site with token-less
+     files to gain; then the rest, where it changes nothing today and primes
+     every new method.
 - **Per-instrument modes (#1463):** an ionization mode may belong to one
   instrument, which filters what its file names are matched against. Not the
   instrument-default rung this item once named - section 5.2 records why that
@@ -1034,8 +1227,53 @@ Needed before any rung can be provisional or park.
 - **Gate:** a replay of the fleet corpus. Every token-routed file binds to
   the same mode. Files of known methods route without their token. Each
   outcome matches the re-baselined manifest.
-- **Result:** the setup win users see. A file named anything routes if its
-  method has been seen once.
+- **Result:** a file named anything routes if its method has been seen
+  once, and a file whose method is new parks for one click. The rest of the
+  setup win is phase 8.
+
+### Phase 8: chemistry profiles as the unit (2-3 weeks)
+
+Numbered after the phases it follows in this note, built right after phase
+2: it is where the setup win of the original proposal is delivered. Every
+item keeps a site's own modes working unchanged.
+
+- **Complete the profiles.** Each seeded chemistry gets a system-owned
+  calibrant collection and a diagnostic collection, seeded at start beside
+  its mechanisms from the reagent-ion library
+  (`mascope_tools.composition.reagents`), in the system workspace the
+  acquisition datasets already live in. The calibration fit reads its anchors
+  through one function (`_resolve_calibration_isotopes`), so a profile's
+  collection needs no pipeline change. Orbitrap wants one anchor and TOF
+  three spread across the range, and a reagent cluster series spans it. The
+  further tiers of the original proposal - background ions, self-consistency
+  - come later, if the reagent ions prove insufficient for a chemistry.
+- **A complete profile is listed from the start**, marked as shipped, and
+  "adopted" stops being a state: adopting a profile is choosing it for a
+  file. The `include_system` switch goes with it.
+- **A Chemistry surface for regular users, Advanced for the rest.** Profiles
+  first, each with what it has routed. The site's own modes, tokens,
+  mechanisms and collection overrides move under Advanced. Choose chemistry
+  lists the profiles. Storage keeps its names and tables; only what the
+  browser calls things changes.
+- **Cold start without the advanced path.** Detection in audit mode (phase
+  5) pre-fills the suggestion on a parked file. Before that, one read-only
+  measurement: how many of the fleet's method names contain a reagent word.
+  If most do, a profile carries recognition hints matched against the method
+  name, and a first contact becomes a confirmation rather than a choice.
+  Either way a hint binds provisionally, and a person's click confirms.
+- **Batches are named after the profile**, not after the site's mode, for
+  batches created after the change; existing batches keep their names. A
+  site retires a custom mode with a profile as its successor: its items and
+  batches stay, and only files processed afterwards follow the profile.
+  Renaming a mode in use is refused today because the batch carries the
+  name, so succession is the cheaper fix than renaming.
+- **Gates:**
+  - a fresh install processes its first file end to end after one click:
+    routed to the profile, calibrated on its anchors, matched, with no mode,
+    token or collection created by hand;
+  - the demo goldens are unchanged, and the demo's own modes and batches keep
+    their names;
+  - a site with tokens sees no change in routing.
 
 ### Phase 3: the part contract (2-3 weeks)
 
@@ -1110,16 +1348,18 @@ graph LR
     P0[0 foundations] --> P1[1 state + review]
     P0 --> P3[3 part contract]
     P1 --> P2[2 method bindings]
+    P2 --> P8[8 chemistry profiles]
     P3 --> P4[4 per-stream state]
-    P1 --> P5[5 detection]
-    E[epic reagent libraries] --> P5
+    P8 --> P5[5 detection]
+    E[reagent libraries, on develop] --> P5
     P3 --> P6[6 recipes + windows]
     P5 -.epochs.-> P6
     P6 --> P7[7 declarations]
 ```
 
-Phases 1-2 and 3-4 are independent tracks. Phase 2 is the earliest
-user-visible win; phase 4 closes the correctness gap.
+Phases 1-2-8 and 3-4 are independent tracks. Phase 2's rung and phase 8
+are the user-visible win, in that order; phase 5 follows 8 so that its
+suggestion has a profile to name; phase 4 closes the correctness gap.
 
 ### How it lands
 
@@ -1146,7 +1386,9 @@ is no epic branch.
   - **phase 5:** detection runs check-only for a release before it may bind
     anything.
 
-  Phase 6 needs no flag: the default recipe splits nothing.
+  Phases 6 and 8 need no flag: the default recipe splits nothing, a
+  profile's seeded rows are inert until a file is bound to one, and naming
+  batches after the profile applies to new batches only.
 - **One migration at most** per pull request.
 - **Status kept current.** It updates the status table at the top of this note
   and ticks its item on #2098.
@@ -1155,8 +1397,9 @@ is no epic branch.
 - Phase 3 changes how peak assignment loads peaks, in the service that epic
   rewrote. So the reader, store and matching layers land first, and the
   assignment consumer follows after the epic merges.
-- Phase 5 builds on that epic's reagent cluster libraries, so it starts once
-  those are on `develop`.
+- Phase 5 builds on that epic's reagent cluster libraries, which are on
+  `develop` since the assignment plan's stage 3 merged; it starts after phase
+  8 so that its suggestion has a profile to name.
 
 **The one exception.** If the stream work of phases 3-4 cannot be cut into
 steps that each keep single-stream files byte-identical, that part alone goes
@@ -1182,6 +1425,8 @@ through a short-lived stacked branch, merged as one unit.
   - a mutation pass over the guards.
 - **Production shadow:** detection in audit mode for a release, with the
   disagreement rate per site read before rung 5 is enabled.
+- **A fresh install:** phase 8's first-file gate, run against a database that
+  holds nothing but the catalogue.
 - **A shareable multi-range and MS2 acquisition** is needed for committed
   fixtures. The corpus files cannot be used.
 
@@ -1197,7 +1442,9 @@ through a short-lived stacked branch, merged as one unit.
    as recommended, with the two rules 2.4 and 5.3 now carry - a key routes
    only while its history agrees on one chemistry, and a constant method name
    counts as none. Without them the order is unsafe on TOF, where one constant
-   key covers 82% of files.
+   key covers 82% of files. **Revised 2026-09-30** on the first fleet
+   measurement (5.7): a *learned* binding sits below the token, as rung 4,
+   and a *confirmed* one above it, as rung 2. The two rules stand.
 3. **Detection authority.**
    - Audit-only for a release, then provisional above a measured precision
      gate (recommended).
@@ -1223,6 +1470,31 @@ through a short-lived stacked branch, merged as one unit.
     UTC boundaries line up across instruments.
 11. **First declaration channel.** An agent sidecar (cheapest; the aligner
     exists), control-program pairing, or analog-input wiring.
+12. **What a binding learns from, and whether it may change its mind.**
+    Raised by 5.7, and it gates the per-site switch. The design so far reads
+    a method's whole history and fixes a binding on the first answer. The
+    measurement argues for the opposite emphasis: what a method runs *now* is
+    what a future file should route by, and a model that has been changing -
+    new mode rows standing in for edits that were not possible - makes distant
+    history an unreliable teacher. Three moves, the first two complementary:
+    (a) empty `method_binding` and let live learning refill it, which costs
+    nothing today because the table is `shadow` everywhere and has no readers,
+    and leaves it holding current practice only; (b) let a consistent run of
+    newer observations re-point a binding, keeping `ambiguous` for genuine
+    concurrent conflict rather than for drift across years; (c) bound what the
+    backfill folds to a recent window, or drop the backfill. Recommended: (a)
+    now, (b) before rung 2 routes anything, and (c) decided along with (b),
+    since a backfill that seeds from a window is nearly the same mechanism.
+    Whichever is chosen, **already-bound samples are not re-bound**: the
+    ladder applies to files arriving after it is switched on, so the
+    historical rows never have to be reconciled.
+    **Decided 2026-09-30:** a fourth move the list lacked, (d) - a learned
+    binding routes only where no token binds, so the disagreement the
+    measurement found cannot re-route a file - together with (b) in its
+    simplest form, the row of the newest three agreeing observations. Not
+    (a): the history is what lets an explicitly re-processed parked file
+    route. (c) is moot once the backfill leaves the newest row. Section 9.1
+    carries the rules for files already processed.
 
 ---
 
@@ -1232,9 +1504,9 @@ through a short-lived stacked branch, merged as one unit.
 |---|---|
 | #749 chunk model (one `sample_file` per part) | Not adopted (3.4). Parts are streams and items. |
 | `multi_sample_items_per_file.md` | Its phase 1 is phase 3 here. Its segment API and chromatogram UI are phase 6. m/z-range splitting is covered by streams, because the scan range is in the signature. |
-| `ionization_method_config.md` | Its Phase 0 items 3 (`method_file`, #2155) and 4 (the delete fan-out, #2156) are done. Its routing order (4.5) is revised by 2.4: method identity above the token, instrument plus polarity only as an explicit default. `acquisition_stream` and `method_binding` are the first concrete pieces of its `AcquisitionMethod` and `MethodBinding`. |
-| `chemistry_profiles.md` and assignment quality plan step 3.5 | The profiles and their future rows stay there. Routing by detection moves here (phase 5), with the guards 2.3 shows it needs. |
-| Setup-simplification proposal (2026-09-03) | Its steps 1, 2 and 4 shipped (#2044, #2046, #2070). Steps 3 and 5 (presets, instrument-scoped modes) are phase 2 here; steps 6 and 7 (notifications, per-file status) are phase 1; step 9 (detection with review) is split between phases 1 and 5. Its routing ladder gains the method rung and loses the implicit instrument-plus-polarity rule. Its calibration anchor tiers (steps 8 and 10) are independent and unchanged. |
+| `ionization_method_config.md` | Its Phase 0 items 3 (`method_file`, #2155) and 4 (the delete fan-out, #2156) are done. Its routing order (4.5) is revised by 2.4 and 5.7: a confirmed method identity above the token, a learned one below it, and no instrument-plus-polarity default. `acquisition_stream` and `method_binding` are the first concrete pieces of its `AcquisitionMethod` and `MethodBinding`. |
+| `chemistry_profiles.md` and assignment quality plan step 3.5 | The profiles and their future rows stay there; the seeded profile of 5.1 is the interim form of its `reagent_profile` row, and `system_key` is the identity that migrates. Routing by detection moves here (phase 5), with the guards 2.3 shows it needs. |
+| Setup-simplification proposal (2026-09-03) | Its steps 1, 2 and 4 shipped (#2044, #2046, #2070). Step 3 (presets) shipped half in phase 2 - mechanisms and modes - and completes in phase 8 with the collections; step 5 (instrument-scoped modes) is phase 2; steps 6 and 7 (notifications, per-file status) are phase 1; step 8 (the profile's reagent ions as calibration anchors) is phase 8, its further tiers later; step 9 (detection with review) is split between phases 1 and 5. Its routing ladder gains the method rung and loses the implicit instrument-plus-polarity rule. Its "profiles as shipped data" is section 5.1 here. |
 
 ---
 
@@ -1256,11 +1528,16 @@ Function names are the stable reference; line numbers drift.
 | Instrument function | `libraries/signal/src/mascope_signal/instrument_func/fit.py` | 4 |
 | Calibration | `api/controllers/calibration/lib/calibration_mz_fit.py` (`_apply_sync`, `_resolve_calibration_isotopes`); `calibration_controller.py` `calibration_mz_apply` | 0 (ordering, shipped in #2153), 4 |
 | Pipeline and routing | `api/controllers/sample/files/process/service.py` (`_auto_process_sample_file`, `create_acquisition_batches_and_items`, `calibrate_with_retry`); `api/new/ionization/modes/util.py` (`resolve_ionization_modes_by_tokens`, `resolve_ionization_modes_by_peaks`) | 0, 1, 2, 5 |
+| Provenance on items | `create_acquisition_batches_and_items` above; `db/models.py` `SampleItem` | 2 |
+| Binding learner and backfill | `api/controllers/sample/files/process/bindings.py` (`_observe`); `db/scripts/backfill_method_bindings.py` (`_fold`, `_merge`); `mascope_backend/method_keys.py` | 2 |
+| Profile seeding | `db/admin/ionization/ensure_system_modes.py`; `mascope_backend/ionization_catalogue.py` | 2, 8 |
+| Calibration anchors | `api/controllers/calibration/lib/calibration_mz_fit.py` `_resolve_calibration_isotopes` | 8 |
+| Chemistry surface | `server/frontend/src/lib/panes/PaneIonizationMode.vue`, `lib/dialogs/DialogChooseChemistry.vue`, `stores/data/modules/ionization/mode.js` | 8 |
 | Daily batches | `api/controllers/sample/batches/sample_batches_controller.py` `get_or_create_acquisition_batch` | 4 |
 | MS2 | `api/new/ms2/` | 4 |
 | Notifications | `socket/notifications/service.py`; the background-task decorator in `api/lib/api_features.py` | 0, 1 |
 | Models | `db/models.py` (`SampleFile`, `SampleItem`, `IonizationMode`); new `AcquisitionStream`, `MethodBinding`, `IngestRecipe`, `Notification` | 1-6 |
-| Reagent libraries (epic) | `libraries/tools/src/mascope_tools/composition/reagents.py` (`REAGENT_CLUSTERS`, `match_reagent_clusters`, `detect_channels`); `profiles.py` | 5 |
+| Reagent libraries (on `develop`) | `libraries/tools/src/mascope_tools/composition/reagents.py` (`REAGENT_CLUSTERS`, `match_reagent_clusters`, `detect_channels`); `profiles.py` | 5, 8 |
 | Changepoints | `libraries/tools/src/mascope_tools/stats/peak.py` (ruptures) | 6 |
 | External traces | `libraries/signal/src/mascope_signal/kecu.py` `csv_to_xarr` | 7 |
 | Agent | `agents/file/src/mascope_file_agent/main.py`; `libraries/sdk/src/mascope_sdk/_agents.py` | 1, 7 |
