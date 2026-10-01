@@ -126,10 +126,10 @@ filestreams = './filestreams'
 # everything it exports (the batch spreadsheet's Provenance sheet, the SDK's
 # frames). Unset (the default), the backend generates one on its first start
 # and keeps it with the data, in deployment.json at the root of the filestore,
-# so it survives updates and a restore from backup. Set it to choose the name,
-# or to give a copy of a deployment (an env synced elsewhere, a backup restored
-# beside the original) a name of its own. 1-64 letters, digits, ".", "_" or
-# "-", starting with a letter or digit. Read at start.
+# so it survives updates and a restore from backup; `mascope env sync` leaves
+# it behind. Set it to choose the name - but not on envs synced from one
+# another, since the sync copies this config with the env. 1-64 letters,
+# digits, ".", "_" or "-", starting with a letter or digit. Read at start.
 # deployment_id = "example-lab"
 # scripts
 run = "uv run mascope-backend run api-server"

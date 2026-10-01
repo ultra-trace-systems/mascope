@@ -17,6 +17,7 @@ from pathlib import Path
 from mascope_cli.cmd.demo import bundles
 from mascope_cli.pg import dirs, drop_database, pg_restore
 from mascope_cli.runtime import runtime
+from mascope_runtime.config import DEPLOYMENT_FILE
 
 
 # The demo always uses a dedicated env so it never touches a developer's work.
@@ -27,6 +28,21 @@ _MODE = "dev"
 def env_dir(env: str = DEMO_ENV) -> Path:
     """Return the runtime directory for an env (may not exist yet)."""
     return Path(os.environ["MASCOPE_PATH"]) / ".runtime" / "env" / env
+
+
+def copy_filestore(src: Path, dest: Path) -> None:
+    """
+    Copy a filestore tree into a bundle or out of one, without its deployment id.
+
+    The deployment file (``deployment.json``) names the deployment whose
+    backend generated it. A bundle carries data from the deployment that built
+    it to every stack seeded from it, so the file stays where it was: copied
+    in, every demo stack would export under the builder's name.
+
+    :param src: The filestore to copy.
+    :param dest: Where to copy it; must not exist yet.
+    """
+    shutil.copytree(src, dest, ignore=shutil.ignore_patterns(DEPLOYMENT_FILE))
 
 
 def _resolve(version: str | None, source_dir: "Path | None") -> tuple[Path, dict]:
@@ -147,7 +163,9 @@ def restore_filestore(
 
     Mirrors ``snapshot/filestore/`` from the bundle into
     ``.runtime/env/demo/filestore/`` so the restored database rows resolve to
-    real files on disk. Existing demo filestore contents are replaced.
+    real files on disk. Existing demo filestore contents are replaced, except
+    the env's own deployment id, which a re-seed keeps (see
+    :func:`copy_filestore`).
 
     :param version: Bundle version tag. Defaults to the registry default.
     :param source_dir: Local bundle directory to use instead of the published cache.
@@ -164,7 +182,11 @@ def restore_filestore(
         return
 
     dest = env_dir() / "filestore"
+    own_id = dest / DEPLOYMENT_FILE
+    kept = own_id.read_bytes() if own_id.is_file() else None
     if dest.exists():
         shutil.rmtree(dest)
-    shutil.copytree(src, dest)
+    copy_filestore(src, dest)
+    if kept is not None:
+        own_id.write_bytes(kept)
     runtime.logger.success(f"Demo filestore restored to {dest}")

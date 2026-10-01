@@ -1156,11 +1156,18 @@ the name yourself, set it in the env's config toml:
 deployment_id = "example-lab"   # 1-64 letters, digits, ".", "_" or "-"
 ```
 
-A configured id wins over the generated one and is read at start. Set one, too,
-when a deployment is copied and both copies go on recording data - an env
-synced to a second host, or a backup restored beside the original: the copy
-carries the original's `deployment.json`, and without an id of its own it
-exports under the original's name.
+A configured id wins over the generated one and is read at start. It is part
+of the env's config, which `mascope env sync` copies with the rest of the env,
+so an env synced from one with a configured id reports that same id: leave
+`deployment_id` unset on envs that are synced from one another.
+
+Copying an env's data does not copy its generated id. `mascope env sync` and
+the demo bundle leave `deployment.json` behind, so a synced env or a demo stack
+keeps the id it has, or generates its own on its next start. A restore from
+backup does bring it back - the point when the original is gone. A backup
+restored beside an original that keeps running carries the original's id as
+well: move the restored `deployment.json` aside before the copy's first start,
+and it generates its own.
 
 The file is never written over. If the backend finds it but cannot read an id
 from it, it logs a warning at start and exports name no deployment until the
