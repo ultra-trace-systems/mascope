@@ -64,6 +64,12 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   compound's ions were built from the ionization mechanism listing, whose
   response now carries the computed `shipped` flag. The mechanisms are read as
   rows instead.
+- **A shipped ionization mechanism no longer fails to be created on a server
+  holding large compounds.** A low resolution isotope line names every
+  isotopologue it merges, and for a large halogenated ion under `[M+Br2]-` the
+  names ran past the 4096-character column, which rolled back the whole
+  mechanism at every start. When the names do not fit, the most abundant ones
+  that do are kept (#1360).
 
 ## [1.10.0] - 2026.09.30
 
