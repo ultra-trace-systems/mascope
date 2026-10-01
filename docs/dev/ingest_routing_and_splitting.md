@@ -632,6 +632,18 @@ newest observation and re-points to it once the last three observations
 agree on it; a single re-bound file does not move it. The backfill folds the
 whole history the same way, oldest first, so the row it leaves is the newest.
 
+Built in #2255: `candidate_mode_id` and `n_candidate_streams` on the binding,
+and `bindings.follow_row` as the one rule both the learner and the backfill
+apply. Any observation agreeing with the row clears the run, so the
+threshold counts the last three and not three spread over a year; an
+ambiguous key is left alone, since it routes nothing. The backfill's merge
+into a row live learning already made takes the history's row when the
+history holds the newer file, which is what makes the re-run move the rows
+every server has learned in shadow - and what makes a second run free. A
+count of files naming another row is deliberately not a disagreement:
+`n_disagreements` stays a count of chemistries, so a report of unreliable
+keys does not list every site that has renamed a mode.
+
 **Why three.** The two ways to be wrong cost different amounts, so the
 threshold sits on the cheap side. Moving too eagerly is the expensive error:
 one corrected file would drag a whole method's routing with it. Moving too
@@ -1221,8 +1233,9 @@ Needed before any rung can be provisional or park.
   remains, in order:
   1. ~~provenance on every ACQUISITION item (5.6), one migration~~ - done
      in #2254;
-  2. the learner and the backfill follow the newest row (5.3), then the
-     backfill re-run on every server - it merges;
+  2. ~~the learner and the backfill follow the newest row (5.3)~~ - done in
+     #2255; the backfill is still to be re-run on every server, which it
+     merges into what shadow learning has made since v1.10.0;
   3. the rung, behind `backend.method_binding = "route"` per site: the
      token, then a learned binding that is unanimous, keyed on a real method
      name and whose row applies to the instrument, else park. The file's
