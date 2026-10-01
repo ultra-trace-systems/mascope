@@ -17,6 +17,7 @@ from mascope_backend.api.new.peak_assignments.batch_peaks_routes import (
 from mascope_backend.api.new.peak_assignments.routes import (
     peak_assignments_router,
 )
+from mascope_backend.api.new.provenance.routes import provenance_router
 from mascope_backend.api.new.roles.routes import roles_router
 from mascope_backend.api.new.temp.routes import temp_router
 from mascope_backend.api.new.users.admin.routes import admin_router
@@ -103,6 +104,7 @@ routers = [
     owner_router,
     roles_router,
     version_router,
+    provenance_router,
     notifications_router,
     workspaces_router,
     params_router,

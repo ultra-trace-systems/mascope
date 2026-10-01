@@ -38,6 +38,13 @@ type LogLevel = Literal[
 # for decoding the address back out of a mailto: link.
 _STRAY_PERCENT = re.compile(r"%(?![0-9A-Fa-f]{2})")
 
+#: What a deployment id may be made of (`backend.deployment_id`). The id is
+#: written into every export's provenance and compared by whatever reads those
+#: exports, so it is kept to characters no file name, URL or CSV cell needs to
+#: quote, and free of `:`, so that it can stand as the prefix of another
+#: identifier without ambiguity. The backend's generated ids satisfy it too.
+DEPLOYMENT_ID_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
+
 
 def _link_problem(url: str) -> str | None:
     """
@@ -482,6 +489,39 @@ class BackendConfig(ModuleConfig):
     # request's PeakAssignmentConfig either - a client must not be able to
     # widen it.
     reference_licenses: Optional[list[str]] = None
+    # The name of this deployment in the provenance of what it exports - the
+    # batch spreadsheet's Provenance sheet, GET /api/provenance and the frames
+    # the SDK stamps from it. Unset (the default), the backend generates one on
+    # its first start and keeps it with the data, in deployment.json at the
+    # root of the env's filestore (mascope_backend.deployment). Set it to name
+    # the deployment yourself, or to give a copy of one - an env synced to
+    # another host, a backup restored beside the original - a name of its own.
+    # 1-64 letters, digits, ".", "_" or "-", starting with a letter or digit.
+    #
+    # Backend-only: [meta] is published to the browser before anyone signs in,
+    # and the id is not something an anonymous visitor needs.
+    deployment_id: Optional[str] = None
+
+    @field_validator("deployment_id")
+    @classmethod
+    def _clean_deployment_id(cls, value: str | None) -> str | None:
+        """Strip the id, read a blank one as unset, and refuse a malformed one.
+
+        Refused at load rather than carried into exports: an id with a space,
+        a quote or a ``:`` in it would be written into every provenance record
+        the deployment hands out, where nothing could correct it afterwards.
+        """
+        if value is None:
+            return None
+        value = value.strip()
+        if not value:
+            return None
+        if not DEPLOYMENT_ID_PATTERN.fullmatch(value):
+            raise ValueError(
+                "backend.deployment_id must be 1-64 letters, digits, '.', '_' "
+                f"or '-', starting with a letter or digit, not {value!r}"
+            )
+        return value
 
     @field_validator("reference_licenses")
     @classmethod

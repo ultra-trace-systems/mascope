@@ -53,6 +53,15 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   lost, but the observation counts on an acquisition method will grow more
   slowly than they did.
 
+- **Each deployment has an id, named in the provenance of what it exports.**
+  The backend generates it on its first start and keeps it with the data, in
+  `deployment.json` at the root of the env's filestore, so updates and a
+  restore from backup keep it. `[backend] deployment_id` names a deployment
+  explicitly, and a copy of one that goes on recording data should get its own
+  (`docs/maintaining.md`, *Deployment identity*). Signed-in users and API
+  tokens read the id, with the versions the server runs, from
+  `GET /api/provenance`.
+
 ## [1.10.1] - 2026.10.01
 
 ### Changed

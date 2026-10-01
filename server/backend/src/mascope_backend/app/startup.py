@@ -7,6 +7,7 @@ race conditions on shared state.
 
 Tasks:
 - File system cleanup and setup
+- The deployment's identity, generated on the first start
 - Application state reset (stuck batch recovery, interrupted file processing)
 - Idempotent data initialization (acquisition datasets, the ionization
   mechanisms and modes Mascope ships)
@@ -35,6 +36,7 @@ from mascope_backend.db.admin.peak_assignments.reset_running_runs import (
 from mascope_backend.db.admin.sample_file.reset_interrupted_processing import (
     reset_interrupted_processing,
 )
+from mascope_backend.deployment import ensure_deployment_id
 from mascope_backend.runtime import runtime
 from mascope_file.gc import gc_filestore
 
@@ -46,6 +48,7 @@ async def init_main_process() -> None:
     Initialization order:
     - Reset temp directory
     - Garbage collect orphaned files from filestore
+    - Resolve the deployment id, generating it on the first start
     - Configure a short-lived DB engine for one-time startup tasks
     - Reset any batches stuck in 'processing' from a previous run
     - Mark sample files whose processing a restart interrupted as failed, and
@@ -70,6 +73,15 @@ async def init_main_process() -> None:
     # Clean filestore
     runtime.logger.info("Main process: garbage collecting filestore")
     gc_filestore()
+
+    # Before any worker can export: the first start generates the id, every
+    # later one finds it. Logged and carried, not raised - a server that cannot
+    # write it still serves, and its exports record no deployment id.
+    runtime.logger.info("Main process: resolving the deployment id")
+    try:
+        ensure_deployment_id()
+    except OSError as e:
+        runtime.logger.error(f"Main process: could not record the deployment id: {e}")
 
     # --- Database ---
     # Configure a short-lived engine so startup tasks can use async_session.
