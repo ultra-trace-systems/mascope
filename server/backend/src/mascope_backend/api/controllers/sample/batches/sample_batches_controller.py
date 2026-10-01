@@ -998,6 +998,10 @@ async def sample_batch_export_peaks(
     Exports peak data for a specific sample batch to a CSV file. This process involves loading sample files,
     detecting peaks, and compiling peak data into a DataFrame before saving it to a file.
 
+    Each row names the records it came from - its sample item and sample file,
+    and the sample batch and dataset - with the id columns last, so a reader
+    that picks columns by position keeps reading what it read before.
+
     Steps:
     1. Fetch sample items belonging to the specified sample batch.
     2. Iterate over each sample item, load its file, and perform peak detection.
@@ -1096,6 +1100,8 @@ async def sample_batch_export_peaks(
                     "sample_item_id": row["sample_item_id"],
                     "tic": row["tic"],
                     "instrument": row["instrument"],
+                    "sample_batch_id": sample_batch_id,
+                    "dataset_id": sample_batch["dataset_id"],
                 }
             )
 

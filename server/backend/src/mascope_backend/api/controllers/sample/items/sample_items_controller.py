@@ -833,6 +833,11 @@ async def sample_item_export_peaks(
     - sample_file_id: The ID of the sample file.
     - sample_item_id: The ID of the sample item.
     - instrument: The type of the instrument used for the sample file.
+    - sample_batch_id: The ID of the sample batch.
+    - dataset_id: The ID of the dataset the sample batch belongs to.
+
+    New columns are appended, so a reader that picks columns by position keeps
+    reading what it read before.
 
     Raises StalePeakStoreError for a sample file whose peak store was
     allocated against scans it no longer reads back: every column above but
@@ -953,6 +958,8 @@ async def sample_item_export_peaks(
         sample_file_id=sample.sample_file_id,
         sample_item_id=sample.sample_item_id,
         instrument=sample.instrument,
+        sample_batch_id=sample_batch.sample_batch_id,
+        dataset_id=sample_batch.dataset_id,
     )
 
     await send_progress_user_notification(notification, 1)

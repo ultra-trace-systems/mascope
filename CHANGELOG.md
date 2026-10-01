@@ -53,6 +53,21 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   lost, but the observation counts on an acquisition method will grow more
   slowly than they did.
 
+- **A batch's *Batch data* spreadsheet can be traced back to what produced
+  it.** Every row now carries the ids of the records behind it - the sample
+  item and sample file on *Samples*, the target compound and ion on the match
+  sheets - and *Samples* gains each sample's acquisition context: its UTC time,
+  instrument and instrument type, method file, polarity, m/z range, the
+  ionization mode it was processed under, its instrument function, and its m/z
+  calibration - the status, whether it is verified, and the post-fit error in
+  ppm. The *Batch* sheet adds the dataset, batch and target collection ids and
+  names every instrument and method file in the batch, and a new last sheet,
+  *Provenance*, names the deployment and the Mascope, match-score and
+  peak-assignment engine versions that wrote the file, and the records it was
+  built from. Everything is appended: the sheets, columns and rows of earlier
+  exports keep their names and their places. Both *Peak data* CSVs, of a batch
+  and of a sample, gain `sample_batch_id` and `dataset_id` columns, last.
+
 - **Each deployment has an id, named in the provenance of what it exports.**
   The backend generates it on its first start and keeps it with the data, in
   `deployment.json` at the root of the env's filestore, so updates and a
