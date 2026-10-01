@@ -419,6 +419,23 @@ async def update_sample_item(
             for key, value in changed_fields.items():
                 setattr(existing_sample_item, key, value)
 
+            if "ionization_mode_id" in changed_fields:
+                # Somebody has just set this item's chemistry by hand, so
+                # whatever rung decided it before did not decide this. Left
+                # alone the row would credit a filename token - or a method
+                # binding - with a mode a person typed, and for a method item
+                # the binding would then name a different mode from the item,
+                # which is exactly the shape a re-pointed binding leaves
+                # behind: a hand edit would read as one.
+                #
+                # Cleared rather than set to "explicit". The column answers
+                # how auto-processing routed a file, which is the question the
+                # counts of it are asked about; an item somebody edits is not
+                # a routed item, and an item somebody builds by hand records
+                # nothing for the same reason.
+                existing_sample_item.bound_by = None
+                existing_sample_item.method_binding_id = None
+
             # --- Update modification timestamp ---
             existing_sample_item.sample_item_utc_modified = datetime.now(timezone.utc)
 
