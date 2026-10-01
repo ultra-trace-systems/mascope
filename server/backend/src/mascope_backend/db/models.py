@@ -956,14 +956,22 @@ class SampleItem(Base):
     # the mode above - a ``binding_rungs.BINDING_RUNGS`` value
     # (``docs/dev/ingest_routing_and_splitting.md``, section 5.2).
     #
-    # "Auto-processing" is the whole of it. NULL on an item it made before the
-    # column existed, and on an item made any other way - built by hand, or
-    # imported into a batch, which resolves the mode by filename token and
-    # still records nothing, because what this answers is how a file was
-    # ROUTED and an import is not that. So a count by rung is a count of
-    # ingested files, which is the only population the question is about.
+    # "Auto-processing" is the whole of it. Three ways to be NULL, and all of
+    # them mean the same thing - this item was not routed:
     #
-    # Neither NULL is filled in afterwards: a rung is a decision, and
+    # - auto-processing made it before the column existed;
+    # - it was made some other way - built by hand, or imported into a batch,
+    #   which resolves the mode by filename token and still records nothing,
+    #   because what this answers is how a file was ROUTED and an import is
+    #   not that;
+    # - somebody changed its mode through the item API afterwards, which
+    #   clears this (see ``update_sample_item``): whatever rung decided the
+    #   old mode did not decide the one it has now.
+    #
+    # So a count by rung is a count of ingested files, which is the only
+    # population the question is about.
+    #
+    # No NULL is ever filled in afterwards: a rung is a decision, and
     # re-deriving one for an item already processed is what section 9.1
     # forbids. A count therefore covers the files processed since the column
     # shipped, which is the window any question about routing is asked over
