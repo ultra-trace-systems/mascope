@@ -1912,16 +1912,20 @@ class OpenTFRawBackend:
         average: bool = False,
         reconstruct: bool = False,
     ) -> tuple[np.ndarray, np.ndarray, int]:
-        # reconstruct=True returns a Thermo-style profile reconstructed as one
-        # Gaussian per centroid (center=m/z, height=intensity, FWHM=m/z/res).
-        # Thermo's AverageScans profile *is* such a reconstruction (verified:
-        # profile local-maxima count == centroid count exactly, baseline floor
-        # ~1e-10 of base peak, peaks Gaussian to <1%); it overlays the centroids
-        # exactly and is the right choice for *display*. The default
-        # reconstruct=False returns the real measured profile, which is what the
-        # instrument-function fit needs -- the fit gets too few quality peaks off
-        # the reconstruction (its idealised shape/grid), so the real, faithful
-        # signal must drive the quantitative path.
+        # reconstruct=True returns a profile drawn as one Gaussian per centroid
+        # (center=m/z, height=intensity, FWHM=m/z/res), which overlays the
+        # centroids exactly because that is how it is built. It is Mascope's own
+        # choice for *display*, NOT an imitation of the vendor: Thermo's
+        # AverageScans profile is the measured signal resampled, not synthesised
+        # from its centroid list. Measured, a profile drawn from centroids
+        # reproduces them exactly (this path: apex/centroid 1.00000, fitted
+        # FWHM/nominal 1.00000), where AverageScans gives 1.012 and 0.970 with
+        # real spread. See reader_pipeline.md section 5.2.
+        #
+        # The default reconstruct=False returns the real measured profile, which
+        # is what the instrument-function fit needs -- the fit gets too few
+        # quality peaks off the reconstruction (its idealised shape/grid), so the
+        # real, faithful signal must drive the quantitative path.
         if reconstruct:
             num_combined = len(scan_indices)
             masses, intensities, resolutions, _ = self.average_centroids(
