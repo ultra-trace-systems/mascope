@@ -359,7 +359,7 @@ Key columns: `sample_batch_name`, `sample_item_name`, `datetime_utc`, plus all c
 
 ### Provenance
 
-Every frame a high-level loader returns carries the provenance of the server that served it, on `df.attrs["provenance"]`: the deployment's id, the Mascope version it runs, the match-score and peak-assignment engine versions in force, and when the server was asked. Keep it with what you derive from the frame, and a published figure can name the build its numbers came from.
+Every frame a high-level loader returns carries the provenance of the server that served it, on `df.attrs["provenance"]`: the deployment's id, the Mascope version it runs, the match-score and peak-assignment engine versions in force, and when this client first heard from that build. Keep it with what you derive from the frame, and a published figure can name the build its numbers came from.
 
 ```python
 peaks = mascope.load_peaks(dataset="My Dataset", batches="Uronium")
@@ -378,7 +378,9 @@ mascope.provenance()
 
 The versions describe the server as it runs when asked. A result it stored earlier was computed by whichever build ran then; where a record carries provenance of its own, as a peak-assignment run does on `df.attrs["run"]`, that record is the authority for it.
 
-The attribute is best effort, in two ways. A server that predates it (`GET /api/provenance` answers 404) returns its frames without the attribute, and the load succeeds as before. And pandas does not reliably carry `attrs` through `concat`, `merge` or `copy`, so read it from the frame the loader returned - the same caveat `attrs["run"]` and `attrs["batch_peaks"]` live with.
+Frames loaded from one deployment and build carry the same block, so `pd.concat` of several loads keeps it. Frames from different builds - the server was updated between two loads - carry different blocks, and `pd.concat` drops the attribute: no single build produced the result.
+
+The attribute is best effort, in two ways. A server that predates it (`GET /api/provenance` answers 404) returns its frames without the attribute, and the load succeeds as before; so does any other failure to ask, which holds the frame back for about 15 seconds at most. And pandas does not reliably carry `attrs` through other operations - `merge`, `copy` and the like - so read it from the frames the loaders returned, or from their concatenation: the same caveat `attrs["run"]` and `attrs["batch_peaks"]` live with.
 
 #### Keeping it when you save a frame
 
@@ -392,7 +394,15 @@ with open("peaks.provenance.json", "w", encoding="utf-8") as f:
     json.dump(peaks.attrs["provenance"], f, indent=2)
 ```
 
-Parquet keeps `attrs` inside the file - `peaks.to_parquet("peaks.parquet")`, and `pd.read_parquet` brings them back - as long as pandas is 2.1 or newer and `pyarrow` is installed, neither of which the SDK itself requires.
+Parquet keeps `attrs` inside the file - `peaks.to_parquet("peaks.parquet")`, and `pd.read_parquet` brings them back - as long as pandas is 2.1 or newer and `pyarrow` is installed, neither of which the SDK itself requires. A `load_batch_ledger` frame is the exception: its `attrs` also hold the species table, a DataFrame that Parquet cannot keep there, so `to_parquet` raises. Save the species table as a file of its own first:
+
+```python
+ledger = mascope.load_batch_ledger(dataset="My Dataset")
+
+species = ledger.attrs.pop("batch_peaks")
+species.to_parquet("species.parquet")
+ledger.to_parquet("ledger.parquet")  # keeps attrs["provenance"]
+```
 
 ## Peak Assignments
 

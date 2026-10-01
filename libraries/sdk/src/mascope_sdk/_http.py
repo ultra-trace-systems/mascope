@@ -156,6 +156,7 @@ def http_get(
     timeout: tuple[int, int] = DEFAULT_TIMEOUT,
     service_name: str = "mascope_sdk",
     verify_ssl: bool = False,
+    max_attempts: int | None = None,
 ) -> requests.Response:
     """Send a GET request to the specified API endpoint.
 
@@ -175,6 +176,10 @@ def http_get(
     :type service_name: str, optional
     :param verify_ssl: Whether to verify SSL certificates.
     :type verify_ssl: bool, optional
+    :param max_attempts: How many times to try a transient failure before
+        raising it; :data:`RETRY_MAX_ATTEMPTS` when None. 1 for a request whose
+        failure the caller tolerates, so it costs one attempt and no backoff.
+    :type max_attempts: int, optional
     :return: The response object.
     :rtype: requests.Response
     :raises AuthenticationError: If authentication fails (401/403).
@@ -191,7 +196,8 @@ def http_get(
         "X-Service-Name": service_name,
     }
 
-    for attempt in range(1, RETRY_MAX_ATTEMPTS + 1):
+    attempts = max_attempts or RETRY_MAX_ATTEMPTS
+    for attempt in range(1, attempts + 1):
         try:
             response = requests.get(
                 full_url,
@@ -205,13 +211,13 @@ def http_get(
             return response
 
         except Timeout as e:
-            if attempt == RETRY_MAX_ATTEMPTS:
+            if attempt == attempts:
                 raise MascopeTimeoutError(
                     f"Request timed out: {e}", url=full_url
                 ) from e
             exc_for_log: Exception = e
         except RequestsConnectionError as e:
-            if attempt == RETRY_MAX_ATTEMPTS:
+            if attempt == attempts:
                 raise MascopeConnectionError(
                     (
                         "Could not connect. "
@@ -227,7 +233,7 @@ def http_get(
                 url=full_url,
             ) from e
         except Exception as e:
-            if not _is_retryable(e) or attempt == RETRY_MAX_ATTEMPTS:
+            if not _is_retryable(e) or attempt == attempts:
                 raise
             exc_for_log = e
 
@@ -237,7 +243,7 @@ def http_get(
             "GET {} failed (attempt {}/{}), retrying in {}s: {}",
             full_url,
             attempt,
-            RETRY_MAX_ATTEMPTS,
+            attempts,
             delay,
             exc_for_log,
         )
