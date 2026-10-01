@@ -1908,12 +1908,15 @@ async def match_compute_batch(
         and set(failure_reason_counts) == {STALE_PEAK_STORE_REASON}
         and rebuilds_queued == len(stale_peak_store_files)
     )
-    if (failed_samples_count > 0 or aggregation_failed) and not repairing_itself:
+    # A rebuild that does not repair its store is warned about by the worker
+    # that ran it (PeakRecomputeWorker._check_rebuilt_store), so trusting the
+    # queue here does not leave such a file unreported.
+    if repairing_itself:
+        runtime.logger.info(message)
+    elif failed_samples_count > 0 or aggregation_failed:
         # One aggregated warning per problem batch; the per-sample failures
         # above are logged at INFO.
         runtime.logger.warning(message)
-    elif repairing_itself:
-        runtime.logger.info(message)
     else:
         runtime.logger.debug(message)
 

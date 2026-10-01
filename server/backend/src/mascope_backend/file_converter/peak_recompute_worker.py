@@ -15,6 +15,7 @@ at enqueue time (in the socket event handler), so the workers only see
 unique filenames.
 """
 
+import asyncio
 from queue import Empty, Queue
 from threading import Event, Thread
 from typing import Any
@@ -27,6 +28,7 @@ from mascope_backend.file_converter.api import (
 from mascope_backend.file_converter.errors import describe_exception
 from mascope_backend.file_converter.peak_guard import PeakDetectionGuard
 from mascope_backend.file_converter.runtime import runtime
+from mascope_signal.compute import StalePeakStoreError, check_peak_store
 from mascope_signal.peak import compute_peaks
 
 
@@ -91,6 +93,34 @@ class PeakRecomputeWorker(Thread):
             auth["user_id"] = user_id
         return auth
 
+    @staticmethod
+    def _check_rebuilt_store(filename: str) -> None:
+        """Warn when the store just rebuilt still disagrees with its file.
+
+        A refresh that meets a stale store queues this rebuild and reports
+        the batch at INFO, trusting it to repair the store. When it does not,
+        this is the only place that knows: the rematch that follows fails as
+        a client error, and the next refresh queues the same rebuild again, so
+        nothing else on that loop ever reaches error monitoring.
+
+        Never fails the rebuild itself - the store is written either way.
+
+        :param filename: The sample file whose store was just rebuilt.
+        """
+        try:
+            asyncio.run(check_peak_store(filename))
+        except StalePeakStoreError as e:
+            runtime.logger.warning(
+                f"PeakRecomputeWorker: the peak store rebuilt for '{filename}' "
+                f"still disagrees with the file: {e} Its samples will keep "
+                "failing to match, and each refresh will queue this rebuild again."
+            )
+        except Exception:
+            runtime.logger.exception(
+                f"PeakRecomputeWorker: could not verify the peak store rebuilt "
+                f"for '{filename}'"
+            )
+
     def _process_request(self, request: dict) -> None:
         """Process a single peak-detection request.
 
@@ -153,6 +183,7 @@ class PeakRecomputeWorker(Thread):
                 instrument_functions,
                 progress_callback=progress_callback,
             )
+            self._check_rebuilt_store(filename)
 
             if affected_sample_item_ids:
                 for sample_item_id in affected_sample_item_ids:
