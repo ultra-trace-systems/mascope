@@ -12,7 +12,8 @@ Exports:
 
 import asyncio
 import os
-from typing import AsyncGenerator, cast
+from contextlib import asynccontextmanager
+from typing import AsyncGenerator, AsyncIterator, cast
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
@@ -138,6 +139,41 @@ def async_session() -> AsyncSession:
     return ASYNC_SESSION_MAKER()
 
 
+@asynccontextmanager
+async def owned_session(
+    independent_transaction: bool, session: AsyncSession | None = None
+) -> AsyncIterator[AsyncSession | None]:
+    """
+    The session a controller taking an ``independent_transaction`` flag runs in.
+
+    Not independent, it is the caller's ``session``, left open for the caller
+    to commit. Independent, it is a session opened here and closed on the way
+    out, however the controller leaves: a commit returns the connection, but a
+    failure before it would leave the connection checked out until the garbage
+    collector terminates it ("The garbage collector is trying to clean up
+    non-checked-in connection"). The close is shielded, so a request cancelled
+    mid-save - a client gone, which cancels the handler again at its next
+    await - still returns the connection.
+
+    Example usage:
+        async with owned_session(independent_transaction, session) as session:
+            ...
+
+    :param independent_transaction: Whether the controller runs a transaction
+        of its own.
+    :param session: The caller's session, for a controller that does not.
+    :yield: The session to run in.
+    """
+    if not independent_transaction:
+        yield session
+        return
+    own = async_session()
+    try:
+        yield own
+    finally:
+        await asyncio.shield(own.close())
+
+
 async def get_async_session() -> AsyncGenerator[AsyncSession, None]:
     """
     Dependency-injected session for FastAPI route handlers.
@@ -255,6 +291,7 @@ __all__ = [
     "configure_database_engine",
     "dispose_engine",
     "async_session",
+    "owned_session",
     "get_async_session",
     "init_db",
     # Views

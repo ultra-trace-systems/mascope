@@ -29,6 +29,7 @@ from mascope_backend.db import (
     TargetCompound,
     TargetCompoundInTargetCollection,
     async_session,
+    owned_session,
 )
 from mascope_backend.db.id import gen_id
 from mascope_backend.socket.records.service import emit_record_reload
@@ -244,9 +245,7 @@ async def create_target_compound(
     :return: Return created target compounds, skipped compounds (already existing) and message log
     :rtype: dict
     """
-    if independent_transaction:
-        session = async_session()
-    try:
+    async with owned_session(independent_transaction, session) as session:
         # initialize list of targets to return
         target_compound_ids = []
         existing_target_compounds = []
@@ -401,12 +400,6 @@ async def create_target_compound(
             "existing_compounds": existing_target_compounds,
             "message_logs": message_log,
         }
-    finally:
-        # A session opened here is closed here: a failure before the
-        # commit would otherwise leave its connection checked out until
-        # the garbage collector finds it.
-        if independent_transaction:
-            await session.close()
 
 
 @api_controller()
@@ -671,9 +664,7 @@ async def delete_target_compound(
     :return: Success message with deleted compound name
     :rtype: dict[str, str]
     """
-    if independent_transaction:
-        session = async_session()
-    try:
+    async with owned_session(independent_transaction, session) as session:
         # Fetch the target compound
         target_compound = await session.get(TargetCompound, target_compound_id)
         if not target_compound:
@@ -744,9 +735,3 @@ async def delete_target_compound(
         return {
             "message": f"Target compound '{target_compound.target_compound_name}' was deleted.",
         }
-    finally:
-        # A session opened here is closed here: a failure before the
-        # commit would otherwise leave its connection checked out until
-        # the garbage collector finds it.
-        if independent_transaction:
-            await session.close()
