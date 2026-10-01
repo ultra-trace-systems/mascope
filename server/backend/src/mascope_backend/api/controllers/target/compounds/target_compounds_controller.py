@@ -5,9 +5,6 @@ from fastapi import HTTPException
 from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from mascope_backend.api.controllers.ionization_mechanisms.ionization_mechanisms_controller import (
-    get_ionization_mechanisms,
-)
 from mascope_backend.api.controllers.sample.batches.status.service import (
     update_sample_batch_status,
 )
@@ -370,12 +367,13 @@ async def create_target_compound(
         session.add(target_compound)
 
         # Create target ions for the compound
+        # Read as rows, not through the listing controller: its response
+        # carries fields computed for the API (``shipped``) that are not
+        # columns, and the model does not accept them back.
         if ionization_mechanisms is None:
-            ionization_mechanisms_data = await get_ionization_mechanisms()
-            ionization_mechanisms = [
-                IonizationMechanism(**ionization_mechanism_dict)
-                for ionization_mechanism_dict in ionization_mechanisms_data["data"]
-            ]
+            ionization_mechanisms = (
+                await session.scalars(select(IonizationMechanism))
+            ).all()
 
         await create_target_ions(
             target_compound=target_compound,

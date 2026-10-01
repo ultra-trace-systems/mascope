@@ -56,6 +56,15 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   decoding any peaks. On the longest file of the internal regression corpus
   (1,486 scans) that is 88.9 ms against 19.0 ms.
 
+### Fixed
+
+- **Creating a target compound works again.** Since 1.10.0, adding a new
+  compound - directly or by saving a target collection that adds one - failed
+  with "'shipped' is an invalid keyword argument for IonizationMechanism": the
+  compound's ions were built from the ionization mechanism listing, whose
+  response now carries the computed `shipped` flag. The mechanisms are read as
+  rows instead.
+
 ## [1.10.0] - 2026.09.30
 
 ### Added
