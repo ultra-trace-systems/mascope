@@ -6,6 +6,13 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 ### Changed
 
+- **The demo dataset is now bundle v1.3.0**
+  ([10.5281/zenodo.23077479](https://doi.org/10.5281/zenodo.23077479)), rebuilt
+  with the reader on opentfraw 2.0.0 so its goldens match what the pipeline now
+  produces. Same 161 acquisitions and the same reference data; the goldens move
+  only in intensity, by about 3.8% at the median, while every peak's m/z is
+  unchanged to the last digit. `mascope demo` picks it up by default, and 1.2.1
+  stays registered so a pinned run still resolves.
 - **The raw reader is on opentfraw 2.0.0, and the averaged profile no longer
   depends on how a reader renders the m/z axis.** The reader was held at 1.4.0
   because 1.4.1 corrected the profile m/z axis and the averaged-centroid heights
