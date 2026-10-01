@@ -45,6 +45,12 @@ _STRAY_PERCENT = re.compile(r"%(?![0-9A-Fa-f]{2})")
 #: identifier without ambiguity. The backend's generated ids satisfy it too.
 DEPLOYMENT_ID_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
 
+#: The file, at the root of an env's filestore, that keeps the id the backend
+#: generated for its deployment (`mascope_backend.deployment`). Named here,
+#: beside the pattern, because the backend writes it and the CLI's tools that
+#: copy a filestore between deployments must leave it behind.
+DEPLOYMENT_FILE = "deployment.json"
+
 
 def _link_problem(url: str) -> str | None:
     """
@@ -493,9 +499,10 @@ class BackendConfig(ModuleConfig):
     # batch spreadsheet's Provenance sheet, GET /api/provenance and the frames
     # the SDK stamps from it. Unset (the default), the backend generates one on
     # its first start and keeps it with the data, in deployment.json at the
-    # root of the env's filestore (mascope_backend.deployment). Set it to name
-    # the deployment yourself, or to give a copy of one - an env synced to
-    # another host, a backup restored beside the original - a name of its own.
+    # root of the env's filestore (mascope_backend.deployment), which the tools
+    # that copy a filestore between deployments leave behind. Set it to name
+    # the deployment yourself. It is part of the env's config, which `mascope
+    # env sync` copies along, so envs synced from one another leave it unset.
     # 1-64 letters, digits, ".", "_" or "-", starting with a letter or digit.
     #
     # Backend-only: [meta] is published to the browser before anyone signs in,

@@ -407,6 +407,67 @@ def test_sync_filestore_sets_deterministic_permissions(
     assert "--chmod=D755,F644" in captured_rsync["cmds"][0]
 
 
+DEPLOYMENT_EXCLUSION = "--exclude=/filestore/deployment.json"
+
+
+def test_sync_filestore_leaves_the_deployment_file_behind(
+    posix_sync, captured_rsync, source_env
+):
+    # The file names the deployment whose backend generated it. Carried
+    # across, the target would replace an id it already had and export under
+    # the source's name.
+    _sync.sync_filestore("sync-src", "sync-dst")
+
+    assert DEPLOYMENT_EXCLUSION in shlex.split(captured_rsync["cmds"][0])
+
+
+def test_the_deployment_file_exclusion_comes_before_a_date_window(
+    posix_sync, captured_rsync, source_env
+):
+    # rsync applies the first rule that matches, so the exclusion must be
+    # read before any rule the date filter brings.
+    _sync.sync_filestore("sync-src", "sync-dst", from_date=DAY(2026, 3, 1))
+
+    args = shlex.split(captured_rsync["cmds"][0])
+    assert args.index(DEPLOYMENT_EXCLUSION) < args.index("--filter")
+
+
+@pytest.mark.skipif(
+    os.name == "nt" or shutil.which("rsync") is None,
+    reason="needs rsync on a POSIX host",
+)
+@pytest.mark.parametrize("from_date", [None, DAY(2026, 3, 1)])
+def test_a_real_sync_keeps_the_targets_deployment_file(
+    posix_sync, monkeypatch, mascope_home, source_env, from_date
+):
+    # The rule as rsync reads it: anchored at the env directory, it matches
+    # the filestore's own file and nothing that is data.
+    monkeypatch.setattr(_sync, "check_after_sync", lambda *a, **kw: None)
+    (source_env / "filestore" / "deployment.json").write_text(
+        '{"deployment_id": "source-id"}', encoding="utf-8"
+    )
+    target_filestore = mascope_home / ".runtime" / "env" / "sync-dst" / "filestore"
+    target_filestore.mkdir(parents=True)
+    (target_filestore / "deployment.json").write_text(
+        '{"deployment_id": "target-id"}', encoding="utf-8"
+    )
+
+    try:
+        _sync.sync_filestore("sync-src", "sync-dst", from_date=from_date)
+
+        assert (target_filestore / "deployment.json").read_text(
+            encoding="utf-8"
+        ) == '{"deployment_id": "target-id"}'
+        assert (
+            target_filestore
+            / "instrumentA"
+            / "2026.03.05"
+            / "instrumentA_2026.03.05_sample"
+        ).is_dir()
+    finally:
+        shutil.rmtree(target_filestore.parent, ignore_errors=True)
+
+
 def test_sync_filestore_with_dates_writes_a_merge_file(
     posix_sync, captured_rsync, source_env
 ):

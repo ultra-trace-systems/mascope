@@ -27,10 +27,12 @@ quietly replaced id would split one deployment's exports across two names.
 Reading (:func:`deployment_id`) never writes: a process that finds no id
 reports none.
 
-A copy of the filestore carries the id with it - ``mascope env sync``, or a
-backup restored onto a second host while the first one keeps running - so a
-copy that goes on to record data of its own needs a ``[backend]
-deployment_id`` of its own.
+The tools that copy a filestore from one deployment to another - ``mascope
+env sync`` and the demo bundle - leave the file behind, so the copy keeps the
+id it had or generates its own. A restore from backup brings it back, which is
+the point when the original is gone. A backup restored beside an original that
+keeps running carries the original's id too, unless its file is moved aside
+before the copy's first start.
 """
 
 import json
@@ -40,11 +42,7 @@ from datetime import datetime, timezone
 from mascope_backend.db.id import gen_id
 from mascope_backend.runtime import runtime
 from mascope_runtime.atomic import write_json
-from mascope_runtime.config import DEPLOYMENT_ID_PATTERN
-
-
-#: The file the generated id is kept in, at the root of the env's filestore.
-DEPLOYMENT_FILE = "deployment.json"
+from mascope_runtime.config import DEPLOYMENT_FILE, DEPLOYMENT_ID_PATTERN
 
 
 class UnreadableDeploymentFile(ValueError):
