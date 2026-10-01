@@ -420,19 +420,32 @@ def _follow(
     a line in a server's log: it is the one thing in this module that alters
     what a later file would be bound to.
     """
+    held = row.ionization_mode_id
     points_at, candidate, run = follow_row(
-        current=row.ionization_mode_id,
+        current=held,
         candidate=row.candidate_mode_id,
         n_candidate=row.n_candidate_streams or 0,
         observed=mode.ionization_mode_id,
     )
-    if points_at != row.ionization_mode_id:
-        runtime.logger.info(
-            f"Method key {key or '(none)'} on {instrument} now points at "
-            f"'{mode.ionization_mode_name}': the last {REPOINT_AFTER} files "
-            "of this method bound to it, and it is the same chemistry as the "
-            "mode the binding held, so files of this method follow them"
-        )
+    if points_at != held:
+        # Two ways to arrive here, and they are not the same event: a row
+        # that held nothing takes a mode on one file, because it was routing
+        # nothing and had nothing to be dragged away from.
+        if held is None:
+            runtime.logger.info(
+                f"Method key {key or '(none)'} on {instrument} now points at "
+                f"'{mode.ionization_mode_name}': the mode it held has been "
+                "deleted, so it takes the one this file bound to for the "
+                "chemistry it already knows"
+            )
+        else:
+            runtime.logger.info(
+                f"Method key {key or '(none)'} on {instrument} now points at "
+                f"'{mode.ionization_mode_name}': the last {REPOINT_AFTER} "
+                "files of this method bound to it, and it is the same "
+                "chemistry as the mode the binding held, so files of this "
+                "method follow them"
+            )
     row.ionization_mode_id = points_at
     row.candidate_mode_id = candidate
     row.n_candidate_streams = run
