@@ -4,6 +4,26 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 ## [Unreleased]
 
+### Changed
+
+- **A method binding now follows the mode its method's files actually use.** A
+  binding records which chemistry an acquisition method has been seen running,
+  and it was written once: while the chemistry held, nothing moved it. The
+  first fleet measurement showed the cost. A site that cannot edit a mode
+  already in use makes a second mode for the same reagent, its files bind to
+  the new one, and the binding goes on naming the retired one - with nothing
+  on it looking wrong, because the two modes are the same chemistry and
+  chemistry is what it checks. A binding now also records the mode its newest
+  files name, and moves to it once the last three agree. One re-bound file, or
+  an afternoon of them, moves nothing; a method in daily use moves within a
+  day. Still nothing routes on a binding, so no file is routed differently by
+  this, and no sample already processed is re-bound.
+
+  Operators: re-run `mascope prod db script run backfill_method_bindings`
+  after upgrading, so the bindings learned since the last release are moved by
+  the same rule over the whole history. It merges, and running it twice
+  changes nothing.
+
 ### Added
 
 - **Every acquisition sample a file is split into now records how its chemistry

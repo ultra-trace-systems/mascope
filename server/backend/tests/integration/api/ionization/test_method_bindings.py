@@ -323,8 +323,135 @@ async def test_the_same_chemistry_under_another_name_is_not_a_disagreement(
     row = await binding_of(_File(instrument), streams=_streams())
     assert row.state == "learned"
     assert len(row.chemistry_keys) == 1
-    # And the row does not wander between two modes that mean the same thing.
+    # One file does not move the row: the twin is noted as the candidate and
+    # has to be seen REPOINT_AFTER times in a row to be followed.
     assert row.ionization_mode_id == modes["nitrate"].ionization_mode_id
+    assert row.candidate_mode_id == modes["twin"].ionization_mode_id
+    assert row.n_candidate_streams == 1
+    # And none of it is a disagreement: the chemistry never changed.
+    assert row.n_disagreements == 0
+
+
+@pytest.mark.asyncio
+async def test_files_short_of_the_threshold_do_not_move_the_row(
+    modes, binding_of, instrument
+):
+    """One re-bound file, or an afternoon of them, must move nothing."""
+    await learn_method_bindings(
+        _File(instrument), [modes["nitrate"]], source="token", streams=_streams()
+    )
+    for _ in range(bindings_module.REPOINT_AFTER - 1):
+        await learn_method_bindings(
+            _File(instrument), [modes["twin"]], source="explicit", streams=_streams()
+        )
+
+    row = await binding_of(_File(instrument), streams=_streams())
+    assert row.ionization_mode_id == modes["nitrate"].ionization_mode_id
+    assert row.candidate_mode_id == modes["twin"].ionization_mode_id
+    assert row.n_candidate_streams == bindings_module.REPOINT_AFTER - 1
+
+
+@pytest.mark.asyncio
+async def test_a_run_of_files_on_the_other_row_moves_the_binding_to_it(
+    modes, binding_of, instrument
+):
+    """The case 5.7 found: a site made a second row for the same reagent.
+
+    An existing mode could not be edited, so its files bind to the new row
+    from then on. A binding that kept the first row it saw would route every
+    future file to the row the site has stopped using, while reading
+    `learned` with no disagreements - which is what made the finding a design
+    one rather than a bug.
+    """
+    await learn_method_bindings(
+        _File(instrument), [modes["nitrate"]], source="token", streams=_streams()
+    )
+    with captured_logs("INFO") as records:
+        for _ in range(bindings_module.REPOINT_AFTER):
+            await learn_method_bindings(
+                _File(instrument), [modes["twin"]], source="token", streams=_streams()
+            )
+
+    row = await binding_of(_File(instrument), streams=_streams())
+    assert row.ionization_mode_id == modes["twin"].ionization_mode_id
+    # Settled again: nothing pending, so the next file on this row is simple
+    # agreement.
+    assert row.candidate_mode_id is None
+    assert row.n_candidate_streams == 0
+    assert row.state == "learned"
+    assert row.n_disagreements == 0
+    moved = [
+        r["message"]
+        for r in records
+        if r["level"].name == "INFO" and "now points at" in r["message"]
+    ]
+    assert len(moved) == 1, moved
+    assert modes["twin"].ionization_mode_name in moved[0]
+
+
+@pytest.mark.asyncio
+async def test_a_file_back_on_the_held_row_breaks_the_run(
+    modes, binding_of, instrument
+):
+    """The threshold counts the LAST files, not every file that ever differed.
+
+    A method genuinely used with two interchangeable mode rows should settle
+    on neither by accident.
+    """
+    await learn_method_bindings(
+        _File(instrument), [modes["nitrate"]], source="token", streams=_streams()
+    )
+    for name in ("twin", "twin", "nitrate", "twin", "twin"):
+        await learn_method_bindings(
+            _File(instrument), [modes[name]], source="token", streams=_streams()
+        )
+
+    row = await binding_of(_File(instrument), streams=_streams())
+    assert row.ionization_mode_id == modes["nitrate"].ionization_mode_id
+    assert row.n_candidate_streams == 2
+
+
+@pytest.mark.asyncio
+async def test_a_retry_does_not_advance_the_run(modes, binding_of, instrument):
+    """A pipeline retry says nothing new, so it must not count toward a move."""
+    await learn_method_bindings(
+        _File(instrument), [modes["nitrate"]], source="token", streams=_streams()
+    )
+    retried = _File(instrument)
+    for _ in range(bindings_module.REPOINT_AFTER + 2):
+        await learn_method_bindings(
+            retried, [modes["twin"]], source="token", streams=_streams()
+        )
+
+    row = await binding_of(retried, streams=_streams())
+    # The first attempt is a real observation; every later one repeats it.
+    assert row.ionization_mode_id == modes["nitrate"].ionization_mode_id
+    assert row.n_candidate_streams == 1
+
+
+@pytest.mark.asyncio
+async def test_an_ambiguous_key_carries_no_pending_move(modes, binding_of, instrument):
+    """It routes nothing, so a pending move on it would only mislead."""
+    await learn_method_bindings(
+        _File(instrument), [modes["nitrate"]], source="token", streams=_streams()
+    )
+    await learn_method_bindings(
+        _File(instrument), [modes["twin"]], source="token", streams=_streams()
+    )
+    await learn_method_bindings(
+        _File(instrument), [modes["bromide"]], source="token", streams=_streams()
+    )
+    # And further files of the row it was moving toward change nothing.
+    for _ in range(bindings_module.REPOINT_AFTER):
+        await learn_method_bindings(
+            _File(instrument), [modes["twin"]], source="token", streams=_streams()
+        )
+
+    row = await binding_of(_File(instrument), streams=_streams())
+    assert row.state == "ambiguous"
+    assert row.ionization_mode_id == modes["nitrate"].ionization_mode_id
+    assert row.candidate_mode_id is None
+    assert row.n_candidate_streams == 0
 
 
 @pytest.mark.asyncio

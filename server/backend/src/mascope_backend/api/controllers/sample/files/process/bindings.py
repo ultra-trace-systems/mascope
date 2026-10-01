@@ -22,6 +22,15 @@ that was never unanimous must not become a routing binding in the first
 place. On the production fleet this holds back about one Orbitrap method key
 in forty, and nearly every TOF one - which is the point, since a TOF file's
 method name is a constant that separates nothing.
+
+**Agreeing on the chemistry does not settle the row.** Two mode rows can
+name one chemistry - a site that could not edit a mode in use made a second
+row for the same reagent - and its files bind to the newer one from then on.
+A binding that kept the first row it saw would route future files to a row
+the site has stopped using, while every state on it read healthy, because by
+the measure those states use it is. So the row follows the newest
+observations once :data:`REPOINT_AFTER` of them in a row agree
+(:func:`follow_row`), and a single re-bound file moves nothing.
 """
 
 from datetime import datetime, timezone
@@ -44,6 +53,20 @@ from mascope_backend.method_keys import (
 from mascope_backend.runtime import runtime
 
 
+#: Consecutive observations that must name the same other mode row before a
+#: binding follows them to it.
+#:
+#: Three, because the two ways of being wrong cost different amounts (section
+#: 5.3, "Why three"). Moving too eagerly is the expensive error: one corrected
+#: file would drag a whole method's routing with it. Moving too slowly is
+#: nearly free, because this rung sits below the filename token - a file with
+#: a token is unaffected either way, and a file without one routes to another
+#: row of the same chemistry, which is where it would have parked before the
+#: rung existed. Three is the smallest count that no single re-bind, and no
+#: pair of them on one afternoon, can reach, and a method in daily use still
+#: reaches it within a day.
+REPOINT_AFTER = 3
+
 #: The counts a run that learned nothing returns. ``repeated`` is an
 #: observation a file had already made; ``no_signature`` a file whose reader
 #: normally records a census but took none, so what it measured is unknown.
@@ -54,6 +77,58 @@ _NOTHING_LEARNED = {
     "repeated": 0,
     "no_signature": 0,
 }
+
+
+def follow_row(
+    current: str | None,
+    candidate: str | None,
+    n_candidate: int,
+    observed: str,
+) -> tuple[str, str | None, int]:
+    """Where a binding points after one more observation of its chemistry.
+
+    Only for an observation that agrees on the chemistry: a new chemistry
+    makes the key ambiguous instead, and an ambiguous key routes nothing, so
+    there is no point in moving it.
+
+    **Unanimity on the chemistry does not settle the row.** A site that could
+    not edit a mode in use made a second row for the same reagent, and its
+    files bind to that one from then on. A binding that kept the first row it
+    ever saw would go on routing future files to a row the site has stopped
+    using - with `state` reading `learned` and `n_disagreements` reading zero,
+    because by the measure those use it is healthy. That is what the first
+    fleet measurement found (section 5.7), and this is the answer to it: the
+    row follows the newest observations once :data:`REPOINT_AFTER` of them in
+    a row agree.
+
+    Pure, and shared with the backfill script, which folds the whole history
+    oldest first and so must apply exactly this rule to end up where live
+    learning would have.
+
+    :param current: The mode the binding points at, or None when the mode it
+        pointed at has been deleted.
+    :param candidate: The mode the recent observations have been naming, or
+        None when they have agreed with ``current``.
+    :param n_candidate: How many in a row have named ``candidate``.
+    :param observed: The mode this observation names.
+    :return: The mode to point at, the candidate to carry, and the length of
+        its run. A run of 0 with no candidate is the settled state.
+    :rtype: tuple[str, str | None, int]
+    """
+    if current is None:
+        # The row points nowhere and therefore routes nothing, so there is
+        # nothing to drag away from: this observation supplies a mode for the
+        # chemistry the row already holds.
+        return observed, None, 0
+    if observed == current:
+        # Agreement. Any run toward another row is broken, which is what
+        # makes the threshold a count of the LAST few observations rather
+        # than of all the ones that ever disagreed.
+        return current, None, 0
+    run = n_candidate + 1 if observed == candidate else 1
+    if run >= REPOINT_AFTER:
+        return observed, None, 0
+    return current, observed, run
 
 
 def method_binding_mode() -> str:
@@ -272,6 +347,8 @@ async def _observe(
                     n_disagreements=0,
                     last_sample_file_id=sample_file_id,
                     last_chemistry_key=chemistry,
+                    candidate_mode_id=None,
+                    n_candidate_streams=0,
                 )
                 .on_conflict_do_nothing(constraint="uq_method_binding_key")
                 .returning(MethodBinding.method_binding_id)
@@ -307,13 +384,12 @@ async def _observe(
     row.last_chemistry_key = chemistry
 
     if chemistry in known:
-        # The same chemistry as before. The row keeps pointing where it
-        # already did, so a deployment that has two identically-built modes
-        # does not see the binding wander between them - unless the mode it
-        # pointed at has been deleted, when this observation supplies a new
-        # one for the chemistry the row already holds.
-        if row.ionization_mode_id is None and len(known) == 1:
-            row.ionization_mode_id = mode.ionization_mode_id
+        # The same chemistry as before, so nothing about this key's unanimity
+        # changes - but the row naming that chemistry may have. Only for a
+        # key that is still unanimous: an ambiguous one routes nothing, and
+        # moving its pointer would be churn nobody reads.
+        if len(known) == 1:
+            _follow(row, mode, instrument=instrument, key=key)
         return "refreshed"
 
     # A chemistry this key has not been seen with. The row is never repointed
@@ -323,12 +399,43 @@ async def _observe(
     row.chemistry_keys = known + [chemistry]
     row.n_disagreements = (row.n_disagreements or 0) + 1
     row.state = "ambiguous"
+    # Whatever run was building is moot now, and leaving it would show a
+    # pending move on a row that will never route again.
+    row.candidate_mode_id = None
+    row.n_candidate_streams = 0
     runtime.logger.info(
         f"Method key {key or '(none)'} on {instrument} has now been seen with "
         f"{len(row.chemistry_keys)} chemistries, so it identifies none of "
         "them; files of this method keep routing by their filename token"
     )
     return "ambiguous"
+
+
+def _follow(
+    row: MethodBinding, mode: IonizationMode, instrument: str, key: str
+) -> None:
+    """Apply :func:`follow_row` to a row, and say so when it moves.
+
+    At INFO, because a binding changing where it sends future files is worth
+    a line in a server's log: it is the one thing in this module that alters
+    what a later file would be bound to.
+    """
+    points_at, candidate, run = follow_row(
+        current=row.ionization_mode_id,
+        candidate=row.candidate_mode_id,
+        n_candidate=row.n_candidate_streams or 0,
+        observed=mode.ionization_mode_id,
+    )
+    if points_at != row.ionization_mode_id:
+        runtime.logger.info(
+            f"Method key {key or '(none)'} on {instrument} now points at "
+            f"'{mode.ionization_mode_name}': the last {REPOINT_AFTER} files "
+            "of this method bound to it, and it is the same chemistry as the "
+            "mode the binding held, so files of this method follow them"
+        )
+    row.ionization_mode_id = points_at
+    row.candidate_mode_id = candidate
+    row.n_candidate_streams = run
 
 
 async def _locked(session, digest: str) -> MethodBinding | None:

@@ -46,6 +46,7 @@ from sqlalchemy import select, text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from mascope_backend.api.controllers.sample.files.process.bindings import (
+    follow_row,
     method_binding_mode,
 )
 from mascope_backend.api.controllers.sample.files.process.status import (
@@ -194,9 +195,18 @@ def _fold(
 ) -> tuple[str, str] | None:
     """Fold one page of history into the records built so far.
 
-    The rules live learning applies: the chemistry first seen is the one the
-    row points at, a second chemistry marks the key ambiguous and counts a
-    disagreement, and the row is never repointed by one.
+    The rules live learning applies: a second chemistry marks the key
+    ambiguous and counts a disagreement, the row is never repointed by one,
+    and while the chemistry holds the row follows the newest observations
+    once three of them agree (``bindings.follow_row``). Folding the history
+    oldest first therefore leaves the row where live learning would have left
+    it, which is the newest mode the method's own files have settled on.
+
+    The order is the files' ACQUISITION time, which is what the history query
+    sorts by, not the time each was bound. For a steady stream of uploads the
+    two agree; a file re-processed long after it was acquired appears at its
+    old position and can break a run that was building, which costs three
+    more observations and no correctness.
 
     :param observations: One page from :func:`_history_pages`, oldest first.
     :param census: The scan streams of that page's files, by filename.
@@ -243,6 +253,8 @@ def _fold(
                 "n_streams": 1,
                 "n_disagreements": 0,
                 "last_chemistry_key": chemistry,
+                "candidate_mode_id": None,
+                "n_candidate_streams": 0,
             }
             continue
 
@@ -254,6 +266,19 @@ def _fold(
             record["chemistry_keys"].append(chemistry)
             record["n_disagreements"] += 1
             record["state"] = "ambiguous"
+            record["candidate_mode_id"] = None
+            record["n_candidate_streams"] = 0
+        elif len(record["chemistry_keys"]) == 1:
+            (
+                record["ionization_mode_id"],
+                record["candidate_mode_id"],
+                record["n_candidate_streams"],
+            ) = follow_row(
+                current=record["ionization_mode_id"],
+                candidate=record["candidate_mode_id"],
+                n_candidate=record["n_candidate_streams"],
+                observed=row["mode_id"],
+            )
     return previous
 
 
@@ -304,9 +329,8 @@ async def _apply(records: dict[str, dict]) -> dict[str, int]:
 def _merge(row: MethodBinding, record: dict) -> bool:
     """Fold a record into a row live learning already made.
 
-    The row keeps pointing where it does - live learning's first chemistry
-    stays the routing one - and gains the history's chemistries, counts and
-    span.
+    The row gains the history's chemistries, counts and span, and takes the
+    mode the history settled on when the history is the newer evidence.
 
     :return: True when this merge turned the key ambiguous.
     :rtype: bool
@@ -319,6 +343,16 @@ def _merge(row: MethodBinding, record: dict) -> bool:
         row.n_disagreements = (row.n_disagreements or 0) + len(added)
     if len(row.chemistry_keys or []) > 1:
         row.state = "ambiguous"
+    # Where the row points comes from whichever side saw the newer file,
+    # which is normally this history: it is close to a superset of what live
+    # learning saw, and it has applied the same rule over all of it rather
+    # than over the last few weeks. Taking it is also what keeps a re-run
+    # idempotent - the same history folds to the same row - and an ambiguous
+    # key is left alone, since it routes nothing.
+    if len(row.chemistry_keys or []) == 1 and record["last_seen"] >= row.last_seen:
+        row.ionization_mode_id = record["ionization_mode_id"]
+        row.candidate_mode_id = record["candidate_mode_id"]
+        row.n_candidate_streams = record["n_candidate_streams"]
     # max, not a sum: every file live learning counted has pipeline items, so
     # it is in this history too. Adding would count those files twice on the
     # first run and double every merged row on the next. The history is close
