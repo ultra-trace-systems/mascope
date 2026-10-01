@@ -1,10 +1,11 @@
 # Automatic ingest: chemistry routing and acquisition splitting - design
 
-Status: **phases 0 and 1 shipped; phase 2 learned and measured, its rung
-next; phase 8 added** (2026-09-30). Written for issue #2098 ("Split files
-into samples by scan attributes"), which carries the checklist of pull
-requests. Decisions 1, 2, 4, 9 and 12 in section 12 are settled; the rest are
-open.
+Status: **phases 0 and 1 shipped; phase 2's provenance and row-following
+shipped, its rung next; the stream work of phases 3 and 4 starts beside
+phase 8, which gains the standard-method catalogue; detection deferred**
+(2026-10-01). Written for issue #2098 ("Split files into samples by scan
+attributes"), which carries the checklist of pull requests. Decisions 1, 2,
+3, 4, 5, 9, 12 and 13 in section 12 are settled; the rest are open.
 
 ## Picking this up
 
@@ -27,6 +28,14 @@ mechanisms and hand-built calibrant collections remain, as the advanced path
 for exotic chemistries and calibration standards. Section 5.1 says how far
 the profile has been built.
 
+Beside the profiles Mascope ships **standard acquisition methods**: a method
+file per chemistry and instrument type for the operator to load, and a
+catalogue entry naming the profile it runs. A site on a shipped method gets
+its chemistry on its first file with no click at all; a site on its own
+method gets it after one (5.3). The standard methods are also where files
+with several scan ranges of one chemistry come from, and splitting those
+into one item per range is the first cut of the stream work (4.5).
+
 The design in one paragraph. A physical acquisition (`sample_file`) is
 partitioned into **streams**: scans that share a scan signature and a
 chemistry epoch. Each stream gets its own peak rows, time axis, instrument
@@ -48,12 +57,14 @@ The token is the advanced path's override: it outranks what the system has
 learned and yields to what a person has confirmed. (Rung 4 once held an
 instrument default, since dropped - section 5.2 says why.)
 
-Detection also audits every other rung. Anything unresolved is parked as
-"needs a chemistry", visibly, with a suggestion where detection has one,
-instead of failing silently.
+Anything unresolved is parked as "needs a chemistry", visibly, instead of
+failing silently. Detection, when it comes, audits every rung and adds a
+suggestion to the parked file; it is deferred behind the stream and profile
+work (decision 3).
 
-Read sections 1 and 2 for the problem and the evidence, 3 for the model, 5.1
-for the profile, and 10 for the plan and how it lands. Section 9.1 carries
+Read sections 1 and 2 for the problem and the evidence, 3 for the model, 4.5
+for the first stream cut, 5.1 for the profile, 5.3 for the catalogue, and 10
+for the plan and how it lands. Section 9.1 carries
 the three rules that keep already-processed files as they are. Every pull
 request for this work updates the table below and ticks its item on #2098.
 
@@ -61,11 +72,11 @@ request for this work updates the table below and ticks its item on #2098.
 |---|---|---|
 | 0 | Stop losing information: method identity, stream census, token-rule and notification fixes | shipped |
 | 1 | Per-file processing state, persistent notifications, "needs a chemistry" | shipped (#2164, #2166-#2169) |
-| 2 | Method bindings: routing without tokens | learned in shadow on every server (#2193, #2196, #2206, #2226) and measured (5.7); provenance, the row-following learner and the rung itself remain, section 10 lists them |
-| 8 | Chemistry profiles as the unit: complete the seeded profiles, list them, a profile-first surface, batches named after the profile | open; built right after phase 2 |
-| 3 | The part contract: stream and window honoured by every consumer | open |
-| 4 | Per-stream state: calibration, instrument function, one item per stream, MS2 | open |
-| 5 | Chemistry detection: audit first, then provisional binding | open; its reagent libraries are on `develop`, so it is unblocked and follows phase 8 |
+| 2 | Method bindings: routing without tokens | learned in shadow on every server (#2193, #2196, #2206, #2226), measured (5.7), item provenance (#2254) and the row-following learner (#2255) shipped; the backfill re-run, the rung, the disagreement report and the per-site switch remain, section 10 lists them |
+| 8 | Chemistry profiles as the unit: complete the seeded profiles, ship the standard methods and their catalogue, list the profiles, a profile-first surface, batches named after the profile | open; built right after phase 2, in parallel with phases 3 and 4 |
+| 3 | The part contract: stream and window honoured by every consumer | open; starts beside phase 8, first for files with more than one MS1 stream in a polarity (4.5) |
+| 4 | Per-stream state: calibration, instrument function, one item per stream, MS2 | open; follows 3 on the same track; no rebuild script (4.5, 9.1) |
+| 5 | Chemistry detection: audit first, then provisional binding | deferred behind phases 3, 4 and 8 (decision 3); its reagent libraries are on `develop` |
 | 6 | Recipes: time and trace windows, preview and apply | open |
 | 7 | Declarations from the instrument side, MS2-only parts | open |
 
@@ -448,7 +459,8 @@ the polarity, so stores written today read as streams without a rebuild
 - **The first-scan outlier rule stays evaluated as it is today for
   single-stream files.** Any change to what the default selection returns
   makes every existing store stale (`check_stored_scan_axis`), so per-stream
-  evaluation applies only to multi-stream files. Those are rebuilt anyway.
+  evaluation applies only to multi-stream files. Those are the files the
+  first cut takes on (4.5).
 - **The instrument function is fitted per stream** when streams differ in
   analyzer or resolution. Otherwise one shared fit stands, as today.
 - **m/z calibration moves to the stream.**
@@ -456,9 +468,10 @@ the polarity, so stores written today read as streams without a rebuild
   - `sample_file.mz_calibration` keeps a copy of the primary stream's fit
     until every reader has moved.
   - This removes the per-file hazard in section 2.1.
-- **Existing multi-stream files** are listed and rebuilt by a maintenance
-  script. It has a dry-run mode and touches ACQUISITION items only, the same
-  shape as `fix_acquisition_window`.
+- **Existing multi-stream files stay as they were processed.** No rebuild
+  script: rule 1 of 9.1 applies, and an explicit re-process of such a file
+  splits it under the rules then current. The maintenance script once
+  planned here is dropped.
 
 ### 4.4 `acquisition_stream`
 
@@ -476,6 +489,44 @@ the polarity, so stores written today read as streams without a rebuild
 
 `sample_item` gains a nullable `stream_id`. NULL means today's semantics, so
 every existing item keeps its meaning. Copy and move carry it.
+
+### 4.5 The first cut: several m/z ranges, one chemistry
+
+What sites want first is to acquire several scan ranges of one chemistry in
+one file and get one sample item per range. Today each item is one stream
+only because the pipeline pools a polarity, so files are acquired one range
+at a time. The corpus already holds the case: a file with two ranges per
+polarity in eight blocks, pooled into one spectrum per polarity (2.2).
+
+The first cut of phases 3 and 4 is scoped to exactly that, and it is a
+smaller piece of work than the two phases read as a whole:
+
+- **Only files with more than one MS1 stream in a polarity are split.** A
+  single-stream file takes the path it takes today, byte for byte, which the
+  demo goldens pin. The census already says which files qualify, and the
+  processing detail already names them (phase 0, item 3).
+- **Per-stream peak detection, time axis and TIC** (4.3), and the stream
+  scope honoured by peak listing, matching, assignment loading and the
+  exports (phase 3). This is the part that cannot be skipped: an averaged
+  spectrum divides by every selected scan, so an ion seen by one range only
+  is diluted in the pooled store.
+- **One ACQUISITION item per MS1 stream**, under the one binding the file's
+  polarity resolves to, and the batch name gains the range only when one
+  binding yields more than one class on a day (decision 7).
+- **Calibration per stream** (phase 4). Not optional for this cut: the
+  Orbitrap apply rescales every peak row of the file and removes every item's
+  matches, so two calibrating items in one file collide. Per-stream apply is
+  what makes two ranges in one file safe.
+- **One instrument function stays shared** while the streams share analyzer
+  and resolution, which the ranges of one method do.
+- **Left for later:** MS2 attachment, polarity-switching files (each polarity
+  already gets its own item), and the rebuild of files already ingested,
+  which rule 1 of 9.1 replaces with an explicit re-process.
+
+An Orbitrap feature by construction: a TofDaq file is one acquisition on one
+mass axis and has nothing to split. The standard methods of 5.3 are where the
+multi-range acquisitions will come from, and a catalogue entry carries the
+expected signature class, so the split needs no configuration at a site.
 
 ---
 
@@ -526,7 +577,7 @@ exactly one mode binds.
 | 1. Explicit | A person: manual processing, re-routing, a review decision | `explicit`, confirmed | yes |
 | 2. Method binding, confirmed | `method_binding` on (instrument, method identity, signature class), once a person has confirmed it | `method`, confirmed | - |
 | 3. Filename token | Today's rule, evaluated per stream polarity and requiring one mode per polarity; the advanced path's override | `token`, learned | yes |
-| 4. Method binding, learned | The same row while it is only learned: unanimous on one chemistry, keyed on a real method name, its row applicable to the instrument | `method`, learned | - |
+| 4. Method binding, learned | The same row while it is only learned: unanimous on one chemistry, keyed on a real method name, its row applicable to the instrument. With no row for the instrument yet, a shipped standard method the file's method matches supplies one (5.3) | `method`, learned; `catalogue` on first contact | - |
 | 5. Detected | Section 5.4, only when its guards pass | `detected`, **provisional** | only after review |
 | none | - | stream parked as `needs_chemistry` | - |
 
@@ -565,8 +616,8 @@ A site that genuinely runs one chemistry per instrument is served by rung 4
 once its method has been seen once, which is the same outcome without a
 standing setting to go stale.
 
-**Detection runs on every MS1 stream, whatever rung bound it.** It stores its
-evidence on the stream. A strong disagreement with the binding raises a
+**Detection, once built, runs on every MS1 stream, whatever rung bound it.**
+It stores its evidence on the stream. A strong disagreement with the binding raises a
 review item. Examples: "bound to bromide by method, no Br- or Br2- found"; "a
 nitrate method, but the 15N/14N anchor ratio says labelled".
 
@@ -680,6 +731,35 @@ daily use makes three observations within a day, while a method used twice a
 year is held back for a season, which is the right way round. Set it as a
 named constant and move it on evidence - phase 2's disagreement report
 (section 10) is what would show whether real changes are waiting too long.
+
+**The standard-method catalogue.** Mascope ships, beside the profiles, a
+method file per chemistry and instrument type for the operator to load on the
+instrument, and a catalogue entry for each: the method's file name, a hash of
+its text, the profile it runs (`system_key`), its polarity and its expected
+signature class. Drafts of the methods exist and are the input to the
+entries. A file whose method matches an entry, on an instrument that has no
+binding for that key yet, binds to the entry's profile and writes the
+instrument's binding with source `catalogue`, so live learning carries on
+from there and a site on a shipped method never sees a parked file. Three
+rules for the entries:
+
+- **Content first, name second.** The reader can extract the method text, so
+  a shipped file's hash is known when the entry is made, a renamed copy still
+  matches, and an edited copy does not; the name is the fallback for readers
+  that give no text (`ionization_method_config.md` 6.1). An edited copy that
+  keeps the name parks once, like any unknown method, and its click teaches
+  the instrument's own binding.
+- **A mismatched signature class is noted, not refused.** A site that keeps
+  the method's name and chemistry but changes its ranges still gets the
+  profile; the processing detail says the scans differ from the shipped
+  method.
+- **Shipped TOF configurations carry a distinct name per chemistry.** The
+  constant name is what makes the method key worthless on TOF today, and a
+  shipped configuration named for its chemistry removes that for every site
+  that adopts it.
+
+The catalogue is consulted in rung 4, below the token: a site's own token
+still wins, as it does over any learned binding.
 
 **A method name that is a constant is no method name.** Some instruments
 report a fixed configuration name for every acquisition - Tofwerk's
@@ -1084,8 +1164,8 @@ same hysteresis and dwell logic as a trace.
   nothing in them.
 - **Existing items** keep `stream_id = NULL`, which means today's polarity
   semantics.
-- **Multi-stream files** are rebuilt by the maintenance script, dry-run
-  first.
+- **Multi-stream files already ingested** stay as they were processed until
+  someone re-processes them; there is no rebuild script (4.5, 9.1).
 - **Tokens keep working** as rung 3, and they teach rung 4.
   - Browser upload stops rejecting token-less names only when the server
     announces the capability. The file then parks rather than being refused,
@@ -1134,6 +1214,7 @@ What that leaves in place, and what happens to it:
 | Files processed before phase 1, with no status or registration time | NULL, shown as no status |
 | Items bound under the token rule before #2158, or calibrated in the order before #2153 | as bound; a re-process applies the current rules |
 | Items bound to one of several mode rows for a chemistry | as bound; the binding follows the newest row for the files that arrive later, and a retired mode keeps its batches |
+| Multi-stream files processed before the split: two polarities as two items, several ranges pooled into one | as processed; an explicit re-process splits them under the rules then current |
 | Bindings the backfill read from history (`source = history`) | kept; they carry no per-file rung, and provenance starts with the item columns |
 | Files with no acquisition sample | parked, or older than the parked state; an explicit bind routes them under the current rules |
 
@@ -1303,11 +1384,12 @@ Needed before any rung can be provisional or park.
   once, and a file whose method is new parks for one click. The rest of the
   setup win is phase 8.
 
-### Phase 8: chemistry profiles as the unit (2-3 weeks)
+### Phase 8: chemistry profiles as the unit (2-3 weeks, beside phases 3 and 4)
 
-Numbered after the phases it follows in this note, built right after phase
-2: it is where the setup win of the original proposal is delivered. Every
-item keeps a site's own modes working unchanged.
+Numbered after the phases it follows in this note, built right after phase 2
+and in parallel with the stream track: it is where the setup win of the
+original proposal is delivered. Every item keeps a site's own modes working
+unchanged.
 
 - **Complete the profiles.** Each seeded chemistry gets a system-owned
   calibrant collection and a diagnostic collection, seeded at start beside
@@ -1319,6 +1401,15 @@ item keeps a site's own modes working unchanged.
   three spread across the range, and a reagent cluster series spans it. The
   further tiers of the original proposal - background ions, self-consistency
   - come later, if the reagent ions prove insufficient for a chemistry.
+- **Ship the standard methods and their catalogue.** A method file per
+  chemistry and instrument type, and `mascope_backend.method_catalogue`
+  beside the ionization catalogue, with the rules of 5.3: content hash first,
+  name as the fallback, a noted rather than refused signature mismatch,
+  distinct TOF names. The existing drafts are the input; each entry needs
+  the file name, the chemistry, the polarity, the scan events with their
+  ranges and resolution, and the instrument type. The pipeline consults the
+  catalogue in rung 4 when the instrument has no binding for the key yet,
+  and writes the binding with source `catalogue`.
 - **A complete profile is listed from the start**, marked as shipped, and
   "adopted" stops being a state: adopting a profile is choosing it for a
   file. The `include_system` switch goes with it.
@@ -1327,12 +1418,14 @@ item keeps a site's own modes working unchanged.
   mechanisms and collection overrides move under Advanced. Choose chemistry
   lists the profiles. Storage keeps its names and tables; only what the
   browser calls things changes.
-- **Cold start without the advanced path.** Detection in audit mode (phase
-  5) pre-fills the suggestion on a parked file. Before that, one read-only
-  measurement: how many of the fleet's method names contain a reagent word.
-  If most do, a profile carries recognition hints matched against the method
-  name, and a first contact becomes a confirmation rather than a choice.
-  Either way a hint binds provisionally, and a person's click confirms.
+- **Cold start without the advanced path.** The catalogue covers a site on
+  a shipped method; a site on its own method parks once and clicks once. One
+  read-only measurement decides whether more is worth doing: how many of the
+  fleet's method names contain a reagent word. If most do, a profile carries
+  recognition hints matched against the method name, and a first contact
+  becomes a confirmation rather than a choice; a hint binds provisionally,
+  and a person's click confirms. Detection (phase 5) adds its suggestion
+  later, when it comes.
 - **Batches are named after the profile**, not after the site's mode, for
   batches created after the change; existing batches keep their names. A
   site retires a custom mode with a profile as its successor: its items and
@@ -1347,8 +1440,12 @@ item keeps a site's own modes working unchanged.
     their names;
   - a site with tokens sees no change in routing.
 
-### Phase 3: the part contract (2-3 weeks)
+### Phase 3: the part contract (2-3 weeks, beside phase 8)
 
+- **First cut:** section 4.5. Files with more than one MS1 stream in a
+  polarity are split, behind the phase 4 flag; every other file is
+  byte-identical. Two ranges of one chemistry in one file is the case it is
+  built for.
 - **The scope object.** A scan scope (stream, t0, t1) replaces the bare
   polarity in:
   - reader selection;
@@ -1374,16 +1471,23 @@ item keeps a site's own modes working unchanged.
 - **Items and batches:** one ACQUISITION item per MS1 stream; the batch name
   gains the signature class when needed.
 - **MSn:** streams attach to their parents; the MS2 routes take the stream.
-- **Existing data:** the rebuild script.
+- **Existing data:** nothing rebuilt; an explicit re-process splits a file
+  already ingested (4.5, 9.1).
 - **Gates:**
+  - two ranges of one chemistry in one file give two calibrated items with
+    separate peak lists, and a re-process of a pooled file splits it;
   - the polarity-switching corpus files get one calibrated item per stream;
   - the internal MS2 acquisitions keep their spectra;
   - the dual-polarity match loss of 2.1 does not reproduce.
 
-### Phase 5: chemistry detection (2-3 weeks, plus a release in audit mode)
+### Phase 5: chemistry detection (deferred; 2-3 weeks, plus a release in audit mode)
 
-- **Dependency:** the epic's reagent libraries on `develop`. That is either
-  the epic merge or the pure module landed on its own.
+- **Deferred (decision 3):** the catalogue and the one-click park cover the
+  cold start, so detection follows phases 3, 4 and 8 and ships as an audit
+  first. Its value then is a reagent changed under an unchanged method, and
+  the suggestion on a parked file.
+- **Dependency:** the epic's reagent libraries, on `develop` since the
+  assignment plan's stage 3 merged.
 - **Build:** the scorer with its four guards, stored evidence, and
   disagreement review items.
 - **Gates:**
@@ -1420,18 +1524,24 @@ graph LR
     P0[0 foundations] --> P1[1 state + review]
     P0 --> P3[3 part contract]
     P1 --> P2[2 method bindings]
-    P2 --> P8[8 chemistry profiles]
+    P2 --> P8[8 profiles + standard methods]
+    P2 -.one migration at a time.-> P3
     P3 --> P4[4 per-stream state]
-    P8 --> P5[5 detection]
+    P8 --> P5[5 detection, deferred]
+    P4 --> P5
     E[reagent libraries, on develop] --> P5
     P3 --> P6[6 recipes + windows]
     P5 -.epochs.-> P6
     P6 --> P7[7 declarations]
 ```
 
-Phases 1-2-8 and 3-4 are independent tracks. Phase 2's rung and phase 8
-are the user-visible win, in that order; phase 5 follows 8 so that its
-suggestion has a profile to name; phase 4 closes the correctness gap.
+After phase 2's rung, two tracks run side by side: phase 8 (the profiles
+and the standard methods) and phases 3-4 (streams, first for multi-range
+files). Phase 5 is deferred until both are in, and then ships as an audit.
+The two tracks touch different layers - seeding, calibration anchors and the
+browser on one side; the reader, the store and matching on the other - and
+meet only at `sample_item`, where each adds a column: one migration per PR,
+sequenced, never opened side by side.
 
 ### How it lands
 
@@ -1454,7 +1564,8 @@ is no epic branch.
   both copies of the runtime toml, and starts in a shadow or check-only mode:
   - **phase 2:** method bindings are learned and compared with the token first;
     routing on them is switched on per site afterwards;
-  - **phase 4:** multi-stream splitting stays off until it is complete;
+  - **phases 3-4:** multi-stream splitting sits behind one flag from the
+    first cut on, off by default until the cut is complete;
   - **phase 5:** detection runs check-only for a release before it may bind
     anything.
 
@@ -1470,8 +1581,8 @@ is no epic branch.
   rewrote. So the reader, store and matching layers land first, and the
   assignment consumer follows after the epic merges.
 - Phase 5 builds on that epic's reagent cluster libraries, which are on
-  `develop` since the assignment plan's stage 3 merged; it starts after phase
-  8 so that its suggestion has a profile to name.
+  `develop` since the assignment plan's stage 3 merged; it is deferred behind
+  phases 3, 4 and 8 (decision 3).
 
 **The one exception.** If the stream work of phases 3-4 cannot be cut into
 steps that each keep single-stream files byte-identical, that part alone goes
@@ -1500,7 +1611,8 @@ through a short-lived stacked branch, merged as one unit.
 - **A fresh install:** phase 8's first-file gate, run against a database that
   holds nothing but the catalogue.
 - **A shareable multi-range and MS2 acquisition** is needed for committed
-  fixtures. The corpus files cannot be used.
+  fixtures. The corpus files cannot be used; a standard method of 5.3 run on
+  the internal instrument is the way to make one.
 
 ---
 
@@ -1521,12 +1633,18 @@ through a short-lived stacked branch, merged as one unit.
    - Audit-only for a release, then provisional above a measured precision
      gate (recommended).
    - Never final without a person.
+   **Decided 2026-10-01:** deferred. The standard-method catalogue and the
+   one-click park cover the cold start, so detection follows phases 3, 4 and
+   8 and ships audit-only first, as recommended; never final without a
+   person.
 4. **Default stream key.** ~~The full signature including resolution
    (recommended), or polarity plus scan range only.~~ **Decided 2026-09-24:**
    the full signature, resolution included, though resolution is not expected
    to vary within a file.
-5. **Calibration scope.** Per stream (recommended; required for different
-   chemistries in one file).
+5. **Calibration scope.** ~~Per stream (recommended; required for different
+   chemistries in one file).~~ **Decided 2026-10-01:** per stream, and
+   required already by the first cut of 4.5, where two ranges of one
+   chemistry calibrate in one file.
 6. **MS2.** Attach to the parent item by default (recommended), or separate
    MS2 items.
 7. **Batch naming.** Add the signature class only when needed (recommended),
@@ -1567,6 +1685,13 @@ through a short-lived stacked branch, merged as one unit.
     (a): the history is what lets an explicitly re-processed parked file
     route. (c) is moot once the backfill leaves the newest row. Section 9.1
     carries the rules for files already processed.
+13. **Standard methods as a routing source.** **Decided 2026-10-01:** shipped
+    beside the profiles with a catalogue, consulted in rung 4 when an
+    instrument has no binding for the key yet, keyed on the method text's
+    hash with the name as the fallback (5.3). Settled inside it: an edited
+    copy that keeps a shipped name parks once rather than routing by name;
+    a changed signature class is noted, not refused; shipped TOF
+    configurations are named per chemistry.
 
 ---
 
@@ -1603,6 +1728,7 @@ Function names are the stable reference; line numbers drift.
 | Provenance on items | `create_acquisition_batches_and_items` above; `db/models.py` `SampleItem` | 2 |
 | Binding learner and backfill | `api/controllers/sample/files/process/bindings.py` (`_observe`); `db/scripts/backfill_method_bindings.py` (`_fold`, `_merge`); `mascope_backend/method_keys.py` | 2 |
 | Profile seeding | `db/admin/ionization/ensure_system_modes.py`; `mascope_backend/ionization_catalogue.py` | 2, 8 |
+| Standard-method catalogue | `mascope_backend/method_catalogue.py` (new), beside the ionization catalogue; consulted from `process/bindings.py`; the method text through `ReaderBackend` (`ionization_method_config.md` 6.1) | 8 |
 | Calibration anchors | `api/controllers/calibration/lib/calibration_mz_fit.py` `_resolve_calibration_isotopes` | 8 |
 | Chemistry surface | `server/frontend/src/lib/panes/PaneIonizationMode.vue`, `lib/dialogs/DialogChooseChemistry.vue`, `stores/data/modules/ionization/mode.js` | 8 |
 | Daily batches | `api/controllers/sample/batches/sample_batches_controller.py` `get_or_create_acquisition_batch` | 4 |
