@@ -149,3 +149,23 @@ async def test_lookup_tolerates_preexisting_duplicates(async_session_factory):
         async with async_session_factory() as session:
             await session.execute(text(index_ddl))
             await session.commit()
+
+
+@pytest.mark.asyncio
+async def test_a_server_without_instruments_is_not_warned_about(monkeypatch):
+    """Every start creates the acquisition datasets, and a server no file has
+    reached yet has no instrument to create them for - a normal state, which
+    at WARNING reached error monitoring on every start."""
+    from mascope_backend.api.controllers.dataset.acquisition import service
+
+    warnings = []
+    monkeypatch.setattr(service.runtime.logger, "warning", warnings.append)
+    with patch(
+        f"{_SVC}.get_instruments",
+        new_callable=AsyncMock,
+        return_value={"data": []},
+    ):
+        result = await service.create_acquisition_datasets()
+
+    assert result["results"] == 0
+    assert warnings == []
