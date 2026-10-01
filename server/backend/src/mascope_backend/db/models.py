@@ -952,16 +952,27 @@ class SampleItem(Base):
             ondelete="SET NULL",
         ),
     )
-    # Which rung of the binding ladder gave this item the mode above - a
-    # ``binding_rungs.BINDING_RUNGS`` value
+    # Which rung of the binding ladder auto-processing used to give this item
+    # the mode above - a ``binding_rungs.BINDING_RUNGS`` value
     # (``docs/dev/ingest_routing_and_splitting.md``, section 5.2).
     #
-    # NULL on an item auto-processing made before the column existed, and on
-    # one a person built by hand, where no rung decided anything. Neither is
-    # filled in afterwards: a rung is a decision, and re-deriving one for an
-    # item already processed is what section 9.1 forbids. So a count of these
-    # covers the files processed since the column shipped, which is the window
-    # any question about routing is asked over anyway.
+    # "Auto-processing" is the whole of it. NULL on an item it made before the
+    # column existed, and on an item made any other way - built by hand, or
+    # imported into a batch, which resolves the mode by filename token and
+    # still records nothing, because what this answers is how a file was
+    # ROUTED and an import is not that. So a count by rung is a count of
+    # ingested files, which is the only population the question is about.
+    #
+    # Neither NULL is filled in afterwards: a rung is a decision, and
+    # re-deriving one for an item already processed is what section 9.1
+    # forbids. A count therefore covers the files processed since the column
+    # shipped, which is the window any question about routing is asked over
+    # anyway.
+    #
+    # The rung outlives the mode. Deleting an ionization mode sets the column
+    # above to NULL and leaves this one as it was, which is the honest record
+    # - that rung did bind this item - so a count by rung includes items whose
+    # mode no longer exists.
     #
     # A file re-processed under the modes its own items held carries their
     # rung forward rather than taking one for the re-processing, NULL
