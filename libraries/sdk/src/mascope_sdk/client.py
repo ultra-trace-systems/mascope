@@ -14,7 +14,7 @@ from dotenv import dotenv_values, find_dotenv
 from loguru import logger
 from tqdm import tqdm
 
-from .exceptions import ConfigurationError
+from .exceptions import ConfigurationError, MascopeError, NotFoundError
 
 
 # Track whether we've already configured the SDK's loguru handler
@@ -112,6 +112,10 @@ class MascopeClient:
 
         # Get spectrum data
         spectrum = mascope.samples.get_spectrum(sample_id="sample-123")
+
+        # Which deployment and build the loaders' frames came from
+        peaks = mascope.load_peaks(dataset="My Dataset")
+        peaks.attrs["provenance"]["produced_with"]["mascope_version"]
     """
 
     def __init__(
@@ -255,6 +259,9 @@ class MascopeClient:
         self._peak_assignments: Any = None
         self._batch_peaks: Any = None
 
+        # False once the server has answered that it has no provenance route
+        self._server_has_provenance = True
+
         # Resolve workspace (fetch list, then resolve or auto-select)
         self._workspace_id, self._workspace_name = self._resolve_workspace(workspace)
 
@@ -359,6 +366,69 @@ class MascopeClient:
 
             self._batch_peaks = BatchPeaksResource(self)
         return self._batch_peaks
+
+    def provenance(self) -> dict[str, Any] | None:
+        """The provenance block of the server this client talks to.
+
+        Names the deployment and the software it runs, as ``GET
+        /api/provenance`` reports them: ``deployment_id``, and under
+        ``produced_with`` the ``mascope_version``, ``match_score_version`` and
+        ``peak_assignment_engine_version`` - with ``generated_utc``, the moment
+        the server answered. The high-level loaders stamp it onto the frames
+        they return, as ``df.attrs["provenance"]``.
+
+        Asked afresh on every call, so ``generated_utc`` says when it was
+        asked and a server updated in the meantime is reported as it now is.
+
+        :return: The block, or None from a server that predates the route.
+        :rtype: dict | None
+        :raises MascopeAPIError: If the server answers with any other error.
+
+        Example::
+
+            mascope.provenance()["produced_with"]["mascope_version"]
+        """
+        if not self._server_has_provenance:
+            return None
+        from ._http import http_get
+
+        try:
+            response = http_get(
+                url=self._url,
+                path="provenance",
+                access_token=self._access_token,
+                timeout=self._timeout,
+                verify_ssl=self._verify_ssl,
+                service_name=self._service_name,
+            )
+        except NotFoundError:
+            # An older server: it will not grow the route while this client
+            # talks to it, so it is not asked again.
+            self._server_has_provenance = False
+            logger.debug("The server predates GET /api/provenance")
+            return None
+        return response.json().get("data")
+
+    def _with_provenance(self, frame: pd.DataFrame | None) -> pd.DataFrame | None:
+        """Stamp the server's provenance block onto a loader's frame.
+
+        Best effort: a frame is never withheld for want of its provenance. An
+        older server leaves it without ``attrs["provenance"]``, and any other
+        failure to ask is logged and does the same.
+
+        :param frame: What a loader returned.
+        :return: The same frame, stamped where the server said.
+        """
+        if frame is None:
+            return None
+        try:
+            block = self.provenance()
+        except MascopeError as e:
+            logger.warning("Returning the frame without its provenance: {}", e)
+            return frame
+        if block is not None:
+            frame.attrs["provenance"] = block
+        return frame
 
     def _resolve_workspace(self, workspace: str | None) -> tuple[str, str]:
         """Resolve workspace argument to a workspace ID and name.
@@ -501,18 +571,20 @@ class MascopeClient:
         """
         from ._loaders import load_peaks as _load_peaks
 
-        return _load_peaks(
-            self,
-            dataset,
-            batches,
-            samples=samples,
-            exact=exact,
-            matches=matches,
-            areas=areas,
-            heights=heights,
-            average=average,
-            confirm_above=confirm_above,
-            max_workers=max_workers,
+        return self._with_provenance(
+            _load_peaks(
+                self,
+                dataset,
+                batches,
+                samples=samples,
+                exact=exact,
+                matches=matches,
+                areas=areas,
+                heights=heights,
+                average=average,
+                confirm_above=confirm_above,
+                max_workers=max_workers,
+            )
         )
 
     def load_peak_timeseries(
@@ -606,17 +678,19 @@ class MascopeClient:
         """
         from ._loaders import load_peak_timeseries as _load_peak_timeseries
 
-        return _load_peak_timeseries(
-            self,
-            dataset,
-            batches,
-            samples=samples,
-            exact=exact,
-            compound=compound,
-            ion=ion,
-            isotope=isotope,
-            confirm_above=confirm_above,
-            max_workers=max_workers,
+        return self._with_provenance(
+            _load_peak_timeseries(
+                self,
+                dataset,
+                batches,
+                samples=samples,
+                exact=exact,
+                compound=compound,
+                ion=ion,
+                isotope=isotope,
+                confirm_above=confirm_above,
+                max_workers=max_workers,
+            )
         )
 
     def load_peaks_by_stage(
@@ -677,14 +751,16 @@ class MascopeClient:
         """
         from ._loaders import load_peaks_by_stage as _load_peaks_by_stage
 
-        return _load_peaks_by_stage(
-            self,
-            sample,
-            stages,
-            matches=matches,
-            areas=areas,
-            heights=heights,
-            max_workers=max_workers,
+        return self._with_provenance(
+            _load_peaks_by_stage(
+                self,
+                sample,
+                stages,
+                matches=matches,
+                areas=areas,
+                heights=heights,
+                max_workers=max_workers,
+            )
         )
 
     def load_batch_ledger(
@@ -744,7 +820,9 @@ class MascopeClient:
         """
         from ._loaders import load_batch_ledger
 
-        return load_batch_ledger(self, dataset, batches, exact=exact, members=members)
+        return self._with_provenance(
+            load_batch_ledger(self, dataset, batches, exact=exact, members=members)
+        )
 
     def load_assignments(
         self,
@@ -850,17 +928,19 @@ class MascopeClient:
         """
         from ._loaders import load_assignments as _load_assignments
 
-        return _load_assignments(
-            self,
-            dataset,
-            batches,
-            samples=samples,
-            exact=exact,
-            run=run,
-            tier=tier,
-            source=source,
-            confirm_above=confirm_above,
-            max_workers=max_workers,
+        return self._with_provenance(
+            _load_assignments(
+                self,
+                dataset,
+                batches,
+                samples=samples,
+                exact=exact,
+                run=run,
+                tier=tier,
+                source=source,
+                confirm_above=confirm_above,
+                max_workers=max_workers,
+            )
         )
 
     def clear_cache(self) -> None:

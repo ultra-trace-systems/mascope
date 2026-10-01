@@ -357,6 +357,29 @@ Key columns: `sample_batch_name`, `sample_item_name`, `datetime_utc`, plus all c
 
 `load_peaks`, `load_peak_timeseries`, and `load_assignments` show an interactive confirmation prompt when the number of samples exceeds `confirm_above`. Defaults are 100 for `load_peaks` and `load_assignments`, and 20 for `load_peak_timeseries`. This prevents accidentally launching hundreds of concurrent requests from a notebook cell. Set `confirm_above=None` to disable.
 
+### Provenance
+
+Every frame a high-level loader returns carries the provenance of the server that served it, on `df.attrs["provenance"]`: the deployment's id, the Mascope version it runs, the match-score and peak-assignment engine versions in force, and when the server was asked. Keep it with what you derive from the frame, and a published figure can name the build its numbers came from.
+
+```python
+peaks = mascope.load_peaks(dataset="My Dataset", batches="Uronium")
+
+peaks.attrs["provenance"]
+# {'provenance_version': 1,
+#  'generated_utc': '2026-10-01T12:00:00Z',
+#  'deployment_id': 'k3J9xQ2mP0aB7cD1',
+#  'produced_with': {'mascope_version': 'vX.Y.Z',
+#                    'match_score_version': 1,
+#                    'peak_assignment_engine_version': '0.5.0'}}
+
+# The same block, asked directly
+mascope.provenance()
+```
+
+The versions describe the server as it runs when asked. A result it stored earlier was computed by whichever build ran then; where a record carries provenance of its own, as a peak-assignment run does on `df.attrs["run"]`, that record is the authority for it.
+
+The attribute is best effort, in two ways. A server that predates it (`GET /api/provenance` answers 404) returns its frames without the attribute, and the load succeeds as before. And pandas does not reliably carry `attrs` through `concat`, `merge` or `copy`, so read it from the frame the loader returned - the same caveat `attrs["run"]` and `attrs["batch_peaks"]` live with.
+
 ## Peak Assignments
 
 Mascope's **peak-centric assignment** engine assigns a composition to *every*

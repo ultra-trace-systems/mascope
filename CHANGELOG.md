@@ -77,6 +77,13 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   tokens read the id, with the versions the server runs, from
   `GET /api/provenance`.
 
+- **The SDK's loaders record which deployment and build served their data.**
+  The frames `load_peaks`, `load_peak_timeseries`, `load_peaks_by_stage`,
+  `load_batch_ledger` and `load_assignments` return carry the server's
+  provenance on `df.attrs["provenance"]`, and `MascopeClient.provenance()`
+  reads it directly. A server that predates it returns its frames without the
+  attribute, and the load succeeds as before.
+
 ## [1.10.1] - 2026.10.01
 
 ### Changed
