@@ -106,9 +106,11 @@ manifest.
 
 Generated only by `ensure_deployment_id`, which `init_main_process` calls once,
 before any worker serves, so no two processes race to create it. Reading
-(`deployment_id()`) never writes. An unreadable file is logged at startup and
-left for an operator - a quietly replaced id would split one deployment's
-exports across two names - and the deployment reports no id until it is fixed.
+(`deployment_id()`) never writes, and keeps an id once it has read one, so the
+route the SDK asks after every load does not reopen the file each time. An
+unreadable file is logged at startup and left for an operator - a quietly
+replaced id would split one deployment's exports across two names - and the
+deployment reports no id until it is fixed.
 
 **`GET /api/provenance`** returns the block without `inputs`. It is
 guest-gated and `token_access`, because the SDK reads it.

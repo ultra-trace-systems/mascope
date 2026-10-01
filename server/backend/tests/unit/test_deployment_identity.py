@@ -135,3 +135,26 @@ def test_the_generated_id_is_written_whole(filestore, monkeypatch):
 
     assert calls == [(deployment.deployment_file(), _kept(filestore))]
     assert calls[0][1]["deployment_id"] == generated
+
+
+def test_an_id_once_read_is_kept_for_the_life_of_the_process(filestore):
+    """``GET /api/provenance`` - which the SDK asks after every load - reads
+    the id; only the main process writes the file, before any worker starts,
+    so a worker need not reopen it on the filestore's disk each time."""
+    generated = deployment.ensure_deployment_id()
+    assert deployment.deployment_id() == generated
+
+    (filestore / "deployment.json").unlink()
+
+    assert deployment.deployment_id() == generated
+
+
+def test_a_failed_read_is_not_kept(filestore):
+    """A repaired file is picked up without a restart."""
+    path = filestore / "deployment.json"
+    path.write_text("{not json", encoding="utf-8")
+    assert deployment.deployment_id() is None
+
+    path.write_text(json.dumps({"deployment_id": "repaired-id"}), encoding="utf-8")
+
+    assert deployment.deployment_id() == "repaired-id"
