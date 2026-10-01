@@ -46,6 +46,7 @@ from mascope_backend.db import (
     TargetIon,
     TargetIsotope,
     async_session,
+    owned_session,
 )
 from mascope_backend.runtime import runtime
 from mascope_backend.socket.records.service import emit_record_reload
@@ -300,9 +301,7 @@ async def create_target_ions(
     :rtype: dict
     """
     # Step 1: Initialize session if operation is an independent transaction.
-    if independent_transaction:
-        session = async_session()
-    try:
+    async with owned_session(independent_transaction, session) as session:
         # Step 2: Generate target ions and isotopes from the compound composition.
         (
             target_ions,
@@ -330,12 +329,6 @@ async def create_target_ions(
             "created_isotopes": [isotope.to_dict() for isotope in target_isotopes],
             "message_logs": {},  # TODO_target_compound_management Populate with relevant log messages
         }
-    finally:
-        # A session opened here is closed here: a failure before the
-        # commit would otherwise leave its connection checked out until
-        # the garbage collector finds it.
-        if independent_transaction:
-            await session.close()
 
 
 @api_controller()
