@@ -1502,10 +1502,35 @@ class MethodBinding(Base):
     #: Times an observation contradicted the chemistry this row holds. The
     #: row is never repointed by one: it goes ambiguous instead, and a key
     #: that keeps disagreeing is a method run with more than one reagent.
+    #: NOT incremented by the two columns below. A later observation naming
+    #: another mode row of the SAME chemistry is not a disagreement - it is
+    #: a site that could not edit a mode in use and made a second row for
+    #: it - and counting it here would make a report of unreliable keys list
+    #: every site that has ever renamed a mode.
     n_disagreements: Mapped[int] = mapped_column(Integer, default=0)
+    #: The mode row the newest observations name, while that is not the one
+    #: above, and how many of them in a row have named it. The binding
+    #: re-points once they reach ``bindings.REPOINT_AFTER``, and the run is
+    #: cleared by any observation that names the current row instead - so it
+    #: is the last N, not N spread over a year.
+    #:
+    #: Why a run rather than a straight move: a binding that followed its
+    #: newest observation outright would let one corrected file drag a whole
+    #: method's routing with it (section 5.3, "Why three"). NULL and 0 mean
+    #: every recent observation agrees with the row, which is the ordinary
+    #: state.
+    candidate_mode_id: Mapped[Optional[str]] = mapped_column(
+        String(16),
+        ForeignKey("ionization_mode.ionization_mode_id", ondelete="SET NULL"),
+        index=True,
+    )
+    n_candidate_streams: Mapped[int] = mapped_column(Integer, default=0)
 
     # Relationships
-    ionization_mode = relationship("IonizationMode")
+    # Both foreign_keys spelled out: two columns of this table point at
+    # ionization_mode now, so neither relationship can be inferred.
+    ionization_mode = relationship("IonizationMode", foreign_keys=[ionization_mode_id])
+    candidate_mode = relationship("IonizationMode", foreign_keys=[candidate_mode_id])
 
 
 class TargetIsotope(Base):

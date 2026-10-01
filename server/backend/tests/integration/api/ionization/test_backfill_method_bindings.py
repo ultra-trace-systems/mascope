@@ -21,6 +21,9 @@ import pytest
 import pytest_asyncio
 from sqlalchemy import delete, select
 
+from mascope_backend.api.controllers.sample.files.process.bindings import (
+    REPOINT_AFTER,
+)
 from mascope_backend.db import (
     Dataset,
     IonizationMode,
@@ -313,6 +316,143 @@ async def test_history_folds_into_a_row_live_learning_already_made(
     assert len(row.chemistry_keys) == 2
     # And it still points where live learning put it.
     assert row.ionization_mode_id == nitrate.ionization_mode_id
+
+
+async def _live_row(async_session_factory, history, mode, last_seen):
+    """The row live learning would have left, pointing at ``mode``."""
+    digest = binding_digest(
+        history["instrument"], method_key(TOF_METHOD), signature_class([], "-", "tof")
+    )
+    async with async_session_factory() as session:
+        session.add(
+            MethodBinding(
+                method_binding_id=gen_id(),
+                binding_key=digest,
+                instrument=history["instrument"],
+                method_key=TOF_METHOD,
+                signature_class="-",
+                ionization_mode_id=mode.ionization_mode_id,
+                chemistry_keys=["mech-deprot,mech-no3"],
+                state="learned",
+                source="token",
+                first_seen=last_seen,
+                last_seen=last_seen,
+                n_streams=1,
+                n_disagreements=0,
+            )
+        )
+        await session.commit()
+
+
+@pytest.mark.asyncio
+async def test_the_fold_follows_the_newest_row_of_one_chemistry(
+    async_session_factory, history
+):
+    """Two mode rows, one chemistry: the row the method's files now use wins.
+
+    The whole point of folding oldest first. A site that could not edit a
+    mode in use made a second row for the same reagent, and its files bind to
+    that one from then on; a fold that kept the first row it saw would leave
+    the binding pointing at a row the site has stopped using.
+    """
+    retired = await history["add_mode"]()
+    in_use = await history["add_mode"]()
+    await history["add_file"](retired, minutes=0)
+    for minutes in range(1, REPOINT_AFTER + 1):
+        await history["add_file"](in_use, minutes=minutes)
+
+    await backfill_method_bindings()
+
+    rows = await _rows(async_session_factory, history["instrument"])
+    assert len(rows) == 1
+    assert rows[0].ionization_mode_id == in_use.ionization_mode_id
+    assert rows[0].candidate_mode_id is None
+    assert rows[0].n_candidate_streams == 0
+    # Not a disagreement at any point: the chemistry never changed.
+    assert rows[0].state == "learned"
+    assert rows[0].n_disagreements == 0
+    assert len(rows[0].chemistry_keys) == 1
+
+
+@pytest.mark.asyncio
+async def test_the_fold_keeps_the_older_row_short_of_the_threshold(
+    async_session_factory, history
+):
+    """A handful of re-bound files is not a method that moved."""
+    held = await history["add_mode"]()
+    other = await history["add_mode"]()
+    await history["add_file"](held, minutes=0)
+    for minutes in range(1, REPOINT_AFTER):
+        await history["add_file"](other, minutes=minutes)
+
+    await backfill_method_bindings()
+
+    rows = await _rows(async_session_factory, history["instrument"])
+    assert rows[0].ionization_mode_id == held.ionization_mode_id
+    assert rows[0].candidate_mode_id == other.ionization_mode_id
+    assert rows[0].n_candidate_streams == REPOINT_AFTER - 1
+
+
+@pytest.mark.asyncio
+async def test_the_history_moves_a_row_live_learning_left_behind(
+    async_session_factory, history
+):
+    """Why the script is re-run after this ships.
+
+    Every server has been learning in shadow since v1.10.0, and each of those
+    rows holds the first mode it happened to see. Re-running the backfill is
+    what moves them: the history has applied the rule over all of it rather
+    than over the last few weeks.
+    """
+    retired = await history["add_mode"]()
+    in_use = await history["add_mode"]()
+    await history["add_file"](retired, minutes=0)
+    newest = None
+    for minutes in range(1, REPOINT_AFTER + 1):
+        newest = await history["add_file"](in_use, minutes=minutes)
+    await _live_row(async_session_factory, history, retired, newest.datetime_utc)
+
+    await backfill_method_bindings()
+
+    rows = await _rows(async_session_factory, history["instrument"])
+    assert len(rows) == 1
+    assert rows[0].ionization_mode_id == in_use.ionization_mode_id
+    assert rows[0].candidate_mode_id is None
+    assert rows[0].n_candidate_streams == 0
+
+    # And a second run moves nothing further: an operator re-running it, or
+    # running it on a server where it has already been run, must be free.
+    await backfill_method_bindings()
+    again = await _rows(async_session_factory, history["instrument"])
+    assert again[0].ionization_mode_id == in_use.ionization_mode_id
+    assert again[0].n_streams == rows[0].n_streams
+
+
+@pytest.mark.asyncio
+async def test_a_live_row_that_saw_a_newer_file_keeps_its_own(
+    async_session_factory, history
+):
+    """The history is not authority over evidence it does not hold.
+
+    A file whose items were deleted is gone from the history while the row
+    live learning made from it remains, so the newer side of the two decides.
+    """
+    retired = await history["add_mode"]()
+    in_use = await history["add_mode"]()
+    await history["add_file"](retired, minutes=0)
+    for minutes in range(1, REPOINT_AFTER + 1):
+        await history["add_file"](in_use, minutes=minutes)
+    await _live_row(
+        async_session_factory,
+        history,
+        retired,
+        datetime(2026, 2, 1, tzinfo=timezone.utc),
+    )
+
+    await backfill_method_bindings()
+
+    rows = await _rows(async_session_factory, history["instrument"])
+    assert rows[0].ionization_mode_id == retired.ionization_mode_id
 
 
 @pytest.mark.asyncio
