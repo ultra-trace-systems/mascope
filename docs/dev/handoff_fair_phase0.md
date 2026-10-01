@@ -154,18 +154,23 @@ described fails CI. The prod backend still serves no schema of its own (`_docs_k
 ## 7. T5 - provenance on SDK frames
 
 - `MascopeClient.provenance()` reads `GET /api/provenance` afresh on every call,
-  so `generated_utc` says when a frame was loaded and a server updated mid-
-  session is reported as it is.
+  with the client's own timeout and retries.
 - `load_peaks`, `load_peak_timeseries`, `load_peaks_by_stage`,
   `load_batch_ledger` and `load_assignments` stamp the block on
   `df.attrs["provenance"]`, beside the existing `attrs["run"]` and
-  `attrs["batch_peaks"]`.
-- **Version skew:** the SDK on PyPI talks to older servers. A 404 means a
-  server without the route: the frame is returned unstamped and the server is
-  not asked again by that client. Any other failure to ask is logged and the
-  frame is still returned - a load never fails for want of its provenance.
-- `attrs` does not reliably survive pandas' concat, merge or copy; the README
-  says so, as it already did for `attrs["run"]`.
+  `attrs["batch_peaks"]`. Each load asks again, so a server updated mid-session
+  is reported as it is, but frames from one deployment and build carry the
+  same block - the first this client received for that build - because
+  `pd.concat` keeps `attrs` only when every input's are equal, and two answers
+  from one build differ in `generated_utc` alone.
+- **Best effort:** the stamping request gets a short timeout and a single
+  attempt, so it cannot hold a finished frame back. The SDK on PyPI talks to
+  older servers: a 404 means a server without the route, the frame is returned
+  unstamped and the server is not asked again by that client. Any other
+  failure to ask - an error status, a timeout, an answer that is not a
+  provenance block - is logged and the frame is still returned.
+- `attrs` does not reliably survive pandas' merge or copy, and CSV and Excel
+  drop it; the README says so, and shows how to keep it beside a saved file.
 
 ## 8. Where the build departed from the plan, and why
 
@@ -204,9 +209,11 @@ described fails CI. The prod backend still serves no schema of its own (`_docs_k
 - **Human-readable column names** (`Sample item ID`), matching the sheet,
   where the plan used field names. The Provenance sheet uses the block's own
   dotted keys.
-- **The SDK asks per loader call rather than caching per client**, so
-  `generated_utc` is the load's time; the extra request is one small GET beside
-  the many a loader makes.
+- **The SDK asks per loader call rather than caching per client**, so a
+  server updated mid-session is reported as it is; it reuses the block it
+  stamped before when the build has not changed, which keeps the block through
+  `pd.concat`. The extra request is one small GET beside the many a loader
+  makes, with a budget of its own.
 
 ## 9. What Phase 0 leaves for later
 
