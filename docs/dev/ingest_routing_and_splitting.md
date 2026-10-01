@@ -765,10 +765,15 @@ it is new work.
     (#482). Unlike `processing_updated_utc`, no later stage overwrites it.
   - Every ACQUISITION item the pipeline makes records **how it was bound**:
     `bound_by` (`declared`, `explicit`, `token` or `method`) and, for a
-    method, the binding row. NULL on an item made before this existed. Phase
-    4 carries both to the stream. The first fleet measurement (5.7) had to
-    rebuild the token rule in SQL and validate it on a sample because nothing
-    recorded it.
+    method, the binding row. NULL on an item made before this existed, and on
+    one a person built by hand, where no rung decided anything; neither is
+    ever filled in afterwards, by 9.1. Phase 4 carries both to the stream. The
+    first fleet measurement (5.7) had to rebuild the token rule in SQL and
+    validate it on a sample because nothing recorded it. Shipped in #2254:
+    auto-processing is the only writer, the binding column waits for the rung
+    that reads one, and `method_binding_id` is indexed because the query that
+    reads it reads by binding - which items a binding bound, and whether it
+    still names their mode.
 - **Notifications** become rows: recipient, kind, severity, payload, read,
   resolved.
   - Processing events for an instrument address the device sponsor and the
@@ -1191,7 +1196,8 @@ Needed before any rung can be provisional or park.
   `mascope prod db script run backfill_method_bindings`. Both have run on
   every production server, and the first fleet measurement is in 5.7. What
   remains, in order:
-  1. provenance on every ACQUISITION item (5.6), one migration;
+  1. ~~provenance on every ACQUISITION item (5.6), one migration~~ - done
+     in #2254;
   2. the learner and the backfill follow the newest row (5.3), then the
      backfill re-run on every server - it merges;
   3. the rung, behind `backend.method_binding = "route"` per site: the
