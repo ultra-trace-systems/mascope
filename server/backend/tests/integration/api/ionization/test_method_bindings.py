@@ -390,6 +390,44 @@ async def test_a_run_of_files_on_the_other_row_moves_the_binding_to_it(
 
 
 @pytest.mark.asyncio
+async def test_a_row_whose_mode_was_deleted_says_so_rather_than_counting_to_three(
+    modes, binding_of, instrument, async_session_factory
+):
+    """One file is enough, and the line has to say that.
+
+    A row pointing nowhere routes nothing, so there is nothing to drag it
+    away from - but the re-point message speaks of the last three files and
+    of the mode the binding held, and neither is true here.
+    """
+    await learn_method_bindings(
+        _File(instrument), [modes["nitrate"]], source="token", streams=_streams()
+    )
+    # The mode the binding pointed at is deleted, which the schema answers
+    # with SET NULL: the key's history is still worth keeping, and a row with
+    # no mode routes nothing.
+    row = await binding_of(_File(instrument), streams=_streams())
+    async with async_session_factory() as session:
+        held = await session.get(MethodBinding, row.method_binding_id)
+        held.ionization_mode_id = None
+        await session.commit()
+
+    with captured_logs("INFO") as records:
+        await learn_method_bindings(
+            _File(instrument), [modes["twin"]], source="token", streams=_streams()
+        )
+
+    row = await binding_of(_File(instrument), streams=_streams())
+    assert row.ionization_mode_id == modes["twin"].ionization_mode_id
+    assert row.n_candidate_streams == 0
+    moved = [r["message"] for r in records if "now points at" in r["message"]]
+    assert len(moved) == 1, moved
+    assert "has been deleted" in moved[0]
+    # The phrase unique to the re-point line, rather than the threshold: a
+    # randomly named mode can carry the digit itself.
+    assert "files of this method bound to it" not in moved[0]
+
+
+@pytest.mark.asyncio
 async def test_a_file_back_on_the_held_row_breaks_the_run(
     modes, binding_of, instrument
 ):

@@ -318,8 +318,18 @@ async def test_history_folds_into_a_row_live_learning_already_made(
     assert row.ionization_mode_id == nitrate.ionization_mode_id
 
 
-async def _live_row(async_session_factory, history, mode, last_seen):
-    """The row live learning would have left, pointing at ``mode``."""
+async def _live_row(
+    async_session_factory, history, mode, acquired, last_file, processed_after=5
+):
+    """The row live learning would have left, pointing at ``mode``.
+
+    ``last_seen`` is set the way live learning sets it - the wall clock when
+    the file was processed, which is always after the file was acquired - and
+    ``last_sample_file_id`` names the file it learned from. Both matter: a
+    row seeded with an acquisition time would hide the very thing that made
+    the merge drop the history's row.
+    """
+    last_seen = acquired + timedelta(minutes=processed_after)
     digest = binding_digest(
         history["instrument"], method_key(TOF_METHOD), signature_class([], "-", "tof")
     )
@@ -339,6 +349,7 @@ async def _live_row(async_session_factory, history, mode, last_seen):
                 last_seen=last_seen,
                 n_streams=1,
                 n_disagreements=0,
+                last_sample_file_id=last_file,
             )
         )
         await session.commit()
@@ -410,7 +421,13 @@ async def test_the_history_moves_a_row_live_learning_left_behind(
     newest = None
     for minutes in range(1, REPOINT_AFTER + 1):
         newest = await history["add_file"](in_use, minutes=minutes)
-    await _live_row(async_session_factory, history, retired, newest.datetime_utc)
+    await _live_row(
+        async_session_factory,
+        history,
+        retired,
+        acquired=newest.datetime_utc,
+        last_file=newest.sample_file_id,
+    )
 
     await backfill_method_bindings()
 
@@ -429,13 +446,14 @@ async def test_the_history_moves_a_row_live_learning_left_behind(
 
 
 @pytest.mark.asyncio
-async def test_a_live_row_that_saw_a_newer_file_keeps_its_own(
+async def test_a_live_row_whose_last_file_the_history_lacks_keeps_its_own(
     async_session_factory, history
 ):
     """The history is not authority over evidence it does not hold.
 
-    A file whose items were deleted is gone from the history while the row
-    live learning made from it remains, so the newer side of the two decides.
+    A file whose items have been deleted is gone from the history while the
+    row live learning made from it remains. That row knows something this run
+    cannot see, so it keeps its own answer.
     """
     retired = await history["add_mode"]()
     in_use = await history["add_mode"]()
@@ -446,7 +464,8 @@ async def test_a_live_row_that_saw_a_newer_file_keeps_its_own(
         async_session_factory,
         history,
         retired,
-        datetime(2026, 2, 1, tzinfo=timezone.utc),
+        acquired=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        last_file="sf-gone00000001",
     )
 
     await backfill_method_bindings()

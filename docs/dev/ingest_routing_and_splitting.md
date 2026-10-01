@@ -644,6 +644,25 @@ count of files naming another row is deliberately not a disagreement:
 `n_disagreements` stays a count of chemistries, so a report of unreliable
 keys does not list every site that has renamed a mode.
 
+**One path the threshold does not cover.** Observations reach a binding in
+the order files are *processed*, while the fold reads them in the order they
+were *acquired*, and re-processing a batch of old files is routine. A mode
+kept from a file's own items teaches nothing (#2254), which covers most of
+it, but a re-processed old file whose filename token still resolves to the
+retired row binds on the token and teaches at full strength - so three of
+those in a row walk the binding back to the retired row. Whether that can
+happen at a site depends on whether its old token still names the old mode:
+a token is unique among the modes that could match one file, so the two rows
+carry different tokens or the retired one carries none at all. It is left
+uncovered deliberately. By the cost argument above it is the cheap
+direction - the row is the same chemistry and sits below the token, so a
+token-bearing file is unaffected and a token-less one lands on a row of the
+right chemistry - and the next three files of the method move it forward
+again. Closing it properly needs the newest acquisition time on the binding,
+so that an observation older than what the row has already seen is ignored;
+that column is worth adding when something measures that this is happening,
+and phase 2's disagreement report (section 10) is what would show it.
+
 **Why three.** The two ways to be wrong cost different amounts, so the
 threshold sits on the cheap side. Moving too eagerly is the expensive error:
 one corrected file would drag a whole method's routing with it. Moving too
