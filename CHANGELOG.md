@@ -69,7 +69,9 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   isotopologue it merges, and for a large halogenated ion under `[M+Br2]-` the
   names ran past the 4096-character column, which rolled back the whole
   mechanism at every start. When the names do not fit, the most abundant ones
-  that do are kept (#1360).
+  that do are kept (#1360). More generally, a compound whose ions still would
+  not fit their columns no longer blocks a new mechanism: it goes without ions
+  under that mechanism, and a warning names it.
 - **A failed target compound create or delete no longer leaks a database
   connection.** These controllers open a session of their own and only ever
   committed it, so any failure before the commit left the connection checked
