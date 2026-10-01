@@ -45,6 +45,15 @@ from mascope_runtime.atomic import write_json
 from mascope_runtime.config import DEPLOYMENT_FILE, DEPLOYMENT_ID_PATTERN
 
 
+#: The generated id once read, by the file it was read from. Only the main
+#: process writes the file, before any worker starts, so an id read once stays
+#: right for the life of the process, and ``GET /api/provenance`` - which the
+#: SDK asks after every load - does not reopen a file on the filestore's disk
+#: each time. A failed read is not kept: a repaired file is picked up without a
+#: restart.
+_read_ids: dict[str, str] = {}
+
+
 class UnreadableDeploymentFile(ValueError):
     """The deployment file exists but holds no id this deployment can use."""
 
@@ -92,10 +101,16 @@ def deployment_id() -> str | None:
     """
     if runtime.config.deployment_id:
         return runtime.config.deployment_id
+    path = deployment_file()
+    if path in _read_ids:
+        return _read_ids[path]
     try:
-        return _read_generated(deployment_file())
+        value = _read_generated(path)
     except UnreadableDeploymentFile:
         return None
+    if value:
+        _read_ids[path] = value
+    return value
 
 
 def ensure_deployment_id() -> str | None:
