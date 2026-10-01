@@ -14,6 +14,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from fastapi import HTTPException
 
+from mascope_backend.api.controllers.match import match_controller
 from mascope_backend.api.controllers.match.match_controller import (
     AGGREGATION_FAILURE_REASON,
     FAILURE_REASON_MAX_CHARS,
@@ -376,6 +377,88 @@ class TestStalePeakStores:
         assert result["status"] == "partial", "the batch still reports its own result"
         assert result["data"]["computed_samples_count"] == 1
         assert "Peak detection has been queued" not in notification.message
+
+
+@pytest.fixture
+def summary_levels(monkeypatch):
+    """The level each batch summary ("Finished computing matches") went out at.
+
+    WARNING is what the error-monitoring sink records, so it is the level that
+    decides whether a batch opens an issue.
+    """
+    levels = []
+    logger = match_controller.runtime.logger
+    for level in ("debug", "info", "warning"):
+        original = getattr(logger, level)
+
+        def record(message, *args, _level=level, _original=original, **kwargs):
+            if str(message).startswith("Finished computing matches"):
+                levels.append(_level)
+            return _original(message, *args, **kwargs)
+
+        monkeypatch.setattr(logger, level, record)
+    return levels
+
+
+class TestSummaryLevel:
+    """A batch that repairs itself is not a problem to report.
+
+    After an upgrade most batches on a server meet peak data an older Mascope
+    built; their files are queued for rebuilding and their samples rematch on
+    their own. Warned about, each batch opened an error-monitoring issue of its
+    own, since the summary names the batch.
+    """
+
+    @pytest.mark.asyncio
+    async def test_only_queued_rebuilds_are_logged_at_info(self, summary_levels):
+        samples = [_make_sample("s1"), _make_sample("s2")]
+
+        result, _, _ = await _compute(samples, [_matched(), _wrapped_stale()])
+
+        assert result["status"] == "partial", "the user is still told"
+        assert summary_levels == ["info"]
+
+    @pytest.mark.asyncio
+    async def test_another_failure_beside_them_still_warns(self, summary_levels):
+        samples = [_make_sample("s1"), _make_sample("s2")]
+
+        await _compute(samples, [_wrapped("unreadable file"), _wrapped_stale()])
+
+        assert summary_levels == ["warning"]
+
+    @pytest.mark.asyncio
+    async def test_a_rebuild_that_could_not_be_queued_still_warns(self, summary_levels):
+        """Nothing will repair the batch, so somebody has to."""
+        samples = [_make_sample("s1")]
+
+        await _compute(samples, [_wrapped_stale()], converter_available=False)
+
+        assert summary_levels == ["warning"]
+
+    @pytest.mark.asyncio
+    async def test_a_run_with_no_user_still_warns(self, summary_levels):
+        """No user, so nothing is queued and nothing repairs the batch."""
+        await _compute([_make_sample("s1")], [_wrapped_stale()], user=None)
+
+        assert summary_levels == ["warning"]
+
+    @pytest.mark.asyncio
+    async def test_a_failed_aggregation_still_warns(self, summary_levels):
+        samples = [_make_sample("s1"), _make_sample("s2")]
+
+        await _compute(
+            samples,
+            [_matched(), _wrapped_stale()],
+            aggregate_side_effect=RuntimeError("boom"),
+        )
+
+        assert summary_levels == ["warning"]
+
+    @pytest.mark.asyncio
+    async def test_a_clean_batch_stays_at_debug(self, summary_levels):
+        await _compute([_make_sample("s1")], [_matched()])
+
+        assert summary_levels == ["debug"]
 
 
 class TestIsStalePeakStore:
