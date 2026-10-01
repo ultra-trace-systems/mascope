@@ -59,11 +59,11 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 ### Fixed
 
 - **Creating a target compound works again.** Since 1.10.0, adding a new
-  compound - directly or by saving a target collection that adds one - failed
-  with "'shipped' is an invalid keyword argument for IonizationMechanism": the
-  compound's ions were built from the ionization mechanism listing, whose
-  response now carries the computed `shipped` flag. The mechanisms are read as
-  rows instead.
+  compound - directly, by saving a target collection that adds one, or by
+  editing a compound's formula, which creates it again - failed with "'shipped'
+  is an invalid keyword argument for IonizationMechanism": the compound's ions
+  were built from the ionization mechanism listing, whose response now carries
+  the computed `shipped` flag. The mechanisms are read as rows instead.
 - **A shipped ionization mechanism no longer fails to be created on a server
   holding large compounds.** A low resolution isotope line names every
   isotopologue it merges, and for a large halogenated ion under `[M+Br2]-` the
