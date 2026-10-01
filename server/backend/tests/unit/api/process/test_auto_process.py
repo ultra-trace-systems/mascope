@@ -815,6 +815,7 @@ async def test_creates_batches_with_correct_dataset_id():
         sample_file=sample_file,
         dataset_id="ds-specific",
         ionization_modes=mocks["resolve"].return_value,
+        bound_by="token",
     )
 
 
@@ -1476,6 +1477,33 @@ async def test_a_file_a_person_routed_teaches_its_method_binding(status):
         await _run_pipeline(ionization_mode_ids=["im-001"])
 
     assert status.learn.await_args.kwargs["source"] == "explicit"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "chosen, rung",
+    [(None, "token"), (["im-001"], "explicit")],
+    ids=["a token routed it", "a person chose"],
+)
+async def test_the_items_record_the_rung_the_binding_was_taught(status, chosen, rung):
+    """One rung, written to the items and taught to the binding.
+
+    Asserted together rather than in two tests, because the thing worth
+    pinning is that they agree: a report counting items by rung is read
+    beside a table learned from those same rungs, and the two drifting apart
+    is the failure that would not look like one.
+    """
+    mocks, _ = _start_single()
+
+    with patch(
+        f"{_SVC}.fetch_ionization_modes",
+        new_callable=AsyncMock,
+        return_value=mocks["resolve"].return_value,
+    ):
+        await _run_pipeline(ionization_mode_ids=chosen)
+
+    assert mocks["create_batches"].await_args.kwargs["bound_by"] == rung
+    assert status.learn.await_args.kwargs["source"] == rung
 
 
 @pytest.mark.asyncio

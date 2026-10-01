@@ -132,6 +132,33 @@ class SampleItemCreate(SampleItemValidator, SampleItemBase):
     )
 
 
+class AcquisitionItemCreate(SampleItemCreate):
+    """An ACQUISITION item the ingest pipeline creates, with its provenance.
+
+    Deliberately not the model any route takes. The two fields below say how
+    Mascope decided this item's chemistry, so only the code that made the
+    decision may fill them in: a request that could set them would be able to
+    claim a rung for an item nobody routed, and every report on routing reads
+    these columns. The routes keep :class:`SampleItemCreate`, which has no
+    such field, and so a hand-made item records no rung - which is the truth
+    about it (``docs/dev/ingest_routing_and_splitting.md``, section 5.2).
+    """
+
+    bound_by: str | None = Field(
+        None,
+        description=(
+            "The rung of the binding ladder that bound this item: one of "
+            "bindings.BINDING_RUNGS."
+        ),
+    )
+    method_binding_id: str | None = Field(
+        None,
+        description=(
+            "The method binding that bound this item, where bound_by is 'method'."
+        ),
+    )
+
+
 class SampleItemRead(SampleItemBase):
     """Model for reading sample items - includes database fields."""
 

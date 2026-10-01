@@ -63,7 +63,7 @@ from mascope_backend.api.models.sample.batches.sample_batch_pydantic_model impor
 )
 from mascope_backend.api.models.sample.files.config import ProcessingStatus
 from mascope_backend.api.models.sample.items.sample_item_pydantic_model import (
-    SampleItemCreate,
+    AcquisitionItemCreate,
 )
 from mascope_backend.api.new.ionization.modes.util import (
     NoTokenMatchError,
@@ -960,13 +960,19 @@ async def _auto_process_sample_file(
             # it needs a chemistry again, and can be given one.
             return await _park_needing_chemistry(sample_file, str(e), streams_note)
 
+    # The rung that decided it, recorded twice over: on the binding this file
+    # teaches, and on each item it produces. One name for both, so a report
+    # that counts items by rung and the table learned from those same rungs
+    # cannot drift apart in their vocabulary.
+    bound_by = "token" if by_token else "explicit"
+
     # What this file's method has now been seen running. Recorded, not read:
     # nothing routes on a method binding yet, and this must never cost the
     # file its processing - learn_method_bindings reports its own failures.
     await learn_method_bindings(
         sample_file,
         bound_modes,
-        source="token" if by_token else "explicit",
+        source=bound_by,
         streams=scan_streams,
         recorded=recorded_bindings,
     )
@@ -979,6 +985,7 @@ async def _auto_process_sample_file(
         sample_file=sample_file,
         dataset_id=acquisition_dataset.get("dataset_id"),
         ionization_modes=bound_modes,
+        bound_by=bound_by,
     )
     await record_processing_status(
         sample_file_id,
@@ -1821,6 +1828,7 @@ async def create_acquisition_batches_and_items(
     sample_file: SampleFile,
     dataset_id: str,
     ionization_modes: list[IonizationMode],
+    bound_by: str,
 ) -> tuple[list[dict], list[dict]]:
     """
     Create ACQUISITION batches and sample items for each ionization mode of sample file.
@@ -1830,12 +1838,24 @@ async def create_acquisition_batches_and_items(
     - Create ACQUISITION sample item within the batch
     - Configure batch with appropriate target collections and ionization mechanisms
 
+    Each item records the rung that bound it, so that how a file was routed is
+    a column rather than a reconstruction
+    (``docs/dev/ingest_routing_and_splitting.md``, section 5.2). The binding
+    row itself is recorded by the rung that reads one, which is not built yet;
+    until then an item names its rung and no binding.
+
     :param sample_file: Sample file record containing polarities and metadata
     :type sample_file: SampleFile
     :param dataset_id: ID of ACQUISITION dataset to create batches in
     :type dataset_id: str
     :param ionization_modes: The modes the file is bound to, one per polarity
     :type ionization_modes: list[IonizationMode]
+    :param bound_by: The rung that bound this file, a
+        ``bindings.BINDING_RUNGS`` value. Required rather than defaulted: a
+        caller that forgot it would silently record items as having been
+        routed by nothing, which is what NULL already means for the items
+        processed before this was recorded.
+    :type bound_by: str
     :return: Tuple of (created sample items, created/retrieved batches)
     :rtype: tuple[list[dict], list[dict]]
     """
@@ -1901,7 +1921,7 @@ async def create_acquisition_batches_and_items(
 
         # Prepare ACQUISITION sample item for this ionization mode
         sample_items_to_create.append(
-            SampleItemCreate(
+            AcquisitionItemCreate(
                 sample_batch_id=acquisition_sample_batch["sample_batch_id"],
                 sample_file_id=sample_file.sample_file_id,
                 sample_item_name=sample_file.datetime.strftime("%Y-%m-%d %H:%M:%S"),
@@ -1909,6 +1929,7 @@ async def create_acquisition_batches_and_items(
                 sample_item_attributes={},
                 polarity=ionization_mode.ionization_mode_polarity,
                 ionization_mode_id=ionization_mode.ionization_mode_id,
+                bound_by=bound_by,
             )
         )
     # Step 3: Create ACQUISITION sample items

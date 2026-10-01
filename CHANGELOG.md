@@ -4,6 +4,19 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 ## [Unreleased]
 
+### Added
+
+- **Every acquisition sample a file is split into now records how its chemistry
+  was decided**: which rung of the routing ladder bound it - a declaration, a
+  person's choice, a filename token or the acquisition method - and, where it
+  was the method, the method binding it came from. Until now that could only be
+  reconstructed afterwards, by re-running the token rule over stored file names,
+  which cannot say which binding a given file would have used because part of a
+  binding's identity is read from the file itself. Samples processed before this
+  record nothing, and are deliberately left that way: the rung is a decision,
+  not a fact a raw file holds, so it is never filled in after the event.
+  Nothing about how a file is routed changes.
+
 ## [1.10.1] - 2026.10.01
 
 ### Changed

@@ -937,6 +937,32 @@ class SampleItem(Base):
             ondelete="SET NULL",
         ),
     )
+    # Which rung of the binding ladder gave this item the mode above - a
+    # ``bindings.BINDING_RUNGS`` value
+    # (``docs/dev/ingest_routing_and_splitting.md``, section 5.2).
+    #
+    # NULL on an item auto-processing made before the column existed, and on
+    # one a person built by hand, where no rung decided anything. Neither is
+    # filled in afterwards: a rung is a decision, and re-deriving one for an
+    # item already processed is what section 9.1 forbids. So a count of these
+    # covers the files processed since the column shipped, which is the window
+    # any question about routing is asked over anyway.
+    bound_by: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)
+    # The binding that bound it, where ``bound_by`` is "method". Left as the
+    # binding this item took even after that binding re-points, because the
+    # pair of this and ``ionization_mode_id`` above is the audit trail: items
+    # whose binding now names another mode are exactly what a re-point leaves
+    # behind, and finding them is a query rather than a reconstruction.
+    #
+    # Indexed because that is the query - by binding, not by item - and
+    # because without it deleting one binding would scan every item to set
+    # this NULL.
+    method_binding_id: Mapped[Optional[str]] = mapped_column(
+        String(16),
+        ForeignKey("method_binding.method_binding_id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
     t0: Mapped[Optional[float]] = mapped_column(Float)
     t1: Mapped[Optional[float]] = mapped_column(Float)
     sample_item_utc_created: Mapped[Optional[dt]] = mapped_column(
