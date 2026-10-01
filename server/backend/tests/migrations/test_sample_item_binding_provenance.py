@@ -172,6 +172,31 @@ def test_deleting_the_binding_keeps_the_item_and_its_mode(upgraded: Engine):
     assert _provenance(upgraded, _NEW_ITEM) == ("method", None)
 
 
+def test_the_constraint_carries_the_name_the_models_give_it(upgraded: Engine):
+    """A migrated database and a created one must name it the same thing.
+
+    The naming convention applies ``ck_%(table_name)s_%(constraint_name)s`` to
+    a plain string, so a name already carrying the prefix is prefixed again
+    and the migration creates ``ck_sample_item_ck_sample_item_...``. Nothing
+    in CI notices - upgrade and downgrade agree with each other, and the drift
+    test does not compare check constraints - but the revision that adds the
+    detection rung would drop a constraint by the models' name and fail on
+    every migrated server.
+    """
+    with upgraded.connect() as conn:
+        names = (
+            conn.execute(
+                text(
+                    "SELECT conname FROM pg_constraint "
+                    "WHERE conrelid = 'sample_item'::regclass AND contype = 'c'"
+                )
+            )
+            .scalars()
+            .all()
+        )
+    assert "ck_sample_item_bound_by_rung" in names, names
+
+
 def test_a_rung_outside_the_vocabulary_is_refused(upgraded: Engine):
     with pytest.raises(IntegrityError):
         with upgraded.begin() as conn:
