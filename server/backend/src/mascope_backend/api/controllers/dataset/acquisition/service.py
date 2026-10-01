@@ -353,7 +353,9 @@ async def create_acquisition_datasets(user_id: int | None = None) -> dict:
         instruments := [i["instrument"] for i in (await get_instruments())["data"]]
     ):
         message = "No instruments found to create acquisition datasets"
-        runtime.logger.warning(message)
+        # INFO: every start runs this, and a server no file has reached yet is
+        # in a normal state, not one to report to error monitoring.
+        runtime.logger.info(message)
         return {"message": message, "results": 0, "data": []}
 
     current_year = datetime.now(timezone.utc).year
