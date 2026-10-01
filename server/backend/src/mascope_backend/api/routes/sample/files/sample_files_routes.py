@@ -403,8 +403,10 @@ async def process_sample_item_route(
     # Get data for notifications
     process_id = gen_id(8)
 
-    # A file whose chemistry was chosen by hand keeps it: no token binds it.
-    ionization_mode_ids = await modes_to_rebind(sample_file_id)
+    # A file no token binds keeps the modes its own samples hold, and how
+    # each of them was bound - which is not necessarily anybody's choice: a
+    # token that has since been renamed bound some of them.
+    kept = await modes_to_rebind(sample_file_id)
     # The run starts by clearing what an earlier run left, and until it
     # records its own stages the row would still say how that run ended. A
     # file another run has claimed is left to it.
@@ -420,7 +422,8 @@ async def process_sample_item_route(
         user_id=user.id,
         process_id=process_id,
         instrument=sample_file.get("instrument"),
-        ionization_mode_ids=ionization_mode_ids,
+        ionization_mode_ids=kept.mode_ids if kept else None,
+        kept_provenance=kept.provenance if kept else None,
     )
 
     return {

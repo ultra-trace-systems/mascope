@@ -16,6 +16,7 @@ from mascope_backend.api.models.base_pydantic_model import (
     QueryParamsModel,
 )
 from mascope_backend.api.models.sample.items.config import sample_item_config
+from mascope_backend.binding_rungs import BindingRung
 
 
 class SampleItemBaseValidator:
@@ -144,11 +145,13 @@ class AcquisitionItemCreate(SampleItemCreate):
     about it (``docs/dev/ingest_routing_and_splitting.md``, section 5.2).
     """
 
-    bound_by: str | None = Field(
+    bound_by: BindingRung | None = Field(
         None,
         description=(
-            "The rung of the binding ladder that bound this item: one of "
-            "bindings.BINDING_RUNGS."
+            "The rung of the binding ladder that bound this item. A Literal "
+            "rather than a string: the column is read by counting, so a "
+            "misspelled rung would be written and then vanish from every "
+            "count instead of failing."
         ),
     )
     method_binding_id: str | None = Field(

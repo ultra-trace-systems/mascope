@@ -12,6 +12,10 @@ as though it had been recorded at the time.
 The reference to the binding must survive the binding's deletion. A binding
 is a summary of how files routed, and the samples it routed are the data; a
 CASCADE here would make deleting a summary delete them.
+
+And a rung outside the four must be refused. The column is only ever read by
+counting, so a misspelling would be written and then be missing from every
+count - the one way a column like this fails without anything failing.
 """
 
 from datetime import datetime, timezone
@@ -23,6 +27,7 @@ from alembic.config import Config
 from alembic.script import ScriptDirectory
 from sqlalchemy import text
 from sqlalchemy.engine import Engine
+from sqlalchemy.exc import IntegrityError
 
 
 # This checkout's migrations, not MASCOPE_PATH's - see conftest.BACKEND_PATH.
@@ -165,6 +170,29 @@ def test_deleting_the_binding_keeps_the_item_and_its_mode(upgraded: Engine):
     # The rung stays: this item was bound by its method, and that remains
     # true after the row recording the method is gone.
     assert _provenance(upgraded, _NEW_ITEM) == ("method", None)
+
+
+def test_a_rung_outside_the_vocabulary_is_refused(upgraded: Engine):
+    with pytest.raises(IntegrityError):
+        with upgraded.begin() as conn:
+            conn.execute(
+                text(
+                    "UPDATE sample_item SET bound_by = 'methods' "
+                    "WHERE sample_item_id = :id"
+                ),
+                {"id": _OLD_ITEM},
+            )
+
+
+def test_the_rung_may_still_be_unset(upgraded: Engine):
+    """NULL is a real answer - no rung decided it - so the check allows it."""
+    with upgraded.begin() as conn:
+        conn.execute(
+            text("UPDATE sample_item SET bound_by = NULL WHERE sample_item_id = :id"),
+            {"id": _OLD_ITEM},
+        )
+
+    assert _provenance(upgraded, _OLD_ITEM) == (None, None)
 
 
 def test_the_downgrade_removes_both_columns(

@@ -309,17 +309,17 @@ async def create_sample_items(
                     else 0
                 ),
                 "sample_item_utc_created": datetime.now(timezone.utc),
-                # How the item got its chemistry, from AcquisitionItemCreate
-                # and from nothing else: the plain create model carries no
-                # such field, so a request cannot claim a rung. Both keys are
-                # written on every row whatever the model, because one
-                # multi-row INSERT takes its column list from the first
-                # dictionary alone - a list mixing the two models would
-                # otherwise drop the provenance or be refused, depending on
-                # which came first.
-                "bound_by": getattr(sample_item, "bound_by", None),
-                "method_binding_id": getattr(sample_item, "method_binding_id", None),
             }
+            # How the item got its chemistry comes from the model dumped
+            # above, and only AcquisitionItemCreate carries it: the plain
+            # create model has no such field, so a request cannot claim a
+            # rung. A row built from the plain model is padded rather than
+            # left short, because one multi-row INSERT takes its column list
+            # from the first dictionary alone - a list mixing the two models
+            # would otherwise drop the provenance or be refused, depending on
+            # which came first, and dropping it is the dangerous half.
+            sample_item_dict.setdefault("bound_by", None)
+            sample_item_dict.setdefault("method_binding_id", None)
 
             sample_items_data.append(sample_item_dict)
 

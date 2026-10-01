@@ -48,6 +48,7 @@ from mascope_backend.api.models.sample.items.config import sample_item_config
 from mascope_backend.api.models.target.collections.config import (
     target_collection_config,
 )
+from mascope_backend.binding_rungs import BINDING_RUNGS
 from mascope_backend.runtime import runtime
 
 
@@ -908,6 +909,20 @@ class SampleItem(Base):
     """
 
     __tablename__ = "sample_item"
+    # The rung has to be one of the four, because the column is only ever
+    # read by counting: a misspelling would be written and then disappear
+    # from every count, which is the one way a column like this fails
+    # silently. The item models validate it too, and this catches whatever
+    # does not go through them. Adding a rung means a migration - the
+    # schema-drift test does not compare check constraints.
+    __table_args__ = (
+        CheckConstraint(
+            "bound_by IS NULL OR bound_by IN ("
+            + ", ".join(f"'{rung}'" for rung in BINDING_RUNGS)
+            + ")",
+            name="bound_by_rung",
+        ),
+    )
 
     sample_item_id: Mapped[str] = mapped_column(String(16), primary_key=True)
     sample_batch_id: Mapped[str] = mapped_column(
@@ -938,7 +953,7 @@ class SampleItem(Base):
         ),
     )
     # Which rung of the binding ladder gave this item the mode above - a
-    # ``bindings.BINDING_RUNGS`` value
+    # ``binding_rungs.BINDING_RUNGS`` value
     # (``docs/dev/ingest_routing_and_splitting.md``, section 5.2).
     #
     # NULL on an item auto-processing made before the column existed, and on
@@ -947,6 +962,11 @@ class SampleItem(Base):
     # item already processed is what section 9.1 forbids. So a count of these
     # covers the files processed since the column shipped, which is the window
     # any question about routing is asked over anyway.
+    #
+    # A file re-processed under the modes its own items held carries their
+    # rung forward rather than taking one for the re-processing, NULL
+    # included: copying a mode forward is nobody's decision, so it must not
+    # look like one.
     bound_by: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)
     # The binding that bound it, where ``bound_by`` is "method". Left as the
     # binding this item took even after that binding re-points, because the
