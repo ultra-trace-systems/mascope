@@ -24,7 +24,8 @@ Full reference, configuration, and tutorial notebooks: see the
 Every frame a loader returns names the server it came from in
 `peaks.attrs["provenance"]`: the deployment's id and the Mascope version it
 runs, among others. Keep it beside a figure you publish, and the figure names
-the build its numbers came from.
+the build its numbers came from. Saving the frame as CSV or Excel drops it;
+the SDK readme shows how to keep it.
 
 ## Built on the SDK: Peaky
 
