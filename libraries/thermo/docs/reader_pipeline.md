@@ -285,12 +285,12 @@ is flat-topped; its height here is the per-scan sum, as for any other peak.
 
 ## 5. Display reconstruction (real vs reconstructed profile)
 
-A crucial, non-obvious fact: **Thermo's averaged profile is itself a
-reconstruction** -- one Gaussian per centroid (verified: the averaged profile's
-local-maxima count equals the centroid count exactly, with a ~1e-10 baseline
-floor). It is not the raw measured signal.
+> **Corrected.** This section used to open by asserting that Thermo's averaged
+> profile is itself one Gaussian per centroid. That is **wrong**, and the
+> evidence given for it did not support it -- see 5.2. The reconstruction here is
+> Mascope's own choice, not an imitation of the vendor.
 
-So Mascope keeps **two** profiles and the choice is deliberate:
+Mascope keeps **two** profiles and the choice is deliberate:
 
 - **Real measured profile** (`average_profile(reconstruct=False)`, the default)
   -- the frequency-averaged signal of section 3. Used by the **quantitative**
@@ -299,8 +299,7 @@ So Mascope keeps **two** profiles and the choice is deliberate:
   `_reconstruct_profile`) -- one Gaussian per averaged centroid (center = m/z,
   height = intensity, FWHM = m/z / resolution), summed on a per-peak sample grid
   (`_RECON_PTS` samples over +-`_RECON_SIGMA` sigma, ~Thermo's density). It
-  **overlays the centroids exactly** and matches Thermo's reconstructed profile.
-  Used for **display**, so the rendered profile and the centroid markers line up.
+  **overlays the centroids exactly**, by construction. Used for **display**.
 
 Using the reconstruction everywhere would break the instrument fit: it needs the
 real measured peak shapes.
@@ -330,6 +329,45 @@ curve. What it costs is honesty -- it draws a symmetric Gaussian over whatever
 was actually measured, so a shoulder, an asymmetry or an unresolved neighbour
 disappears from the picture. Which to show is a product call, not a constraint
 of the reader any more.
+
+### 5.2 Thermo's profile is NOT a reconstruction
+
+The earlier claim that the vendor does the same thing does not survive a direct
+test, and the evidence once cited for it is not discriminating:
+
+- *"The local-maxima count equals the centroid count exactly."* It does -- and so
+  it does for the **real measured per-scan profile**, 736 maxima for 736
+  centroids. A stored profile is already reduced to the regions around detected
+  peaks, so one bump per centroid is what measured data looks like too.
+- *"The baseline floor is ~1e-10 of the base peak."* Also true of the measured
+  averaged profile (4e-12 here). A low floor says points were dropped, not drawn.
+- *"Peaks are Gaussian to <1%."* Measured, the averaged profile's Gaussian
+  residual is 2.7% of peak height -- worse than the real per-scan signal's 1.5%.
+
+The discriminating test is that a profile drawn from the centroids reproduces
+them *exactly*, because that is how it was drawn. Against our own
+`reconstruct=True` as a known positive:
+
+| averaged profile | apex / centroid intensity | fitted FWHM / (m/z / resolution) |
+| --- | --- | --- |
+| Mascope `reconstruct=True` (known positive) | **1.00000** | **1.00000** |
+| Thermo `AverageScans` | 1.012 (p10 0.987, p90 1.029) | 0.970 (p10 0.946, p90 1.010) |
+| Mascope measured | 0.990 | 0.811 |
+
+Thermo's averaged profile misses both marks, with real spread, so it is not
+synthesised from its centroid list.
+
+What it *is* doing is resampling onto a finer grid than the native sample
+spacing -- 8,244 non-zero points against our 7,274 for the same scans -- which is
+why its peaks look smoother and why a Gaussian fitted to them recovers 0.97 of
+the nominal width where the natively-spaced signal gives 0.81. That smoothness
+is the likely source of the impression that the vendor's profile is synthetic.
+
+The per-scan profile is even plainer: Thermo's non-zero points are the stored
+samples, agreeing with the open reader's to **0.000000 ppm in m/z and 0.000000%
+in intensity** on every one of them. The only difference is that Thermo also
+carries the baseline zeros around each cluster, which the open reader omits (and
+which `_zerofill_baseline` puts back).
 
 ---
 
