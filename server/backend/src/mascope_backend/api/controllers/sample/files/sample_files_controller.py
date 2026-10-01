@@ -576,7 +576,9 @@ async def create_sample_file(
 
         if new_sample_file.instrument not in initial_instruments:
             # New instrument detected - create datasets and emit instrument events
-            await create_acquisition_datasets(user_id=user_id)
+            await create_acquisition_datasets(
+                user_id=user_id, instruments_expected=True
+            )
 
         # Step 6: Trigger automatic processing of the sample file
         from mascope_backend.api.controllers.sample.files.process.service import (
@@ -1022,7 +1024,7 @@ async def update_sample_file(
     )
     # Handle instrument changes and handle acquisition datasets creation/deletion
     if final_instruments > initial_instruments:  # Check for added instruments
-        await create_acquisition_datasets(user_id=user_id)
+        await create_acquisition_datasets(user_id=user_id, instruments_expected=True)
     if initial_instruments > final_instruments:  # Check for removed instruments
         await delete_acquisition_datasets()
 
