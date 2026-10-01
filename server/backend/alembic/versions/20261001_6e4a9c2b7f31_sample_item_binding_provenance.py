@@ -53,12 +53,25 @@ depends_on: Union[str, Sequence[str], None] = None
 
 # Both names are what the models' naming convention produces for these two
 # (``models.NAMING_CONVENTION``), so the drift test sees one schema.
+_RUNG_CHECK = "ck_sample_item_bound_by_rung"
 _BINDING_FK = "fk_sample_item_method_binding_id_method_binding"
 _BINDING_INDEX = "ix_sample_item_method_binding_id"
 
 
 def upgrade() -> None:
     op.add_column("sample_item", sa.Column("bound_by", sa.String(16), nullable=True))
+    # The four rungs spelled out rather than imported, so this revision keeps
+    # saying what it said when it was written. A rung added later gets its own
+    # revision, which the vocabulary's own module says to expect.
+    #
+    # Validated as it is added, which scans the table under an ACCESS
+    # EXCLUSIVE lock: seconds on the largest production sample_item, and
+    # migrations run with the app stopped.
+    op.create_check_constraint(
+        _RUNG_CHECK,
+        "sample_item",
+        "bound_by IS NULL OR bound_by IN ('declared', 'explicit', 'token', 'method')",
+    )
     op.add_column(
         "sample_item", sa.Column("method_binding_id", sa.String(16), nullable=True)
     )
@@ -76,6 +89,7 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    op.drop_constraint(_RUNG_CHECK, "sample_item", type_="check")
     op.drop_index(_BINDING_INDEX, table_name="sample_item")
     op.drop_constraint(_BINDING_FK, "sample_item", type_="foreignkey")
     op.drop_column("sample_item", "method_binding_id")

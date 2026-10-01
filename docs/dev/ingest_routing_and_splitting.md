@@ -774,6 +774,22 @@ it is new work.
     that reads one, and `method_binding_id` is indexed because the query that
     reads it reads by binding - which items a binding bound, and whether it
     still names their mode.
+  - **A kept mode keeps its rung.** A file no token binds is re-processed
+    under the modes its own items held, and that path is not only the file
+    somebody chose a chemistry for: a file a token bound months ago reaches
+    it once that token has been renamed or deleted. So each kept mode carries
+    the rung its item recorded, NULL included, and the file's method learns
+    nothing from the run. Copying a decision forward is nobody's decision -
+    calling it `explicit` would say a person vouched for a chemistry nobody
+    was asked about, and teaching from it would both claim a strength nobody
+    gave and let a re-processed batch build a run (5.3) back toward the row
+    those files were bound under.
+  - The rung is a closed vocabulary (`mascope_backend.binding_rungs`): a
+    `Literal` the item models validate and a check constraint on the column.
+    The column is only ever read by counting, so a misspelled rung would be
+    written and then be missing from every count, which is the one way a
+    column like this fails without anything failing. Adding a rung takes a
+    migration, and the schema-drift test does not compare check constraints.
 - **Notifications** become rows: recipient, kind, severity, payload, read,
   resolved.
   - Processing events for an instrument address the device sponsor and the

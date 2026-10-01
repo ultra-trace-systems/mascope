@@ -19,6 +19,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from test_utils import captured_logs
 
+from mascope_backend.api.controllers.sample.files.process.service import (
+    ItemProvenance,
+)
 from mascope_backend.runtime import runtime
 
 
@@ -815,7 +818,10 @@ async def test_creates_batches_with_correct_dataset_id():
         sample_file=sample_file,
         dataset_id="ds-specific",
         ionization_modes=mocks["resolve"].return_value,
-        bound_by="token",
+        provenance={
+            mode.ionization_mode_id: ItemProvenance("token")
+            for mode in mocks["resolve"].return_value
+        },
     )
 
 
@@ -1479,6 +1485,11 @@ async def test_a_file_a_person_routed_teaches_its_method_binding(status):
     assert status.learn.await_args.kwargs["source"] == "explicit"
 
 
+def _recorded_provenance(mocks) -> dict:
+    """The provenance the run passed for each mode it bound."""
+    return mocks["create_batches"].await_args.kwargs["provenance"]
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "chosen, rung",
@@ -1502,8 +1513,73 @@ async def test_the_items_record_the_rung_the_binding_was_taught(status, chosen, 
     ):
         await _run_pipeline(ionization_mode_ids=chosen)
 
-    assert mocks["create_batches"].await_args.kwargs["bound_by"] == rung
+    assert _recorded_provenance(mocks) == {
+        "im-001": ItemProvenance(rung),
+    }
     assert status.learn.await_args.kwargs["source"] == rung
+
+
+@pytest.mark.asyncio
+async def test_a_kept_mode_carries_the_rung_that_bound_it_before(status):
+    """Re-processing a file no token binds is nobody's decision.
+
+    ``ionization_mode_ids`` is not only the choose-chemistry route. A file a
+    token bound months ago reaches the same path once that token has been
+    renamed, and its modes are then copied from its own previous samples. The
+    rung has to come with them: calling that "explicit" would say a person
+    vouched for a chemistry nobody was asked about, and the count of explicit
+    bindings in any report would climb every time a batch was re-processed.
+    """
+    mocks, _ = _start_single()
+    kept = {"im-001": ItemProvenance("token", "mb-000000000001")}
+
+    with patch(
+        f"{_SVC}.fetch_ionization_modes",
+        new_callable=AsyncMock,
+        return_value=mocks["resolve"].return_value,
+    ):
+        await _run_pipeline(ionization_mode_ids=["im-001"], kept_provenance=kept)
+
+    assert _recorded_provenance(mocks) == kept
+    # And the method learns nothing: the observation was recorded when the
+    # mode was first matched or chosen, and repeating it would both claim a
+    # strength nobody gave and let a re-processed batch drag the binding
+    # back toward the row those files were bound under.
+    status.learn.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_kept_mode_from_before_the_columns_invents_no_rung(status):
+    """NULL carries forward as NULL, which is the one honest answer."""
+    mocks, _ = _start_single()
+
+    with patch(
+        f"{_SVC}.fetch_ionization_modes",
+        new_callable=AsyncMock,
+        return_value=mocks["resolve"].return_value,
+    ):
+        await _run_pipeline(
+            ionization_mode_ids=["im-001"],
+            kept_provenance={"im-001": ItemProvenance()},
+        )
+
+    assert _recorded_provenance(mocks) == {"im-001": ItemProvenance(None, None)}
+    status.learn.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_mode_missing_from_the_kept_provenance_records_nothing(status):
+    """A mode whose own item predates the columns is not given a rung."""
+    mocks, _ = _start_single()
+
+    with patch(
+        f"{_SVC}.fetch_ionization_modes",
+        new_callable=AsyncMock,
+        return_value=mocks["resolve"].return_value,
+    ):
+        await _run_pipeline(ionization_mode_ids=["im-001"], kept_provenance={})
+
+    assert _recorded_provenance(mocks) == {"im-001": ItemProvenance()}
 
 
 @pytest.mark.asyncio

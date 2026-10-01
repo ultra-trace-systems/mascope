@@ -73,6 +73,7 @@ from mascope_backend.api.new.ionization.modes.util import (
 from mascope_backend.api.new.peak_assignments.service import (
     auto_assign_sample_peaks,
 )
+from mascope_backend.binding_rungs import BindingRung
 from mascope_backend.db import (
     Dataset,
     IonizationMode,
@@ -329,20 +330,65 @@ def _pipeline_item():
     )
 
 
-async def _acquisition_item_mode_ids(sample_file_id: str) -> list[str]:
-    """The ionization modes auto-processing made a file's samples under."""
+@dataclass(frozen=True)
+class ItemProvenance:
+    """How an ACQUISITION item's chemistry was decided.
+
+    ``bound_by`` is the rung and ``method_binding_id`` the binding row where
+    that rung is the method. Both None is a real answer, not a missing one:
+    it is what an item created before this was recorded says, and what a mode
+    kept from such an item carries forward.
+    """
+
+    bound_by: BindingRung | None = None
+    method_binding_id: str | None = None
+
+
+@dataclass(frozen=True)
+class KeptModes:
+    """The modes a file's own samples hold, to re-process it under them.
+
+    A file no token binds keeps the modes its samples were made under - and
+    with them how each was bound, because copying a mode forward is nobody's
+    decision. The rung stays the one that decided it in the first place: a
+    token, a person, or nothing at all.
+    """
+
+    mode_ids: list[str]
+    provenance: dict[str, ItemProvenance]
+
+
+async def _acquisition_item_provenance(
+    sample_file_id: str,
+) -> dict[str, ItemProvenance]:
+    """The modes auto-processing made a file's samples under, and how.
+
+    One entry per mode. Every item of one mode is created in one pass under
+    one rung, so there is nothing to choose between them - but a windowed
+    file will have several per mode once phase 6 cuts them, so the order is
+    fixed here rather than left to the planner and the first item answers for
+    its mode.
+    """
     async with async_session() as session:
-        return list(
-            await session.scalars(
-                select(SampleItem.ionization_mode_id)
+        items = (
+            await session.execute(
+                select(
+                    SampleItem.ionization_mode_id,
+                    SampleItem.bound_by,
+                    SampleItem.method_binding_id,
+                )
                 .where(
                     SampleItem.sample_file_id == sample_file_id,
                     _pipeline_item(),
                     SampleItem.ionization_mode_id.is_not(None),
                 )
-                .distinct()
+                .order_by(SampleItem.sample_item_id)
             )
-        )
+        ).all()
+    held: dict[str, ItemProvenance] = {}
+    for mode_id, bound_by, method_binding_id in items:
+        held.setdefault(mode_id, ItemProvenance(bound_by, method_binding_id))
+    return held
 
 
 def _failure_detail(exc: BaseException) -> str:
@@ -616,6 +662,7 @@ async def auto_process_sample_file(
     parent_id: str | None = None,
     instrument: str | None = None,
     ionization_mode_ids: list[str] | None = None,
+    kept_provenance: dict[str, "ItemProvenance"] | None = None,
     reset_calibration: bool = False,
 ) -> dict:
     """
@@ -656,6 +703,12 @@ async def auto_process_sample_file(
         person or kept from its samples. None binds it by its file-name
         tokens, and a file they bind to nothing waits for a chemistry.
     :type ionization_mode_ids: list[str] | None, optional
+    :param kept_provenance: Present when ``ionization_mode_ids`` are the modes
+        the file's own samples held rather than a choice somebody made: how
+        each of them was bound, by mode id. The items carry those rungs
+        forward and the file's method learns nothing, because copying a
+        decision forward is not a new observation of anything.
+    :type kept_provenance: dict[str, ItemProvenance] | None, optional
     :param reset_calibration: Restore the file's acquisition m/z axis before
         the first attempt, as re-processing does, for a file rebuilt under
         other modes.
@@ -685,6 +738,7 @@ async def auto_process_sample_file(
                     process_id=process_id,
                     parent_id=parent_id,
                     ionization_mode_ids=ionization_mode_ids,
+                    kept_provenance=kept_provenance,
                     recorded_bindings=recorded_bindings,
                 )
         except asyncio.CancelledError:
@@ -852,6 +906,7 @@ async def spawn_auto_process_sample_file(
     parent_id: str | None = None,
     instrument: str | None = None,
     ionization_mode_ids: list[str] | None = None,
+    kept_provenance: dict[str, "ItemProvenance"] | None = None,
     reset_calibration: bool = False,
 ) -> None:
     """Start the auto-processing pipeline detached from the request that triggered it.
@@ -880,6 +935,7 @@ async def spawn_auto_process_sample_file(
         "parent_id": parent_id,
         "instrument": instrument,
         "ionization_mode_ids": ionization_mode_ids,
+        "kept_provenance": kept_provenance,
         "reset_calibration": reset_calibration,
     }
     # Omitted rather than forwarded as None. api_controller_background_task
@@ -905,6 +961,7 @@ async def _auto_process_sample_file(
     process_id: str | None = None,
     parent_id: str | None = None,
     ionization_mode_ids: list[str] | None = None,
+    kept_provenance: dict[str, ItemProvenance] | None = None,
     recorded_bindings: set[str] | None = None,
 ) -> dict:
     """Gated body of ``auto_process_sample_file`` - see the public wrapper.
@@ -960,22 +1017,50 @@ async def _auto_process_sample_file(
             # it needs a chemistry again, and can be given one.
             return await _park_needing_chemistry(sample_file, str(e), streams_note)
 
-    # The rung that decided it, recorded twice over: on the binding this file
-    # teaches, and on each item it produces. One name for both, so a report
-    # that counts items by rung and the table learned from those same rungs
+    # How each item will say its chemistry was decided, and what the file's
+    # method may be taught from it. The three ways in here are not equal. A
+    # token and a person's choice are both evidence about the method, and are
+    # recorded on the items under the same name they teach the binding with,
+    # so a report counting items by rung and a table learned from those rungs
     # cannot drift apart in their vocabulary.
-    bound_by = "token" if by_token else "explicit"
+    #
+    # A mode kept from the file's own samples is neither. Copying a decision
+    # forward is nobody's decision: the rung it carries is the one that made
+    # it, NULL included, and the binding learns nothing - the observation was
+    # recorded when the mode was first chosen or matched, and repeating it
+    # would claim a strength nobody gave and let a batch of re-processed
+    # files build a run back toward the row they were bound under.
+    if by_token:
+        provenance = {
+            mode.ionization_mode_id: ItemProvenance("token") for mode in bound_modes
+        }
+        teaches: BindingRung | None = "token"
+    elif kept_provenance is not None:
+        provenance = {
+            mode.ionization_mode_id: kept_provenance.get(
+                mode.ionization_mode_id, ItemProvenance()
+            )
+            for mode in bound_modes
+        }
+        teaches = None
+    else:
+        provenance = {
+            mode.ionization_mode_id: ItemProvenance("explicit") for mode in bound_modes
+        }
+        teaches = "explicit"
 
-    # What this file's method has now been seen running. Recorded, not read:
-    # nothing routes on a method binding yet, and this must never cost the
-    # file its processing - learn_method_bindings reports its own failures.
-    await learn_method_bindings(
-        sample_file,
-        bound_modes,
-        source=bound_by,
-        streams=scan_streams,
-        recorded=recorded_bindings,
-    )
+    if teaches is not None:
+        # What this file's method has now been seen running. Recorded, not
+        # read: nothing routes on a method binding yet, and this must never
+        # cost the file its processing - learn_method_bindings reports its own
+        # failures.
+        await learn_method_bindings(
+            sample_file,
+            bound_modes,
+            source=teaches,
+            streams=scan_streams,
+            recorded=recorded_bindings,
+        )
 
     # --- Create ACQUISITION batches and sample items for each ionization mode --- #
     (
@@ -985,7 +1070,7 @@ async def _auto_process_sample_file(
         sample_file=sample_file,
         dataset_id=acquisition_dataset.get("dataset_id"),
         ionization_modes=bound_modes,
-        bound_by=bound_by,
+        provenance=provenance,
     )
     await record_processing_status(
         sample_file_id,
@@ -1505,7 +1590,7 @@ async def re_process_sample_files(
     # --- Validate each file --- #
     valid_sample_files = []
     # Files no token binds, re-processed under the modes their samples have.
-    kept_mode_ids: dict[str, list[str]] = {}
+    kept_modes: dict[str, KeptModes] = {}
 
     for sample_file in sample_files:
         # Check for user-created samples
@@ -1562,7 +1647,7 @@ async def re_process_sample_files(
             # outside the except clause, where an error would escape the
             # handlers that keep one file's failure its own.
             try:
-                kept = await _kept_mode_ids(sample_file)
+                kept = await _kept_modes(sample_file)
             except Exception as e:  # noqa: BLE001 - one file's failure
                 runtime.logger.info(
                     f"Could not read the modes of sample file {sample_file.filename}'s "
@@ -1578,7 +1663,7 @@ async def re_process_sample_files(
                     }
                 )
                 continue
-            kept_mode_ids[sample_file.sample_file_id] = kept
+            kept_modes[sample_file.sample_file_id] = kept
 
         # Passed all validations
         valid_sample_files.append(sample_file)
@@ -1636,13 +1721,17 @@ async def re_process_sample_files(
                 raise
             affected_sample_batch_ids.update(cleared_batch_ids)
 
+            # Set only for a file no token binds: it is re-processed under
+            # the modes its own samples held, carrying their provenance.
+            kept = kept_modes.get(sample_file.sample_file_id)
             result = await auto_process_sample_file(
                 sample_file_id=sample_file.sample_file_id,
                 independent_transaction=False,
                 user_id=user_id,
                 process_id=gen_id(8),
                 parent_id=process_id,
-                ionization_mode_ids=kept_mode_ids.get(sample_file.sample_file_id),
+                ionization_mode_ids=kept.mode_ids if kept else None,
+                kept_provenance=kept.provenance if kept else None,
             )
             if result.get("status") == "parked":
                 # Its token was removed while the batch waited: it needs a
@@ -1734,43 +1823,53 @@ async def re_process_sample_files(
         raise_api_warning(message, notification_data, status_code=207)
 
 
-async def modes_to_rebind(sample_file_id: str) -> list[str] | None:
+async def modes_to_rebind(sample_file_id: str) -> KeptModes | None:
     """The modes to process a file under again, when its tokens do not bind it.
 
-    A file whose chemistry was chosen by hand has no token to bind it again,
-    so it keeps the modes its samples were made under, as re-processing
-    keeps them. None leaves the binding to the tokens: they bind the file, or
-    the run finds that they do not and parks it.
+    A file no token binds has nothing to bind it again, so it keeps the modes
+    its samples were made under, as re-processing keeps them. None leaves the
+    binding to the tokens: they bind the file, or the run finds that they do
+    not and parks it.
+
+    Not only a file somebody chose a chemistry for. A file a token bound
+    months ago reaches this too, once that token has been renamed or
+    deleted - which is why what comes back carries each mode's own
+    provenance rather than being treated as a choice.
 
     :param sample_file_id: The file.
-    :return: The modes its samples have, or None.
+    :return: The modes its samples have with how each was bound, or None.
     """
     sample_file = await fetch_sample_file(sample_file_id=sample_file_id)
     try:
         await resolve_ionization_modes_by_tokens(sample_file)
     except NoTokenMatchError:
-        return await _kept_mode_ids(sample_file)
+        return await _kept_modes(sample_file)
     except ValueError:
         return None
     return None
 
 
-async def _kept_mode_ids(sample_file: SampleFile) -> list[str] | None:
+async def _kept_modes(sample_file: SampleFile) -> KeptModes | None:
     """The modes a file's samples have, when they still bind it.
 
-    :return: One mode id per polarity of the file, or None when its samples
-        do not give one - it has none, or a mode was deleted since.
+    :return: One mode per polarity of the file with the provenance its
+        samples recorded, or None when its samples do not give one - it has
+        none, or a mode was deleted since.
     """
-    mode_ids = await _acquisition_item_mode_ids(sample_file.sample_file_id)
-    if not mode_ids:
+    held = await _acquisition_item_provenance(sample_file.sample_file_id)
+    if not held:
         return None
     try:
         modes = choose_ionization_modes(
-            sample_file, await fetch_ionization_modes(mode_ids)
+            sample_file, await fetch_ionization_modes(list(held))
         )
     except ValueError:
         return None
-    return [mode.ionization_mode_id for mode in modes]
+    mode_ids = [mode.ionization_mode_id for mode in modes]
+    return KeptModes(
+        mode_ids=mode_ids,
+        provenance={mode_id: held[mode_id] for mode_id in mode_ids},
+    )
 
 
 async def _clear_sample_items_for_reprocessing(
@@ -1828,7 +1927,7 @@ async def create_acquisition_batches_and_items(
     sample_file: SampleFile,
     dataset_id: str,
     ionization_modes: list[IonizationMode],
-    bound_by: str,
+    provenance: dict[str, ItemProvenance],
 ) -> tuple[list[dict], list[dict]]:
     """
     Create ACQUISITION batches and sample items for each ionization mode of sample file.
@@ -1838,8 +1937,8 @@ async def create_acquisition_batches_and_items(
     - Create ACQUISITION sample item within the batch
     - Configure batch with appropriate target collections and ionization mechanisms
 
-    Each item records the rung that bound it, so that how a file was routed is
-    a column rather than a reconstruction
+    Each item records how it was bound, so that how a file was routed is a
+    column rather than a reconstruction
     (``docs/dev/ingest_routing_and_splitting.md``, section 5.2). The binding
     row itself is recorded by the rung that reads one, which is not built yet;
     until then an item names its rung and no binding.
@@ -1850,12 +1949,13 @@ async def create_acquisition_batches_and_items(
     :type dataset_id: str
     :param ionization_modes: The modes the file is bound to, one per polarity
     :type ionization_modes: list[IonizationMode]
-    :param bound_by: The rung that bound this file, a
-        ``bindings.BINDING_RUNGS`` value. Required rather than defaulted: a
-        caller that forgot it would silently record items as having been
-        routed by nothing, which is what NULL already means for the items
-        processed before this was recorded.
-    :type bound_by: str
+    :param provenance: How each mode came to bind this file, by mode id.
+        Required rather than defaulted: a caller that forgot it would record
+        every item as routed by nothing, which is what NULL already means for
+        the items processed before this was recorded. A mode missing from it
+        gets exactly that, which is what a mode kept from an item predating
+        the column should say.
+    :type provenance: dict[str, ItemProvenance]
     :return: Tuple of (created sample items, created/retrieved batches)
     :rtype: tuple[list[dict], list[dict]]
     """
@@ -1920,6 +2020,7 @@ async def create_acquisition_batches_and_items(
         acquisition_sample_batches.append(acquisition_sample_batch)
 
         # Prepare ACQUISITION sample item for this ionization mode
+        held = provenance.get(ionization_mode.ionization_mode_id, ItemProvenance())
         sample_items_to_create.append(
             AcquisitionItemCreate(
                 sample_batch_id=acquisition_sample_batch["sample_batch_id"],
@@ -1929,7 +2030,8 @@ async def create_acquisition_batches_and_items(
                 sample_item_attributes={},
                 polarity=ionization_mode.ionization_mode_polarity,
                 ionization_mode_id=ionization_mode.ionization_mode_id,
-                bound_by=bound_by,
+                bound_by=held.bound_by,
+                method_binding_id=held.method_binding_id,
             )
         )
     # Step 3: Create ACQUISITION sample items

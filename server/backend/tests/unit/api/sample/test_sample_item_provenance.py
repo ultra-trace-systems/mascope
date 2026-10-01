@@ -19,6 +19,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from sqlalchemy.dialects import postgresql
 
+from mascope_backend.api.controllers.sample.files.process.service import (
+    ItemProvenance,
+)
 from mascope_backend.api.models.sample.items.sample_item_pydantic_model import (
     AcquisitionItemCreate,
     SampleItemCreate,
@@ -50,14 +53,12 @@ def _mode(mode_id="im-001", polarity="-"):
     return mode
 
 
-@pytest.mark.asyncio
-@pytest.mark.parametrize("rung", ["token", "explicit", "method"])
-async def test_each_item_carries_the_rung_that_bound_the_file(rung):
+async def _items_created(modes, provenance):
+    """The item models the pipeline would create for these modes."""
     from mascope_backend.api.controllers.sample.files.process.service import (
         create_acquisition_batches_and_items,
     )
 
-    modes = [_mode("im-neg", "-"), _mode("im-pos", "+")]
     with (
         patch(
             f"{_SVC}.get_or_create_acquisition_batch",
@@ -73,10 +74,21 @@ async def test_each_item_carries_the_rung_that_bound_the_file(rung):
             sample_file=_sample_file(),
             dataset_id="ds-001",
             ionization_modes=modes,
-            bound_by=rung,
+            provenance=provenance,
         )
+    return create_sample_items.await_args.kwargs["sample_items"]
 
-    items = create_sample_items.await_args.kwargs["sample_items"]
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("rung", ["token", "explicit", "method"])
+async def test_each_item_carries_the_rung_that_bound_the_file(rung):
+    modes = [_mode("im-neg", "-"), _mode("im-pos", "+")]
+
+    items = await _items_created(
+        modes,
+        {"im-neg": ItemProvenance(rung), "im-pos": ItemProvenance(rung)},
+    )
+
     assert [item.ionization_mode_id for item in items] == ["im-neg", "im-pos"]
     assert all(isinstance(item, AcquisitionItemCreate) for item in items)
     assert [item.bound_by for item in items] == [rung, rung]
@@ -84,6 +96,42 @@ async def test_each_item_carries_the_rung_that_bound_the_file(rung):
     # building it is a deliberate change rather than something a reader
     # assumes already happens.
     assert [item.method_binding_id for item in items] == [None, None]
+
+
+@pytest.mark.asyncio
+async def test_each_polarity_takes_its_own_provenance():
+    """One file, two streams, two histories.
+
+    A polarity-switching method is bound a polarity at a time and keyed a
+    polarity at a time, so each item answers for itself - and after a
+    re-process one polarity's mode can carry a rung the other's does not.
+    """
+    modes = [_mode("im-neg", "-"), _mode("im-pos", "+")]
+
+    items = await _items_created(
+        modes,
+        {"im-neg": ItemProvenance("method", "mb-000000000001")},
+    )
+
+    assert [(item.bound_by, item.method_binding_id) for item in items] == [
+        ("method", "mb-000000000001"),
+        (None, None),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_a_rung_outside_the_vocabulary_is_refused():
+    """The column is read by counting, so a typo must not be writable.
+
+    "methods" would be written, and then be absent from every count of the
+    rungs - the one way a column like this fails without anything failing.
+    """
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError):
+        await _items_created(
+            [_mode("im-neg", "-")], {"im-neg": ItemProvenance("methods")}
+        )
 
 
 @pytest.mark.asyncio

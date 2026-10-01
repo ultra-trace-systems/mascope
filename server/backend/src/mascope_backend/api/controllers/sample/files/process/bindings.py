@@ -29,6 +29,7 @@ from datetime import datetime, timezone
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
+from mascope_backend.binding_rungs import LEARNING_SOURCES
 from mascope_backend.db import IonizationMode, MethodBinding, SampleFile, async_session
 from mascope_backend.db.id import gen_id
 from mascope_backend.method_keys import (
@@ -42,22 +43,6 @@ from mascope_backend.method_keys import (
 )
 from mascope_backend.runtime import runtime
 
-
-#: Rungs that may teach a binding, strongest first. Rung 2 is the binding
-#: itself and rungs below it are weaker than what they would teach.
-LEARNING_SOURCES = ("declared", "explicit", "token")
-
-#: The binding itself, as ``sample_item.bound_by`` records it. One name for
-#: rungs 2 and 4: a confirmed binding and a learned one are the same evidence
-#: read at two strengths, and the state of the row the item names says which
-#: of them it was - which a name frozen onto the item could not, since a
-#: binding can be confirmed after it has routed.
-BOUND_BY_METHOD = "method"
-
-#: Every value ``sample_item.bound_by`` may hold: the rung that bound the
-#: item. Detection (rung 5) joins this list when it routes rather than
-#: suggests.
-BINDING_RUNGS = LEARNING_SOURCES + (BOUND_BY_METHOD,)
 
 #: The counts a run that learned nothing returns. ``repeated`` is an
 #: observation a file had already made; ``no_signature`` a file whose reader
