@@ -202,7 +202,9 @@ async def create_sample_items(
     - Update modified timestamps for affected batches.
     - Emit creation events
 
-    :param sample_items: List of sample item details for bulk creation
+    :param sample_items: List of sample item details for bulk creation. An
+        ``AcquisitionItemCreate`` is a ``SampleItemCreate`` that also carries
+        the rung that bound the item; pass one list or the other, not a mix.
     :type sample_items: list[SampleItemCreate]
     :param independent_transaction: Flag for independent transaction, defaults to False.
     :type independent_transaction: bool, optional
@@ -307,6 +309,16 @@ async def create_sample_items(
                     else 0
                 ),
                 "sample_item_utc_created": datetime.now(timezone.utc),
+                # How the item got its chemistry, from AcquisitionItemCreate
+                # and from nothing else: the plain create model carries no
+                # such field, so a request cannot claim a rung. Both keys are
+                # written on every row whatever the model, because one
+                # multi-row INSERT takes its column list from the first
+                # dictionary alone - a list mixing the two models would
+                # otherwise drop the provenance or be refused, depending on
+                # which came first.
+                "bound_by": getattr(sample_item, "bound_by", None),
+                "method_binding_id": getattr(sample_item, "method_binding_id", None),
             }
 
             sample_items_data.append(sample_item_dict)
