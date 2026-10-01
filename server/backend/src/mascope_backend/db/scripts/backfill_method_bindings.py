@@ -20,8 +20,8 @@ Running it twice changes nothing: the chemistries merge as a set, the span by
 min and max, and ``n_streams`` takes the larger of the two counts rather than
 their sum - every file live learning counted has pipeline items and so is in
 this history as well, which a sum would count twice. The mode a merged row
-points at comes from the history whenever the history holds the file that row
-last learned from, which is the same answer every time it is asked.
+points at comes from the history whenever the file that row last learned from
+still has items, which is the same answer every time it is asked.
 
 **It reads the scan-stream census from each file's ``.props``**, for the
 instruments whose reader records one, because the signature class comes from
@@ -135,9 +135,17 @@ _HISTORY_SQL = """
 """
 
 
-#: Does the history above hold a given file? The same five-way filter as
-#: _HISTORY_SQL, which is what makes a yes mean "this run read that file's
-#: items" rather than merely "that file exists".
+#: Does a given file have items the history above would read? The same
+#: five-way filter, so a yes means the file is in that population rather than
+#: merely that the file exists.
+#:
+#: It is a question about NOW, not about what the walk folded, and the two can
+#: differ: a file re-processed while the walk was past its position has items
+#: at this point and was folded as it stood minutes ago, and a file that
+#: arrived after the last page has items the walk never saw at all. Both cost
+#: one observation's effect on one run, which the next files of the method
+#: make up, so the window is left open rather than paid for by holding every
+#: file id the walk read.
 _HOLDS_FILE_SQL = """
     SELECT 1
     FROM sample_item si
@@ -351,12 +359,12 @@ async def _apply(records: dict[str, dict]) -> dict[str, int]:
 
 
 async def _holds_file(session, sample_file_id: str | None) -> bool:
-    """Does this run's history hold the items of one file?
+    """Does one file still have items this run's history would read?
 
     The question :func:`_merge` turns on. A row live learning wrote names the
-    last file it folded; if that file's items are still there then this run
-    read them too, so its conclusion about the row is built on everything the
-    row knew and more.
+    last file it folded; if that file's items are still there, this run read
+    them too - barring the narrow windows in :data:`_HOLDS_FILE_SQL` - so its
+    conclusion about the row is built on everything the row knew and more.
 
     None is not a gap. A row the previous run of this script created has no
     last file, and nothing has observed it since, so the history is all the
@@ -381,8 +389,8 @@ def _merge(row: MethodBinding, record: dict, holds_last_observation: bool) -> bo
 
     :param row: The row to fold into, locked.
     :param record: What the history says about this key.
-    :param holds_last_observation: Whether the history holds the file the row
-        last learned from, from :func:`_holds_file`.
+    :param holds_last_observation: Whether the file the row last learned from
+        still has items this run would read, from :func:`_holds_file`.
     :return: True when this merge turned the key ambiguous.
     :rtype: bool
     """
@@ -394,14 +402,14 @@ def _merge(row: MethodBinding, record: dict, holds_last_observation: bool) -> bo
         row.n_disagreements = (row.n_disagreements or 0) + len(added)
     if len(row.chemistry_keys or []) > 1:
         row.state = "ambiguous"
-    # Where the row points comes from the history whenever the history holds
-    # what the row last saw: it then has everything live learning had and
-    # more, and it has applied the rule over all of it rather than over the
-    # last few weeks. It loses only to evidence it does not hold - a file
-    # whose items have since been deleted - and that is the whole of the
-    # test. Taking it is also what keeps a re-run idempotent, since the same
-    # history folds to the same row; an ambiguous key is left alone, since it
-    # routes nothing.
+    # Where the row points comes from the history whenever the file the row
+    # last learned from still has items this run would read: the history then
+    # has everything live learning had and more, and it has applied the rule
+    # over all of it rather than over the last few weeks. It loses only to
+    # evidence it does not hold - a file whose items have since been deleted -
+    # and that is the whole of the test. Taking it is also what keeps a re-run
+    # idempotent, since the same history folds to the same row; an ambiguous
+    # key is left alone, since it routes nothing.
     #
     # NOT a comparison of last_seen. The two are different clocks: the
     # record's is the newest ACQUISITION time in the history, the row's is
