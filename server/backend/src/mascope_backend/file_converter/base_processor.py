@@ -58,6 +58,22 @@ def with_file_context(prop_getter) -> callable:
     return wrapper
 
 
+def describe_file_size(path) -> str:
+    """The size of a file as a failure report states it, or why it cannot.
+
+    A file the converter cannot open is often one it picked up too early -
+    empty, or still being written - and its size at the moment it failed is
+    what tells that apart from a file that is simply damaged.
+
+    :param path: The file.
+    :return: ``"<n> bytes"``, or ``"size unknown"`` when it cannot be read.
+    """
+    try:
+        return f"{os.path.getsize(path)} bytes"
+    except OSError:
+        return "size unknown"
+
+
 #: A wall clock that occurs twice: the clocks went back over it, so the same
 #: reading names two instants an offset-change apart.
 WALL_TIME_AMBIGUOUS = "ambiguous"
@@ -757,7 +773,8 @@ class BaseFileProcessor(Thread, ABC, metaclass=FileProcessorMeta):
                         )
                     else:
                         runtime.logger.exception(
-                            f"Failed to process file {Path(self.file_to_process).name}"
+                            f"Failed to process file {Path(self.file_to_process).name} "
+                            f"({describe_file_size(self.file_to_process)})"
                         )
 
                     # CRITICAL: Finalize BEFORE error emission to ensure file is closed

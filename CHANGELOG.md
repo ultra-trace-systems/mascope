@@ -83,6 +83,15 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   A compound matching two stored ones - one by CAS number, one by name and
   formula - had its result written over another compound's entry in the
   response's message log, and its own entry left empty.
+- **Error monitoring reports less of what needs nobody, and says more about
+  what does.** A batch whose only failures are peak data an older Mascope
+  built, every file of it already queued for the rebuild that rematches its
+  samples, now logs its summary at info rather than warning: after an upgrade
+  that was most batches on a server, each opening an issue of its own. A
+  server no file has reached yet no longer warns at every start that it has
+  no instruments. An exception event now carries the line it was logged with,
+  which names what failed - a file the converter could not process, now with
+  its size - where the event used to hold the exception alone.
 
 ## [1.10.0] - 2026.09.30
 
