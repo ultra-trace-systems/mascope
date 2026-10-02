@@ -66,8 +66,7 @@ from mascope_cli.pg import (
     purge_old_dumps,
 )
 from mascope_cli.pg.admin import create_database as admin_create_database
-from mascope_cli.runtime import runtime
-from mascope_runtime.config import DEPLOYMENT_FILE
+from mascope_cli.runtime import DEPLOYMENT_FILE, runtime
 
 
 def _scp(

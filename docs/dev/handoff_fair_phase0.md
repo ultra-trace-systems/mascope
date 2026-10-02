@@ -188,9 +188,12 @@ described fails CI. The prod backend still serves no schema of its own (`_docs_k
   backup copies with the database dumps, so the id survives a restore with the
   records it names. The tools that copy a filestore between deployments -
   `mascope env sync` and the demo bundle's export and seed - leave the file
-  behind (`mascope_runtime.config.DEPLOYMENT_FILE` names it for both sides),
-  so a copy keeps or generates its own id; a configured id travels with the
-  env's config and is documented as such in `docs/maintaining.md`.
+  behind, so a copy keeps or generates its own id; a configured id travels
+  with the env's config and is documented as such in `docs/maintaining.md`.
+  The CLI names the file in `mascope_cli.runtime` rather than importing
+  `mascope_runtime.config.DEPLOYMENT_FILE`: the published CLI must still
+  import against the older runtimes its floor admits. A CLI test keeps the two
+  names equal.
 - **No git fallback for `mascope_version`.** The plan had the backend call
   `runtime.parse_version()` when `MASCOPE_VERSION` is unset; the CLI already
   exports it before launching the backend in dev, and `/api/version`'s

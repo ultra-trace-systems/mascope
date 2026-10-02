@@ -16,6 +16,13 @@ from mascope_cli.home import default_home, is_initialized
 from mascope_runtime import Runtime
 
 
+# The file in an env's filestore where the backend keeps the id it generated
+# for its deployment. It is mascope_runtime.config.DEPLOYMENT_FILE, named here
+# rather than imported so the CLI still imports against an installed runtime
+# older than that name, as its floor in pyproject.toml allows. A test keeps
+# the two equal.
+DEPLOYMENT_FILE = "deployment.json"
+
 _runtime: Runtime | None = None
 
 
