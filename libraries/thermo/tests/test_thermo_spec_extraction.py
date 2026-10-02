@@ -104,7 +104,11 @@ class TestComputeSumSignal:
 
         Measured, the median offset is 0.05 and 0.04 ppm on these two files,
         and 0.053 ppm over 80,416 strong peaks of the 161 demo files
-        (reader_pipeline.md section 5.1), against a FWHM of 4-8 ppm.
+        (reader_pipeline.md section 5.1), against a FWHM of 4-8 ppm. The
+        0.1 ppm bound leaves twice that as headroom, and an axis fitted to the
+        labels, which reads 0.14 and 0.25 ppm here, fails it. Both files keep
+        one calibration throughout, so a profile written on a single scan's
+        calibration would pass here; test_average_profile catches that.
         """
         sum_sig, _ = m_thermo.compute_sum_signal(path, polarity=polarity)
         masses, *_ = m_thermo.get_centroids(path, polarity=polarity)
@@ -131,7 +135,7 @@ class TestComputeSumSignal:
             f"only {offsets_ppm.size} of {masses.size} centroids have a peak "
             "of the sum signal within 3 ppm"
         )
-        assert np.median(np.abs(offsets_ppm)) <= 0.5, (
+        assert np.median(np.abs(offsets_ppm)) <= 0.1, (
             f"the sum signal's peaks sit a median "
             f"{np.median(np.abs(offsets_ppm)):.3f} ppm off their centroids"
         )
