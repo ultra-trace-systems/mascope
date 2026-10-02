@@ -408,7 +408,7 @@ at them.
 | Scan ranges | filter (`[lo-hi]`, several for multiplexed SIM) | yes | |
 | Precursor and activation | filter (`123.4567@hcd30.00`) | for targeted MSn only | data-dependent scans fold into one family per parent; this matches today's MS2 grouping key |
 | FT resolution | trailer (`FT Resolution:`) | yes | not in the filter; constant within a filter across the corpus |
-| Microscans, AGC target, injection time, lock-mass state, scan event and segment numbers | trailer | no | recorded on the stream as attributes, with their variation |
+| Microscans, AGC target, injection time, lock-mass state, scan event and segment numbers | trailer | no | recorded on the stream as attributes, with their variation; promoted into the key if one proves to move the peak shape, which then gives it its own fit (4.3) |
 
 The signature needs **one** filter-string parser, written and tested in
 `mascope_thermo`. It serves both backends:
@@ -418,8 +418,11 @@ The signature needs **one** filter-string parser, written and tested in
 - The DLL backend could use `IScanFilter`, but parsing the same canonical
   string on both keeps them in parity.
 
-A Tofwerk file is one stream: a single `IonMode` and one mass axis. TOF parts
-come only from epochs and windows.
+A Tofwerk file is one stream: a single `IonMode` and one mass axis, because
+the reader exposes no per-scan setting to split on. TOF parts come only from
+epochs and windows until it does; a TOF instrument function is therefore a
+per-file fit until then, and follows the signature once a setting enters it
+(4.3).
 
 The stream key is a stable, normalised rendering of the key fields. For a
 single-polarity file whose scans all share one signature, the key reduces to
@@ -461,8 +464,22 @@ the polarity, so stores written today read as streams without a rebuild
   makes every existing store stale (`check_stored_scan_axis`), so per-stream
   evaluation applies only to multi-stream files. Those are the files the
   first cut takes on (4.5).
-- **The instrument function is fitted per stream** when streams differ in
-  analyzer or resolution. Otherwise one shared fit stands, as today.
+- **The instrument function is fitted per stream, always.** Today's fit is
+  one per file, on the file's whole summed signal: up to a hundred of the
+  brightest peaks, their width against m/z, an inverse-square-root model for
+  Orbitrap and a rational one for TOF, stored as a row keyed by instrument
+  and method file that peak detection, matching and calibration read. A
+  stream's fit is the same procedure on the stream's own summed signal, the
+  signal its peaks are picked from. A single-stream file has one stream and
+  one fit, so it stays byte-identical; a split file gets one fit per stream,
+  and the signature becomes the one place that declares what changes the
+  peak shape - anything that enters it gets its own fit for free. A stream
+  with too few peaks to fit takes the fit of a sibling stream with the same
+  analyzer and resolution, else the file's, and says so. The row's identity
+  gains the stream key beside instrument and method file; the instrument
+  config listing and the delete by id (#2156) follow. When phase 4 reaches
+  dual-polarity files, each polarity gets its own fit instead of one fit over
+  both summed together, which is a correction rather than a cost.
 - **m/z calibration moves to the stream.**
   - The Orbitrap apply scales only that stream's peak rows and sum signals.
   - `sample_file.mz_calibration` keeps a copy of the primary stream's fit
@@ -517,8 +534,8 @@ smaller piece of work than the two phases read as a whole:
   Orbitrap apply rescales every peak row of the file and removes every item's
   matches, so two calibrating items in one file collide. Per-stream apply is
   what makes two ranges in one file safe.
-- **One instrument function stays shared** while the streams share analyzer
-  and resolution, which the ranges of one method do.
+- **One instrument function per stream** (4.3), fitted on the stream's own
+  summed signal; a range too narrow to fit borrows its sibling's.
 - **Left for later:** MS2 attachment, polarity-switching files (each polarity
   already gets its own item), and the rebuild of files already ingested,
   which rule 1 of 9.1 replaces with an explicit re-process.
@@ -1644,7 +1661,9 @@ through a short-lived stacked branch, merged as one unit.
 5. **Calibration scope.** ~~Per stream (recommended; required for different
    chemistries in one file).~~ **Decided 2026-10-01:** per stream, and
    required already by the first cut of 4.5, where two ranges of one
-   chemistry calibrate in one file.
+   chemistry calibrate in one file. **And the instrument function, decided
+   2026-10-02:** per stream always, not only where streams differ in analyzer
+   or resolution (4.3); a stream too thin to fit borrows a sibling's fit.
 6. **MS2.** Attach to the parent item by default (recommended), or separate
    MS2 items.
 7. **Batch naming.** Add the signature class only when needed (recommended),
@@ -1722,7 +1741,7 @@ Function names are the stable reference; line numbers drift.
 | Matching | `libraries/match/src/mascope_match/compute/isotopes.py` `compute_match_isotopes`; `api/controllers/match/lib/match_compute.py` | 3 |
 | Assignment peak loading | `api/new/peak_assignments/service.py` | 3 |
 | Item creation | `api/controllers/sample/items/sample_items_controller.py` `create_sample_items` | 3 |
-| Instrument function | `libraries/signal/src/mascope_signal/instrument_func/fit.py` | 4 |
+| Instrument function | `libraries/signal/src/mascope_signal/instrument_func/fit.py` (`fit_instrument_functions`, on the stream's summed signal); `file_converter/base_processor.py`; `db/models.py` `InstrumentFunction` (identity gains the stream key) | 3, 4 |
 | Calibration | `api/controllers/calibration/lib/calibration_mz_fit.py` (`_apply_sync`, `_resolve_calibration_isotopes`); `calibration_controller.py` `calibration_mz_apply` | 0 (ordering, shipped in #2153), 4 |
 | Pipeline and routing | `api/controllers/sample/files/process/service.py` (`_auto_process_sample_file`, `create_acquisition_batches_and_items`, `calibrate_with_retry`); `api/new/ionization/modes/util.py` (`resolve_ionization_modes_by_tokens`, `resolve_ionization_modes_by_peaks`) | 0, 1, 2, 5 |
 | Provenance on items | `create_acquisition_batches_and_items` above; `db/models.py` `SampleItem` | 2 |
