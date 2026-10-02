@@ -31,6 +31,8 @@ from mascope_backend.api.controllers.sample.batches.sample_batches_controller im
 )
 from mascope_backend.api.controllers.sample.files.process.bindings import (
     learn_method_bindings,
+    resolve_modes_by_method_binding,
+    routes_on_method_binding,
 )
 from mascope_backend.api.controllers.sample.files.process.status import (
     claim_for_processing,
@@ -77,6 +79,7 @@ from mascope_backend.binding_rungs import BindingRung
 from mascope_backend.db import (
     Dataset,
     IonizationMode,
+    MethodBinding,
     SampleBatch,
     SampleFile,
     SampleItem,
@@ -450,13 +453,25 @@ async def _record_failed(sample_file_id: str, error: Exception) -> None:
         raise
 
 
-def _bound_detail(ionization_modes: list[IonizationMode], by_token: bool) -> str:
-    """Name the modes a file was bound to, and what bound it."""
+def _bound_detail(ionization_modes: list[IonizationMode], rung: str) -> str:
+    """Name the modes a file was bound to, and what bound it.
+
+    Read by whoever is looking at the file in Raw files, so it says which rung
+    answered. ``"token"`` and ``"method"`` each get their own sentence; a
+    person's choice and a mode kept from the file's own samples share one,
+    because what a reader needs there is that no file name chose it.
+
+    :param ionization_modes: The modes it bound to, one per polarity.
+    :param rung: What bound it this run - "token", "method", "explicit" or
+        "kept".
+    """
     names = " and ".join(
         f"'{mode.ionization_mode_name}' ({mode.ionization_mode_polarity})"
         for mode in ionization_modes
     )
-    if not by_token:
+    if rung == "method":
+        return f"Bound to {names} by its acquisition method."
+    if rung != "token":
         return f"Bound to {names} without a file-name token."
     tokens = "token" if len(ionization_modes) == 1 else "tokens"
     return f"Bound by file-name {tokens} to {names}."
@@ -1004,9 +1019,30 @@ async def _auto_process_sample_file(
     # After the dataset on purpose: a file that binds to nothing still gets
     # its instrument's workspace, which is where its modes are configured.
     by_token = ionization_mode_ids is None
+    routed_by_method: list = []
     if by_token:
         try:
             bound_modes = await resolve_ionization_modes_by_tokens(sample_file)
+        except NoTokenMatchError as no_token:
+            # Nothing named this file, which is the one case a binding may
+            # answer. An ambiguous name is NOT: it falls to the clause below,
+            # because a configuration to fix is not something a binding
+            # stands in for (section 5.3).
+            if not routes_on_method_binding():
+                return await _park_needing_chemistry(
+                    sample_file, str(no_token), streams_note
+                )
+            routed_by_method, declined = await resolve_modes_by_method_binding(
+                sample_file, scan_streams
+            )
+            if declined is not None:
+                return await _park_needing_chemistry(
+                    sample_file,
+                    f"{no_token} Its acquisition method does not say either: "
+                    f"{declined}.",
+                    streams_note,
+                )
+            bound_modes = [routing.mode for routing in routed_by_method]
         except ValueError as e:
             return await _park_needing_chemistry(sample_file, str(e), streams_note)
     else:
@@ -1032,11 +1068,27 @@ async def _auto_process_sample_file(
     # recorded when the mode was first chosen or matched, and repeating it
     # would claim a strength nobody gave and let a batch of re-processed
     # files build a run back toward the row they were bound under.
-    if by_token:
+    if routed_by_method:
+        # The binding bound it, so there is nothing for the binding to learn:
+        # it would be teaching itself what it already holds, and counting the
+        # files it routed as observations of the chemistry it chose for them.
+        provenance = {
+            routing.mode.ionization_mode_id: ItemProvenance(
+                "method", routing.binding_id
+            )
+            for routing in routed_by_method
+        }
+        teaches: BindingRung | None = None
+        # What the file's status says bound it. Not read off `provenance`: a
+        # kept mode's rung is whatever bound it originally and can differ per
+        # polarity, while the status describes this run in one sentence.
+        rung = "method"
+    elif by_token:
         provenance = {
             mode.ionization_mode_id: ItemProvenance("token") for mode in bound_modes
         }
-        teaches: BindingRung | None = "token"
+        teaches = "token"
+        rung = "token"
     elif kept_provenance is not None:
         provenance = {
             mode.ionization_mode_id: kept_provenance.get(
@@ -1045,11 +1097,13 @@ async def _auto_process_sample_file(
             for mode in bound_modes
         }
         teaches = None
+        rung = "kept"
     else:
         provenance = {
             mode.ionization_mode_id: ItemProvenance("explicit") for mode in bound_modes
         }
         teaches = "explicit"
+        rung = "explicit"
 
     if teaches is not None:
         # What this file's method has now been seen running. Recorded, not
@@ -1077,7 +1131,7 @@ async def _auto_process_sample_file(
     await record_processing_status(
         sample_file_id,
         ProcessingStatus.BOUND,
-        compose_detail(_bound_detail(bound_modes, by_token), streams_note),
+        compose_detail(_bound_detail(bound_modes, rung), streams_note),
     )
 
     # Extract batch and sample IDs for notifications
@@ -1925,6 +1979,61 @@ async def _clear_sample_items_for_reprocessing(
     return affected_sample_batch_ids
 
 
+async def _with_live_bindings(
+    provenance: dict[str, ItemProvenance],
+) -> dict[str, ItemProvenance]:
+    """The same provenance with any vanished binding dropped to None.
+
+    ``ON DELETE SET NULL`` reads as a blanket guarantee and is not one: it
+    rewrites rows that exist when the delete runs, and says nothing about a
+    row inserted a minute later. A binding id is read before the items are
+    written - at the rung, and for a re-process during validation, which can
+    be minutes earlier - so a binding deleted in between would fail the whole
+    file's processing on the foreign key.
+
+    Losing the id costs an item its link to the binding, which is provenance.
+    Failing the insert costs the file its samples. So the id goes and the rung
+    stays: "bound by its acquisition method" is still true of that item.
+
+    :param provenance: How each mode came to bind the file.
+    :return: The same map, with ids no longer in ``method_binding`` cleared.
+    :rtype: dict[str, ItemProvenance]
+    """
+    wanted = {
+        held.method_binding_id
+        for held in provenance.values()
+        if held.method_binding_id is not None
+    }
+    if not wanted:
+        return provenance
+    async with async_session() as session:
+        live = set(
+            (
+                await session.scalars(
+                    select(MethodBinding.method_binding_id).where(
+                        MethodBinding.method_binding_id.in_(wanted)
+                    )
+                )
+            ).all()
+        )
+    gone = wanted - live
+    if not gone:
+        return provenance
+    runtime.logger.info(
+        f"{len(gone)} method binding(s) were deleted while this file was "
+        "processed, so its samples record the rung that bound them and no "
+        "binding row"
+    )
+    return {
+        mode_id: (
+            held
+            if held.method_binding_id in live or held.method_binding_id is None
+            else ItemProvenance(held.bound_by, None)
+        )
+        for mode_id, held in provenance.items()
+    }
+
+
 async def create_acquisition_batches_and_items(
     sample_file: SampleFile,
     dataset_id: str,
@@ -1963,6 +2072,7 @@ async def create_acquisition_batches_and_items(
     """
     sample_items_to_create = []
     acquisition_sample_batches = []
+    provenance = await _with_live_bindings(provenance)
 
     for ionization_mode in ionization_modes:
         # --- Generate daily ACQUISITION batch name for this ionization mode ---

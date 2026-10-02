@@ -1292,6 +1292,117 @@ async def test_records_each_stage_a_calibrated_file_reaches(status):
     assert all(call.args[0] == "sf-001" for call in status.call_args_list)
 
 
+def _no_token(filename="2025.09.20_test_file.raw"):
+    """What the token rule raises for a file no token names."""
+    from mascope_backend.api.new.ionization.modes.util import NoTokenMatchError
+
+    return NoTokenMatchError(
+        f"No ionization mode tokens found for file {filename}. "
+        "Configure tokens in ionization settings"
+    )
+
+
+def _routing(mode, binding_id="mb-000000000001"):
+    from mascope_backend.api.controllers.sample.files.process.bindings import (
+        MethodRouting,
+    )
+
+    return MethodRouting(mode=mode, binding_id=binding_id)
+
+
+@pytest.mark.asyncio
+async def test_a_token_less_file_parks_while_the_rung_is_off(status):
+    """The default. Nothing about routing changes until a site switches it."""
+    mocks, _ = _start_single()
+    mocks["resolve"].side_effect = _no_token()
+
+    with patch(f"{_SVC}.routes_on_method_binding", return_value=False):
+        with patch(
+            f"{_SVC}.resolve_modes_by_method_binding", new_callable=AsyncMock
+        ) as rung:
+            result = await _run_pipeline()
+
+    assert result["status"] == "parked"
+    # Not even consulted: a shadow deployment runs no extra query per file.
+    rung.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_the_rung_binds_a_token_less_file_to_its_method(status):
+    """What `method_binding = "route"` buys: this file parks on every other
+    deployment."""
+    mocks, _ = _start_single()
+    mode = mocks["resolve"].return_value[0]
+    mocks["resolve"].side_effect = _no_token()
+
+    with patch(f"{_SVC}.routes_on_method_binding", return_value=True):
+        with patch(
+            f"{_SVC}.resolve_modes_by_method_binding",
+            new_callable=AsyncMock,
+            return_value=([_routing(mode)], None),
+        ):
+            await _run_pipeline()
+
+    # Bound, not parked, and the items say which rung and which row.
+    assert [state for state, _ in _recorded(status)] == [
+        "bound",
+        "calibrated",
+        "done",
+    ]
+    assert _recorded(status)[0][1] == (
+        "Bound to 'Bromide RI' (-) by its acquisition method."
+    )
+    assert _recorded_provenance(mocks) == {
+        "im-001": ItemProvenance("method", "mb-000000000001")
+    }
+    # And the binding learns nothing from the file it routed itself: that
+    # would be counting its own answer as evidence for itself.
+    status.learn.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_the_park_detail_says_what_the_method_could_not_tell_either(status):
+    """Two reasons, because a person reading it has two things to check."""
+    mocks, _ = _start_single()
+    mocks["resolve"].side_effect = _no_token()
+
+    with patch(f"{_SVC}.routes_on_method_binding", return_value=True):
+        with patch(
+            f"{_SVC}.resolve_modes_by_method_binding",
+            new_callable=AsyncMock,
+            return_value=([], "its acquisition method has not been seen before"),
+        ):
+            result = await _run_pipeline()
+
+    assert result["status"] == "parked"
+    (state, detail) = _recorded(status)[0]
+    assert state == "needs_chemistry"
+    assert "No ionization mode tokens found" in detail
+    assert "has not been seen before" in detail
+
+
+@pytest.mark.asyncio
+async def test_an_ambiguous_name_does_not_reach_the_rung(status):
+    """A name carrying two tokens is a configuration to fix.
+
+    The binding must not stand in for it: that would route a file whose own
+    name says two contradictory things, and hide the thing to correct.
+    """
+    mocks, _ = _start_single()
+    mocks["resolve"].side_effect = ValueError(
+        "Ionization mode tokens must match exactly one mode per polarity"
+    )
+
+    with patch(f"{_SVC}.routes_on_method_binding", return_value=True):
+        with patch(
+            f"{_SVC}.resolve_modes_by_method_binding", new_callable=AsyncMock
+        ) as rung:
+            result = await _run_pipeline()
+
+    assert result["status"] == "parked"
+    rung.assert_not_awaited()
+
+
 @pytest.mark.asyncio
 async def test_a_file_that_binds_to_nothing_waits_for_a_chemistry(status):
     """Routing found no mode: the file is parked, not failed."""

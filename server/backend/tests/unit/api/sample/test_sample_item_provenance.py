@@ -65,6 +65,13 @@ async def _items_created(modes, provenance):
             new_callable=AsyncMock,
             return_value={"data": {"sample_batch_id": "sb-001"}, "created": True},
         ),
+        # Pass the provenance through untouched: whether a binding row still
+        # exists is its own question, tested on its own below.
+        patch(
+            f"{_SVC}._with_live_bindings",
+            new_callable=AsyncMock,
+            side_effect=lambda held: held,
+        ),
         patch(
             f"{_SVC}.create_sample_items", new_callable=AsyncMock
         ) as create_sample_items,
@@ -132,6 +139,59 @@ async def test_a_rung_outside_the_vocabulary_is_refused():
         await _items_created(
             [_mode("im-neg", "-")], {"im-neg": ItemProvenance("methods")}
         )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "live, expected",
+    [
+        (["mb-live00000001"], "mb-live00000001"),
+        ([], None),
+    ],
+    ids=["the binding is still there", "it was deleted mid-run"],
+)
+async def test_a_binding_deleted_mid_run_costs_the_link_not_the_file(live, expected):
+    """``ON DELETE SET NULL`` does not reach a row being inserted a minute later.
+
+    The id is read before the items are written - at the rung, and for a
+    re-process during validation, which can be minutes earlier. A binding
+    deleted in between would fail the whole file's processing on the foreign
+    key, which costs the file its samples; dropping the id costs one item its
+    link to a binding that no longer exists. The rung stays either way,
+    because "bound by its acquisition method" is still true of that item.
+    """
+    from mascope_backend.api.controllers.sample.files.process.service import (
+        _with_live_bindings,
+    )
+
+    rows = MagicMock()
+    rows.all.return_value = live
+    session = AsyncMock()
+    session.scalars.return_value = rows
+    context = AsyncMock()
+    context.__aenter__ = AsyncMock(return_value=session)
+    context.__aexit__ = AsyncMock(return_value=False)
+
+    with patch(f"{_SVC}.async_session", return_value=context):
+        kept = await _with_live_bindings(
+            {"im-001": ItemProvenance("method", "mb-live00000001")}
+        )
+
+    assert kept == {"im-001": ItemProvenance("method", expected)}
+
+
+@pytest.mark.asyncio
+async def test_no_binding_ids_means_no_query():
+    """Every file routed by a token or a person, which is nearly all of them."""
+    from mascope_backend.api.controllers.sample.files.process.service import (
+        _with_live_bindings,
+    )
+
+    with patch(f"{_SVC}.async_session") as session_factory:
+        kept = await _with_live_bindings({"im-001": ItemProvenance("token")})
+
+    assert kept == {"im-001": ItemProvenance("token")}
+    session_factory.assert_not_called()
 
 
 def _stored_item(**overrides):

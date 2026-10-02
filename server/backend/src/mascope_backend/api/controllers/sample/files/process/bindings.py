@@ -34,6 +34,7 @@ observations once :data:`REPOINT_AFTER` of them in a row agree
 """
 
 from datetime import datetime, timezone
+from typing import NamedTuple
 
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
@@ -47,6 +48,7 @@ from mascope_backend.method_keys import (
     binding_digest,
     chemistry_key,
     clipped,
+    instrument_key,
     method_key,
     signature_class,
 )
@@ -136,12 +138,139 @@ def method_binding_mode() -> str:
 
     Read from ``method_binding`` in the runtime ``[backend]`` config:
     ``"shadow"`` (the default) learns them and routes nothing on them,
-    ``"off"`` records nothing at all.
+    ``"off"`` records nothing at all, ``"route"`` learns them and binds a
+    file no token names to what its method has been seen running.
 
-    :return: ``"shadow"`` or ``"off"``.
+    :return: ``"shadow"``, ``"off"`` or ``"route"``.
     :rtype: str
     """
     return getattr(runtime.config, "method_binding", "shadow")
+
+
+def routes_on_method_binding() -> bool:
+    """Whether this deployment lets a binding bind a file.
+
+    A separate question from the mode, because one value answers both: under
+    ``"route"`` the learner goes on recording exactly as it did, and only the
+    rung is added. Nothing about what is learned depends on this.
+    """
+    return method_binding_mode() == "route"
+
+
+class MethodRouting(NamedTuple):
+    """One polarity's answer from the method binding rung.
+
+    The binding's id travels with the mode because the item records both:
+    which rung bound it, and the row that did, so an item bound by a binding
+    that has since moved is a query rather than a reconstruction
+    (``sample_item.method_binding_id``).
+    """
+
+    mode: IonizationMode
+    binding_id: str
+
+
+async def resolve_modes_by_method_binding(
+    sample_file: SampleFile, streams: list[dict] | None
+) -> tuple[list[MethodRouting], str | None]:
+    """Bind a file to the chemistry its acquisition method has been seen running.
+
+    Rung 4 of the ladder (section 5.2), and the whole of what
+    ``backend.method_binding = "route"`` switches on. Tried only for a file
+    **no token names**: a file whose tokens match ambiguously is a
+    configuration to fix, and no binding stands in for that.
+
+    One binding per polarity, because the key carries a signature class and a
+    class describes one polarity. Every polarity must answer, as under the
+    token rule - a file half of whose polarities had a chemistry would
+    otherwise be bound for one and silently lose the other.
+
+    **Five guards, each of them a way this key could be trusted too far**
+    (section 5.3):
+
+    - a method name that never varies is no name, so it recognises nothing;
+    - a file whose scans were not recorded has no signature class to key on,
+      and a stand-in would key it apart from the files that carry one;
+    - a key seen with more than one chemistry has separated nothing;
+    - a binding whose mode has been deleted points nowhere;
+    - a mode belonging to another instrument is not this instrument's answer,
+      which is what scoping a mode means (#1463).
+
+    :param sample_file: The file to bind.
+    :param streams: Its scan-stream census, as
+        :func:`~...process.status.read_scan_streams` returns it.
+    :return: One routing per polarity and None, or no routings and the reason
+        there are none, as a sentence for the file's processing detail.
+    :rtype: tuple[list[MethodRouting], str | None]
+    """
+    key = method_key(sample_file.method_file)
+    if not key:
+        return [], (
+            "its acquisition method reports no name of its own, so there is "
+            "nothing to recognise it by"
+        )
+
+    routings: list[MethodRouting] = []
+    async with async_session() as session:
+        for polarity in sample_file.polarity or "":
+            signature = signature_class(streams, polarity, sample_file.instrument_type)
+            if signature is None:
+                return [], (
+                    "what its scans measured was not recorded, so its "
+                    "acquisition method cannot be recognised"
+                )
+            found = (
+                await session.execute(
+                    select(MethodBinding, IonizationMode)
+                    .join(
+                        IonizationMode,
+                        MethodBinding.ionization_mode_id
+                        == IonizationMode.ionization_mode_id,
+                    )
+                    .where(
+                        MethodBinding.binding_key
+                        == binding_digest(sample_file.instrument, key, signature)
+                    )
+                )
+            ).first()
+            if found is None:
+                # No row, or a row whose mode has been deleted: the join drops
+                # both, and neither can bind a file.
+                return [], (
+                    "its acquisition method has not been seen running a "
+                    "chemistry on this instrument"
+                )
+            binding, mode = found
+            # Judged on the chemistries, not on `state`. The two say the same
+            # thing today and would not once a person can confirm a binding.
+            if len(binding.chemistry_keys or []) != 1:
+                return [], (
+                    "its acquisition method has been seen running more than "
+                    "one chemistry, so the method does not say which"
+                )
+            scope = instrument_key(mode.instrument)
+            if scope is not None and scope != instrument_key(sample_file.instrument):
+                return [], (
+                    "the chemistry its acquisition method was seen running "
+                    "belongs to another instrument"
+                )
+            if mode.ionization_mode_polarity != polarity:
+                # The mode was edited after the binding learned it. The key
+                # describes one polarity, so a mode of the other is not what
+                # this polarity measured.
+                return [], (
+                    "the chemistry its acquisition method was seen running is "
+                    f"no longer recorded for polarity {polarity}"
+                )
+            routings.append(
+                MethodRouting(mode=mode, binding_id=binding.method_binding_id)
+            )
+
+    if not routings:
+        # The file records no polarity at all. The token rule refuses such a
+        # file for the same reason: there is nothing to bind one mode to.
+        return [], "its polarities were not recorded"
+    return routings, None
 
 
 async def learn_method_bindings(
