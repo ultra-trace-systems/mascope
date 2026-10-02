@@ -29,8 +29,7 @@ def _peak(centre: float = MZ, fwhm_ppm: float = FWHM_PPM, points: int = 81) -> t
 
 class _FakeRaw:
     """The slice of ``opentfraw.RawFile`` that ``average_profile`` touches. The
-    trailer carries no Conversion Parameters, as a non-FTMS scan's does not, and
-    there are no centroid labels, so the axis is left as the fallback built it.
+    trailer carries no Conversion Parameters, as a non-FTMS scan's does not.
     """
 
     def __init__(self, profile: tuple):
@@ -41,15 +40,6 @@ class _FakeRaw:
 
     def scan_parameters(self, scan_number):
         return {"Ion Injection Time (ms):": 10.0}
-
-    def centroid_labels(self, scan_number):
-        empty = np.array([])
-        return {
-            "mz": empty,
-            "intensity": empty,
-            "resolution": empty,
-            "signal_to_noise": empty,
-        }
 
 
 def _backend() -> OpenTFRawBackend:
@@ -145,3 +135,93 @@ def test_the_frequency_grid_lands_on_the_samples_it_averages():
     )
     # The apex is the tallest sample itself, not an interpolation short of it.
     assert summed.max() == pytest.approx(stored_intensity.max(), rel=1e-9)
+
+
+# -- several scans, each written on a calibration of its own --
+
+# Seven scans of the same ions, scans 1-3 written on a calibration 2.5 ppm above
+# that of scans 4-7, as when a lock mass engages part-way through a file.
+_STEP_PPM = 2.5
+_STEP_SCANS = list(range(1, 8))
+
+
+class _FakeFtmsRaw:
+    """Scans that sample one frequency grid, as every scan of a file does, and
+    differ only in the calibration each is written with: profile, centroid
+    labels and the Conversion Parameters behind both."""
+
+    def __init__(self, scans: dict[int, dict]):
+        self._scans = scans
+
+    def profile(self, scan_number):
+        return self._scans[scan_number]["profile"]
+
+    def centroid_labels(self, scan_number):
+        return self._scans[scan_number]["labels"]
+
+    def scan_parameters(self, scan_number):
+        return self._scans[scan_number]["params"]
+
+
+def _stepped_ftms_scans(points: int = 1200) -> dict[int, dict]:
+    """Two ions, each centred on a sample so that its tallest sample is its
+    apex, written out by every scan on that scan's calibration."""
+    f_start = np.sqrt(_B / 301.0)
+    df = (np.sqrt(_B / 300.0) - f_start) / points
+    offsets = np.concatenate(([0.0], np.arange(1, points) + _SUB_CELL))
+    freq = f_start + offsets * df
+    ions = [(freq[300], 1e5), (freq[900], 4e4)]
+    intensity = np.zeros(points)
+    for f_ion, height in ions:
+        # m/z goes as 1/f^2, so a peak is half as wide in frequency, relatively.
+        sigma = f_ion * FWHM_PPM / 2 / 1e6 / (2 * np.sqrt(2 * np.log(2)))
+        intensity += height * np.exp(-0.5 * ((freq - f_ion) / sigma) ** 2)
+    f_ions = np.array([f for f, _ in ions])
+    scans = {}
+    for n in _STEP_SCANS:
+        scale = 1 + _STEP_PPM / 1e6 if n <= 3 else 1.0
+        b, c = _B * scale, _C * scale
+        scans[n] = {
+            "profile": (b / freq**2 + c / freq**4, intensity),
+            "labels": {
+                "mz": b / f_ions**2 + c / f_ions**4,
+                "intensity": np.array([height for _, height in ions]),
+                "resolution": np.full(len(ions), 1e6 / FWHM_PPM),
+                "signal_to_noise": np.full(len(ions), 4000.0),
+            },
+            "params": {"Conversion Parameter B:": b, "Conversion Parameter C:": c},
+        }
+    return scans
+
+
+def test_the_profile_is_written_on_the_mean_of_the_scans_calibrations():
+    """Across a calibration step the averaged profile's peaks sit on the
+    averaged centroids.
+
+    An ion's frequency is the same in every scan, but each scan writes it out
+    on its own calibration, so a step moves every label of the scans on one
+    side of it. An averaged centroid reports the mean of its labels as written,
+    which is the ion's frequency on the mean calibration, and the averaged
+    profile is written on that too. On any one scan's calibration it would sit
+    as far off the centroids as that scan is from the mean: 1.4 ppm for scans
+    1-3 here, a sixth of the peak's width. The spectrum views draw the
+    centroids over the profile, and a centroid's height is read off the
+    profile apex within 3 ppm of it.
+    """
+    scans = _stepped_ftms_scans()
+    backend = OpenTFRawBackend("unused.raw")
+    backend._raw = _FakeFtmsRaw(scans)
+
+    masses, *_ = backend.average_centroids(_STEP_SCANS)
+    grid, summed, _ = backend.average_profile(_STEP_SCANS)
+
+    assert masses.size == 2
+    # The step is there to be averaged: scan 1 writes each ion 4/7 of it above
+    # the ion's averaged centroid.
+    above = (np.sort(scans[1]["labels"]["mz"]) - masses) / masses * 1e6
+    np.testing.assert_allclose(above, _STEP_PPM * 4 / 7, rtol=1e-3)
+    for mass in masses:
+        near = np.abs(grid - mass) / mass * 1e6 < 2 * FWHM_PPM
+        apex = grid[near][np.argmax(summed[near])]
+        offset = (apex - mass) / mass * 1e6
+        assert abs(offset) < 0.01, f"the profile peaks {offset:+.3f} ppm off"

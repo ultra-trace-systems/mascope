@@ -92,7 +92,8 @@ frequency. The steps (`average_profile`, the frequency branch):
 3. Linear-interpolate each scan onto the frequency grid and sum. Because the
    peaks are aligned, this is the true mean shape (times `scans_combined`) with
    no integral rescaling.
-4. Convert the frequency grid back to m/z with the reference calibration.
+4. Convert the frequency grid back to m/z on the mean of the scans'
+   calibrations (3.2).
 
 Falls back to a constant-ppm m/z grid only for non-FTMS data or when the
 conversion parameters are unavailable.
@@ -153,22 +154,64 @@ change: measured against the Thermo library over 29,493 matched peaks, the
 averaged-centroid bias differs by 1.3 percentage points between reader 1.4.0 and
 2.0.0 on cell centres, and by 0.1 on cell means.
 
-### 3.2 Aligning the averaged profile to the calibrated m/z
+### 3.2 Which calibration the averaged profile is written on
 
-Step 4 above uses the *reference* calibration; it still omits Thermo's per-scan
-calibration *compensations* (~10-20 ppm, m/z-dependent). The exact, fully
-calibrated m/z values live in the centroid labels. So
-`_align_profile_grid_to_centroids()` matches the strongest, well-separated
-profile peaks to their nearest centroid, rejects outliers, and fits a low-order
-m/z correction to the whole grid. Result: the profile m/z lands on the
-calibrated axis.
+From reader 2.0.0 a scan's profile m/z is the instrument's own, point for point
+(5.1): the reader converts each frequency with the scan's calibration and
+applies the same per-segment m/z corrections the centroid labels carry. So
+there is nothing to correct against the labels. What step 4 still has to
+choose is which calibration writes the frequency grid out, because every scan
+carries its own.
+
+They need not agree. A lock mass that engages part-way through a file, or
+whose correction wanders from scan to scan, moves a scan's calibration by up
+to a few ppm while the ions' frequencies stay put, and every label of that scan
+moves with it. An averaged centroid reports the mean of its labels as written
+(section 4), and m/z is linear in B and C, so for an ion present alike in every
+scan that mean is its frequency on the *mean* calibration. The grid is
+converted on that, and the profile's peaks sit on the averaged centroids
+whatever the scans' calibrations did. Any single scan's calibration would put
+them as far off as that scan is from the mean.
+
+Measured as in 5.1 -- strong peaks (S:N >= 20), each located at the vertex of
+the parabola through its three top samples -- as the median over files of each
+file's median distance to its centroid, with the worst file:
+
+| files | densest scan's calibration | mean calibration |
+| --- | --- | --- |
+| 161 demo files (calibration spread 0.05 ppm) | 0.052 ppm (0.087) | 0.053 ppm (0.059) |
+| internal regression corpus, 163 acquisitions | 0.052 ppm | 0.040 ppm |
+| ... its 22 whose calibration spreads over 0.4 ppm | 0.116 ppm (1.06) | 0.047 ppm (0.33) |
+| two files whose lock mass engaged part-way | 1.24 and 3.14 ppm | 0.07 and 0.08 ppm |
+
+Over the corpus the densest scan's calibration also leaves a bias: the signed
+median over all its strong peaks is -0.048 ppm, -0.11 above m/z 500, against
+-0.008 on the mean. The worst files left are long acquisitions (60 to 1,500
+scans) whose calibration drifts by 0.7 to 2.6 ppm. An averaged centroid weighs
+each scan by that ion's own intensity in it, so ions with different time
+courses sit on slightly different calibrations, and no single axis matches
+them all. Weighting the mean by each scan's total signal does no better (worst
+file 0.75 ppm).
+
+Fitting the axis to the centroid labels -- needed while the reader left the
+profile a few ppm off them -- does worse on every count. A fit matches the
+profile's sampled maxima to the nearest per-scan label, so on steady files it
+adds a tenth of a ppm or two (0.083 ppm on the demo files, against 0.053), and
+where a line fitted to mid-range anchors extrapolates it moves the ends of the
+range by up to 10 ppm. On a file whose calibration steps, the nearest label to
+a peak is the densest scan's own, so a fit leaves that scan's offset in place.
+
+The Thermo library's own averaged profile agrees: it puts a peak where the mean
+calibration does, to 0.065 ppm over 31 files, against 0.077 for the densest
+scan's. Where the scans' calibrations spread over several ppm at low m/z its
+averaged peak is smeared across them, and its position is no reference there.
 
 ### 3.3 Baseline zero-fill
 
 OpenTFRaw returns only non-zero profile samples; Thermo's profile has explicit
 zero baseline between peak clusters. Linear interpolation across a large empty
 gap would draw spurious ramps that, summed over scans, inflate the baseline.
-`_zero_fill_profile_baseline()` (driven by `_ZEROFILL_GAP_FACTOR`) inserts a zero
+`_zerofill_baseline()` (driven by `_ZEROFILL_GAP_FACTOR`) inserts a zero
 just outside each cluster edge -- any m/z gap more than a few times the median
 sample spacing is treated as a cluster boundary -- so interpolation stays local
 and the baseline floor matches Thermo.
@@ -311,14 +354,16 @@ them itself:
 | | per-scan profile apex minus its label | averaged profile apex minus its averaged centroid |
 | --- | --- | --- |
 | reader 1.4.0 | -4.60 ppm median, -5.40 below m/z 200 | -- |
-| reader 2.0.0 | **-0.001 ppm** median, +-0.1 ppm in every band | **0.096 ppm** median absolute, no bias |
+| reader 2.0.0 | **-0.001 ppm** median, +-0.1 ppm in every band | **0.053 ppm** median absolute, no bias |
 
 The per-scan axis is in fact byte-for-byte the Thermo library's: 0.000000 ppm
 over every point of a scan, where 1.4.0 differed by up to 3.3 ppm. The averaged
-figure is over 6,064 strong peaks (S:N >= 20) of 21 demo files, each located at
-the vertex of the parabola through its three top samples, the way the Thermo
-library centroids one (5.3); its signed median is -0.003 ppm. Against a 4-8 ppm
-FWHM, a tenth of a ppm is not a visible offset.
+figure is over 80,416 strong peaks (S:N >= 20) of the 161 demo files, each
+located at the vertex of the parabola through its three top samples, the way
+the Thermo library centroids one (5.3); its signed median is -0.005 ppm, and it
+runs from 0.04 ppm below m/z 150 to 0.09 above m/z 500. It holds where the
+scans' calibrations differ, because the profile is written on their mean
+(3.2). Against a 4-8 ppm FWHM, a tenth of a ppm is not a visible offset.
 `test_sum_signal_peaks_sit_on_the_centroids` (in `test_thermo_spec_extraction.py`)
 holds the averaged profile to it under each backend, locating peaks the same
 way.
@@ -395,7 +440,7 @@ which `_zerofill_baseline` puts back).
   `sum_signal`, a filtered one under a hash of its time window and polarity).
   A raw Orbitrap file's cache name also carries what averaged the profile,
   `averaged_profile_signature()` (`sum_signal_suffix`): the reader, its version
-  and `AVERAGED_PROFILE_GENERATION`, as in `sum_signal_<hash>.otf2.0.0-g2`.
+  and `AVERAGED_PROFILE_GENERATION`, as in `sum_signal_<hash>.otf2.0.0-g3`.
 - Computes via `m_thermo.compute_sum_signal(...)` -> `average_profile(...,
   average=False)` (sum, i.e. apex = mean * scans_combined), optionally dividing
   by an averaging factor for the averaged view.
@@ -450,7 +495,7 @@ them, touching raw Orbitrap files only.
 | Averaged centroid intensity (profile-apex) | ~3% high, and flat across the intensity range (section 6, step 6) |
 | Single-scan centroid intensity (profile-apex) | 0.8% of the instrument's own label |
 | Averaged S:N above-threshold count | Tracks Thermo (via n/sqrt(N)) |
-| Averaged profile peak vs its own averaged centroid | 0.096 ppm median absolute (section 5.1); exact under Thermo |
+| Averaged profile peak vs its own averaged centroid | 0.053 ppm median absolute (section 5.1); exact under Thermo |
 | XIC | rtol 1e-4 |
 
 The averaged-centroid path is the only genuine *approximation* (Thermo
@@ -470,8 +515,8 @@ a tolerance.
 | Per-scan centroids + labels | `centroids_per_scan` |
 | Per-scan profile | `profile_per_scan` |
 | Frequency-domain averaging | `average_profile`, `_mz_to_freq` |
-| Profile->centroid m/z alignment | `_align_profile_grid_to_centroids` |
-| Baseline zero-fill | `_zero_fill_profile_baseline` |
+| Frequency grid back to m/z, on the mean calibration | `_average_profile_in_frequency` |
+| Baseline zero-fill | `_zerofill_baseline` |
 | ppm binning | `_ppm_bin` |
 | Labels keyed by frequency | `_labels_on_one_calibration` |
 | Averaged centroids | `average_centroids`, `_merge_split_centroids`, `_heights_from_profile_apex` |
@@ -511,9 +556,8 @@ Orbitrap physics. Key references:
 - **Calibration Function for the Orbitrap FTMS Accounting for the Space Charge
   Effect.** *J. Am. Soc. Mass Spectrom.* **2010**, 21(11), 1846-1851.
   doi:10.1016/j.jasms.2010.06.021. Basis for the higher-order (`C/f^4`,
-  space-charge) terms beyond the ideal `B/f^2` conversion, and for why the real
-  profile carries a small per-scan calibration residual that section 3.2 corrects
-  against the centroid labels.
+  space-charge) terms beyond the ideal `B/f^2` conversion, and for why every
+  scan carries a calibration of its own, which section 3.2 averages.
 - **Makarov, A.; et al.** "First 20 Years of Orbitrap Mass Spectrometry as the
   Mainstream Analytical Technique." *Mass Spectrom. Rev.* **2025**.
   doi:10.1002/mas.70024. Recent comprehensive review.

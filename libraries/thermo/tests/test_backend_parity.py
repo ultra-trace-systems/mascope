@@ -603,8 +603,9 @@ def _profile_fwhm_ppm(mz, inten, center, window_ppm=40):
 
 
 def _profile_apex(mz, inten, center, window_ppm=40):
-    """Apex intensity of the peak nearest `center` (the OpenTFRaw profile m/z can
-    be offset by up to ~20 ppm, so search a window), or None if not measurable."""
+    """Apex intensity of the peak at `center`: the tallest point within
+    `window_ppm` of it, or None if not measurable. The centres are picked at
+    least 50 ppm apart, so the window holds the one peak."""
     sel = np.abs(mz - center) / center * 1e6 < window_ppm
     y = inten[sel]
     if (y > 0).sum() < 3:  # signal points only (ignore inserted baseline zeros)

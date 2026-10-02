@@ -102,8 +102,8 @@ class TestComputeSumSignal:
         top samples; the sampled maximum alone can be off by half a sample
         spacing, a ppm or more.
 
-        Measured, the median offset is 0.14 and 0.25 ppm on these two files,
-        and 0.096 ppm over 6,064 strong peaks of 21 demo files
+        Measured, the median offset is 0.05 and 0.04 ppm on these two files,
+        and 0.053 ppm over 80,416 strong peaks of the 161 demo files
         (reader_pipeline.md section 5.1), against a FWHM of 4-8 ppm.
         """
         sum_sig, _ = m_thermo.compute_sum_signal(path, polarity=polarity)
