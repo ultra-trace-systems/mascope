@@ -246,7 +246,8 @@ def test_the_listing_snippet_lists_the_package_by_file(tmp_path):
     # the runner skips the pre-script dump on the strength of this line, so a
     # docstring or a comment mentioning it must not count.
     (pkg / "db" / "scripts" / "a_report.py").write_text(
-        "WRITES_NOTHING = True\n\n\ndef main():\n    pass\n", encoding="utf-8"
+        "WRITES_NOTHING = True  # only reads\n\n\ndef main():\n    pass\n",
+        encoding="utf-8",
     )
     (pkg / "db" / "scripts" / "talks_about_it.py").write_text(
         '"""Unlike a report, WRITES_NOTHING = True does not hold here."""\n'
@@ -598,10 +599,16 @@ def test_a_bare_assignment_declares_it_and_a_mention_does_not():
     # the dump off for a script that writes.
     assert script_writes_nothing("WRITES_NOTHING = True\n")
     assert script_writes_nothing("import os\n\nWRITES_NOTHING = True\n\n\n")
+    # Annotated: somebody will say why beside the flag, and a dump taken for a
+    # line that reads as a declaration would say nothing about why not.
+    assert script_writes_nothing("WRITES_NOTHING = True  # only reads\n")
     assert not script_writes_nothing('"""WRITES_NOTHING = True, one day."""\n')
     assert not script_writes_nothing("# WRITES_NOTHING = True\n")
     assert not script_writes_nothing("    WRITES_NOTHING = True\n")
     assert not script_writes_nothing("WRITES_NOTHING = False\n")
+    # Nothing but a comment may follow, now that something may.
+    assert not script_writes_nothing("WRITES_NOTHING = Truest\n")
+    assert not script_writes_nothing("WRITES_NOTHING = True and later_false\n")
 
 
 def test_the_snippet_and_the_host_decide_from_the_one_pattern():

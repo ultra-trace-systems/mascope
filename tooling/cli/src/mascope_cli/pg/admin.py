@@ -34,11 +34,18 @@ from pathlib import Path
 #: operator that "no restore point will exist if this script corrupts data",
 #: which is not true of a script that writes nothing.
 #:
-#: Matched as a bare assignment, so a mention in a docstring, a comment or a
-#: test does not count. One pattern, shared with the snippet the production
-#: runner sends into the backend container, so the host and the container
-#: cannot come to disagree about what a declaration looks like.
-WRITES_NOTHING_PATTERN = r"^WRITES_NOTHING = True[ \t]*$"
+#: Matched as an assignment of its own, so a mention in a docstring, a
+#: comment or a test does not count: the name has to open the line, which no
+#: commented out copy does. A trailing comment is allowed, because somebody
+#: will annotate the flag and a dump taken for a line that reads as a
+#: declaration would say nothing about why - and because, between the name
+#: opening the line and a comment closing it, there is nothing else a
+#: formatted module can put there.
+#:
+#: One pattern, shared with the snippet the production runner sends into the
+#: backend container, so the host and the container cannot come to disagree
+#: about what a declaration looks like.
+WRITES_NOTHING_PATTERN = r"^WRITES_NOTHING = True[ \t]*(#.*)?$"
 
 
 def script_writes_nothing(source: str) -> bool:
