@@ -22,6 +22,8 @@ approximation, why the spectrum views draw the measured profile), see
 
 from __future__ import annotations
 
+import functools
+import importlib.metadata
 import math
 import os
 import re
@@ -34,6 +36,14 @@ from mascope_thermo.scan_filter import parse_scan_filter
 
 
 ENV_BACKEND = "MASCOPE_THERMO_BACKEND"
+
+# The generation of the OpenTFRaw backend's average_profile, which
+# averaged_profile_signature names: bump it whenever average_profile returns a
+# different profile from the same samples, or a cached profile computed the old
+# way keeps being served as the new one. Generation 2 places each grid point at
+# the mean of the real frequencies in its cell; generation 1 placed it at the
+# cell's centre.
+AVERAGED_PROFILE_GENERATION = 2
 
 Polarity = Literal["+", "-"]
 MsType = Literal["Ms", "Ms2"]
@@ -2321,3 +2331,37 @@ def open_backend(datafile_path: str) -> ReaderBackend:
     raise ValueError(
         f"Unknown {ENV_BACKEND}={name!r}; expected 'thermo' or 'opentfraw'."
     )
+
+
+def averaged_profile_signature() -> str:
+    """What computes an averaged profile, as a short tag safe in a file name.
+
+    Names the reader ``MASCOPE_THERMO_BACKEND`` selects and, for OpenTFRaw, the
+    reader's version and :data:`AVERAGED_PROFILE_GENERATION`:
+    ``"otf2.0.0-g2"``. The Thermo library averages by itself and is named
+    alone, ``"thermo"``.
+
+    A profile one signature computed is not what another computes - reader
+    2.0.0 moved the per-scan profile axis by up to 3.3 ppm, and generation 2
+    the averaged heights by about 3% - so anything that caches a profile keys
+    it on this. A reader upgrade changes it by itself; a change to the
+    averaging has to bump the generation.
+
+    :return: The signature, e.g. ``"otf2.0.0-g2"``
+    :rtype: str
+    """
+    name = os.environ.get(ENV_BACKEND, "opentfraw").lower()
+    if name == "thermo":
+        return "thermo"
+    if name == "opentfraw":
+        version = _distribution_version("opentfraw")
+        return f"otf{version}-g{AVERAGED_PROFILE_GENERATION}"
+    raise ValueError(
+        f"Unknown {ENV_BACKEND}={name!r}; expected 'thermo' or 'opentfraw'."
+    )
+
+
+@functools.cache
+def _distribution_version(distribution: str) -> str:
+    """Installed version of ``distribution``, read once per process."""
+    return importlib.metadata.version(distribution)

@@ -16,6 +16,7 @@ import mascope_file.name as m_name
 import mascope_thermo.thermo as m_thermo
 import mascope_tofwerk.tofwerk as m_tofwerk
 from mascope_signal.runtime import runtime
+from mascope_thermo.backend import averaged_profile_signature
 from mascope_tools.alignment.calibration import CentroidedSpectrum, MassAligner, Spectra
 
 
@@ -139,7 +140,7 @@ def get_sum_signal(
     """
 
     sample_type = m_name.get_sample_file_type(base_filename)
-    cached_name = _get_sum_signal_hash_name(t_min, t_max, polarity)
+    cached_name = _get_sum_signal_hash_name(t_min, t_max, polarity, sample_type)
     averaging_factor = None
     if average:
         averaging_factor = _get_averaging_factor(
@@ -261,7 +262,7 @@ def get_sum_signal(
     return sum_signal
 
 
-def _get_sum_signal_hash_name(t_min, t_max, polarity):
+def _get_sum_signal_hash_name(t_min, t_max, polarity, sample_type):
     """Generate a unique hash name for sum signal based on parameters"""
     is_full_sum_signal = t_min is None and t_max is None and polarity is None
     if is_full_sum_signal:
@@ -271,7 +272,27 @@ def _get_sum_signal_hash_name(t_min, t_max, polarity):
         hash_addition = hashlib.sha1(key_str.encode()).hexdigest()[:12]
         cached_name = f"sum_signal_{hash_addition}"
 
-    return cached_name
+    return cached_name + sum_signal_suffix(sample_type)
+
+
+def sum_signal_suffix(sample_type: str) -> str:
+    """The suffix a cached sum signal of ``sample_type`` is named with.
+
+    A raw Orbitrap file's profile is averaged from the raw file on demand, so
+    its cache names what averaged it - the reader and the averaging, e.g.
+    ``.otf2.0.0-g2`` (``averaged_profile_signature``). A profile cached by
+    another reader or averaging is then never read back, where it would be
+    served, to the spectrum views and to the instrument-function fit alike, as
+    if this one had computed it. The other sample types carry no suffix.
+
+    :param sample_type: The sample file type, e.g. ``"orbi_raw"``
+    :type sample_type: str
+    :return: The suffix, or an empty string
+    :rtype: str
+    """
+    if sample_type == "orbi_raw":
+        return f".{averaged_profile_signature()}"
+    return ""
 
 
 def _get_cached_sum_signal(base_filename, cached_name):

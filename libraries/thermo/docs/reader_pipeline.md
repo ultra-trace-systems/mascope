@@ -288,10 +288,11 @@ The spectrum endpoints -- the sample spectrum, the sample file spectrum and the
 match view's isotope windows, and through them the SDK's `get_spectrum` and
 `get_spectra` -- return the measured averaged profile of section 3. It is the
 same signal, from the same cache entry, that the instrument-function fit and the
-peak heights read. The spectrum views dot its samples once a zoom spreads them
-far enough apart to tell one from the next
-(`server/frontend/src/lib/charts/samples.js`), so the profile's density, about
-three points per FWHM, is visible rather than implied.
+peak heights read, and the entry is named after the reader and averaging that
+computed it (section 6), so what is drawn is what the current reader measures.
+The spectrum views dot its samples once a zoom spreads them far enough apart to
+tell one from the next (`server/frontend/src/lib/charts/samples.js`), so the
+profile's density, about three points per FWHM, is visible rather than implied.
 
 Nothing is drawn in its place. The display used to show a reconstruction
 instead -- one Gaussian per averaged centroid (centre = m/z, height = intensity,
@@ -388,6 +389,9 @@ which `_zerofill_baseline` puts back).
 - Resolves the sample type and reads the file with the matching reader.
 - Caches the signal per window (`_get_sum_signal_hash_name`: the full signal as
   `sum_signal`, a filtered one under a hash of its time window and polarity).
+  A raw Orbitrap file's cache name also carries what averaged the profile,
+  `averaged_profile_signature()` (`sum_signal_suffix`): the reader, its version
+  and `AVERAGED_PROFILE_GENERATION`, as in `sum_signal_<hash>.otf2.0.0-g2`.
 - Computes via `m_thermo.compute_sum_signal(...)` -> `average_profile(...,
   average=False)` (sum, i.e. apex = mean * scans_combined), optionally dividing
   by an averaging factor for the averaged view.
@@ -395,6 +399,16 @@ which `_zerofill_baseline` puts back).
 The display endpoints (the spectrum and match views in the server controllers)
 and the quantitative consumers read the same signal, so a window's cache entry
 serves both (section 5).
+
+The signature is there because nothing else would tell a cached profile from a
+fresh one. Before it, a file processed under reader 1.4.0 kept serving that
+reader's profile after the upgrade - averaged on the old grid (3.1.1) - to the
+instrument-function fit, and to peak detection when it was re-run. A reader
+upgrade now changes the name by itself. A change to `average_profile` that
+alters its output for the same samples has to bump `AVERAGED_PROFILE_GENERATION`.
+The entries left behind are never read again;
+`python -m mascope_backend.db.admin.filestore delete-stale-sum-signal` deletes
+them, touching raw Orbitrap files only.
 
 ---
 
@@ -453,6 +467,7 @@ a tolerance.
 | Averaged centroids | `average_centroids`, `_merge_split_centroids`, `_heights_from_profile_apex` |
 | XIC | `xic` |
 | Sum signal (app) | `mascope_signal/compute.py:get_sum_signal`, `thermo.py:compute_sum_signal` |
+| Sum signal cache name | `averaged_profile_signature`, `mascope_signal/compute.py:sum_signal_suffix` |
 | Instrument fit | `mascope_signal/instrument_func/fit.py` |
 | Cross-backend parity tests | `tests/test_backend_parity.py`, `signal/tests/test_instrument_fit_parity.py` |
 
