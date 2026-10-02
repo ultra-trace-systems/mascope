@@ -227,6 +227,8 @@ def test_a_candidate_keeps_what_the_pane_reads():
         "plausibility": 0.9,
         "evidence": 0.63,
         "tier": "candidate",
+        # The search sets no source today; the pane would read one if it did.
+        "source": "untargeted",
         "cheminfo": _composition(0),
     }
 
@@ -242,6 +244,7 @@ def test_a_candidate_keeps_what_the_pane_reads():
         "plausibility",
         "evidence",
         "tier",
+        "source",
         "cheminfo",
         "children",
     }
