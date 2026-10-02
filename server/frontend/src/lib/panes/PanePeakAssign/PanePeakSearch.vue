@@ -265,7 +265,9 @@ app.ui.notification.on('match_compositions_by_mz', async (payload) => {
   // notification is copied to every backend process through Redis pub/sub, and
   // a large search's rows overran Redis' buffer and knocked the server's socket
   // subscribers off. The server keeps them for the user who searched
-  // (cheminfo/match_results.py).
+  // (cheminfo/match_results.py) and sends only the fields this pane reads - a
+  // field the pane starts reading has to be added to the lists in
+  // cheminfo/service.py.
   const request = searchRequest
   let rows = []
   if (payload.data.results > 0) {

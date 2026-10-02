@@ -790,7 +790,9 @@ re-assignment and an override does not.
 
 *Find more* searches the focused peak on its own: every formula of the grid whose ion,
 under one of the chosen ionization mechanisms, puts a line within the m/z window of the
-peak, each matched against the sample and scored as a run scores it.
+peak, each matched against the sample and scored as a run scores it. A peak with very
+many candidates lists the 500 that fit it best; the count beside the peak still says
+how many compositions the search found.
 
 Which line of the ion the peak is decides what can be found. Read as the monoisotopic
 line of every candidate, a peak that is another line of a compound's ion never finds

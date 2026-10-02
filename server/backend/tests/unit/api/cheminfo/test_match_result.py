@@ -6,8 +6,8 @@ Socket.IO emit is published to every backend process through Redis pub/sub, and
 a large search's result - every candidate with its whole matched isotope
 pattern, about 14 MB - overran Redis' pub/sub output buffer and disconnected the
 backend's subscribers. These pin the replacement: the notification carries the
-counts and no rows, and the rows are kept for the user who searched, under a
-key that expires.
+counts and no rows, the rows are kept for the user who searched, under a key
+that expires, and what is kept is capped and cut down to what the pane reads.
 """
 
 import json
@@ -19,7 +19,11 @@ import pytest
 from mascope_backend.api.new.cheminfo import match_results
 from mascope_backend.api.new.cheminfo import service as cheminfo_service
 from mascope_backend.api.new.cheminfo.config import cheminfo_config
-from mascope_backend.api.new.cheminfo.service import match_compositions_by_mz
+from mascope_backend.api.new.cheminfo.service import (
+    _best_candidates,
+    _for_the_pane,
+    match_compositions_by_mz,
+)
 from mascope_match.params import OrbiMatchParams
 
 
@@ -147,6 +151,7 @@ async def _search(
     monkeypatch,
     candidates: int,
     *,
+    scored: bool = False,
     user_id: int | None = 7,
     process_id: str | None = "p-1",
     isotopes: int = 30,
@@ -154,7 +159,8 @@ async def _search(
     """Run the search task over ``candidates`` matched candidates.
 
     The composition finder and the matching are stood in for: what is under
-    test is what the task does with their output.
+    test is what the task does with their output. Candidate ``i`` scores
+    ``i / candidates``, so the best are the last ones the search found.
 
     :return: The task's return value and the notification it sent.
     """
@@ -179,7 +185,17 @@ async def _search(
         "aggregate_sample_match_compounds",
         AsyncMock(return_value={"data": matches}),
     )
-    monkeypatch.setattr(cheminfo_service, "peak_assignment_enabled", lambda: False)
+    monkeypatch.setattr(cheminfo_service, "peak_assignment_enabled", lambda: scored)
+
+    def fit_by_match_score(results, match_params):
+        # The fit the pane lists candidates by, made to rank opposite to the
+        # legacy score: the cap must follow the score the pane shows.
+        for entry in results:
+            entry["fit_score"] = round(1.0 - entry["match_score"], 6)
+
+    monkeypatch.setattr(
+        cheminfo_service, "_annotate_assignment_scores", fit_by_match_score
+    )
 
     with (
         patch(
@@ -198,6 +214,128 @@ async def _search(
         )
     assert notify.await_count == 1, "the search is announced exactly once"
     return result, notify.await_args.args[1]
+
+
+# --- What the pane is sent -------------------------------------------------
+
+
+def test_a_candidate_keeps_what_the_pane_reads():
+    candidate = {
+        **_matched_compound(0, score=0.8)["children"][0],
+        "target_compound_formula": "C10H20",
+        "fit_score": 0.7,
+        "plausibility": 0.9,
+        "evidence": 0.63,
+        "tier": "candidate",
+        "cheminfo": _composition(0),
+    }
+
+    pane = _for_the_pane(candidate)
+
+    assert set(pane) == {
+        "target_compound_formula",
+        "target_ion_formula",
+        "ionization_mechanism_id",
+        "match_score",
+        "match_category",
+        "fit_score",
+        "plausibility",
+        "evidence",
+        "tier",
+        "cheminfo",
+        "children",
+    }
+    assert pane["cheminfo"] == {
+        "target_compound_unsaturation": 4.0,
+        "target_isotope_mz": MZ,
+        "target_isotope_mz_error_ppm": -0.8,
+        "ionization_mechanism": {
+            "ionization_mechanism_id": "mech-1",
+            "ionization_mechanism": "[M+NO3]-",
+        },
+        "known_compounds": [{"name": "Some compound", "source": "pubchem"}],
+    }
+    # Every line of the pattern: the pane lists them all under the candidate.
+    assert len(pane["children"]) == len(candidate["children"])
+    assert set(pane["children"][0]) == {
+        "target_isotope_formula",
+        "mz",
+        "relative_abundance",
+        "sample_peak_mz",
+        "match_mz_error",
+        "match_score",
+        "match_category",
+    }
+    assert pane["children"][1] == {
+        key: candidate["children"][1][key] for key in pane["children"][1]
+    }
+
+
+def test_a_candidate_keeps_its_absences():
+    # Unscored and with no reference lookup, a candidate has neither the
+    # peak-centric scores nor `known_compounds`, and the pane reads an absence
+    # as "not measured": nothing may be filled in for it.
+    candidate = {
+        **_matched_compound(0, score=0.8)["children"][0],
+        "cheminfo": {
+            key: value
+            for key, value in _composition(0).items()
+            if key != "known_compounds"
+        },
+    }
+
+    pane = _for_the_pane(candidate)
+
+    assert "fit_score" not in pane
+    assert "tier" not in pane
+    assert "known_compounds" not in pane["cheminfo"]
+
+
+def _names(candidates):
+    return [candidate["name"] for candidate in candidates]
+
+
+def test_the_cap_keeps_the_best_in_the_search_order():
+    candidates = [
+        {"name": "a", "fit_score": 0.2},
+        {"name": "b", "fit_score": 0.9},
+        {"name": "c", "fit_score": 0.5},
+        {"name": "d", "fit_score": 0.8},
+    ]
+
+    kept = _best_candidates(candidates, "fit_score", limit=3)
+
+    # b, d and c are the best three, and they stay in the order the search
+    # found them rather than the order they rank in.
+    assert _names(kept) == ["b", "c", "d"]
+
+
+def test_the_cap_breaks_a_tie_in_the_search_order():
+    candidates = [
+        {"name": "a", "fit_score": 0.5},
+        {"name": "b", "fit_score": 0.9},
+        {"name": "c", "fit_score": 0.5},
+    ]
+
+    assert _names(_best_candidates(candidates, "fit_score", limit=2)) == ["a", "b"]
+
+
+# The pane lists a candidate with no score after every scored one, a score of
+# zero included, so the cap drops it before any of them.
+@pytest.mark.parametrize("missing", [None, float("nan")])
+def test_the_cap_ranks_a_missing_score_below_a_zero_one(missing):
+    candidates = [
+        {"name": "a", "fit_score": missing},
+        {"name": "b", "fit_score": 0.0},
+    ]
+
+    assert _names(_best_candidates(candidates, "fit_score", limit=1)) == ["b"]
+
+
+def test_the_cap_leaves_a_smaller_search_alone():
+    candidates = [{"fit_score": 0.1}, {"fit_score": 0.9}]
+
+    assert _best_candidates(candidates, "fit_score", limit=2) is candidates
 
 
 # --- The search task --------------------------------------------------------
@@ -276,6 +414,36 @@ async def test_a_search_nobody_ran_keeps_nothing(monkeypatch, fake_redis):
     assert fake_redis.store == {}
     # A direct caller still gets the rows back.
     assert len(result["data"]) == 5
+
+
+@pytest.mark.asyncio
+async def test_a_large_search_is_capped_by_the_legacy_score(monkeypatch, fake_redis):
+    limit = 10
+    monkeypatch.setattr(cheminfo_config, "MATCH_RESULT_MAX_CANDIDATES", limit)
+
+    result, notification = await _search(monkeypatch, candidates=25, isotopes=4)
+
+    # Candidate i scores i / 25: the last ten found are the best ten.
+    assert [row["match_score"] for row in result["data"]] == [
+        i / 25 for i in range(15, 25)
+    ]
+    # `total` still counts everything the search found.
+    assert notification.data["results"] == limit
+    assert notification.data["total"] == 25
+    assert notification.message.endswith(f"Listing the best {limit}.")
+    assert "Matched 25 potential compounds" in notification.message
+
+
+@pytest.mark.asyncio
+async def test_a_large_scored_search_is_capped_by_the_fit(monkeypatch, fake_redis):
+    limit = 10
+    monkeypatch.setattr(cheminfo_config, "MATCH_RESULT_MAX_CANDIDATES", limit)
+
+    result, _ = await _search(monkeypatch, candidates=25, scored=True, isotopes=4)
+
+    # The stand-in fit ranks opposite to the legacy score, so the ten kept are
+    # the first ten found: the pane lists a scored search by its fit.
+    assert [row["match_score"] for row in result["data"]] == [i / 25 for i in range(10)]
 
 
 @pytest.mark.asyncio

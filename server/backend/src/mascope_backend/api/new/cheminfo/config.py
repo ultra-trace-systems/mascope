@@ -40,6 +40,14 @@ class ChemInfoConfig(BaseModel):
     # bounds is how long Redis holds a result nobody came for.
     MATCH_RESULT_TTL_SECONDS: int = 300
 
+    # The most candidates a match search returns, the best first by the score
+    # the pane lists them by. Several hundred is more than anyone reads down a
+    # results table, and each candidate carries its whole isotope pattern - tens
+    # of lines - so this is what keeps the largest searches (a couple of
+    # thousand candidates) from costing megabytes for rows nobody scrolls to.
+    # The result's `total` still counts every composition the search found.
+    MATCH_RESULT_MAX_CANDIDATES: int = 500
+
 
 # Global config instance for composition search (cheminfo)
 cheminfo_config = ChemInfoConfig()

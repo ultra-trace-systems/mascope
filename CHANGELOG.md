@@ -155,10 +155,12 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   loading. The notification now only says the search is done, and the pane
   fetches the results over HTTP, from
   `GET /api/cheminfo/mz/match/result/{process_id}`, which only the user who ran
-  the search can read and which expires after five minutes. The pane also
-  shows only the search it launched last: one finished in another tab, or an
-  earlier search of the same peak under other parameters, no longer replaces
-  its results.
+  the search can read and which expires after five minutes. A search now lists
+  at most its 500 best candidates, by the score the pane ranks them on - the
+  count beside the peak still says how many compositions it found - and sends
+  only the fields the pane shows. The pane also shows only the search it
+  launched last: one finished in another tab, or an earlier search of the same
+  peak under other parameters, no longer replaces its results.
 
 ### Security
 
