@@ -19,6 +19,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from test_utils import captured_logs
 
+from mascope_backend.api.controllers.sample.files.process.bindings import (
+    Declined,
+)
 from mascope_backend.api.controllers.sample.files.process.service import (
     ItemProvenance,
 )
@@ -1370,7 +1373,14 @@ async def test_the_park_detail_says_what_the_method_could_not_tell_either(status
         with patch(
             f"{_SVC}.resolve_modes_by_method_binding",
             new_callable=AsyncMock,
-            return_value=([], "its acquisition method has not been seen before"),
+            return_value=(
+                [],
+                Declined(
+                    "its acquisition method has not been seen before",
+                    "Choose a chemistry for one file of this method and the "
+                    "rest will follow it.",
+                ),
+            ),
         ):
             result = await _run_pipeline()
 
@@ -1385,6 +1395,36 @@ async def test_the_park_detail_says_what_the_method_could_not_tell_either(status
         "not say either: its acquisition method has not been seen before. "
         "Choose a chemistry for one file of this method and the rest will "
         "follow it."
+    )
+
+
+@pytest.mark.asyncio
+async def test_the_remedy_comes_from_the_guard_that_declined(status):
+    """Four of the six guards are not fixed by choosing one file's chemistry.
+
+    The call site joins what the guard said rather than appending advice of
+    its own, because the wrong version of that advice - "choose one and the
+    rest follow" for an instrument that reports the same method name for every
+    acquisition - is the one most people on the fleet would read.
+    """
+    mocks, _ = _start_single()
+    mocks["resolve"].side_effect = _no_token()
+
+    with patch(f"{_SVC}.routes_on_method_binding", return_value=True):
+        with patch(
+            f"{_SVC}.resolve_modes_by_method_binding",
+            new_callable=AsyncMock,
+            return_value=(
+                [],
+                Declined("it reports no method name", "Use a filename token."),
+            ),
+        ):
+            await _run_pipeline()
+
+    (_, detail) = _recorded(status)[0]
+    assert detail.endswith(
+        "Its acquisition method does not say either: it reports no method "
+        "name. Use a filename token."
     )
 
 

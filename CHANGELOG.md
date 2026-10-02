@@ -21,8 +21,10 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   which, and a chemistry that has been deleted, that belongs to another
   instrument, or whose polarity has been edited since is not an answer. A file
   the method cannot place still parks, and its status now says what the token
-  and the method each failed to tell - and that choosing a chemistry for one
-  file of that method is enough for the rest to follow it.
+  and the method each failed to tell, with what to do about it - which differs:
+  choosing a chemistry for one file is enough where the method has simply not
+  been seen before, while an instrument that reports the same method name for
+  every acquisition cannot be recognised at all and needs a filename token.
 
   Re-processing the files already parked is how a site picks up the ones it has
   been collecting, so that path reaches the rung too: select them in Raw files
