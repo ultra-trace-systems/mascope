@@ -439,6 +439,9 @@ _PANE_CANDIDATE_FIELDS = (
     "plausibility",
     "evidence",
     "tier",
+    # The tier chip's provenance line. The search sets none today, but the pane
+    # passes it on, so a hit that carries one keeps it.
+    "source",
 )
 _PANE_CHEMINFO_FIELDS = (
     "target_compound_unsaturation",
