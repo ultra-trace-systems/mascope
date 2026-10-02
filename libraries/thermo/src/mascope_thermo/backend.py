@@ -15,9 +15,9 @@ multi-scan averaging, XIC, trailer, run header, ...) rather than an emulation of
 the .NET RawFile object, so each backend implements it natively.
 
 For an end-to-end explanation of the reading and averaging pipeline (why
-averaging happens in the frequency domain, the real-vs-reconstructed profile
-split, the averaged-centroid approximation), see ``libraries/thermo/docs/
-reader_pipeline.md``.
+averaging happens in the frequency domain, the averaged-centroid
+approximation, why the spectrum views draw the measured profile), see
+``libraries/thermo/docs/reader_pipeline.md``.
 """
 
 from __future__ import annotations
@@ -272,17 +272,13 @@ class ReaderBackend(Protocol):
         scan_indices: list[int],
         ppm: int = 1,
         average: bool = False,
-        reconstruct: bool = False,
     ) -> tuple[np.ndarray, np.ndarray, int]:
         """Multi-scan ppm-binned averaged profile spectrum:
         ``(mz, intensities, scans_combined)``. With ``average=False`` the
         intensities are scaled back up by the combined-scan count (sum signal).
 
-        ``reconstruct=True`` returns a Thermo-style profile reconstructed as one
-        Gaussian per centroid (overlays the centroids exactly; matches Thermo,
-        which also reconstructs) -- intended for display. The default
-        ``reconstruct=False`` returns the real measured profile, which the
-        instrument-function fit needs.
+        The measured signal, never a model of it: the instrument-function fit
+        needs the real peak shapes, and the spectrum views draw it as measured.
 
         Builds on the profile accessor and the NumPy ppm averaging above."""
         ...
@@ -549,9 +545,6 @@ _AVG_PROFILE_CALIB_MIN_ANCHORS = 6  # below this, leave the grid uncorrected
 _AVG_PROFILE_CALIB_MAX_ANCHORS = 60  # cap anchors (a linear fit needs few)
 _AVG_PROFILE_FREQ_NEWTON = 4  # Newton iterations for the m/z -> frequency inverse
 _AVG_PROFILE_GAP_DF = 2.0  # zero a scan's interp beyond this * FFT bin from its samples
-_RECON_SIGMA = 5.0  # reconstructed-profile half-window / sample span, in sigma
-_RECON_PTS = 15  # samples per peak across +-_RECON_SIGMA sigma (~Thermo's density;
-# keep odd so the centroid is sampled exactly -> the profile apex lands on it)
 _AVG_CENTROID_HEIGHT_PPM = 3.0  # window to source centroid height from profile apex
 _AVG_CENTROID_HEIGHT_BAND = (0.85, 1.15)  # apply the apex only as a modest refinement
 _AVG_CENTROID_MERGE_FWHM = 0.5  # merge centroids whose gap is below this * local FWHM
@@ -953,12 +946,7 @@ class ThermoBackend:
         scan_indices: list[int],
         ppm: int = 1,
         average: bool = False,
-        reconstruct: bool = False,
     ) -> tuple[np.ndarray, np.ndarray, int]:
-        # ``reconstruct`` is accepted for protocol parity but has no effect:
-        # Thermo's AverageScans profile is always a reconstruction (one Gaussian
-        # per centroid). The real measured averaged profile is only available
-        # from the OpenTFRaw backend (reconstruct=False there).
         from System.Collections.Generic import List
         from ThermoFisher.CommonCore.Data import Extensions, ToleranceUnits
         from ThermoFisher.CommonCore.Data.Business import MassOptions
@@ -1603,13 +1591,10 @@ class OpenTFRawBackend:
 
         # Source the height from the frequency-averaged profile apex (matches
         # Thermo's re-centroid-of-the-averaged-profile), falling back to the
-        # ppm-bin value where the profile has no peak. Use the real measured
-        # profile (reconstruct=False) -- a reconstruction is built *from* these
-        # heights, and average_profile defaults to it, so this must be explicit
-        # to avoid recursion.
+        # ppm-bin value where the profile has no peak.
         if masses.size:
             grid_mz, profile, _ = self.average_profile(
-                scan_indices, ppm=ppm, average=average, reconstruct=False
+                scan_indices, ppm=ppm, average=average
             )
             if grid_mz.size:
                 intensities = self._heights_from_profile_apex(
@@ -1910,29 +1895,7 @@ class OpenTFRawBackend:
         scan_indices: list[int],
         ppm: int = 1,
         average: bool = False,
-        reconstruct: bool = False,
     ) -> tuple[np.ndarray, np.ndarray, int]:
-        # reconstruct=True returns a profile drawn as one Gaussian per centroid
-        # (center=m/z, height=intensity, FWHM=m/z/res), which overlays the
-        # centroids exactly because that is how it is built. It is Mascope's own
-        # choice for *display*, NOT an imitation of the vendor: Thermo's
-        # AverageScans profile is the measured signal resampled, not synthesised
-        # from its centroid list. Measured, a profile drawn from centroids
-        # reproduces them exactly (this path: apex/centroid 1.00000, fitted
-        # FWHM/nominal 1.00000), where AverageScans gives 1.012 and 0.970 with
-        # real spread. See reader_pipeline.md section 5.2.
-        #
-        # The default reconstruct=False returns the real measured profile, which
-        # is what the instrument-function fit needs -- the fit gets too few
-        # quality peaks off the reconstruction (its idealised shape/grid), so the
-        # real, faithful signal must drive the quantitative path.
-        if reconstruct:
-            num_combined = len(scan_indices)
-            masses, intensities, resolutions, _ = self.average_centroids(
-                scan_indices, ppm=ppm, average=average
-            )
-            grid, summed = self._reconstruct_profile(masses, intensities, resolutions)
-            return grid, summed, num_combined
         # NumPy reimplementation of Thermo's AverageScans over profile data.
         # AverageScans averages in the FREQUENCY domain: an ion's
         # physical frequency is identical across scans, and the between-scan
@@ -2023,33 +1986,6 @@ class OpenTFRawBackend:
         if isinstance(b, (int, float)) and isinstance(c, (int, float)) and b:
             return float(b), float(c)
         return None, None
-
-    @staticmethod
-    def _reconstruct_profile(
-        masses: np.ndarray,
-        intensities: np.ndarray,
-        resolutions: np.ndarray,
-    ) -> tuple[np.ndarray, np.ndarray]:
-        """Build a Thermo-style profile: one Gaussian per centroid (center =
-        m/z, height = intensity, FWHM = m/z / resolution), summed on a per-peak
-        sample grid. Matches Thermo's reconstructed AverageScans profile and
-        overlays the centroids exactly (display parity). See ``average_profile``.
-        """
-        sigma_per_fwhm = 1.0 / (2.0 * np.sqrt(2.0 * np.log(2.0)))
-        valid = (resolutions > 0) & (intensities > 0) & (masses > 0)
-        cm, ci = masses[valid], intensities[valid]
-        sigma = (cm / resolutions[valid]) * sigma_per_fwhm
-        if cm.size == 0:
-            return np.array([]), np.array([])
-        offs = np.linspace(-_RECON_SIGMA, _RECON_SIGMA, _RECON_PTS)
-        grid = np.unique((cm[:, None] + sigma[:, None] * offs).ravel())
-        summed = np.zeros_like(grid)
-        for c, h, s in zip(cm, ci, sigma):
-            lo = int(np.searchsorted(grid, c - _RECON_SIGMA * s))
-            hi = int(np.searchsorted(grid, c + _RECON_SIGMA * s))
-            if hi > lo:
-                summed[lo:hi] += h * np.exp(-0.5 * ((grid[lo:hi] - c) / s) ** 2)
-        return grid, summed
 
     @staticmethod
     def _mz_to_freq(mz: np.ndarray, b: float, c: float) -> np.ndarray:

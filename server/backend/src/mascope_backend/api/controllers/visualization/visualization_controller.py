@@ -259,7 +259,6 @@ async def _load_peaks_and_averaged_signal(
         iso.sample_peak_mz for iso in isotopes if iso.sample_peak_mz is not None
     ]
     mz_min, mz_max = min(match_mzs) - dmz, max(match_mzs) + dmz
-    # Reconstructed for display so the profile overlays the centroids.
     # get_sum_signal returns a lazy dask array, so the .compute() has to be
     # inside the thread too - offloading only the call would move nothing.
     averaged_signal = await asyncio.to_thread(
@@ -270,7 +269,6 @@ async def _load_peaks_and_averaged_signal(
                 t1,
                 polarity=polarity,
                 average=True,
-                reconstruct=True,
             )
             .sel(mz=slice(mz_min, mz_max))
             .compute()

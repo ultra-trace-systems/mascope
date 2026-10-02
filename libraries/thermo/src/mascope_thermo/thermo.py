@@ -396,10 +396,13 @@ def compute_sum_signal(
     t_max: float | None = None,
     ppm: int = 1,
     polarity: Literal["+", "-"] | None = None,
-    reconstruct: bool = False,
 ) -> tuple[xr.DataArray, int]:
     """Computes sum signal, binning counts within ``ppm`` value.
     Polarity and time filters may be optionally provided.
+
+    The signal is the measured profile summed over the selected scans: what the
+    instrument-function fit reads its peak shapes from, and what the spectrum
+    views draw.
 
     :param datafile_path: Path to the Thermo Fisher raw file (.raw) containing the data.
     :type datafile_path: str
@@ -414,12 +417,6 @@ def compute_sum_signal(
     :param polarity: + or -, Polarity of the scans to be retrieved, optional,
                     defaults to None
     :type polarity: str, optional
-    :param reconstruct: When True, return a profile reconstructed as one Gaussian
-                    per centroid (overlays the centroids exactly; matches Thermo's
-                    profile, which is also a reconstruction) -- intended for
-                    display. The default False returns the real measured profile,
-                    which the instrument-function fit needs.
-    :type reconstruct: bool, optional
     :raises ValueError: If the specified time range is invalid, or if no data is found
                         in the specified filters, or the specified polarity is not found
                         in the raw file.
@@ -430,11 +427,11 @@ def compute_sum_signal(
         indices = backend.scan_indices(polarity=polarity, t_min=t_min, t_max=t_max)
         runtime.logger.debug(
             f"Selected {len(indices)} scans for sum signal computation. "
-            f"Polarity: {polarity}, binning ppm: {ppm}, reconstruct: {reconstruct}."
+            f"Polarity: {polarity}, binning ppm: {ppm}."
         )
         # average=False restores the sum signal (averaged * scans combined).
         mz, sum_signal, num_of_combined_scans = backend.average_profile(
-            indices, ppm=ppm, average=False, reconstruct=reconstruct
+            indices, ppm=ppm, average=False
         )
 
     sum_signal_dask = da.from_array(sum_signal, chunks="auto")

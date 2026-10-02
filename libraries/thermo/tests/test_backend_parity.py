@@ -613,22 +613,12 @@ def _profile_apex(mz, inten, center, window_ppm=40):
     return ymax if ymax > 0 else None
 
 
-def _profile_apex_mz(mz, inten, center, window_ppm=40):
-    """m/z of the apex of the peak nearest `center`, or None if not measurable."""
-    sel = np.abs(mz - center) / center * 1e6 < window_ppm
-    sub_mz, sub_i = mz[sel], inten[sel]
-    if (sub_i > 0).sum() < 3:  # signal points only (ignore inserted baseline zeros)
-        return None
-    return float(sub_mz[int(np.argmax(sub_i))])
-
-
 @pytest.mark.parametrize("path", RAW_FILES, ids=lambda p: p.name)
 def test_sum_signal_matches_thermo(monkeypatch, path):
-    """OpenTFRaw's real measured averaged profile (compute_sum_signal ->
-    average_profile, default reconstruct=False) must reproduce Thermo's in the
-    properties that matter for the quantitative path: per-peak apex intensity and
-    per-peak FWHM. (Thermo's profile is a reconstruction, but apex and FWHM still
-    match the real measured peaks.) Bounded to a small scan window for speed.
+    """OpenTFRaw's measured averaged profile (compute_sum_signal ->
+    average_profile) must reproduce Thermo's in the properties that matter for
+    the quantitative path: per-peak apex intensity and per-peak FWHM. Bounded to
+    a small scan window for speed.
     """
     path = str(path)
     t_min, t_max = _bounded_window(monkeypatch, path)
@@ -692,84 +682,9 @@ def test_sum_signal_matches_thermo(monkeypatch, path):
     assert 0.93 <= float(np.median(fwhm_ratios)) <= 1.10, (
         f"median FWHM ratio OTF/Thermo = {np.median(fwhm_ratios):.3f}"
     )
-    # m/z *position* parity is not asserted on the real profile: it carries the
-    # genuine per-peak freq->m/z residual (a few ppm, larger on calibrant/lock
-    # acquisitions whose strongest peaks cluster at low m/z). Exact centroid
-    # overlay is the reconstruction's job -- test_reconstructed_profile_matches_thermo.
-
-
-@pytest.mark.parametrize("path", RAW_FILES, ids=lambda p: p.name)
-def test_reconstructed_profile_matches_thermo(monkeypatch, path):
-    """Thermo's averaged profile is itself a reconstruction -- one Gaussian per
-    centroid (verified: profile local-maxima count == centroid count exactly,
-    baseline floor ~1e-10 of base peak). OpenTFRaw's ``average_profile(
-    reconstruct=True)`` must reproduce it for display parity: peaks overlay the
-    centroids *exactly* (unlike the real measured profile, which carries the
-    genuine freq->m/z residual) and the apex heights match Thermo.
-    """
-    path = str(path)
-    t_min, t_max = _bounded_window(monkeypatch, path)
-
-    th_sig, th_n = _run_under(
-        monkeypatch,
-        "thermo",
-        m_thermo.compute_sum_signal,
-        path,
-        t_min=t_min,
-        t_max=t_max,
-    )
-    if th_n < _MIN_SCANS_FOR_PROFILE_PARITY:
-        pytest.skip(f"too few scans ({th_n})")
-    tmz, tv = np.asarray(th_sig.mz), np.asarray(th_sig.values)
-
-    monkeypatch.setenv("MASCOPE_THERMO_BACKEND", "opentfraw")
-    with open_backend(path) as backend:
-        idx = backend.scan_indices(ms_type="Ms", t_min=t_min, t_max=t_max)
-        rmz, rv, _ = backend.average_profile(idx, reconstruct=True)
-        cmz = np.sort(np.asarray(backend.average_centroids(idx)[0], dtype=float))
-    if rmz.size == 0 or cmz.size < 6:
-        pytest.skip("no reconstructed profile / too few centroids")
-
-    # Strongest, well-separated Thermo peaks as comparison centers.
-    order = np.argsort(tv)[::-1]
-    centers = []
-    for k in order[:600]:
-        c = tmz[k]
-        if all(abs(c - cc) / c * 1e6 > 50 for cc in centers):
-            centers.append(c)
-        if len(centers) >= 12:
-            break
-
-    apex_ratios, mz_off_ppm, overlay_ppm = [], [], []
-    for c in centers:
-        ta, ra = _profile_apex(tmz, tv, c), _profile_apex(rmz, rv, c)
-        if ta and ra:
-            apex_ratios.append(ra / ta)
-        rm = _profile_apex_mz(rmz, rv, c)
-        if rm is not None:
-            mz_off_ppm.append((rm - c) / c * 1e6)
-            # distance from the reconstructed apex to the nearest centroid
-            j = np.searchsorted(cmz, rm)
-            near = min(
-                (abs(cmz[i] - rm) / rm * 1e6 for i in (j - 1, j) if 0 <= i < cmz.size),
-                default=np.inf,
-            )
-            overlay_ppm.append(near)
-    if len(apex_ratios) < 3 or len(overlay_ppm) < 3:
-        pytest.skip("too few measurable peaks")
-
-    # Reconstructed peaks sit on the centroids (the whole point of reconstruction)
-    # and on Thermo's reconstructed profile -- both to well under 1 ppm.
-    assert float(np.median(overlay_ppm)) <= 0.2, (
-        f"reconstructed apex sits {np.median(overlay_ppm):.3f} ppm off the centroids"
-    )
-    assert abs(float(np.median(mz_off_ppm))) <= 1.0, (
-        f"reconstructed vs Thermo profile m/z offset {np.median(mz_off_ppm):.3f} ppm"
-    )
-    # Apex heights match Thermo (both are the centroid intensity).
-    assert 0.9 <= float(np.median(apex_ratios)) <= 1.1, (
-        f"median reconstructed apex ratio vs Thermo = {np.median(apex_ratios):.3f}"
-    )
+    # m/z *position* is asserted per backend instead, against that backend's own
+    # centroids: test_thermo_spec_extraction's
+    # test_sum_signal_peaks_sit_on_the_centroids.
 
 
 @pytest.mark.skipif(not RAW_FILES, reason="no .raw files in test_files/")
