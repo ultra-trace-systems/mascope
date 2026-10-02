@@ -23,6 +23,7 @@ import pytest
 
 from mascope_backend.file_converter import base_processor, service
 from mascope_backend.file_converter.peak_recompute_worker import PeakRecomputeWorker
+from mascope_runtime.logging import SENTRY_FINGERPRINT
 from mascope_thermo.processor import RawProcessor
 from mascope_tofwerk.processor import H5Processor
 
@@ -44,6 +45,9 @@ def running_shutdown_event():
 def logger():
     """Capture the module's logger calls."""
     fake = MagicMock()
+    # A bound logger logs through the same calls, so tests that read
+    # logger.error see bound and unbound lines alike.
+    fake.bind.return_value = fake
     runtime = MagicMock()
     runtime.logger = fake
     with patch.object(service, "runtime", runtime):
@@ -357,6 +361,49 @@ def test_unrestartable_slot_is_reported_and_left_alone(
     assert slot.thread is dead
     assert factory.call_count == 1
     assert _errors(logger, "cannot be replaced while the service runs")
+
+
+def _fingerprints(logger):
+    """The monitoring fingerprints the slot bound, in order."""
+    return [call.kwargs[SENTRY_FINGERPRINT] for call in logger.bind.call_args_list]
+
+
+def test_each_dead_slot_opens_an_issue_of_its_own(
+    running_shutdown_event, logger, clock
+):
+    """Grouped by call site, every dead slot would share one issue, and one
+    ignored dead worker would hide the next. Each needs its own restart."""
+    for name in ("FSWatcher *.raw", "FSWatcher *.h5"):
+        factory = MagicMock(side_effect=[_thread(alive=False)])
+        slot = service._Supervised(name, factory, restartable=False)
+        with clock(0):
+            slot.ensure_alive()
+
+    assert _fingerprints(logger) == [
+        ["file-converter-slot-dead:FSWatcher *.raw"],
+        ["file-converter-slot-dead:FSWatcher *.h5"],
+    ]
+
+
+def test_giving_up_and_its_reminders_share_the_slots_issue(
+    running_shutdown_event, logger, clock
+):
+    factory = MagicMock(
+        side_effect=[_thread(alive=False) for _ in range(MAX_RESTARTS + 2)]
+    )
+    slot = service._Supervised("RawProcessor #0", factory)
+
+    gave_up_at = MAX_RESTARTS * BACKOFF
+    interval = service._Supervised.GIVE_UP_REPORT_INTERVAL_S
+    ticks = _deaths(MAX_RESTARTS + 1) + [gave_up_at + interval + 1]
+    with clock(*ticks):
+        for _ in range(len(ticks)):
+            slot.ensure_alive()
+
+    # The restarts before it are not pinned: still being handled, they stay
+    # one issue for every slot, grouped by where they are logged.
+    assert _fingerprints(logger) == [["file-converter-slot-dead:RawProcessor #0"]] * 2
+    assert len(_errors(logger, "died unexpectedly")) == MAX_RESTARTS
 
 
 def test_join_skips_a_thread_that_already_exited(running_shutdown_event, logger):

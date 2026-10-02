@@ -15,10 +15,14 @@ express operator relevance, not verbosity:
   the traceback travels with the record, and log an incident exactly once -
   the outermost handler owns the record (no log-then-raise).
 
-Grouping: a record with an exception groups by the exception; one without
-groups by its logging call site, so text naming a file or batch does not open
-an issue per entity. Bind ``SENTRY_FINGERPRINT`` where an issue per entity is
-wanted.
+Grouping: a record without an exception groups by its logging call site, so
+text naming a file or batch does not open an issue per entity. The line number
+is part of that key, so an upgrade that moves the line opens a new issue for
+the same warning, and servers on different releases report it apart. A record
+with an exception groups by the exception's type and the first line of its
+message, so when that message carries per-entity detail (``OSError`` names
+its path) bind ``SENTRY_FINGERPRINT`` too. Bind it as well where an issue per
+entity is wanted.
 """
 
 # import type hint w/o circular import error
@@ -158,9 +162,10 @@ _sentry_ready = False
 #: per entity on purpose binds its own key instead, e.g.
 #: ``logger.bind(sentry_fingerprint=[f"drift:{instrument}"]).warning(...)``.
 #: ``["{{ default }}"]`` restores grouping by the formatted text. Honoured for
-#: exception records too, which otherwise group by the exception. GlitchTip
-#: concatenates the parts with no separator before hashing, so put the
-#: separators inside a part rather than relying on the list to keep parts
+#: exception records too, which otherwise group by the exception's type and
+#: the first line of its message - per entity when that line names one.
+#: GlitchTip concatenates the parts with no separator before hashing, so put
+#: the separators inside a part rather than relying on the list to keep parts
 #: apart.
 SENTRY_FINGERPRINT = "sentry_fingerprint"
 
@@ -294,9 +299,10 @@ def _sentry_sink(message) -> None:
                 # the call site names what it was doing - which file, which
                 # batch - and the exception alone rarely says. It goes in as
                 # the event's log entry, shown beside the exception: monitoring
-                # titles and groups an exception event by the exception, so
-                # the entry changes neither. A scope processor rather than a
-                # hand-built event keeps capture_exception doing the building.
+                # titles and groups an exception event by the exception's type
+                # and message, so the entry changes neither. A scope processor
+                # rather than a hand-built event keeps capture_exception doing
+                # the building.
                 def _add_log_entry(event, hint):
                     event["logentry"] = {"formatted": message}
                     return event
@@ -308,7 +314,10 @@ def _sentry_sink(message) -> None:
                 # warnings embed the file, batch or id they are about, which
                 # opened an issue per entity. Group by the call site instead.
                 # One part, not three: GlitchTip concatenates the parts with
-                # no separator before hashing.
+                # no separator before hashing. The line makes the key
+                # release-sensitive - an edit above the call regroups it, and a
+                # muted issue stops covering it - but once the f-string is
+                # formatted there is no stabler key to group by.
                 if bound_fingerprint is None:
                     scope.fingerprint = [
                         f"{name}:{record['function']}:{record['line']}"
