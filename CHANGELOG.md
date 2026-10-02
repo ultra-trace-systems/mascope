@@ -40,7 +40,9 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   method and answers two questions about each - what its name binds it to
   today, and what its method would bind it to - using the same code the
   pipeline uses for both, so the report cannot drift from what would actually
-  happen. It writes nothing.
+  happen. It writes nothing, and says so to the runner, which therefore takes
+  no pre-script database dump before it - a restore point for a change it
+  cannot make, on every reading, was the one cost of reading it often.
 
   Read it before switching `method_binding` to `"route"`, and before deciding a
   method record is right. It names the files no token names, which are the only

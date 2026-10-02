@@ -179,17 +179,26 @@ async def fleet(async_session_factory):
         await session.commit()
 
 
-async def _report(binding, modes=None, **kwargs):
-    """Run the report and return what it says about one binding."""
+async def _walk(modes=None, **kwargs):
+    """Run the report and return both of its answers.
+
+    ``modes=None`` leaves the mode fetch alone, which is what
+    :func:`test_it_runs_at_all` wants; anything else is handed to the token
+    rule in place of every mode in the database.
+    """
     kwargs.setdefault("files_limit", _ALL_FILES)
     if modes is None:
-        reports = await method_binding_report(**kwargs)
-    else:
-        with patch(
-            f"{_REPORT}.fetch_all_ionization_modes",
-            AsyncMock(return_value=list(modes)),
-        ):
-            reports = await method_binding_report(**kwargs)
+        return await method_binding_report(**kwargs)
+    with patch(
+        f"{_REPORT}.fetch_all_ionization_modes",
+        AsyncMock(return_value=list(modes)),
+    ):
+        return await method_binding_report(**kwargs)
+
+
+async def _report(binding, modes=None, **kwargs):
+    """Run the report and return what it says about one binding."""
+    reports, _ = await _walk(modes=modes, **kwargs)
     return reports[binding.method_binding_id]
 
 
@@ -377,3 +386,29 @@ async def test_it_reads_only_so_many_files_of_one_key(fleet):
 
     assert report.files == 1
     assert report.agree == 1
+
+
+@pytest.mark.asyncio
+async def test_the_walked_counts_are_a_partition_of_the_files(fleet):
+    """A dual-polarity file is one file in the walked line, not two.
+
+    The cap is applied per polarity, where the count is, while the line counts
+    files - so a dual-polarity file past the cap was counted twice into a
+    total it appears in once, and the parts of the line stopped adding up to
+    it. The sum below is what says they do, whatever else the database holds.
+    """
+    negative = await fleet["add_mode"](polarity="-")
+    positive = await fleet["add_mode"](polarity="+")
+    await fleet["add_binding"](negative)
+    await fleet["add_binding"](positive)
+    for minutes in range(2):
+        await fleet["add_file"](polarity="+-", minutes=minutes)
+
+    _, walk = await _walk(modes=[negative, positive], per_key=1)
+
+    assert (
+        walk.compared + walk.no_binding + walk.enough + walk.could_not_place
+        == walk.walked
+    )
+    assert walk.compared == 1
+    assert walk.enough == 1

@@ -2,7 +2,9 @@
 Development database script runner.
 
 Discovers and executes maintenance scripts from
-`mascope_backend.db.scripts.*` with automatic pre-execution backup.
+`mascope_backend.db.scripts.*` with automatic pre-execution backup - except
+for a script that declares `WRITES_NOTHING = True`, which has nothing to
+restore from.
 
 Scripts are data-manipulation entry points — see `mascope_backend.db.admin`
 for the distinction from Alembic schema migrations.
@@ -12,7 +14,7 @@ import importlib
 import importlib.util
 import subprocess
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, NamedTuple
 
 import typer
 
@@ -20,6 +22,7 @@ from mascope_cli.pg import (
     check_prerequisites,
     dirs,
     pg_dump,
+    script_writes_nothing,
     skip_backup_log_level,
 )
 from mascope_cli.runtime import runtime
@@ -31,15 +34,23 @@ _MODE = "dev"
 _SCRIPTS_MODULE = "mascope_backend.db.scripts"
 
 
-def _discover_scripts() -> dict[str, str]:
+class _Script(NamedTuple):
+    """A maintenance script as the runner needs it: what to run, and whether
+    running it can change anything."""
+
+    module: str
+    writes_nothing: bool
+
+
+def _discover_scripts() -> dict[str, _Script]:
     """
     Discover available scripts from mascope_backend.db.scripts.
 
     Scans the package directory for .py files (excluding __init__)
     that expose a main() callable.
 
-    :return: Mapping of CLI name to dotted module path.
-    :rtype: dict[str, str]
+    :return: Mapping of CLI name to what the runner needs.
+    :rtype: dict[str, _Script]
     """
     spec = importlib.util.find_spec(_SCRIPTS_MODULE)
     if spec is None or spec.submodule_search_locations is None:
@@ -55,8 +66,12 @@ def _discover_scripts() -> dict[str, str]:
         try:
             mod = importlib.import_module(module_path)
             if callable(getattr(mod, "main", None)):
-                cli_name = path.stem
-                result[cli_name] = module_path
+                result[path.stem] = _Script(
+                    module=module_path,
+                    writes_nothing=script_writes_nothing(
+                        path.read_text(encoding="utf-8")
+                    ),
+                )
         except Exception as e:
             # Broken import - skip the script (don't crash list/run), but leave
             # a breadcrumb so it doesn't silently vanish from `db script list`.
@@ -73,7 +88,8 @@ def main() -> None:
     Scripts manipulate existing data — they do not change the schema.
     For schema changes, use `mascope dev migrate upgrade`.
 
-    A backup is always taken before execution.
+    A backup is taken before execution, unless the script declares that it
+    writes nothing.
     """
 
 
@@ -85,8 +101,11 @@ def list_scripts() -> None:
         runtime.logger.warning("No scripts found in mascope_backend.db.scripts")
         return
     runtime.logger.info("Available scripts:")
-    for name, module in scripts.items():
-        runtime.logger.info(f"  {name}")
+    for name, found in scripts.items():
+        reads_only = (
+            " (writes nothing; no backup is taken)" if found.writes_nothing else ""
+        )
+        runtime.logger.info(f"  {name}{reads_only}")
 
 
 @dev_db_scripts_app.command("run")
@@ -112,8 +131,8 @@ def run_script(
     """
     Run a maintenance script against the development database.
 
-    Takes an automatic pre-execution backup before running, unless
-    `--skip-backup` is passed.
+    Takes an automatic pre-execution backup before running, unless the script
+    declares `WRITES_NOTHING = True` or `--skip-backup` is passed.
 
     Some scripts accept configuration via environment variables.
     For example, to pass MIN_DATETIME:
@@ -149,7 +168,15 @@ def run_script(
     db_cfg = runtime.full_config.backend.database
 
     # --- Backup ---
-    if skip_backup:
+    if scripts[script].writes_nothing:
+        # Before the flag, and no prompt: there is no restore point to miss,
+        # so the warning below would be false and asking would train an
+        # operator to click through it.
+        runtime.logger.info(
+            f"'{script}' declares that it writes nothing, so no pre-script "
+            "backup was taken."
+        )
+    elif skip_backup:
         # WARNING interactively, INFO under --yes: see skip_backup_log_level.
         runtime.logger.log(
             skip_backup_log_level(yes),
@@ -180,7 +207,7 @@ def run_script(
             raise typer.Exit(1)
 
     # --- Execute ---
-    module = scripts[script]
+    module = scripts[script].module
     runtime.logger.info(f"Running: {module}")
 
     result = subprocess.run(

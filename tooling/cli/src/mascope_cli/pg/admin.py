@@ -24,6 +24,39 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 
+#: How a maintenance script declares that it only reads: this exact line, at
+#: module level.
+#:
+#: A pre-script dump is a restore point for a change. A script that makes no
+#: change has nothing to restore from, and a report is read before and after
+#: every change an operator makes - so the dump would be paid per reading, on
+#: every server, for nothing. ``--skip-backup`` covers it only by telling the
+#: operator that "no restore point will exist if this script corrupts data",
+#: which is not true of a script that writes nothing.
+#:
+#: Matched as a bare assignment, so a mention in a docstring, a comment or a
+#: test does not count. One pattern, shared with the snippet the production
+#: runner sends into the backend container, so the host and the container
+#: cannot come to disagree about what a declaration looks like.
+WRITES_NOTHING_PATTERN = r"^WRITES_NOTHING = True[ \t]*$"
+
+
+def script_writes_nothing(source: str) -> bool:
+    """
+    Whether a maintenance script declares that it only reads.
+
+    Decided from the source rather than by importing the module: the runners
+    ask about every script they list, and importing one to ask a question is
+    both slower and a side effect none of them asked for.
+
+    :param source: The script module's source.
+    :type source: str
+    :return: True when the module declares ``WRITES_NOTHING = True``.
+    :rtype: bool
+    """
+    return re.search(WRITES_NOTHING_PATTERN, source, re.MULTILINE) is not None
+
+
 # --- Internal helpers ---
 
 

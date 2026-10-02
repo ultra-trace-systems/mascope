@@ -12,7 +12,10 @@ two questions over the files read: what their tokens bind them to today, and
 what their method binding would bind them to.
 
 **It writes nothing.** There is no ``DRY_RUN`` because there is nothing to dry
-run, and nothing here takes a lock.
+run, and nothing here takes a lock. It says so to the runner as well, with
+``WRITES_NOTHING`` below, so no ``pg_dump`` is taken before it: this is meant
+to be read before and after every change an operator makes, and a restore
+point for a change it cannot make would be paid for per reading.
 
 **Both answers come from the code the pipeline uses**, not from a
 reconstruction of it: :func:`resolve_ionization_modes_by_tokens` for the token,
@@ -92,6 +95,12 @@ from mascope_backend.method_keys import (
 from mascope_backend.runtime import runtime
 
 
+#: Read by ``mascope dev|prod db script run``, which then takes no pre-script
+#: backup (``mascope_cli.pg.script_writes_nothing``). It is a promise about
+#: this module: nothing here opens a write session, and the only thing it
+#: touches outside the database is reading each file's ``.props``.
+WRITES_NOTHING = True
+
 #: Files whose props are read at once, as in ``backfill_method_bindings``: a
 #: small local JSON load each, bounded to keep the open descriptors in hand.
 _PROPS_CONCURRENCY = 16
@@ -135,6 +144,30 @@ class TokenAnswer:
 
 
 @dataclass
+class Walk:
+    """What one run looked at, as a partition of the files it walked.
+
+    Every file walked lands in exactly one of the four: compared against the
+    binding of its method, no binding for its instrument and method at all,
+    past what that binding still needed, or refused by one of the rung's
+    guards. They are all counts of FILES - the attribution below is per
+    polarity, and mixing the two units made the parts of this stop adding up.
+    """
+
+    total: int
+    walked: int = 0
+    compared: int = 0
+    no_binding: int = 0
+    enough: int = 0
+    declined: Counter[tuple[str, str]] = field(default_factory=Counter)
+
+    @property
+    def could_not_place(self) -> int:
+        """Files whose own method could not place them, over every reason."""
+        return sum(self.declined.values())
+
+
+@dataclass
 class KeyReport:
     """One binding, and what the files of its method say about it.
 
@@ -155,6 +188,11 @@ class KeyReport:
     n_candidate_streams: int
     #: Why this key could never route a file, whatever its files say.
     blocked: str | None
+    #: Files of this method compared against this binding - one per file,
+    #: never two: a binding's key carries a signature class and a class
+    #: describes one polarity, so the two polarities of a file key to
+    #: different bindings. The attribution holds to that even if they ever
+    #: keyed to the same one, or this would stop being a count of files.
     files: int = 0
     agree: int = 0
     no_token: int = 0
@@ -368,7 +406,7 @@ async def _token_answer(
 
 async def method_binding_report(
     files_limit: int = _DEFAULT_FILES, per_key: int = _DEFAULT_PER_KEY
-) -> dict[str, KeyReport]:
+) -> tuple[dict[str, KeyReport], Walk]:
     """Read the bindings, the files, and what the two say about each other.
 
     Separate from :func:`run` so that it can be exercised against a test
@@ -376,11 +414,15 @@ async def method_binding_report(
     deployment's own.
 
     :param files_limit: Files to read, newest acquisition first.
-    :param per_key: Files to read per binding.
-    :return: The report of each binding, by binding id.
-    :rtype: dict[str, KeyReport]
+    :param per_key: Files to compare each binding on.
+    :return: The report of each binding, by binding id, and what the run
+        looked at.
+    :rtype: tuple[dict[str, KeyReport], Walk]
     """
     reports, by_method = await _key_reports()
+    async with async_session() as session:
+        total = await session.scalar(select(func.count()).select_from(SampleFile))
+    walk = Walk(total=total)
     if not reports:
         runtime.logger.info(
             "No method bindings have been learned yet, so there is nothing to "
@@ -388,16 +430,12 @@ async def method_binding_report(
             "files that route; `backfill_method_bindings` reads the ones "
             "already routed."
         )
-        return reports
+        return reports, walk
 
     modes = await fetch_all_ionization_modes()
-    async with async_session() as session:
-        total = await session.scalar(select(func.count()).select_from(SampleFile))
-    tally: Counter[str] = Counter()
-    declined: Counter[tuple[str, str]] = Counter()
 
     async for page in _file_pages(files_limit):
-        tally["read"] += len(page)
+        walk.walked += len(page)
         considered = []
         for sample_file in page:
             ids = by_method.get(
@@ -412,13 +450,13 @@ async def method_binding_report(
                 # whatever its scans were. Counted without opening its props:
                 # that read is the expensive part of this script, and these
                 # files are most of a server that has just started learning.
-                tally["no_binding"] += 1
+                walk.no_binding += 1
                 continue
             if all(reports[binding_id].files >= per_key for binding_id in ids):
                 # Cheap half of the per-key cap: a key that was already full
                 # when this page began costs nothing more, not even the props
                 # read. The exact half is at the attribution below.
-                tally["enough"] += 1
+                walk.enough += 1
                 continue
             considered.append(sample_file)
 
@@ -436,25 +474,34 @@ async def method_binding_report(
                 sample_file, census.get(sample_file.filename)
             )
             if refused is not None:
-                declined[(refused.reason, refused.remedy)] += 1
+                walk.declined[(refused.reason, refused.remedy)] += 1
                 continue
             token = await _token_answer(sample_file, modes)
             # Aligned: the rung appends one routing per polarity of the file,
             # in that order, and returns nothing at all if any polarity fails.
+            compared: set[str] = set()
             for polarity, routing in zip(sample_file.polarity, routings):
                 report = reports[routing.binding_id]
-                if report.files >= per_key:
-                    # The cap belongs here, where the count is. The filter
-                    # above can only skip a file whose bindings were already
-                    # full when the page began, and a page holds up to _PAGE
-                    # files - so a method in daily use would otherwise take
-                    # the whole of the first page it fills.
-                    tally["enough"] += 1
+                # The cap belongs here, where the count is. The filter above
+                # can only skip a file whose bindings were already full when
+                # the page began, and a page holds up to _PAGE files - so a
+                # method in daily use would otherwise take the whole of the
+                # first page it fills.
+                if routing.binding_id in compared or report.files >= per_key:
                     continue
+                compared.add(routing.binding_id)
                 _attribute(report, sample_file, polarity, routing, token)
+            if compared:
+                walk.compared += 1
+            else:
+                # Every binding this file could speak to had its fill. Counted
+                # once, as the page filter above counts it, because the walked
+                # line is a partition of files and a dual-polarity file is one
+                # file in it.
+                walk.enough += 1
 
-    _log(reports, tally, declined, total, files_limit, per_key)
-    return reports
+    _log(reports, walk, files_limit, per_key)
+    return reports, walk
 
 
 def _attribute(
@@ -519,9 +566,7 @@ def _count(number: int, noun: str) -> str:
 
 def _log(
     reports: dict[str, KeyReport],
-    tally: Counter,
-    declined: Counter,
-    total: int,
+    walk: Walk,
     files_limit: int,
     per_key: int,
 ) -> None:
@@ -541,11 +586,12 @@ def _log(
     for reason, count in blocked.most_common():
         runtime.logger.info(f"  {_count(count, 'key')} cannot: {reason}")
     runtime.logger.info(
-        f"Walked {tally['read']} of {total} files, newest acquisition first "
+        f"Walked {walk.walked} of {walk.total} files, newest acquisition first "
         f"(BINDING_REPORT_FILES={files_limit}, BINDING_REPORT_PER_KEY={per_key}): "
-        f"{tally['no_binding']} whose instrument and method have no binding, "
-        f"{tally['enough']} past what their binding needed, "
-        f"{sum(declined.values())} their own method could not place"
+        f"{walk.compared} compared, "
+        f"{walk.no_binding} whose instrument and method have no binding, "
+        f"{walk.enough} past what their binding needed, "
+        f"{walk.could_not_place} their own method could not place"
     )
 
     disagreeing = sorted(
@@ -643,12 +689,12 @@ def _log(
                 f"{_count(report.n_streams, 'observation')}"
             )
 
-    if declined:
+    if walk.declined:
         runtime.logger.info(
             "Files their own method could not place, by what stopped it - the "
             "sentence each file's status carries, and what would change it:"
         )
-        for (reason, remedy), count in declined.most_common(_PREVIEW_LIMIT):
+        for (reason, remedy), count in walk.declined.most_common(_PREVIEW_LIMIT):
             runtime.logger.info(f"  {_count(count, 'file')}: {reason}")
             runtime.logger.info(f"      {remedy}")
 
