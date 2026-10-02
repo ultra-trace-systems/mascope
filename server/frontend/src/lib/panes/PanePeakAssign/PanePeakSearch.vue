@@ -179,6 +179,18 @@ const lastRequestParams = ref(null)
 // which reach this user's socket room. Null until the 202 lands.
 let searchRequest = 0
 const pendingProcessId = ref(null)
+// The searches this pane has moved on from, by process id: the one pending at
+// each new launch, and any acknowledged only after a later search started.
+// What they report is not this pane's to act on, even while the latest
+// search's own id is still unknown. One short id per search, for as long as
+// the pane is open.
+const superseded = new Set()
+
+// Move on from the search in flight, if there is one.
+function supersedePending() {
+  if (pendingProcessId.value) superseded.add(pendingProcessId.value)
+  pendingProcessId.value = null
+}
 
 // The range validates against the shared rule rather than a copy of it: the
 // launcher dialog binds the same field, so a string one surface would reject
@@ -235,12 +247,15 @@ const formulaRangePlaceholder = computed(() => resolved.value?.element_ranges ??
 const RESETTABLE = ['mz_precision_ppm', 'formula_ranges']
 
 // Whether a notification may belong to the search this pane launched last. One
-// that names another process does not. One that names none - a failure the http
-// layer reported - or that lands before the 202 has told us our own id, is
+// that names another process does not, nor does one from a search this pane
+// has moved on from. One that lands before the 202 has told us our own id is
 // given the benefit of the doubt: a result then still has to be for the peak
-// on screen, and a failure only ends a wait that may be ours.
-const isOwnSearch = (payload) =>
-  !pendingProcessId.value || !payload?.process_id || payload.process_id === pendingProcessId.value
+// on screen, which leaves another tab's search of the same peak to that check.
+const isOwnSearch = (payload) => {
+  const processId = payload?.process_id
+  if (processId && superseded.has(processId)) return false
+  return !pendingProcessId.value || !processId || processId === pendingProcessId.value
+}
 
 // Whether a finished search is the one to show: this pane's own, for the sample
 // and the peak focused now.
@@ -252,9 +267,11 @@ const isCurrentSearch = (payload) =>
 app.ui.notification.on('match_compositions_by_mz', async (payload) => {
   if (!payload || payload.status === 'pending') return
   // An error or a warning carries no result, and no peak to check it against:
-  // the search is over either way.
+  // the search is over either way. One with no process id is the http layer
+  // reporting a launch that failed, which the launch's own catch has handled,
+  // and only if that launch was still the latest.
   if (payload.status !== 'success') {
-    if (isOwnSearch(payload)) loading.value = false
+    if (payload.process_id && isOwnSearch(payload)) loading.value = false
     return
   }
   // Asked before anything is downloaded: a result for a peak the user has left
@@ -349,7 +366,7 @@ watchDebounced(
   async (deps) => {
     if (!store.loaded || !deps.peakFocused || !deps.mzPrecision || !deps.formulaRange) {
       searchRequest++
-      pendingProcessId.value = null
+      supersedePending()
       results.value = []
       resultsPeakId.value = null
       loading.value = false
@@ -363,7 +380,7 @@ watchDebounced(
     lastRequestParams.value = currentParams
 
     const request = ++searchRequest
-    pendingProcessId.value = null
+    supersedePending()
     loading.value = true
     results.value = []
     resultsPeakId.value = null
@@ -392,10 +409,11 @@ watchDebounced(
         },
         { type: 'match_compositions_by_mz' }
       )
-      // A later search may have started while this one was being acknowledged.
-      if (request === searchRequest) {
-        pendingProcessId.value = response?.headers?.['process-id'] ?? null
-      }
+      // A later search may have started while this one was being acknowledged,
+      // and then this one is already moved on from.
+      const processId = response?.headers?.['process-id'] ?? null
+      if (request === searchRequest) pendingProcessId.value = processId
+      else if (processId) superseded.add(processId)
     } catch {
       // The http layer has reported the failure. A search that never started
       // is not running.

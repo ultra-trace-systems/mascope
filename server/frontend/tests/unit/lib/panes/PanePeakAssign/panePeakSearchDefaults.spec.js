@@ -1,7 +1,11 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { flushPromises, mount } from '@vue/test-utils'
+import { enableAutoUnmount, flushPromises, mount } from '@vue/test-utils'
 import { ref } from 'vue'
 import { createPinia, setActivePinia } from 'pinia'
+
+// Every pane goes when its test does, so no earlier pane can launch a search,
+// or answer a notification, in a later test.
+enableAutoUnmount(afterEach)
 
 // What the composition search searches with while its two fields are empty. A
 // run's defaults for both are "whatever the sample's chemistry profile resolves
@@ -22,14 +26,20 @@ const RESOLVED = {
 }
 
 // Each search is acknowledged as the route does it, with a 202 whose
-// `Process-ID` header names the background task.
-const { search, previewCalls } = vi.hoisted(() => {
+// `Process-ID` header names the background task. The pane's notification
+// handler is kept so a test can deliver what a search reports, and the result
+// route serves one row for whichever search is asked for.
+const { search, previewCalls, handlers, fetchResult } = vi.hoisted(() => {
   let launched = 0
   return {
     search: vi.fn(() =>
       Promise.resolve({ status: 202, headers: { 'process-id': `p-${++launched}` } })
     ),
-    previewCalls: []
+    previewCalls: [],
+    handlers: new Map(),
+    fetchResult: vi.fn(() =>
+      Promise.resolve([{ target_compound_formula: 'C10H16O4', ionization_mechanism_id: 'mech-1' }])
+    )
   }
 })
 
@@ -64,7 +74,7 @@ vi.mock('@/stores', () => ({
         left: () => ({}),
         right: () => ({})
       },
-      notification: { on: vi.fn() }
+      notification: { on: (type, handler) => handlers.set(type, handler) }
     }
   })
 }))
@@ -75,6 +85,7 @@ vi.mock('@/api', () => ({
   api: {
     http: {
       get: (url, config) => {
+        if (url.startsWith('/cheminfo/mz/match/result/')) return fetchResult(url, config)
         if (url === '/params') {
           return Promise.resolve({
             data: {
@@ -147,6 +158,7 @@ beforeEach(() => {
   setActivePinia(createPinia())
   focusedSampleId = ref('si-1')
   previewCalls.length = 0
+  handlers.clear()
 })
 afterEach(() => vi.clearAllMocks())
 
@@ -276,5 +288,101 @@ describe('PanePeakSearch waiting for its own search', () => {
     expect(search).toHaveBeenCalled()
     expect(wrapper.vm.loading).toBe(false)
     expect(wrapper.vm.pendingProcessId).toBeNull()
+  })
+})
+
+// A search this pane has moved on from still reports, and while the later
+// search's own 202 is in flight there is no id of its own to tell the two
+// apart by: the earlier one's report is the same peak's, and passes the peak
+// check. So the pane remembers which searches it moved on from.
+describe('PanePeakSearch ignoring the searches it moved on from', () => {
+  /** A deferred 202 for `processId`, and the call that lets it land. */
+  function held(processId) {
+    let land
+    search.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          land = () => resolve({ status: 202, headers: { 'process-id': processId } })
+        })
+    )
+    return () => land()
+  }
+
+  /** What a search of the focused peak reports when it finishes. */
+  async function finish(processId) {
+    handlers.get('match_compositions_by_mz')({
+      status: 'success',
+      process_id: processId,
+      data: { sample_item_id: 'si-1', mz: PEAK.mz, results: 1, total: 1 }
+    })
+    await flushPromises()
+  }
+
+  const fetched = () => fetchResult.mock.calls.map(([url]) => url)
+
+  const searchAgain = async () => {
+    usePeakAssignParams().params.mz_precision_ppm = 5
+    await flushPromises()
+  }
+
+  it('ignores the earlier search that finishes while the later is acknowledged', async () => {
+    const wrapper = await mountPane()
+    const first = wrapper.vm.pendingProcessId
+    const landSecond = held('p-second')
+    await searchAgain()
+
+    await finish(first)
+
+    expect(fetched()).toEqual([])
+    expect(wrapper.vm.loading).toBe(true)
+
+    landSecond()
+    await flushPromises()
+    await finish('p-second')
+
+    expect(fetched()).toEqual(['/cheminfo/mz/match/result/p-second'])
+    expect(wrapper.vm.results).toHaveLength(1)
+    expect(wrapper.vm.loading).toBe(false)
+  })
+
+  it('ignores an earlier search acknowledged only after the later started', async () => {
+    const landFirst = held('p-first')
+    const landSecond = held('p-second')
+    const wrapper = await mountPane()
+    await searchAgain()
+
+    landFirst()
+    await flushPromises()
+    await finish('p-first')
+
+    expect(wrapper.vm.pendingProcessId).toBeNull()
+    expect(fetched()).toEqual([])
+
+    landSecond()
+    await flushPromises()
+    await finish('p-second')
+
+    expect(fetched()).toEqual(['/cheminfo/mz/match/result/p-second'])
+  })
+
+  // The launch that failed is the earlier one: the http layer's report of it
+  // names no process, and the launch's own catch knows it is no longer the
+  // latest, so the later search is still waited for.
+  it('keeps waiting for the later search when the earlier launch fails', async () => {
+    let failFirst
+    search.mockImplementationOnce(() => new Promise((_, reject) => (failFirst = reject)))
+    const wrapper = await mountPane()
+    await searchAgain()
+
+    failFirst(new Error('timeout of 20000ms exceeded'))
+    handlers.get('match_compositions_by_mz')({
+      type: 'match_compositions_by_mz',
+      status: 'error',
+      message: 'Request timed out. Please try again or contact support.'
+    })
+    await flushPromises()
+
+    expect(wrapper.vm.loading).toBe(true)
+    expect(wrapper.vm.pendingProcessId).toMatch(/^p-\d+$/)
   })
 })
