@@ -16,8 +16,7 @@ from pathlib import Path
 
 from mascope_cli.cmd.demo import bundles
 from mascope_cli.pg import dirs, drop_database, pg_restore
-from mascope_cli.runtime import runtime
-from mascope_runtime.config import DEPLOYMENT_FILE
+from mascope_cli.runtime import DEPLOYMENT_FILE, runtime
 
 
 # The demo always uses a dedicated env so it never touches a developer's work.

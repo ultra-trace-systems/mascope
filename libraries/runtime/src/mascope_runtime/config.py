@@ -46,9 +46,10 @@ _STRAY_PERCENT = re.compile(r"%(?![0-9A-Fa-f]{2})")
 DEPLOYMENT_ID_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
 
 #: The file, at the root of an env's filestore, that keeps the id the backend
-#: generated for its deployment (`mascope_backend.deployment`). Named here,
-#: beside the pattern, because the backend writes it and the CLI's tools that
-#: copy a filestore between deployments must leave it behind.
+#: generated for its deployment (`mascope_backend.deployment`). The CLI's tools
+#: that copy a filestore between deployments leave it behind under the name
+#: `mascope_cli.runtime` gives it: the published CLI also runs against runtimes
+#: that predate this name, so it keeps its own copy, which a CLI test pins equal.
 DEPLOYMENT_FILE = "deployment.json"
 
 
