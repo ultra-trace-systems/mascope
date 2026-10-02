@@ -290,9 +290,11 @@ match view's isotope windows, and through them the SDK's `get_spectrum` and
 same signal, from the same cache entry, that the instrument-function fit and the
 peak heights read, and the entry is named after the reader and averaging that
 computed it (section 6), so what is drawn is what the current reader measures.
-The spectrum views dot its samples once a zoom spreads them far enough apart to
-tell one from the next (`server/frontend/src/lib/charts/samples.js`), so the
-profile's density, about three points per FWHM, is visible rather than implied.
+The spectrum views dot its samples wherever they land far enough apart on screen
+to tell one from the next (`server/frontend/src/lib/charts/samples.js`): in the
+match view's narrow isotope windows usually from the start, in the sample
+spectrum once zoomed in. The profile's density, about three points per FWHM, is
+then visible rather than implied.
 
 Nothing is drawn in its place. The display used to show a reconstruction
 instead -- one Gaussian per averaged centroid (centre = m/z, height = intensity,
@@ -309,15 +311,17 @@ them itself:
 | | per-scan profile apex minus its label | averaged profile apex minus its averaged centroid |
 | --- | --- | --- |
 | reader 1.4.0 | -4.60 ppm median, -5.40 below m/z 200 | -- |
-| reader 2.0.0 | **-0.001 ppm** median, +-0.1 ppm in every band | **0.065 ppm** median absolute |
+| reader 2.0.0 | **-0.001 ppm** median, +-0.1 ppm in every band | **0.096 ppm** median absolute, no bias |
 
 The per-scan axis is in fact byte-for-byte the Thermo library's: 0.000000 ppm
-over every point of a scan, where 1.4.0 differed by up to 3.3 ppm. Against a
-4-8 ppm FWHM, a tenth of a ppm is not a visible offset.
+over every point of a scan, where 1.4.0 differed by up to 3.3 ppm. The averaged
+figure is over 6,064 strong peaks (S:N >= 20) of 21 demo files, each located at
+the vertex of the parabola through its three top samples, the way the Thermo
+library centroids one (5.3); its signed median is -0.003 ppm. Against a 4-8 ppm
+FWHM, a tenth of a ppm is not a visible offset.
 `test_sum_signal_peaks_sit_on_the_centroids` (in `test_thermo_spec_extraction.py`)
-holds the averaged profile to it under each backend, locating a peak the way the
-Thermo library centroids one: at the vertex of the parabola through its three
-top samples (5.3).
+holds the averaged profile to it under each backend, locating peaks the same
+way.
 
 ### 5.2 Smoothness, and what it cost
 
@@ -440,7 +444,7 @@ them, touching raw Orbitrap files only.
 | Averaged centroid intensity (profile-apex) | ~3% high, and flat across the intensity range (section 6, step 6) |
 | Single-scan centroid intensity (profile-apex) | 0.8% of the instrument's own label |
 | Averaged S:N above-threshold count | Tracks Thermo (via n/sqrt(N)) |
-| Averaged profile peak vs its own averaged centroid | 0.065 ppm median absolute; exact under Thermo (section 5) |
+| Averaged profile peak vs its own averaged centroid | 0.096 ppm median absolute (section 5.1); exact under Thermo |
 | XIC | rtol 1e-4 |
 
 The averaged-centroid path is the only genuine *approximation* (Thermo
