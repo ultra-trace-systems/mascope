@@ -261,8 +261,9 @@ def test_sink_keeps_the_log_line_beside_the_exception(fake_sentry):
 
 
 def test_sink_leaves_exception_grouping_to_the_exception(fake_sentry):
-    """Exceptions already group by type and location; a call-site fingerprint
-    would merge every exception one handler catches into one issue."""
+    """Exceptions already group by their own title - type and first message
+    line - and location; a call-site fingerprint would merge every exception
+    one handler catches into one issue."""
     err = ValueError("nope")
     rl._sentry_sink(_msg(level="ERROR", exc=_Exc(ValueError, err, None)))
     assert fake_sentry.last_scope.fingerprint is None

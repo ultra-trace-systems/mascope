@@ -8,6 +8,7 @@ from mascope_backend.file_converter.peak_guard import PeakDetectionGuard
 from mascope_backend.file_converter.peak_recompute_worker import PeakRecomputeWorker
 from mascope_backend.file_converter.socket.client import FileConverterSocketClient
 from mascope_backend.file_converter.watcher import FSWatcher
+from mascope_runtime.logging import SENTRY_FINGERPRINT
 from mascope_thermo.processor import RawProcessor
 from mascope_tofwerk.processor import H5Processor
 
@@ -121,7 +122,7 @@ class _Supervised:
 
         if not self._restartable:
             self._gave_up_at = now
-            runtime.logger.error(
+            self._report_dead(
                 f"{self.name} died and cannot be replaced while the service "
                 f"runs; the work it feeds has stopped moving - restart the "
                 f"file converter to recover it"
@@ -148,7 +149,7 @@ class _Supervised:
         self._restarts += 1
         if self._restarts > self.MAX_RESTARTS:
             self._gave_up_at = now
-            runtime.logger.error(
+            self._report_dead(
                 f"{self.name} died {self.MAX_RESTARTS + 1} times within "
                 f"{self.MAX_RESTART_WINDOW_S} s and will not be restarted "
                 f"again; work routed to it is no longer being processed"
@@ -179,10 +180,24 @@ class _Supervised:
         if now - self._gave_up_at < self.GIVE_UP_REPORT_INTERVAL_S:
             return
         self._gave_up_at = now
-        runtime.logger.error(
+        self._report_dead(
             f"{self.name} is still dead and no longer supervised; restart the "
             f"file converter to recover it"
         )
+
+    def _report_dead(self, message: str) -> None:
+        """Report this slot as dead for good, in an issue of its own.
+
+        Error monitoring would group these lines by call site, merging every
+        slot: once someone ignored one dead worker, the next to die would land
+        in the ignored issue. Each dead slot needs its own restart, so each
+        gets its own issue, shared by the line that gave up on it and the
+        reminders that follow. A restart that is still being attempted stays
+        grouped by call site - it needs nobody yet.
+        """
+        runtime.logger.bind(
+            **{SENTRY_FINGERPRINT: [f"file-converter-slot-dead:{self.name}"]}
+        ).error(message)
 
     def _requeue_inflight(self) -> None:
         """Hand the dead thread's in-flight work back to its queue.
