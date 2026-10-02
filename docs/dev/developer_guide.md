@@ -1570,6 +1570,18 @@ flowchart TB
 In production, multiple Uvicorn workers run behind [Nginx](https://nginx.org/en/docs/http/load_balancing.html) with sticky sessions (`ip_hash`).
 Redis coordinates Socket.IO events across workers via pub/sub and stores user sessions for cross-worker authentication.
 
+Every emit - to a room, to one user, to one socket - is published to every worker through that
+pub/sub, and Redis disconnects a subscriber whose unread output passes its buffer limit
+(`client-output-buffer-limit pubsub`, by default 32 MB at once or 8 MB held for a minute), which
+takes every worker's Socket.IO subscribers off Redis and loses whatever was in flight. So a
+background task's notification says that the task moved on or finished - ids, counts, a message, a
+download name - and does not carry anything that grows with the data: rows, samples, files. A
+result the browser needs goes where it fetches it over HTTP, as the composition search keeps its
+rows (`api/new/cheminfo/match_results.py`), and a report of per-item failures names the first few
+and counts the rest. A `user_notification` heavier than `USER_NOTIFICATION_BUDGET_BYTES` (256 KiB,
+`socket/notifications/service.py`) is still sent, and logged at WARNING under its notification
+type.
+
 ### Backend File Converter
 
 The file converter is an independent service responsible for transforming incoming sample files

@@ -1,5 +1,6 @@
 """Socket.IO notification service."""
 
+import json
 from copy import deepcopy
 from typing import Any
 
@@ -9,12 +10,52 @@ from mascope_backend.runtime import runtime
 from mascope_backend.socket import sio
 from mascope_backend.socket.notifications.schemas import UserNotification
 from mascope_backend.socket.storage import room_tracker
+from mascope_runtime.logging import SENTRY_FINGERPRINT
 
 
 # Share of a batch match refresh's single progress bar filled by the
 # per-sample compute phase; the chunked batch aggregation that follows fills
 # the remaining share of the same bar.
 MATCH_COMPUTE_PROGRESS_SHARE = 0.7
+
+#: What a user notification may weigh, serialized, before its emit is logged at
+#: WARNING. A notification says that a task moved on or finished - ids, counts,
+#: a message - and the largest any controller sends by design, a calibration
+#: fit's table of calibrants, is tens of kilobytes. Every emit is published to
+#: every backend process through Redis pub/sub, and Redis disconnects a
+#: subscriber whose unread output passes its pub/sub buffer limit (by default
+#: 32 MB at once, or 8 MB held for a minute), which takes every process's
+#: Socket.IO subscribers off Redis and loses what was in flight. A payload that
+#: grows with the data - rows, samples, files - belongs in an HTTP response the
+#: browser fetches instead (as ``api/new/cheminfo/match_results.py`` keeps a
+#: composition search's rows).
+USER_NOTIFICATION_BUDGET_BYTES = 256 * 1024
+
+
+def _warn_if_over_budget(notification_dict: dict[str, Any]) -> None:
+    """Log a notification that weighs more than ``USER_NOTIFICATION_BUDGET_BYTES``.
+
+    Weighed as JSON, the form the emit is published in. One issue per
+    notification type: the type names the controller that has to change.
+
+    :param notification_dict: The notification as it is about to be emitted.
+    :type notification_dict: dict[str, Any]
+    """
+    try:
+        size = len(json.dumps(notification_dict, default=str).encode())
+    except Exception:  # noqa: BLE001 - weighing it must not cost the emit
+        return
+    if size <= USER_NOTIFICATION_BUDGET_BYTES:
+        return
+    notification_type = notification_dict.get("type")
+    runtime.logger.bind(
+        **{SENTRY_FINGERPRINT: [f"user-notification-over-budget:{notification_type}"]}
+    ).warning(
+        f"User notification '{notification_type}' weighs {size} bytes, over its "
+        f"{USER_NOTIFICATION_BUDGET_BYTES}-byte budget. Every emit is published "
+        "to every backend process through Redis pub/sub; a payload that grows "
+        "with the data belongs in an HTTP response the browser fetches."
+    )
 
 
 async def emit_user_notification(
@@ -53,6 +94,7 @@ async def emit_user_notification(
         exclude_none=True,
         exclude={"data", "error"} if notification.silent else None,
     )
+    _warn_if_over_budget(notification_dict)
 
     # Case 1: Only user_id → emit to user's personal room
     if user_id and not room_id:
