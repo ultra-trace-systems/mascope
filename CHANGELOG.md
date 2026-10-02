@@ -92,6 +92,22 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   colour means and what its tooltip adds. The manual's own paragraph on the
   badge was the same text written twice, and is now the shared snippet.
 
+### Security
+
+- **Creating an ionization mechanism refuses one too long to store while the
+  request is validated.** `POST /api/ionization_mechanisms` left the length to
+  the database column, 256 characters, so a longer mechanism was parsed whole
+  and failed only at the insert, as a 500 "Database operation failed". Parsing
+  takes time in proportion to the text, and a mechanism that parsed was kept
+  in the parser's cache, so at the bundled nginx's 1 MB body limit an editor's
+  requests could hold about 1.9 GiB of a backend process's memory. It is now a
+  422 naming the limit, and nothing parses it first. The limit holds for the
+  mechanism as sent and for the standard spelling it is stored in, which can
+  be the longer of the two (`+H+` is stored as `[M+H]+`). That makes it
+  stricter in one case: a mechanism sent with more than 256 characters is
+  refused even where its stored spelling would have fit, such as one padded
+  with whitespace.
+
 ## [1.10.1] - 2026.10.01
 
 ### Changed
