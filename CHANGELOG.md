@@ -38,9 +38,10 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   additional data; how it groups is unchanged.
 
   Operators: every issue for a warning or error logged without an exception
-  is regrouped once, the two above included. Existing issues stop receiving
-  events and each problem opens one new issue under its new grouping, so
-  expect a burst of new issues after upgrading; the old ones can be resolved.
+  is regrouped once, the pinned ones above included, and so is the
+  still-stale peak store warning. Existing issues stop receiving events and
+  each problem opens one new issue under its new grouping, so expect a burst
+  of new issues after upgrading; the old ones can be resolved.
   Because a warning is now grouped by the line of code that logs it, an
   upgrade that changes the code around that line can open a new issue for the
   same warning, and servers on different versions can report it as separate
