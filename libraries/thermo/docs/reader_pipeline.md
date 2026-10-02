@@ -404,7 +404,9 @@ which `_zerofill_baseline` puts back).
   signal in place (`OrbiCalibrationHandler`), so a stored axis is the
   acquisition axis times the file's current calibration factor, and a signal
   averaged after the file was calibrated has to start there too - which, once
-  a new reader renames the cache, is every one.
+  a new reader renames the cache, is every one. An Orbitrap file kept without
+  its raw file (`orbi_zarr`) takes no factor: it is summed from its stored
+  signal, which a calibration rescales in place as well.
 
 The display endpoints (the spectrum and match views in the server controllers)
 and the quantitative consumers read the same signal, so a window's cache entry

@@ -209,22 +209,39 @@ class TestRawOrbitrapSumSignalCache:
         np.testing.assert_allclose(window.mz.values, calibrated, rtol=0, atol=1e-9)
 
 
-class TestOrbitrapZarrFullSumSignal:
+class TestOrbitrapZarrSumSignal:
+    """An orbi_zarr file keeps no raw file to average: its signal is the stored
+    ``signal.zarr``, which a calibration rescales in place along with its sum
+    signals and its peaks. Whatever is summed from it, the full signal or a
+    window, is on the calibrated axis already, so the factor must not go on
+    twice - on a window it used to, which put the window one factor off the
+    file's peaks.
+    """
+
+    @pytest.mark.parametrize(
+        ("t_min", "t_max", "polarity"),
+        [
+            (None, None, None),
+            (0.0, 2.0, None),
+            (None, None, "+"),
+            (0.0, 2.0, "+"),
+        ],
+        ids=["full", "time-window", "polarity", "time-window-and-polarity"],
+    )
     def test_keeps_the_axis_of_its_stored_signal(
-        self, monkeypatch, sample_file_path, signal_dataset
+        self, monkeypatch, sample_file_path, signal_dataset, t_min, t_max, polarity
     ):
-        """An orbi_zarr file's stored signal is rescaled in place by a
-        calibration, like its sum signals, so a full signal summed from it is on
-        the calibrated axis already: the factor must not go on twice."""
         monkeypatch.setattr(
             m_compute.m_name, "get_sample_file_type", lambda _: "orbi_zarr"
         )
         monkeypatch.setattr(m_compute, "load_signal", lambda _: signal_dataset)
         _calibrate(sample_file_path, 1.000003)
 
-        full = m_compute.get_sum_signal(SIGNAL_TEST_FILENAME)
+        summed = m_compute.get_sum_signal(SIGNAL_TEST_FILENAME, t_min, t_max, polarity)
 
-        np.testing.assert_allclose(full.mz.values, signal_dataset.mz.values)
+        np.testing.assert_allclose(
+            summed.mz.values, signal_dataset.mz.values, rtol=0, atol=1e-9
+        )
 
 
 class TestGetAcquisitionWindow:
