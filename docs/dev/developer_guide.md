@@ -1379,6 +1379,7 @@ Each API resource uses one of the two authorization layers. The table below docu
 | Calibration (read)                                                     | Global RBAC   | guest          | View calibration state                                |
 | Calibration (mutations)                                                | Global RBAC   | admin          | Global operation, affects all associated samples      |
 | Cheminfo (query)                                                       | Global RBAC   | guest          | Stateless formula lookup                              |
+| Cheminfo (match result)                                                | Authenticated | —              | `/mz/match/result/{id}` — own results only, expiring  |
 | Params                                                                 | Global RBAC   | guest          | Application parameters                                |
 | Temp files                                                             | Global RBAC   | guest          | Temporary file serving                                |
 | **Admin (system management)**                                          |               |                |                                                       |

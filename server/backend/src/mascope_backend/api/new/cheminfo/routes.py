@@ -1,7 +1,9 @@
 from fastapi import APIRouter, BackgroundTasks, Depends
 
 from mascope_backend.api.lib.api_features import api_route
+from mascope_backend.api.lib.exceptions.api_exceptions import NotFoundException
 from mascope_backend.api.new.auth.dependencies import current_active_user, guest_user
+from mascope_backend.api.new.cheminfo.match_results import load_match_result
 from mascope_backend.api.new.cheminfo.schema import (
     CheminfoMatchedQueryBody,
     CheminfoQueryBody,
@@ -54,6 +56,12 @@ async def match_compositions_by_mz_route(
     This endpoint finds potential molecular formulas matching the given m/z
     using Mascope Tools, then matches these formulas against a specific sample.
 
+    The search runs as a background task. Its completion notification
+    (``match_compositions_by_mz``) carries the counts, not the candidates: those
+    are fetched from ``GET /mz/match/result/{process_id}`` with the process id
+    this response returns in its ``Process-ID`` header and the notification
+    repeats.
+
     :param sample_item_id: The unique identifier of the sample to match against.
     :param body: request query options; the only required field is `mz`
     :type body: CheminfoMatchedQueryBody
@@ -84,4 +92,43 @@ async def match_compositions_by_mz_route(
     return {
         "message": f"Matching potential formulae for m/z {body.mz}, please wait",
         "process_id": process_id,
+    }
+
+
+@cheminfo_router.get("/mz/match/result/{process_id}")
+@api_route()
+async def match_compositions_result_route(
+    process_id: str,
+    user: User = Depends(current_active_user),
+) -> dict:
+    """
+    Fetch the result of a composition match search.
+
+    A match search (``POST /mz/match/sample/{sample_item_id}``) keeps its result
+    for the user who ran it, for ``MATCH_RESULT_TTL_SECONDS``, and its completion
+    notification names the process. This hands the result to that user: the
+    candidates as ``data``, with the m/z, the sample and the counts the
+    notification carried.
+
+    No sample role is checked here: the search checked it when it ran, and a
+    result can only be read by the account that ran it.
+
+    :param process_id: The search task's process id.
+    :type process_id: str
+    :param user: The current authenticated user.
+    :type user: User
+    :raises NotFoundException: (404) This user has no result under this process
+        id: it expired, another account ran the search, or no search did.
+    :return: The search's result.
+    :rtype: dict
+    """
+    result = await load_match_result(user.id, process_id)
+    if result is None:
+        raise NotFoundException(
+            "No such composition search result; it may have expired"
+        )
+    return {
+        "message": f"Retrieved {result['results']} matched compositions "
+        f"for m/z {result['mz']}",
+        **result,
     }

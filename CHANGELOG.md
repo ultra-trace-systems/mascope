@@ -144,6 +144,21 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   title and the "Learn more" link alone; the card now reads what each badge
   colour means and what its tooltip adds. The manual's own paragraph on the
   badge was the same text written twice, and is now the shared snippet.
+- **A large composition search no longer cuts the server's live updates, or
+  loses its own results.** The search sent everything it found inside the
+  notification that announced it - every candidate with its whole isotope
+  pattern, about 14 MB for a peak with a couple of thousand candidates. Every
+  notification is published to every backend process through Redis, which
+  disconnects a listener that far behind, so each such search knocked the
+  backend's live updates off Redis for a moment: whatever was in flight was
+  lost, the search's own results often among it, and the search pane was left
+  loading. The notification now only says the search is done, and the pane
+  fetches the results over HTTP, from
+  `GET /api/cheminfo/mz/match/result/{process_id}`, which only the user who ran
+  the search can read and which expires after five minutes. The pane also
+  shows only the search it launched last: one finished in another tab, or an
+  earlier search of the same peak under other parameters, no longer replaces
+  its results.
 
 ### Security
 

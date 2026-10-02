@@ -21,10 +21,17 @@ const RESOLVED = {
   samples: 1
 }
 
-const { search, previewCalls } = vi.hoisted(() => ({
-  search: vi.fn(() => Promise.resolve({})),
-  previewCalls: []
-}))
+// Each search is acknowledged as the route does it, with a 202 whose
+// `Process-ID` header names the background task.
+const { search, previewCalls } = vi.hoisted(() => {
+  let launched = 0
+  return {
+    search: vi.fn(() =>
+      Promise.resolve({ status: 202, headers: { 'process-id': `p-${++launched}` } })
+    ),
+    previewCalls: []
+  }
+})
 
 let focusedSampleId
 
@@ -222,5 +229,52 @@ describe('PanePeakSearch isotopologue lines', () => {
     await mountPane()
 
     expect(lastSearch()).toMatchObject({ isotopologues: true })
+  })
+})
+
+// The completion notification of every search this user runs reaches the same
+// socket room, so the pane tells its own search's apart by the process id the
+// 202 acknowledging it named.
+describe('PanePeakSearch waiting for its own search', () => {
+  const acknowledged = async (call) => (await search.mock.results.at(call).value).headers
+
+  it('waits for the process the latest search was acknowledged as', async () => {
+    const wrapper = await mountPane()
+    expect(wrapper.vm.pendingProcessId).toBe((await acknowledged(-1))['process-id'])
+
+    usePeakAssignParams().params.mz_precision_ppm = 5
+    await flushPromises()
+
+    expect(lastSearch()).toMatchObject({ mz_precision: 5 })
+    expect(wrapper.vm.pendingProcessId).toBe((await acknowledged(-1))['process-id'])
+  })
+
+  it('keeps waiting for the later search when an earlier one is acknowledged last', async () => {
+    let acknowledgeFirst
+    search.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          acknowledgeFirst = () => resolve({ status: 202, headers: { 'process-id': 'p-early' } })
+        })
+    )
+    const wrapper = await mountPane()
+    usePeakAssignParams().params.mz_precision_ppm = 5
+    await flushPromises()
+    const later = wrapper.vm.pendingProcessId
+
+    acknowledgeFirst()
+    await flushPromises()
+
+    expect(later).toMatch(/^p-\d+$/)
+    expect(wrapper.vm.pendingProcessId).toBe(later)
+  })
+
+  it('stops waiting when the search cannot be launched', async () => {
+    search.mockImplementationOnce(() => Promise.reject(new Error('502 Bad Gateway')))
+    const wrapper = await mountPane()
+
+    expect(search).toHaveBeenCalled()
+    expect(wrapper.vm.loading).toBe(false)
+    expect(wrapper.vm.pendingProcessId).toBeNull()
   })
 })

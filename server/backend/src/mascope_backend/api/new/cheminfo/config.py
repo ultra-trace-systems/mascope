@@ -34,6 +34,12 @@ class ChemInfoConfig(BaseModel):
     # Debounce delay in milliseconds for frontend API requests
     DEBOUNCE_DELAY_MS: int = 800
 
+    # How long a finished match search keeps its result for the user who ran it
+    # (`match_results`). The pane fetches it the moment the completion
+    # notification lands, so this only has to outlast that round trip; what it
+    # bounds is how long Redis holds a result nobody came for.
+    MATCH_RESULT_TTL_SECONDS: int = 300
+
 
 # Global config instance for composition search (cheminfo)
 cheminfo_config = ChemInfoConfig()

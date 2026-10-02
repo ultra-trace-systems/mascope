@@ -14,6 +14,7 @@ from mascope_backend.api.lib.api_features import (
     api_controller_background_task,
 )
 from mascope_backend.api.new.cheminfo.config import cheminfo_config
+from mascope_backend.api.new.cheminfo.match_results import save_match_result
 from mascope_backend.api.new.cheminfo.utils import (
     to_custom_element_format,
     to_explicit_isotope_format,
@@ -416,6 +417,54 @@ async def _annotate_with_reference(results: list[dict], known_only: bool) -> lis
     return annotated
 
 
+async def _search_finished(
+    message: str,
+    mz: float,
+    sample_item_id: str,
+    data: list[dict],
+    total: int,
+    user_id: int | None,
+    process_id: str | None,
+) -> dict:
+    """What a finished match search returns, with its result saved for the pane.
+
+    The rows travel to the pane over HTTP, never in the completion notification:
+    a Socket.IO emit is published to every backend process through Redis pub/sub,
+    and a result the size of a large search's overran Redis' pub/sub buffer and
+    disconnected every subscriber (see `match_results`). The notification says
+    which search finished and how many rows it has; the pane fetches them by the
+    notification's process id. A search no user ran has nobody to fetch it, and
+    nothing is saved.
+
+    :param message: What the notification says.
+    :param mz: The m/z searched.
+    :param sample_item_id: The sample searched.
+    :param data: The matched candidates.
+    :param total: How many compositions the search found, before any were
+        dropped for matching another peak.
+    :param user_id: The account that ran the search.
+    :param process_id: The search task's process id.
+    :return: The controller's result: the counts, the rows, and notification
+        data that carries no rows.
+    :rtype: dict
+    """
+    summary = {
+        "mz": mz,
+        "sample_item_id": sample_item_id,
+        "results": len(data),
+        "total": total,
+    }
+    if user_id is not None and process_id is not None:
+        await save_match_result(user_id, process_id, {**summary, "data": data})
+    return {
+        "message": message,
+        "results": len(data),
+        "total": total,
+        "data": data,
+        "_notification_data": summary,
+    }
+
+
 @api_controller_background_task(
     success_notification_rooms=["user_id"],
     error_notification_rooms=["user_id"],
@@ -441,9 +490,15 @@ async def match_compositions_by_mz(
     - Find compositions matching the m/z value using Mascope Tools
     - Match these compounds against a specified sample
     - Combine and format the results
+    - Save the result for the user who ran the search
 
     Match ion aggregation level is used to represent the match score of each formula result.
     Match isotopes are included in the result data for more detailed information.
+
+    The completion notification carries the counts and no rows: the pane fetches
+    the rows by the notification's process id from
+    ``GET /api/cheminfo/mz/match/result/{process_id}`` (see `match_results` for
+    why they no longer travel through Socket.IO).
 
     :param sample_item_id: Sample item ID to match against
     :type sample_item_id: str
@@ -469,16 +524,15 @@ async def match_compositions_by_mz(
     :type independent_transaction: bool
     :param user_id: Current user triggered operation (for user notifications)
     :type user_id: int | None, optional
-    :param process_id: Process ID for tracking
+    :param process_id: Process ID for tracking, and the key the result is saved
+        under for the user
     :type process_id: None | str
     :param parent_id: Parent process ID for nested operations
     :type parent_id: None | str
-    :return: Metadata and a result array of records containing the following fields:
-        - target_compound_formula
-        - target_compound_unsaturation
-        - ionization_mechanism
-        - target_isotope_mz
-        - target_isotope_mz_error_ppm
+    :return: Metadata (``results`` returned, ``total`` the compositions the
+        search found) and the matched candidates as ``data``, each the matched
+        ion with its composition result as ``cheminfo`` and its isotope lines
+        as ``children``
     :rtype: dict
     """
     if match_params is None:
@@ -500,16 +554,15 @@ async def match_compositions_by_mz(
 
     # Return early if no composition data
     if not cheminfo_data:
-        return {
-            "message": "No matching compositions found for the specified m/z and parameters.",
-            "results": 0,
-            "total": 0,
-            "data": [],
-            "_notification_data": {
-                "mz": mz,
-                "sample_item_id": sample_item_id,
-            },
-        }
+        return await _search_finished(
+            "No matching compositions found for the specified m/z and parameters.",
+            mz=mz,
+            sample_item_id=sample_item_id,
+            data=[],
+            total=0,
+            user_id=user_id,
+            process_id=process_id,
+        )
 
     # Get matches against the sample
     runtime.logger.info(
@@ -601,20 +654,14 @@ async def match_compositions_by_mz(
     if peak_assignment_enabled():
         _annotate_assignment_scores(data, match_params)
 
-    # Return formatted response with notification data
-    result_data = {
-        "results": len(data),
-        "total": cheminfo_total,
-        "data": data,
-    }
     message = f"Matched {len(data)} potential compounds with m/z {mz:.4f}."
     runtime.logger.info(message)
-    return {
-        "message": message,
-        **result_data,
-        "_notification_data": {
-            "mz": mz,
-            "sample_item_id": sample_item_id,
-            **result_data,
-        },
-    }
+    return await _search_finished(
+        message,
+        mz=mz,
+        sample_item_id=sample_item_id,
+        data=data,
+        total=cheminfo_total,
+        user_id=user_id,
+        process_id=process_id,
+    )
