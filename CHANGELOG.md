@@ -52,8 +52,10 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   about a tenth of a ppm, invisible against peaks 4-8 ppm wide. Peaks now look
   more angular, since a raw file keeps about three points across a peak's
   width - but the drawing had no more than that either; it looked smooth
-  because every peak in it was symmetric with a point exactly on its top. TOF
-  spectra are unchanged: they always showed the measured signal.
+  because every peak in it was symmetric with a point exactly on its top. Zoom
+  in far enough to tell them apart and the spectra now dot the points the
+  instrument recorded, so how few there are is shown rather than hidden. TOF
+  spectra always showed the measured signal, and get the same dots.
 
   The drawings were cached in each sample file's directory as
   `sum_signal*_recon.zarr`, with `.lock` files beside them. Nothing reads them

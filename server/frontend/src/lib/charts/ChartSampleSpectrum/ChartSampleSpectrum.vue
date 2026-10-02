@@ -20,11 +20,16 @@ const spectrumHelp = peakAssignmentEnabled
       message: `
         <h1>Sum Spectrum</h1>
         <p>
-        The sample's spectrum: the continuous signal in green, with every
+        The sample's spectrum: the measured signal in green, with every
         detected peak drawn as a vertical line. Once the sample has an
         assignment run, the peak lines are colored by confidence tier &mdash;
         green assigned, amber candidate, grey-blue below assignability,
         purple reagent / artifact, grey unassigned.
+        </p>
+        <p>
+        Zoom in far enough and dots mark the points the instrument recorded.
+        An Orbitrap file keeps about three across each peak, joined here by
+        straight lines, so a peak's shape is only as fine as those points.
         </p>
         <p>
         Click a peak to focus it: the view zooms in, the inspector shows its
@@ -37,9 +42,14 @@ const spectrumHelp = peakAssignmentEnabled
       message: `
         <h1>Sum Spectrum</h1>
         <p>
-        The sample's spectrum: the continuous signal in green, with every
+        The sample's spectrum: the measured signal in green, with every
         detected peak drawn as a vertical grey line. Click a peak to select it
         and assign a composition below.
+        </p>
+        <p>
+        Zoom in far enough and dots mark the points the instrument recorded.
+        An Orbitrap file keeps about three across each peak, joined here by
+        straight lines, so a peak's shape is only as fine as those points.
         </p>`,
       doc: app.ui.help.docUrl('how-it-works/peak-detection/')
     }

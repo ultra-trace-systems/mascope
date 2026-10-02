@@ -1,5 +1,5 @@
 <script setup>
-import { ref, computed, onMounted, onBeforeUnmount, watch, useSlots } from 'vue'
+import { ref, shallowRef, computed, onMounted, onBeforeUnmount, toRaw, watch, useSlots } from 'vue'
 
 import Plotly from 'plotly.js-dist-min'
 
@@ -10,6 +10,8 @@ import Popover from 'primevue/popover'
 import { useWindowSize } from '@vueuse/core'
 
 import { useApp } from '@/stores'
+
+import { samplesShown, withSampleMarkers } from './samples.js'
 
 const win = useWindowSize()
 
@@ -57,6 +59,50 @@ const plot = ref(null)
 const created = ref(false)
 const settings = ref()
 let clickTimeout = null
+
+// The x range and plot-area width as last drawn, which decide whether a trace's
+// samples sit far enough apart on screen to be dotted. Plotly keeps what it drew
+// on the graph div's full layout; the layout handed in only holds what was
+// asked for, which is "autorange" until someone zooms.
+const view = shallowRef(null)
+
+function readView() {
+  const fullLayout = plot.value?._fullLayout
+  const range = fullLayout?.xaxis?.range
+  const width = fullLayout?._size?.w
+  if (!range || !(width > 0)) return
+  const [x0, x1] = range.map(Number)
+  const last = view.value
+  if (last && last.x0 === x0 && last.x1 === x1 && last.width === width) return
+  view.value = { x0, x1, width }
+}
+
+// Per trace, whether its samples are dotted: only a trace that asks for it
+// (`markSamples`), and only while they sit far enough apart to tell apart. The
+// previous array is kept while nothing flips, so a zoom that changes nothing
+// here does not redraw anything.
+const dotted = computed((previous) => {
+  const current = view.value
+  const next = (props.data ?? []).map(
+    (trace, index) =>
+      Boolean(trace.markSamples) &&
+      current !== null &&
+      samplesShown(trace.x, [current.x0, current.x1], current.width, previous?.[index] ?? false)
+  )
+  const same = previous?.length === next.length && next.every((shown, i) => shown === previous[i])
+  return same ? previous : next
+})
+
+// The traces as Plotly gets them: `markSamples` is this component's, not a
+// trace attribute Plotly knows.
+const plotData = computed(() =>
+  (props.data ?? []).map((trace, index) => {
+    if (!('markSamples' in trace)) return trace
+    const drawn = { ...toRaw(trace) }
+    delete drawn.markSamples
+    return dotted.value[index] ? withSampleMarkers(drawn) : drawn
+  })
+)
 
 const resetSelection = () => {
   if (plot.value && props.data.length > 0) {
@@ -207,16 +253,21 @@ function handleRelayout(data) {
     // Update dragmode state
     emit('dragmode', dragmode)
   }
+  readView()
 }
 
 onMounted(() => {
   console.debug(`📊 [${props.id}] creating chart`)
   // create the plot
-  Plotly.newPlot(plot.value, props.data, derived.value.layout, derived.value.config)
+  Plotly.newPlot(plot.value, plotData.value, derived.value.layout, derived.value.config)
   // add the event listener
   plot.value.on('plotly_click', handleClick)
   plot.value.on('plotly_relayout', handleRelayout)
   plot.value.on('plotly_selected', handleSelect)
+  // A full draw ends in afterplot, an update of what is drawn in react; either
+  // can move an autoranged axis.
+  plot.value.on('plotly_afterplot', readView)
+  plot.value.on('plotly_react', readView)
   // mark as created
   created.value = true
 })
@@ -232,6 +283,8 @@ onBeforeUnmount(() => {
   plot.value?.removeEventListener('plotly_click', handleClick)
   plot.value?.removeEventListener('plotly_relayout', handleRelayout)
   plot.value?.removeEventListener('plotly_selected', handleSelect)
+  plot.value?.removeEventListener('plotly_afterplot', readView)
+  plot.value?.removeEventListener('plotly_react', readView)
 })
 
 const ready = computed(() => created.value && derived.value.layout && app.ui.split.right)
@@ -242,7 +295,7 @@ watch(
     if (ready.value) {
       console.debug(`📊 [${props.id}] redrawing chart with height ${props.height}`)
       // adapt to changes
-      Plotly.react(plot.value, props.data, derived.value.layout, derived.value.config)
+      Plotly.react(plot.value, plotData.value, derived.value.layout, derived.value.config)
       // Relayout to autoranges to fix horizontal-only zoom
       Plotly.relayout(plot.value, {
         'xaxis.autorange': derived.value.layout.xaxis.autorange ? true : false,
@@ -253,12 +306,13 @@ watch(
   { flush: 'post' }
 )
 
+// New data, or a zoom that brings samples into reach of their dots or out of it
 watch(
-  () => props.data,
+  [() => props.data, dotted],
   () => {
     if (ready.value && props.data && plot.value) {
       console.debug(`📊 [${props.id}] updating chart data`)
-      Plotly.react(plot.value, props.data, derived.value.layout, derived.value.config)
+      Plotly.react(plot.value, plotData.value, derived.value.layout, derived.value.config)
     }
   },
   { deep: true }
