@@ -228,8 +228,10 @@ labels:
 1. **Pool** the per-scan FT label peaks across the selected scans.
 2. **Key them by frequency** (`_labels_on_one_calibration`): each scan's label
    m/z is converted to frequency with that scan's Conversion Parameter B/C and
-   back with one reference scan's, the same move the profile averaging makes
-   (section 3.1). What shifts a label between scans is the per-scan
+   back with one reference scan's. The profile averaging goes to frequency the
+   same way (section 3.1), though it writes its grid back on the mean
+   calibration (3.2); a key only has to group, so any one scan serves. What
+   shifts a label between scans is the per-scan
    calibration, and when a lock mass engages part-way through a file that
    calibration steps by a few ppm at once. At low m/z such a step is wider
    than the bin below *and* than half a FWHM, so without this key one peak's

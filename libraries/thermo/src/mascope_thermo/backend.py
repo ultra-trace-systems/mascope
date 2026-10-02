@@ -1621,8 +1621,9 @@ class OpenTFRawBackend:
         land in two bins and the jitter-split merge cannot recover them.
         Converting every scan's labels to frequency with its own B/C and back
         with one reference calibration removes the step -- the profile
-        averaging does the same, see ``_average_profile_in_frequency`` -- so the
-        bin groups a peak's centroids by physical frequency.
+        averaging keys by frequency the same way, though it writes its grid
+        back on the mean calibration, see ``_average_profile_in_frequency`` --
+        so the bin groups a peak's centroids by physical frequency.
 
         Returns one array per scan, aligned with ``mz_parts``, or None when a
         selected scan carries no B/C (non-FTMS data), in which case the caller

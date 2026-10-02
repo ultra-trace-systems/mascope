@@ -1,10 +1,12 @@
-"""Averaging a profile when a scan carries no frequency calibration.
+"""Averaging a profile, in the frequency domain and in the m/z fallback.
 
 ``average_profile`` averages in the frequency domain, which needs each scan's
 Conversion Parameters B and C from its trailer. A non-FTMS scan carries none,
 and then the m/z-domain fallback runs: a constant-ppm m/z grid, summed with an
-integral-conserving interpolation. These tests drive that fallback with a fake
-reader whose trailer holds no conversion parameters.
+integral-conserving interpolation. The first tests drive that fallback with a
+fake reader whose trailer holds no conversion parameters. The rest drive the
+frequency path: its grid has to land on the samples it averages, and be
+written on the mean of the scans' calibrations.
 """
 
 import numpy as np

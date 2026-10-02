@@ -115,7 +115,7 @@ On the internal regression corpus, the census agrees between the backends on 181
 
 The `average_profile` algorithm operates in the **frequency domain**.
 
-- **Grid Resolution**: Uses a constant **0.2 ppm** output grid to sample per-peak FWHM while collapsing jitter.
+- **Grid**: One point per native FFT bin, at the mean of the frequencies the scans sampled in it; a constant **0.2 ppm** m/z grid only for scans without Conversion Parameters.
 - **m/z Axis**: The frequency grid is converted back to m/z on the mean of the scans' Conversion Parameters B and C, the calibration their averaged centroids sit on. Nothing is fitted to the centroids.
 - **S/N Scaling**: Averaged Signal-to-Noise is scaled by $n/\sqrt{N}$.
 
