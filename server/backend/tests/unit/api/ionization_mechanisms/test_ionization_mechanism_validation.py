@@ -4,7 +4,8 @@ A mechanism is accepted in the standard adduct notation (``[M-H]-``) or the
 legacy one (``-H+``), and stored in the standard one. Each term's formula is
 validated (strictly) via mascope_tools.composition.utils.assert_valid_formula,
 which raises on invalid characters and unknown elements rather than silently
-ignoring them.
+ignoring them. A mechanism longer than its column is refused before anything
+parses it.
 """
 
 from types import SimpleNamespace
@@ -16,10 +17,24 @@ from mascope_backend.api.controllers.ionization_mechanisms.ionization_mechanisms
     read_ionization_mechanism,
     report_if_unwritable,
 )
+from mascope_backend.api.models.ionization_mechanisms.config import (
+    ionization_mechanism_config,
+)
 from mascope_backend.api.models.ionization_mechanisms.ionization_mechanism_pydantic_model import (
     IonizationMechanismCreate,
     IonizationMechanismRead,
 )
+from mascope_backend.db import IonizationMechanism
+from mascope_tools.composition.mechanism_notation import parse_mechanism
+
+
+#: The longest mechanism a create accepts.
+LIMIT = ionization_mechanism_config.IONIZATION_MECHANISM_MAX_LENGTH
+
+
+def _mechanism(length: int) -> str:
+    """A valid mechanism this many characters long, in the standard notation."""
+    return "[M+" + "H" * (length - 5) + "]+"
 
 
 @pytest.mark.parametrize(
@@ -92,12 +107,67 @@ def test_a_polarity_the_ion_does_not_carry_is_rejected(polarity, mechanism):
         )
 
 
+def test_the_bound_is_the_column_length():
+    """A create accepts what the column can store, and nothing longer."""
+    assert LIMIT == IonizationMechanism.__table__.c.ionization_mechanism.type.length
+
+
+def test_a_mechanism_as_long_as_the_column_is_accepted():
+    mechanism = _mechanism(LIMIT)
+    created = IonizationMechanismCreate(ionization_mechanism=mechanism)
+    assert created.ionization_mechanism == mechanism
+
+
+@pytest.mark.parametrize("polarity", [None, "+"])
+def test_an_overlong_mechanism_is_refused_before_it_is_parsed(monkeypatch, polarity):
+    """Parsing takes time in proportion to the text, and the parser's cache
+    keeps each value it accepts, so the bound has to come first - including
+    where the polarity is derived, before pydantic has checked any field."""
+    parsed = []
+
+    def recording_parse(text):
+        parsed.append(len(text))
+        return parse_mechanism(text)
+
+    monkeypatch.setattr(
+        "mascope_backend.api.models.ionization_mechanisms."
+        "ionization_mechanism_pydantic_model.parse_mechanism",
+        recording_parse,
+    )
+    body = {"ionization_mechanism": _mechanism(LIMIT + 1)}
+    if polarity is not None:
+        body["ionization_mechanism_polarity"] = polarity
+
+    with pytest.raises(ValidationError) as refused:
+        IonizationMechanismCreate.model_validate(body)
+
+    errors = {error["loc"]: error["type"] for error in refused.value.errors()}
+    assert errors[("ionization_mechanism",)] == "string_too_long"
+    assert parsed == []
+
+
+def test_a_legacy_spelling_has_to_fit_the_column_as_it_is_stored():
+    """The standard spelling is what is stored, and for one term it is three
+    characters longer than the legacy one: the bound on what is sent is not
+    enough on its own."""
+    fits = "+" + "H" * (LIMIT - 5) + "+"
+    created = IonizationMechanismCreate(ionization_mechanism=fits)
+    assert created.ionization_mechanism == _mechanism(LIMIT)
+
+    overflows = "+" + "H" * (LIMIT - 2) + "+"
+    assert len(overflows) == LIMIT
+    with pytest.raises(ValidationError, match=f"is {LIMIT + 3} characters"):
+        IonizationMechanismCreate(ionization_mechanism=overflows)
+
+
 #: Rows a create would refuse today, as older rules or direct inserts left them.
 STORED_ROWS_CREATE_REFUSES = [
     ("+", "++"),  # empty modification, accepted before that rule
     ("+", "[M+H]+ 0123456789abcdef"),  # free-text label
     ("-", "-H-"),  # polarity the mechanism does not imply
     ("+", "+Zz+"),  # element the formula check does not know
+    # A legacy row as long as the column, read in the standard notation.
+    pytest.param("+", _mechanism(LIMIT + 3), id="legacy-row-at-the-column-length"),
 ]
 
 

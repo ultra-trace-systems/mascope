@@ -15,6 +15,9 @@ class IonizationMechanismConfig(BaseModel):
     # Polarity constraints
     IONIZATION_MECHANISM_POLARITY: list = ["+", "-"]
 
+    # The longest mechanism its column holds, IonizationMechanism.ionization_mechanism
+    IONIZATION_MECHANISM_MAX_LENGTH: int = 256
+
 
 # Global ionization mechanism configuration instance
 ionization_mechanism_config = IonizationMechanismConfig()
