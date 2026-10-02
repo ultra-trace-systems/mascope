@@ -21,6 +21,12 @@
 # PyPI already has. Once PyPI has the version, its copy is the one checked,
 # never the wheel built here.
 #
+# What a pass proves: the names the CLI imports at startup exist in that
+# runtime. A newer runtime behaviour, keyword argument or config field, or a
+# newer name imported inside a function, passes it and still needs the floor
+# raised by hand. The result depends on PyPI as well as on the diff, so a
+# runtime release can turn it red on a pull request that changed nothing here.
+#
 # CI runs it after building both wheels into dist/; the same works locally:
 #   uv build --package mascope_cli --out-dir dist
 #   uv build --package mascope_runtime --out-dir dist
@@ -81,13 +87,16 @@ runtime name the CLI imports must be one of these:
 
   * covered by the floor in {CLI_PYPROJECT}: raise it to a runtime
     that has the name. When PyPI has none yet, also give
-    {RUNTIME_PYPROJECT} a version PyPI does not have, relock
-    (`uv lock`, then `uv lock --directory {AGENT_PROJECT}`) and raise the floor
-    to that version. A release publishes this checkout's runtime under it, so
-    this check then imports against the wheel built here.
+    {RUNTIME_PYPROJECT} a version newer than any PyPI has,
+    relock (`uv lock`, then `uv lock --directory {AGENT_PROJECT}`) and raise
+    the floor to that version. A release publishes this checkout's runtime
+    under it, so this check then imports against the wheel built here.
 
 Raising the floor to a version PyPI already has does not help when PyPI's copy
 predates the name: that copy is the one users install.
+
+The check reads PyPI as well as this diff, so a runtime release can turn it red
+on a pull request that touched nothing in the CLI; the fix is the same.
 """
 
 
@@ -130,7 +139,9 @@ def index_versions(page: dict) -> tuple[set[Version], set[Version]]:
     A version is taken once PyPI lists it at all. The publish workflow skips
     such a version, so a release never publishes the checkout's runtime under
     it. A version is served while one of its files is not yanked; only those
-    install through a version range.
+    install through a version range. pip still keeps a yanked runtime that is
+    already installed while the floor admits it, so yanking a runtime goes
+    with raising the CLI's floor past it.
     """
     taken = {Version(version) for version in page.get("versions", [])}
     served = set()
