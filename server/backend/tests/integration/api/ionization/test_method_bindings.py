@@ -18,6 +18,7 @@ from mascope_backend.api.controllers.sample.files.process import (
 )
 from mascope_backend.api.controllers.sample.files.process.bindings import (
     learn_method_bindings,
+    resolve_modes_by_method_binding,
 )
 from mascope_backend.db import IonizationMode, MethodBinding
 from mascope_backend.db.id import gen_id
@@ -34,7 +35,7 @@ ORBI_STREAM = "FTMS - p NSI Full ms [40.0000-600.0000] R=120000"
 
 
 class _File:
-    """The few fields of a sample file the learner reads."""
+    """The few fields of a sample file the learner and the rung read."""
 
     def __init__(
         self,
@@ -42,12 +43,16 @@ class _File:
         method_file=ORBI_METHOD,
         instrument_type="orbi",
         sample_file_id=None,
+        polarity="-",
     ):
         self.instrument = instrument
         self.instrument_type = instrument_type
         self.method_file = method_file
         self.filename = "a-file.raw"
         self.sample_file_id = sample_file_id or gen_id()
+        # Read a character at a time, as every way of binding a file does:
+        # "+-" is a file carrying both.
+        self.polarity = polarity
 
 
 @pytest.fixture
@@ -642,6 +647,148 @@ async def test_a_rung_below_the_binding_teaches_nothing(modes, binding_of, instr
 
     assert not any(counts.values()), counts
     assert await binding_of(sample_file, streams=_streams()) is None
+
+
+# ---------------------------------------------------------------------------
+# Rung 4: binding a file no token names
+# ---------------------------------------------------------------------------
+
+
+async def _taught(instrument, mode, polarity="-", streams=None):
+    """Teach a binding from one file, as a token-routed file does."""
+    await learn_method_bindings(
+        _File(instrument, polarity=polarity),
+        [mode],
+        source="token",
+        streams=streams if streams is not None else _streams(polarity=polarity),
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_known_method_binds_a_file_no_token_names(
+    modes, instrument, binding_of
+):
+    """The whole point of the rung: this file would park today."""
+    await _taught(instrument, modes["nitrate"])
+
+    routings, declined = await resolve_modes_by_method_binding(
+        _File(instrument), _streams()
+    )
+
+    assert declined is None
+    assert [r.mode.ionization_mode_id for r in routings] == [
+        modes["nitrate"].ionization_mode_id
+    ]
+    # The row that answered, so the item can record which binding bound it.
+    row = await binding_of(_File(instrument), streams=_streams())
+    assert [r.binding_id for r in routings] == [row.method_binding_id]
+
+
+@pytest.mark.asyncio
+async def test_an_unseen_method_declines(modes, instrument):
+    routings, declined = await resolve_modes_by_method_binding(
+        _File(instrument), _streams()
+    )
+
+    assert routings == []
+    assert "has not been seen" in declined
+
+
+@pytest.mark.asyncio
+async def test_a_constant_method_name_declines(modes, instrument):
+    """A name every acquisition shares recognises nothing (section 5.3)."""
+    constant = _File(instrument, method_file="CurrentAcquisition.ini")
+    await learn_method_bindings(
+        constant, [modes["nitrate"]], source="token", streams=_streams()
+    )
+
+    routings, declined = await resolve_modes_by_method_binding(constant, _streams())
+
+    assert routings == []
+    assert "no name of its own" in declined
+
+
+@pytest.mark.asyncio
+async def test_a_file_with_no_census_declines(modes, instrument):
+    """Its scans were not recorded, so there is no class to key on."""
+    await _taught(instrument, modes["nitrate"])
+
+    routings, declined = await resolve_modes_by_method_binding(_File(instrument), None)
+
+    assert routings == []
+    assert "was not recorded" in declined
+
+
+@pytest.mark.asyncio
+async def test_a_method_seen_with_two_chemistries_declines(modes, instrument):
+    """Unanimity is the rule that makes the key safe to route on at all."""
+    await _taught(instrument, modes["nitrate"])
+    await _taught(instrument, modes["bromide"])
+
+    routings, declined = await resolve_modes_by_method_binding(
+        _File(instrument), _streams()
+    )
+
+    assert routings == []
+    assert "more than one chemistry" in declined
+
+
+@pytest.mark.asyncio
+async def test_a_binding_whose_mode_was_deleted_declines(
+    modes, instrument, binding_of, async_session_factory
+):
+    """The row survives the mode by design, and routes nothing without one."""
+    await _taught(instrument, modes["nitrate"])
+    row = await binding_of(_File(instrument), streams=_streams())
+    async with async_session_factory() as session:
+        held = await session.get(MethodBinding, row.method_binding_id)
+        held.ionization_mode_id = None
+        await session.commit()
+
+    routings, declined = await resolve_modes_by_method_binding(
+        _File(instrument), _streams()
+    )
+
+    assert routings == []
+    assert "has not been seen" in declined
+
+
+@pytest.mark.asyncio
+async def test_a_mode_scoped_to_another_instrument_declines(
+    modes, instrument, async_session_factory
+):
+    """Scoping a mode means it is not every instrument's answer (#1463)."""
+    await _taught(instrument, modes["nitrate"])
+    async with async_session_factory() as session:
+        mode = await session.get(IonizationMode, modes["nitrate"].ionization_mode_id)
+        mode.instrument = f"someone-else-{gen_id(6)}"
+        await session.commit()
+
+    routings, declined = await resolve_modes_by_method_binding(
+        _File(instrument), _streams()
+    )
+
+    assert routings == []
+    assert "another instrument" in declined
+
+
+@pytest.mark.asyncio
+async def test_a_dual_polarity_file_needs_both_polarities(
+    modes, instrument, async_session_factory
+):
+    """Half an answer is not one: it would bind one polarity and lose the other.
+
+    The negative polarity has been seen and the positive has not, so the file
+    parks rather than being bound for the half that is known.
+    """
+    await _taught(instrument, modes["nitrate"])
+    both = _File(instrument, polarity="-+")
+    streams = _streams() + _streams(key="FTMS + p NSI Full ms", polarity="+")
+
+    routings, declined = await resolve_modes_by_method_binding(both, streams)
+
+    assert routings == []
+    assert "has not been seen" in declined
 
 
 @pytest.mark.asyncio

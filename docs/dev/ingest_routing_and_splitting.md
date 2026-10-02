@@ -1358,16 +1358,20 @@ Needed before any rung can be provisional or park.
   2. ~~the learner and the backfill follow the newest row (5.3)~~ - done in
      #2255; the backfill is still to be re-run on every server, which it
      merges into what shadow learning has made since v1.10.0;
-  3. the rung, behind `backend.method_binding = "route"` per site: the
-     token, then a learned binding that is unanimous, keyed on a real method
-     name and whose row applies to the instrument, else park. The file's
-     processing detail says it was bound by its acquisition method. This is
-     also what first writes `sample_item.method_binding_id`, and the id has
-     to be checked against the table as the item is created rather than
-     trusted from an earlier read: a re-process reads a file's kept modes
-     during validation and inserts its items minutes later, and `ON DELETE
-     SET NULL` only rewrites rows that already exist, so a binding deleted in
-     between would fail that file's processing on the foreign key;
+  3. ~~the rung, behind `backend.method_binding = "route"` per site~~ - built
+     in #2256: `bindings.resolve_modes_by_method_binding`, tried only after
+     `NoTokenMatchError`, so an ambiguous name still falls through to the
+     configuration it is. One binding per polarity and every polarity must
+     answer, with five guards - a constant method name, an unknown signature
+     class, a key seen with more than one chemistry, a deleted mode, and a
+     mode scoped to another instrument - each returning the sentence the
+     file's `needs_chemistry` detail carries beside the token's. A file bound
+     this way teaches its binding nothing, and its items record
+     `method_binding_id`, which is checked against the table as the item is
+     created rather than trusted from the earlier read: `ON DELETE SET NULL`
+     only rewrites rows that already exist, so a binding deleted between the
+     read and the insert would otherwise fail that file's processing on the
+     foreign key. A vanished id is dropped and the rung kept;
   4. a disagreement report, a db script listing the keys whose binding row
      differs from what the token maps to today - what a person reads before
      confirming a binding, and the seed of the confirm flow that fills

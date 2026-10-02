@@ -4,6 +4,28 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 ## [Unreleased]
 
+### Added
+
+- **A file whose name carries no ionization mode token can now be bound by its
+  acquisition method**, instead of parking for somebody to pick a chemistry.
+  Mascope has been recording which chemistry each acquisition method has been
+  seen running since v1.10.0; this is the first thing that reads those records
+  back. Off by default - set `method_binding = "route"` in the server's
+  `[backend]` config to switch it on.
+
+  It can only ever affect a file that parks today. The rung sits **below** the
+  filename token, so a file a token names is bound exactly as it was, and five
+  guards hold it back otherwise: a method whose reported name never varies
+  recognises nothing, a file whose scans were not recorded has nothing to be
+  recognised by, a method seen running more than one chemistry does not say
+  which, and a chemistry that has been deleted or that belongs to another
+  instrument is not an answer. A file the method cannot place still parks, and
+  its status now says what the token and the method each failed to tell.
+
+  Samples bound this way record it: the Raw files status reads "Bound to ... by
+  its acquisition method", and each sample names the method record that bound
+  it, so what the rung did is a query rather than a guess.
+
 ### Changed
 
 - **A method binding now follows the mode its method's files actually use.** A

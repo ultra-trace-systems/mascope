@@ -457,12 +457,17 @@ class BackendConfig(ModuleConfig):
     # once, does for the files that follow it. "shadow" (the default) learns
     # a binding from every file that routes on a stronger rung - a person's
     # choice or its filename token - and routes nothing on what it learned;
-    # "off" records nothing. Routing on the bindings is a third value, which
-    # arrives once the agreement between them and the token has been measured
-    # on real traffic, per site. Learning is inert either way: no file's
-    # processing depends on it, and nothing reads the rows back yet. See
+    # "off" records nothing; "route" also binds a file NO TOKEN NAMES to the
+    # chemistry its acquisition method has been seen running, instead of
+    # parking it for someone to choose.
+    #
+    # "route" can only ever affect a file that parks today. It sits BELOW the
+    # filename token, so a file a token names is bound exactly as before, and
+    # a method seen running two chemistries is skipped. Switched on per site:
+    # on the production fleet nearly all of what it gains is at the sites
+    # whose file names carry no token at all. See
     # docs/dev/ingest_routing_and_splitting.md section 5.3.
-    method_binding: Literal["off", "shadow"] = "shadow"
+    method_binding: Literal["off", "shadow", "route"] = "shadow"
     # Allowlist of per-record reference licences the peak-assignment database
     # stage (Stage A) may match against. The reference mirror carries a
     # licence per record from ingest through to results, and some sources

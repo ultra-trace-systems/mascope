@@ -100,10 +100,17 @@ filestreams = './filestreams'
 # does for the files that follow it. "shadow" (the default) learns a binding
 # from every file that routes on a stronger rung - a person's choice or its
 # filename token - and routes nothing on what it learned; "off" records
-# nothing. Routing on the bindings is a third value, which arrives once the
-# agreement between them and the token has been measured on real traffic, per
-# site. Learning is inert either way: no file's processing depends on it, and
-# nothing reads the rows back yet.
+# nothing; "route" also binds a file NO TOKEN NAMES to the chemistry its
+# acquisition method has been seen running, instead of parking it for someone
+# to choose.
+#
+# "route" can only ever affect a file that parks today: it sits below the
+# filename token, so a file a token names is bound exactly as before, and a
+# method that has been seen running two chemistries is skipped rather than
+# guessed at. What it gains is concentrated: on the production fleet nearly
+# all of it is at the sites whose file names carry no token at all, so switch
+# it on there first and watch the parked count. Takes effect on restart, and
+# applies to files converted from then on.
 # method_binding = "shadow"
 # Reference chemistry: the per-record licence tags peak assignment's database
 # stage is allowed to match against. Unset (the default) means no gating -
