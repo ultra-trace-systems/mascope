@@ -1,3 +1,5 @@
+import math
+
 import numpy as np
 import pandas as pd
 from sqlalchemy import select
@@ -417,6 +419,120 @@ async def _annotate_with_reference(results: list[dict], known_only: bool) -> lis
     return annotated
 
 
+# The fields of a matched candidate the composition search pane reads
+# (PanePeakSearch.vue and searchHit.js), which are all a match search returns.
+# A candidate is built from the matched ion and every isotope line matching
+# computed for it - ids, filter parameters, peak intensities and noise included -
+# and a pattern runs to tens of lines, so the fields the pane never reads were
+# most of what the search sent. A field the pane starts reading has to be named
+# here.
+_PANE_CANDIDATE_FIELDS = (
+    "target_compound_formula",
+    "target_ion_formula",
+    "ionization_mechanism_id",
+    # The legacy score, which the pane shows while peak assignment is off.
+    "match_score",
+    "match_category",
+    "alarming",
+    # The peak-centric scores (`_annotate_assignment_scores`).
+    "fit_score",
+    "plausibility",
+    "evidence",
+    "tier",
+)
+_PANE_CHEMINFO_FIELDS = (
+    "target_compound_unsaturation",
+    "target_isotope_mz",
+    "target_isotope_mz_error_ppm",
+)
+_PANE_MECHANISM_FIELDS = ("ionization_mechanism_id", "ionization_mechanism")
+_PANE_KNOWN_COMPOUND_FIELDS = ("name", "source")
+_PANE_ISOTOPE_FIELDS = (
+    "target_isotope_formula",
+    "mz",
+    "relative_abundance",
+    "sample_peak_mz",
+    "match_mz_error",
+    "match_score",
+    "match_category",
+    "alarming",
+)
+
+
+def _pick(record: dict, fields: tuple[str, ...]) -> dict:
+    """The named fields of a record, of those it has."""
+    return {field: record[field] for field in fields if field in record}
+
+
+def _for_the_pane(candidate: dict) -> dict:
+    """A matched candidate cut down to the fields the search pane reads.
+
+    Every isotope line is kept - the pane lists them all under an expanded
+    candidate - and so are the absent keys' absences: ``known_compounds`` is
+    there only when the reference mirror was consulted, and the peak-centric
+    scores only when the search was scored with them.
+
+    :param candidate: A matched candidate as `match_compositions_by_mz` builds it.
+    :type candidate: dict
+    :return: The same candidate, with only the fields the pane reads.
+    :rtype: dict
+    """
+    cheminfo = candidate.get("cheminfo") or {}
+    pane_cheminfo = _pick(cheminfo, _PANE_CHEMINFO_FIELDS)
+    if "ionization_mechanism" in cheminfo:
+        pane_cheminfo["ionization_mechanism"] = _pick(
+            cheminfo["ionization_mechanism"] or {}, _PANE_MECHANISM_FIELDS
+        )
+    if "known_compounds" in cheminfo:
+        pane_cheminfo["known_compounds"] = [
+            _pick(known, _PANE_KNOWN_COMPOUND_FIELDS)
+            for known in cheminfo["known_compounds"]
+        ]
+    return {
+        **_pick(candidate, _PANE_CANDIDATE_FIELDS),
+        "cheminfo": pane_cheminfo,
+        "children": [
+            _pick(isotope, _PANE_ISOTOPE_FIELDS)
+            for isotope in candidate.get("children", [])
+        ],
+    }
+
+
+def _best_first(score) -> tuple[bool, float]:
+    """Sort key for a score, best first and a missing one after every score."""
+    missing = score is None or (isinstance(score, float) and math.isnan(score))
+    return (missing, 0.0 if missing else -score)
+
+
+def _best_candidates(candidates: list[dict], score_key: str, limit: int) -> list[dict]:
+    """The ``limit`` best candidates by ``score_key``, in the search's own order.
+
+    Ranked as the pane lists them before anyone sorts the table - that score
+    descending, a missing one last, ties in the search's order - so what a cap
+    drops is the bottom of the pane's own default listing, and the top of it is
+    the same as an uncapped search's. The candidates kept stay in the order the
+    search gave them, as an uncapped result's do: the pane sorts the table
+    itself, and among candidates a column cannot tell apart its sort is stable.
+
+    :param candidates: The matched candidates, in the search's order.
+    :type candidates: list[dict]
+    :param score_key: The score the pane lists them by.
+    :type score_key: str
+    :param limit: How many to keep.
+    :type limit: int
+    :return: At most ``limit`` candidates.
+    :rtype: list[dict]
+    """
+    if len(candidates) <= limit:
+        return candidates
+    ranked = sorted(
+        range(len(candidates)),
+        key=lambda index: _best_first(candidates[index].get(score_key)),
+    )
+    kept = set(ranked[:limit])
+    return [candidate for index, candidate in enumerate(candidates) if index in kept]
+
+
 async def _search_finished(
     message: str,
     mz: float,
@@ -439,9 +555,9 @@ async def _search_finished(
     :param message: What the notification says.
     :param mz: The m/z searched.
     :param sample_item_id: The sample searched.
-    :param data: The matched candidates.
+    :param data: The candidates, as the pane reads them.
     :param total: How many compositions the search found, before any were
-        dropped for matching another peak.
+        dropped for matching another peak or past the cap.
     :param user_id: The account that ran the search.
     :param process_id: The search task's process id.
     :return: The controller's result: the counts, the rows, and notification
@@ -490,7 +606,8 @@ async def match_compositions_by_mz(
     - Find compositions matching the m/z value using Mascope Tools
     - Match these compounds against a specified sample
     - Combine and format the results
-    - Save the result for the user who ran the search
+    - Keep the best ``MATCH_RESULT_MAX_CANDIDATES``, cut down to the fields the
+      search pane reads, and save them for the user who ran the search
 
     Match ion aggregation level is used to represent the match score of each formula result.
     Match isotopes are included in the result data for more detailed information.
@@ -532,7 +649,7 @@ async def match_compositions_by_mz(
     :return: Metadata (``results`` returned, ``total`` the compositions the
         search found) and the matched candidates as ``data``, each the matched
         ion with its composition result as ``cheminfo`` and its isotope lines
-        as ``children``
+        as ``children``, cut down to what the pane reads (`_for_the_pane`)
     :rtype: dict
     """
     if match_params is None:
@@ -651,10 +768,25 @@ async def match_compositions_by_mz(
     # Only when the feature is on - otherwise this long-standing search keeps
     # reporting the legacy match score and category it always has, and the extra
     # fields stay absent so the UI falls back to the legacy columns.
-    if peak_assignment_enabled():
+    scored = peak_assignment_enabled()
+    if scored:
         _annotate_assignment_scores(data, match_params)
 
-    message = f"Matched {len(data)} potential compounds with m/z {mz:.4f}."
+    # The pane lists the candidates by the score it shows, so the cap keeps the
+    # head of that listing.
+    matched = len(data)
+    data = [
+        _for_the_pane(candidate)
+        for candidate in _best_candidates(
+            data,
+            score_key="fit_score" if scored else "match_score",
+            limit=cheminfo_config.MATCH_RESULT_MAX_CANDIDATES,
+        )
+    ]
+
+    message = f"Matched {matched} potential compounds with m/z {mz:.4f}."
+    if len(data) < matched:
+        message += f" Listing the best {len(data)}."
     runtime.logger.info(message)
     return await _search_finished(
         message,
