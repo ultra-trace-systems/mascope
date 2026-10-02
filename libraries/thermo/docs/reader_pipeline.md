@@ -288,7 +288,10 @@ The spectrum endpoints -- the sample spectrum, the sample file spectrum and the
 match view's isotope windows, and through them the SDK's `get_spectrum` and
 `get_spectra` -- return the measured averaged profile of section 3. It is the
 same signal, from the same cache entry, that the instrument-function fit and the
-peak heights read.
+peak heights read. The spectrum views dot its samples once a zoom spreads them
+far enough apart to tell one from the next
+(`server/frontend/src/lib/charts/samples.js`), so the profile's density, about
+three points per FWHM, is visible rather than implied.
 
 Nothing is drawn in its place. The display used to show a reconstruction
 instead -- one Gaussian per averaged centroid (centre = m/z, height = intensity,
