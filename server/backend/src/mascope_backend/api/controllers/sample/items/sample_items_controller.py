@@ -662,8 +662,14 @@ async def copy_sample_items(
             type="copy_sample_items",
             status="pending",
             message=f"Copying match records for {len(sample_item_ids)} samples.",
+            # Nothing per sample: this packet is sent again at every step of
+            # every sample's copy (copy_sample_items_match_data), so a list of
+            # the copies in it would make each packet the size of the batch
+            # and the whole copy the square of it - every emit published to
+            # every backend process through Redis pub/sub, after a deep copy
+            # on the event loop. The browser reads a pending packet's progress
+            # and message, nothing else.
             data={
-                "sample_match_copies": [cmd._asdict() for cmd in match_copy_commands],
                 "sample_batch_id": sample_batch_id,
                 "_user_id": user_id,
             },
