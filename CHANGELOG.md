@@ -253,6 +253,26 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   only the fields the pane shows. The pane also shows only the search it
   launched last: one finished in another tab, or an earlier search of the same
   peak under other parameters, no longer replaces its results.
+- **Copying a large sample batch no longer floods the server's live updates.**
+  A batch copy reports its progress six times per sample, and every report
+  carried the list of every sample being copied, so each report was the size
+  of the batch and the whole copy the square of it. Every notification is
+  published to every backend process through Redis, so copying a batch of a
+  few thousand samples pushed gigabytes through it, and the server copied that
+  list again before every report. A report now carries the batch and the
+  progress only.
+
+  Re-processing many files and calibrating a large batch report counts and
+  their first ten failures, as a batch rematch already did, instead of a record
+  for every file or sample - and the re-processing message, which named every
+  file that failed, names ten and counts the rest. A re-processing run that
+  rebuilt some files and failed on others now also refreshes the views of the
+  batches it rebuilt, which it did only when every file succeeded.
+
+  Operators: a notification heavier than 256 KiB is still sent, and now logged
+  as a warning naming its type, so a task whose notification grows with the
+  data shows up in error monitoring before it costs the server its live
+  updates.
 
 ### Security
 
