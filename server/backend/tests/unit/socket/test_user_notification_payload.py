@@ -14,11 +14,15 @@ calibration fit, warning or not, that is the fit's whole table of calibrants,
 and a batch calibration sends one per sample.
 
 A packet heavier than ``USER_NOTIFICATION_BUDGET_BYTES`` is still sent, and
-logged at WARNING, once per notification type: a composition search that sent
-its whole result this way - about 14 MB - overran Redis' pub/sub buffer and
-took every backend process's subscribers off it.
+logged at WARNING once per notification type and
+``USER_NOTIFICATION_BUDGET_WARNING_INTERVAL_S``: a composition search that
+sent its whole result this way - about 14 MB - overran Redis' pub/sub buffer
+and took every backend process's subscribers off it. What outgrows the budget
+is mostly a progress stream, the same packet sent at every step of a task, so
+its repeats are held back rather than logged one by one.
 """
 
+import time
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -31,6 +35,14 @@ from mascope_runtime.logging import SENTRY_FINGERPRINT
 
 
 _SVC = "mascope_backend.socket.notifications.service"
+
+
+@pytest.fixture(autouse=True)
+def _no_warning_window():
+    """Each test starts with no over-budget warning on record, and leaves none."""
+    service._over_budget_warned_at.clear()
+    yield
+    service._over_budget_warned_at.clear()
 
 
 def _notification(**fields) -> UserNotification:
@@ -101,11 +113,15 @@ async def test_a_top_level_packet_keeps_its_data_and_error():
     assert len(packet["error"]["detail"]["data"]["stats"]) == 50
 
 
-def _carrying(payload_bytes: int, silent: bool | None = None) -> UserNotification:
+def _carrying(
+    payload_bytes: int,
+    silent: bool | None = None,
+    notification_type: str = "match_compositions_by_mz",
+) -> UserNotification:
     """A finished task's notification whose data weighs about ``payload_bytes``."""
     return UserNotification(
         process_id="search-process",
-        type="match_compositions_by_mz",
+        type=notification_type,
         status="success",
         message="Matched 2000 potential compounds.",
         data={"rows": "x" * payload_bytes},
@@ -149,3 +165,52 @@ async def test_a_packet_is_weighed_as_it_is_sent():
 
     assert "data" not in packet
     assert records == []
+
+
+@pytest.mark.asyncio
+async def test_a_stream_of_heavy_packets_is_logged_once():
+    """The packet a progress stream sends at every step: one record for the
+    stream, and the repeats at DEBUG - every packet still sent."""
+    budget = service.USER_NOTIFICATION_BUDGET_BYTES
+
+    with captured_logs(level="DEBUG") as records:
+        for _ in range(5):
+            packet = await _emitted(_carrying(budget + 1))
+
+    assert len(packet["data"]["rows"]) == budget + 1
+    assert [r["level"].name for r in records if "budget" in r["message"]] == [
+        "WARNING",
+        "DEBUG",
+        "DEBUG",
+        "DEBUG",
+        "DEBUG",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_each_type_is_logged_on_its_own():
+    """The type names the controller to change: one does not hold back another."""
+    budget = service.USER_NOTIFICATION_BUDGET_BYTES
+
+    with captured_logs(level="WARNING") as records:
+        await _emitted(_carrying(budget + 1))
+        await _emitted(_carrying(budget + 1, notification_type="copy_sample_items"))
+
+    assert [record["extra"][SENTRY_FINGERPRINT] for record in records] == [
+        ["user-notification-over-budget:match_compositions_by_mz"],
+        ["user-notification-over-budget:copy_sample_items"],
+    ]
+
+
+@pytest.mark.asyncio
+async def test_a_type_is_logged_again_once_its_interval_has_passed():
+    budget = service.USER_NOTIFICATION_BUDGET_BYTES
+    interval = service.USER_NOTIFICATION_BUDGET_WARNING_INTERVAL_S
+    service._over_budget_warned_at["match_compositions_by_mz"] = (
+        time.monotonic() - interval - 1
+    )
+
+    with captured_logs(level="WARNING") as records:
+        await _emitted(_carrying(budget + 1))
+
+    assert len(records) == 1

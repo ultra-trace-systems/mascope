@@ -270,9 +270,9 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   batches it rebuilt, which it did only when every file succeeded.
 
   Operators: a notification heavier than 256 KiB is still sent, and now logged
-  as a warning naming its type, so a task whose notification grows with the
-  data shows up in error monitoring before it costs the server its live
-  updates.
+  as a warning naming its type - once an hour per type and server process - so
+  a task whose notification grows with the data shows up in error monitoring
+  before it costs the server its live updates.
 
 ### Security
 

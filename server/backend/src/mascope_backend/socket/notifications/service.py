@@ -1,6 +1,7 @@
 """Socket.IO notification service."""
 
 import json
+import time
 from copy import deepcopy
 from typing import Any
 
@@ -31,12 +32,27 @@ MATCH_COMPUTE_PROGRESS_SHARE = 0.7
 #: composition search's rows).
 USER_NOTIFICATION_BUDGET_BYTES = 256 * 1024
 
+#: How long one notification type's over-budget warning holds back its
+#: repeats. What outgrows the budget is mostly a progress stream - the same
+#: packet sent again at every step of a task - so a record per packet would
+#: flood the monitoring the warning reports to, and the first says all the
+#: rest would.
+USER_NOTIFICATION_BUDGET_WARNING_INTERVAL_S = 60 * 60
+
+# Monotonic time of each notification type's last over-budget warning.
+# Per process, like the acquisition-drift window: each backend worker can
+# warn about a type once per interval, which is the handful this needs, and a
+# Redis round trip on the emit path to make it exact would cost every packet.
+_over_budget_warned_at: dict[str, float] = {}
+
 
 def _warn_if_over_budget(notification_dict: dict[str, Any]) -> None:
     """Log a notification that weighs more than ``USER_NOTIFICATION_BUDGET_BYTES``.
 
     Weighed as JSON, the form the emit is published in. One issue per
-    notification type: the type names the controller that has to change.
+    notification type, the type naming the controller that has to change, and
+    one WARNING per type and ``USER_NOTIFICATION_BUDGET_WARNING_INTERVAL_S``;
+    a repeat inside the interval is logged at DEBUG.
 
     :param notification_dict: The notification as it is about to be emitted.
     :type notification_dict: dict[str, Any]
@@ -48,13 +64,25 @@ def _warn_if_over_budget(notification_dict: dict[str, Any]) -> None:
     if size <= USER_NOTIFICATION_BUDGET_BYTES:
         return
     notification_type = notification_dict.get("type")
+    now = time.monotonic()
+    last = _over_budget_warned_at.get(notification_type)
+    if last is not None and now - last < USER_NOTIFICATION_BUDGET_WARNING_INTERVAL_S:
+        runtime.logger.debug(
+            f"User notification '{notification_type}' of process "
+            f"{notification_dict.get('process_id')} weighs {size} bytes, over its "
+            "budget again"
+        )
+        return
+    _over_budget_warned_at[notification_type] = now
     runtime.logger.bind(
         **{SENTRY_FINGERPRINT: [f"user-notification-over-budget:{notification_type}"]}
     ).warning(
         f"User notification '{notification_type}' weighs {size} bytes, over its "
         f"{USER_NOTIFICATION_BUDGET_BYTES}-byte budget. Every emit is published "
         "to every backend process through Redis pub/sub; a payload that grows "
-        "with the data belongs in an HTTP response the browser fetches."
+        "with the data belongs in an HTTP response the browser fetches. Repeats "
+        f"in this process are logged at DEBUG for "
+        f"{USER_NOTIFICATION_BUDGET_WARNING_INTERVAL_S / 60:g} minutes."
     )
 
 
