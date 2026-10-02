@@ -76,6 +76,9 @@ _FORWARDED_ENV_VARS = [
     # backfill_scan_stream_census
     "CENSUS_LIMIT",
     "CENSUS_RETRY",
+    # report_method_binding_disagreements
+    "BINDING_REPORT_FILES",
+    "BINDING_REPORT_PER_KEY",
 ]
 
 # Runs inside the backend container (`<container_python> -c ...`) and prints
