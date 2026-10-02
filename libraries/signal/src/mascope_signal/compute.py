@@ -220,9 +220,12 @@ def get_sum_signal(
                 name="sum_signal",
             )
 
-    # Every sum signal is put on the file's calibrated m/z axis: the one its
-    # peaks are on, and its stored sum signals are moved to when a calibration
-    # is applied. How it gets there depends on what it was summed from.
+    # A sum signal is put on the file's calibrated m/z axis: the one its peaks
+    # are on, and its stored sum signals are moved to when a calibration is
+    # applied. How it gets there depends on what it was summed from. A TOF
+    # file's full signal is the exception, being the reference itself: apply
+    # writes the calibrated axis into its store and the filtered ones take it
+    # from there, so one summed afresh from the data file keeps that file's axis.
     is_full_sum_signal = t_min is None and t_max is None and polarity is None
     match sample_type:
         case "orbi_raw":

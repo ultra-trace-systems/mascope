@@ -205,10 +205,10 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   their timeseries and the file's full spectrum were never affected, and
   neither were raw Orbitrap and TOF files.
 
-  Operators: no deployment holds a calibrated `orbi_zarr` file, so there is
-  nothing to clean up. Should a server have calibrated one, the spectra it
-  cached since stay off until deleted: remove that file's `sum_signal_*.zarr`
-  stores and they are averaged again on the next view.
+  Operators: none of the deployments we know of holds a calibrated `orbi_zarr`
+  file. Should yours hold one, the spectra cached since it was calibrated stay
+  off until deleted: remove that file's `sum_signal_*.zarr` stores and they
+  are averaged again on the next view.
 
 - **The sample browser's assignment status column explains itself in help mode
   again.** Its header card had no snippet behind it, so the popover showed its
