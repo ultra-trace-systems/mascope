@@ -40,10 +40,12 @@ ENV_BACKEND = "MASCOPE_THERMO_BACKEND"
 # The generation of the OpenTFRaw backend's average_profile, which
 # averaged_profile_signature names: bump it whenever average_profile returns a
 # different profile from the same samples, or a cached profile computed the old
-# way keeps being served as the new one. Generation 2 places each grid point at
-# the mean of the real frequencies in its cell; generation 1 placed it at the
-# cell's centre.
-AVERAGED_PROFILE_GENERATION = 2
+# way keeps being served as the new one. Generation 3 converts the frequency
+# grid back to m/z on the mean of the scans' calibrations; generation 2 used
+# the densest scan's and fitted the axis to the centroid labels. From
+# generation 2 each grid point sits at the mean of the real frequencies in its
+# cell; generation 1 placed it at the cell's centre.
+AVERAGED_PROFILE_GENERATION = 3
 
 Polarity = Literal["+", "-"]
 MsType = Literal["Ms", "Ms2"]
@@ -544,15 +546,6 @@ def _trailer_table(trailers: dict[int, dict]) -> dict:
 # the between-scan jitter duplicates into one cell per native position.
 _AVG_PROFILE_GRID_PPM = 0.2
 
-# average_profile m/z calibration (align the profile axis to the centroid
-# labels; see _align_profile_grid_to_centroids). Sample a few scans for the
-# reference centroids, anchor on well-separated strong peaks, reject matches
-# whose offset is far from the median, and fit a low-order correction.
-_AVG_PROFILE_CALIB_SCANS = 8  # scans sampled for the reference centroids
-_AVG_PROFILE_CALIB_SEP_PPM = 60  # min spacing between anchor peaks
-_AVG_PROFILE_CALIB_TIGHT_PPM = 5  # max residual to keep a match after pass 1
-_AVG_PROFILE_CALIB_MIN_ANCHORS = 6  # below this, leave the grid uncorrected
-_AVG_PROFILE_CALIB_MAX_ANCHORS = 60  # cap anchors (a linear fit needs few)
 _AVG_PROFILE_FREQ_NEWTON = 4  # Newton iterations for the m/z -> frequency inverse
 _AVG_PROFILE_GAP_DF = 2.0  # zero a scan's interp beyond this * FFT bin from its samples
 _AVG_CENTROID_HEIGHT_PPM = 3.0  # window to source centroid height from profile apex
@@ -1638,8 +1631,8 @@ class OpenTFRawBackend:
         params = [self._profile_conversion_params(int(n)) for n in scan_indices]
         if not params or any(b is None for b, _ in params):
             return None
-        # The reference only fixes the key's scale, so any scan serves; the
-        # densest one, as the profile averaging picks.
+        # The reference only fixes the key's scale, so any scan serves: the
+        # densest one.
         ref = max(range(len(mz_parts)), key=lambda i: mz_parts[i].size)
         b_ref, c_ref = params[ref]
         keys = []
@@ -1922,10 +1915,8 @@ class OpenTFRawBackend:
         #   3. Linear-interpolate each scan onto the freq grid and sum. The peaks
         #      are aligned, so this reproduces Thermo's apex (= mean *
         #      ScansCombined) and FWHM; no integral rescale is needed.
-        #   4. Convert the freq grid back to m/z (reference calibration), then
-        #      calibrate the axis to the centroid labels: the freq->m/z conversion
-        #      still omits Thermo's per-scan calibration compensations (~10-20
-        #      ppm), which the exact centroid m/z carry.
+        #   4. Convert the freq grid back to m/z with the mean of the scans'
+        #      calibrations, the one their averaged centroids sit on.
         # Falls back to a constant-ppm m/z grid when the Conversion Parameters
         # are unavailable (non-FTMS data).
         if ppm <= 0:
@@ -1951,7 +1942,6 @@ class OpenTFRawBackend:
         if average and num_combined:
             summed = summed / num_combined
 
-        grid = self._align_profile_grid_to_centroids(scan_indices, grid, summed)
         grid, summed = self._zerofill_baseline(grid, summed)
         return grid, summed, num_combined
 
@@ -2077,10 +2067,21 @@ class OpenTFRawBackend:
             vals[near > _AVG_PROFILE_GAP_DF * df] = 0.0
             summed[lo:hi] += vals
 
-        # Convert the freq grid back to m/z with the reference scan's calibration.
-        b_ref, c_ref = scans[ref][2], scans[ref][3]
+        # Convert the freq grid back to m/z with the mean of the scans'
+        # calibrations. An ion's frequency is the same in every scan; what moves
+        # its m/z from scan to scan is the calibration each scan was written
+        # with, and a lock mass that engages, steps or drifts part-way through a
+        # file moves that by up to a few ppm. An averaged centroid reports the
+        # mean of its labels as written, which for an ion present alike in every
+        # scan is its frequency on the mean calibration, m/z being linear in B
+        # and C. Any one scan's calibration puts the profile as far off its
+        # centroids as that scan is from the mean: measured on two files whose
+        # lock mass engaged part-way, 1.2 and 3.1 ppm in the median, against
+        # under 0.1 ppm on the mean.
+        b_mean = float(np.mean([b for (_, _, b, _) in scans]))
+        c_mean = float(np.mean([c for (_, _, _, c) in scans]))
         f2 = fgrid * fgrid
-        mz_grid = b_ref / f2 + c_ref / (f2 * f2)
+        mz_grid = b_mean / f2 + c_mean / (f2 * f2)
         order = np.argsort(mz_grid)
         return mz_grid[order], summed[order]
 
@@ -2110,91 +2111,6 @@ class OpenTFRawBackend:
         if grid_integral > 0:
             summed *= target_integral / grid_integral
         return grid, summed
-
-    def _align_profile_grid_to_centroids(
-        self,
-        scan_indices: list[int],
-        grid: np.ndarray,
-        summed: np.ndarray,
-    ) -> np.ndarray:
-        """Correct the profile m/z axis to match the file's centroid labels.
-
-        What is left to correct is small. The reader's own per-scan profile m/z
-        is byte-for-byte Thermo's from 2.0.0 (measured: 0.000000 ppm over every
-        point of a scan, where 1.4.0 differed by up to 3.3 ppm and left the
-        profile apex ~5 ppm below its label at low m/z). What remains is this
-        module's own doing: the averaged profile is built in the frequency
-        domain and converted back with ONE scan's calibration, so the other
-        scans' compensations are dropped. Measured on the demo files, the fit
-        below then moves the axis by about half a ppm at the bottom of the range
-        and a couple of tenths at the top.
-
-        The centroids are the reference: match the strongest well-separated
-        profile peaks to their nearest centroid, reject outliers, and fit a
-        low-order m/z correction. Returns the corrected grid, or the original
-        grid unchanged when there is too little signal to fit reliably.
-        """
-        if grid.size == 0:
-            return grid
-
-        # Reference m/z from centroid labels of a sample of the selected scans
-        # (strong peaks appear in every scan, so a sample keeps this cheap on
-        # large files).
-        step = max(1, len(scan_indices) // _AVG_PROFILE_CALIB_SCANS)
-        ref_parts = []
-        for scan_number in scan_indices[::step][:_AVG_PROFILE_CALIB_SCANS]:
-            mz = np.asarray(
-                self._raw.centroid_labels(int(scan_number))["mz"], dtype=np.float64
-            )
-            if mz.size:
-                ref_parts.append(mz)
-        if not ref_parts:
-            return grid
-        ref_mz = np.unique(np.concatenate(ref_parts))
-
-        # Anchors: the strongest, well-separated profile peaks.
-        anchor_prof = []
-        for k in np.argsort(summed)[::-1]:
-            if summed[k] <= 0:
-                break
-            c = grid[k]
-            if all(
-                abs(c - p) / c * 1e6 >= _AVG_PROFILE_CALIB_SEP_PPM for p in anchor_prof
-            ):
-                anchor_prof.append(c)
-            if len(anchor_prof) >= _AVG_PROFILE_CALIB_MAX_ANCHORS:
-                break
-        anchor_prof = np.asarray(anchor_prof)
-        if anchor_prof.size < _AVG_PROFILE_CALIB_MIN_ANCHORS:
-            return grid
-
-        def nearest(vals: np.ndarray) -> np.ndarray:
-            idx = np.clip(np.searchsorted(ref_mz, vals), 1, ref_mz.size - 1)
-            left, right = ref_mz[idx - 1], ref_mz[idx]
-            return np.where(np.abs(vals - left) <= np.abs(vals - right), left, right)
-
-        # Pass 1: nearest centroid gives the gross (median) offset. Pass 2:
-        # re-match each anchor to the centroid nearest its offset-corrected
-        # position and keep only tight matches -- this locks onto the right peak
-        # and drops mismatches that a single nearest-search would let through.
-        n1 = nearest(anchor_prof)
-        med = np.median((n1 - anchor_prof) / anchor_prof * 1e6)
-        expected = anchor_prof * (1.0 + med / 1e6)
-        anchor_ref = nearest(expected)
-        resid_ppm = np.abs(anchor_ref - expected) / expected * 1e6
-        keep = resid_ppm <= _AVG_PROFILE_CALIB_TIGHT_PPM
-        anchor_prof, anchor_ref = anchor_prof[keep], anchor_ref[keep]
-        if anchor_prof.size < _AVG_PROFILE_CALIB_MIN_ANCHORS:
-            return grid
-
-        # Fit centroid_mz = a + b*profile_mz (LINEAR) and remap the grid. The Da
-        # offset is ~linear in m/z; a quadratic over-fits the (dense, mid-m/z)
-        # anchors and mis-extrapolates the low-m/z curvature -- it left a ~5 ppm
-        # systematic below m/z 120 while a line keeps low and high m/z balanced
-        # (within ~1.5 ppm). Equivalent to the physical A + B/f^2 calibration form
-        # since profile m/z is ~ B/f^2.
-        coeffs = np.polyfit(anchor_prof, anchor_ref, 1)
-        return np.polyval(coeffs, grid)
 
     def xic(
         self,
@@ -2338,7 +2254,7 @@ def averaged_profile_signature() -> str:
 
     Names the reader ``MASCOPE_THERMO_BACKEND`` selects and, for OpenTFRaw, the
     reader's version and :data:`AVERAGED_PROFILE_GENERATION`:
-    ``"otf2.0.0-g2"``. The Thermo library averages by itself and is named
+    ``"otf2.0.0-g3"``. The Thermo library averages by itself and is named
     alone, ``"thermo"``.
 
     A profile one signature computed is not what another computes - reader
@@ -2347,7 +2263,7 @@ def averaged_profile_signature() -> str:
     it on this. A reader upgrade changes it by itself; a change to the
     averaging has to bump the generation.
 
-    :return: The signature, e.g. ``"otf2.0.0-g2"``
+    :return: The signature, e.g. ``"otf2.0.0-g3"``
     :rtype: str
     """
     name = os.environ.get(ENV_BACKEND, "opentfraw").lower()

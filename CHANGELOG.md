@@ -166,6 +166,27 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 ### Fixed
 
+- **The averaged Orbitrap profile sits on its peaks when the calibration moves
+  between scans.** Every scan is written out on its own calibration, and when
+  the lock mass engages part-way through a file, or its correction wanders
+  from scan to scan, those calibrations differ by up to a few ppm. The averaged
+  profile was written on one scan's calibration and then fitted to the peaks,
+  and the fit could not see the difference: on three such files the profile
+  sat 0.6, 1.2 and 2.6 ppm off its peaks, a good part of a peak's width at low
+  m/z. It is now written on the mean of the scans' calibrations, which is
+  where the peaks themselves sit, and nothing is fitted. The fit was there for
+  a reader that left the profile a few ppm off its peaks, which opentfraw 2.0.0
+  no longer does, and on files with a steady calibration it added a little
+  offset of its own. Over the demo dataset and an internal corpus of production
+  acquisitions the profile's peaks now sit a median 0.04-0.05 ppm from the
+  peak list, against 0.07-0.08 before, and on the three files above 0.03-0.08.
+
+  Peak positions are unchanged. A peak's height is read off the profile's apex
+  where that lies within 3 ppm of the peak, so on files whose calibration
+  moves some heights change by a few percent. On the demo dataset 18 of its
+  310,095 peaks change height, none above S:N 9. A profile cached by the old
+  averaging is not served again; it is averaged anew on first view.
+
 - **A raw Orbitrap file's cached profile no longer outlives the reader that
   averaged it.** Sum signals are cached per time window and polarity, and
   nothing in the cache said which reader computed them, so a file processed
@@ -174,7 +195,7 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   re-run. With the spectra now drawing that profile, it would also have shown
   up a little off its own peaks. A raw Orbitrap file's cache is now named
   after its reader, the reader's version and the averaging generation, as in
-  `sum_signal.otf2.0.0-g2.zarr`, and is recomputed when any of them changes;
+  `sum_signal.otf2.0.0-g3.zarr`, and is recomputed when any of them changes;
   the first view of each sample after the upgrade averages it again. TOF and
   zarr files keep their caches.
 

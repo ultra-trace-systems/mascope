@@ -293,7 +293,7 @@ def sum_signal_suffix(sample_type: str) -> str:
 
     A raw Orbitrap file's profile is averaged from the raw file on demand, so
     its cache names what averaged it - the reader and the averaging, e.g.
-    ``.otf2.0.0-g2`` (``averaged_profile_signature``). A profile cached by
+    ``.otf2.0.0-g3`` (``averaged_profile_signature``). A profile cached by
     another reader or averaging is then never read back, where it would be
     served, to the spectrum views and to the instrument-function fit alike, as
     if this one had computed it. The other sample types carry no suffix.
