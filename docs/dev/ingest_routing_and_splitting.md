@@ -1390,10 +1390,15 @@ Needed before any rung can be provisional or park.
      only rewrites rows that already exist, so a binding deleted between the
      read and the insert would otherwise fail that file's processing on the
      foreign key. A vanished id is dropped and the rung kept;
-  4. a disagreement report, `report_method_binding_disagreements`: for every
-     binding, what the files of that method bind to by their token and what
-     they would bind to by their method, over a bounded number of the newest
-     files. It writes nothing. Both answers come from the code the pipeline
+  4. ~~a disagreement report, a db script listing the keys whose binding row
+     differs from what the token maps to today~~ - built in #2267 as
+     `report_method_binding_disagreements`: for every binding, what the files
+     of that method bind to by their token and what they would bind to by
+     their method, over a bounded number of the newest files. It writes
+     nothing, and declares that to the script runner, which then takes no
+     pre-script dump for it - a report is read before and after every change,
+     and a restore point for a change it cannot make would be paid for per
+     reading. Both answers come from the code the pipeline
      uses - the token rule, which gained a parameter so that asking it about
      many files is not a query per file, and the rung itself with its six
      guards - because a report that re-implemented either would eventually

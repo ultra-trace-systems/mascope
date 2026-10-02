@@ -21,6 +21,8 @@ from loguru import logger
 from typer.testing import CliRunner
 
 from mascope_cli.cmd.prod.db import scripts
+from mascope_cli.pg import script_writes_nothing
+from mascope_cli.runtime import runtime
 
 
 runner = CliRunner()
@@ -32,6 +34,9 @@ SYSTEMD_DIR = Path(__file__).resolve().parents[3] / "tooling" / "systemd"
 
 CONTAINER = "mascope_prod_backend"
 CONTAINER_PYTHON = "/opt/uv/tools/mascope/bin/python"
+
+#: A discovered script, for the tests that stand in for a whole discovery.
+_HOST_SCRIPT = scripts._Script(module="x.from_host", writes_nothing=False)
 
 
 def _fake_run(returncode: int, stdout: str):
@@ -53,9 +58,12 @@ class FakeContainer:
     assert on what would have reached docker.
     """
 
-    def __init__(self, *, python=CONTAINER_PYTHON, names=(), run_exit=0):
+    def __init__(
+        self, *, python=CONTAINER_PYTHON, names=(), writes_nothing=(), run_exit=0
+    ):
         self.python = python
         self.names = list(names)
+        self.writes_nothing = set(writes_nothing)
         self.run_exit = run_exit
         self.calls: list[list[str]] = []
 
@@ -70,7 +78,10 @@ class FakeContainer:
         if "-c" in cmd:
             assert cmd[cmd.index("-c") - 1] == self.python
             return subprocess.CompletedProcess(
-                cmd, 0, "".join(f"{n}\n" for n in self.names), ""
+                cmd,
+                0,
+                "".join(f"{n} {n in self.writes_nothing}\n" for n in self.names),
+                "",
             )
         if "-m" in cmd:
             return subprocess.CompletedProcess(cmd, self.run_exit, "", "")
@@ -122,7 +133,14 @@ def log_lines():
     The CLI's terminal sink is bound to the real stdout at configure time, so
     CliRunner's captured output never sees loguru records; a sink of our own
     does.
+
+    Configure first, then add the sink: configuring calls `logger.remove()`,
+    which takes every handler with it, and the first CLI command in a process
+    is what triggers it - so a sink added before that vanished, and every test
+    using this fixture passed in a full run and failed when it was the only
+    one.
     """
+    runtime.reload_config()
     lines: list[str] = []
     handler = logger.add(
         lambda message: lines.append(message.record["message"]), level="DEBUG"
@@ -142,16 +160,24 @@ def test_host_discovery_is_empty_without_the_backend_package(no_host_backend):
 
 
 def test_container_discovery_asks_the_container_python(monkeypatch):
-    container = FakeContainer(names=["prune_peak_assignment_runs", "seed_demo"])
+    container = FakeContainer(
+        names=["prune_peak_assignment_runs", "seed_demo"],
+        writes_nothing=["seed_demo"],
+    )
     monkeypatch.setattr(scripts.subprocess, "run", container)
 
     found = scripts._discover_container_scripts(CONTAINER, CONTAINER_PYTHON)
 
     assert found == {
-        "prune_peak_assignment_runs": (
-            "mascope_backend.db.scripts.prune_peak_assignment_runs"
+        "prune_peak_assignment_runs": scripts._Script(
+            module="mascope_backend.db.scripts.prune_peak_assignment_runs",
+            writes_nothing=False,
         ),
-        "seed_demo": "mascope_backend.db.scripts.seed_demo",
+        # Not what seed_demo does - it is the only other name here, and what
+        # matters is that the flag travels per script rather than per run.
+        "seed_demo": scripts._Script(
+            module="mascope_backend.db.scripts.seed_demo", writes_nothing=True
+        ),
     }
     (cmd,) = container.calls
     assert cmd[:3] == ["docker", "exec", CONTAINER]
@@ -166,12 +192,14 @@ def test_container_discovery_reports_a_failed_probe_as_unknown(monkeypatch):
 
 
 def test_container_discovery_ignores_noise_on_stdout(monkeypatch):
-    # Whatever else ends up on stdout, only names that can follow `-m` as a
-    # module path are offered.
+    # Whatever else ends up on stdout, only a line of exactly a module name
+    # and a flag is offered. A line of prose parses as neither, and a name on
+    # its own is a line this runner did not print - both are dropped rather
+    # than guessed at, since the guess would be a module path to execute.
     monkeypatch.setattr(
         scripts.subprocess,
         "run",
-        _fake_run(0, "\nseed_demo\nnot a module\n  \n"),
+        _fake_run(0, "\nseed_demo False\nnot a module\n  \nlonely_name\n"),
     )
     found = scripts._discover_container_scripts(CONTAINER, CONTAINER_PYTHON)
     assert list(found) == ["seed_demo"]
@@ -182,7 +210,7 @@ def test_discovery_prefers_the_container_over_the_host(monkeypatch):
         scripts.subprocess, "run", FakeContainer(names=["from_container"])
     )
     monkeypatch.setattr(
-        scripts, "_discover_host_scripts", lambda: {"from_host": "x.from_host"}
+        scripts, "_discover_host_scripts", lambda: {"from_host": _HOST_SCRIPT}
     )
     assert list(scripts._discover_scripts(CONTAINER, CONTAINER_PYTHON)) == [
         "from_container"
@@ -191,7 +219,7 @@ def test_discovery_prefers_the_container_over_the_host(monkeypatch):
 
 def test_discovery_falls_back_to_the_host_without_a_container_python(monkeypatch):
     monkeypatch.setattr(
-        scripts, "_discover_host_scripts", lambda: {"from_host": "x.from_host"}
+        scripts, "_discover_host_scripts", lambda: {"from_host": _HOST_SCRIPT}
     )
     assert list(scripts._discover_scripts(CONTAINER, None)) == ["from_host"]
 
@@ -214,6 +242,17 @@ def test_the_listing_snippet_lists_the_package_by_file(tmp_path):
         (pkg / "db" / "scripts" / f"{name}.py").write_text(
             "def main():\n    pass\n", encoding="utf-8"
         )
+    # One that declares it writes nothing, and one that only talks about it:
+    # the runner skips the pre-script dump on the strength of this line, so a
+    # docstring or a comment mentioning it must not count.
+    (pkg / "db" / "scripts" / "a_report.py").write_text(
+        "WRITES_NOTHING = True\n\n\ndef main():\n    pass\n", encoding="utf-8"
+    )
+    (pkg / "db" / "scripts" / "talks_about_it.py").write_text(
+        '"""Unlike a report, WRITES_NOTHING = True does not hold here."""\n'
+        "# WRITES_NOTHING = True\n\n\ndef main():\n    pass\n",
+        encoding="utf-8",
+    )
     (pkg / "db" / "scripts" / "__pycache__" / "stale.cpython-312.pyc").write_bytes(b"")
 
     # PYTHONPATH first so the synthetic package shadows the workspace one.
@@ -228,9 +267,11 @@ def test_the_listing_snippet_lists_the_package_by_file(tmp_path):
     )
 
     assert result.returncode == 0, result.stderr
-    assert result.stdout.split() == [
-        "prune_peak_assignment_runs",
-        "require_password_change",
+    assert [line.split() for line in result.stdout.splitlines()] == [
+        ["a_report", "True"],
+        ["prune_peak_assignment_runs", "False"],
+        ["require_password_change", "False"],
+        ["talks_about_it", "False"],
     ]
 
 
@@ -274,7 +315,7 @@ def test_list_falls_back_to_the_host_install_when_the_stack_is_down(
     # the host's copy need not match the deployed image.
     monkeypatch.setattr(scripts.subprocess, "run", FakeContainer(python=None))
     monkeypatch.setattr(
-        scripts, "_discover_host_scripts", lambda: {"seed_demo": "x.seed_demo"}
+        scripts, "_discover_host_scripts", lambda: {"seed_demo": _HOST_SCRIPT}
     )
 
     result = runner.invoke(scripts.prod_db_scripts_app, ["list"])
@@ -546,3 +587,93 @@ def test_the_prune_unit_runs_unattended():
     )
     assert "--skip-backup" in exec_start
     assert "--yes" in exec_start
+
+
+# --- a script that writes nothing ------------------------------------------
+
+
+def test_a_bare_assignment_declares_it_and_a_mention_does_not():
+    # The whole mechanism is this one line, read from source rather than by
+    # importing the module. A docstring or a commented-out copy must not turn
+    # the dump off for a script that writes.
+    assert script_writes_nothing("WRITES_NOTHING = True\n")
+    assert script_writes_nothing("import os\n\nWRITES_NOTHING = True\n\n\n")
+    assert not script_writes_nothing('"""WRITES_NOTHING = True, one day."""\n')
+    assert not script_writes_nothing("# WRITES_NOTHING = True\n")
+    assert not script_writes_nothing("    WRITES_NOTHING = True\n")
+    assert not script_writes_nothing("WRITES_NOTHING = False\n")
+
+
+def test_the_snippet_and_the_host_decide_from_the_one_pattern():
+    # Two readers of the declaration - this process, and the snippet that runs
+    # inside the container - so they are given the same pattern rather than
+    # each carrying its own copy of it.
+    assert repr(scripts.WRITES_NOTHING_PATTERN) in scripts._LIST_SCRIPTS_SNIPPET
+
+
+def test_run_takes_no_backup_for_a_script_that_writes_nothing(
+    no_host_backend, stack_up, no_backup, monkeypatch, log_lines
+):
+    # no_backup fails the test if pg_dump is reached: on eight servers, read
+    # before and after every change, the dump was the one cost of reading a
+    # report often - for a restore point against a change it cannot make.
+    container = FakeContainer(
+        names=["report_method_binding_disagreements"],
+        writes_nothing=["report_method_binding_disagreements"],
+    )
+    monkeypatch.setattr(scripts.subprocess, "run", container)
+
+    result = runner.invoke(
+        scripts.prod_db_scripts_app,
+        ["run", "report_method_binding_disagreements", "--yes"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert container.executed_modules == [
+        "mascope_backend.db.scripts.report_method_binding_disagreements"
+    ]
+    assert any("declares that it writes nothing" in line for line in log_lines)
+    # And not the line that says a restore point is missing, which is what
+    # --skip-backup would have printed and is untrue of this script.
+    assert not any("No restore point" in line for line in log_lines)
+
+
+def test_run_still_backs_up_a_script_that_writes(
+    no_host_backend, stack_up, monkeypatch, tmp_path
+):
+    dumped = []
+
+    def _dump(*args, **kwargs):  # noqa: ARG001
+        dumped.append(kwargs.get("label"))
+        return tmp_path / "dump.sql"
+
+    monkeypatch.setattr(scripts, "pg_dump", _dump)
+    monkeypatch.setattr(scripts, "dirs", lambda *args, **kwargs: (tmp_path, "/backups"))
+    container = FakeContainer(names=["prune_peak_assignment_runs"])
+    monkeypatch.setattr(scripts.subprocess, "run", container)
+
+    result = runner.invoke(
+        scripts.prod_db_scripts_app, ["run", "prune_peak_assignment_runs", "--yes"]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert dumped == ["pre-prune_peak_assignment_runs"]
+
+
+def test_the_listing_says_which_scripts_write_nothing(
+    no_host_backend, stack_up, monkeypatch, log_lines
+):
+    container = FakeContainer(
+        names=["prune_peak_assignment_runs", "report_method_binding_disagreements"],
+        writes_nothing=["report_method_binding_disagreements"],
+    )
+    monkeypatch.setattr(scripts.subprocess, "run", container)
+
+    result = runner.invoke(scripts.prod_db_scripts_app, ["list"])
+
+    assert result.exit_code == 0, result.output
+    listed = [line.strip() for line in log_lines if line.startswith("  ")]
+    assert listed == [
+        "prune_peak_assignment_runs",
+        "report_method_binding_disagreements (writes nothing; no backup is taken)",
+    ]
