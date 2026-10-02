@@ -881,6 +881,15 @@ The CLI is written using [Typer](https://typer.tiangolo.com/), a type-hints base
 
 The best resource for learning about the Typer API is the [Typer docs Learn section](https://typer.tiangolo.com/tutorial/).
 
+#### Importing from the runtime
+
+`mascope-cli` and `mascope-runtime` are published to PyPI separately, and the CLI names the oldest runtime it works with as a floor in `tooling/cli/pyproject.toml` (`mascope_runtime[logs]>=...`). `pip install -U mascope-cli` upgrades an installed runtime only when the new CLI's floor excludes it, and the CLI imports every command group when it starts. So a CLI module that imports a runtime name newer than the floor stops every `mascope` command for anyone left on an older runtime, while everything still passes in the workspace, whose runtime has the name. A name like that is either:
+
+- defined in `tooling/cli/src/mascope_cli/runtime.py` instead of imported, with `tooling/cli/tests/test_runtime_mirror.py` keeping it equal to the runtime's (as `DEPLOYMENT_FILE` is); or
+- covered by raising the floor to a runtime that has it. When PyPI has none yet, also give `libraries/runtime/pyproject.toml` a version PyPI does not have (then `uv lock` and `uv lock --directory agents/file`) and raise the floor to that version: the release publishes the runtime under it.
+
+The "CLI packaging smoke" CI job holds the CLI to this. `tooling/check-cli-runtime-floor.py` installs the built CLI wheel beside the oldest runtime the floor admits and imports it. That runtime comes from PyPI, or is the wheel built from the checkout when PyPI has never had its version. A version PyPI already has is always taken from PyPI, because the checkout's runtime can have gained names under the same number.
+
 ---
 
 ## 🤖 Agents

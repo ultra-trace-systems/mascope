@@ -300,6 +300,7 @@ jobs:
           version: "0.11.2"
 
       - name: Build the CLI and runtime wheels
+        id: wheels
         run: |
           uv build --package mascope_cli --out-dir dist
           uv build --package mascope_runtime --out-dir dist
@@ -331,6 +332,20 @@ jobs:
           test -x "$UV_TOOL_BIN_DIR/mascope"
           test -x "$UV_TOOL_BIN_DIR/mascope-backend"
           "$UV_TOOL_BIN_DIR/mascope" --help > /dev/null
+
+      - name: Import the CLI against the oldest runtime it admits
+        # Both steps above resolve the runtime built from this checkout, which
+        # has every name the CLI could import. A published CLI meets older
+        # runtimes: `pip install -U mascope-cli` keeps an installed runtime its
+        # floor still admits, and the CLI imports every command group at
+        # startup. The script installs the oldest runtime the floor admits -
+        # from PyPI, or the wheel built here when PyPI has never had that
+        # version - and says how to fix a failure. Its own signal, so it runs
+        # whenever the wheels were built.
+        if: ${{ !cancelled() && steps.wheels.outcome == 'success' }}
+        run: |
+          uv run --no-project --python 3.12 --with packaging \
+            python tooling/check-cli-runtime-floor.py dist
 
   e2e:
     name: End-to-end tests (demo stack)
