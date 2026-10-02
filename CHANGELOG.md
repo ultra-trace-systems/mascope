@@ -14,13 +14,19 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   `[backend]` config to switch it on.
 
   It can only ever affect a file that parks today. The rung sits **below** the
-  filename token, so a file a token names is bound exactly as it was, and five
+  filename token, so a file a token names is bound exactly as it was, and six
   guards hold it back otherwise: a method whose reported name never varies
   recognises nothing, a file whose scans were not recorded has nothing to be
   recognised by, a method seen running more than one chemistry does not say
-  which, and a chemistry that has been deleted or that belongs to another
-  instrument is not an answer. A file the method cannot place still parks, and
-  its status now says what the token and the method each failed to tell.
+  which, and a chemistry that has been deleted, that belongs to another
+  instrument, or whose polarity has been edited since is not an answer. A file
+  the method cannot place still parks, and its status now says what the token
+  and the method each failed to tell - and that choosing a chemistry for one
+  file of that method is enough for the rest to follow it.
+
+  Re-processing the files already parked is how a site picks up the ones it has
+  been collecting, so that path reaches the rung too: select them in Raw files
+  and press Re-process.
 
   Samples bound this way record it: the Raw files status reads "Bound to ... by
   its acquisition method", and each sample names the method record that bound

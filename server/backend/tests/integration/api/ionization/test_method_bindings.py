@@ -773,6 +773,30 @@ async def test_a_mode_scoped_to_another_instrument_declines(
 
 
 @pytest.mark.asyncio
+async def test_a_mode_whose_polarity_was_edited_declines(
+    modes, instrument, async_session_factory
+):
+    """The sixth guard, and the one the key cannot cover.
+
+    A signature class describes one polarity and does not change when somebody
+    edits the mode, so the binding keyed on this file's polarity still resolves
+    - and answers with a mode that now measures the other one.
+    """
+    await _taught(instrument, modes["nitrate"])
+    async with async_session_factory() as session:
+        mode = await session.get(IonizationMode, modes["nitrate"].ionization_mode_id)
+        mode.ionization_mode_polarity = "+"
+        await session.commit()
+
+    routings, declined = await resolve_modes_by_method_binding(
+        _File(instrument), _streams()
+    )
+
+    assert routings == []
+    assert "no longer recorded for polarity -" in declined
+
+
+@pytest.mark.asyncio
 async def test_a_dual_polarity_file_needs_both_polarities(
     modes, instrument, async_session_factory
 ):

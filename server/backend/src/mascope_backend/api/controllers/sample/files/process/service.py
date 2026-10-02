@@ -30,6 +30,7 @@ from mascope_backend.api.controllers.sample.batches.sample_batches_controller im
     get_or_create_acquisition_batch,
 )
 from mascope_backend.api.controllers.sample.files.process.bindings import (
+    MethodRouting,
     learn_method_bindings,
     resolve_modes_by_method_binding,
     routes_on_method_binding,
@@ -1017,7 +1018,7 @@ async def _auto_process_sample_file(
     # After the dataset on purpose: a file that binds to nothing still gets
     # its instrument's workspace, which is where its modes are configured.
     by_token = ionization_mode_ids is None
-    routed_by_method: list = []
+    routed_by_method: list[MethodRouting] = []
     if by_token:
         try:
             bound_modes = await resolve_ionization_modes_by_tokens(sample_file)
@@ -1034,10 +1035,20 @@ async def _auto_process_sample_file(
                 sample_file, scan_streams
             )
             if declined is not None:
+                # rstrip: the token rule's message ends without a full stop,
+                # and _park_needing_chemistry only normalises the end of the
+                # whole detail, so the two sentences would run together.
+                #
+                # The advice differs at a routing site, which is why it is
+                # written here rather than in the token rule: configuring a
+                # token is no longer the only remedy, because choosing a
+                # chemistry for one file of this method teaches it and the
+                # next file routes on its own.
                 return await _park_needing_chemistry(
                     sample_file,
-                    f"{no_token} Its acquisition method does not say either: "
-                    f"{declined}.",
+                    f"{str(no_token).rstrip('.')}. Its acquisition method "
+                    f"does not say either: {declined}. Choose a chemistry for "
+                    "one file of this method and the rest will follow it.",
                     streams_note,
                 )
             bound_modes = [routing.mode for routing in routed_by_method]
@@ -1104,10 +1115,10 @@ async def _auto_process_sample_file(
         rung = "explicit"
 
     if teaches is not None:
-        # What this file's method has now been seen running. Recorded, not
-        # read: nothing routes on a method binding yet, and this must never
-        # cost the file its processing - learn_method_bindings reports its own
-        # failures.
+        # What this file's method has now been seen running. Read back only
+        # where a deployment sets `method_binding = "route"`, and this must
+        # never cost the file its processing - learn_method_bindings reports
+        # its own failures.
         await learn_method_bindings(
             sample_file,
             bound_modes,
@@ -1708,7 +1719,7 @@ async def re_process_sample_files(
                     f"samples: {e}"
                 )
                 kept = None
-            if kept is None:
+            if kept is None and not routes_on_method_binding():
                 failed_files.append(
                     {
                         "sample_file_id": sample_file.sample_file_id,
@@ -1717,7 +1728,25 @@ async def re_process_sample_files(
                     }
                 )
                 continue
-            kept_modes[sample_file.sample_file_id] = kept
+            if kept is None:
+                # No token, and no samples to keep - but this deployment lets
+                # an acquisition method bind a file, and only the pipeline can
+                # ask it: the rung needs the file's scan-stream census, which
+                # is read there. So the file goes through with no modes of its
+                # own and the pipeline decides.
+                #
+                # It parks again if the method cannot place it, which is where
+                # it already is, with a detail naming both reasons instead of
+                # the token alone. Refusing it here is what made selecting
+                # every parked file and pressing Re-process - the first thing
+                # a site does after switching the flag on - report "no tokens"
+                # for files the pipeline would have bound.
+                runtime.logger.debug(
+                    f"{sample_file.filename} has no token and no samples to "
+                    "keep; its acquisition method may still bind it"
+                )
+            else:
+                kept_modes[sample_file.sample_file_id] = kept
 
         # Passed all validations
         valid_sample_files.append(sample_file)
@@ -2048,9 +2077,9 @@ async def create_acquisition_batches_and_items(
 
     Each item records how it was bound, so that how a file was routed is a
     column rather than a reconstruction
-    (``docs/dev/ingest_routing_and_splitting.md``, section 5.2). The binding
-    row itself is recorded by the rung that reads one, which is not built yet;
-    until then an item names its rung and no binding.
+    (``docs/dev/ingest_routing_and_splitting.md``, section 5.2). An item bound
+    by its acquisition method also names the binding row that did it; every
+    other rung leaves that empty, there being no row to name.
 
     :param sample_file: Sample file record containing polarities and metadata
     :type sample_file: SampleFile

@@ -72,7 +72,7 @@ request for this work updates the table below and ticks its item on #2098.
 |---|---|---|
 | 0 | Stop losing information: method identity, stream census, token-rule and notification fixes | shipped |
 | 1 | Per-file processing state, persistent notifications, "needs a chemistry" | shipped (#2164, #2166-#2169) |
-| 2 | Method bindings: routing without tokens | learned in shadow on every server (#2193, #2196, #2206, #2226), measured (5.7), item provenance (#2254) and the row-following learner (#2255) shipped; the backfill re-run, the rung, the disagreement report and the per-site switch remain, section 10 lists them |
+| 2 | Method bindings: routing without tokens | learned in shadow on every server (#2193, #2196, #2206, #2226), measured (5.7), item provenance (#2254), the row-following learner (#2255) and the rung (#2264) shipped; the backfill re-run, the disagreement report and the per-site switch remain, section 10 lists them |
 | 8 | Chemistry profiles as the unit: complete the seeded profiles, ship the standard methods and their catalogue, list the profiles, a profile-first surface, batches named after the profile | open; built right after phase 2, in parallel with phases 3 and 4 |
 | 3 | The part contract: stream and window honoured by every consumer | open; starts beside phase 8, first for files with more than one MS1 stream in a polarity (4.5) |
 | 4 | Per-stream state: calibration, instrument function, one item per stream, MS2 | open; follows 3 on the same track; no rebuild script (4.5, 9.1) |
@@ -1347,7 +1347,8 @@ Needed before any rung can be provisional or park.
   seen running, keyed on (instrument, method key, signature class) as section
   5.3 defines them, with both riders in force - unanimity to route, and a
   constant configuration name treated as no method name. `backend.method_binding`
-  is `"shadow"`, so nothing reads the rows back; the backfills are
+  is `"shadow"` by default, which learns the rows and reads none of them
+  back - `"route"` adds the rung of item 3. The backfills are
   `mascope prod db script run backfill_scan_stream_census`, which gives the
   Orbitrap history a signature class to be keyed on, and then
   `mascope prod db script run backfill_method_bindings`. Both have run on
@@ -1359,13 +1360,17 @@ Needed before any rung can be provisional or park.
      #2255; the backfill is still to be re-run on every server, which it
      merges into what shadow learning has made since v1.10.0;
   3. ~~the rung, behind `backend.method_binding = "route"` per site~~ - built
-     in #2256: `bindings.resolve_modes_by_method_binding`, tried only after
+     in #2264: `bindings.resolve_modes_by_method_binding`, tried only after
      `NoTokenMatchError`, so an ambiguous name still falls through to the
      configuration it is. One binding per polarity and every polarity must
-     answer, with five guards - a constant method name, an unknown signature
-     class, a key seen with more than one chemistry, a deleted mode, and a
-     mode scoped to another instrument - each returning the sentence the
-     file's `needs_chemistry` detail carries beside the token's. A file bound
+     answer, with six guards - a constant method name, an unknown signature
+     class, a key seen with more than one chemistry, a deleted mode, a mode
+     scoped to another instrument, and a mode whose polarity was edited after
+     the binding learned it - each returning the sentence the file's
+     `needs_chemistry` detail carries beside the token's. Bulk re-processing
+     reaches the rung too: a parked file with no samples to keep goes through
+     to the pipeline rather than being refused on its name, which is what
+     selecting the parked files and pressing Re-process does. A file bound
      this way teaches its binding nothing, and its items record
      `method_binding_id`, which is checked against the table as the item is
      created rather than trusted from the earlier read: `ON DELETE SET NULL`
