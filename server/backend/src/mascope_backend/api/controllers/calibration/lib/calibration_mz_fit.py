@@ -1018,6 +1018,13 @@ class OrbiCalibrationHandler(BaseCalibrationHandler):
 
         runtime.logger.info(f"Calibrating file: {self.filename}")
 
+        # The full sum signal has to exist before the stores are rescaled, so it
+        # is rescaled with them. One averaged after the loop would be put on the
+        # calibration the properties still hold, the old one, and kept there. A
+        # raw Orbitrap file caches it under the name of the reader that averaged
+        # it, so a file processed before that reader has none yet.
+        m_compute.get_sum_signal(self.filename)
+
         # Update m/z axis for all existing sum signals
         sample_data_path = m_name.parse_path_from_item_filename(self.filename)
         sample_file_vars = m_io.get_file_data_vars(sample_data_path)
@@ -1052,9 +1059,7 @@ class OrbiCalibrationHandler(BaseCalibrationHandler):
         fit["par"].pop("old_factor", None)
         fit["par"].pop("old_factor_scaling", None)
         # Update sample file properties. The full sum signal is asked for rather
-        # than read by name: a raw Orbitrap file caches it under the name of the
-        # reader that averaged it, and a file processed before that reader may
-        # not have one yet.
+        # than read by name, since its name depends on the reader.
         full_sum_signal_mz = m_compute.get_sum_signal(self.filename).mz.values
         new_mz_range = full_sum_signal_mz[0], full_sum_signal_mz[-1]
         m_io.update_props(self.filename, {"range": new_mz_range, "mz_calibration": fit})

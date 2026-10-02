@@ -178,6 +178,13 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   the first view of each sample after the upgrade averages it again. TOF and
   zarr files keep their caches.
 
+  A raw Orbitrap file's full sum signal, averaged after the file was
+  calibrated, is now put on the calibrated m/z axis like a filtered window.
+  It used to come out on the acquisition axis, a calibration factor off the
+  file's peaks, which a reset and recalibration then carried forward; that
+  only happened after a manual cache clear, and the new cache names would have
+  made it happen to every calibrated file at once.
+
   Operators: the caches left behind are never read again. Reclaim the space
   with `python -m mascope_backend.db.admin.filestore delete-stale-sum-signal`,
   which deletes them from raw Orbitrap files only. The existing

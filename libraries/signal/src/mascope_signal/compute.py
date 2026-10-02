@@ -220,10 +220,16 @@ def get_sum_signal(
                 name="sum_signal",
             )
 
-    # The full, unfiltered sum signal skips the one-point m/z calibration factor;
-    # filtered signals get it (this matches what the app displays).
+    # Filtered signals are put on the calibrated m/z axis. So is a raw Orbitrap
+    # file's full one: applying a calibration rescales every stored sum signal
+    # in place (OrbiCalibrationHandler), so a stored axis is the acquisition
+    # axis times the current factor, and a full signal averaged after the file
+    # was calibrated - as every one is once a new reader renames the cache -
+    # has to start there too. Other full signals keep the axis they are summed
+    # on: an orbi_zarr file's stored signal is rescaled in place as well, and a
+    # TOF file's full signal is the reference its filtered ones take theirs from.
     is_full_sum_signal = t_min is None and t_max is None and polarity is None
-    if not is_full_sum_signal:
+    if not is_full_sum_signal or sample_type == "orbi_raw":
         # Check if calibration factor is available in the sample file properties
         props = m_io.read_props(base_filename)
         calibration = props["mz_calibration"]

@@ -1,3 +1,4 @@
+import json
 import os
 
 import numpy as np
@@ -114,6 +115,13 @@ class TestGetSumSignalCaching:
         assert injected_error["raised"] is True
 
 
+def _calibrate(sample_file_path: str, factor: float) -> None:
+    """Record a one-point m/z calibration in the test sample's props."""
+    calibration = {"mode": "one-point", "par": {"calibration_factor": factor}}
+    with open(os.path.join(sample_file_path, ".props"), "w") as f:
+        json.dump({"mz_calibration": calibration}, f)
+
+
 def _profile(values) -> xr.DataArray:
     """A three-point averaged profile, as the raw reader returns one."""
     return xr.DataArray(
@@ -182,6 +190,41 @@ class TestRawOrbitrapSumSignalCache:
         monkeypatch.setattr(m_compute, "averaged_profile_signature", lambda: "otfB-g2")
         m_compute.get_sum_signal(SIGNAL_TEST_FILENAME, 0.0, 2.0, "+")
         assert self.computed == ["otfA-g2", "otfB-g2"]
+
+    def test_a_full_signal_averaged_after_calibration_is_on_the_calibrated_axis(
+        self, sample_file_path
+    ):
+        """Applying a calibration rescales every stored sum signal in place, so
+        a stored axis is the acquisition axis times the current factor. A full
+        signal averaged after the file was calibrated - as every one is once a
+        new reader renames the cache - has to start there too, like a window.
+        """
+        _calibrate(sample_file_path, 1.000003)
+
+        full = m_compute.get_sum_signal(SIGNAL_TEST_FILENAME)
+        window = m_compute.get_sum_signal(SIGNAL_TEST_FILENAME, 0.0, 2.0, "+")
+
+        calibrated = np.array([100.0, 101.0, 102.0]) * 1.000003
+        np.testing.assert_allclose(full.mz.values, calibrated, rtol=0, atol=1e-9)
+        np.testing.assert_allclose(window.mz.values, calibrated, rtol=0, atol=1e-9)
+
+
+class TestOrbitrapZarrFullSumSignal:
+    def test_keeps_the_axis_of_its_stored_signal(
+        self, monkeypatch, sample_file_path, signal_dataset
+    ):
+        """An orbi_zarr file's stored signal is rescaled in place by a
+        calibration, like its sum signals, so a full signal summed from it is on
+        the calibrated axis already: the factor must not go on twice."""
+        monkeypatch.setattr(
+            m_compute.m_name, "get_sample_file_type", lambda _: "orbi_zarr"
+        )
+        monkeypatch.setattr(m_compute, "load_signal", lambda _: signal_dataset)
+        _calibrate(sample_file_path, 1.000003)
+
+        full = m_compute.get_sum_signal(SIGNAL_TEST_FILENAME)
+
+        np.testing.assert_allclose(full.mz.values, signal_dataset.mz.values)
 
 
 class TestGetAcquisitionWindow:
