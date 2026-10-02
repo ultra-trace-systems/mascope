@@ -1256,8 +1256,9 @@ async def calibration_mz_calibrate_samples(
     - Calibrate each sample, collecting affected IDs
     - On per-sample failure, log warning and continue
     - Fetch affected batch IDs from all touched sample IDs
-    - Raise a warning naming every sample that failed or was calibrated
-      below the quality bar
+    - Raise a warning naming the samples that failed or were calibrated
+      below the quality bar - the first ``MAX_LISTED_CALIBRATION_FAILURES``
+      of each - and counting the rest
     - Return calibration summary and notification data
 
     :param sample_item_ids: List of sample item IDs to be calibrated.

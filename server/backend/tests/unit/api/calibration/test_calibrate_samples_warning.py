@@ -42,9 +42,13 @@ def _fetched_sample(sample_item_id: str) -> SimpleNamespace:
     )
 
 
-async def _run_batch(sample_item_ids: list[str], failing: set[str]) -> dict:
+async def _run_batch(
+    sample_item_ids: list[str],
+    failing: set[str],
+    progress: AsyncMock | None = None,
+) -> dict:
     """Calibrate a batch in which ``failing`` fails; what the controller returns
-    or raises is passed on."""
+    or raises is passed on. ``progress`` stands in for the progress emitter."""
 
     async def _one_sample(sample_item_id: str, **kwargs) -> dict:
         # A failed fit names the samples it touched too, as the real one does.
@@ -72,7 +76,7 @@ async def _run_batch(sample_item_ids: list[str], failing: set[str]) -> dict:
             f"{_CTRL}.fetch_affected_sample_data",
             AsyncMock(return_value=(None, ["sb-1"], None, None)),
         ),
-        patch(f"{_CTRL}.send_progress_user_notification", AsyncMock()),
+        patch(f"{_CTRL}.send_progress_user_notification", progress or AsyncMock()),
     ):
         return await calibration_mz_calibrate_samples.__wrapped__(
             sample_item_ids=sample_item_ids,
@@ -160,3 +164,18 @@ async def test_a_calibrated_batch_reports_its_batches_not_its_samples():
     result = await _run_batch([f"s{i}" for i in range(50)], failing=set())
 
     assert result["_notification_data"] == {"affected_sample_batch_ids": ["sb-1"]}
+
+
+@pytest.mark.asyncio
+async def test_the_progress_packet_counts_the_samples_and_lists_none():
+    """The packet that opens the batch's progress bar: its message gives the
+    count, and the ids would make it the size of the batch."""
+    progress = AsyncMock()
+
+    await _run_batch([f"s{i}" for i in range(50)], failing=set(), progress=progress)
+
+    progress.assert_awaited_once()
+    packet = progress.await_args.args[0]
+    assert packet.type == "calibration_mz_calibrate_samples"
+    assert packet.message == "m/z calibrating 50 samples."
+    assert packet.data == {"_user_id": 1}
