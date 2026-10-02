@@ -10,14 +10,22 @@ parent reports; the browser reads its process id, status, message and
 progress, and nothing else. It goes without the data and the error detail the
 decorator filled in - for a dependent calibration fit that is the fit's whole
 table of calibrants, and a batch calibration sends one per sample.
+
+A packet heavier than ``USER_NOTIFICATION_BUDGET_BYTES`` is still sent, and
+logged at WARNING, once per notification type: a composition search that sent
+its whole result this way - about 14 MB - overran Redis' pub/sub buffer and
+took every backend process's subscribers off it.
 """
 
 from unittest.mock import AsyncMock, patch
 
 import pytest
+from test_utils import captured_logs
 
+from mascope_backend.socket.notifications import service
 from mascope_backend.socket.notifications.schemas import UserNotification
 from mascope_backend.socket.notifications.service import emit_user_notification
+from mascope_runtime.logging import SENTRY_FINGERPRINT
 
 
 _SVC = "mascope_backend.socket.notifications.service"
@@ -66,3 +74,53 @@ async def test_a_reported_packet_keeps_its_data_and_error():
 
     assert packet["data"] == {"sample_item_id": "sample-1"}
     assert len(packet["error"]["detail"]["data"]["stats"]) == 50
+
+
+def _carrying(payload_bytes: int, silent: bool | None = None) -> UserNotification:
+    """A finished task's notification whose data weighs about ``payload_bytes``."""
+    return UserNotification(
+        process_id="search-process",
+        type="match_compositions_by_mz",
+        status="success",
+        message="Matched 2000 potential compounds.",
+        data={"rows": "x" * payload_bytes},
+        silent=silent,
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_packet_over_its_budget_is_sent_and_logged_by_type():
+    budget = service.USER_NOTIFICATION_BUDGET_BYTES
+
+    with captured_logs(level="WARNING") as records:
+        packet = await _emitted(_carrying(budget + 1))
+
+    assert len(packet["data"]["rows"]) == budget + 1  # sent all the same
+    assert len(records) == 1
+    assert "'match_compositions_by_mz'" in records[0]["message"]
+    assert records[0]["extra"][SENTRY_FINGERPRINT] == [
+        "user-notification-over-budget:match_compositions_by_mz"
+    ]
+
+
+@pytest.mark.asyncio
+async def test_a_packet_within_its_budget_is_not_logged():
+    budget = service.USER_NOTIFICATION_BUDGET_BYTES
+
+    with captured_logs(level="WARNING") as records:
+        await _emitted(_carrying(budget // 2))
+
+    assert records == []
+
+
+@pytest.mark.asyncio
+async def test_a_packet_is_weighed_as_it_is_sent():
+    """A silent packet sheds its payload before it is weighed, so the data it
+    no longer carries does not count against it."""
+    budget = service.USER_NOTIFICATION_BUDGET_BYTES
+
+    with captured_logs(level="WARNING") as records:
+        packet = await _emitted(_carrying(budget * 2, silent=True))
+
+    assert "data" not in packet
+    assert records == []
