@@ -11,9 +11,11 @@ calibration and rematch aggregates do, and the notification carries the
 counts and the failures the message names.
 
 The batches the run touched are carried on the failure paths as well, where
-the background-task decorator resolves the run's reload rooms: a run that
-re-processed some files and failed others has still rebuilt those files'
-samples, and the views showing them have to reload.
+the background-task decorator resolves the run's reload rooms. A file's samples
+are cleared before its pipeline runs, so a run that failed on some or all of
+its files has still changed their batches - the files it re-processed have new
+samples, the ones whose pipeline failed have none - and the views showing them
+have to reload.
 
 All external dependencies are scripted - no database, file or Socket.IO.
 """
@@ -63,9 +65,16 @@ class _Session:
         return result
 
 
-async def _re_process(files: int, failing: set[int], decorated: bool = False):
+async def _re_process(
+    files: int,
+    failing: set[int],
+    decorated: bool = False,
+    pipeline_fails: bool = False,
+):
     """Re-process ``files`` files, of which those in ``failing`` are claimed
-    by another run already. Returns the result, or raises what the run raised.
+    by another run already; with ``pipeline_fails``, the pipeline of every
+    other one fails after its samples were cleared. Returns the result, or
+    raises what the run raised.
     """
     sample_files = [_sample_file(index) for index in range(files)]
     busy = {sample_files[index].sample_file_id for index in failing}
@@ -81,6 +90,8 @@ async def _re_process(files: int, failing: set[int], decorated: bool = False):
             }
         }
     )
+    if pipeline_fails:
+        pipeline.side_effect = ApiException("Calibration failed", {}, 500)
     run = service.re_process_sample_files
     with (
         patch(f"{_SVC}.async_session", lambda: _Session(sample_files)),
@@ -186,6 +197,28 @@ async def test_a_partial_run_still_reloads_the_batches_it_rebuilt():
     ):
         await _re_process(4, failing={1}, decorated=True)
 
+    reloaded = {
+        (call.kwargs["record_type"], tuple(call.kwargs["room"]))
+        for call in reload.await_args_list
+    }
+    assert ("match", (BATCH,)) in reloaded
+
+
+@pytest.mark.asyncio
+async def test_a_failed_run_still_reloads_the_batches_it_cleared():
+    """Every pipeline failed, but only after its file's samples were cleared:
+    the batches have changed all the same, and their views must reload."""
+    with (
+        patch(f"{_FEATURES}.handle_notifications", AsyncMock()) as notify,
+        patch(f"{_UTILS}.emit_record_reload", AsyncMock()) as reload,
+    ):
+        await _re_process(3, failing=set(), decorated=True, pipeline_fails=True)
+
+    notification = notify.await_args.args[1]
+    assert notification.status == "error"
+    assert notification.message.splitlines()[0].endswith(
+        "Failed to re-process all 3 sample files."
+    )
     reloaded = {
         (call.kwargs["record_type"], tuple(call.kwargs["room"]))
         for call in reload.await_args_list

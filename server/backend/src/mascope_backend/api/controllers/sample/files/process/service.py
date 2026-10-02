@@ -1635,7 +1635,6 @@ async def re_process_sample_files(
     processed_count = 0
     failed_files = []
     affected_sample_batch_ids = set()
-    affected_sample_item_ids = set()
 
     # --- Validate all sample files exist and collect data --- #
     async with async_session() as session:
@@ -1871,10 +1870,6 @@ async def re_process_sample_files(
             if "affected_sample_batch_ids" in file_notification_data:
                 affected_sample_batch_ids.update(
                     file_notification_data["affected_sample_batch_ids"]
-                )
-            if "affected_sample_item_ids" in file_notification_data:
-                affected_sample_item_ids.update(
-                    file_notification_data["affected_sample_item_ids"]
                 )
         except ApiException as ae:
             failed_files.append(

@@ -266,8 +266,9 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   their first ten failures, as a batch rematch already did, instead of a record
   for every file or sample - and the re-processing message, which named every
   file that failed, names ten and counts the rest. A re-processing run that
-  rebuilt some files and failed on others now also refreshes the views of the
-  batches it rebuilt, which it did only when every file succeeded.
+  failed on some or all of its files now also refreshes the views of the
+  batches it changed - a file's samples are cleared before its pipeline runs -
+  which it did only when every file succeeded.
 
   Operators: a notification heavier than 256 KiB is still sent, and now logged
   as a warning naming its type - once an hour per type and server process - so
