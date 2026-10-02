@@ -1196,7 +1196,10 @@ async def calibration_mz_calibrate_sample(
 # failure that reaches the user - the notification pane renders type, status
 # and message, and nothing consumes the per-sample detail carried in the
 # payload - so it has to name them, without letting a large batch turn one
-# notification into a wall of text.
+# notification into a wall of text. The payload carries the records the
+# message names and no more: a notification is published to every backend
+# process through Redis pub/sub, and a record per sample would make it the
+# size of the batch.
 MAX_LISTED_CALIBRATION_FAILURES = 10
 
 
@@ -1286,10 +1289,9 @@ async def calibration_mz_calibrate_samples(
         type="calibration_mz_calibrate_samples",
         status="pending",
         message=f"m/z calibrating {len(sample_item_ids)} samples.",
-        data={
-            "sample_item_ids": sample_item_ids,
-            "_user_id": user_id,
-        },
+        # The count is in the message; the ids would make the packet the size
+        # of the batch.
+        data={"_user_id": user_id},
     )
     await send_progress_user_notification(notification)
 
@@ -1381,27 +1383,37 @@ async def calibration_mz_calibrate_samples(
             )
             if items
         )
+        # The records the message names, with the counts behind them; the
+        # batches are what the reloads are addressed to.
         raise_api_warning(
             warning_message,
             {
-                "samples_calibrate_failed": failed_sample_items,
-                "samples_calibrated_below_bar": below_bar_sample_items,
+                "summary": {
+                    "failed": len(failed_sample_items),
+                    "below_bar": len(below_bar_sample_items),
+                    "total": len(sample_item_ids),
+                },
+                "samples_calibrate_failed": failed_sample_items[
+                    :MAX_LISTED_CALIBRATION_FAILURES
+                ],
+                "samples_calibrated_below_bar": below_bar_sample_items[
+                    :MAX_LISTED_CALIBRATION_FAILURES
+                ],
                 "_notification_data": {
                     "affected_sample_batch_ids": affected_sample_batch_ids,
-                    "affected_sample_item_ids": list(affected_sample_item_ids),
                 },
             },
         )
 
+    # No sample ids: the batches are what the reloads are addressed to, and
+    # the count is in the message.
     return {
         "message": (
             f"M/z calibrated {len(sample_item_ids)} samples. "
             f"Number of batches affected: {len(affected_sample_batch_ids)}."
         ),
         "_notification_data": {
-            "sample_item_ids": sample_item_ids,
             "affected_sample_batch_ids": affected_sample_batch_ids,
-            "affected_sample_item_ids": list(affected_sample_item_ids),
         },
     }
 
@@ -1514,7 +1526,6 @@ async def calibration_mz_calibrate_batch(
     # --- Extract notification data from child operation and prepare response ---
     notification_data = calibration_result.get("_notification_data", {})
     affected_sample_batch_ids = notification_data.get("affected_sample_batch_ids", [])
-    affected_sample_item_ids = notification_data.get("affected_sample_item_ids", [])
 
     # --- Update batch statuses ---
     await update_sample_batch_status(
@@ -1535,6 +1546,5 @@ async def calibration_mz_calibrate_batch(
         "message": message,
         "_notification_data": {
             "affected_sample_batch_ids": affected_sample_batch_ids,
-            "affected_sample_item_ids": affected_sample_item_ids,
         },
     }
