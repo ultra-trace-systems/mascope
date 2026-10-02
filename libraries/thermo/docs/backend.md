@@ -73,7 +73,7 @@ Scan selection reads metadata only. The OpenTFRaw backend builds it from `scan_t
 - **`profile_per_scan(polarity, t_min, t_max, ms_type, mz_min, mz_max)`**: Retrieves the raw profile m/z and intensity arrays of each selected scan, with the scan times.
 - **`centroids_per_scan(polarity, t_min, t_max, ms_type, mz_min, mz_max)`**: Retrieves the centroided peaks (m/z, intensity, resolution, S/N) of each selected scan.
 - **`centroids_meta()`**: Returns every scan's centroid m/z, intensity, resolution and noise, decoded from its centroid labels.
-- **`average_profile(scan_indices, ppm, average, reconstruct)`**: Executes frequency-domain averaging across multiple scans, including m/z calibration, jitter correction, and $n/\sqrt{N}$ S/N scaling.
+- **`average_profile(scan_indices, ppm, average)`**: Executes frequency-domain averaging across multiple scans, including m/z calibration, jitter correction, and $n/\sqrt{N}$ S/N scaling. The result is the measured signal, which is also what the spectrum views draw.
 - **`average_centroids(scan_indices, ppm, average)`**: Returns an approximation of centroids derived from an averaged profile.
 - **`xic(mzs, ppm, polarity, t_min, t_max, ms_type)`**: Generates an Extracted Ion Chromatogram within `ppm` of each target m/z across the selected scans.
 
@@ -119,9 +119,8 @@ The `average_profile` algorithm operates in the **frequency domain**.
 - **m/z Correction**: The profile axis is aligned to centroid labels by sampling 8 scans for reference, anchoring on peaks with at least 60 ppm separation, and applying a low-order correction fit.
 - **S/N Scaling**: Averaged Signal-to-Noise is scaled by $n/\sqrt{N}$.
 
-### Profile Reconstruction
+### Averaged Centroids and Baseline
 
-- **Gaussian Reconstruction**: Displayed profiles are reconstructed as a Gaussian-per-centroid to exactly overlay centroids.
 - **Peak Sourcing**: Peak heights are refined from the profile apex within a 3.0 ppm window.
 - **Centroid Merging**: Centroids are merged if their gap is below **0.5 \* local FWHM**.
 - **Zero-filling**: Baseline zeros are placed 2.0 ppm outside cluster edges.

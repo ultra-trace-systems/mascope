@@ -89,6 +89,52 @@ class TestComputeSumSignal:
         with pytest.raises(ValueError):
             m_thermo.compute_sum_signal(POS_ORBI_FILE_PATH, polarity="-")
 
+    @pytest.mark.parametrize(
+        ("path", "polarity"),
+        [(POS_ORBI_FILE_PATH, "+"), (NEG_ORBI_FILE_PATH, "-")],
+        ids=["pos", "neg"],
+    )
+    def test_sum_signal_peaks_sit_on_the_centroids(self, path, polarity):
+        """The spectrum views draw the sum signal as measured, beneath the
+        sample's peaks, which are its averaged centroids, so the signal's peaks
+        have to sit on them. A peak's position is taken the way the Thermo
+        library centroids one, as the vertex of the parabola through its three
+        top samples; the sampled maximum alone can be off by half a sample
+        spacing, a ppm or more.
+
+        Measured, the median offset is 0.14 and 0.25 ppm on these two files
+        and 0.09 over 21 demo files, against a FWHM of 4-8 ppm.
+        """
+        sum_sig, _ = m_thermo.compute_sum_signal(path, polarity=polarity)
+        masses, *_ = m_thermo.get_centroids(path, polarity=polarity)
+        mz, y = np.asarray(sum_sig.mz), np.asarray(sum_sig.values)
+
+        top = y[1:-1]
+        maxima = np.flatnonzero((top > y[:-2]) & (top >= y[2:]) & (top > 0)) + 1
+        y0, y1, y2 = y[maxima - 1], y[maxima], y[maxima + 1]
+        x0, x1, x2 = mz[maxima - 1], mz[maxima], mz[maxima + 1]
+        # Vertex of the parabola through three unevenly spaced points.
+        num = (x1 - x0) ** 2 * (y1 - y2) - (x1 - x2) ** 2 * (y1 - y0)
+        den = (x1 - x0) * (y1 - y2) - (x1 - x2) * (y1 - y0)
+        apexes = x1 - 0.5 * num / den
+
+        nearest = np.clip(np.searchsorted(apexes, masses), 1, apexes.size - 1)
+        left_closer = masses - apexes[nearest - 1] <= apexes[nearest] - masses
+        nearest = np.where(left_closer, nearest - 1, nearest)
+        offsets_ppm = (apexes[nearest] - masses) / masses * 1e6
+        # Only the centroids a profile peak belongs to; noise maxima elsewhere
+        # in the profile are not anybody's position.
+        offsets_ppm = offsets_ppm[np.abs(offsets_ppm) <= 3.0]
+
+        assert offsets_ppm.size >= 0.9 * masses.size, (
+            f"only {offsets_ppm.size} of {masses.size} centroids have a peak "
+            "of the sum signal within 3 ppm"
+        )
+        assert np.median(np.abs(offsets_ppm)) <= 0.5, (
+            f"the sum signal's peaks sit a median "
+            f"{np.median(np.abs(offsets_ppm)):.3f} ppm off their centroids"
+        )
+
 
 class TestGetTicPerScan:
     """Test that the TIC per scan is correctly extracted from the raw file.

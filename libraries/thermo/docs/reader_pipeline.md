@@ -3,7 +3,7 @@
 This document explains, end to end, how Mascope turns a Thermo `.raw` file into
 the spectra and quantities the application uses, and why the non-obvious maths is
 the way it is. It binds together the docstrings in `mascope_thermo` (reading,
-averaging, reconstruction) and `mascope_signal` (sum signal, instrument fit).
+averaging) and `mascope_signal` (sum signal, instrument fit).
 
 It is reference material for developers; each section points at the function that
 implements it. Nothing here is required reading to *use* the public functions in
@@ -262,8 +262,7 @@ labels:
    genuinely sits there, and Thermo's averaging convention reports a little
    less. Matching Thermo exactly would mean reproducing its convention, which is
    not something this pipeline can derive, so the difference is left standing
-   and stated rather than tuned away. This uses the **real** profile
-   (`reconstruct=False`) to avoid recursion with the reconstruction (section 5).
+   and stated rather than tuned away.
 
 This is an *approximation* of Thermo's re-centroiding, so parity here is "very
 close" not "exact": m/z to sub-0.1 ppm, summed intensity within a few percent,
@@ -283,34 +282,25 @@ is flat-topped; its height here is the per-scan sum, as for any other peak.
 
 ---
 
-## 5. Display reconstruction (real vs reconstructed profile)
+## 5. What the spectrum views draw: the measured profile
 
-> **Corrected.** This section used to open by asserting that Thermo's averaged
-> profile is itself one Gaussian per centroid. That is **wrong**, and the
-> evidence given for it did not support it -- see 5.2. The reconstruction here is
-> Mascope's own choice, not an imitation of the vendor.
+The spectrum endpoints -- the sample spectrum, the sample file spectrum and the
+match view's isotope windows, and through them the SDK's `get_spectrum` and
+`get_spectra` -- return the measured averaged profile of section 3. It is the
+same signal, from the same cache entry, that the instrument-function fit and the
+peak heights read.
 
-Mascope keeps **two** profiles and the choice is deliberate:
+Nothing is drawn in its place. The display used to show a reconstruction
+instead -- one Gaussian per averaged centroid (centre = m/z, height = intensity,
+FWHM = m/z / resolution) -- for two reasons, and neither holds.
 
-- **Real measured profile** (`average_profile(reconstruct=False)`, the default)
-  -- the frequency-averaged signal of section 3. Used by the **quantitative**
-  path (the instrument-function fit, peak heights).
-- **Reconstructed profile** (`average_profile(reconstruct=True)`,
-  `_reconstruct_profile`) -- one Gaussian per averaged centroid (center = m/z,
-  height = intensity, FWHM = m/z / resolution), summed on a per-peak sample grid
-  (`_RECON_PTS` samples over +-`_RECON_SIGMA` sigma, ~Thermo's density). It
-  **overlays the centroids exactly**, by construction. Used for **display**.
+### 5.1 Alignment
 
-Using the reconstruction everywhere would break the instrument fit: it needs the
-real measured peak shapes.
-
-### 5.1 The alignment reason for the split has expired
-
-The split was also justified the other way round -- that the real profile plotted
-under the centroid markers would sit a few ppm off them, because the reader
-converted the profile to m/z with the base polynomial only and left Thermo's
-per-scan compensations out. **That is no longer true from reader 2.0.0**, which
-applies them itself:
+The reconstruction overlaid the centroid markers by construction, where the
+measured profile sat a few ppm off them: up to reader 1.4.0 the profile was
+converted to m/z with the base polynomial alone, leaving out the per-scan
+compensations the centroid labels carry. From reader 2.0.0 the reader applies
+them itself:
 
 | | per-scan profile apex minus its label | averaged profile apex minus its averaged centroid |
 | --- | --- | --- |
@@ -320,20 +310,34 @@ applies them itself:
 The per-scan axis is in fact byte-for-byte the Thermo library's: 0.000000 ppm
 over every point of a scan, where 1.4.0 differed by up to 3.3 ppm. Against a
 4-8 ppm FWHM, a tenth of a ppm is not a visible offset.
+`test_sum_signal_peaks_sit_on_the_centroids` (in `test_thermo_spec_extraction.py`)
+holds the averaged profile to it under each backend, locating a peak the way the
+Thermo library centroids one: at the vertex of the parabola through its three
+top samples (5.3).
 
-So the reconstruction is no longer needed to make the rendered profile line up
-with its centroids, and showing the measured signal is now an option. What the
-reconstruction still buys is smoothness: a raw file keeps only about three points
-per FWHM, so the real profile renders as a few-point polyline rather than a
-curve. What it costs is honesty -- it draws a symmetric Gaussian over whatever
-was actually measured, so a shoulder, an asymmetry or an unresolved neighbour
-disappears from the picture. Which to show is a product call, not a constraint
-of the reader any more.
+### 5.2 Smoothness, and what it cost
 
-### 5.2 Thermo's profile is NOT a reconstruction
+The other reason was that a raw file keeps about three points per FWHM, so the
+measured profile renders as a short polyline rather than a curve. The
+reconstruction was no denser: its 15 samples over +-5 sigma come to 3.3 per
+FWHM. It looked smoother because every peak in it was symmetric and had a
+sample exactly on its apex.
 
-The earlier claim that the vendor does the same thing does not survive a direct
-test, and the evidence once cited for it is not discriminating:
+That regularity is what it cost. It drew a symmetric Gaussian of the label's
+resolution over whatever was measured, so a shoulder, an asymmetry, a flat top
+or an unresolved neighbour disappeared from the picture -- exactly what someone
+zooming into a peak to tell one ion from two needs to see.
+
+Resampling the measured signal more finely would buy the smoothness back, and
+is deliberately not done. Interpolating a profile this sparse loses height
+(section 3.1.1), and the same endpoints feed the SDK, so what they return has to
+be the samples themselves.
+
+### 5.3 Thermo's profile is NOT a reconstruction
+
+The reconstruction was also once justified as matching the vendor: that Thermo's
+averaged profile is itself one Gaussian per centroid. That does not survive a
+direct test, and the evidence once cited for it is not discriminating:
 
 - *"The local-maxima count equals the centroid count exactly."* It does -- and so
   it does for the **real measured per-scan profile**, 736 maxima for 736
@@ -345,17 +349,20 @@ test, and the evidence once cited for it is not discriminating:
   residual is 2.7% of peak height -- worse than the real per-scan signal's 1.5%.
 
 The discriminating test is that a profile drawn from the centroids reproduces
-them *exactly*, because that is how it was drawn. Against our own
-`reconstruct=True` as a known positive:
+them *exactly*, because that is how it was drawn. Against Mascope's former
+display reconstruction as a known positive:
 
 | averaged profile | apex / centroid intensity | fitted FWHM / (m/z / resolution) |
 | --- | --- | --- |
-| Mascope `reconstruct=True` (known positive) | **1.00000** | **1.00000** |
+| Gaussian per centroid (known positive) | **1.00000** | **1.00000** |
 | Thermo `AverageScans` | 1.012 (p10 0.987, p90 1.029) | 0.970 (p10 0.946, p90 1.010) |
 | Mascope measured | 0.990 | 0.811 |
 
 Thermo's averaged profile misses both marks, with real spread, so it is not
-synthesised from its centroid list.
+synthesised from its centroid list. The dependence runs the other way: its
+averaged centroids are read off the profile, each one the vertex of the parabola
+through its peak's three top samples, to within 1.1e-5 ppm over 5,950 peaks of
+21 demo files.
 
 What it *is* doing is resampling onto a finer grid than the native sample
 spacing -- 8,244 non-zero points against our 7,274 for the same scans -- which is
@@ -375,17 +382,16 @@ which `_zerofill_baseline` puts back).
 
 `mascope_signal/compute.py` `get_sum_signal()` is what the app calls. It:
 
-- Resolves the sample type; **`reconstruct` is honoured only for live
-  `orbi_raw`** (other sample types return the real signal regardless).
-- Caches the real and reconstructed signals **separately** (the cache name
-  carries a `_recon` suffix via `_get_sum_signal_hash_name`).
+- Resolves the sample type and reads the file with the matching reader.
+- Caches the signal per window (`_get_sum_signal_hash_name`: the full signal as
+  `sum_signal`, a filtered one under a hash of its time window and polarity).
 - Computes via `m_thermo.compute_sum_signal(...)` -> `average_profile(...,
   average=False)` (sum, i.e. apex = mean * scans_combined), optionally dividing
   by an averaging factor for the averaged view.
 
-Display endpoints (spectrum/match views in the server controllers) pass
-`reconstruct=True`; the fit and other quantitative consumers use the default
-`reconstruct=False`.
+The display endpoints (the spectrum and match views in the server controllers)
+and the quantitative consumers read the same signal, so a window's cache entry
+serves both (section 5).
 
 ---
 
@@ -412,12 +418,12 @@ Display endpoints (spectrum/match views in the server controllers) pass
 | Quantity | Parity with Thermo |
 |---|---|
 | Per-scan centroid m/z / resolution / S:N | Exact (same binary stream); sub-0.0002 ppm m/z |
-| Per-scan profile m/z (after alignment) | Within a few ppm (real measured residual) |
+| Per-scan profile m/z | Exact from reader 2.0.0: 0.000000 ppm on every point |
 | Averaged centroid m/z | Sub-0.1 ppm (matched peaks) |
 | Averaged centroid intensity (profile-apex) | ~3% high, and flat across the intensity range (section 6, step 6) |
 | Single-scan centroid intensity (profile-apex) | 0.8% of the instrument's own label |
 | Averaged S:N above-threshold count | Tracks Thermo (via n/sqrt(N)) |
-| Reconstructed profile vs centroids | Overlays exactly (<0.2 ppm) |
+| Averaged profile peak vs its own averaged centroid | 0.065 ppm median absolute; exact under Thermo (section 5) |
 | XIC | rtol 1e-4 |
 
 The averaged-centroid path is the only genuine *approximation* (Thermo
@@ -442,7 +448,6 @@ a tolerance.
 | ppm binning | `_ppm_bin` |
 | Labels keyed by frequency | `_labels_on_one_calibration` |
 | Averaged centroids | `average_centroids`, `_merge_split_centroids`, `_heights_from_profile_apex` |
-| Reconstruction | `_reconstruct_profile` |
 | XIC | `xic` |
 | Sum signal (app) | `mascope_signal/compute.py:get_sum_signal`, `thermo.py:compute_sum_signal` |
 | Instrument fit | `mascope_signal/instrument_func/fit.py` |

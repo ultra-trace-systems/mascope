@@ -1427,9 +1427,7 @@ def _sync_get_sum_spectrum(
     :param mz_max: End of the m/z window, or None for all
     :return: (mz values, intensity values) as plain lists
     """
-    spectrum = m_compute.get_sum_signal(
-        filename, t_min, t_max, average=True, reconstruct=True
-    )
+    spectrum = m_compute.get_sum_signal(filename, t_min, t_max, average=True)
     if mz_min is not None and mz_max is not None:
         spectrum = spectrum.sel(mz=slice(mz_min, mz_max)).compute()
     return spectrum.mz.values.tolist(), spectrum.values.tolist()
@@ -1698,10 +1696,9 @@ async def get_sample_file_spectrum(
     filename = sample_file_data.get("data").get("filename")
     intensity_unit = "counts/s"
 
-    # Step 2-4: Compute the averaged spectrum (reconstructed for display so it
-    # overlays the centroids), filter it and materialize it, all in one worker
-    # thread. This is the path that takes the cross-process zarr write lock on
-    # a cache miss.
+    # Step 2-4: Compute the averaged spectrum, filter it and materialize it,
+    # all in one worker thread. This is the path that takes the cross-process
+    # zarr write lock on a cache miss.
     mz_values, intensity_values = await asyncio.to_thread(
         _sync_get_sum_spectrum, filename, t_min, t_max, mz_min, mz_max
     )

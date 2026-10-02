@@ -36,6 +36,29 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 ### Changed
 
+- **Orbitrap spectra now show the signal the instrument measured.** The
+  sample spectrum and the Match tab's per-isotope spectra drew the profile as
+  one Gaussian per detected peak, built from the peak's position, height and
+  resolution, and the spectrum endpoints handed the same drawing to the SDK's
+  `get_spectrum` and `get_spectra`. A drawing like that can only show what it
+  was built from: a shoulder, an asymmetry, a flat top or an unresolved
+  neighbour disappeared from it, so zooming into a peak to judge whether it is
+  one ion or two showed a picture that could only ever show one. They now all
+  show the measured averaged profile, the same signal the instrument-function
+  fit and the peak heights are read from.
+
+  The drawing existed because the measured profile used to sit a few ppm off
+  its own peaks. Since the reader moved to opentfraw 2.0.0 it sits on them to
+  about a tenth of a ppm, invisible against peaks 4-8 ppm wide. Peaks now look
+  more angular, since a raw file keeps about three points across a peak's
+  width - but the drawing had no more than that either; it looked smooth
+  because every peak in it was symmetric with a point exactly on its top. TOF
+  spectra are unchanged: they always showed the measured signal.
+
+  The drawings were cached in each sample file's directory as
+  `sum_signal*_recon.zarr`, with `.lock` files beside them. Nothing reads them
+  any more, and they can be deleted.
+
 - **A method binding now follows the mode its method's files actually use.** A
   binding records which chemistry an acquisition method has been seen running,
   and it was written once: while the chemistry held, nothing moved it. The

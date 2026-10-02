@@ -620,8 +620,7 @@ async def get_sample_spectrum(
     # - Compute averaged spectrum in the time range with polarity filtering
     intensity_unit = "counts/s"
 
-    # Use specific time range with polarity filtering (reconstructed for display
-    # so it overlays the centroids).
+    # Use specific time range with polarity filtering.
     # One thread hop spans the call and the .tolist() materialization: the
     # spectrum is a lazy dask array, so offloading only the call would leave
     # every chunk read on the event loop.
@@ -635,7 +634,6 @@ async def get_sample_spectrum(
             t_max_eff,
             polarity=polarity,
             average=True,
-            reconstruct=True,
         )
         if spectrum is None:
             return None
