@@ -1562,6 +1562,37 @@ async def bind_sample_files(
     return {"message": message, "data": data}
 
 
+#: How many failed files a re-processing run's report names one by one before
+#: it counts the rest - in its message, and in the notification that carries
+#: it. A run takes any number of files, up to every file of an instrument, and
+#: a notification is published to every backend process through Redis pub/sub:
+#: one that named them all would be the size of the request.
+MAX_LISTED_REPROCESS_FAILURES = 10
+
+
+def _compose_reprocess_failure_message(failed_files: list[dict], header: str) -> str:
+    """
+    Summarise a re-processing run's failures, naming the files.
+
+    The same shape as the batch calibration and rematch aggregates: the
+    header, then one line per failure giving the file and the reason,
+    truncated to ``MAX_LISTED_REPROCESS_FAILURES`` entries.
+
+    :param failed_files: Per-file failure records, in the order they failed.
+    :type failed_files: list[dict]
+    :param header: First line, with the counts.
+    :type header: str
+    :return: The message naming the files that were not re-processed.
+    :rtype: str
+    """
+    listed = failed_files[:MAX_LISTED_REPROCESS_FAILURES]
+    lines = [f"{failed['filename']}: {failed['message']}" for failed in listed]
+    remaining = len(failed_files) - len(listed)
+    if remaining:
+        lines.append(f"...and {remaining} more.")
+    return "\n".join([header] + lines)
+
+
 @api_controller_background_task(
     success_notification_rooms=["user_id"],
     success_reload=[
@@ -1601,7 +1632,7 @@ async def re_process_sample_files(
     :return: Processing results with aggregated data
     :rtype: dict
     """
-    processed_files = []
+    processed_count = 0
     failed_files = []
     affected_sample_batch_ids = set()
     affected_sample_item_ids = set()
@@ -1629,7 +1660,7 @@ async def re_process_sample_files(
         message = f"None of the {len(sample_file_ids)} sample files found"
         raise ApiException(
             user_message=message,
-            tech_message={"failed_files": failed_files},
+            tech_message={"failed_files": failed_files[:MAX_LISTED_REPROCESS_FAILURES]},
             status_code=404,
         )
 
@@ -1833,13 +1864,7 @@ async def re_process_sample_files(
                 )
                 continue
 
-            processed_files.append(
-                {
-                    "sample_file_id": sample_file.sample_file_id,
-                    "filename": sample_file.filename,
-                    "message": f"Successfully processed file {sample_file.filename}.",
-                }
-            )
+            processed_count += 1
 
             # Collect notification data
             file_notification_data = result.get("_notification_data", {})
@@ -1870,17 +1895,18 @@ async def re_process_sample_files(
 
     # --- Prepare response --- #
     total_files = len(sample_file_ids)
-    processed_count = len(processed_files)
     failed_count = len(failed_files)
+    # Counts and the failures the message names, not a record per file. The
+    # batches are what the reloads are addressed to, and they sit under
+    # `_notification_data` on the failure paths too: that is where the
+    # background-task decorator looks for an error's reload rooms.
     notification_data = {
-        "total_files": total_files,
-        "processed_files": processed_files,
-        "failed_files": failed_files,
         "summary": {
             "processed": processed_count,
             "failed": failed_count,
             "total": total_files,
         },
+        "failed_files": failed_files[:MAX_LISTED_REPROCESS_FAILURES],
         "affected_sample_batch_ids": list(affected_sample_batch_ids),
     }
     # Determine status and message
@@ -1891,24 +1917,23 @@ async def re_process_sample_files(
             "_notification_data": notification_data,
         }
     elif processed_count == 0:
-        message = f"Failed to re-process all {total_files} sample files.\n" + "\n".join(
-            [f"{failed['filename']}: {failed['message']}" for failed in failed_files]
+        message = _compose_reprocess_failure_message(
+            failed_files, f"Failed to re-process all {total_files} sample files."
         )
         raise ApiException(
-            user_message=message, tech_message=notification_data, status_code=422
+            user_message=message,
+            tech_message={"_notification_data": notification_data},
+            status_code=422,
         )
     else:
-        message = (
+        message = _compose_reprocess_failure_message(
+            failed_files,
             f"Re-processed {processed_count} files successfully, "
-            f"{failed_count} files failed.\n"
-            + "\n".join(
-                [
-                    f"{failed['filename']}: {failed['message']}"
-                    for failed in failed_files
-                ]
-            )
+            f"{failed_count} files failed.",
         )
-        raise_api_warning(message, notification_data, status_code=207)
+        raise_api_warning(
+            message, {"_notification_data": notification_data}, status_code=207
+        )
 
 
 async def modes_to_rebind(sample_file_id: str) -> KeptModes | None:
