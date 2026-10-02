@@ -1366,8 +1366,12 @@ Needed before any rung can be provisional or park.
      answer, with six guards - a constant method name, an unknown signature
      class, a key seen with more than one chemistry, a deleted mode, a mode
      scoped to another instrument, and a mode whose polarity was edited after
-     the binding learned it - each returning the sentence the file's
-     `needs_chemistry` detail carries beside the token's. Bulk re-processing
+     the binding learned it - each returning both the sentence the file's
+     `needs_chemistry` detail carries beside the token's AND the remedy for
+     that guard, which differs: one choice is enough for a method never seen
+     before, several for a binding whose mode no longer applies, and a token
+     is the only answer for an instrument that reports one method name for
+     every acquisition. Bulk re-processing
      reaches the rung too: a parked file with no samples to keep goes through
      to the pipeline rather than being refused on its name, which is what
      selecting the parked files and pressing Re-process does. A file bound

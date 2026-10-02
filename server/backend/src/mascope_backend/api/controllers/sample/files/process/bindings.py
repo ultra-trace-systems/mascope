@@ -58,6 +58,14 @@ from mascope_backend.method_keys import (
 from mascope_backend.runtime import runtime
 
 
+#: The remedy for the two guards where a binding exists and points at a mode
+#: that does not apply here. One choice is not enough: the binding already
+#: holds a mode, so it moves only once :data:`REPOINT_AFTER` observations
+#: agree on another, which is the whole point of the threshold.
+_FOLLOWS_A_FEW = (
+    "Choose a chemistry for these files; the method follows once a few of them agree."
+)
+
 #: Consecutive observations that must name the same other mode row before a
 #: binding follows them to it.
 #:
@@ -173,9 +181,27 @@ class MethodRouting(NamedTuple):
     binding_id: str
 
 
+class Declined(NamedTuple):
+    """Why a binding cannot bind a file, and what would change that.
+
+    Both halves reach a person, as the file's ``needs_chemistry`` detail, so
+    the remedy has to be true of the guard that produced it. Four of the six
+    are not fixed by choosing a chemistry for one file: a key seen with two
+    chemistries is made no more unanimous by a third observation, a file with
+    no census teaches nothing at all, a binding whose mode does not apply
+    moves only once several files agree, and a method whose reported name never
+    varies cannot be recognised however many files are chosen - which covers
+    most of the fleet's token-less TOF files, so that is the version of the
+    sentence most people would read.
+    """
+
+    reason: str
+    remedy: str
+
+
 async def resolve_modes_by_method_binding(
     sample_file: SampleFile, streams: list[dict] | None
-) -> tuple[list[MethodRouting], str | None]:
+) -> tuple[list[MethodRouting], Declined | None]:
     """Bind a file to the chemistry its acquisition method has been seen running.
 
     Rung 4 of the ladder (section 5.2), and the whole of what
@@ -207,15 +233,19 @@ async def resolve_modes_by_method_binding(
     :param sample_file: The file to bind.
     :param streams: Its scan-stream census, as
         :func:`~...process.status.read_scan_streams` returns it.
-    :return: One routing per polarity and None, or no routings and the reason
-        there are none, as a sentence for the file's processing detail.
-    :rtype: tuple[list[MethodRouting], str | None]
+    :return: One routing per polarity and None, or no routings and why, as
+        sentences for the file's processing detail.
+    :rtype: tuple[list[MethodRouting], Declined | None]
     """
     key = method_key(sample_file.method_file)
     if not key:
-        return [], (
+        # Nothing a person does teaches this key: the learner records it under
+        # the empty name, and the lookup below never reaches such a row.
+        return [], Declined(
             "its acquisition method reports no name of its own, so there is "
-            "nothing to recognise it by"
+            "nothing to recognise it by",
+            "Files of this instrument need a filename token, or a chemistry "
+            "chosen for each.",
         )
 
     routings: list[MethodRouting] = []
@@ -223,9 +253,11 @@ async def resolve_modes_by_method_binding(
         for polarity in sample_file.polarity or "":
             signature = signature_class(streams, polarity, sample_file.instrument_type)
             if signature is None:
-                return [], (
+                return [], Declined(
                     "what its scans measured was not recorded, so its "
-                    "acquisition method cannot be recognised"
+                    "acquisition method cannot be recognised",
+                    "Choose a chemistry for this file. Files converted since "
+                    "the scan census shipped carry what the method needs.",
                 )
             found = (
                 await session.execute(
@@ -243,32 +275,40 @@ async def resolve_modes_by_method_binding(
             ).first()
             if found is None:
                 # No row, or a row whose mode has been deleted: the join drops
-                # both, and neither can bind a file.
-                return [], (
+                # both, and neither can bind a file. One choice covers either -
+                # it creates the row, or supplies a mode for the chemistry a
+                # row with none already holds.
+                return [], Declined(
                     "its acquisition method has not been seen running a "
-                    "chemistry on this instrument"
+                    "chemistry on this instrument",
+                    "Choose a chemistry for one file of this method and the "
+                    "rest will follow it.",
                 )
             binding, mode = found
             # Judged on the chemistries, not on `state`. The two say the same
             # thing today and would not once a person can confirm a binding.
             if len(binding.chemistry_keys or []) != 1:
-                return [], (
+                return [], Declined(
                     "its acquisition method has been seen running more than "
-                    "one chemistry, so the method does not say which"
+                    "one chemistry, so the method does not say which",
+                    "Tell them apart with a filename token, or choose a "
+                    "chemistry for each file.",
                 )
             scope = instrument_key(mode.instrument)
             if scope is not None and scope != instrument_key(sample_file.instrument):
-                return [], (
+                return [], Declined(
                     "the chemistry its acquisition method was seen running "
-                    "belongs to another instrument"
+                    "belongs to another instrument",
+                    _FOLLOWS_A_FEW,
                 )
             if mode.ionization_mode_polarity != polarity:
                 # The mode was edited after the binding learned it. The key
                 # describes one polarity, so a mode of the other is not what
                 # this polarity measured.
-                return [], (
+                return [], Declined(
                     "the chemistry its acquisition method was seen running is "
-                    f"no longer recorded for polarity {polarity}"
+                    f"no longer recorded for polarity {polarity}",
+                    _FOLLOWS_A_FEW,
                 )
             routings.append(
                 MethodRouting(mode=mode, binding_id=binding.method_binding_id)
@@ -277,7 +317,10 @@ async def resolve_modes_by_method_binding(
     if not routings:
         # The file records no polarity at all. The token rule refuses such a
         # file for the same reason: there is nothing to bind one mode to.
-        return [], "its polarities were not recorded"
+        return [], Declined(
+            "its polarities were not recorded",
+            "Choose a chemistry for this file.",
+        )
     return routings, None
 
 

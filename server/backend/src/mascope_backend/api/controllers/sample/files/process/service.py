@@ -1035,20 +1035,20 @@ async def _auto_process_sample_file(
                 sample_file, scan_streams
             )
             if declined is not None:
+                # Three sentences, and only the join belongs here. The remedy
+                # comes from the guard that declined, because it differs per
+                # guard and four of the six are not fixed by choosing a
+                # chemistry for one file - a method whose reported name never
+                # varies is not fixed by choosing any number of them.
+                #
                 # rstrip: the token rule's message ends without a full stop,
                 # and _park_needing_chemistry only normalises the end of the
-                # whole detail, so the two sentences would run together.
-                #
-                # The advice differs at a routing site, which is why it is
-                # written here rather than in the token rule: configuring a
-                # token is no longer the only remedy, because choosing a
-                # chemistry for one file of this method teaches it and the
-                # next file routes on its own.
+                # whole detail, so the first two would run together.
                 return await _park_needing_chemistry(
                     sample_file,
                     f"{str(no_token).rstrip('.')}. Its acquisition method "
-                    f"does not say either: {declined}. Choose a chemistry for "
-                    "one file of this method and the rest will follow it.",
+                    f"does not say either: {declined.reason}. "
+                    f"{declined.remedy}",
                     streams_note,
                 )
             bound_modes = [routing.mode for routing in routed_by_method]
@@ -1817,8 +1817,11 @@ async def re_process_sample_files(
                 kept_provenance=kept.provenance if kept else None,
             )
             if result.get("status") == "parked":
-                # Its token was removed while the batch waited: it needs a
-                # chemistry now, and was not re-processed.
+                # Two ways here. Its token was removed while the batch waited,
+                # or it never had one and this deployment routes on method
+                # bindings, which is the file the validation above lets through
+                # on purpose. Either way it needs a chemistry and was not
+                # re-processed, and the pipeline's own message says which.
                 failed_files.append(
                     {
                         "sample_file_id": sample_file.sample_file_id,

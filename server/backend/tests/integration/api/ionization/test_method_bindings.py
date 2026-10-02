@@ -691,7 +691,8 @@ async def test_an_unseen_method_declines(modes, instrument):
     )
 
     assert routings == []
-    assert "has not been seen" in declined
+    assert "has not been seen" in declined.reason
+    assert declined.remedy.startswith("Choose a chemistry for one file")
 
 
 @pytest.mark.asyncio
@@ -705,7 +706,12 @@ async def test_a_constant_method_name_declines(modes, instrument):
     routings, declined = await resolve_modes_by_method_binding(constant, _streams())
 
     assert routings == []
-    assert "no name of its own" in declined
+    assert "no name of its own" in declined.reason
+    # Not "choose one and the rest follow": the learner records this
+    # under the empty method key and the rung never reaches such a
+    # row, so no number of choices teaches it.
+    assert "filename token" in declined.remedy
+    assert "one file" not in declined.remedy
 
 
 @pytest.mark.asyncio
@@ -716,7 +722,7 @@ async def test_a_file_with_no_census_declines(modes, instrument):
     routings, declined = await resolve_modes_by_method_binding(_File(instrument), None)
 
     assert routings == []
-    assert "was not recorded" in declined
+    assert "was not recorded" in declined.reason
 
 
 @pytest.mark.asyncio
@@ -730,7 +736,9 @@ async def test_a_method_seen_with_two_chemistries_declines(modes, instrument):
     )
 
     assert routings == []
-    assert "more than one chemistry" in declined
+    assert "more than one chemistry" in declined.reason
+    # No further choice makes a key unanimous again.
+    assert "filename token" in declined.remedy
 
 
 @pytest.mark.asyncio
@@ -750,7 +758,7 @@ async def test_a_binding_whose_mode_was_deleted_declines(
     )
 
     assert routings == []
-    assert "has not been seen" in declined
+    assert "has not been seen" in declined.reason
 
 
 @pytest.mark.asyncio
@@ -769,7 +777,10 @@ async def test_a_mode_scoped_to_another_instrument_declines(
     )
 
     assert routings == []
-    assert "another instrument" in declined
+    assert "another instrument" in declined.reason
+    # The binding already holds a mode, so it moves only once several
+    # files agree - one choice is not enough.
+    assert "once a few of them agree" in declined.remedy
 
 
 @pytest.mark.asyncio
@@ -793,7 +804,8 @@ async def test_a_mode_whose_polarity_was_edited_declines(
     )
 
     assert routings == []
-    assert "no longer recorded for polarity -" in declined
+    assert "no longer recorded for polarity -" in declined.reason
+    assert "once a few of them agree" in declined.remedy
 
 
 @pytest.mark.asyncio
@@ -812,7 +824,7 @@ async def test_a_dual_polarity_file_needs_both_polarities(
     routings, declined = await resolve_modes_by_method_binding(both, streams)
 
     assert routings == []
-    assert "has not been seen" in declined
+    assert "has not been seen" in declined.reason
 
 
 @pytest.mark.asyncio
