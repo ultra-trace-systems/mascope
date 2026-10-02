@@ -58,8 +58,8 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   spectra always showed the measured signal, and get the same dots.
 
   The drawings were cached in each sample file's directory as
-  `sum_signal*_recon.zarr`, with `.lock` files beside them. Nothing reads them
-  any more, and they can be deleted.
+  `sum_signal*_recon.zarr`. Nothing reads them any more, and
+  `delete-stale-sum-signal` deletes them (see *Fixed*).
 
 - **A method binding now follows the mode its method's files actually use.** A
   binding records which chemistry an acquisition method has been seen running,
@@ -163,6 +163,24 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   attribute, and the load succeeds as before.
 
 ### Fixed
+
+- **A raw Orbitrap file's cached profile no longer outlives the reader that
+  averaged it.** Sum signals are cached per time window and polarity, and
+  nothing in the cache said which reader computed them, so a file processed
+  before 1.10.1 went on serving the profile reader 1.4.0 averaged on the old
+  grid - to the instrument-function fit, and to peak detection when it was
+  re-run. With the spectra now drawing that profile, it would also have shown
+  up a little off its own peaks. A raw Orbitrap file's cache is now named
+  after its reader, the reader's version and the averaging generation, as in
+  `sum_signal.otf2.0.0-g2.zarr`, and is recomputed when any of them changes;
+  the first view of each sample after the upgrade averages it again. TOF and
+  zarr files keep their caches.
+
+  Operators: the caches left behind are never read again. Reclaim the space
+  with `python -m mascope_backend.db.admin.filestore delete-stale-sum-signal`,
+  which deletes them from raw Orbitrap files only. The existing
+  `delete-sum-signal` is not a substitute: it also deletes a TOF file's full
+  sum signal, which carries its calibrated m/z axis.
 
 - **The sample browser's assignment status column explains itself in help mode
   again.** Its header card had no snippet behind it, so the popover showed its

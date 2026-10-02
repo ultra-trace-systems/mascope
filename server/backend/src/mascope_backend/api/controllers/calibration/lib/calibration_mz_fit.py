@@ -1014,7 +1014,7 @@ class OrbiCalibrationHandler(BaseCalibrationHandler):
         old_factor_scaling = fit_parameters["old_factor_scaling"]
         if self._is_calibration_already_applied(fit):
             runtime.logger.info("Same calibration already applied; skipping.")
-            return m_io.load_coord(self.filename, "sum_signal", "mz")
+            return m_compute.get_sum_signal(self.filename).mz.values
 
         runtime.logger.info(f"Calibrating file: {self.filename}")
 
@@ -1051,8 +1051,11 @@ class OrbiCalibrationHandler(BaseCalibrationHandler):
         # Remove excessive items
         fit["par"].pop("old_factor", None)
         fit["par"].pop("old_factor_scaling", None)
-        # Update sample file properties
-        full_sum_signal_mz = m_io.load_coord(self.filename, "sum_signal", "mz")
+        # Update sample file properties. The full sum signal is asked for rather
+        # than read by name: a raw Orbitrap file caches it under the name of the
+        # reader that averaged it, and a file processed before that reader may
+        # not have one yet.
+        full_sum_signal_mz = m_compute.get_sum_signal(self.filename).mz.values
         new_mz_range = full_sum_signal_mz[0], full_sum_signal_mz[-1]
         m_io.update_props(self.filename, {"range": new_mz_range, "mz_calibration": fit})
 

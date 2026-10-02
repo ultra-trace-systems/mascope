@@ -15,7 +15,8 @@ from mascope_backend.api.new.instrument_configs.lib import (
 from mascope_backend.db import init_db
 from mascope_backend.runtime import runtime
 from mascope_file.io import remove_path
-from mascope_file.name import parse_path_from_item_filename
+from mascope_file.name import get_sample_file_type, parse_path_from_item_filename
+from mascope_signal.compute import sum_signal_suffix
 from mascope_signal.peak import (
     compute_peaks,
 )
@@ -55,6 +56,57 @@ async def delete_sum_signal(cached_only=False):
             # The glob matches a store's side-car lock file as well as the
             # store directory, and rmtree raises NotADirectoryError on a file.
             remove_path(zarr_dir)
+
+
+async def delete_stale_sum_signal():
+    """Delete the cached sum signals of raw Orbitrap files that nothing reads.
+
+    A raw Orbitrap file caches its sum signals under the name of the reader and
+    averaging that computed them (``mascope_signal.compute.sum_signal_suffix``),
+    so a reader or averaging change leaves the previous ones behind: never read
+    again, but kept. So are those cached before the names carried it
+    (``sum_signal.zarr``, ``sum_signal_<hash>.zarr``), and the ``_recon``
+    drawings the spectrum views once showed. This deletes all of them, with
+    their lock files, and keeps whatever the current reader would read.
+
+    Only raw Orbitrap files are touched. The other types name their caches as
+    before, and a TOF file's full sum signal carries its calibrated m/z axis,
+    which is not something to drop. Run it after an upgrade that changes the
+    reader or the averaging.
+    """
+    current = sum_signal_suffix("orbi_raw")
+    sample_files = await fetch_sample_files()
+
+    removed = 0
+    for i, sample_file in enumerate(sample_files):
+        if get_sample_file_type(sample_file.filename) != "orbi_raw":
+            continue
+        sample_data_path = parse_path_from_item_filename(sample_file.filename)
+        stale = [
+            path
+            for path in glob.glob(os.path.join(sample_data_path, "sum_signal*"))
+            if not _store_name(path).endswith(current)
+        ]
+        if not stale:
+            continue
+        runtime.logger.info(
+            f"Removing {len(stale)} stale sum signal entries from "
+            f"{sample_file.filename}: {i + 1}/{len(sample_files)}"
+        )
+        for path in stale:
+            remove_path(path)
+            removed += 1
+
+    runtime.logger.info(
+        f"Removed {removed} stale sum signal entries across "
+        f"{len(sample_files)} sample files."
+    )
+
+
+def _store_name(path: str) -> str:
+    """The variable a store or its lock file belongs to: ``sum_signal_<hash>``
+    for both ``sum_signal_<hash>.zarr`` and ``sum_signal_<hash>.lock``."""
+    return os.path.basename(path).removesuffix(".zarr").removesuffix(".lock")
 
 
 async def delete_sync_dirs():
@@ -130,6 +182,7 @@ async def refit_peaks():
 
 
 ACTIONS = {
+    "delete-stale-sum-signal": delete_stale_sum_signal,
     "delete-sum-signal": delete_sum_signal,
     "delete-sync-dirs": delete_sync_dirs,
     "refit-peaks": refit_peaks,
