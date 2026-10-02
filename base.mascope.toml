@@ -111,6 +111,10 @@ filestreams = './filestreams'
 # all of it is at the sites whose file names carry no token at all, so switch
 # it on there first and watch the parked count. Takes effect on restart, and
 # applies to files converted from then on.
+#
+# What this deployment would route, and where a file name says otherwise, is
+# what `db script run report_method_binding_disagreements` reports. It writes
+# nothing, so it is worth reading before and after a change here.
 # method_binding = "shadow"
 # Reference chemistry: the per-record licence tags peak assignment's database
 # stage is allowed to match against. Unset (the default) means no gating -

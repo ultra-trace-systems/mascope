@@ -72,7 +72,7 @@ request for this work updates the table below and ticks its item on #2098.
 |---|---|---|
 | 0 | Stop losing information: method identity, stream census, token-rule and notification fixes | shipped |
 | 1 | Per-file processing state, persistent notifications, "needs a chemistry" | shipped (#2164, #2166-#2169) |
-| 2 | Method bindings: routing without tokens | learned in shadow on every server (#2193, #2196, #2206, #2226), measured (5.7), item provenance (#2254), the row-following learner (#2255) and the rung (#2264) shipped; the backfill re-run, the disagreement report and the per-site switch remain, section 10 lists them |
+| 2 | Method bindings: routing without tokens | learned in shadow on every server (#2193, #2196, #2206, #2226), measured (5.7), item provenance (#2254), the row-following learner (#2255), the rung (#2264) and the disagreement report (#2267) shipped; the backfill re-run and the per-site switch remain, section 10 lists them |
 | 8 | Chemistry profiles as the unit: complete the seeded profiles, ship the standard methods and their catalogue, list the profiles, a profile-first surface, batches named after the profile | open; built right after phase 2, in parallel with phases 3 and 4 |
 | 3 | The part contract: stream and window honoured by every consumer | open; starts beside phase 8, first for files with more than one MS1 stream in a polarity (4.5) |
 | 4 | Per-stream state: calibration, instrument function, one item per stream, MS2 | open; follows 3 on the same track; no rebuild script (4.5, 9.1) |
@@ -607,8 +607,10 @@ token, a learned binding could only re-route what routes today; below it, it
 routes what parks today and changes nothing else. A person's confirmation is
 a different kind of evidence - it says what the method is, whatever a file
 was named - so a confirmed binding outranks the token, as an explicit choice
-does. Confirmation does not exist yet; it arrives with the disagreement
-report of phase 2.
+does. Confirmation does not exist yet. The report of section 10 is the half
+of it that reads: for every key it says what confirming would change, which
+is why it asks the rung about the files a token already names. The flow that
+records a confirmation, with the column naming who made it, follows.
 
 **Rung 4 holds the learned binding. The instrument default once planned
 there was dropped, and #1463 is not one.** The default was to be admin-set
@@ -715,7 +717,10 @@ rows the re-run exists to move. This is what makes the re-run move the rows
 every server has learned in shadow, and what makes a second run free. A
 count of files naming another row is deliberately not a disagreement:
 `n_disagreements` stays a count of chemistries, so a report of unreliable
-keys does not list every site that has renamed a mode.
+keys does not list every site that has renamed a mode. The report of section
+10 shows those separately, as a token naming another row of the same
+chemistry - the shape nearly every disagreement on the fleet turned out to
+have (5.7).
 
 **One path the threshold does not cover.** Observations reach a binding in
 the order files are *processed*, while the fold reads them in the order they
@@ -733,8 +738,10 @@ token-bearing file is unaffected and a token-less one lands on a row of the
 right chemistry - and the next three files of the method move it forward
 again. Closing it properly needs the newest acquisition time on the binding,
 so that an observation older than what the row has already seen is ignored;
-that column is worth adding when something measures that this is happening,
-and phase 2's disagreement report (section 10) is what would show it.
+that column is worth adding when something measures that this is happening.
+`report_method_binding_disagreements` is what would show it: a key whose
+token names the row the site moved away from, on files acquired long before
+the ones it has just read.
 
 **Why three.** The two ways to be wrong cost different amounts, so the
 threshold sits on the cheap side. Moving too eagerly is the expensive error:
@@ -746,8 +753,10 @@ existed. Three is the smallest count that no single re-bind, and no pair of
 them on one afternoon, can reach. It is also fast in practice: a method in
 daily use makes three observations within a day, while a method used twice a
 year is held back for a season, which is the right way round. Set it as a
-named constant and move it on evidence - phase 2's disagreement report
-(section 10) is what would show whether real changes are waiting too long.
+named constant and move it on evidence:
+`report_method_binding_disagreements` lists the keys following a move that
+has not landed, with how far each run has got, which is what would show a
+real change waiting too long.
 
 **The standard-method catalogue.** Mascope ships, beside the profiles, a
 method file per chemistry and instrument type for the operator to load on the
@@ -1381,10 +1390,22 @@ Needed before any rung can be provisional or park.
      only rewrites rows that already exist, so a binding deleted between the
      read and the insert would otherwise fail that file's processing on the
      foreign key. A vanished id is dropped and the rung kept;
-  4. a disagreement report, a db script listing the keys whose binding row
-     differs from what the token maps to today - what a person reads before
-     confirming a binding, and the seed of the confirm flow that fills
-     rung 2;
+  4. a disagreement report, `report_method_binding_disagreements`: for every
+     binding, what the files of that method bind to by their token and what
+     they would bind to by their method, over a bounded number of the newest
+     files. It writes nothing. Both answers come from the code the pipeline
+     uses - the token rule, which gained a parameter so that asking it about
+     many files is not a query per file, and the rung itself with its six
+     guards - because a report that re-implemented either would eventually
+     name a disagreement production does not have. It asks the rung about
+     every file read, including the ones a token names, which the pipeline
+     never does: those are exactly the files a confirmation would move, since
+     a confirmed binding sits above the token. Beside the disagreements it
+     reports what only the binding answers (the files `route` would bind and
+     `shadow` parks), the keys following a move that has not landed, the keys
+     a guard holds back and why, and the files whose name matches two
+     chemistries, which park whatever the bindings hold. It is the seed of
+     the confirm flow that fills rung 2;
   5. the switch, on the internal server first, the one site with token-less
      files to gain; then the rest, where it changes nothing today and primes
      every new method.
@@ -1758,7 +1779,7 @@ Function names are the stable reference; line numbers drift.
 | Calibration | `api/controllers/calibration/lib/calibration_mz_fit.py` (`_apply_sync`, `_resolve_calibration_isotopes`); `calibration_controller.py` `calibration_mz_apply` | 0 (ordering, shipped in #2153), 4 |
 | Pipeline and routing | `api/controllers/sample/files/process/service.py` (`_auto_process_sample_file`, `create_acquisition_batches_and_items`, `calibrate_with_retry`); `api/new/ionization/modes/util.py` (`resolve_ionization_modes_by_tokens`, `resolve_ionization_modes_by_peaks`) | 0, 1, 2, 5 |
 | Provenance on items | `create_acquisition_batches_and_items` above; `db/models.py` `SampleItem` | 2 |
-| Binding learner and backfill | `api/controllers/sample/files/process/bindings.py` (`_observe`); `db/scripts/backfill_method_bindings.py` (`_fold`, `_merge`); `mascope_backend/method_keys.py` | 2 |
+| Binding learner, backfill and report | `api/controllers/sample/files/process/bindings.py` (`_observe`, `resolve_modes_by_method_binding`); `db/scripts/backfill_method_bindings.py` (`_fold`, `_merge`); `db/scripts/report_method_binding_disagreements.py`; `mascope_backend/method_keys.py` | 2 |
 | Profile seeding | `db/admin/ionization/ensure_system_modes.py`; `mascope_backend/ionization_catalogue.py` | 2, 8 |
 | Standard-method catalogue | `mascope_backend/method_catalogue.py` (new), beside the ionization catalogue; consulted from `process/bindings.py`; the method text through `ReaderBackend` (`ionization_method_config.md` 6.1) | 8 |
 | Calibration anchors | `api/controllers/calibration/lib/calibration_mz_fit.py` `_resolve_calibration_isotopes` | 8 |

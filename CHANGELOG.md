@@ -34,6 +34,22 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   its acquisition method", and each sample names the method record that bound
   it, so what the rung did is a query rather than a guess.
 
+- **A report of what the acquisition methods would route, and where a file name
+  says otherwise**: `db script run report_method_binding_disagreements`. For
+  every method record it reads a bounded number of the newest files of that
+  method and answers two questions about each - what its name binds it to
+  today, and what its method would bind it to - using the same code the
+  pipeline uses for both, so the report cannot drift from what would actually
+  happen. It writes nothing.
+
+  Read it before switching `method_binding` to `"route"`, and before deciding a
+  method record is right. It names the files no token names, which are the only
+  ones the rung binds; the records whose files are named for another chemistry,
+  saying whether that is a second record for one chemistry or a genuinely
+  different one; the records waiting for enough files to agree before they
+  follow a move; and the records held back by a guard, with the sentence a
+  parked file of each would carry.
+
 ### Changed
 
 - **Orbitrap spectra now show the signal the instrument measured.** The

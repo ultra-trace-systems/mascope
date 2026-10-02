@@ -255,18 +255,20 @@ def applies_to_instrument(mode: IonizationMode, instrument: str | None) -> bool:
     )
 
 
-async def _modes_matching_tokens(sample_file: SampleFile) -> list[IonizationMode]:
+def _modes_matching_tokens(
+    sample_file: SampleFile, all_ionization_modes: list[IonizationMode]
+) -> list[IonizationMode]:
     """The modes whose token occurs in a file's name, in a polarity it holds.
 
     Scoped to the file's instrument: a mode belonging to another instrument is
     not a candidate, however well its token reads in this file's name.
 
     :param sample_file: The file to match.
+    :param all_ionization_modes: Every configured mode.
     :return: Every matching mode, which may be none, one or several per
         polarity - the caller decides what to do about that.
     :rtype: list[IonizationMode]
     """
-    all_ionization_modes = await fetch_all_ionization_modes()
     file_polarities = set(sample_file.polarity)
     matched = []
     for ionization_mode in all_ionization_modes:
@@ -368,7 +370,7 @@ def _prefer_scoped(
 
 
 async def resolve_ionization_modes_by_tokens(
-    sample_file: SampleFile,
+    sample_file: SampleFile, modes: list[IonizationMode] | None = None
 ) -> list[IonizationMode]:
     """Resolve ionization modes based on tokens in the sample file.
 
@@ -379,6 +381,14 @@ async def resolve_ionization_modes_by_tokens(
 
     :param sample_file: The sample file to resolve ionization modes for.
     :type sample_file: SampleFile
+    :param modes: Every configured mode, for a caller asking about many files
+        in a row - the modes are the same for all of them, and fetching them
+        per file is a query per file. Every request path leaves it unset and
+        gets today's modes, which is the only answer a file being processed
+        may be bound on. The two kinds of failure below are how a caller that
+        asks in bulk tells "no token names this file" from "its name says two
+        chemistries": the first is what the method binding rung is for, the
+        second is a configuration to fix.
     :raises NoTokenMatchError: If no mode's token occurs in the name.
     :raises ValueError: If a polarity of the file matches no mode or more
         than one.
@@ -388,8 +398,10 @@ async def resolve_ionization_modes_by_tokens(
     runtime.logger.debug(
         f"Resolving ionization modes by tokens for {sample_file.filename}"
     )
+    if modes is None:
+        modes = await fetch_all_ionization_modes()
     matched_ionization_modes = _prefer_scoped(
-        await _modes_matching_tokens(sample_file), sample_file
+        _modes_matching_tokens(sample_file, modes), sample_file
     )
 
     if not matched_ionization_modes:
