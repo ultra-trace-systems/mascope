@@ -172,6 +172,13 @@ const totalMatches = ref(0)
 const displayedMatches = ref(0)
 const loading = ref(false)
 const lastRequestParams = ref(null)
+// The search this pane launched last: a count that moves on with every launch,
+// and its process id once the 202 that acknowledged it has landed. The id is
+// what tells its completion notification from any other search's - an earlier
+// one for this same peak under other parameters, or another tab's - all of
+// which reach this user's socket room. Null until the 202 lands.
+let searchRequest = 0
+const pendingProcessId = ref(null)
 
 // The range validates against the shared rule rather than a copy of it: the
 // launcher dialog binds the same field, so a string one surface would reject
@@ -227,38 +234,76 @@ const formulaRangePlaceholder = computed(() => resolved.value?.element_ranges ??
 // cannot see from this pane and would have no reason to expect it to touch.
 const RESETTABLE = ['mz_precision_ppm', 'formula_ranges']
 
-app.ui.notification.on('match_compositions_by_mz', (payload) => {
-  if (payload.status === 'error') {
-    loading.value = false
+// Whether a notification may belong to the search this pane launched last. One
+// that names another process does not. One that names none - a failure the http
+// layer reported - or that lands before the 202 has told us our own id, is
+// given the benefit of the doubt: a result then still has to be for the peak
+// on screen, and a failure only ends a wait that may be ours.
+const isOwnSearch = (payload) =>
+  !pendingProcessId.value || !payload?.process_id || payload.process_id === pendingProcessId.value
+
+// Whether a finished search is the one to show: this pane's own, for the sample
+// and the peak focused now.
+const isCurrentSearch = (payload) =>
+  isOwnSearch(payload) &&
+  payload?.data?.sample_item_id === app.data.sample.focusedId &&
+  payload?.data?.mz === app.data.peak.focused?.mz
+
+app.ui.notification.on('match_compositions_by_mz', async (payload) => {
+  if (!payload || payload.status === 'pending') return
+  // An error or a warning carries no result, and no peak to check it against:
+  // the search is over either way.
+  if (payload.status !== 'success') {
+    if (isOwnSearch(payload)) loading.value = false
     return
   }
-  if (!payload) return
+  // Asked before anything is downloaded: a result for a peak the user has left
+  // is never fetched at all.
+  if (!isCurrentSearch(payload)) return
 
-  const isFocusedSample = payload?.data?.sample_item_id === app.data.sample.focusedId
-  const isFocusedMz = payload?.data?.mz === app.data.peak.focused?.mz
-  if (!isFocusedSample || !isFocusedMz) return
-
-  if (payload.status === 'success') {
-    if (payload.data?.data) {
-      totalMatches.value = payload?.data?.total || 0
-      displayedMatches.value = payload?.data?.results || 0
-
-      // The two checks above already established that this payload is the
-      // focused peak's, so this is the one place in the pane where a result set
-      // is tied to a peak. Stamped with `peak_id` rather than the m/z the
-      // payload carries: the ledger joins on peak_id, and it is the identity
-      // the write path has to match.
-      resultsPeakId.value = app.data.peak.focused?.peak_id ?? null
-
-      results.value = payload.data.data.map((res) => {
-        const existing = app.data.target.compound.list.filter(
-          ({ target_compound_formula }) => target_compound_formula === res.target_compound_formula
-        )
-        return { ...res, existing, readAt: readLineOfHit(res), key: hitKey(res) }
+  // The notification carries the counts and the process id, not the rows: a
+  // notification is copied to every backend process through Redis pub/sub, and
+  // a large search's rows overran Redis' buffer and knocked the server's socket
+  // subscribers off. The server keeps them for the user who searched
+  // (cheminfo/match_results.py).
+  const request = searchRequest
+  let rows = []
+  if (payload.data.results > 0) {
+    try {
+      rows = await api.http.get(`/cheminfo/mz/match/result/${payload.process_id}`, {
+        use: 'read',
+        type: 'match_compositions_result'
       })
+    } catch {
+      // The http layer has said why. A search that cannot be shown is over,
+      // and forgetting its parameters lets the next change search again even
+      // where it lands on the same ones.
+      if (request === searchRequest && isCurrentSearch(payload)) {
+        loading.value = false
+        lastRequestParams.value = null
+      }
+      return
     }
-    loading.value = false
+    // The focus can move, or another search start, while the rows are in flight.
+    if (request !== searchRequest || !isCurrentSearch(payload)) return
   }
+
+  totalMatches.value = payload.data.total || 0
+  displayedMatches.value = payload.data.results || 0
+
+  // The checks above established that this result is the focused peak's, so
+  // this is the one place in the pane where a result set is tied to a peak.
+  // Stamped with `peak_id` rather than the m/z the payload carries: the ledger
+  // joins on peak_id, and it is the identity the write path has to match.
+  resultsPeakId.value = app.data.peak.focused?.peak_id ?? null
+
+  results.value = (rows ?? []).map((res) => {
+    const existing = app.data.target.compound.list.filter(
+      ({ target_compound_formula }) => target_compound_formula === res.target_compound_formula
+    )
+    return { ...res, existing, readAt: readLineOfHit(res), key: hitKey(res) }
+  })
+  loading.value = false
 })
 
 // Follow the store into the text box: the launcher dialog binds the same field
@@ -301,6 +346,8 @@ watchDebounced(
   },
   async (deps) => {
     if (!store.loaded || !deps.peakFocused || !deps.mzPrecision || !deps.formulaRange) {
+      searchRequest++
+      pendingProcessId.value = null
       results.value = []
       resultsPeakId.value = null
       loading.value = false
@@ -313,33 +360,45 @@ watchDebounced(
     }
     lastRequestParams.value = currentParams
 
+    const request = ++searchRequest
+    pendingProcessId.value = null
     loading.value = true
     results.value = []
     resultsPeakId.value = null
     totalMatches.value = 0
     displayedMatches.value = 0
 
-    await api.http.post(
-      `/cheminfo/mz/match/sample/${deps.sampleId}`,
-      {
-        mz: app.data.peak.focused.mz,
-        sample_item_id: deps.sampleId,
-        ionization_mechanism_ids: ionMechs.value.map(
-          ({ ionization_mechanism_id }) => ionization_mechanism_id
-        ),
-        mz_precision: deps.mzPrecision,
-        formula_ranges: deps.formulaRange,
-        // Any line of a candidate's ion may be the peak, not only its
-        // monoisotopic one: a peak searched can be a compound's 13C or 81Br
-        // line, and a candidate found at another line is tagged with it.
-        isotopologues: true,
-        match_params: app.data.match.params.typeDefaults
-      },
-      {
-        use: 'read',
-        type: 'match_compositions_by_mz'
+    try {
+      // No `use` handler: the search's process id rides on the `Process-ID`
+      // response header (the route pops it out of the body), and the `read`
+      // handler throws the response itself away.
+      const response = await api.http.post(
+        `/cheminfo/mz/match/sample/${deps.sampleId}`,
+        {
+          mz: app.data.peak.focused.mz,
+          sample_item_id: deps.sampleId,
+          ionization_mechanism_ids: ionMechs.value.map(
+            ({ ionization_mechanism_id }) => ionization_mechanism_id
+          ),
+          mz_precision: deps.mzPrecision,
+          formula_ranges: deps.formulaRange,
+          // Any line of a candidate's ion may be the peak, not only its
+          // monoisotopic one: a peak searched can be a compound's 13C or 81Br
+          // line, and a candidate found at another line is tagged with it.
+          isotopologues: true,
+          match_params: app.data.match.params.typeDefaults
+        },
+        { type: 'match_compositions_by_mz' }
+      )
+      // A later search may have started while this one was being acknowledged.
+      if (request === searchRequest) {
+        pendingProcessId.value = response?.headers?.['process-id'] ?? null
       }
-    )
+    } catch {
+      // The http layer has reported the failure. A search that never started
+      // is not running.
+      if (request === searchRequest) loading.value = false
+    }
   },
   {
     debounce: computed(() => store.debounceMs),
