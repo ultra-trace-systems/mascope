@@ -72,6 +72,7 @@ from mascope_backend.socket.notifications import (
     UserNotification,
     send_progress_user_notification,
 )
+from mascope_runtime.logging import SENTRY_FINGERPRINT
 from mascope_signal.compute import get_sum_signal
 
 
@@ -187,11 +188,12 @@ def warn_on_acquisition_drift(
     once, for the badge and this warning alike, and the caller passes on the
     fits it declined to attribute.
 
-    The warning text names the instrument but not the observed magnitude:
-    monitoring groups events by message, and the magnitude of ongoing drift
-    wanders file-to-file, so embedding it would split one drift episode into
-    an issue per ppm value. Grouping is per instrument; the exact per-file
-    magnitude follows at INFO.
+    Monitoring groups this warning per (instrument, threshold) - the same key
+    the suppression window uses - rather than by call site, which is what it
+    does for warnings by default: each drifting instrument needs its own
+    retuning, so each gets its own issue. The text names the instrument but
+    not the observed magnitude, which wanders file-to-file; the exact
+    per-file magnitude follows at INFO.
 
     Each (instrument, threshold) pair warns at most once per
     ``ACQUISITION_DRIFT_WARNING_INTERVAL_S`` (see :func:`_drift_warning_due`).
@@ -223,7 +225,8 @@ def warn_on_acquisition_drift(
     # first drifting instrument hide every other one for a full day - the
     # opposite of what the window is for.
     if not instrument or _drift_warning_due((instrument, limit), time.monotonic()):
-        runtime.logger.warning(message)
+        fingerprint = f"acquisition-drift:{instrument or 'unknown'}:{limit:g}"
+        runtime.logger.bind(**{SENTRY_FINGERPRINT: [fingerprint]}).warning(message)
     # The per-file detail is unconditional: it never reaches monitoring, and
     # it is what the drill-down needs to see every affected file, including
     # those acquired while the warning itself is suppressed.

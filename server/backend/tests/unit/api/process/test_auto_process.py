@@ -23,6 +23,7 @@ from mascope_backend.api.controllers.sample.files.process.service import (
     ItemProvenance,
 )
 from mascope_backend.runtime import runtime
+from mascope_runtime.logging import SENTRY_FINGERPRINT
 
 
 # Module path prefix for patching
@@ -1142,10 +1143,10 @@ async def test_give_up_error_reads_the_same_for_every_file():
     """
     The ERROR text depends on the kind of fault only, never on the file.
 
-    Error monitoring groups issues by the formatted message, so text that
-    carries the file id or the error opens an issue - and an alert - per file.
-    The same fault on two files has to read identically, while different
-    faults still read apart.
+    The same fault on two files has to read identically - the file and the
+    error are named at INFO - while different faults still read apart, and
+    error monitoring groups them apart too: by status code, not by the call
+    site every give-up shares.
     """
     from mascope_backend.api.lib.exceptions.api_exceptions import ApiException
 
@@ -1157,10 +1158,16 @@ async def test_give_up_error_reads_the_same_for_every_file():
     )
     other, _ = await _run_until_given_up("sf-third", ApiException("busy", {}, 503))
 
-    first, second, other = (_lines(_monitored(r)) for r in (first, second, other))
+    first, second, other = (_monitored(r) for r in (first, second, other))
+    fingerprints = [
+        r[0]["extra"].get(SENTRY_FINGERPRINT) for r in (first, second, other)
+    ]
+    first, second, other = (_lines(r) for r in (first, second, other))
     assert len(first) == 1 and first == second, (first, second)
     assert "sf-" not in first[0][1] and "corrupt" not in first[0][1], first
     assert len(other) == 1 and other != first, other
+    assert fingerprints[0] == fingerprints[1] != fingerprints[2], fingerprints
+    assert fingerprints[0] is not None, fingerprints
 
 
 @pytest.mark.asyncio

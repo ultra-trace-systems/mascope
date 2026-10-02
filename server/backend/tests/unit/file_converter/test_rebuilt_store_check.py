@@ -52,8 +52,8 @@ def test_a_store_still_stale_after_its_rebuild_is_warned_about(monkeypatch):
 
 
 def test_the_warning_carries_the_error_so_files_group_as_one_issue(monkeypatch):
-    """A message event groups by its text, which names the file - one issue
-    per file. An exception event groups by the error, and the file still
+    """An exception event groups by the error, so the files one fault reaches
+    share an issue while a different fault opens its own, and the file still
     travels with it in the log line."""
     _store_check(monkeypatch, STALE)
 

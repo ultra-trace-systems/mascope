@@ -3,10 +3,9 @@
 The level is not cosmetic: the error-monitoring sink subscribes at WARNING
 (``mascope_runtime.logging._SENTRY_LEVELS``), so it alone decides whether a
 failure becomes a monitoring event. A routine data-side failure logged at
-WARNING is worse than no fix at all - the record carries no exception, so it
-is captured as a *message* keyed on text that includes the filename, turning
-one grouped issue into one issue per file. That is the exact flood these
-failures were reclassified to stop.
+WARNING sends an event for every duplicate upload and every empty acquisition,
+none of them a fault. That is the exact flood these failures were
+reclassified to stop.
 
 These tests drive ``BaseFileProcessor.run`` itself rather than the
 classification helper, because the helper being right is not the property
@@ -115,8 +114,8 @@ class TestRoutineFailureStaysOutOfMonitoring:
         assert _at_or_above_warning(records) == []
 
     def test_it_carries_no_traceback(self):
-        # A record without an exception is grouped by its message text, which
-        # includes the filename - one issue per file rather than one issue.
+        # A routine outcome, not a fault: a traceback would make the line
+        # read as a crash to whoever greps the worker log.
         records, _, _ = _run_once(self.FAILURE)
 
         assert _failure_records(records)[0]["exception"] is None

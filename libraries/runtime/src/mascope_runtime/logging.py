@@ -14,6 +14,11 @@ express operator relevance, not verbosity:
 - ERROR/CRITICAL: faults. Inside an except block use ``logger.exception`` so
   the traceback travels with the record, and log an incident exactly once -
   the outermost handler owns the record (no log-then-raise).
+
+Grouping: a record with an exception groups by the exception; one without
+groups by its logging call site, so text naming a file or batch does not open
+an issue per entity. Bind ``SENTRY_FINGERPRINT`` where an issue per entity is
+wanted.
 """
 
 # import type hint w/o circular import error
@@ -147,6 +152,31 @@ def _extract_log_archives(archives: List[str], dest_dir: str) -> tuple[int, int]
 _SENTRY_LEVELS = {"WARNING": "warning", "ERROR": "error", "CRITICAL": "fatal"}
 _sentry_ready = False
 
+#: Loguru ``extra`` key that overrides how monitoring groups a record. The sink
+#: groups a message record by its call site, so one warning that names a
+#: different file each time stays one issue. A call site that wants an issue
+#: per entity on purpose binds its own key instead, e.g.
+#: ``logger.bind(sentry_fingerprint=[f"drift:{instrument}"]).warning(...)``.
+#: ``["{{ default }}"]`` restores grouping by the formatted text. Honoured for
+#: exception records too, which otherwise group by the exception. GlitchTip
+#: concatenates the parts with no separator before hashing, so put the
+#: separators inside a part rather than relying on the list to keep parts
+#: apart.
+SENTRY_FINGERPRINT = "sentry_fingerprint"
+
+
+def _fingerprint_parts(value) -> list[str]:
+    """
+    Normalize a bound ``sentry_fingerprint`` to the SDK's list of strings.
+
+    :param value: A list or tuple of parts of any type, or a single value.
+    :return: The parts as strings; a single value - a string included -
+        becomes a one-part list rather than one part per character.
+    """
+    if isinstance(value, (list, tuple)):
+        return [str(part) for part in value]
+    return [str(value)]
+
 
 def _traces_sample_rate() -> float:
     """
@@ -250,19 +280,40 @@ def _sentry_sink(message) -> None:
     level_name = record["level"].name
     sentry_level = _SENTRY_LEVELS.get(level_name, level_name.lower())
     exc = record["exception"]  # loguru (type, value, traceback) tuple, or None
+    message = record["message"]
+    bound_fingerprint = record["extra"].get(SENTRY_FINGERPRINT)
     try:
         with sentry_sdk.new_scope() as scope:
             scope.set_level(sentry_level)
             scope.set_tag("log_level", level_name)
             scope.set_tag("logger", name)
+            if bound_fingerprint is not None:
+                scope.fingerprint = _fingerprint_parts(bound_fingerprint)
             if exc is not None:
                 # The event is the exception; the line logged with it is where
                 # the call site names what it was doing - which file, which
-                # batch - and the exception alone rarely says.
-                scope.set_extra("log_message", record["message"])
+                # batch - and the exception alone rarely says. It goes in as
+                # the event's log entry, shown beside the exception: monitoring
+                # titles and groups an exception event by the exception, so
+                # the entry changes neither. A scope processor rather than a
+                # hand-built event keeps capture_exception doing the building.
+                def _add_log_entry(event, hint):
+                    event["logentry"] = {"formatted": message}
+                    return event
+
+                scope.add_event_processor(_add_log_entry)
                 sentry_sdk.capture_exception((exc.type, exc.value, exc.traceback))
             else:
-                sentry_sdk.capture_message(record["message"])
+                # Monitoring groups a message event by its text, and most
+                # warnings embed the file, batch or id they are about, which
+                # opened an issue per entity. Group by the call site instead.
+                # One part, not three: GlitchTip concatenates the parts with
+                # no separator before hashing.
+                if bound_fingerprint is None:
+                    scope.fingerprint = [
+                        f"{name}:{record['function']}:{record['line']}"
+                    ]
+                sentry_sdk.capture_message(message)
     except Exception:
         # A sink must never raise, and must not logger.* here (loop guard).
         pass

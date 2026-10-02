@@ -24,6 +24,22 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   the same rule over the whole history. It merges, and running it twice
   changes nothing.
 
+- **Error monitoring groups a warning by where it was logged, not by what it
+  says.** A warning or error logged without an exception was grouped by its
+  text, and most such lines name the file, batch or id they are about, so the
+  same problem opened an issue - and an alert - for every file it reached.
+  They now group by the line of code that logged them. Two keep an issue per
+  thing on purpose: the m/z drift warning, one per instrument, and the error
+  for a file auto-processing gave up on, one per status code. An exception
+  event now shows the line it was logged with as the event's message, beside
+  the exception, rather than under additional data; it still groups by the
+  exception.
+
+  Operators: every issue for a warning or error logged without an exception
+  is regrouped once, the two above included. Existing issues stop receiving
+  events and each problem opens one new issue under its new grouping, so
+  expect a burst of new issues after upgrading; the old ones can be resolved.
+
 ### Added
 
 - **Every acquisition sample a file is split into now records how its chemistry

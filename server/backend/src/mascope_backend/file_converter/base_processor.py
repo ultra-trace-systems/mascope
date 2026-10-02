@@ -769,10 +769,8 @@ class BaseFileProcessor(Thread, ABC, metaclass=FileProcessorMeta):
                         #
                         # INFO, not WARNING: the error-monitoring sink
                         # subscribes at WARNING (see mascope_runtime.logging),
-                        # so a warning here would still mint an event - and,
-                        # carrying no exception, it would be captured as a
-                        # message keyed on text that includes the filename,
-                        # turning one grouped issue into one issue per file.
+                        # so a warning here would still mint an event - one
+                        # per routine failure, for nothing that is wrong.
                         runtime.logger.info(
                             f"Failed to process file {Path(self.file_to_process).name}: {e}"
                         )
