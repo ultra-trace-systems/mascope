@@ -46,7 +46,13 @@ async def emit_user_notification(
     if not room_id and not user_id:
         raise ValueError("At least one of room_id or user_id must be provided")
 
-    notification_dict = notification.model_dump(exclude_none=True)
+    # A silent packet only ends the progress bar its process opened (see
+    # handle_notifications), so it goes without the data and error a reported
+    # one carries - a dependent task's whole result, at times.
+    notification_dict = notification.model_dump(
+        exclude_none=True,
+        exclude={"data", "error"} if notification.silent else None,
+    )
 
     # Case 1: Only user_id → emit to user's personal room
     if user_id and not room_id:
