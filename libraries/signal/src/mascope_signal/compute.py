@@ -220,36 +220,40 @@ def get_sum_signal(
                 name="sum_signal",
             )
 
-    # Filtered signals are put on the calibrated m/z axis. So is a raw Orbitrap
-    # file's full one: applying a calibration rescales every stored sum signal
-    # in place (OrbiCalibrationHandler), so a stored axis is the acquisition
-    # axis times the current factor, and a full signal averaged after the file
-    # was calibrated - as every one is once a new reader renames the cache -
-    # has to start there too. Other full signals keep the axis they are summed
-    # on: an orbi_zarr file's stored signal is rescaled in place as well, and a
-    # TOF file's full signal is the reference its filtered ones take theirs from.
+    # Every sum signal is put on the file's calibrated m/z axis: the one its
+    # peaks are on, and its stored sum signals are moved to when a calibration
+    # is applied. How it gets there depends on what it was summed from.
     is_full_sum_signal = t_min is None and t_max is None and polarity is None
-    if not is_full_sum_signal or sample_type == "orbi_raw":
-        # Check if calibration factor is available in the sample file properties
-        props = m_io.read_props(base_filename)
-        calibration = props["mz_calibration"]
-        match sample_type:
-            case "orbi_raw" | "orbi_zarr":
-                if calibration:
-                    fit_parameters = calibration["par"]
-                    factor = fit_parameters["calibration_factor"]
-                    sum_signal = sum_signal.assign_coords(
-                        mz=sum_signal.mz.values * factor
-                    )
-            case "tof_h5" | "tof_zarr":
-                if calibration:
-                    full_sum_signal = get_sum_signal(base_filename)
-                    full_sum_signal_mz = full_sum_signal.mz.values
-                    if full_sum_signal_mz.size != sum_signal.mz.size:
-                        # Reverse compatibility correction on m/z axis
-                        # Leave only sum_signal.mz.size last values in full_sum_signal_mz
-                        full_sum_signal_mz = full_sum_signal_mz[-sum_signal.mz.size :]
-                    sum_signal = sum_signal.assign_coords(mz=full_sum_signal_mz)
+    match sample_type:
+        case "orbi_raw":
+            # Averaged from the raw file, on the acquisition axis, while
+            # applying a calibration rescales the stored sum signals in place
+            # (OrbiCalibrationHandler) to the acquisition axis times the
+            # current factor. So the factor goes on - the full signal's too:
+            # one averaged after the file was calibrated, as every one is once
+            # a new reader renames the cache, has to start where they are.
+            calibration = m_io.read_props(base_filename)["mz_calibration"]
+            if calibration:
+                fit_parameters = calibration["par"]
+                factor = fit_parameters["calibration_factor"]
+                sum_signal = sum_signal.assign_coords(mz=sum_signal.mz.values * factor)
+        case "orbi_zarr":
+            # Summed from the stored signal, which a calibration rescales in
+            # place as well: on the calibrated axis already, full or filtered,
+            # so the factor must not go on a second time.
+            pass
+        case "tof_h5" | "tof_zarr" if not is_full_sum_signal:
+            # A filtered signal takes its axis from the full one, which carries
+            # the calibration.
+            calibration = m_io.read_props(base_filename)["mz_calibration"]
+            if calibration:
+                full_sum_signal = get_sum_signal(base_filename)
+                full_sum_signal_mz = full_sum_signal.mz.values
+                if full_sum_signal_mz.size != sum_signal.mz.size:
+                    # Reverse compatibility correction on m/z axis
+                    # Leave only sum_signal.mz.size last values in full_sum_signal_mz
+                    full_sum_signal_mz = full_sum_signal_mz[-sum_signal.mz.size :]
+                sum_signal = sum_signal.assign_coords(mz=full_sum_signal_mz)
 
     # Save the computed sum signal to the sample file for future use
     concurrent_sum_signal = _write_cached_sum_signal(

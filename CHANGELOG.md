@@ -191,6 +191,25 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   `delete-sum-signal` is not a substitute: it also deletes a TOF file's full
   sum signal, which carries its calibrated m/z axis.
 
+- **An Orbitrap file kept without its raw file no longer shows its spectra one
+  calibration off its own peaks.** Such a file - an `orbi_zarr` file, the way
+  Orbitrap acquisitions were stored before Mascope read raw files directly -
+  holds its signal as a stored array, and applying a calibration rescales that
+  array in place along with the file's peaks and cached spectra. A spectrum
+  averaged over a time window or one polarity after the file was calibrated
+  then got the calibration factor a second time, so the sample spectrum, the
+  Match tab's per-isotope spectra, a sample file's spectrum over a time range,
+  and the SDK's `get_spectrum` and `get_spectra` sat as far off the file's
+  peaks as the calibration had moved them - and stayed off through every later
+  recalibration and reset. They now keep the stored signal's axis. The peaks,
+  their timeseries and the file's full spectrum were never affected, and
+  neither were raw Orbitrap and TOF files.
+
+  Operators: no deployment holds a calibrated `orbi_zarr` file, so there is
+  nothing to clean up. Should a server have calibrated one, the spectra it
+  cached since stay off until deleted: remove that file's `sum_signal_*.zarr`
+  stores and they are averaged again on the next view.
+
 - **The sample browser's assignment status column explains itself in help mode
   again.** Its header card had no snippet behind it, so the popover showed its
   title and the "Learn more" link alone; the card now reads what each badge
