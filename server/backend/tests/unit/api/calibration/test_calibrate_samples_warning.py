@@ -6,6 +6,10 @@ the notification pane renders only type, status and message, and nothing in
 the tree consumes the ``samples_calibrate_failed`` payload - so a bare count
 left the user with no way to tell which samples came back uncalibrated.
 
+The payload carries the records the message names and the counts behind them,
+not one per sample: like every notification it is published to every backend
+process through Redis pub/sub.
+
 The tests drive the undecorated controller through ``__wrapped__`` and mock
 the per-sample calibration, so neither a database nor a Socket.IO server is
 involved.
@@ -38,17 +42,20 @@ def _fetched_sample(sample_item_id: str) -> SimpleNamespace:
     )
 
 
-async def _calibrate_batch(
-    sample_item_ids: list[str], failing: set[str]
-) -> ApiException:
-    """Calibrate a batch in which ``failing`` fails, returning the warning."""
+async def _run_batch(sample_item_ids: list[str], failing: set[str]) -> dict:
+    """Calibrate a batch in which ``failing`` fails; what the controller returns
+    or raises is passed on."""
 
     async def _one_sample(sample_item_id: str, **kwargs) -> dict:
+        # A failed fit names the samples it touched too, as the real one does.
+        affected = {
+            "_notification_data": {"affected_sample_item_ids": [sample_item_id]}
+        }
         if sample_item_id in failing:
             raise ApiException(
-                f"Not enough calibration peaks for {sample_item_id}", {}, 200
+                f"Not enough calibration peaks for {sample_item_id}", affected, 200
             )
-        return {"_notification_data": {"affected_sample_item_ids": [sample_item_id]}}
+        return affected
 
     with (
         patch(
@@ -66,14 +73,21 @@ async def _calibrate_batch(
             AsyncMock(return_value=(None, ["sb-1"], None, None)),
         ),
         patch(f"{_CTRL}.send_progress_user_notification", AsyncMock()),
-        pytest.raises(ApiException) as excinfo,
     ):
-        await calibration_mz_calibrate_samples.__wrapped__(
+        return await calibration_mz_calibrate_samples.__wrapped__(
             sample_item_ids=sample_item_ids,
             mz_calibration_params=MzCalibrationParams(refine_window=100),
             user_id=1,
             process_id="batch",
         )
+
+
+async def _calibrate_batch(
+    sample_item_ids: list[str], failing: set[str]
+) -> ApiException:
+    """Calibrate a batch in which ``failing`` fails, returning the warning."""
+    with pytest.raises(ApiException) as excinfo:
+        await _run_batch(sample_item_ids, failing)
     return excinfo.value
 
 
@@ -115,3 +129,34 @@ async def test_a_long_failure_list_is_truncated():
     assert lines[0] == f"Failed to calibrate {len(sample_item_ids)} sample(s)."
     assert len(lines) == listed + 2
     assert lines[-1] == f"...and {extra} more."
+
+
+@pytest.mark.asyncio
+async def test_the_payload_carries_the_records_the_message_names():
+    """A notification is published to every backend process through Redis
+    pub/sub: a record per sample would make it the size of the batch."""
+    listed = calibration_controller.MAX_LISTED_CALIBRATION_FAILURES
+    sample_item_ids = [f"s{i}" for i in range(listed * 5)]
+
+    warning = await _calibrate_batch(sample_item_ids, failing=set(sample_item_ids))
+
+    failed = warning.tech_message["samples_calibrate_failed"]
+    assert [record["sample_item"]["sample_item_id"] for record in failed] == (
+        sample_item_ids[:listed]
+    )
+    assert warning.tech_message["summary"] == {
+        "failed": len(sample_item_ids),
+        "below_bar": 0,
+        "total": len(sample_item_ids),
+    }
+    # What the reloads are addressed to, and nothing per sample.
+    assert warning.tech_message["_notification_data"] == {
+        "affected_sample_batch_ids": ["sb-1"]
+    }
+
+
+@pytest.mark.asyncio
+async def test_a_calibrated_batch_reports_its_batches_not_its_samples():
+    result = await _run_batch([f"s{i}" for i in range(50)], failing=set())
+
+    assert result["_notification_data"] == {"affected_sample_batch_ids": ["sb-1"]}
