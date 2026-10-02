@@ -25,6 +25,7 @@ from mascope_backend.api.controllers.sample.lib.fetch_affected_sample_data impor
     AffectedSampleData,
 )
 from mascope_backend.api.models.calibration.config import calibration_config
+from mascope_runtime.logging import SENTRY_FINGERPRINT
 
 
 ORBI_FILE = "ORBI-1_file.raw"
@@ -92,13 +93,31 @@ class TestWarnOnAcquisitionDrift:
         assert "-12.53 ppm" in detail[0]["message"]
 
     def test_warning_text_is_identical_across_magnitudes(self):
-        # Monitoring groups events by message: the magnitude of ongoing
-        # drift wanders file-to-file, so it must not enter the message or
-        # each ppm value becomes its own issue.
+        # The magnitude of ongoing drift wanders file-to-file; it stays out of
+        # the text so one drift episode reads as one warning, and follows at
+        # INFO instead.
         first = _warnings(_capture({"quality": {"pre_fit_mz_error_ppm": 84.0}}))
         second = _warnings(_capture({"quality": {"pre_fit_mz_error_ppm": 122.4}}))
         assert first[0]["message"] == second[0]["message"]
         assert "pre-calibration error" not in first[0]["message"]
+
+    def test_monitoring_groups_the_warning_per_instrument(self):
+        # Monitoring groups warnings by call site unless the record binds its
+        # own fingerprint; drift binds one per instrument and threshold, so
+        # each instrument that needs retuning keeps an issue of its own.
+        orbi = _warnings(_capture({"quality": {"pre_fit_mz_error_ppm": 12.0}}))
+        other = _warnings(
+            _capture({"quality": {"pre_fit_mz_error_ppm": 12.0}}, instrument="ORBI-2")
+        )
+        unknown = _warnings(
+            _capture({"quality": {"pre_fit_mz_error_ppm": 12.0}}, instrument=None)
+        )
+
+        assert orbi[0]["extra"][SENTRY_FINGERPRINT] == ["acquisition-drift:ORBI-1:10"]
+        assert other[0]["extra"][SENTRY_FINGERPRINT] == ["acquisition-drift:ORBI-2:10"]
+        assert unknown[0]["extra"][SENTRY_FINGERPRINT] == [
+            "acquisition-drift:unknown:10"
+        ]
 
     def test_drift_within_threshold_is_silent(self):
         assert _warnings(_capture({"quality": {"pre_fit_mz_error_ppm": 4.2}})) == []

@@ -92,6 +92,7 @@ from mascope_backend.socket.notifications import (
 from mascope_backend.socket.records.service import (
     emit_record_deleted,
 )
+from mascope_runtime.logging import SENTRY_FINGERPRINT
 
 
 # Number of calibration fitting attempts before giving up
@@ -132,11 +133,10 @@ def _report_cancelled(sample_file_id: str, when: str) -> None:
 
     Cancellation during a shutdown drain is expected and arrives in bulk - one
     per file still queued behind the ingest gate - and the error-monitoring
-    sink groups issues by the formatted message, so an ERROR carrying the
-    sample file id opens a separate issue for every file in an interrupted
-    burst. The drain reports the count itself as a single error; the per-file
-    detail stays at INFO, where the worker log still records exactly which
-    files were truncated.
+    sink turns every ERROR into an event, so an ERROR per file sends one for
+    every file in an interrupted burst. The drain reports the count itself as
+    a single error; the per-file detail stays at INFO, where the worker log
+    still records exactly which files were truncated.
 
     A cancellation outside a drain is a fault - nobody asked for it - and keeps
     the ERROR that makes it visible.
@@ -181,11 +181,10 @@ def _report_given_up(sample_file_id: str, attempts: int, error: Exception) -> No
     or a 4xx such as a file deleted mid-run - stays at INFO: the decorator
     still hands it to the user, and it is nothing an operator can act on.
 
-    A fault's ERROR names neither the file nor the error. The error-monitoring
-    sink groups issues by the formatted message, so text that carries either
-    opens an issue per file - one for every queued file when an outage hits an
-    ingest burst. The status code stays in the text, so distinct faults still
-    group apart.
+    A fault's ERROR names neither the file nor the error, which the INFO line
+    carries: the same fault on every queued file reads the same. Error
+    monitoring would group it by this call site; it is grouped by status code
+    instead, so distinct faults stay in issues of their own.
 
     :param sample_file_id: File whose pipeline gave up.
     :param attempts: Attempts spent, the last one included.
@@ -199,7 +198,9 @@ def _report_given_up(sample_file_id: str, attempts: int, error: Exception) -> No
         error, error.status_code
     ):
         return
-    runtime.logger.error(
+    runtime.logger.bind(
+        **{SENTRY_FINGERPRINT: [f"auto-process-gave-up:{error.status_code}"]}
+    ).error(
         f"Auto-processing gave up on a sample file after {attempts} attempt(s) "
         f"(status {error.status_code}); it will have no matched peaks. The file "
         "and the cause are named at INFO in this worker's log"
@@ -757,9 +758,10 @@ async def auto_process_sample_file(
                 await _record_failed(sample_file_id, e)
                 raise
             delay = _AUTO_PROCESS_RETRY_DELAYS_S[attempt]
-            # INFO: a retry that usually succeeds, and the line names the file,
-            # so at WARNING it would open a monitoring issue per file and per
-            # attempt. A retry that does not help ends in the give-up above.
+            # INFO: a retry that usually succeeds, so at WARNING it would send
+            # a monitoring event per file and per attempt for nothing an
+            # operator has to do. A retry that does not help ends in the
+            # give-up above.
             runtime.logger.info(
                 f"Auto-processing attempt {attempt + 1} for sample file "
                 f"{sample_file_id} hit a recoverable error ({e}); retrying "
@@ -878,10 +880,10 @@ async def drain_auto_process_tasks(
 
         for task in outstanding:
             task.cancel()
-        # One error for the whole drain, not one per file: the sink groups
-        # error-monitoring issues by message text, and an interrupted ingest
-        # burst can hold hundreds of queued pipelines. Each file is named at
-        # INFO by _report_cancelled.
+        # One error for the whole drain, not one per file: every ERROR is an
+        # error-monitoring event, and an interrupted ingest burst can hold
+        # hundreds of queued pipelines. Each file is named at INFO by
+        # _report_cancelled.
         runtime.logger.error(
             f"Shutdown cancelled {len(outstanding)} background task(s) still "
             f"running after {timeout:.0f}s; what each was working on is named "

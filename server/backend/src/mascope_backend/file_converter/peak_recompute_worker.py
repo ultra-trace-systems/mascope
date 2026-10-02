@@ -111,8 +111,8 @@ class PeakRecomputeWorker(Thread):
             asyncio.run(check_peak_store(filename))
         except StalePeakStoreError:
             # With the exception attached, error monitoring groups these by the
-            # error rather than by the text, which names the file - one issue
-            # for the fault, not one per file it reaches.
+            # error - one issue for the fault, not one per file it reaches -
+            # and shows this line, which names the file, beside it.
             runtime.logger.opt(exception=True).warning(
                 f"PeakRecomputeWorker: the peak store rebuilt for '{filename}' "
                 "still disagrees with the file. Its samples will keep failing to "
