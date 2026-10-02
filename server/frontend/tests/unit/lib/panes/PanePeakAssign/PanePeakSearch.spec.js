@@ -399,6 +399,18 @@ describe('PanePeakSearch fetching a finished search', () => {
     expect(wrapper.vm.loading).toBe(true)
   })
 
+  // A failure that names no process is the http layer reporting a launch that
+  // failed. The launch's own catch ends the wait, and only if no later search
+  // has started since; taken here as well, it would end that later one's wait.
+  it('leaves a failed launch to the launch', async () => {
+    const wrapper = await mountPane()
+    wrapper.vm.loading = true
+
+    await notify({ status: 'error', message: 'Request timed out. Please try again.' })
+
+    expect(wrapper.vm.loading).toBe(true)
+  })
+
   // The result route answers 404 once the result has expired. The http layer
   // reports it; the pane stops waiting rather than spin on a search that is over.
   it('stops waiting when the rows cannot be fetched', async () => {
