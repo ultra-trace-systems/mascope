@@ -1580,7 +1580,8 @@ result the browser needs goes where it fetches it over HTTP, as the composition 
 rows (`api/new/cheminfo/match_results.py`), and a report of per-item failures names the first few
 and counts the rest. A `user_notification` heavier than `USER_NOTIFICATION_BUDGET_BYTES` (256 KiB,
 `socket/notifications/service.py`) is still sent, and logged at WARNING under its notification
-type.
+type - once an hour per type and worker, since what outgrows the budget is mostly a progress
+stream that sends the same packet at every step.
 
 ### Backend File Converter
 
