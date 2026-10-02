@@ -1377,8 +1377,15 @@ async def test_the_park_detail_says_what_the_method_could_not_tell_either(status
     assert result["status"] == "parked"
     (state, detail) = _recorded(status)[0]
     assert state == "needs_chemistry"
-    assert "No ionization mode tokens found" in detail
-    assert "has not been seen before" in detail
+    # Asserted as one string, not as two substrings: the token rule's message
+    # ends without a full stop, so the two sentences ran together.
+    assert detail == (
+        "No ionization mode tokens found for file 2025.09.20_test_file.raw. "
+        "Configure tokens in ionization settings. Its acquisition method does "
+        "not say either: its acquisition method has not been seen before. "
+        "Choose a chemistry for one file of this method and the rest will "
+        "follow it."
+    )
 
 
 @pytest.mark.asyncio

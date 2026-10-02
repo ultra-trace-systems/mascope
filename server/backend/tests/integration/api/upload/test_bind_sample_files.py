@@ -585,6 +585,31 @@ async def test_reprocessing_refuses_a_file_nothing_binds(
 
 
 @pytest.mark.asyncio
+async def test_reprocessing_lets_the_rung_answer_for_a_parked_file(
+    async_session_factory, setup, pipeline, monkeypatch
+):
+    """Re-processing the parked files is how a site picks up what it collected.
+
+    Selecting them in Raw files and pressing Re-process calls this, so
+    refusing a file on its name here would report "no tokens" for exactly the
+    files a routing deployment can now bind. Only the pipeline can ask the
+    rung - it needs the file's scan-stream census - so the file goes through
+    with no modes of its own, and parks again if the method cannot place it.
+    """
+    monkeypatch.setattr(process_service, "routes_on_method_binding", lambda: True)
+    parked = await _file(async_session_factory, "parked-for-the-rung", "-")
+
+    result = await process_service.re_process_sample_files(sample_file_ids=[parked])
+
+    assert "Successfully re-processed 1" in result["message"]
+    pipeline.assert_awaited_once()
+    # No modes of its own: by_token stays true, the token rule raises, and the
+    # pipeline consults the binding.
+    assert pipeline.await_args.kwargs["ionization_mode_ids"] is None
+    assert pipeline.await_args.kwargs["kept_provenance"] is None
+
+
+@pytest.mark.asyncio
 async def test_reprocessing_refuses_an_ambiguous_name_whatever_its_samples(
     async_session_factory, setup, pipeline
 ):

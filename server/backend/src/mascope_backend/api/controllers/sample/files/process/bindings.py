@@ -7,12 +7,15 @@ method: that method, measuring that way, ran that chemistry. Recording it is
 what eventually lets a file route with no token at all
 (``docs/dev/ingest_routing_and_splitting.md``, section 5.3).
 
-**Nothing here routes anything yet.** The rows are written and not read: the
-rung that consults them arrives with the flag that switches it on, once the
-agreement with the token has been measured on real traffic. Until then this
-is a recorder, and its one hard requirement is that it can never cost a file
-its processing - so :func:`learn_method_bindings` reports failures to the log
-and returns, and the caller is not asked to guard it.
+**Learning can never cost a file its processing.** It runs on every ingest
+and is nobody's dependency: :func:`learn_method_bindings` reports failures to
+the log and returns, and the caller is not asked to guard it.
+
+**Reading them back is off unless a deployment asks.** With
+``backend.method_binding = "route"``, :func:`resolve_modes_by_method_binding`
+binds a file no token names to what its method has been seen running; with
+``"shadow"``, the default, the rows are written and never read. The rung sits
+below the token either way, so it can only ever reach a file that parks.
 
 **A key routes only while its history agrees on one chemistry.** Each
 observation adds its chemistry to the row's ``chemistry_keys``; a second one
@@ -185,7 +188,7 @@ async def resolve_modes_by_method_binding(
     token rule - a file half of whose polarities had a chemistry would
     otherwise be bound for one and silently lose the other.
 
-    **Five guards, each of them a way this key could be trusted too far**
+    **Six guards, each of them a way this key could be trusted too far**
     (section 5.3):
 
     - a method name that never varies is no name, so it recognises nothing;
@@ -194,7 +197,12 @@ async def resolve_modes_by_method_binding(
     - a key seen with more than one chemistry has separated nothing;
     - a binding whose mode has been deleted points nowhere;
     - a mode belonging to another instrument is not this instrument's answer,
-      which is what scoping a mode means (#1463).
+      which is what scoping a mode means (#1463);
+    - a mode whose polarity has been edited since the binding learned it is
+      not what this polarity measured. The key carries a signature class,
+      which describes one polarity, and the class does not change when
+      somebody edits the mode - so the binding still resolves and its mode is
+      the wrong answer.
 
     :param sample_file: The file to bind.
     :param streams: Its scan-stream census, as
