@@ -84,6 +84,14 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   reads it directly. A server that predates it returns its frames without the
   attribute, and the load succeeds as before.
 
+### Fixed
+
+- **The sample browser's assignment status column explains itself in help mode
+  again.** Its header card had no snippet behind it, so the popover showed its
+  title and the "Learn more" link alone; the card now reads what each badge
+  colour means and what its tooltip adds. The manual's own paragraph on the
+  badge was the same text written twice, and is now the shared snippet.
+
 ## [1.10.1] - 2026.10.01
 
 ### Changed
