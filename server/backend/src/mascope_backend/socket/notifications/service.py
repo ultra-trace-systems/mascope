@@ -87,12 +87,16 @@ async def emit_user_notification(
     if not room_id and not user_id:
         raise ValueError("At least one of room_id or user_id must be provided")
 
-    # A silent packet only ends the progress bar its process opened (see
-    # handle_notifications), so it goes without the data and error a reported
-    # one carries - a dependent task's whole result, at times.
+    # A dependent task's packet - one with a parent, a silent one always -
+    # only moves or ends the progress bar its process opened: the browser
+    # displays and dispatches the packets without a parent alone, and logs a
+    # child's type, status and message (stores/ui/notification.js). So it goes
+    # without the data and error a top-level one carries - the dependent
+    # task's whole result, at times, sent once per item of its parent's run.
+    dependent = notification.silent or notification.parent_id
     notification_dict = notification.model_dump(
         exclude_none=True,
-        exclude={"data", "error"} if notification.silent else None,
+        exclude={"data", "error"} if dependent else None,
     )
     _warn_if_over_budget(notification_dict)
 

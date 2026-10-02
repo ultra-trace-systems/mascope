@@ -5,11 +5,13 @@ Every Socket.IO emit is published to every backend process through Redis
 pub/sub, so what an emit carries is paid for once per process, whoever the
 packet is addressed to.
 
-A ``silent`` packet ends the progress bar of a dependent task whose outcome a
-parent reports; the browser reads its process id, status, message and
-progress, and nothing else. It goes without the data and the error detail the
-decorator filled in - for a dependent calibration fit that is the fit's whole
-table of calibrants, and a batch calibration sends one per sample.
+A dependent task's packet - one with a parent, a ``silent`` one always - only
+moves or ends the progress bar its process opened. The browser displays and
+dispatches packets without a parent alone, and of a child it reads the process
+id, status, message and progress, nothing else. So a child goes without the
+data and the error detail the decorator filled in - for a dependent
+calibration fit, warning or not, that is the fit's whole table of calibrants,
+and a batch calibration sends one per sample.
 
 A packet heavier than ``USER_NOTIFICATION_BUDGET_BYTES`` is still sent, and
 logged at WARNING, once per notification type: a composition search that sent
@@ -32,15 +34,18 @@ _SVC = "mascope_backend.socket.notifications.service"
 
 
 def _notification(**fields) -> UserNotification:
+    """A dependent calibration fit's warning, unless ``fields`` say otherwise."""
     return UserNotification(
-        process_id="child-process",
-        parent_id="root-process",
-        type="calibration_mz_fit",
-        status="warning",
-        message="m/z fitting sample 'x' warning: Calibration inaccurate",
-        data={"sample_item_id": "sample-1"},
-        error={"detail": {"data": {"stats": [{"mz": 100.0}] * 50}}},
-        **fields,
+        **{
+            "process_id": "child-process",
+            "parent_id": "root-process",
+            "type": "calibration_mz_fit",
+            "status": "warning",
+            "message": "m/z fitting sample 'x' warning: Calibration inaccurate",
+            "data": {"sample_item_id": "sample-1"},
+            "error": {"detail": {"data": {"stats": [{"mz": 100.0}] * 50}}},
+            **fields,
+        }
     )
 
 
@@ -69,8 +74,28 @@ async def test_a_silent_packet_goes_without_data_and_error():
 
 
 @pytest.mark.asyncio
-async def test_a_reported_packet_keeps_its_data_and_error():
-    packet = await _emitted(_notification())
+async def test_a_successful_dependent_packet_goes_without_data():
+    """Not silent - a child that succeeded reports nothing its parent would -
+    but still a child: the browser never displays it or hands it to a watcher."""
+    packet = await _emitted(
+        _notification(
+            status="success",
+            message="Finished to m/z fit sample 'x'.",
+            data={"fit": {"mode": 0}, "stats": [{"mz": 100.0}] * 50},
+            error=None,
+        )
+    )
+
+    assert "data" not in packet
+    assert packet["parent_id"] == "root-process"
+    assert packet["status"] == "success"
+
+
+@pytest.mark.asyncio
+async def test_a_top_level_packet_keeps_its_data_and_error():
+    """What the browser shows and its watchers read: the calibration dialog
+    takes the fit and its table from here."""
+    packet = await _emitted(_notification(parent_id=None))
 
     assert packet["data"] == {"sample_item_id": "sample-1"}
     assert len(packet["error"]["detail"]["data"]["stats"]) == 50
