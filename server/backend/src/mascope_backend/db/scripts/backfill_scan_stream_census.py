@@ -3,7 +3,8 @@ Maintenance script to record the scan-stream census in files converted before
 it existed.
 
 ``.props["scan_streams"]`` is the census of what an acquisition measured: its
-scans grouped by scan signature (``mascope_thermo.streams``). It is written
+scans grouped into the experiments of its method, and by scan signature
+where it records none (``mascope_thermo.streams``). It is written
 once, when a file is converted, and nothing fills it in afterwards -
 ``write_props`` has a single caller, the file converter, and calibration only
 patches ``range`` and ``mz_calibration`` through ``update_props``.

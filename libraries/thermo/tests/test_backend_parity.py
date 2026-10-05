@@ -100,13 +100,14 @@ def _num_of_scans(path):
 
 @pytest.mark.skipif(not RAW_FILES, reason="no .raw files in test_files/")
 @pytest.mark.parametrize("path", RAW_FILES, ids=lambda p: p.name)
-def test_scan_events_match_thermo(monkeypatch, path):
+def test_scan_experiments_match_thermo(monkeypatch, path):
     """Both backends name the same experiment for every scan.
 
-    The scan event is what tells one scan stream from the next
-    (``mascope_thermo.streams``), so a backend that counted it differently
-    would split a file differently. Compared per scan, the scans of every MS
-    order included, and on a file that records none both must say so.
+    A scan's segment and scan event are what tell one scan stream from the
+    next (``mascope_thermo.streams``), so a backend that counted either
+    differently would split a file differently. Compared per scan, the scans
+    of every MS order included, and on a file that records none both must
+    say so.
     """
     path = str(path)
 
@@ -118,7 +119,9 @@ def test_scan_events_match_thermo(monkeypatch, path):
         ot = backend.scan_filters()
 
     assert [row["scan"] for row in ot] == [row["scan"] for row in th]
-    assert [row["event"] for row in ot] == [row["event"] for row in th]
+    assert [(row["segment"], row["event"]) for row in ot] == [
+        (row["segment"], row["event"]) for row in th
+    ]
 
 
 @pytest.mark.skipif(not RAW_FILES, reason="no .raw files in test_files/")

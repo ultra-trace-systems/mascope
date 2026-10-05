@@ -2,13 +2,23 @@
 
 A scan stream is the scans of one experiment of the acquisition method. A
 method is built of experiments, each defining its scan parameters, and every
-scan records the one that produced it as its scan event, so the survey scans
-of one event are one stream whatever sets two experiments apart: a scan
-range, a polarity, or a microscan count that no scan filter shows. A file
-acquired with no method loaded records no event, and there a stream is the
-scans that share one scan signature: the fields of the scan filter that say
-what was measured (:mod:`mascope_thermo.scan_filter`), plus the FT resolution
-from the scan's trailer.
+scan records the one that produced it: its scan event, numbered within its
+segment of the method. So the survey scans of one segment and event are one
+stream whatever sets two experiments apart: a scan range, a polarity, or a
+microscan count that no scan filter shows. A file acquired with no method
+loaded records no event, and there a stream is the scans that share one scan
+signature: the fields of the scan filter that say what was measured
+(:mod:`mascope_thermo.scan_filter`), plus the FT resolution from the scan's
+trailer.
+
+**What a stream is, and what it is called, are two things.** A stream's
+identity is its signature and its experiment: ``signature_key``,
+``scan_segment`` and ``scan_event``. Those say the same thing in every file
+of one method. Its ``key`` is a name, unique within its file and no further:
+it carries the experiment only where another experiment of the same file
+shares the signature, so a run stopped before a repeated experiment came
+round again names the first one by its signature alone. Compare streams
+across files by their identity, never by their keys.
 
 Most files hold one stream per polarity. A method can also alternate scan
 ranges or scan modes within one polarity, repeat an experiment later in the
@@ -73,17 +83,26 @@ def scan_streams(backend: ReaderBackend) -> list[dict]:
 
     Each stream is a dict:
 
-    - ``key``: the signature as one line of text
-      (:meth:`~mascope_thermo.scan_filter.ScanFilter.stream_key`), closed by
-      the scan event where the signature is shared by more than one
-      experiment: ``... R=120000 event=2``. A file whose signatures already
-      separate its experiments keeps the keys it would have without events,
-      which is nearly every file;
+    - ``key``: the stream's name in this file: the signature as one line of
+      text (:meth:`~mascope_thermo.scan_filter.ScanFilter.stream_key`),
+      closed by the experiment where the signature is shared by more than
+      one in this file: ``... R=120000 event=2``, with the segment before
+      the event for an experiment outside the method's first segment. A file
+      whose signatures already separate its experiments keeps the keys it
+      would have without events, which is nearly every file. Unique within
+      the file, and **not** stable across files of one method (see the
+      module docstring);
+    - ``signature_key``: the signature and resolution as one line of text,
+      with no experiment: what was measured, the same text in every file.
+      Equal to ``key`` wherever the key names no experiment;
     - ``signature``: the same fields, parsed. Two experiments under one
       signature share it;
-    - ``scan_event``: the experiment that produced the stream's scans, as the
-      method counts it from 1. ``None`` where the file records none, and for
-      a fragmentation stream whose scans come from more than one;
+    - ``scan_segment``, ``scan_event``: for an MS1 stream, the experiment
+      that produced its scans, as the method counts them from 1; both
+      ``None`` where the file records none. A fragmentation stream carries
+      neither key, because what its scans' events count is not measured
+      (see the module docstring). A census taken before streams followed
+      the experiment carries neither on any stream;
     - ``scans``: how many scans the stream holds;
     - ``blocks``: how many runs its scans form among the scans of the same
       polarity and MS order. A stream that runs throughout the file is one
@@ -112,12 +131,20 @@ def scan_streams(backend: ReaderBackend) -> list[dict]:
 
 
 class _KeyedScan(NamedTuple):
-    """One scan, with the stream it belongs to."""
+    """One scan, with the stream it belongs to.
+
+    ``segment`` and ``event`` are the experiment the scan is grouped by:
+    ``None`` for a survey scan that records none, and for every
+    fragmentation scan, which is not grouped by it.
+    """
 
     row: dict
     parsed: ScanFilter
     resolution: int | str | None
     key: str
+    signature_key: str
+    segment: int | None
+    event: int | None
 
 
 def _keyed_scans(backend: ReaderBackend) -> list[_KeyedScan]:
@@ -126,32 +153,46 @@ def _keyed_scans(backend: ReaderBackend) -> list[_KeyedScan]:
     The one place that decides which stream a scan belongs to, so that the
     census and anything that later selects a stream's scans cannot disagree.
 
-    A survey scan belongs to its experiment: its signature and its scan
-    event together. The event closes the key only where one signature is
-    shared by more than one event, so the key of every other stream is the
-    signature alone. A fragmentation scan is keyed by its signature whatever
-    event it carries (see the module docstring).
+    A survey scan belongs to its experiment: its signature together with
+    its segment and scan event. The experiment closes the key only where one
+    signature is shared by more than one, so the key of every other stream
+    is the signature alone; and it names the segment only outside the
+    method's first, so a method of one segment reads ``event=N``. Survey
+    scans that record no event are one stream per signature, also beside
+    scans of that signature that do record one. A fragmentation scan is
+    keyed by its signature whatever it records (see the module docstring).
     """
     scans = []
-    # signature key -> the events its survey scans carry
-    events: dict[str, set[int | None]] = {}
+    # signature key -> the experiments its survey scans come from
+    experiments: dict[str, set[tuple[int | None, int | None]]] = {}
     for row in backend.scan_filters():
         parsed = parse_scan_filter(row["filter"])
         resolution = _resolution(backend.scan_trailer(row["scan"]))
-        event = row.get("event") if parsed.ms_order == 1 else None
+        experiment = (None, None)
+        if parsed.ms_order == 1 and row.get("event") is not None:
+            # An event with no segment is in the method's first, as the
+            # reader also has it (backend._method_experiment).
+            experiment = (row.get("segment") or 1, row["event"])
         signature_key = parsed.stream_key(resolution)
-        events.setdefault(signature_key, set()).add(event)
-        scans.append((row, parsed, resolution, event, signature_key))
+        experiments.setdefault(signature_key, set()).add(experiment)
+        scans.append((row, parsed, resolution, experiment, signature_key))
     return [
         _KeyedScan(
             row,
             parsed,
             resolution,
-            parsed.stream_key(resolution, event)
-            if len(events[signature_key]) > 1
+            parsed.stream_key(
+                resolution,
+                event=event,
+                segment=None if segment == 1 else segment,
+            )
+            if len(experiments[signature_key]) > 1
             else signature_key,
+            signature_key,
+            segment,
+            event,
         )
-        for row, parsed, resolution, event, signature_key in scans
+        for row, parsed, resolution, (segment, event), signature_key in scans
     ]
 
 
@@ -160,13 +201,22 @@ def _census(backend: ReaderBackend) -> list[tuple[dict, list[int]]]:
     streams: dict[str, dict] = {}
     # (polarity, MS order) -> key of the last scan seen in that sequence
     last_key: dict[tuple, str] = {}
-    for row, parsed, resolution, key in _keyed_scans(backend):
+    for scan in _keyed_scans(backend):
+        row, parsed, key = scan.row, scan.parsed, scan.key
         stream = streams.get(key)
         if stream is None:
             stream = streams[key] = {
                 "key": key,
-                "signature": parsed.signature(resolution),
-                "scan_event": row.get("event"),
+                "signature_key": scan.signature_key,
+                "signature": parsed.signature(scan.resolution),
+                # The experiment, on the streams grouped by it and only on
+                # those: a key this dict lacks says "not grouped by it",
+                # where None says "the file records none".
+                **(
+                    {"scan_segment": scan.segment, "scan_event": scan.event}
+                    if parsed.ms_order == 1
+                    else {}
+                ),
                 "scans": 0,
                 "blocks": 0,
                 "t_first": row["time_s"],
@@ -174,10 +224,6 @@ def _census(backend: ReaderBackend) -> list[tuple[dict, list[int]]]:
                 "_filters": set(),
                 "_scan_numbers": [],
             }
-        elif stream["scan_event"] != row.get("event"):
-            # Only a fragmentation stream gets here: survey scans of two
-            # events never share a key.
-            stream["scan_event"] = None
         sequence = (parsed.polarity, parsed.ms_order)
         if last_key.get(sequence) != key:
             stream["blocks"] += 1

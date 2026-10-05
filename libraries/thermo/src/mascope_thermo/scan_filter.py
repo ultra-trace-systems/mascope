@@ -155,7 +155,10 @@ class ScanFilter:
         }
 
     def stream_key(
-        self, resolution: int | str | None = None, event: int | None = None
+        self,
+        resolution: int | str | None = None,
+        event: int | None = None,
+        segment: int | None = None,
     ) -> str:
         """The signature as one stable line of text.
 
@@ -167,13 +170,16 @@ class ScanFilter:
         m/z and no scan range.
 
         An experiment the signature alone cannot tell from another closes the
-        key with its scan event: ``... R=120000 event=2``. The caller decides
-        when that is (:func:`mascope_thermo.streams.scan_streams`), so a file
-        whose signatures already separate its experiments keeps the key it
-        has always had.
+        key with its scan event: ``... R=120000 event=2``, or
+        ``... R=120000 segment=2 event=1`` for one the caller places in a
+        segment. The caller decides when either is named
+        (:func:`mascope_thermo.streams.scan_streams`), so a file whose
+        signatures already separate its experiments keeps the key it has
+        always had.
 
         :param resolution: The scan's FT resolution, from its trailer.
         :param event: The scan event to name, as the method counts it from 1.
+        :param segment: The method segment to name before the event.
         :return: The stream key.
         """
         folded = self.folds_precursors
@@ -202,6 +208,8 @@ class ScanFilter:
             parts.append(f"[{ranges}]")
         if resolution is not None:
             parts.append(f"R={resolution}")
+        if segment is not None:
+            parts.append(f"segment={segment}")
         if event is not None:
             parts.append(f"event={event}")
         return " ".join(parts)

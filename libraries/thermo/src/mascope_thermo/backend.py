@@ -176,19 +176,24 @@ class ReaderBackend(Protocol):
         ...
 
     def scan_filters(self) -> list[dict]:
-        """Every scan's filter and scan event, in acquisition order.
+        """Every scan's filter and experiment, in acquisition order.
 
         ``[{"scan": 1-based number, "time_s": start time [s], "filter": text,
-        "event": scan event}]`` for every scan of every polarity and MS order.
-        No scan is left out, not even an outlier first scan: this describes
-        the file rather than selecting from it. The text is as the reader
-        renders it; see :mod:`mascope_thermo.scan_filter` for what it holds.
+        "segment": method segment, "event": scan event}]`` for every scan of
+        every polarity and MS order. No scan is left out, not even an outlier
+        first scan: this describes the file rather than selecting from it.
+        The text is as the reader renders it; see
+        :mod:`mascope_thermo.scan_filter` for what it holds.
 
-        ``event`` is the experiment of the acquisition method that produced
-        the scan, counted from 1 as the method and the trailer's
-        ``Scan Event:`` count it, and ``None`` where the file records none
-        (:func:`_method_scan_event`). It is read from the scan index, like
-        ``ScanEventNumber`` in :meth:`scan_statistics`.
+        ``segment`` and ``event`` together name the experiment of the
+        acquisition method that produced the scan: a method numbers its scan
+        events within each of its segments, so the event alone does not.
+        Both are counted from 1, as the method and the trailer's
+        ``Scan Segment:`` and ``Scan Event:`` count them, and both are
+        ``None`` where the file records no event (:func:`_method_experiment`).
+        They are read from the scan index, like ``SegmentNumber`` and
+        ``ScanEventNumber`` in :meth:`scan_statistics`, which reports the
+        index's own numbers.
         """
         ...
 
@@ -477,12 +482,54 @@ def _method_scan_event(index_event: int) -> int | None:
     as -1, and its trailers say 0. That is ``None`` here rather than a
     number, so that no caller can mistake it for an experiment.
 
+    **Three conventions meet here, and this is the only bridge.** The scan
+    index, and so the ``scan_event`` of the rows OpenTFRaw's scan selection
+    filters, counts from 0 and holds :data:`_SCAN_INDEX_UNSET` where unset.
+    ``ScanEventNumber`` in :meth:`ReaderBackend.scan_statistics` is the
+    Thermo library's reading of the same word: from 0, with -1 where unset.
+    The ``event`` of :meth:`ReaderBackend.scan_filters`, and the
+    ``scan_event`` of a scan stream, count from 1 with ``None``. Anything
+    that compares a stream's event with a scan's must do it on this side of
+    the bridge.
+
     :param index_event: The scan index's event, as either backend reports it.
     :return: The event counted from 1, or ``None`` where none was recorded.
     """
     if index_event < 0 or index_event == _SCAN_INDEX_UNSET:
         return None
     return index_event + 1
+
+
+def _method_experiment(
+    index_segment: int, index_event: int
+) -> tuple[int | None, int | None]:
+    """A scan's ``(segment, event)`` as the acquisition method numbers them.
+
+    A method numbers its scan events within each of its segments, so the
+    pair is what names an experiment. Both are counted from 1
+    (:func:`_method_scan_event`), and both are ``None`` where the file
+    records no event.
+
+    The segment needs the event to be read at all. Where it was never set
+    the index holds :data:`_SCAN_INDEX_UNSET`, but the Thermo library reports
+    that as 0, which is also its number for a method's first segment. So a
+    scan with an event and no segment reads as segment 1 under either
+    backend, and a scan with no event has no segment: on every file of the
+    internal regression corpus the two words are set or unset together.
+
+    Every one of those files is also in one segment, so the pairing itself
+    is as the vendor documents it rather than as measured here.
+
+    :param index_segment: The scan index's segment, as either backend
+        reports it.
+    :param index_event: The scan index's event, as either backend reports it.
+    :return: ``(segment, event)``, each counted from 1, or ``(None, None)``.
+    """
+    event = _method_scan_event(index_event)
+    if event is None:
+        return None, None
+    unset = index_segment < 0 or index_segment == _SCAN_INDEX_UNSET
+    return (1 if unset else index_segment + 1), event
 
 
 def _sample_evenly(items: list, count: int) -> list:
@@ -817,19 +864,25 @@ class ThermoBackend:
 
     def scan_filters(self) -> list[dict]:
         selector = self._selector(ms_type=None)
-        return [
-            {
-                "scan": scan_number,
-                "time_s": stats.StartTime * _SECONDS_PER_MINUTE,
-                "filter": scan_filter.ToString(),
-                "event": _method_scan_event(int(stats.ScanEventNumber)),
-            }
-            for scan_number, scan_filter, stats in zip(
-                selector.all_scan_indices,
-                selector.raw_scan_filters,
-                selector.raw_scan_stats,
+        rows = []
+        for scan_number, scan_filter, stats in zip(
+            selector.all_scan_indices,
+            selector.raw_scan_filters,
+            selector.raw_scan_stats,
+        ):
+            segment, event = _method_experiment(
+                int(stats.SegmentNumber), int(stats.ScanEventNumber)
             )
-        ]
+            rows.append(
+                {
+                    "scan": scan_number,
+                    "time_s": stats.StartTime * _SECONDS_PER_MINUTE,
+                    "filter": scan_filter.ToString(),
+                    "segment": segment,
+                    "event": event,
+                }
+            )
+        return rows
 
     def scan_trailer(self, scan_number: int) -> dict:
         header = self._raw.GetTrailerExtraInformation(scan_number)
@@ -1403,15 +1456,21 @@ class OpenTFRawBackend:
         return _summarize_acquisition_parameters("opentfraw", per_scan)
 
     def scan_filters(self) -> list[dict]:
-        return [
-            {
-                "scan": int(s["scan_number"]),
-                "time_s": s["retention_time"] * _SECONDS_PER_MINUTE,
-                "filter": s["filter_string"] or "",
-                "event": _method_scan_event(int(s["scan_event"])),
-            }
-            for s in self._all_scans()
-        ]
+        rows = []
+        for s in self._all_scans():
+            segment, event = _method_experiment(
+                int(s["scan_segment"]), int(s["scan_event"])
+            )
+            rows.append(
+                {
+                    "scan": int(s["scan_number"]),
+                    "time_s": s["retention_time"] * _SECONDS_PER_MINUTE,
+                    "filter": s["filter_string"] or "",
+                    "segment": segment,
+                    "event": event,
+                }
+            )
+        return rows
 
     def scan_trailer(self, scan_number: int) -> dict:
         # scan_parameters() is the instrument's own trailer-extra table (tens

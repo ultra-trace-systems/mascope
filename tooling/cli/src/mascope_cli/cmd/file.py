@@ -154,6 +154,23 @@ def _report_in_container(path: Path, top: int) -> dict:
     return report
 
 
+def _experiment(stream: dict) -> str:
+    """How a stream's line names the experiment that produced it, if it says.
+
+    A fragmentation stream names none, nor does any stream of a report from a
+    reader that predates the experiment, and a file acquired with no method
+    loaded records none. The segment is named only outside a method's first,
+    which is the only one nearly every method has.
+    """
+    event = stream.get("scan_event")
+    if event is None:
+        return ""
+    segment = stream.get("scan_segment")
+    if segment in (None, 1):
+        return f", scan event {event}"
+    return f", segment {segment} scan event {event}"
+
+
 def _print_report(report: dict) -> None:
     """One stream per paragraph: its key would not fit a table column."""
     console = Console(highlight=False)
@@ -166,12 +183,9 @@ def _print_report(report: dict) -> None:
     for index, stream in enumerate(report["streams"], start=1):
         console.print()
         console.print(f"{index}. [cyan]{stream['key']}[/cyan]")
-        # A report from a reader that predates the scan event carries none.
-        event = stream.get("scan_event")
         console.print(
             f"   {stream['scans']} scans in {stream['blocks']} block(s), "
-            f"{stream['t_first']:.1f}-{stream['t_last']:.1f} s"
-            + (f", scan event {event}" if event is not None else "")
+            f"{stream['t_first']:.1f}-{stream['t_last']:.1f} s" + _experiment(stream)
         )
         if stream.get("top_peaks"):
             peaks = ", ".join(f"{mz:.4f}" for mz, _ in stream["top_peaks"])
@@ -220,12 +234,18 @@ def scans(
     Show a raw file's scan streams.
 
     A scan stream is the scans of one experiment of the acquisition method,
-    which every scan records as its scan event. It is described by its scan
-    signature: analyzer, polarity, scan type, source, scan mode, MS order,
-    precursors, scan ranges and FT resolution. Two experiments that share a
-    signature are told apart by the event, which then closes the stream's
-    name. A file acquired with no method loaded records no event, and its
-    streams are the scans that share a signature.
+    which every scan records as its scan event, numbered within its segment
+    of the method. It is described by its scan signature: analyzer, polarity,
+    scan type, source, scan mode, MS order, precursors, scan ranges and FT
+    resolution. Two experiments that share a signature are told apart by the
+    event, which then closes the stream's name. A file acquired with no
+    method loaded records no event, and its streams are the scans that share
+    a signature.
+
+    A stream's name is its name in this file: the same experiment is named
+    by its signature alone in a run that stopped before the signature came
+    round again. Its signature and scan event are what to compare between
+    files.
 
     For each stream this lists its scan count, its blocks, the time it spans,
     its scan event and the strongest peaks of its averaged spectrum. It also

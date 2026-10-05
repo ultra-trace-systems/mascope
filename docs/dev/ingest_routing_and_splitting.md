@@ -1,8 +1,9 @@
 # Automatic ingest: chemistry routing and acquisition splitting - design
 
-Status: **phases 0 and 1 shipped; phase 2 shipped up to its per-site
-switch; the stream first cut of phases 3 and 4 is being built, its census
-keyed on the method's experiments; phase 8 follows it; detection deferred**
+Status: **phases 0 and 1 shipped; phase 2 shipped up to its backfill
+re-run and per-site switch; the stream first cut of phases 3 and 4 is
+being built, its census keyed on the method's experiments; phase 8
+follows it; detection deferred**
 (2026-10-05). Written for issue #2098 ("Split files into samples by scan
 attributes"), which carries the checklist of pull requests. Decisions 1 to
 5, 7, 9 and 12 to 15 in section 12 are settled; 6, 8, 10 and 11 are open.
@@ -428,8 +429,8 @@ at them.
 | Scan ranges | filter (`[lo-hi]`, several for multiplexed SIM) | yes | |
 | Precursor and activation | filter (`123.4567@hcd30.00`) | for targeted MSn only | data-dependent scans fold into one family per parent; this matches today's MS2 grouping key |
 | FT resolution | trailer (`FT Resolution:`) | yes | not in the filter; constant within a filter across the corpus |
-| Scan event | scan index; the trailer's `Scan Event:` agrees with it | as identity | the experiment of the method. It decides what a stream is, and joins the key text only where one filter carries more than one (below) |
-| Microscans, AGC target, injection time, lock-mass state, segment number | trailer | no | recorded on the stream as attributes, with their variation. A method that changes one defines another experiment, which is its own stream with its own fit (4.3); the microscan count and the AGC target also say which batch a stream's item joins (4.5) |
+| Scan segment and scan event | scan index; the trailer's `Scan Segment:` and `Scan Event:` agree with it | as identity | the experiment of the method: its scan event, numbered within its segment. The pair decides what a stream is, and joins the key text only where one filter carries more than one (below) |
+| Microscans, AGC target, injection time, lock-mass state | trailer | no | recorded on the stream as attributes, with their variation. A method that changes one defines another experiment, which is its own stream with its own fit (4.3); the microscan count and the AGC target also say which batch a stream's item joins (4.5) |
 
 The signature needs **one** filter-string parser, written and tested in
 `mascope_thermo`. It serves both backends:
@@ -499,9 +500,29 @@ shows two. Nothing is configured, at a site or in a recipe.
 
 The event number joins the key text only where one filter carries more than
 one event. A file with one event per filter - 180 of the 182 above - keeps
-the key it has, so no store goes stale and no method binding re-keys; a
-method that gains a stream this way gets a new signature class, and a
-binding learned from its next routed file.
+the key it has, so no store goes stale. No method binding re-keys either,
+for any file: a binding's signature class is built from what each stream
+measured, not from what it is called (5.3).
+
+**A key names a stream in its file; its identity names it anywhere.** The
+rule above makes a key depend on the rest of its file. A method that runs
+negative, positive, negative, positive names its second experiment
+`... event=2` in a complete run and by the bare signature in a run stopped
+before the fourth, where nothing shares its signature. So a stream carries
+both: `key`, unique within its file and used only there - the reader's
+selection, the store's labels, the stream row - and its identity, the
+signature key with the segment and the scan event, which reads the same in
+every file of one method. Anything that compares streams across files
+compares identities: the signature class today, per-stream bindings and the
+batch a stream's item joins (4.5) later.
+
+**An experiment is a scan event within a segment.** A method numbers its
+scan events within each of its segments, so a settle-then-measure method
+written as two segments has an event 1 in each, under one filter, and the
+event alone would pool them. The identity is therefore the pair, and the key
+names the segment only outside the method's first
+(`... segment=2 event=1`). Every corpus file is in one segment, so this is
+as the vendor documents it rather than as measured here.
 
 Picking grouping parameters instead - the range, the microscan count and so
 on - was the alternative, and was turned down. Each parameter would need a
@@ -535,19 +556,23 @@ it. Four things the build settled:
   above, where a file with a method counts its events from 0. Both reader
   backends report it alike, and report the same event for every scan of the
   corpus's 185 files (5,476 scans, with the reader as pinned).
-- **The event is counted from 1**, as the method and the trailer's
-  `Scan Event:` count it, and closes the key as
-  `... R=120000 event=2`. A stream also carries it as `scan_event`, whether
-  or not its key shows it.
+- **The segment and the event are counted from 1**, as the method and the
+  trailer's `Scan Segment:` and `Scan Event:` count them, and the event
+  closes the key as `... R=120000 event=2`. An MS1 stream carries both as
+  `scan_segment` and `scan_event`, whether or not its key shows them, and
+  its bare signature as `signature_key`.
 - **The corpus under the new key:** 183 of 185 files keep every key. The two
   polarity-switching files go from four streams to eight and from two to
-  four, each new stream one contiguous block, and they are the only files
-  whose signature class - and so whose method binding - re-keys.
-- **MSn scans stay keyed by signature for now.** The corpus holds no MSn
-  scan, so what a dependent scan's event counts - its experiment, or its
-  place in the cycle - is unmeasured, and the one family per parent of 4.2
-  must not become one stream per slot. Phase 4 measures it on the internal
-  MS2 acquisitions before it attaches them.
+  four, each new stream one contiguous block. No signature class moves, for
+  those two or any other, because the class reads the signature keys.
+- **MSn scans stay keyed by signature for now, and say nothing of their
+  experiment.** The corpus holds no MSn scan, so what a dependent scan's
+  event counts - its experiment, or its place in the cycle - is unmeasured,
+  and the one family per parent of 4.2 must not become one stream per slot.
+  An MSn stream carries neither `scan_segment` nor `scan_event`: a missing
+  key says "not grouped by it", where `None` on an MS1 stream says "the file
+  records none". Phase 4 measures it on the internal MS2 acquisitions before
+  it attaches them.
 
 ### 4.2 MS2 and above
 
@@ -620,8 +645,8 @@ it. Four things the build settled:
 | Column | Meaning |
 |---|---|
 | `stream_id`, `sample_file_id` | identity |
-| `stream_key`, `epoch` | unique per file |
-| `scan_event` | the experiment's event number in the method; NULL where the file records none |
+| `stream_key`, `epoch` | unique per file, and a name there only: the same experiment can be keyed differently in another file of its method (4.1) |
+| `signature_key`, `scan_segment`, `scan_event` | the stream's identity across files: what it measured, and the experiment's segment and event number in the method; the last two NULL where the file records none |
 | `signature` (JSON) | the parsed key fields, plus the attributes of section 4.1 with their variation |
 | `parent_stream_id` | MSn to its MS1 parent |
 | `scan_count`, `blocks`, `t_first`, `t_last` | census |
@@ -832,7 +857,13 @@ method text can be extracted reliably (`ionization_method_config.md` 6.1).
 
 **The signature class** is polarity, analyzer, source, scan mode and scan
 ranges, without precursors. A polarity-switching method can therefore bind
-two chemistries, one per polarity.
+two chemistries, one per polarity. It is built from the signatures of a
+polarity's MS1 streams, each counted once, and not from their keys: a key
+names an experiment only where another of the same file shares its
+signature (4.1), so a class built from keys would change with how far a run
+got, and one method would be keyed two ways. A method that repeats an
+experiment, or runs one scan definition at two microscan counts, has the
+class it had before streams followed the experiment.
 
 **Learning:**
 
@@ -1664,9 +1695,11 @@ unchanged.
   all of it is in, so the cut delivers at its end, not step by step. In
   order:
   1. ~~the census keys streams on the method's experiments (4.1)~~ - built
-     in #2273: `scan_filters` reports each scan's event from the scan index,
-     and `mascope_thermo.streams` groups MS1 scans by signature and event,
-     the event closing the key only where a signature is shared. A census,
+     in #2273: `scan_filters` reports each scan's segment and event from
+     the scan index, and `mascope_thermo.streams` groups MS1 scans by
+     signature, segment and event, the experiment closing the key only
+     where a signature is shared. Each stream carries its identity beside
+     its key, and the signature class reads the identity. A census,
      so it ships with no flag: `.props`, `mascope file scans` and the pooled
      note in a file's processing detail list the experiments, and peak
      detection pools them as before;
@@ -1987,7 +2020,7 @@ Function names are the stable reference; line numbers drift.
 |---|---|---|
 | Method identity (shipped, #2155) | `libraries/thermo/src/mascope_thermo/processor.py` `RawProcessor.method_file`; `backend.py` `ReaderBackend.method_file`; `db/scripts/populate_orbitrap_method_file.py` | 0 |
 | Filter parsing, stream census, per-stream parameter sampling | `libraries/thermo/src/mascope_thermo/backend.py` (`acquisition_parameters`, `_sample_evenly`, a new signature accessor); `server/backend/src/mascope_backend/file_converter/schema.py` `SampleFileProps` | 0 |
-| Scan selection and stream identity | `backend.py` `scan_filters` (the scan event from the scan index, `_method_scan_event`), `OpenTFRawBackend._selected` and `_all_scans`; `thermo.py` `ScanSelector`; `streams.py` `_keyed_scans` (which stream a scan belongs to) and `_census`; `scan_filter.py` `ScanFilter.stream_key` | 3 |
+| Scan selection and stream identity | `backend.py` `scan_filters` (the scan event from the scan index, `_method_scan_event`), `OpenTFRawBackend._selected` and `_all_scans`; `thermo.py` `ScanSelector`; `backend.py` `_method_experiment` (segment and event, as the method counts them); `streams.py` `_keyed_scans` (which stream a scan belongs to) and `_census`; `scan_filter.py` `ScanFilter.stream_key`; `method_keys.py` `signature_class` (built from signature keys) | 3 |
 | Detection and store layout | `libraries/signal/src/mascope_signal/peak.py` (`_extract_peaks_for_polarity`, `_allocate_peak_timeseries`) | 3 |
 | Timeseries fill, stale-axis check, acquisition window | `libraries/signal/src/mascope_signal/compute.py` (`load_peak_timeseries`, `check_stored_scan_axis`, `get_acquisition_window`) | 3 |
 | Peak listing | `server/backend/src/mascope_backend/api/controllers/samples/lib/samples_peaks.py` `extract_peaks` | 3 |

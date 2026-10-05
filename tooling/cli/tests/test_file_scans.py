@@ -146,9 +146,12 @@ def test_a_streams_scan_event_is_shown_where_the_report_names_one(
     report = {
         **REPORT,
         "streams": [
-            {**first, "scan_event": 1},
-            {**second, "scan_event": 2},
-            {**REPORT["streams"][1], "scan_event": None},
+            {**first, "scan_segment": 1, "scan_event": 1},
+            {**second, "scan_segment": 2, "scan_event": 2},
+            # A file that records no experiment, and a fragmentation stream,
+            # which carries neither key.
+            {**REPORT["streams"][1], "scan_segment": None, "scan_event": None},
+            {**REPORT["streams"][0], "t_first": 9.5},
         ],
     }
     monkeypatch.setattr(file_cmd, "_reader_available", lambda: True)
@@ -158,10 +161,12 @@ def test_a_streams_scan_event_is_shown_where_the_report_names_one(
 
     assert result.exit_code == 0, result.output
     lines = [line.strip() for line in result.output.splitlines()]
+    # The method's first segment goes unnamed: nearly every method has one.
     assert "3 scans in 3 block(s), 0.5-5.5 s, scan event 1" in lines
-    assert "3 scans in 3 block(s), 1.5-6.5 s, scan event 2" in lines
+    assert "3 scans in 3 block(s), 1.5-6.5 s, segment 2 scan event 2" in lines
     # A stream that names none says nothing rather than "None".
     assert "3 scans in 3 block(s), 1.5-6.5 s" in lines
+    assert "3 scans in 3 block(s), 9.5-5.5 s" in lines
 
 
 def test_an_operator_install_reads_the_file_in_the_backend_container(

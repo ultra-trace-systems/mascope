@@ -59,10 +59,11 @@ def pooled_streams_note(streams: list[dict]) -> str | None:
     """Name the polarities whose MS1 scans come from more than one stream.
 
     Peak detection pools every MS1 scan of a polarity into one averaged
-    spectrum and one peak list, so a file whose method alternates scan ranges
-    or scan modes within a polarity has its streams mixed. The census that
-    shows it is the converter's ``scan_streams``
-    (``SampleFileProps.scan_streams``).
+    spectrum and one peak list, so a file whose method runs more than one
+    experiment in a polarity has its streams mixed: alternating scan ranges
+    or scan modes, the same scan at another microscan count, or one scan
+    definition repeated later in the method. The census that shows it is the
+    converter's ``scan_streams`` (``SampleFileProps.scan_streams``).
 
     :param streams: The file's scan stream census, as
         :func:`read_scan_streams` returns it: every entry a dict with a dict
