@@ -131,6 +131,30 @@ def test_scan_experiments_match_thermo(monkeypatch, path):
 
 @pytest.mark.skipif(not RAW_FILES, reason="no .raw files in test_files/")
 @pytest.mark.parametrize("path", RAW_FILES, ids=lambda p: p.name)
+def test_scan_experiments_are_in_the_methods_table(monkeypatch, path):
+    """Every scan's experiment is one its method's own table of events holds.
+
+    The Thermo library addresses a method's scan events by segment and event
+    number - ``IScanEvents``: ``Segments``, ``GetEventCount(segment)``,
+    ``GetEvent(segment, eventNumber)`` - which is what makes the pair the
+    name of an experiment. A scan whose pair fell outside that table would
+    mean the scan index counts something else.
+    """
+    monkeypatch.setenv("MASCOPE_THERMO_BACKEND", "thermo")
+    with open_backend(str(path)) as backend:
+        events = backend._raw.ScanEvents
+        table = {
+            (segment + 1, event + 1)
+            for segment in range(events.Segments)
+            for event in range(events.GetEventCount(segment))
+        }
+        recorded = {(row["segment"], row["event"]) for row in backend.scan_filters()}
+
+    assert recorded - {(None, None)} <= table
+
+
+@pytest.mark.skipif(not RAW_FILES, reason="no .raw files in test_files/")
+@pytest.mark.parametrize("path", RAW_FILES, ids=lambda p: p.name)
 def test_xic_matches_thermo(monkeypatch, path):
     """OpenTFRaw's NumPy XIC must reproduce Thermo's MassRange chromatogram for
     targets spanning the file's full m/z range, across all MS1 scans.

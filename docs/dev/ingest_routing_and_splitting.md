@@ -512,17 +512,32 @@ before the fourth, where nothing shares its signature. So a stream carries
 both: `key`, unique within its file and used only there - the reader's
 selection, the store's labels, the stream row - and its identity, the
 signature key with the segment and the scan event, which reads the same in
-every file of one method. Anything that compares streams across files
-compares identities: the signature class today, per-stream bindings and the
-batch a stream's item joins (4.5) later.
+every file of one method. Nothing that compares streams across files may use
+the key, and not every such comparison wants the whole identity:
+
+- **the signature class** compares `signature_key` alone, which is what
+  keeps a class from moving with a method's layout;
+- **the batch a stream's item joins** (4.5) compares what the experiment
+  measured - its signature with the microscan count and the AGC target -
+  and not where it sits in the method;
+- **per-stream bindings** are open, and the triple is not their default.
+  Keyed on it, a method edited to insert an experiment would shift every
+  later event number and orphan each of its bindings, and one chemistry run
+  at events 1 and 3 would be learned twice: the sensitivity the class was
+  just moved away from. The step that builds them decides.
 
 **An experiment is a scan event within a segment.** A method numbers its
 scan events within each of its segments, so a settle-then-measure method
 written as two segments has an event 1 in each, under one filter, and the
 event alone would pool them. The identity is therefore the pair, and the key
 names the segment only outside the method's first
-(`... segment=2 event=1`). Every corpus file is in one segment, so this is
-as the vendor documents it rather than as measured here.
+(`... segment=2 event=1`). The pair is how the vendor library addresses a
+method's events: `IScanEvents`, the type of an open file's `ScanEvents`,
+gives a count of `Segments`, `GetEventCount(segment)` for each, and
+`GetEvent(segment, eventNumber)`. On the 171 corpus files that record
+events, every scan's pair is one of the pairs its method's own table holds.
+Every one of those files is in one segment, though: that a second segment
+starts again at event 1 is read off that interface, not off a file.
 
 Picking grouping parameters instead - the range, the microscan count and so
 on - was the alternative, and was turned down. Each parameter would need a
@@ -646,7 +661,7 @@ it. Four things the build settled:
 |---|---|
 | `stream_id`, `sample_file_id` | identity |
 | `stream_key`, `epoch` | unique per file, and a name there only: the same experiment can be keyed differently in another file of its method (4.1) |
-| `signature_key`, `scan_segment`, `scan_event` | the stream's identity across files: what it measured, and the experiment's segment and event number in the method; the last two NULL where the file records none |
+| `signature_key`, `scan_segment`, `scan_event` | the stream's identity across files: what it measured, and the experiment's segment and event number in the method; the last two NULL where the file records none. Which of the three a consumer compares is the consumer's own (4.1) |
 | `signature` (JSON) | the parsed key fields, plus the attributes of section 4.1 with their variation |
 | `parent_stream_id` | MSn to its MS1 parent |
 | `scan_count`, `blocks`, `t_first`, `t_last` | census |

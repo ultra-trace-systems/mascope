@@ -364,8 +364,8 @@ def test_a_key_names_a_stream_in_its_file_and_its_identity_names_it_anywhere():
     """One method, three runs: complete, stopped during its third experiment,
     and stopped during its second. An experiment's key depends on whether the
     run got far enough to repeat its signature, so the same experiment is
-    named two ways. Its signature, segment and event are not: those are what
-    to compare across files."""
+    named two ways. Its signature, segment and event are not: those read the
+    same in every run."""
     method = [(NEG_LOW, 1), (POS_LOW, 2), (NEG_LOW, 3), (POS_LOW, 4)]
 
     def run(experiments):
