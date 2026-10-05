@@ -24,7 +24,6 @@ import os
 import re
 
 import numpy as np
-import opentfraw
 import pytest
 from thermo_test_support import TEST_FILES_DIR
 
@@ -171,7 +170,7 @@ def test_centroids_per_scan_matches_thermo(monkeypatch, path):
     across the corpus). The tolerances are therefore tight -- loose tolerances
     here would silently tolerate a real decode regression. S:N is
     ``(intensity - baseline) / (noise - baseline)`` (matches Thermo to f32).
-    Works on Exploris too, unlike the profile m/z.
+    Works on Exploris too.
     """
     path = str(path)
 
@@ -204,44 +203,78 @@ def test_centroids_per_scan_matches_thermo(monkeypatch, path):
         pytest.skip("no FT centroid scans to compare")
 
 
+# Bound on the m/z of one per-scan profile point against the Thermo library's,
+# in ppm. Both readers convert the same stored samples, and on most scans the
+# two axes are bit-identical. The rest is the Thermo library converting a scan
+# with an earlier scan's conversion coefficients rather than its own, which it
+# does where both B and C lie within 0.01 of the earlier scan's. That moves
+# every point of the scan by one factor of at most 0.01 / B: 1.5e-4 ppm where B
+# is 6.8e7 (a Q Exactive Plus), 5.9e-5 ppm where it is 1.7e8 (the Exploris
+# models). Measured over 28.1 million points in 5,394 scans of 185 files from
+# four instrument models: 571 scans differ at all, by 1.4e-4 ppm at most. The
+# bound leaves that a factor of seven, and a decode fault costs a thousand
+# times more: reader 1.4.0, which misapplied the stored per-scan correction,
+# was several ppm off on every point.
+PROFILE_MZ_PPM = 1e-3
+
+
 @pytest.mark.parametrize("path", RAW_FILES, ids=lambda p: p.name)
 def test_profile_matches_thermo(monkeypatch, path):
-    """OpenTFRaw's profile spectrum must match Thermo's SegmentedScan.
+    """OpenTFRaw's per-scan profile must be the Thermo library's SegmentedScan,
+    point for point, on every profile-mode MS1 scan.
 
-    Guards the profile path so a structural-only check (e.g. get_signal's
-    size>0) can't mask wrong m/z. Compares the first MS1 scan's non-zero profile
-    points: count must match, and the base-peak m/z must agree within a coarse
-    tolerance. (On Q Exactive the m/z agrees to ~20 ppm - a lock-mass-level
-    offset - hence 50 ppm, not sub-ppm.)
+    Pins the values behind ``profile_per_scan`` under both backends, so that a
+    structural check (get_signal's size > 0, say) cannot pass over a wrong m/z
+    axis. Per scan, the non-zero points must be the same in number, each m/z
+    within ``PROFILE_MZ_PPM`` of the Thermo library's, and each intensity
+    identical (measured: not one of 28.1 million differs). The comparison is
+    over the non-zero points because the Thermo library also carries the
+    baseline zeros around each cluster of samples, which OpenTFRaw leaves out.
 
-    Exploris profile m/z is correct too, via the scan-event coefficient decoding.
+    A centroid-mode scan is passed over: its SegmentedScan holds the centroids,
+    and there is no stored profile to set against them.
     """
     path = str(path)
-    raw = opentfraw.RawFile(path)
 
     monkeypatch.setenv("MASCOPE_THERMO_BACKEND", "thermo")
     with open_backend(path) as backend:
-        first_ms1 = backend.scan_indices(ms_type="Ms")[0]
-        mzs, specs, _ = backend.profile_per_scan(ms_type="Ms")
-    tmz = np.asarray(mzs[0], dtype=float)
-    tint = np.asarray(specs[0], dtype=float)
+        th_scans = backend.scan_indices(ms_type="Ms")
+        th_mzs, th_specs, _ = backend.profile_per_scan(ms_type="Ms")
+        th_stats = backend.scan_statistics(ms_type="Ms")
+    monkeypatch.setenv("MASCOPE_THERMO_BACKEND", "opentfraw")
+    with open_backend(path) as backend:
+        ot_scans = backend.scan_indices(ms_type="Ms")
+        ot_mzs, ot_specs, _ = backend.profile_per_scan(ms_type="Ms")
 
-    omz, oint = (np.asarray(a, dtype=float) for a in raw.profile(first_ms1))
+    assert ot_scans == th_scans, "MS1 scan set differs"
 
-    om, tm = omz[oint > 0], tmz[tint > 0]
-    oi, ti = oint[oint > 0], tint[tint > 0]
-    if om.size == 0 or tm.size == 0:
-        pytest.skip("no profile signal in the first MS1 scan")
+    compared = 0
+    for k, scan in enumerate(th_scans):
+        if th_stats[scan]["IsCentroidScan"]:
+            continue
+        tmz, tint = (np.asarray(a, dtype=float) for a in (th_mzs[k], th_specs[k]))
+        omz, oint = (np.asarray(a, dtype=float) for a in (ot_mzs[k], ot_specs[k]))
+        om, tm = omz[oint > 0], tmz[tint > 0]
+        oi, ti = oint[oint > 0], tint[tint > 0]
 
-    assert om.size == tm.size, (
-        f"non-zero profile point count: OpenTFRaw {om.size} vs Thermo {tm.size}"
-    )
-    bp_otf = om[np.argmax(oi)]
-    bp_thermo = tm[np.argmax(ti)]
-    ppm = abs(bp_otf - bp_thermo) / bp_thermo * 1e6
-    assert ppm <= 50, (
-        f"base-peak m/z {bp_otf:.4f} vs Thermo {bp_thermo:.4f} ({ppm:.0f} ppm)"
-    )
+        assert om.size == tm.size, (
+            f"scan {scan}: non-zero profile point count: "
+            f"OpenTFRaw {om.size} vs Thermo {tm.size}"
+        )
+        if tm.size == 0:
+            continue
+        compared += 1
+        ppm = np.abs(om - tm) / tm * 1e6
+        worst = int(np.argmax(ppm))
+        assert ppm[worst] <= PROFILE_MZ_PPM, (
+            f"scan {scan}: profile m/z {om[worst]!r} vs Thermo {tm[worst]!r} "
+            f"({ppm[worst]:.3g} ppm, bound {PROFILE_MZ_PPM:g}); "
+            f"{int((ppm > PROFILE_MZ_PPM).sum())} of {ppm.size} points over it"
+        )
+        np.testing.assert_array_equal(oi, ti, err_msg=f"scan {scan}: profile intensity")
+
+    if compared == 0:
+        pytest.skip("no profile-mode MS1 scan with signal to compare")
 
 
 @pytest.mark.parametrize("path", RAW_FILES, ids=lambda p: p.name)

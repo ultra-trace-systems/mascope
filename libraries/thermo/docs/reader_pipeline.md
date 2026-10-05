@@ -358,12 +358,26 @@ them itself:
 | reader 1.4.0 | -4.60 ppm median, -5.40 below m/z 200 | -- |
 | reader 2.0.0 | **-0.001 ppm** median, +-0.1 ppm in every band | **0.053 ppm** median absolute, no bias |
 
-The per-scan axis is in fact byte-for-byte the Thermo library's: 0.000000 ppm
-over every point of a scan, where 1.4.0 differed by up to 3.3 ppm. The averaged
-figure is over 80,416 strong peaks (S:N >= 20) of the 161 demo files, each
-located at the vertex of the parabola through its three top samples, the way
-the Thermo library centroids one (5.3); its signed median is -0.005 ppm, and it
-runs from 0.04 ppm below m/z 150 to 0.09 above m/z 500. It holds where the
+The per-scan axis is in fact the Thermo library's. Over the 28.1 million
+non-zero points of 5,394 profile scans, in 185 files from four instrument models
+(a Q Exactive Plus and three Exploris models), 4,823 scans are bit-identical on
+every point and the other 571 differ by one factor per scan, 1.4e-4 ppm at most.
+Reader 1.4.0 differed on every point of the same files, by 6.7 ppm at the median
+file's worst point. What is left is on the Thermo side. It converts such a scan
+with an earlier scan's conversion coefficients where B and C both lie within
+0.01 of that scan's, while the open reader converts every scan with its own.
+Taking the first such earlier scan reproduces 5,383 of the 5,394 scans, shifted
+or not, to the last digit of the factor; in the other 11 the coefficients are
+another earlier scan's, also within 0.01. That moves a scan by at most 0.01 / B:
+1.5e-4 ppm at the Q Exactive Plus's B of 6.8e7, 5.9e-5 ppm at the Exploris
+models' 1.7e8.
+`test_profile_matches_thermo` (in `test_backend_parity.py`) holds every point of
+every profile scan to 1e-3 ppm, and every intensity to equality.
+
+The averaged figure is over 80,416 strong peaks (S:N >= 20) of the 161 demo
+files, each located at the vertex of the parabola through its three top samples,
+the way the Thermo library centroids one (5.3); its signed median is -0.005 ppm,
+and it runs from 0.04 ppm below m/z 150 to 0.09 above m/z 500. It holds where the
 scans' calibrations differ, because the profile is written on their mean
 (3.2). Against a 4-8 ppm FWHM, a tenth of a ppm is not a visible offset.
 `test_sum_signal_peaks_sit_on_the_centroids` (in `test_thermo_spec_extraction.py`)
@@ -426,10 +440,10 @@ the nominal width where the natively-spaced signal gives 0.81. That smoothness
 is the likely source of the impression that the vendor's profile is synthetic.
 
 The per-scan profile is even plainer: Thermo's non-zero points are the stored
-samples, agreeing with the open reader's to **0.000000 ppm in m/z and 0.000000%
-in intensity** on every one of them. The only difference is that Thermo also
-carries the baseline zeros around each cluster, which the open reader omits (and
-which `_zerofill_baseline` puts back).
+samples, agreeing with the open reader's **to the last bit in intensity** on
+every one of them, and in m/z to the last bit or to 1.4e-4 ppm (5.1). The only
+other difference is that Thermo also carries the baseline zeros around each
+cluster, which the open reader omits (and which `_zerofill_baseline` puts back).
 
 ---
 
@@ -494,7 +508,8 @@ them, touching raw Orbitrap files only.
 | Quantity | Parity with Thermo |
 |---|---|
 | Per-scan centroid m/z / resolution / S:N | Exact (same binary stream); sub-0.0002 ppm m/z |
-| Per-scan profile m/z | Exact from reader 2.0.0: 0.000000 ppm on every point |
+| Per-scan profile m/z | From reader 2.0.0, bit-identical on nine scans in ten; within 1.4e-4 ppm on the rest, where Thermo converts with an earlier scan's coefficients (section 5.1) |
+| Per-scan profile intensity | Exact (the stored samples) |
 | Averaged centroid m/z | Sub-0.1 ppm (matched peaks) |
 | Averaged centroid intensity (profile-apex) | ~3% high, and flat across the intensity range (section 6, step 6) |
 | Single-scan centroid intensity (profile-apex) | 0.8% of the instrument's own label |
