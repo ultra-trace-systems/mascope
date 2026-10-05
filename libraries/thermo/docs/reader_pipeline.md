@@ -53,10 +53,13 @@ Per-peak resolution and S:N matter downstream (the instrument fit uses FWHM =
 m/z / resolution; peak detection uses S:N), so the labels are first-class.
 
 **Scan selection** is shared by every read: `_selector(...)` /
-`_selected(...)` filter scans by polarity (`+`/`-`), MS level (`Ms`/`Ms2`) and a
-retention-time window `[t_min, t_max]`. One subtlety: the pipeline drops a
-high-TIC outlier first scan when present (`thermo.py` `_bad_first_scan`), and
-both backends apply it, so scan counts agree.
+`_selected(...)` filter scans by polarity (`+`/`-`), MS level (`Ms`/`Ms2`), a
+retention-time window `[t_min, t_max]` and, when one is asked for, a scan
+stream (`backend.md`, "Selecting one stream"). One subtlety: the pipeline drops
+a high-TIC outlier first scan when present (`thermo.py` `_bad_first_scan`), and
+both backends apply it, so scan counts agree. Asked for a stream, they compare
+the first scan with the other scans of its own stream rather than with the
+whole file.
 
 ---
 

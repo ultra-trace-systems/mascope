@@ -78,7 +78,7 @@ request for this work updates the table below and ticks its item on #2098.
 | 1 | Per-file processing state, persistent notifications, "needs a chemistry" | shipped (#2164, #2166-#2169) |
 | 2 | Method bindings: routing without tokens | learned in shadow on every server (#2193, #2196, #2206, #2226), measured (5.7), item provenance (#2254), the row-following learner (#2255), the rung (#2264) and the disagreement report (#2267) shipped; the backfill re-run and the per-site switch remain, section 10 lists them |
 | 8 | Chemistry profiles as the unit: complete the seeded profiles, ship the standard methods and their catalogue, list the profiles, a profile-first surface, batches named after the profile | open; follows the stream first cut, or runs beside it when there are hands for both (decided 2026-10-05) |
-| 3 | The part contract: stream and window honoured by every consumer | **in progress**: the first cut, for files with more than one MS1 stream in a polarity (4.5), leads the work after phase 2 (decided 2026-10-05). The census keys streams on the method's experiments (#2273); the reader, the store, the items and the consumers follow, and section 10 lists them |
+| 3 | The part contract: stream and window honoured by every consumer | **in progress**: the first cut, for files with more than one MS1 stream in a polarity (4.5), leads the work after phase 2 (decided 2026-10-05). The census keys streams on the method's experiments (#2273) and the reader selects one stream's scans (#2278); the store, the items and the consumers follow, and section 10 lists them |
 | 4 | Per-stream state: calibration, instrument function, one item per stream, MS2 | open; follows 3 on the same track; no rebuild script (4.5, 9.1) |
 | 5 | Chemistry detection: audit first, then provisional binding | deferred behind phases 3, 4 and 8 (decision 3); its reagent libraries are on `develop` |
 | 6 | Recipes: time and trace windows, preview and apply | open |
@@ -620,7 +620,11 @@ it. Four things the build settled:
   - Scan selection gains a stream predicate, next to polarity, time and MS
     order, in `OpenTFRawBackend._selected` and `ScanSelector`. The predicate
     is the scan event, which the reader takes from the scan index beside the
-    segment number; where a file records none, it is the filter.
+    segment number; where a file records none, it is the filter. As built
+    (#2278) it is the stream's key, compared with the key of every scan: the
+    one function that keys the census also answers the selection, so a stream
+    the census names is exactly the scans selected for it, and a reader reads
+    the keys once per open file.
 - **Per-peak timeseries are filled with a per-scan stream mask.** This also
   removes today's normalisation of a polarity's rows over the axis of both
   polarities in `load_peak_timeseries`.
@@ -628,7 +632,15 @@ it. Four things the build settled:
   single-stream files.** Any change to what the default selection returns
   makes every existing store stale (`check_stored_scan_axis`), so per-stream
   evaluation applies only to multi-stream files. Those are the files the
-  first cut takes on (4.5).
+  first cut takes on (4.5). As built (#2278): a selection that names no
+  stream compares the file's first scan with every other scan, as before,
+  and one that names a stream compares it with the other scans of its own
+  stream - only that stream can lose it. On a single-stream file the two are
+  one comparison. They differ on one corpus file, a polarity-switching one:
+  its first scan equals the median of its own experiment and is sixty times
+  the file's median only because the other polarity's scans are that much
+  weaker, so today's rule drops an ordinary scan there, and the per-stream
+  one keeps it.
 - **The instrument function is fitted per stream, always.** Today's fit is
   one per file, on the file's whole summed signal: up to a hundred of the
   brightest peaks, their width against m/z, an inverse-square-root model for
@@ -1718,9 +1730,15 @@ unchanged.
      so it ships with no flag: `.props`, `mascope file scans` and the pooled
      note in a file's processing detail list the experiments, and peak
      detection pools them as before;
-  2. the reader selects one stream's scans: a stream predicate beside
+  2. ~~the reader selects one stream's scans: a stream predicate beside
      polarity, time and MS order, answered by the same function the census
-     keys its streams with;
+     keys its streams with~~ - built in #2278: every selecting method of both
+     reader backends takes `stream`, and so do the public reads built on
+     them (`get_signal`, `compute_sum_signal`, `get_tic_per_scan`,
+     `get_scan_timestamps`, `get_peak_timeseries`, `get_centroids`,
+     `get_centroids_per_scan`); the MS2 reads wait for phase 4. Nothing in
+     processing passes one yet, and a selection that names none reads no
+     key, so no file is read differently;
   3. per-stream peak detection, store labels and timeseries fill, behind
      the flag;
   4. the stream table and one item per stream;
@@ -2035,7 +2053,7 @@ Function names are the stable reference; line numbers drift.
 |---|---|---|
 | Method identity (shipped, #2155) | `libraries/thermo/src/mascope_thermo/processor.py` `RawProcessor.method_file`; `backend.py` `ReaderBackend.method_file`; `db/scripts/populate_orbitrap_method_file.py` | 0 |
 | Filter parsing, stream census, per-stream parameter sampling | `libraries/thermo/src/mascope_thermo/backend.py` (`acquisition_parameters`, `_sample_evenly`, a new signature accessor); `server/backend/src/mascope_backend/file_converter/schema.py` `SampleFileProps` | 0 |
-| Scan selection and stream identity | `backend.py` `scan_filters` (the scan event from the scan index, `_method_scan_event`), `OpenTFRawBackend._selected` and `_all_scans`; `thermo.py` `ScanSelector`; `backend.py` `_method_experiment` (segment and event, as the method counts them); `streams.py` `_keyed_scans` (which stream a scan belongs to) and `_census`; `scan_filter.py` `ScanFilter.stream_key`; `method_keys.py` `signature_class` (built from signature keys) | 3 |
+| Scan selection and stream identity | `backend.py` `scan_filters` (the scan event from the scan index, `_method_scan_event`), `OpenTFRawBackend._selected` and `_all_scans`; `thermo.py` `ScanSelector`; `backend.py` `_method_experiment` (segment and event, as the method counts them); `streams.py` `_keyed_scans` (which stream a scan belongs to), `scan_stream_keys` (what selection compares) and `_census`; `scan_filter.py` `ScanFilter.stream_key`; `method_keys.py` `signature_class` (built from signature keys) | 3 |
 | Detection and store layout | `libraries/signal/src/mascope_signal/peak.py` (`_extract_peaks_for_polarity`, `_allocate_peak_timeseries`) | 3 |
 | Timeseries fill, stale-axis check, acquisition window | `libraries/signal/src/mascope_signal/compute.py` (`load_peak_timeseries`, `check_stored_scan_axis`, `get_acquisition_window`) | 3 |
 | Peak listing | `server/backend/src/mascope_backend/api/controllers/samples/lib/samples_peaks.py` `extract_peaks` | 3 |

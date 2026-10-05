@@ -33,7 +33,10 @@ measured on any file in reach, and nothing reads their streams yet.
 Processing does not act on streams: peak detection pools every MS1 scan of a
 polarity. The census records what each file holds, so that the pooling can be
 seen, and so that splitting by stream rests on evidence
-(``docs/dev/ingest_routing_and_splitting.md``, section 4).
+(``docs/dev/ingest_routing_and_splitting.md``, section 4). The reader can
+select one stream's scans by its key (:func:`scan_stream_keys`, and the
+``stream`` argument of ``ReaderBackend``'s selecting methods); nothing in
+processing asks it to yet.
 """
 
 from __future__ import annotations
@@ -130,6 +133,21 @@ def scan_streams(backend: ReaderBackend) -> list[dict]:
     :return: One dict per stream, JSON-safe.
     """
     return [stream for stream, _scan_numbers in _census(backend)]
+
+
+def scan_stream_keys(backend: ReaderBackend) -> list[str]:
+    """The stream key of every scan of the file, in acquisition order.
+
+    What scan selection compares a ``stream`` against. They are the keys
+    :func:`scan_streams` reports, from the function it groups by, so the scans
+    selected for a stream are exactly the ones the census counted into it -
+    all but an outlier first scan, which selection leaves out and the census
+    does not.
+
+    :param backend: An open reader backend.
+    :return: One key per scan, as ``ReaderBackend.scan_filters`` orders them.
+    """
+    return [scan.key for scan in _keyed_scans(backend)]
 
 
 class _KeyedScan(NamedTuple):
