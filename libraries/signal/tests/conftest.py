@@ -63,7 +63,8 @@ def write_peak_store(sample_file_path):
 
     Mirrors what peak detection allocates: a store carrying the scan axis of
     the acquisition, per-peak summed intensities, and every timeseries still
-    uncomputed - the state `load_peak_timeseries` is asked to fill in.
+    uncomputed - the state `load_peak_timeseries` is asked to fill in. Every
+    peak is a kept, negative one unless `is_weak` or `polarity` say otherwise.
     """
 
     def _write(
@@ -71,13 +72,19 @@ def write_peak_store(sample_file_path):
         mz_values: np.ndarray,
         sum_peak_areas: np.ndarray,
         sum_peak_heights: np.ndarray,
+        is_weak: np.ndarray | None = None,
+        polarity: list[str] | None = None,
     ) -> str:
         n_mz = len(mz_values)
         n_time = len(scan_times)
+        if is_weak is None:
+            is_weak = np.zeros(n_mz, dtype=bool)
+        if polarity is None:
+            polarity = ["-"] * n_mz
         store = xr.Dataset(
             data_vars={
                 "is_satellite": (["mz"], np.zeros(n_mz, dtype=bool)),
-                "is_weak": (["mz"], np.zeros(n_mz, dtype=bool)),
+                "is_weak": (["mz"], np.asarray(is_weak, dtype=bool)),
                 "is_timeseries_computed": (["mz"], np.zeros(n_mz, dtype=bool)),
                 "sparsity": (["mz"], np.zeros(n_mz, dtype=np.float64)),
                 "peak_areas": (["mz", "time"], np.full((n_mz, n_time), np.nan)),
@@ -85,7 +92,7 @@ def write_peak_store(sample_file_path):
                 "sum_peak_areas": (["mz"], np.asarray(sum_peak_areas, dtype=float)),
                 "sum_peak_heights": (["mz"], np.asarray(sum_peak_heights, dtype=float)),
                 "signal_to_noise": (["mz"], np.full(n_mz, 50.0)),
-                "polarity": (["mz"], np.array(["-"] * n_mz, dtype="<U1")),
+                "polarity": (["mz"], np.array(polarity, dtype="<U1")),
             },
             coords={
                 "mz": np.asarray(mz_values, dtype=float),

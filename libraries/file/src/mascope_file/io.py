@@ -291,7 +291,10 @@ def load_peak_data(base_filename: str, drop_bad_peaks: bool = True) -> xr.Datase
     peak_data["sparsity"] = peak_data.sparsity.fillna(0.0)
     if drop_bad_peaks:
         bad_peak_mask = peak_data.is_weak | peak_data.is_satellite
-        peak_data = peak_data.sel(mz=peak_data.mz.values[~bad_peak_mask])
+        # By position: selecting by m/z needs every m/z on the axis to be
+        # unique, the ones being dropped included, and two peaks of a file can
+        # share one
+        peak_data = peak_data.isel(mz=np.flatnonzero(~bad_peak_mask.values))
     # Add zarr file properties to attributes for reverse compatibility
     props = read_props(base_filename)
     peak_data.attrs["props"] = props

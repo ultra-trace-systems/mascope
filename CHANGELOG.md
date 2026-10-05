@@ -314,6 +314,22 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   a task whose notification grows with the data shows up in error monitoring
   before it costs the server its live updates.
 
+- **A file that switches polarity no longer loses all of its peaks to two that
+  share an m/z.** The peaks of both polarities of a raw Orbitrap file are kept
+  in one list, and a scan's peaks are recorded in single precision, so a
+  positive and a negative peak that were each seen in one scan only can sit on
+  exactly the same m/z. Reading the file's peaks left out the weak and
+  satellite ones by selecting the rest by m/z, which fails unless every m/z in
+  the list is unique, the ones left out included. One such pair anywhere, even
+  of two noise peaks that are never shown, and every read of the file's peaks
+  failed with "Reindexing only valid with uniquely valued Index objects": its
+  peak list, matching, calibration, timeseries and export. The peaks are now
+  left out by position.
+
+  On a polarity-switching file of the internal regression corpus two pairs
+  among 41,639 peaks shared an m/z, all four of them noise. Nothing in error
+  monitoring shows the failure having reached a deployment.
+
 ### Security
 
 - **Creating an ionization mechanism refuses one too long to store while the
