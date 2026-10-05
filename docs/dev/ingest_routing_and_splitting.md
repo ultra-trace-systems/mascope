@@ -34,7 +34,8 @@ catalogue entry naming the profile it runs. A site on a shipped method gets
 its chemistry on its first file with no click at all; a site on its own
 method gets it after one (5.3). The standard methods are also where files
 with several scan ranges of one chemistry come from, and splitting those
-into one item per range is the first cut of the stream work (4.5).
+into one item per range is the first cut of the stream work (4.5) - the
+next thing built (decided 2026-10-05).
 
 The design in one paragraph. A physical acquisition (`sample_file`) is
 partitioned into **streams**: scans that share a scan signature and a
@@ -73,8 +74,8 @@ request for this work updates the table below and ticks its item on #2098.
 | 0 | Stop losing information: method identity, stream census, token-rule and notification fixes | shipped |
 | 1 | Per-file processing state, persistent notifications, "needs a chemistry" | shipped (#2164, #2166-#2169) |
 | 2 | Method bindings: routing without tokens | learned in shadow on every server (#2193, #2196, #2206, #2226), measured (5.7), item provenance (#2254), the row-following learner (#2255), the rung (#2264) and the disagreement report (#2267) shipped; the backfill re-run and the per-site switch remain, section 10 lists them |
-| 8 | Chemistry profiles as the unit: complete the seeded profiles, ship the standard methods and their catalogue, list the profiles, a profile-first surface, batches named after the profile | open; built right after phase 2, in parallel with phases 3 and 4 |
-| 3 | The part contract: stream and window honoured by every consumer | open; starts beside phase 8, first for files with more than one MS1 stream in a polarity (4.5) |
+| 8 | Chemistry profiles as the unit: complete the seeded profiles, ship the standard methods and their catalogue, list the profiles, a profile-first surface, batches named after the profile | open; follows the stream first cut, or runs beside it when there are hands for both (decided 2026-10-05) |
+| 3 | The part contract: stream and window honoured by every consumer | open and **next**: the first cut, for files with more than one MS1 stream in a polarity (4.5), leads the work after phase 2 (decided 2026-10-05) |
 | 4 | Per-stream state: calibration, instrument function, one item per stream, MS2 | open; follows 3 on the same track; no rebuild script (4.5, 9.1) |
 | 5 | Chemistry detection: audit first, then provisional binding | deferred behind phases 3, 4 and 8 (decision 3); its reagent libraries are on `develop` |
 | 6 | Recipes: time and trace windows, preview and apply | open |
@@ -192,6 +193,18 @@ grouped every file's scans by Thermo filter string:
 
 Multi-stream files are rare. When they occur, today's pooling is wrong
 rather than merely coarse.
+
+**What a site that wants multi-range files runs today** (one production
+Orbitrap, read on 2026-10-05, read-only). Four methods of twenty seconds
+each - two scan ranges in each polarity, one that includes the reagent ion
+and one that starts above it - cycled as separate files around the clock:
+about 2,500 files a day, each a single stream. A cycle takes about 134 s
+and records 80 s of it. The rest, two fifths of the cycle, is the gap
+between one file and the next, and whatever happened in the sample during
+it is context the neighbouring range never sees. Acquiring the ranges in
+one file is meant to remove both, and it is the case the first stream cut
+is built for (4.5). One of the four methods also turned out to hold two
+scan events under one filter, which the census cannot tell apart (4.1).
 
 ### 2.3 Can a spectrum name its own chemistry?
 
@@ -408,7 +421,7 @@ at them.
 | Scan ranges | filter (`[lo-hi]`, several for multiplexed SIM) | yes | |
 | Precursor and activation | filter (`123.4567@hcd30.00`) | for targeted MSn only | data-dependent scans fold into one family per parent; this matches today's MS2 grouping key |
 | FT resolution | trailer (`FT Resolution:`) | yes | not in the filter; constant within a filter across the corpus |
-| Microscans, AGC target, injection time, lock-mass state, scan event and segment numbers | trailer | no | recorded on the stream as attributes, with their variation; promoted into the key if one proves to move the peak shape, which then gives it its own fit (4.3) |
+| Microscans, AGC target, injection time, lock-mass state, scan event and segment numbers | trailer | no | recorded on the stream as attributes, with their variation; promoted into the key if one proves to move the peak shape, which then gives it its own fit (4.3); two scan events under one filter are the open case, below |
 
 The signature needs **one** filter-string parser, written and tested in
 `mascope_thermo`. It serves both backends:
@@ -428,6 +441,38 @@ The stream key is a stable, normalised rendering of the key fields. For a
 single-polarity file whose scans all share one signature, the key reduces to
 the polarity, so stores written today read as streams without a rebuild
 (section 9).
+
+**Two scan events can share one filter, and the key does not see them.** A
+production nitrate method, read scan by scan on 2026-10-05, defines two
+scan events with the same analyzer, range and resolution: seven scans of
+one microscan at an AGC target of 3e5 in the file's first two seconds, then
+seven scans of ten microscans at 1e6 over the eighteen that remain. Their
+filter strings are identical. So the census reports one stream in one
+block - with the microscan count, the AGC target, the maximum injection
+time and the scan event among the trailer values that vary - and the
+pipeline averages all fourteen scans as equals. Whatever the first event
+was meant for, it is not the measurement the second one is: a tenth of the
+transients per scan at a third of the ion population, taken while the
+source is still settling (the injection time of its first scans can sit at
+a fifth of the rest). In a per-scan average those two seconds weigh as
+much as the eighteen that follow. The corpus holds the same shape: four
+streams whose scan event number varies, one of them with its microscan
+count (2.2).
+
+The rule proposed for it, open as decision 14: **where the scans of one
+filter carry more than one scan event number, each event is its own
+stream**, and the event number joins the key only then. A file with one
+event per filter - every other file the census has described - keeps the
+key it has, so no store goes stale and no method binding re-keys; a method
+that does gain a stream this way gets a new signature class, and a binding
+learned from its next routed file. The event is preferred over comparing
+the settings themselves because it is the method's own statement that the
+operator defined two experiments, while a setting would have to be judged
+for what counts as a difference: the maximum injection time varies within
+a stream in fifteen corpus streams without meaning anything. Before the
+rule is fixed, the four corpus streams are read scan by scan, to see that
+an event boundary is always a block the method set and never something
+that flickers from one scan to the next.
 
 ### 4.2 MS2 and above
 
@@ -515,6 +560,11 @@ only because the pipeline pools a polarity, so files are acquired one range
 at a time. The corpus already holds the case: a file with two ranges per
 polarity in eight blocks, pooled into one spectrum per polarity (2.2).
 
+**This cut is the next thing built** (decided 2026-10-05), ahead of phase
+8. A site that cycles its ranges as separate files loses two fifths of
+every cycle to the gaps between them (2.2), and nothing waits on the
+profiles.
+
 The first cut of phases 3 and 4 is scoped to exactly that, and it is a
 smaller piece of work than the two phases read as a whole:
 
@@ -529,13 +579,33 @@ smaller piece of work than the two phases read as a whole:
   is diluted in the pooled store.
 - **One ACQUISITION item per MS1 stream**, under the one binding the file's
   polarity resolves to, and the batch name gains the range only when one
-  binding yields more than one class on a day (decision 7).
+  binding yields more than one class on a day (decision 7, settled
+  2026-10-05). A site that keeps its two ranges in two batches today keeps
+  two batches.
 - **Calibration per stream** (phase 4). Not optional for this cut: the
   Orbitrap apply rescales every peak row of the file and removes every item's
   matches, so two calibrating items in one file collide. Per-stream apply is
   what makes two ranges in one file safe.
+  - **One binding, one calibrant collection.** A site that acquires its
+    ranges as separate files usually holds a mode row per range, each with
+    a collection that suits it. A file with both ranges resolves to one
+    binding per polarity, so both items calibrate against one collection,
+    and it has to hold anchors inside every range: the range that starts
+    above the reagent ion needs calibrants of its own. An anchor outside a
+    stream's range is simply unmatched there, and the minimum the fit
+    requires is counted per stream, on what its range can show.
+  - **A stream with too few anchors fails visibly** and does not take its
+    sibling's fit (decided 2026-10-05). The instrument function may be
+    borrowed, because the analyzer and the resolution are the same. The
+    mass error may not: the two ranges trap different ion populations -
+    leaving the reagent ion out is the whole point of the second one - and
+    the space-charge shift goes with the population.
 - **One instrument function per stream** (4.3), fitted on the stream's own
   summed signal; a range too narrow to fit borrows its sibling's.
+- **Streams that differ only in their scan event** join the cut if decision
+  14 goes as proposed (4.1): the same machinery, keyed one field further.
+  It is wanted before the cut's reader work is finished, because it decides
+  whether a stream is identified by its filter alone.
 - **Left for later:** MS2 attachment, polarity-switching files (each polarity
   already gets its own item), and the rebuild of files already ingested,
   which rule 1 of 9.1 replaces with an explicit re-process.
@@ -1442,8 +1512,10 @@ Needed before any rung can be provisional or park.
 
 ### Phase 8: chemistry profiles as the unit (2-3 weeks, beside phases 3 and 4)
 
-Numbered after the phases it follows in this note, built right after phase 2
-and in parallel with the stream track: it is where the setup win of the
+Numbered after the phases it follows in this note. Built after the stream
+first cut, or beside it when there are hands for both (decided 2026-10-05:
+the cut leads, because sites are waiting to acquire several ranges in one
+file and nothing waits on the profiles). It is where the setup win of the
 original proposal is delivered. Every item keeps a site's own modes working
 unchanged.
 
@@ -1501,7 +1573,11 @@ unchanged.
 - **First cut:** section 4.5. Files with more than one MS1 stream in a
   polarity are split, behind the phase 4 flag; every other file is
   byte-identical. Two ranges of one chemistry in one file is the case it is
-  built for.
+  built for. **Built next** (decided 2026-10-05), in this order: the reader
+  and the store; the stream table and one item per stream; the consumers;
+  calibration and instrument function per stream; batch naming. The flag
+  stays off until all of it is in, so the cut delivers at its end, not
+  step by step.
 - **The scope object.** A scan scope (stream, t0, t1) replaces the bare
   polarity in:
   - reader selection;
@@ -1578,7 +1654,7 @@ unchanged.
 ```mermaid
 graph LR
     P0[0 foundations] --> P1[1 state + review]
-    P0 --> P3[3 part contract]
+    P0 --> P3[3 part contract, first cut next]
     P1 --> P2[2 method bindings]
     P2 --> P8[8 profiles + standard methods]
     P2 -.one migration at a time.-> P3
@@ -1591,9 +1667,15 @@ graph LR
     P6 --> P7[7 declarations]
 ```
 
-After phase 2's rung, two tracks run side by side: phase 8 (the profiles
-and the standard methods) and phases 3-4 (streams, first for multi-range
-files). Phase 5 is deferred until both are in, and then ships as an audit.
+After phase 2's rung there are two tracks: phases 3-4 (streams, first for
+multi-range files) and phase 8 (the profiles and the standard methods).
+**The stream first cut leads** (decided 2026-10-05). Sites are waiting to
+acquire several ranges in one file; the cut needs nothing from phase 8,
+since a split file binds as a file does today, once per polarity, and its
+items inherit that; and what remains of phase 2 is operations work gated
+on a release. Phase 8 follows the cut, or runs beside it when there are
+hands for both. Phase 5 is deferred until both are in, and then ships as
+an audit.
 The two tracks touch different layers - seeding, calibration anchors and the
 browser on one side; the reader, the store and matching on the other - and
 meet only at `sample_item`, where each adds a column: one migration per PR,
@@ -1703,10 +1785,17 @@ through a short-lived stacked branch, merged as one unit.
    chemistry calibrate in one file. **And the instrument function, decided
    2026-10-02:** per stream always, not only where streams differ in analyzer
    or resolution (4.3); a stream too thin to fit borrows a sibling's fit.
+   **And a stream that cannot be calibrated, decided 2026-10-05:** it fails
+   visibly and borrows nothing, because two ranges of one file trap
+   different ion populations (4.5). Both items of a split file calibrate
+   against the one collection their binding carries, counted per stream.
 6. **MS2.** Attach to the parent item by default (recommended), or separate
    MS2 items.
-7. **Batch naming.** Add the signature class only when needed (recommended),
-   or always.
+7. **Batch naming.** ~~Add the signature class only when needed
+   (recommended), or always.~~ **Decided 2026-10-05:** only when needed.
+   The range joins the batch name when one binding yields more than one
+   class on a day, which keeps a site's two ranges in the two batches it
+   has today (4.5).
 8. **Recipe scope.** Per instrument with a site default (recommended), or
    per workspace.
 9. **Token fate.** ~~Keep it as a supported rung and learning source
@@ -1750,6 +1839,16 @@ through a short-lived stacked branch, merged as one unit.
     copy that keeps a shipped name parks once rather than routing by name;
     a changed signature class is noted, not refused; shipped TOF
     configurations are named per chemistry.
+14. **Scan events that share a filter.** Raised by a production method read
+    on 2026-10-05 (4.1), whose two events differ in microscans and AGC
+    target and in nothing the filter shows. Open, and wanted before the
+    first cut's reader work is finished:
+    - each event is its own stream wherever one filter carries more than
+      one, and the event number joins the key only then (recommended);
+    - promote the settings that differ into the signature;
+    - leave such files pooled.
+15. **What is built after phase 2.** **Decided 2026-10-05:** the stream
+    first cut (4.5), ahead of phase 8, which follows it or runs beside it.
 
 ---
 
