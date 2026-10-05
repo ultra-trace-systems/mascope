@@ -1714,7 +1714,7 @@ unchanged.
      the scan index, and `mascope_thermo.streams` groups MS1 scans by
      signature, segment and event, the experiment closing the key only
      where a signature is shared. Each stream carries its identity beside
-     its key, and the signature class reads the identity. A census,
+     its key, and the signature class reads only its signature key. A census,
      so it ships with no flag: `.props`, `mascope file scans` and the pooled
      note in a file's processing detail list the experiments, and peak
      detection pools them as before;
