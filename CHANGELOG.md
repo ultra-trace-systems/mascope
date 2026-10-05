@@ -203,6 +203,29 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   310,095 peaks change height, none above S:N 9. A profile cached by the old
   averaging is not served again; it is averaged anew on first view.
 
+- **The averaged Orbitrap profile sits on its peaks on long acquisitions
+  too.** A peak in the peak list is the average of its ion over the scans the
+  ion was in, weighted by its intensity in each, so an ion that comes and goes
+  sits on the calibration of its own scans and not on the mean of them all.
+  Where the calibration drifts over a long acquisition, or the scans alternate
+  between mass ranges, no one calibration puts every peak of the profile under
+  its peak: on an acquisition of 1,486 scans whose calibration drifted by
+  2.6 ppm the profile sat a median 0.33 ppm off its strong peaks, and on one
+  alternating between two mass ranges 0.28 ppm. Each peak of the profile is now
+  written on the mean of the scans' calibrations weighted the way its peak is,
+  and moved as a whole, so its width does not change. Those two acquisitions
+  now read 0.07 and 0.02 ppm, and over the 22 drifting acquisitions of an
+  internal corpus the ninth decile goes from 0.25 ppm to 0.07. Weak peaks,
+  often in a few scans only, gain the most: on files whose lock mass engaged
+  part-way, the share of all peaks with a profile peak within 3 ppm rises
+  from 94.6% to over 99%. Files with a steady calibration read as before,
+  0.053 ppm over the demo dataset.
+
+  Peak positions are unchanged. Of the demo dataset's 310,095 peaks one
+  changes height, below S:N 9, and of the corpus's 466,478 peaks 1,293 do,
+  ten of them at S:N 9 or above. A profile cached by the old averaging is not
+  served again; it is averaged anew on first view.
+
 - **A raw Orbitrap file's cached profile no longer outlives the reader that
   averaged it.** Sum signals are cached per time window and polarity, and
   nothing in the cache said which reader computed them, so a file processed
@@ -211,7 +234,7 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   re-run. With the spectra now drawing that profile, it would also have shown
   up a little off its own peaks. A raw Orbitrap file's cache is now named
   after its reader, the reader's version and the averaging generation, as in
-  `sum_signal.otf2.0.0-g3.zarr`, and is recomputed when any of them changes;
+  `sum_signal.otf2.0.0-g4.zarr`, and is recomputed when any of them changes;
   the first view of each sample after the upgrade averages it again. TOF and
   zarr files keep their caches.
 
