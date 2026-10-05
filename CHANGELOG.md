@@ -155,6 +155,13 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   The Windows program is built from the same code, and its installer, its
   configuration and its guided setup are as they were.
 
+- **A table for the scan streams of a file, with nothing in it yet.**
+  Migration `5a0e9de94ed9` adds `acquisition_stream` and an empty
+  `sample_item.stream_id`. They belong to the per-experiment processing
+  above, and nothing writes either until its next step. Every existing sample
+  keeps an empty `stream_id`, which means what a sample has always meant: it
+  spans every MS1 scan of its polarity.
+
 ### Changed
 
 - **The File Agent names the files it leaves behind when it is stopped.**
