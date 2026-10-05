@@ -29,11 +29,34 @@ ALIGNMENT_MIN_FRACTION = 1.0  # Minimum fraction of scans for mass alignment
 AGGREGATION_WINDOW_FACTOR = 1  # Peak aggregation window factor (times FWHM)
 
 
+def _refuse_stream_unless_raw_orbitrap(sample_type: str, stream: str | None) -> None:
+    """Refuse to read one scan stream from a sample type that has none.
+
+    A scan stream is the scans of one experiment of an acquisition method
+    (``mascope_thermo.streams``), and only a raw Orbitrap file is read scan by
+    scan under one. Asked of any other type the stream could only be ignored,
+    and the caller would be handed every scan as if they were the stream's.
+
+    :param sample_type: The sample file type, e.g. ``"orbi_raw"``
+    :type sample_type: str
+    :param stream: The stream key asked for, or None
+    :type stream: str | None
+    :raises ValueError: If a stream is asked of a type that is not a raw
+        Orbitrap file
+    """
+    if stream is not None and sample_type != "orbi_raw":
+        raise ValueError(
+            f"A '{sample_type}' sample file has no scan streams to read apart; "
+            f"stream '{stream}' was asked for."
+        )
+
+
 def get_scan_timestamps(
     base_filename: str,
     t_min: float | None = None,
     t_max: float | None = None,
     polarity: Literal["+", "-"] | None = None,
+    stream: str | None = None,
 ) -> np.ndarray:
     """
     Retrieve scan timestamps from a given file based on its type.
@@ -44,15 +67,21 @@ def get_scan_timestamps(
     :type t_min: float
     :param t_max: Maximum time [s], optional, defaults to None
     :type t_max: float
+    :param stream: Key of the scan stream to read, for a raw Orbitrap file,
+        defaults to None (every stream)
+    :type stream: str, optional
     :return: An array of scan timestamps extracted from the sample file.
     """
     sample_type = m_name.get_sample_file_type(base_filename)
+    _refuse_stream_unless_raw_orbitrap(sample_type, stream)
     match sample_type:
         case "orbi_raw":
             datafile_path = os.path.join(
                 m_name.parse_path_from_item_filename(base_filename), "data.raw"
             )
-            return m_thermo.get_scan_timestamps(datafile_path, t_min, t_max, polarity)
+            return m_thermo.get_scan_timestamps(
+                datafile_path, t_min, t_max, polarity, stream=stream
+            )
         case "tof_h5":
             datafile_path = os.path.join(
                 m_name.parse_path_from_item_filename(base_filename), "data.h5"
@@ -90,6 +119,7 @@ def _get_averaging_factor(
     t_min: float | None,
     t_max: float | None,
     polarity: Literal["+", "-"] | None,
+    stream: str | None = None,
 ) -> int:
     """Get deterministic averaging factor for average=True paths."""
     if sample_type in ("tof_zarr", "orbi_zarr"):
@@ -107,7 +137,7 @@ def _get_averaging_factor(
         signal_slice = signal.sel(time=slice(closest_t_min, closest_t_max))
         return signal_slice.sizes["time"]
 
-    time_coord = get_scan_timestamps(base_filename, t_min, t_max, polarity)
+    time_coord = get_scan_timestamps(base_filename, t_min, t_max, polarity, stream)
     return time_coord.size
 
 
@@ -117,8 +147,10 @@ def get_sum_signal(
     t_max: float | None = None,
     polarity: Literal["+", "-"] | None = None,
     average: bool = False,
+    stream: str | None = None,
 ) -> xr.DataArray:
-    """Get sum signal from the sample file for the given time range and polarity.
+    """Get sum signal from the sample file for the given time range, polarity
+    and scan stream.
 
     The signal is the measured one, for display as for computation: the
     spectrum endpoints return it as it is, and the instrument-function fit
@@ -134,13 +166,19 @@ def get_sum_signal(
     :type polarity: str, optional
     :param average: Whether to return the average signal
     :type average: bool, optional
+    :param stream: Key of the scan stream to sum, for a raw Orbitrap file,
+        defaults to None (every stream). A stream's signal is cached under a
+        name of its own.
+    :type stream: str, optional
     :raises RuntimeError: If the sample file is not found or inaccessible
+    :raises ValueError: If a stream is asked of a type that has none
     :return: The sum signal as an xarray DataArray
     :rtype: xr.DataArray
     """
 
     sample_type = m_name.get_sample_file_type(base_filename)
-    cached_name = _get_sum_signal_hash_name(t_min, t_max, polarity, sample_type)
+    _refuse_stream_unless_raw_orbitrap(sample_type, stream)
+    cached_name = _get_sum_signal_hash_name(t_min, t_max, polarity, sample_type, stream)
     averaging_factor = None
     if average:
         averaging_factor = _get_averaging_factor(
@@ -149,6 +187,7 @@ def get_sum_signal(
             t_min,
             t_max,
             polarity,
+            stream,
         )
 
     try:
@@ -164,8 +203,8 @@ def get_sum_signal(
         # proceed if sample_file/dataset exists but is missing target sum_signal
         runtime.logger.debug(
             f"No cached sum signal found for {base_filename} with parameters: "
-            f"t_min={t_min}, t_max={t_max}, polarity={polarity}, average={average} "
-            f"Computing sum signal..."
+            f"t_min={t_min}, t_max={t_max}, polarity={polarity}, stream={stream}, "
+            f"average={average} Computing sum signal..."
         )
 
     sample_path = m_name.parse_path_from_item_filename(base_filename)
@@ -177,6 +216,7 @@ def get_sum_signal(
                 t_min=t_min,
                 t_max=t_max,
                 polarity=polarity,
+                stream=stream,
             )
         case "tof_h5":
             datafile_path = os.path.join(sample_path, "data.h5")
@@ -275,13 +315,23 @@ def get_sum_signal(
     return sum_signal
 
 
-def _get_sum_signal_hash_name(t_min, t_max, polarity, sample_type):
-    """Generate a unique hash name for sum signal based on parameters"""
-    is_full_sum_signal = t_min is None and t_max is None and polarity is None
+def _get_sum_signal_hash_name(t_min, t_max, polarity, sample_type, stream=None):
+    """Generate a unique hash name for sum signal based on parameters
+
+    The stream joins the name only when one is asked for, so every signal
+    cached before a stream could be read apart keeps the name it was cached
+    under.
+    """
+    is_full_sum_signal = (
+        t_min is None and t_max is None and polarity is None and stream is None
+    )
     if is_full_sum_signal:
         cached_name = "sum_signal"
     else:
-        key_str = json.dumps([t_min, t_max, polarity])
+        key = [t_min, t_max, polarity]
+        if stream is not None:
+            key.append(stream)
+        key_str = json.dumps(key)
         hash_addition = hashlib.sha1(key_str.encode()).hexdigest()[:12]
         cached_name = f"sum_signal_{hash_addition}"
 
@@ -385,6 +435,7 @@ def load_signal(
     mz_min: float | None = None,
     mz_max: float | None = None,
     polarity: Literal["+", "-"] | None = None,
+    stream: str | None = None,
 ) -> xr.Dataset:
     """Load signal from the sample file
 
@@ -402,12 +453,22 @@ def load_signal(
     :type mz_max: float, optional
     :param polarity: Polarity of the scan to extract, defaults to None (get all scans)
     :type polarity: str, optional
+    :param stream: Key of the scan stream to load, for a raw Orbitrap file,
+        defaults to None (every stream)
+    :type stream: str, optional
+    :raises ValueError: If a stream is asked of a type that has none
+    :raises mascope_thermo.thermo.UnknownStreamError: If the file holds no
+        stream under the key asked for
     :return: The signal with m/z and time coordinates
     :rtype: xr.Dataset
     """
     runtime.logger.debug(f"Loading signal from {base_filename}")
 
     sample_type = m_name.get_sample_file_type(base_filename)
+    # Before the try below, which answers a ValueError with an empty signal:
+    # a stream asked of a file that has none is the caller's mistake, not an
+    # empty range.
+    _refuse_stream_unless_raw_orbitrap(sample_type, stream)
     sample_path = m_name.parse_path_from_item_filename(base_filename)
 
     if not os.path.exists(sample_path):
@@ -418,7 +479,7 @@ def load_signal(
             case "orbi_raw":
                 datafile_path = os.path.join(sample_path, "data.raw")
                 signal = m_thermo.get_signal(
-                    datafile_path, t_min, t_max, mz_min, mz_max, polarity
+                    datafile_path, t_min, t_max, mz_min, mz_max, polarity, stream
                 )
                 # Handle m/z axis calibration
                 props = m_io.read_props(base_filename)
@@ -474,6 +535,11 @@ def load_signal(
                 return signal_ds_sliced.chunk(dict(mz=-1))
             case _:
                 raise NotImplementedError(f"Unsupported sample type: {sample_type}")
+    except m_thermo.UnknownStreamError:
+        # Not an empty range either. The file holds no stream under the key
+        # asked for, and answered with an empty signal the caller would read
+        # "no data" of a stream that is not there.
+        raise
     except Exception as e:
         # Both paths return an empty dataset (callers render "no data"), but
         # expected data conditions (empty range, unsupported type) must not
@@ -496,6 +562,7 @@ def get_tic_per_scan(
     base_filename: str,
     timestamps: Iterable | None = None,
     polarity: Literal["+", "-"] | None = None,
+    stream: str | None = None,
 ) -> tuple:
     """Get TIC per scan from the sample file depending on the file type
 
@@ -505,15 +572,20 @@ def get_tic_per_scan(
     :type timestamps: Iterable | None
     :param polarity: Polarity of the scan to extract, defaults to None (get all scans)
     :type polarity: str | None
+    :param stream: Key of the scan stream to read, for a raw Orbitrap file,
+        defaults to None (every stream)
+    :type stream: str | None
+    :raises ValueError: If a stream is asked of a type that has none
     :return: TIC time and TIC per scan as numpy arrays
     :rtype: tuple
     """
     sample_type = m_name.get_sample_file_type(base_filename)
+    _refuse_stream_unless_raw_orbitrap(sample_type, stream)
     match sample_type:
         case "orbi_raw":
             datafile_path = m_name.filename_to_datafile_path(base_filename)
             tic_time, tic_per_scan = m_thermo.get_tic_per_scan(
-                datafile_path, timestamps, polarity
+                datafile_path, timestamps, polarity, stream
             )
         case "tof_h5":
             datafile_path = m_name.filename_to_datafile_path(base_filename)
@@ -572,6 +644,7 @@ def get_tic_per_scan(
 def get_acquisition_window(
     base_filename: str,
     polarity: Literal["+", "-"] | None = None,
+    stream: str | None = None,
 ) -> tuple[float, float]:
     """First and last scan time [s] of an acquisition, across every scan type.
 
@@ -588,16 +661,23 @@ def get_acquisition_window(
     :type base_filename: str
     :param polarity: Polarity of the scans to span ('+' or '-'), optional.
     :type polarity: Literal['+', '-'] | None, optional
+    :param stream: Key of the scan stream to span, for a raw Orbitrap file,
+        optional. The window is then the stream's own first and last scan:
+        a stream is the scans of one experiment, so nothing of another scan
+        type is among them to widen it.
+    :type stream: str | None, optional
     :return: (t0, t1) in seconds.
     :rtype: tuple[float, float]
-    :raises ValueError: When the file reports no scan times to span.
+    :raises ValueError: When the file reports no scan times to span, or a
+        stream is asked of a type that has none.
     """
     sample_type = m_name.get_sample_file_type(base_filename)
+    _refuse_stream_unless_raw_orbitrap(sample_type, stream)
     match sample_type:
         case "orbi_raw":
             datafile_path = m_name.filename_to_datafile_path(base_filename)
             times = m_thermo.get_scan_timestamps(
-                datafile_path, polarity=polarity, scan_type=None
+                datafile_path, polarity=polarity, scan_type=None, stream=stream
             )
         case _:
             # No other reader has an MS2 scan type to leave out, so the scan
@@ -609,7 +689,9 @@ def get_acquisition_window(
     # numpy report a zero-size reduction.
     if not len(times):
         raise ValueError(
-            f"No scan times to span for '{base_filename}' (polarity={polarity!r})."
+            f"No scan times to span for '{base_filename}' (polarity={polarity!r}"
+            + ("" if stream is None else f", stream={stream!r}")
+            + ")."
         )
 
     return float(np.min(times)), float(np.max(times))
@@ -623,6 +705,7 @@ async def get_orbi_centroids(
     polarity: Literal["+", "-"] | None = None,
     ppm: int = 1,
     average: bool = False,
+    stream: str | None = None,
 ) -> tuple:
     """
     Extract centroided peaks from an Orbitrap (Thermo .raw) file for specified m/z values and time range.
@@ -645,6 +728,8 @@ async def get_orbi_centroids(
     :type ppm: int, optional
     :param average: If True, return averaged intensities across scans, defaults to False.
     :type average: bool, optional
+    :param stream: Key of the scan stream to average, defaults to None (every stream).
+    :type stream: str, optional
     :return: Tuple of (masses, intensities, resolutions, signal-to-noise) for centroid peaks
     matching the criteria.
     :rtype: tuple
@@ -662,6 +747,7 @@ async def get_orbi_centroids(
                 polarity=polarity,
                 ppm=ppm,
                 average=average,
+                stream=stream,
             )
             props = m_io.read_props(base_filename)
             calibration = props["mz_calibration"]
@@ -691,6 +777,7 @@ def get_orbi_centroids_per_scan(
     t_max: float | None = None,
     polarity: Literal["+", "-"] | None = None,
     scan_type: Literal["Ms", "Ms2"] | None = None,
+    stream: str | None = None,
 ) -> list:
     """
     Extract per-scan centroids from an Orbitrap raw file
@@ -705,6 +792,8 @@ def get_orbi_centroids_per_scan(
     :type polarity: Literal['+', '-'], optional
     :param scan_type: Filter by scan type ('Ms' or 'Ms2'), optional, defaults to None (all scans).
     :type scan_type: Literal['Ms', 'Ms2'] | None, optional
+    :param stream: Key of the scan stream to read, optional, defaults to None (every stream).
+    :type stream: str | None, optional
     :return: List of dictionaries with per-scan centroid data, each containing
             centroid masses, intensities, resolutions, signal-to-noise ratios, and timestamps.
     :rtype: list
@@ -714,7 +803,12 @@ def get_orbi_centroids_per_scan(
         case "orbi_raw":
             datafile_path = m_name.filename_to_datafile_path(base_filename)
             centroids_per_scan = m_thermo.get_centroids_per_scan(
-                datafile_path, t_min, t_max, polarity=polarity, scan_type=scan_type
+                datafile_path,
+                t_min,
+                t_max,
+                polarity=polarity,
+                scan_type=scan_type,
+                stream=stream,
             )
             props = m_io.read_props(base_filename)
             calibration = props["mz_calibration"]
@@ -1220,6 +1314,7 @@ async def get_peak_timeseries(
     t_min: float | None = None,
     t_max: float | None = None,
     polarity: Literal["+", "-"] | None = None,
+    stream: str | None = None,
 ) -> xr.DataArray:
     """Get peak timeseries for given peak m/z values in the time range [t_min, t_max]
 
@@ -1233,10 +1328,15 @@ async def get_peak_timeseries(
     :type t_max: float, optional
     :param polarity: Polarity of the scan to extract, defaults to None (get all scans)
     :type polarity: str, optional
+    :param stream: Key of the scan stream to read, for a raw Orbitrap file,
+        defaults to None (every stream)
+    :type stream: str, optional
+    :raises ValueError: If a stream is asked of a type that has none
     :return: peak timeseries for the given m/z values
     :rtype: xr.DataArray
     """
     sample_type = m_name.get_sample_file_type(base_filename)
+    _refuse_stream_unless_raw_orbitrap(sample_type, stream)
     match sample_type:
         case "orbi_raw":
             datafile_path = m_name.filename_to_datafile_path(base_filename)
@@ -1257,6 +1357,7 @@ async def get_peak_timeseries(
                 t_min,
                 t_max,
                 polarity,
+                stream=stream,
             )
             # Calibrate m/z coordinate
             return peak_timeseries.assign_coords(mz=peak_timeseries.mz.values * factor)
