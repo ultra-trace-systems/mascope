@@ -30,13 +30,14 @@ Fragmentation scans are grouped by signature alone. What their scan event
 counts - the experiment, or a dependent scan's place in its cycle - is not
 measured on any file in reach, and nothing reads their streams yet.
 
-Processing does not act on streams: peak detection pools every MS1 scan of a
-polarity. The census records what each file holds, so that the pooling can be
-seen, and so that splitting by stream rests on evidence
-(``docs/dev/ingest_routing_and_splitting.md``, section 4). The reader can
-select one stream's scans by its key (:func:`scan_stream_keys`, and the
-``stream`` argument of ``ReaderBackend``'s selecting methods); nothing in
-processing asks it to yet.
+Peak detection pools every MS1 scan of a polarity unless a deployment asks
+for more, and then a file that holds more than one MS1 stream in a polarity
+has its peaks detected per stream (:func:`peak_streams`). The census records
+what each file holds, so that the pooling can be seen, and so that what is
+built on streams rests on evidence
+(``docs/dev/ingest_routing_and_splitting.md``, section 4). The reader selects
+one stream's scans by its key (:func:`scan_stream_keys`, and the ``stream``
+argument of ``ReaderBackend``'s selecting methods).
 """
 
 from __future__ import annotations
@@ -286,6 +287,39 @@ def pooled_ms1_streams(streams: list[dict]) -> dict[str, list[str]]:
         if signature.get("ms_order") == 1:
             by_polarity.setdefault(signature.get("polarity"), []).append(stream["key"])
     return {polarity: keys for polarity, keys in by_polarity.items() if len(keys) > 1}
+
+
+def peak_streams(streams: list[dict]) -> list[dict]:
+    """The MS1 streams a file's peaks are detected per, or ``[]``.
+
+    A file is detected per stream when some polarity holds more than one MS1
+    stream (:func:`pooled_ms1_streams`). Every MS1 stream of the file then
+    gets a peak list of its own, the only stream of another polarity
+    included, so that each peak of such a file belongs to exactly one stream.
+    A file with one MS1 stream in each polarity is detected whole: there its
+    polarity already is its stream.
+
+    :param streams: A census from :func:`scan_streams`.
+    :return: The MS1 streams, in the order they first appear, or ``[]``.
+    """
+    if not pooled_ms1_streams(streams):
+        return []
+    return [stream for stream in streams if stream["signature"].get("ms_order") == 1]
+
+
+def file_scan_streams(datafile_path: str) -> list[dict]:
+    """A raw file's scan streams, taken from the file as it reads now.
+
+    What per-stream peak detection goes by. The census in a file's
+    ``.props`` was taken when the file was converted, by the reader of that
+    day, and a stream is selected by a key the reader of today computes;
+    asking the reader for both is what keeps them one answer.
+
+    :param datafile_path: Path to a Thermo ``.raw`` file.
+    :return: The census, as :func:`scan_streams` gives it.
+    """
+    with open_backend(datafile_path) as backend:
+        return scan_streams(backend)
 
 
 def stream_report(datafile_path: str, top: int = 10) -> dict:

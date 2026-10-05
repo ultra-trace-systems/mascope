@@ -84,7 +84,7 @@ request for this work updates the table below and ticks its item on #2098.
 | 1 | Per-file processing state, persistent notifications, "needs a chemistry" | shipped (#2164, #2166-#2169) |
 | 2 | Method bindings: routing without tokens | learned in shadow on every server (#2193, #2196, #2206, #2226), measured (5.7), item provenance (#2254), the row-following learner (#2255), the rung (#2264) and the disagreement report (#2267) shipped; the backfill re-run and the per-site switch remain, section 10 lists them |
 | 8 | Chemistry profiles as the unit: complete the seeded profiles, ship the standard methods and their catalogue, list the profiles, a profile-first surface, batches named after the profile | open; follows the stream first cut, or runs beside it when there are hands for both (decided 2026-10-05) |
-| 3 | The part contract: stream and window honoured by every consumer | **in progress**: the composite cut, for files with more than one MS1 stream in a polarity (4.5), leads the work after phase 2 (decided 2026-10-05; a stitch, not a split, since 2026-10-06). The census keys streams on the method's experiments (#2273) and the reader selects one stream's scans (#2278); per-stream detection (#2279) is open; the stitch, the composite row and its item, the consumers and the per-segment fits follow, and section 10 lists them |
+| 3 | The part contract: stream and window honoured by every consumer | **in progress**: the composite cut, for files with more than one MS1 stream in a polarity (4.5), leads the work after phase 2 (decided 2026-10-05; a stitch, not a split, since 2026-10-06). The census keys streams on the method's experiments (#2273), the reader selects one stream's scans (#2278), and peak detection and the peak store follow a stream behind `composite_scan_streams` (#2279); the stitch, the composite row and its item, the consumers and the per-segment fits follow, and section 10 lists them |
 | 4 | Per-stream state: calibration and instrument function per segment, MS2 | open; its per-segment calibration is part of the composite cut; follows 3 on the same track; no rebuild script (4.5, 9.1) |
 | 5 | Chemistry detection: audit first, then provisional binding | deferred behind phases 3, 4 and 8 (decision 3); its reagent libraries are on `develop` |
 | 6 | Recipes: time and trace windows, preview and apply | open |
@@ -748,6 +748,84 @@ it. Four things the build settled:
   script: rule 1 of 9.1 applies, and an explicit re-process of such a file
   re-cuts it under the rules then current, stitched where its ranges make
   a composite. The maintenance script once planned here is dropped.
+
+**As built** (#2279), for the store, behind
+`backend.composite_scan_streams`. The setting is named for where the cut
+ends, the composite of 4.5, and this step is the part a stitch needs first:
+each stream's peaks detected over its own scans. It says "per stream"
+throughout, because nothing here cuts a file into items, and it writes no
+`composite` mask, which is the stitch's to add (step 4 of section 10).
+
+- **Only a per-stream store says anything about streams.** A file with one
+  MS1 stream in each polarity is detected and stored as before, to the
+  byte, whichever way the flag is set. A file with more than one in a
+  polarity is detected per stream as a whole: every MS1 stream of it gets
+  its own peak list, the only stream of another polarity included, so that
+  no peak of such a file is left without one.
+- **Labels are indexes, and the keys are in the store.** Each peak carries
+  `stream` and each scan `scan_stream`, both an index into the keys the
+  store's `streams` attribute lists - a key of eighty characters on every
+  peak would be most of the store. `peak_store_streams` reads them,
+  answers nothing for a pooled store, and refuses a dataset that carries
+  only part of them: read as pooled, a per-stream store's peak would be
+  filled over the scans of every stream.
+- **The m/z axis stays one axis, strictly increasing.** The store finds a
+  row by its m/z, and two streams are two averaged spectra on that axis:
+  two of their centroids can land on the same double. They do: detected
+  per stream, one corpus file of eight streams has 111 of its 57,564 rows
+  on an m/z another stream already holds, far more often than chance allows
+  at that density. A tied row is set `2**-40` of its m/z above the one
+  before it, about a part in a trillion, which no tolerance in the pipeline
+  can see. That is more than the one float that would tell two rows apart,
+  and on purpose: an Orbitrap m/z calibration multiplies the stored axis,
+  cumulatively, and a rounded product can fold two neighbouring doubles
+  back onto one - a rescale by -5 ppm does it to 62.0 and the float above
+  it. Rows some thousands of floats apart keep their relative distance
+  through a rescale, and its rounding can cost a pair one float at a time.
+- **A pooled store has no such rule.** It never had one, and a file whose
+  two polarities tie writes a pooled store with two rows at one m/z. Such a
+  store loads since #2280, its weak and satellite peaks left out by
+  position, and a fill finds the kept peak of a pair. Where both peaks of a
+  pair are kept, whatever reads the store by m/z still fails, and setting
+  them apart at detection, as a per-stream store's rows are, is what that
+  takes. It is left as it is in this step, so that no pooled store changes.
+- **A peak holds values only on the scans of its own stream.** Its
+  timeseries is read back over them, normalised over them and scaled to its
+  sum; on the other streams' scans it holds nothing, because the instrument
+  was measuring something else then, which is not a zero. Its sparsity is
+  the share of its own stream's scans it is absent from. The scan axis is
+  checked per stream, so a store one of whose streams the file no longer
+  reads back is refused for the peaks of that stream.
+- **A stored key that names nothing any more is a stale store.** The store
+  lists its streams by key and is read back by key, which makes it the
+  first thing to store a key and read with it later (above). Where the file
+  no longer holds a stream under one, the reader refuses, and the store
+  turns that refusal into the stale-store error it raises for an axis that
+  no longer lines up. So the refresh that meets it queues the rebuild, as
+  for any stale store, and the rebuild keys the file's streams afresh. Left
+  as the reader's own error it would be a fault nobody's rebuild answers.
+- **Satellites are judged within a stream.** A sidelobe belongs to a strong
+  peak of its own spectrum; judged over the whole axis, a real peak of one
+  experiment would be read as the sidelobe of another's.
+- **A rebuild keeps what a store is.** The file's first conversion decides
+  whether its store is per stream and records it in `.props`
+  (`peak_streams`, the keys); a rebuild of the store - the stale-axis
+  repair, a re-run of peak detection, the maintenance refit - goes by that
+  record and not by the flag. Otherwise switching the flag would take a
+  pooled store apart by stream, or pool a per-stream one, under samples
+  that already exist, which is rule 1 of 9.1 broken from underneath. Only
+  an explicit decision changes it, and the re-process of step 8 is where
+  one is made. The record is written before the store, so that a store
+  whose write is cut short is rebuilt the way it was being built.
+- **The streams to detect are asked of the file, not of `.props`.** The
+  census there was taken by the reader of the day the file was converted,
+  and a stream's scans are selected by a key today's reader computes.
+- **No eager timeseries yet.** An item of this cut covers its segments
+  whole, and their sums peak detection has already measured; the timeseries
+  stay lazy. They become eager with windows (6.3).
+- **What stays per file for now:** the instrument function and the m/z
+  calibration, which step 7 moves to the segment, and the `tof` coordinate,
+  which only orders peaks along the axis.
 
 ### 4.4 `acquisition_stream`
 
@@ -1989,9 +2067,19 @@ unchanged.
      processing passes one yet, and a selection that names none reads no
      key, so no file is read differently; the first scan is compared within
      its own stream;
-  3. per-stream peak detection, store labels and timeseries fill, behind
-     the flag (#2279), its setting and its wording saying "per stream"
-     rather than "split";
+  3. ~~per-stream peak detection, store labels and timeseries fill, behind
+     the flag~~ - built in #2279: `backend.composite_scan_streams`, off by
+     default, read by the file converter at a file's first conversion. The
+     signal library's reads take a stream; the peaks of a file with more
+     than one MS1 stream in a polarity are detected per stream and labelled
+     in its store; its timeseries are filled over each peak's own stream; a
+     rebuild keeps the store as it was built, and a store whose stream key
+     the file no longer holds is stale, so rebuilt (4.3). With the flag on,
+     such a file still gets one item per polarity, and until steps 4 to 6
+     that item reads the peak lists of every stream of its polarity
+     together, an ion two of them measure counted twice; the file's status
+     detail and the converter's census line still call its streams pooled -
+     which is why the flag stays off;
   4. the stitch: the default map from the segments' ranges and
      microscans, the per-peak mask and the stitched sum signal, recorded
      beside the store;
@@ -2157,8 +2245,9 @@ is no epic branch.
   both copies of the runtime toml, and starts in a shadow or check-only mode:
   - **phase 2:** method bindings are learned and compared with the token first;
     routing on them is switched on per site afterwards;
-  - **phases 3-4:** multi-stream splitting sits behind one flag from the
-    first cut on, off by default until the cut is complete;
+  - **phases 3-4:** the multi-stream work sits behind one flag from the
+    first cut on, `backend.composite_scan_streams`, off by default until the
+    cut is complete;
   - **phase 5:** detection runs check-only for a release before it may bind
     anything.
 
@@ -2386,8 +2475,8 @@ Function names are the stable reference; line numbers drift.
 | Method identity (shipped, #2155) | `libraries/thermo/src/mascope_thermo/processor.py` `RawProcessor.method_file`; `backend.py` `ReaderBackend.method_file`; `db/scripts/populate_orbitrap_method_file.py` | 0 |
 | Filter parsing, stream census, per-stream parameter sampling | `libraries/thermo/src/mascope_thermo/backend.py` (`acquisition_parameters`, `_sample_evenly`, a new signature accessor); `server/backend/src/mascope_backend/file_converter/schema.py` `SampleFileProps` | 0 |
 | Scan selection and stream identity | `backend.py` `scan_filters` (the scan event from the scan index, `_method_scan_event`), `OpenTFRawBackend._selected` and `_all_scans`; `thermo.py` `ScanSelector`; `backend.py` `_method_experiment` (segment and event, as the method counts them); `streams.py` `_keyed_scans` (which stream a scan belongs to), `scan_stream_keys` (what selection compares) and `_census`; `scan_filter.py` `ScanFilter.stream_key`; `method_keys.py` `signature_class` (built from signature keys) | 3 |
-| Detection and store layout | `libraries/signal/src/mascope_signal/peak.py` (`_extract_peaks_for_polarity`, `_allocate_peak_timeseries`) | 3 |
-| Timeseries fill, stale-axis check, acquisition window | `libraries/signal/src/mascope_signal/compute.py` (`load_peak_timeseries`, `check_stored_scan_axis`, `get_acquisition_window`) | 3 |
+| Detection and store layout | `libraries/signal/src/mascope_signal/peak.py` (`OrbiPeakDetector._peak_streams`, `_extract_peaks_per_stream`, `_scan_axis`, `_strictly_increasing`, `record_streams`, `_allocate_peak_timeseries`); `libraries/thermo/src/mascope_thermo/streams.py` `peak_streams`; `file_converter/base_processor.py` `composites_scan_streams` | 3 |
+| Timeseries fill, stale-axis check, acquisition window | `libraries/signal/src/mascope_signal/compute.py` (`load_peak_timeseries`, `_stream_timeseries_update`, `_read_stream_back`, `peak_store_streams`, `check_peak_store`, `check_stored_scan_axis`, `get_acquisition_window`) | 3 |
 | Peak listing | `server/backend/src/mascope_backend/api/controllers/samples/lib/samples_peaks.py` `extract_peaks` | 3 |
 | Matching | `libraries/match/src/mascope_match/compute/isotopes.py` `compute_match_isotopes`; `api/controllers/match/lib/match_compute.py` | 3 |
 | Assignment peak loading | `api/new/peak_assignments/service.py` | 3 |

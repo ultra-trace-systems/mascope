@@ -468,6 +468,30 @@ class BackendConfig(ModuleConfig):
     # whose file names carry no token at all. See
     # docs/dev/ingest_routing_and_splitting.md section 5.3.
     method_binding: Literal["off", "shadow", "route"] = "shadow"
+    # Composite scan streams: how a raw Orbitrap file is processed whose
+    # acquisition method runs more than one experiment in a polarity, most
+    # often several scan ranges of one chemistry. False (the default) pools
+    # every MS1 scan of a polarity into one peak list, as every release so
+    # far has, so each ion is divided by the scans of all the experiments,
+    # those that never measured it included. True processes the experiments
+    # one by one and stitches their ranges into one spectrum per polarity.
+    #
+    # LEAVE IT OFF ON A PRODUCTION SERVER. What it switches on is built in
+    # steps (docs/dev/ingest_routing_and_splitting.md, section 4.5), and so
+    # far only peak detection follows it: the peaks of each experiment are
+    # detected over its own scans, and nothing stitches them yet. Such a file
+    # still gets one sample per polarity, which then reads the peak lists of
+    # every experiment of that polarity together. The flag exists so that
+    # each step ships inert and can be exercised on a development server.
+    #
+    # A file with one experiment in each polarity - nearly every file - is
+    # processed exactly as before whichever way this is set. A file already
+    # converted keeps the peak store it has: rebuilding a store never changes
+    # whether it holds a peak list per experiment, so this applies to files
+    # converted from then on.
+    #
+    # Read by the file converter, which is where peaks are detected.
+    composite_scan_streams: bool = False
     # Allowlist of per-record reference licences the peak-assignment database
     # stage (Stage A) may match against. The reference mirror carries a
     # licence per record from ingest through to results, and some sources

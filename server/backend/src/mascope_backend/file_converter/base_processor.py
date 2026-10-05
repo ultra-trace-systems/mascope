@@ -39,6 +39,23 @@ from .schema import SampleFileProps
 mascope_sdk.SERVICE_NAME = "file-converter"
 
 
+def composites_scan_streams() -> bool:
+    """Whether this deployment processes a multi-experiment file per experiment.
+
+    ``composite_scan_streams`` in the runtime ``[backend]`` config
+    (``mascope_runtime.config.BackendConfig``). The converter reads it
+    because peak detection runs here, and it is the first conversion of a
+    file that decides whether its peak store holds a peak list per scan
+    stream; a rebuild of the store keeps what was decided then.
+
+    :return: True when a file holding more than one MS1 scan stream in a
+        polarity is to get a peak list per stream.
+    :rtype: bool
+    """
+    backend = runtime.full_config.backend
+    return bool(backend is not None and backend.composite_scan_streams)
+
+
 def with_file_context(prop_getter) -> callable:
     """Abstract file context manager decorator
 
@@ -332,7 +349,9 @@ class BaseFileProcessor(Thread, ABC, metaclass=FileProcessorMeta):
             if not is_acquired:
                 raise RuntimeError(acquisition_failure_reason)
         try:
-            compute_peaks(filename, instrument_functions)
+            compute_peaks(
+                filename, instrument_functions, per_stream=composites_scan_streams()
+            )
         finally:
             # Release the guard in case of any exception to avoid deadlocks,
             # but only if it was acquired successfully

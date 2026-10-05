@@ -116,6 +116,27 @@ filestreams = './filestreams'
 # what `db script run report_method_binding_disagreements` reports. It writes
 # nothing, so it is worth reading before and after a change here.
 # method_binding = "shadow"
+# Composite scan streams: how a raw Orbitrap file is processed whose
+# acquisition method runs more than one experiment in a polarity, most often
+# several scan ranges of one chemistry. false (the default) pools every MS1
+# scan of a polarity into one peak list, as every release so far has, so each
+# ion is divided by the scans of all the experiments, those that never
+# measured it included. true processes the experiments one by one and stitches
+# their ranges into one spectrum per polarity.
+#
+# LEAVE IT OFF ON A PRODUCTION SERVER. What it switches on is being built in
+# steps, and so far only peak detection follows it: the peaks of each
+# experiment are detected over its own scans, and nothing stitches them yet.
+# Such a file still gets one sample per polarity, which then reads the peak
+# lists of every experiment of that polarity together. The setting is here so
+# that each step can be exercised on a development server before the last one
+# is in.
+#
+# A file with one experiment in each polarity - nearly every file - is
+# processed exactly as before whichever way this is set. A file already
+# converted keeps the peak store it has, so this applies to files converted
+# after a restart of the file converter.
+# composite_scan_streams = false
 # Reference chemistry: the per-record licence tags peak assignment's database
 # stage is allowed to match against. Unset (the default) means no gating -
 # every active reference source is matched, which is what every deployment did

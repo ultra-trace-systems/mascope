@@ -290,6 +290,15 @@ def load_peak_data(base_filename: str, drop_bad_peaks: bool = True) -> xr.Datase
     - sum_peak_areas (mz)
     - sum_peak_heights (mz)
 
+    A store that holds a peak list per scan stream (``mascope_signal.peak``)
+    also carries:
+    - stream (mz): the stream each peak was detected in
+    - scan_stream (time): the stream each scan belongs to
+    both as an index into the stream keys listed by its ``streams``
+    attribute. A peak of such a store holds values only on the scans of its
+    own stream. Read them through ``mascope_signal.compute.peak_store_streams``,
+    which answers ``[]`` for a pooled store.
+
     :param base_filename: Sample file filename
     :type base_filename: str
     :param drop_bad_peaks: Flag to drop weak and satellite peaks, defaults to True

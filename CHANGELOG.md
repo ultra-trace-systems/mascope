@@ -110,6 +110,31 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   reads it directly. A server that predates it returns its frames without the
   attribute, and the load succeeds as before.
 
+- **A setting for Orbitrap methods that measure a sample as several scan
+  ranges - off, and not yet for production.** Mascope averages every MS1
+  scan of a polarity into one spectrum and one peak list. A method that runs
+  more than one experiment in a polarity - several scan ranges of one
+  chemistry, or a short scan while the source settles and then the
+  measurement - has them pooled, and each ion is divided by the scans of all
+  of them, so an ion only one experiment measures reads too low. With
+  `composite_scan_streams = true` in the server's `[backend]` config, the
+  file converter detects such a file's peaks per experiment, each over its
+  own scans.
+
+  It is the first step of several, which is why it is off and should stay
+  off on a production server: so far only peak detection follows it. Such a
+  file still gets one sample per polarity, and that sample then reads the
+  peak lists of every experiment of the polarity together. The steps that
+  stitch the experiments' ranges into one spectrum per polarity, and
+  calibrate each range on its own, follow, and the setting will be announced
+  again when they are in.
+
+  A file with one experiment in each polarity, which is nearly every file, is
+  processed exactly as before whichever way this is set. A file already
+  converted keeps the peak store it has: rebuilding a store, as Mascope does
+  when it finds one out of date, never changes whether its peaks are held
+  per experiment.
+
 ### Changed
 
 - **The demo dataset is now bundle v1.3.1**
