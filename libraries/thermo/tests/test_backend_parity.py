@@ -203,48 +203,68 @@ def test_centroids_per_scan_matches_thermo(monkeypatch, path):
         pytest.skip("no FT centroid scans to compare")
 
 
-# Bound on the m/z of one per-scan profile point against the Thermo library's,
-# in ppm. Both readers convert the same stored samples, and on most scans the
-# two axes are bit-identical. The rest is the Thermo library converting a scan
-# with an earlier scan's conversion coefficients rather than its own, which it
-# does where both B and C lie within 0.01 of the earlier scan's. That moves
-# every point of the scan by one factor of at most 0.01 / B: 1.5e-4 ppm where B
-# is 6.8e7 (a Q Exactive Plus), 5.9e-5 ppm where it is 1.7e8 (the Exploris
-# models). Measured over 28.1 million points in 5,394 scans of 185 files from
-# four instrument models: 571 scans differ at all, by 1.4e-4 ppm at most. The
-# bound leaves that a factor of seven, and a decode fault costs a thousand
-# times more: reader 1.4.0, which misapplied the stored per-scan correction,
-# was several ppm off on every point.
+# Bounds on a per-scan profile's m/z against the Thermo library's, in ppm: how
+# far a point may sit from it, and how far the points of one scan may differ
+# from each other in that.
+#
+# Both readers convert the same stored samples, and on most scans the two axes
+# are bit-identical. On the rest every point of the scan is off by one factor,
+# and the factor is what converting the scan with an earlier scan's conversion
+# coefficients in place of its own gives, where B and C both lie within 0.01 of
+# that scan's. That is read off the two readers' outputs, not from anything the
+# vendor documents. It caps the shift at 0.01 / B: 1.5e-4 ppm where B is 6.8e7
+# (a Q Exactive Plus), 5.9e-5 ppm where it is 1.7e8 (the Exploris models).
+#
+# Measured over 28.1 million points in 5,394 scans of 185 files from those four
+# models: 571 scans differ at all, by 1.4e-4 ppm at most, and the points of
+# such a scan agree on the factor to 3.3e-9 ppm.
+#
+# PROFILE_MZ_PPM leaves the shift a factor of seven, and a decode fault costs a
+# thousand times more: reader 1.4.0, which added each chunk's stored m/z
+# correction to the frequency before converting where it belongs on the m/z
+# after, was several ppm off on every point. PROFILE_MZ_SPREAD_PPM holds the
+# shape, one factor for the whole scan, so that a fault moving single points by
+# less than the first bound does not pass for that shift.
 PROFILE_MZ_PPM = 1e-3
+PROFILE_MZ_SPREAD_PPM = 1e-6
 
 
 @pytest.mark.parametrize("path", RAW_FILES, ids=lambda p: p.name)
 def test_profile_matches_thermo(monkeypatch, path):
     """OpenTFRaw's per-scan profile must be the Thermo library's SegmentedScan,
-    point for point, on every profile-mode MS1 scan.
+    sample for sample, on every profile-mode MS1 scan.
 
     Pins the values behind ``profile_per_scan`` under both backends, so that a
     structural check (get_signal's size > 0, say) cannot pass over a wrong m/z
     axis. Per scan, the non-zero points must be the same in number, each m/z
-    within ``PROFILE_MZ_PPM`` of the Thermo library's, and each intensity
-    identical (measured: not one of 28.1 million differs). The comparison is
-    over the non-zero points because the Thermo library also carries the
-    baseline zeros around each cluster of samples, which OpenTFRaw leaves out.
+    within ``PROFILE_MZ_PPM`` of the Thermo library's and all of them off by
+    one factor to ``PROFILE_MZ_SPREAD_PPM``, and each intensity identical
+    (measured: not one of 28.1 million differs).
+
+    Both sides are read over an open m/z range, so every stored sample is
+    compared, the few a scan holds outside the file's mass range included. The
+    comparison is over the non-zero points because the Thermo library also
+    carries the baseline zeros around each cluster of samples, which OpenTFRaw
+    leaves out.
 
     A centroid-mode scan is passed over: its SegmentedScan holds the centroids,
     and there is no stored profile to set against them.
     """
     path = str(path)
+    every_sample = {"mz_min": 0.0, "mz_max": np.inf}
 
     monkeypatch.setenv("MASCOPE_THERMO_BACKEND", "thermo")
-    with open_backend(path) as backend:
-        th_scans = backend.scan_indices(ms_type="Ms")
-        th_mzs, th_specs, _ = backend.profile_per_scan(ms_type="Ms")
-        th_stats = backend.scan_statistics(ms_type="Ms")
+    try:
+        with open_backend(path) as backend:
+            th_scans = backend.scan_indices(ms_type="Ms")
+            th_mzs, th_specs, _ = backend.profile_per_scan(ms_type="Ms", **every_sample)
+            th_stats = backend.scan_statistics(ms_type="Ms")
+    except m_thermo.NoScansFoundError:
+        pytest.skip("no MS1 scans")
     monkeypatch.setenv("MASCOPE_THERMO_BACKEND", "opentfraw")
     with open_backend(path) as backend:
         ot_scans = backend.scan_indices(ms_type="Ms")
-        ot_mzs, ot_specs, _ = backend.profile_per_scan(ms_type="Ms")
+        ot_mzs, ot_specs, _ = backend.profile_per_scan(ms_type="Ms", **every_sample)
 
     assert ot_scans == th_scans, "MS1 scan set differs"
 
@@ -264,12 +284,18 @@ def test_profile_matches_thermo(monkeypatch, path):
         if tm.size == 0:
             continue
         compared += 1
-        ppm = np.abs(om - tm) / tm * 1e6
-        worst = int(np.argmax(ppm))
-        assert ppm[worst] <= PROFILE_MZ_PPM, (
-            f"scan {scan}: profile m/z {om[worst]!r} vs Thermo {tm[worst]!r} "
-            f"({ppm[worst]:.3g} ppm, bound {PROFILE_MZ_PPM:g}); "
-            f"{int((ppm > PROFILE_MZ_PPM).sum())} of {ppm.size} points over it"
+        ppm = (om - tm) / tm * 1e6
+        worst = int(np.argmax(np.abs(ppm)))
+        assert abs(ppm[worst]) <= PROFILE_MZ_PPM, (
+            f"scan {scan}: profile m/z {float(om[worst])!r} vs Thermo "
+            f"{float(tm[worst])!r} ({abs(ppm[worst]):.3g} ppm, bound "
+            f"{PROFILE_MZ_PPM:g}); {int((np.abs(ppm) > PROFILE_MZ_PPM).sum())} of "
+            f"{ppm.size} points over it"
+        )
+        assert np.ptp(ppm) <= PROFILE_MZ_SPREAD_PPM, (
+            f"scan {scan}: profile m/z is off Thermo's by {ppm.min():.3g} to "
+            f"{ppm.max():.3g} ppm across the scan, not by one factor (bound "
+            f"{PROFILE_MZ_SPREAD_PPM:g} on the spread)"
         )
         np.testing.assert_array_equal(oi, ti, err_msg=f"scan {scan}: profile intensity")
 
