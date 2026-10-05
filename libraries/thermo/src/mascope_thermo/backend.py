@@ -40,12 +40,13 @@ ENV_BACKEND = "MASCOPE_THERMO_BACKEND"
 # The generation of the OpenTFRaw backend's average_profile, which
 # averaged_profile_signature names: bump it whenever average_profile returns a
 # different profile from the same samples, or a cached profile computed the old
-# way keeps being served as the new one. Generation 3 converts the frequency
-# grid back to m/z on the mean of the scans' calibrations; generation 2 used
-# the densest scan's and fitted the axis to the centroid labels. From
-# generation 2 each grid point sits at the mean of the real frequencies in its
-# cell; generation 1 placed it at the cell's centre.
-AVERAGED_PROFILE_GENERATION = 3
+# way keeps being served as the new one. Generation 4 converts the frequency
+# grid back to m/z peak by peak, each on the intensity-weighted mean of the
+# scans' calibrations; generation 3 used their plain mean throughout, and
+# generation 2 the densest scan's, fitting the axis to the centroid labels.
+# From generation 2 each grid point sits at the mean of the real frequencies in
+# its cell; generation 1 placed it at the cell's centre.
+AVERAGED_PROFILE_GENERATION = 4
 
 Polarity = Literal["+", "-"]
 MsType = Literal["Ms", "Ms2"]
@@ -548,6 +549,7 @@ _AVG_PROFILE_GRID_PPM = 0.2
 
 _AVG_PROFILE_FREQ_NEWTON = 4  # Newton iterations for the m/z -> frequency inverse
 _AVG_PROFILE_GAP_DF = 2.0  # zero a scan's interp beyond this * FFT bin from its samples
+_AVG_PROFILE_PEAK_GAP_DF = 1.5  # grid points further apart than this * FFT bin: a gap
 _AVG_CENTROID_HEIGHT_PPM = 3.0  # window to source centroid height from profile apex
 _AVG_CENTROID_HEIGHT_BAND = (0.85, 1.15)  # apply the apex only as a modest refinement
 _AVG_CENTROID_MERGE_FWHM = 0.5  # merge centroids whose gap is below this * local FWHM
@@ -1621,9 +1623,10 @@ class OpenTFRawBackend:
         land in two bins and the jitter-split merge cannot recover them.
         Converting every scan's labels to frequency with its own B/C and back
         with one reference calibration removes the step -- the profile
-        averaging keys by frequency the same way, though it writes its grid
-        back on the mean calibration, see ``_average_profile_in_frequency`` --
-        so the bin groups a peak's centroids by physical frequency.
+        averaging keys by frequency the same way, though it writes each peak
+        back on the weighted mean of the scans' calibrations, see
+        ``_frequency_grid_to_mz`` -- so the bin groups a peak's centroids by
+        physical frequency.
 
         Returns one array per scan, aligned with ``mz_parts``, or None when a
         selected scan carries no B/C (non-FTMS data), in which case the caller
@@ -1916,8 +1919,9 @@ class OpenTFRawBackend:
         #   3. Linear-interpolate each scan onto the freq grid and sum. The peaks
         #      are aligned, so this reproduces Thermo's apex (= mean *
         #      ScansCombined) and FWHM; no integral rescale is needed.
-        #   4. Convert the freq grid back to m/z with the mean of the scans'
-        #      calibrations, the one their averaged centroids sit on.
+        #   4. Convert the freq grid back to m/z, each profile peak on the
+        #      intensity-weighted mean of the scans' calibrations, the one its
+        #      averaged centroid sits on.
         # Falls back to a constant-ppm m/z grid when the Conversion Parameters
         # are unavailable (non-FTMS data).
         if ppm <= 0:
@@ -2047,8 +2051,15 @@ class OpenTFRawBackend:
         _, inverse = np.unique(cells, return_inverse=True)
         fgrid = np.bincount(inverse, weights=f_all) / np.bincount(inverse)
 
+        # Beside the sum, keep what each scan contributes to a grid point times
+        # how far its calibration is from the mean: the back-conversion below
+        # weights the scans' calibrations by it (_frequency_grid_to_mz).
+        b_mean = float(np.mean([b for (_, _, b, _) in scans]))
+        c_mean = float(np.mean([c for (_, _, _, c) in scans]))
         summed = np.zeros(fgrid.shape, dtype=np.float64)
-        for f, (_, intensity, _, _) in zip(freqs, scans):
+        b_drift = np.zeros(fgrid.shape, dtype=np.float64)
+        c_drift = np.zeros(fgrid.shape, dtype=np.float64)
+        for f, (_, intensity, b, c) in zip(freqs, scans):
             order = np.argsort(f, kind="stable")
             f_sorted, int_sorted = f[order], intensity[order]
             lo = int(np.searchsorted(fgrid, f_sorted[0], side="left"))
@@ -2067,24 +2078,107 @@ class OpenTFRawBackend:
             near = np.minimum(np.abs(seg - f_sorted[j - 1]), np.abs(seg - f_sorted[j]))
             vals[near > _AVG_PROFILE_GAP_DF * df] = 0.0
             summed[lo:hi] += vals
+            b_drift[lo:hi] += vals * (b - b_mean)
+            c_drift[lo:hi] += vals * (c - c_mean)
 
-        # Convert the freq grid back to m/z with the mean of the scans'
-        # calibrations. An ion's frequency is the same in every scan; what moves
-        # its m/z from scan to scan is the calibration each scan was written
-        # with, and a lock mass that engages, steps or drifts part-way through a
-        # file moves that by up to a few ppm. An averaged centroid reports the
-        # mean of its labels as written, which for an ion present alike in every
-        # scan is its frequency on the mean calibration, m/z being linear in B
-        # and C. Any one scan's calibration puts the profile as far off its
-        # centroids as that scan is from the mean: measured on two files whose
-        # lock mass engaged part-way, 1.2 and 3.1 ppm in the median, against
-        # under 0.1 ppm on the mean.
-        b_mean = float(np.mean([b for (_, _, b, _) in scans]))
-        c_mean = float(np.mean([c for (_, _, _, c) in scans]))
-        f2 = fgrid * fgrid
-        mz_grid = b_mean / f2 + c_mean / (f2 * f2)
+        mz_grid = self._frequency_grid_to_mz(
+            fgrid, df, summed, b_mean, c_mean, b_drift, c_drift
+        )
         order = np.argsort(mz_grid)
         return mz_grid[order], summed[order]
+
+    @staticmethod
+    def _frequency_grid_to_mz(
+        fgrid: np.ndarray,
+        df: float,
+        summed: np.ndarray,
+        b_mean: float,
+        c_mean: float,
+        b_drift: np.ndarray,
+        c_drift: np.ndarray,
+    ) -> np.ndarray:
+        """Write the averaged profile's frequency grid out in m/z, each profile
+        peak on the calibration its averaged centroid sits on.
+
+        An ion's frequency is the same in every scan; what moves its m/z from
+        scan to scan is the calibration each scan was written with, and a lock
+        mass that engages, steps or drifts part-way through a file moves that by
+        up to a few ppm. An averaged centroid reports the intensity-weighted
+        mean of its labels as written, which is the ion's frequency on the
+        intensity-weighted mean of the scans' calibrations, m/z being linear in
+        B and C. For an ion present alike in every scan that is the plain mean
+        (``b_mean``, ``c_mean``). An ion that comes and goes leans towards the
+        scans it was in, so where the calibration drifts over a long
+        acquisition, ions with different time courses sit on different
+        calibrations and no one axis fits them all. Measured on the plain mean:
+        an acquisition of 1,486 scans drifting by 2.6 ppm had its strong peaks
+        a median 0.33 ppm off their centroids, and one whose scans alternate
+        between two mass ranges 0.28, against 0.07 and 0.02 here.
+
+        So every profile peak is written on its own calibration. A peak is the
+        run of samples between two valleys of the sum, or up to a gap in the
+        grid. It takes the weighted mean calibration at its tallest sample, the
+        weights being what each scan contributes there, as in its centroid
+        (``b_drift`` and ``c_drift`` hold that contribution times the scan's
+        distance from the mean, which keeps the precision of a difference in
+        the sixth digit). The whole peak moves together, so its width stays
+        what the frequency axis gives it. Weighting each grid point by itself
+        does not keep it: a weak scan stores less of a peak's flanks than a
+        strong one, the flanks then lean towards the strong scans, and on
+        drifting acquisitions 18% of the strong peaks came out more than 5%
+        wider or narrower.
+
+        Neighbouring peaks on different calibrations move against each other,
+        and at low m/z, where a grid step is about one ppm, two that overlap
+        can cross. Peaks that would cross are written on one calibration,
+        weighted over the tallest sample of each, and so on until the grid
+        descends throughout (it ascends in frequency), so the samples stay in
+        the order they were measured in. Falling back on the plain mean there
+        is worse where a mass range is in some of the scans only, the plain
+        mean being no ion's calibration then: the strong peaks below m/z 100 of
+        the acquisition alternating between two ranges read 0.19 ppm that way,
+        against 0.04.
+        """
+        f2 = fgrid * fgrid
+        if fgrid.size < 3 or not (b_drift.any() or c_drift.any()):
+            return b_mean / f2 + c_mean / (f2 * f2)
+
+        # A peak begins after a gap and at a valley. A valley lies between
+        # samples of one run: the last sample before a gap is lower than the one
+        # before it, and is no valley for being lower than whatever begins the
+        # next run as well. Counted as one, it would be a peak of its own,
+        # written on the weights of a flank.
+        gap = np.diff(fgrid) > _AVG_PROFILE_PEAK_GAP_DF * df
+        new_peak = np.zeros(fgrid.size, dtype=bool)
+        new_peak[0] = True
+        new_peak[1:] = gap
+        new_peak[1:-1] |= (
+            (summed[1:-1] <= summed[:-2]) & (summed[1:-1] < summed[2:]) & ~gap[1:]
+        )
+        peak = np.cumsum(new_peak) - 1
+        # Sorted by peak with the tallest sample first, a peak's first entry is
+        # its tallest sample.
+        top = np.lexsort((-summed, peak))[np.flatnonzero(new_peak)]
+        weight, b_pull, c_pull = summed[top], b_drift[top], c_drift[top]
+        while True:
+            lit = weight > 0
+            b_shift = np.divide(b_pull, weight, out=np.zeros_like(weight), where=lit)
+            c_shift = np.divide(c_pull, weight, out=np.zeros_like(weight), where=lit)
+            mz_grid = (b_mean + b_shift[peak]) / f2 + (c_mean + c_shift[peak]) / (
+                f2 * f2
+            )
+            crossed = np.flatnonzero(np.diff(mz_grid) >= 0)
+            crossed = crossed[peak[crossed] != peak[crossed + 1]]
+            if crossed.size == 0:
+                return mz_grid
+            # The peak after each crossing joins the one before it.
+            apart = np.ones(weight.size, dtype=bool)
+            apart[peak[crossed + 1]] = False
+            joined = np.cumsum(apart) - 1
+            weight = np.bincount(joined, weights=weight)
+            b_pull = np.bincount(joined, weights=b_pull)
+            c_pull = np.bincount(joined, weights=c_pull)
+            peak = joined[peak]
 
     def _average_profile_in_mz(
         self,
@@ -2255,7 +2349,7 @@ def averaged_profile_signature() -> str:
 
     Names the reader ``MASCOPE_THERMO_BACKEND`` selects and, for OpenTFRaw, the
     reader's version and :data:`AVERAGED_PROFILE_GENERATION`:
-    ``"otf2.0.0-g3"``. The Thermo library averages by itself and is named
+    ``"otf2.0.0-g4"``. The Thermo library averages by itself and is named
     alone, ``"thermo"``.
 
     A profile one signature computed is not what another computes - reader
@@ -2264,7 +2358,7 @@ def averaged_profile_signature() -> str:
     it on this. A reader upgrade changes it by itself; a change to the
     averaging has to bump the generation.
 
-    :return: The signature, e.g. ``"otf2.0.0-g3"``
+    :return: The signature, e.g. ``"otf2.0.0-g4"``
     :rtype: str
     """
     name = os.environ.get(ENV_BACKEND, "opentfraw").lower()
