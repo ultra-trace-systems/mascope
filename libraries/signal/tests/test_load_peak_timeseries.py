@@ -10,6 +10,9 @@ the discarded scan too, so distributing a recomputed timeseries over the scans
 that remain would smear the very artifact the exclusion exists to drop across
 the good scans. It is refused instead, with an error its caller can recognise
 and answer by asking for peak detection.
+
+Also here: filling a store two of whose peaks share an m/z
+(``TestPeaksSharingAnMz``).
 """
 
 import numpy as np
@@ -120,6 +123,44 @@ async def test_a_computed_store_is_served_without_reading_the_file(
     result = await m_compute.load_peak_timeseries(SIGNAL_TEST_FILENAME, MZ_VALUES)
 
     assert result.is_timeseries_computed.values.all()
+
+
+class TestPeaksSharingAnMz:
+    """Filling a store two of whose peaks sit on the same m/z.
+
+    A file that switches polarity keeps both polarities' peaks on one axis,
+    and a peak of each can hold exactly the same m/z. Such a pair must not
+    cost the file's other peaks their timeseries.
+    """
+
+    # Rows 1 and 2 share an m/z, one of each polarity
+    MZ = np.array([100.0, 200.0, 200.0, 300.0])
+    AREAS = np.array([1000.0, 2000.0, 3000.0, 4000.0])
+    HEIGHTS = np.array([10.0, 20.0, 30.0, 40.0])
+    POLARITY = ["+", "+", "-", "+"]
+
+    @pytest.mark.asyncio
+    async def test_a_dropped_pair_leaves_the_other_peaks_their_timeseries(
+        self, monkeypatch, write_peak_store
+    ):
+        """Two noise peaks at one m/z: what such a pair usually is."""
+        write_peak_store(
+            SCAN_TIMES,
+            self.MZ,
+            self.AREAS,
+            self.HEIGHTS,
+            is_weak=[False, True, True, False],
+            polarity=self.POLARITY,
+        )
+        _stub_reader(monkeypatch, SCAN_TIMES)
+
+        result = await m_compute.load_peak_timeseries(
+            SIGNAL_TEST_FILENAME, [100.0, 300.0]
+        )
+
+        np.testing.assert_allclose(
+            result.peak_heights.values, np.outer(self.HEIGHTS[[0, 3]], _shares(5))
+        )
 
 
 class TestCheckPeakStore:

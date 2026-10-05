@@ -355,6 +355,99 @@ class TestWritePeaksEdgeCases:
         assert not np.allclose(first_values, second_values)
 
 
+class TestPeaksSharingAnMz:
+    """Peaks of one file that sit on the same m/z.
+
+    A raw Orbitrap file's polarities are detected apart and stored on one m/z
+    axis, and a scan's centroids are single precision, so a peak of each that
+    was seen in one scan only can hold exactly the same value. The store is
+    read by m/z, and that may not count on its axis being unique.
+    """
+
+    # Rows 1 and 2 share an m/z
+    MZ = np.array([100.0, 200.0, 200.0, 300.0, 400.0])
+    SHARED_ROWS = (1, 2)
+
+    @pytest.mark.parametrize(
+        ("weak", "satellite"),
+        [
+            pytest.param((1, 5, 6), (2, 6, 19), id="some"),
+            pytest.param((), (), id="none"),
+            pytest.param(tuple(range(TEST_MZ_SIZE)), (), id="all"),
+        ],
+    )
+    @pytest.mark.asyncio
+    async def test_a_unique_axis_loads_as_a_selection_by_mz_does(
+        self,
+        weak,
+        satellite,
+        create_peak_timeseries_dataset,
+        peak_timeseries_zarr_path,
+    ):
+        """Dropping by position hands out what selecting the kept m/z values does.
+
+        On an axis without a shared m/z, which is nearly every store's, the
+        two cannot differ: the rows, their order, every variable and
+        coordinate and the attributes all come out the same.
+        """
+        ds = create_peak_timeseries_dataset(fill_with_nan=False)
+        ds["is_weak"].values[list(weak)] = True
+        ds["is_satellite"].values[list(satellite)] = True
+        await write_peaks(ds, TEST_FILENAME, overwrite=True)
+
+        loaded = m_io.load_peak_data(TEST_FILENAME)
+
+        everything = m_io.load_peak_data(TEST_FILENAME, drop_bad_peaks=False)
+        kept = ~(everything.is_weak | everything.is_satellite).values
+        xr.testing.assert_identical(
+            loaded, everything.sel(mz=everything.mz.values[kept])
+        )
+        assert loaded.mz.size == TEST_MZ_SIZE - len({*weak, *satellite})
+
+    @pytest.mark.asyncio
+    async def test_two_dropped_peaks_sharing_an_mz_do_not_stop_the_load(
+        self,
+        create_peak_timeseries_dataset,
+        peak_timeseries_zarr_path,
+    ):
+        """One shared m/z must not cost the file every one of its peaks.
+
+        Selecting by m/z needs the whole axis to be unique, whatever is asked
+        of it, so it fails on a pair that is dropped anyway: two noise peaks
+        of opposite polarity, which is what such a pair usually is.
+        """
+        ds = create_peak_timeseries_dataset(mz_values=self.MZ)
+        ds["is_weak"].values[1] = True
+        ds["is_satellite"].values[2] = True
+        await write_peaks(ds, TEST_FILENAME, overwrite=True)
+
+        loaded = m_io.load_peak_data(TEST_FILENAME)
+
+        assert loaded.peak_id.values.tolist() == ["peak_0000", "peak_0003", "peak_0004"]
+        assert loaded.mz.values.tolist() == [100.0, 300.0, 400.0]
+
+    @pytest.mark.parametrize("dropped", SHARED_ROWS)
+    @pytest.mark.asyncio
+    async def test_a_kept_peak_loads_beside_a_dropped_one_at_its_mz(
+        self,
+        dropped,
+        create_peak_timeseries_dataset,
+        peak_timeseries_zarr_path,
+    ):
+        """The kept peak of a pair is loaded, and the axis it is on is unique."""
+        kept = sum(self.SHARED_ROWS) - dropped
+        ds = create_peak_timeseries_dataset(mz_values=self.MZ)
+        ds["is_weak"].values[dropped] = True
+        await write_peaks(ds, TEST_FILENAME, overwrite=True)
+
+        loaded = m_io.load_peak_data(TEST_FILENAME)
+
+        assert loaded.peak_id.values.tolist() == [
+            f"peak_{row:04d}" for row in (0, kept, 3, 4)
+        ]
+        assert loaded.peak_id.sel(mz=200.0).values.item() == f"peak_{kept:04d}"
+
+
 class TestEnsureSparsityExists:
     """Tests for ensure_sparsity_exists backwards compatibility function."""
 
