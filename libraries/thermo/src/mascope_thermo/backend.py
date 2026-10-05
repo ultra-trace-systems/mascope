@@ -2259,7 +2259,7 @@ def averaged_profile_signature() -> str:
     alone, ``"thermo"``.
 
     A profile one signature computed is not what another computes - reader
-    2.0.0 moved the per-scan profile axis by up to 3.3 ppm, and generation 2
+    2.0.0 moved the per-scan profile axis by several ppm, and generation 2
     the averaged heights by about 3% - so anything that caches a profile keys
     it on this. A reader upgrade changes it by itself; a change to the
     averaging has to bump the generation.

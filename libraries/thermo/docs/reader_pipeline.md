@@ -156,12 +156,12 @@ averaged-centroid bias differs by 1.3 percentage points between reader 1.4.0 and
 
 ### 3.2 Which calibration the averaged profile is written on
 
-From reader 2.0.0 a scan's profile m/z is the instrument's own, point for point
-(5.1): the reader converts each frequency with the scan's calibration and
-applies the same per-segment m/z corrections the centroid labels carry. So
-there is nothing to correct against the labels. What step 4 still has to
-choose is which calibration writes the frequency grid out, because every scan
-carries its own.
+From reader 2.0.0 a scan's profile m/z is the instrument's own, point for
+point, on the models 5.1 measures: the reader converts each frequency with the
+scan's calibration and applies the same per-chunk m/z corrections the centroid
+labels carry. So there is nothing to correct against the labels. What step 4
+still has to choose is which calibration writes the frequency grid out, because
+every scan carries its own.
 
 They need not agree. A lock mass that engages part-way through a file, or
 whose correction wanders from scan to scan, moves a scan's calibration by up
@@ -348,31 +348,44 @@ FWHM = m/z / resolution) -- for two reasons, and neither holds.
 ### 5.1 Alignment
 
 The reconstruction overlaid the centroid markers by construction, where the
-measured profile sat a few ppm off them: up to reader 1.4.0 the profile was
-converted to m/z with the base polynomial alone, leaving out the per-scan
-compensations the centroid labels carry. From reader 2.0.0 the reader applies
-them itself:
+measured profile sat a few ppm off them. A raw file stores an m/z correction
+with each chunk of a scan's profile, a contiguous run of samples, to be added to
+the m/z after conversion; it is what carries the per-scan compensations the
+centroid labels have. Up to reader 1.4.0 the reader added it to the frequency
+before converting instead. Reader 1.4.1 applies it where it belongs, and 2.0.0
+is the first such reader pinned here:
 
 | | per-scan profile apex minus its label | averaged profile apex minus its averaged centroid |
 | --- | --- | --- |
 | reader 1.4.0 | -4.60 ppm median, -5.40 below m/z 200 | -- |
 | reader 2.0.0 | **-0.001 ppm** median, +-0.1 ppm in every band | **0.053 ppm** median absolute, no bias |
 
-The per-scan axis is in fact the Thermo library's. Over the 28.1 million
-non-zero points of 5,394 profile scans, in 185 files from four instrument models
-(a Q Exactive Plus and three Exploris models), 4,823 scans are bit-identical on
-every point and the other 571 differ by one factor per scan, 1.4e-4 ppm at most.
-Reader 1.4.0 differed on every point of the same files, by 6.7 ppm at the median
-file's worst point. What is left is on the Thermo side. It converts such a scan
-with an earlier scan's conversion coefficients where B and C both lie within
-0.01 of that scan's, while the open reader converts every scan with its own.
-Taking the first such earlier scan reproduces 5,383 of the 5,394 scans, shifted
-or not, to the last digit of the factor; in the other 11 the coefficients are
-another earlier scan's, also within 0.01. That moves a scan by at most 0.01 / B:
-1.5e-4 ppm at the Q Exactive Plus's B of 6.8e7, 5.9e-5 ppm at the Exploris
-models' 1.7e8.
-`test_profile_matches_thermo` (in `test_backend_parity.py`) holds every point of
-every profile scan to 1e-3 ppm, and every intensity to equality.
+On the four instrument models it was measured on, a Q Exactive Plus and three
+Exploris models, the per-scan axis is in fact the Thermo library's. Over the
+28.1 million stored samples of 5,394 profile-mode MS1 scans in 185 files, 4,823
+scans are bit-identical on every sample, and the other 571 differ by one factor
+per scan: 1.4e-4 ppm at most, the samples of a scan agreeing on it to 3.3e-9
+ppm. Reader 1.4.0 opens 182 of those files, 181 of them with profile scans, and
+differs on every sample of them, by 6.7 ppm at the median file's worst.
+
+It is not so on every Orbitrap. The reader's
+[changelog](https://github.com/Sigilweaver/OpenTFRaw/blob/main/CHANGELOG.md)
+lists, as fixed after 2.0.0, MS1 profiles of Fusion Lumos, Eclipse and Orbitrap
+Elite files that come back as frequencies in place of m/z.
+
+What is left on those 571 scans appears to be on the Thermo side. Its axis for
+such a scan is what converting the scan with an earlier scan's conversion
+coefficients gives, where B and C both lie within 0.01 of that scan's, while the
+open reader converts every scan with its own. This is read off the two readers'
+outputs and not from anything the vendor documents: taking the first such
+earlier scan reproduces 5,383 of the 5,394 scans, shifted or not, to the last
+digit of the factor, and in the other 11 the coefficients are another earlier
+scan's, also within 0.01. It caps the shift at 0.01 / B: 1.5e-4 ppm at the Q
+Exactive Plus's B of 6.8e7, 5.9e-5 ppm at the Exploris models' 1.7e8.
+
+`test_profile_matches_thermo` (in `test_backend_parity.py`) holds every stored
+sample of every profile-mode MS1 scan to 1e-3 ppm, the samples of one scan to a
+single factor within 1e-6 ppm, and every intensity to equality.
 
 The averaged figure is over 80,416 strong peaks (S:N >= 20) of the 161 demo
 files, each located at the vertex of the parabola through its three top samples,
@@ -508,7 +521,7 @@ them, touching raw Orbitrap files only.
 | Quantity | Parity with Thermo |
 |---|---|
 | Per-scan centroid m/z / resolution / S:N | Exact (same binary stream); sub-0.0002 ppm m/z |
-| Per-scan profile m/z | From reader 2.0.0, bit-identical on nine scans in ten; within 1.4e-4 ppm on the rest, where Thermo converts with an earlier scan's coefficients (section 5.1) |
+| Per-scan profile m/z | On the models measured (a Q Exactive Plus, three Exploris models), from reader 2.0.0: bit-identical on nine scans in ten; within 1.4e-4 ppm on the rest, where Thermo's axis is what an earlier scan's coefficients give (section 5.1) |
 | Per-scan profile intensity | Exact (the stored samples) |
 | Averaged centroid m/z | Sub-0.1 ppm (matched peaks) |
 | Averaged centroid intensity (profile-apex) | ~3% high, and flat across the intensity range (section 6, step 6) |
