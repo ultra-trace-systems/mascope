@@ -899,6 +899,74 @@ class SampleFile(Base):
     )
 
 
+class AcquisitionStream(Base):
+    """One scan stream of a sample file: the scans of one experiment of its
+    acquisition method.
+
+    A raw Orbitrap file whose method runs more than one MS1 experiment in a
+    polarity can be processed per experiment, each with a peak list and a
+    sample item of its own (``docs/dev/ingest_routing_and_splitting.md``,
+    sections 4.4 and 4.5). A row here is one such stream of one file, and
+    ``sample_item.stream_id`` points an item at the stream it is cut from.
+
+    Only a file processed per stream has rows. A file with one stream in each
+    polarity has none, and its items carry no ``stream_id``: there the
+    polarity already says which scans an item is cut from, as it always has.
+
+    Two names for a stream, kept apart on purpose:
+
+    - ``stream_key`` is the stream's name in ITS file, and is what selects
+      its scans there - the reader's selection and the labels of the peak
+      store both take it. The same experiment can be keyed differently in
+      another file of its method (a run stopped before a repeated experiment
+      came round names the first one by its signature alone), so the key is
+      unique within a file and compared across files by nothing.
+    - ``signature_key``, ``scan_segment`` and ``scan_event`` are the stream's
+      identity, which reads the same in every file of one method: what it
+      measured, and the experiment's segment and event number. Which of the
+      three a comparison across files uses is the comparison's own choice.
+
+    The rest is the stream's census at the time the row was written: taken
+    from the file, never configured.
+    """
+
+    __tablename__ = "acquisition_stream"
+    # Also the index that finds a file's streams and that the file's ON
+    # DELETE CASCADE walks: sample_file_id leads it, so the column needs none
+    # of its own.
+    __table_args__ = (
+        UniqueConstraint(
+            "sample_file_id", "stream_key", name="uq_acquisition_stream_file_key"
+        ),
+    )
+
+    stream_id: Mapped[str] = mapped_column(String(16), primary_key=True)
+    # CASCADE: a stream is a description of part of its file and has no
+    # meaning without it.
+    sample_file_id: Mapped[str] = mapped_column(
+        String(16),
+        ForeignKey("sample_file.sample_file_id", ondelete="CASCADE"),
+    )
+    # As wide as method_binding.signature_class, which holds the signature
+    # keys of a whole polarity joined together.
+    stream_key: Mapped[str] = mapped_column(String(512))
+    signature_key: Mapped[str] = mapped_column(String(512))
+    # Counted from 1, as the method counts them. Both NULL where the file
+    # records no experiment, which is an acquisition started with no method
+    # loaded.
+    scan_segment: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    scan_event: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    # The parsed fields of the signature, as the census reports them.
+    signature: Mapped[dict] = mapped_column(JSON)
+    scan_count: Mapped[int] = mapped_column(Integer)
+    # Contiguous runs of the stream's scans: 1 for an experiment that runs
+    # once, the number of repeats for one that alternates with another.
+    blocks: Mapped[int] = mapped_column(Integer)
+    # First and last scan time [s] from the start of the acquisition.
+    t_first: Mapped[float] = mapped_column(Float)
+    t_last: Mapped[float] = mapped_column(Float)
+
+
 class SampleItem(Base):
     """
     Represents a processed sample derived from a sample file.
@@ -999,6 +1067,28 @@ class SampleItem(Base):
     method_binding_id: Mapped[Optional[str]] = mapped_column(
         String(16),
         ForeignKey("method_binding.method_binding_id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    # The scan stream this item is cut from, for an item of a file processed
+    # per stream (``AcquisitionStream``). NULL means the item spans every MS1
+    # scan of its polarity: what an item meant before streams could be read
+    # apart, and what it still means for every file with one stream in each
+    # polarity. So a NULL is never filled in afterwards - an item made under
+    # the polarity rule says what it said
+    # (``docs/dev/ingest_routing_and_splitting.md``, sections 4.4 and 9.1).
+    #
+    # No ON DELETE action, deliberately. A stream row goes only with its file
+    # or when the file is processed again, and its items go first both times.
+    # An item still pointing at a stream being deleted is therefore a fault
+    # to refuse, and SET NULL would instead turn it, silently, into an item
+    # over the whole polarity.
+    #
+    # Indexed for the question asked the other way round - a stream's items -
+    # and so that deleting a stream does not scan every item for references.
+    stream_id: Mapped[Optional[str]] = mapped_column(
+        String(16),
+        ForeignKey("acquisition_stream.stream_id"),
         nullable=True,
         index=True,
     )
@@ -2909,6 +2999,7 @@ __all__ = [
     "Dataset",
     "SampleBatch",
     "SampleFile",
+    "AcquisitionStream",
     "SampleItem",
     "TargetCollection",
     "TargetCollectionInSampleBatch",
