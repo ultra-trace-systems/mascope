@@ -1222,10 +1222,14 @@ the stack is down fails, and the next one runs the pass again.
 
 **A file was processed in an unexpected way** - samples missing, or peaks that
 look like two measurements mixed together. `mascope file scans <file.raw>` lists
-the file's scan streams: what each group of scans measured (polarity, scan
-range, scan mode, resolution), when, and its strongest peaks, which usually
-include the reagent ions of its chemistry. A polarity with more than one MS1
-stream is pooled into one peak list by processing, and the command says so. It
+the file's scan streams, one per experiment of its acquisition method: what
+each measured (polarity, scan range, scan mode, resolution), when, under which
+scan event, and its strongest peaks, which usually include the reagent ions of
+its chemistry. Two experiments that measure the same thing on paper - the same
+range at another microscan count, or one scan definition repeated later in the
+method - are listed apart, with the scan event closing each one's name. A
+polarity with more than one MS1 stream is pooled into one peak list by
+processing, and the command says so. It
 reads a copy of the file on this machine, inside the backend container, so the
 stack must be up.
 

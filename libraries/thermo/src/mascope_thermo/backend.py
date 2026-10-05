@@ -176,13 +176,19 @@ class ReaderBackend(Protocol):
         ...
 
     def scan_filters(self) -> list[dict]:
-        """Every scan's filter, in acquisition order.
+        """Every scan's filter and scan event, in acquisition order.
 
-        ``[{"scan": 1-based number, "time_s": start time [s], "filter": text}]``
-        for every scan of every polarity and MS order. No scan is left out, not
-        even an outlier first scan: this describes the file rather than
-        selecting from it. The text is as the reader renders it; see
-        :mod:`mascope_thermo.scan_filter` for what it holds.
+        ``[{"scan": 1-based number, "time_s": start time [s], "filter": text,
+        "event": scan event}]`` for every scan of every polarity and MS order.
+        No scan is left out, not even an outlier first scan: this describes
+        the file rather than selecting from it. The text is as the reader
+        renders it; see :mod:`mascope_thermo.scan_filter` for what it holds.
+
+        ``event`` is the experiment of the acquisition method that produced
+        the scan, counted from 1 as the method and the trailer's
+        ``Scan Event:`` count it, and ``None`` where the file records none
+        (:func:`_method_scan_event`). It is read from the scan index, like
+        ``ScanEventNumber`` in :meth:`scan_statistics`.
         """
         ...
 
@@ -421,9 +427,11 @@ MS_SCAN_DETECTOR_STATS = {
 # from the right place but cannot rule out a constant offset.
 OPENTFRAW_UNAVAILABLE_SCAN_STATS = ("CycleNumber",)
 
-# The scan index writes this where a field was never set. Thermo reports those
-# as -1 for the scan event and 0 for the segment; no file here carries one, so
-# the mapping is a guard rather than something the corpus exercises.
+# The scan index writes this where a field was never set, and Thermo reports
+# those as -1 for the scan event and 0 for the segment. It is what an
+# acquisition started with no method loaded carries on every scan: 14 of the
+# 185 files of the internal regression corpus, whose trailers say
+# "Scan Event: 0". Both backends report -1 and 0 for them.
 _SCAN_INDEX_UNSET = 0xFFFF
 
 # Default number of scans sampled by acquisition_parameters(). The trailer is
@@ -456,6 +464,25 @@ def _json_safe(value):
         # NaN/Infinity are accepted by Python's json but are not valid JSON.
         return value if math.isfinite(value) else str(value)
     return str(value)
+
+
+def _method_scan_event(index_event: int) -> int | None:
+    """A scan's event as the acquisition method numbers it, or ``None``.
+
+    The scan index counts a method's scan events from 0, where the method
+    and the trailer's ``Scan Event:`` count them from 1; the two agree on
+    every scan of every file of the internal regression corpus that records
+    one. A file acquired with no method loaded records no event at all: its
+    index holds :data:`_SCAN_INDEX_UNSET`, which the Thermo library reports
+    as -1, and its trailers say 0. That is ``None`` here rather than a
+    number, so that no caller can mistake it for an experiment.
+
+    :param index_event: The scan index's event, as either backend reports it.
+    :return: The event counted from 1, or ``None`` where none was recorded.
+    """
+    if index_event < 0 or index_event == _SCAN_INDEX_UNSET:
+        return None
+    return index_event + 1
 
 
 def _sample_evenly(items: list, count: int) -> list:
@@ -795,6 +822,7 @@ class ThermoBackend:
                 "scan": scan_number,
                 "time_s": stats.StartTime * _SECONDS_PER_MINUTE,
                 "filter": scan_filter.ToString(),
+                "event": _method_scan_event(int(stats.ScanEventNumber)),
             }
             for scan_number, scan_filter, stats in zip(
                 selector.all_scan_indices,
@@ -1380,6 +1408,7 @@ class OpenTFRawBackend:
                 "scan": int(s["scan_number"]),
                 "time_s": s["retention_time"] * _SECONDS_PER_MINUTE,
                 "filter": s["filter_string"] or "",
+                "event": _method_scan_event(int(s["scan_event"])),
             }
             for s in self._all_scans()
         ]

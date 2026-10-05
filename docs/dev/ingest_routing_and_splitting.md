@@ -1,11 +1,11 @@
 # Automatic ingest: chemistry routing and acquisition splitting - design
 
-Status: **phases 0 and 1 shipped; phase 2's provenance and row-following
-shipped, its rung next; the stream work of phases 3 and 4 starts beside
-phase 8, which gains the standard-method catalogue; detection deferred**
-(2026-10-01). Written for issue #2098 ("Split files into samples by scan
-attributes"), which carries the checklist of pull requests. Decisions 1, 2,
-3, 4, 5, 9, 12 and 13 in section 12 are settled; the rest are open.
+Status: **phases 0 and 1 shipped; phase 2 shipped up to its per-site
+switch; the stream first cut of phases 3 and 4 is being built, its census
+keyed on the method's experiments; phase 8 follows it; detection deferred**
+(2026-10-05). Written for issue #2098 ("Split files into samples by scan
+attributes"), which carries the checklist of pull requests. Decisions 1 to
+5, 7, 9 and 12 to 15 in section 12 are settled; 6, 8, 10 and 11 are open.
 
 ## Picking this up
 
@@ -77,7 +77,7 @@ request for this work updates the table below and ticks its item on #2098.
 | 1 | Per-file processing state, persistent notifications, "needs a chemistry" | shipped (#2164, #2166-#2169) |
 | 2 | Method bindings: routing without tokens | learned in shadow on every server (#2193, #2196, #2206, #2226), measured (5.7), item provenance (#2254), the row-following learner (#2255), the rung (#2264) and the disagreement report (#2267) shipped; the backfill re-run and the per-site switch remain, section 10 lists them |
 | 8 | Chemistry profiles as the unit: complete the seeded profiles, ship the standard methods and their catalogue, list the profiles, a profile-first surface, batches named after the profile | open; follows the stream first cut, or runs beside it when there are hands for both (decided 2026-10-05) |
-| 3 | The part contract: stream and window honoured by every consumer | open and **next**: the first cut, for files with more than one MS1 stream in a polarity (4.5), leads the work after phase 2 (decided 2026-10-05) |
+| 3 | The part contract: stream and window honoured by every consumer | **in progress**: the first cut, for files with more than one MS1 stream in a polarity (4.5), leads the work after phase 2 (decided 2026-10-05). The census keys streams on the method's experiments (#2273); the reader, the store, the items and the consumers follow, and section 10 lists them |
 | 4 | Per-stream state: calibration, instrument function, one item per stream, MS2 | open; follows 3 on the same track; no rebuild script (4.5, 9.1) |
 | 5 | Chemistry detection: audit first, then provisional binding | deferred behind phases 3, 4 and 8 (decision 3); its reagent libraries are on `develop` |
 | 6 | Recipes: time and trace windows, preview and apply | open |
@@ -527,6 +527,28 @@ changed by hand part way through leaves no mark in them. Splitting them
 where a declared setting changes is recorded under phase 7 and is not a
 priority: methods first.
 
+**As built** (#2273), for the census; nothing is processed differently by
+it. Four things the build settled:
+
+- **"Records no event" is read off the file, not inferred.** The scan index
+  holds an unset marker for the event on every scan of the fourteen files
+  above, where a file with a method counts its events from 0. Both reader
+  backends report it alike, and report the same event for every scan of the
+  corpus's 185 files (5,476 scans, with the reader as pinned).
+- **The event is counted from 1**, as the method and the trailer's
+  `Scan Event:` count it, and closes the key as
+  `... R=120000 event=2`. A stream also carries it as `scan_event`, whether
+  or not its key shows it.
+- **The corpus under the new key:** 183 of 185 files keep every key. The two
+  polarity-switching files go from four streams to eight and from two to
+  four, each new stream one contiguous block, and they are the only files
+  whose signature class - and so whose method binding - re-keys.
+- **MSn scans stay keyed by signature for now.** The corpus holds no MSn
+  scan, so what a dependent scan's event counts - its experiment, or its
+  place in the cycle - is unmeasured, and the one family per parent of 4.2
+  must not become one stream per slot. Phase 4 measures it on the internal
+  MS2 acquisitions before it attaches them.
+
 ### 4.2 MS2 and above
 
 - **Data-dependent MS2.** One family stream per parent. The parent is the MS1
@@ -542,6 +564,9 @@ priority: methods first.
 - **MS2-only acquisitions.** An MS2 stream with no parent becomes an MS2-only
   part (#2068) once the item contract can build a TIC and time axis from MS2
   scans (phase 7).
+- **The scan event.** MSn streams are keyed by signature alone, not by the
+  experiment that produced them, until what their event counts has been
+  measured (4.1).
 
 ### 4.3 Storage and computation
 
@@ -1635,11 +1660,26 @@ unchanged.
 - **First cut:** section 4.5. Files with more than one MS1 stream in a
   polarity are split, behind the phase 4 flag; every other file is
   byte-identical. Two ranges of one chemistry in one file is the case it is
-  built for. **Built next** (decided 2026-10-05), in this order: the reader
-  and the store; the stream table and one item per stream; the consumers;
-  calibration and instrument function per stream; batch naming. The flag
-  stays off until all of it is in, so the cut delivers at its end, not
-  step by step.
+  built for. **Being built** (decided 2026-10-05). The flag stays off until
+  all of it is in, so the cut delivers at its end, not step by step. In
+  order:
+  1. ~~the census keys streams on the method's experiments (4.1)~~ - built
+     in #2273: `scan_filters` reports each scan's event from the scan index,
+     and `mascope_thermo.streams` groups MS1 scans by signature and event,
+     the event closing the key only where a signature is shared. A census,
+     so it ships with no flag: `.props`, `mascope file scans` and the pooled
+     note in a file's processing detail list the experiments, and peak
+     detection pools them as before;
+  2. the reader selects one stream's scans: a stream predicate beside
+     polarity, time and MS order, answered by the same function the census
+     keys its streams with;
+  3. per-stream peak detection, store labels and timeseries fill, behind
+     the flag;
+  4. the stream table and one item per stream;
+  5. the consumers: peak listing, matching, the item TIC, the exports, and
+     assignment loading;
+  6. calibration and the instrument function per stream;
+  7. batches gathered by what was measured, and their names.
 - **The scope object.** A scan scope (stream, t0, t1) replaces the bare
   polarity in:
   - reader selection;
@@ -1947,7 +1987,7 @@ Function names are the stable reference; line numbers drift.
 |---|---|---|
 | Method identity (shipped, #2155) | `libraries/thermo/src/mascope_thermo/processor.py` `RawProcessor.method_file`; `backend.py` `ReaderBackend.method_file`; `db/scripts/populate_orbitrap_method_file.py` | 0 |
 | Filter parsing, stream census, per-stream parameter sampling | `libraries/thermo/src/mascope_thermo/backend.py` (`acquisition_parameters`, `_sample_evenly`, a new signature accessor); `server/backend/src/mascope_backend/file_converter/schema.py` `SampleFileProps` | 0 |
-| Scan selection and stream identity | `backend.py` `OpenTFRawBackend._selected` and `_all_scans` (`scan_event`, `scan_segment` from the scan index); `thermo.py` `ScanSelector`; `streams.py` `_census` | 3 |
+| Scan selection and stream identity | `backend.py` `scan_filters` (the scan event from the scan index, `_method_scan_event`), `OpenTFRawBackend._selected` and `_all_scans`; `thermo.py` `ScanSelector`; `streams.py` `_keyed_scans` (which stream a scan belongs to) and `_census`; `scan_filter.py` `ScanFilter.stream_key` | 3 |
 | Detection and store layout | `libraries/signal/src/mascope_signal/peak.py` (`_extract_peaks_for_polarity`, `_allocate_peak_timeseries`) | 3 |
 | Timeseries fill, stale-axis check, acquisition window | `libraries/signal/src/mascope_signal/compute.py` (`load_peak_timeseries`, `check_stored_scan_axis`, `get_acquisition_window`) | 3 |
 | Peak listing | `server/backend/src/mascope_backend/api/controllers/samples/lib/samples_peaks.py` `extract_peaks` | 3 |

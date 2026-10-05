@@ -100,6 +100,29 @@ def _num_of_scans(path):
 
 @pytest.mark.skipif(not RAW_FILES, reason="no .raw files in test_files/")
 @pytest.mark.parametrize("path", RAW_FILES, ids=lambda p: p.name)
+def test_scan_events_match_thermo(monkeypatch, path):
+    """Both backends name the same experiment for every scan.
+
+    The scan event is what tells one scan stream from the next
+    (``mascope_thermo.streams``), so a backend that counted it differently
+    would split a file differently. Compared per scan, the scans of every MS
+    order included, and on a file that records none both must say so.
+    """
+    path = str(path)
+
+    monkeypatch.setenv("MASCOPE_THERMO_BACKEND", "thermo")
+    with open_backend(path) as backend:
+        th = backend.scan_filters()
+    monkeypatch.setenv("MASCOPE_THERMO_BACKEND", "opentfraw")
+    with open_backend(path) as backend:
+        ot = backend.scan_filters()
+
+    assert [row["scan"] for row in ot] == [row["scan"] for row in th]
+    assert [row["event"] for row in ot] == [row["event"] for row in th]
+
+
+@pytest.mark.skipif(not RAW_FILES, reason="no .raw files in test_files/")
+@pytest.mark.parametrize("path", RAW_FILES, ids=lambda p: p.name)
 def test_xic_matches_thermo(monkeypatch, path):
     """OpenTFRaw's NumPy XIC must reproduce Thermo's MassRange chromatogram for
     targets spanning the file's full m/z range, across all MS1 scans.

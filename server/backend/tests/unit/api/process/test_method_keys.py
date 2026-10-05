@@ -104,6 +104,20 @@ class TestSignatureClass:
         at_240k = _stream("FTMS - p NSI Full ms [40.0000-600.0000] R=240000", "-")
         assert signature_class([at_120k], "-") != signature_class([at_240k], "-")
 
+    def test_two_experiments_under_one_signature_are_both_in_the_class(self):
+        # The census names each by its scan event, so a method that runs one
+        # scan definition as two experiments is a class of its own. A file of
+        # it converted before the census followed the event carries the bare
+        # signature, and keys apart: that method's binding is learned again
+        # from its next routed file.
+        bare = _stream("FTMS - p NSI Full ms [40.0000-600.0000] R=120000", "-")
+        first = _stream(f"{bare['key']} event=1", "-")
+        second = _stream(f"{bare['key']} event=2", "-")
+        assert signature_class([first, second], "-") == (
+            f"{bare['key']} event=1 + {bare['key']} event=2"
+        )
+        assert signature_class([first, second], "-") != signature_class([bare], "-")
+
     def test_a_reader_that_takes_no_census_keys_on_polarity(self):
         # A TofDaq h5 is one acquisition on one mass axis: the polarity is
         # the whole of what it varies, so it is the class.
