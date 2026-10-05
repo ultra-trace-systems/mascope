@@ -197,11 +197,15 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   Nothing is processed differently: peak detection still pools every MS1 scan
   of a polarity, and the census still only says so. A file with one experiment
   per filter - nearly every file - is listed exactly as before, and so is one
-  acquired with no method loaded, which records no scan event. A method that
-  runs more than one experiment under one filter reads as a new method to the
-  method bindings: its first file after the upgrade binds by its filename
-  token, or waits for a chemistry to be chosen, and the binding is learned
-  again from it.
+  acquired with no method loaded, which records no scan event. No file is
+  routed differently either: what a method binding knows a method by is what
+  its scans measured, which this does not change.
+
+  A stream's name is its name in its own file. The same experiment is named
+  by its filter alone in a run that stopped before that filter came round
+  again, so compare experiments between files by what they measured and their
+  scan event, which `mascope file scans --json` gives for each stream as
+  `signature_key`, `scan_segment` and `scan_event`.
 
 ### Fixed
 
