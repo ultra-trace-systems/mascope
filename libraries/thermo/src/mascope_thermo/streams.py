@@ -17,8 +17,10 @@ identity is its signature and its experiment: ``signature_key``,
 of one method. Its ``key`` is a name, unique within its file and no further:
 it carries the experiment only where another experiment of the same file
 shares the signature, so a run stopped before a repeated experiment came
-round again names the first one by its signature alone. Compare streams
-across files by their identity, never by their keys.
+round again names the first one by its signature alone. Never compare
+streams across files by their keys, and compare the part of the identity the
+comparison is about: the method binding's signature class reads
+``signature_key`` alone, so that it does not move with a method's layout.
 
 Most files hold one stream per polarity. A method can also alternate scan
 ranges or scan modes within one polarity, repeat an experiment later in the

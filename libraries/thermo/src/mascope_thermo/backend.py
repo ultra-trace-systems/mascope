@@ -517,8 +517,14 @@ def _method_experiment(
     backend, and a scan with no event has no segment: on every file of the
     internal regression corpus the two words are set or unset together.
 
-    Every one of those files is also in one segment, so the pairing itself
-    is as the vendor documents it rather than as measured here.
+    That an event has its number within a segment is how the Thermo library
+    addresses a method's events: ``IScanEvents``, the type of an open file's
+    ``ScanEvents``, gives a count of ``Segments``, ``GetEventCount(segment)``
+    for each, and ``GetEvent(segment, eventNumber)``. On every corpus file
+    that records events, each scan's pair is one of the pairs that table
+    holds. Every one of those files is in one segment, though, so that a
+    second segment starts again at event 1 is read off that interface and
+    not off a file.
 
     :param index_segment: The scan index's segment, as either backend
         reports it.
