@@ -73,7 +73,7 @@ Scan selection reads metadata only. The OpenTFRaw backend builds it from `scan_t
 - **`profile_per_scan(polarity, t_min, t_max, ms_type, mz_min, mz_max)`**: Retrieves the raw profile m/z and intensity arrays of each selected scan, with the scan times.
 - **`centroids_per_scan(polarity, t_min, t_max, ms_type, mz_min, mz_max)`**: Retrieves the centroided peaks (m/z, intensity, resolution, S/N) of each selected scan.
 - **`centroids_meta()`**: Returns every scan's centroid m/z, intensity, resolution and noise, decoded from its centroid labels.
-- **`average_profile(scan_indices, ppm, average)`**: Averages the selected scans' profiles in the frequency domain, where an ion's peak lines up across scans, and converts the result back to m/z on the mean of the scans' calibrations. The result is the measured signal, which is also what the spectrum views draw.
+- **`average_profile(scan_indices, ppm, average)`**: Averages the selected scans' profiles in the frequency domain, where an ion's peak lines up across scans, and converts the result back to m/z, each peak on the intensity-weighted mean of the scans' calibrations. The result is the measured signal, which is also what the spectrum views draw.
 - **`average_centroids(scan_indices, ppm, average)`**: Returns an approximation of centroids derived from an averaged profile.
 - **`xic(mzs, ppm, polarity, t_min, t_max, ms_type)`**: Generates an Extracted Ion Chromatogram within `ppm` of each target m/z across the selected scans.
 
@@ -116,7 +116,7 @@ On the internal regression corpus, the census agrees between the backends on 181
 The `average_profile` algorithm operates in the **frequency domain**.
 
 - **Grid**: One point per native FFT bin, at the mean of the frequencies the scans sampled in it; a constant **0.2 ppm** m/z grid only for scans without Conversion Parameters.
-- **m/z Axis**: The frequency grid is converted back to m/z on the mean of the scans' Conversion Parameters B and C, the calibration their averaged centroids sit on. Nothing is fitted to the centroids.
+- **m/z Axis**: The frequency grid is converted back to m/z peak by peak. Each profile peak, the samples between two valleys, is written on the mean of the scans' Conversion Parameters B and C weighted by what each scan contributes to its tallest sample, which is the calibration its averaged centroid sits on. Neighbouring peaks that would cross share one calibration. Nothing is fitted to the centroids.
 - **S/N Scaling**: Averaged Signal-to-Noise is scaled by $n/\sqrt{N}$.
 
 ### Averaged Centroids and Baseline

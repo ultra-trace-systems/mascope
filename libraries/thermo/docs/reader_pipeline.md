@@ -92,8 +92,8 @@ frequency. The steps (`average_profile`, the frequency branch):
 3. Linear-interpolate each scan onto the frequency grid and sum. Because the
    peaks are aligned, this is the true mean shape (times `scans_combined`) with
    no integral rescaling.
-4. Convert the frequency grid back to m/z on the mean of the scans'
-   calibrations (3.2).
+4. Convert the frequency grid back to m/z, each profile peak on the
+   intensity-weighted mean of the scans' calibrations (3.2).
 
 Falls back to a constant-ppm m/z grid only for non-FTMS data or when the
 conversion parameters are unavailable.
@@ -166,32 +166,97 @@ every scan carries its own.
 They need not agree. A lock mass that engages part-way through a file, or
 whose correction wanders from scan to scan, moves a scan's calibration by up
 to a few ppm while the ions' frequencies stay put, and every label of that scan
-moves with it. An averaged centroid reports the mean of its labels as written
-(section 4), and m/z is linear in B and C, so for an ion present alike in every
-scan that mean is its frequency on the *mean* calibration. The grid is
-converted on that, and the profile's peaks sit on the averaged centroids
-whatever the scans' calibrations did. Any single scan's calibration would put
-them as far off as that scan is from the mean.
+moves with it. An averaged centroid reports the intensity-weighted mean of its
+labels as written (section 4), and m/z is linear in B and C, so that mean is
+the ion's frequency on the *intensity-weighted mean of the scans'
+calibrations*, weighted by that ion's own intensity in each scan. For an ion
+present alike in every scan that is the plain mean of them. An ion that comes
+and goes leans towards the scans it was in, so ions with different time
+courses sit on different calibrations, and no one axis matches them all.
+
+Step 4 therefore writes each profile peak on its own calibration
+(`_frequency_grid_to_mz`):
+
+- **A peak** is the run of grid points between two valleys of the summed
+  profile, or up to a gap in the occupied cells. A valley lies between samples
+  of one run: the last sample before a gap belongs to the peak it ends, however
+  tall the first sample beyond the gap is.
+- **Its calibration** is the weighted mean of the scans' B and C at its tallest
+  sample, the weights being what each scan contributes to that sample. Those
+  are the weights of its centroid, so the peak lands on its centroid whatever
+  the scans' calibrations did and whenever the ion was there.
+- **The peak moves as a whole.** Every sample of it is written on that one
+  calibration, so its width stays what the frequency axis gives it.
+- **Peaks do not cross.** Neighbours on different calibrations move against
+  each other, and at low m/z, where a grid step is about one ppm, two that
+  overlap can end up past each other. Peaks that would cross are written on
+  one calibration, weighted over the tallest sample of each, until the grid is
+  monotonic, so the profile's samples stay in the order they were measured in.
 
 Measured as in 5.1 -- strong peaks (S:N >= 20), each located at the vertex of
 the parabola through its three top samples -- as the median over files of each
 file's median distance to its centroid, with the worst file:
 
-| files | densest scan's calibration | mean calibration |
-| --- | --- | --- |
-| 161 demo files (calibration spread 0.05 ppm) | 0.052 ppm (0.087) | 0.053 ppm (0.059) |
-| internal regression corpus, 163 acquisitions | 0.052 ppm | 0.040 ppm |
-| ... its 22 whose calibration spreads over 0.4 ppm | 0.116 ppm (1.06) | 0.047 ppm (0.33) |
-| two files whose lock mass engaged part-way | 1.24 and 3.14 ppm | 0.07 and 0.08 ppm |
+| files | densest scan's calibration | plain mean | per peak |
+| --- | --- | --- | --- |
+| 161 demo files (calibration spread 0.05 ppm) | 0.052 ppm (0.087) | 0.053 ppm (0.059) | 0.053 ppm (0.059) |
+| internal regression corpus, 163 acquisitions | 0.052 ppm | 0.040 ppm | 0.039 ppm |
+| ... its 22 whose calibration spreads over 0.4 ppm | 0.116 ppm (1.06) | 0.047 ppm (0.33) | 0.038 ppm (0.26) |
+| two files whose lock mass engaged part-way | 1.24 and 3.14 ppm | 0.07 and 0.08 ppm | 0.03 and 0.04 ppm |
 
-Over the corpus the densest scan's calibration also leaves a bias: the signed
+Any single scan's calibration puts the profile as far off its centroids as that
+scan is from the mean, and over the corpus it leaves a bias as well: the signed
 median over all its strong peaks is -0.048 ppm, -0.11 above m/z 500, against
--0.008 on the mean. The worst files left are long acquisitions (60 to 1,500
-scans) whose calibration drifts by 0.7 to 2.6 ppm. An averaged centroid weighs
-each scan by that ion's own intensity in it, so ions with different time
-courses sit on slightly different calibrations, and no single axis matches
-them all. Weighting the mean by each scan's total signal does no better (worst
-file 0.75 ppm).
+-0.008 on the plain mean and -0.003 per peak.
+
+The plain mean is right wherever the ions are there throughout, which is why
+the demo files do not tell the two apart. What it leaves is the long
+acquisitions (60 to 1,500 scans) whose calibration drifts by 0.7 to 2.6 ppm,
+and those whose scans alternate between mass ranges. One of 1,486 scans goes
+from 0.33 ppm to 0.07 per peak, and one that alternates between two ranges
+from 0.28 to 0.02; over the 22 drifting acquisitions the ninth decile falls
+from 0.25 ppm to 0.07. Weighting one mean for the whole grid by each scan's
+total signal does no better than the plain mean (worst file 0.75 ppm), because
+it is still one axis.
+
+The file left at 0.26 ppm is not a matter of calibration. Of its 1,881 strong
+peaks some 1,700 are packed between m/z 60 and 65, in the skirts of the
+reagent ions, where one peak's labels scatter by 1.6 ppm from scan to scan on
+any one calibration, so no axis puts their average on its centroid. Its strong
+peaks above m/z 100 go from 0.04 ppm to 0.02. Without that file the worst of
+the 22 is 0.07 ppm.
+
+Weak peaks gain the most, since a weak ion is often in a few scans only. Over
+every centroid of six files whose lock mass engaged part-way, the median
+distance falls from 0.86 ppm to 0.04, and the share with a profile peak within
+3 ppm of them rises from 94.6% to over 99%.
+
+**Why per peak and not per grid point.** Weighting every grid point by itself
+reaches the same figures (0.038 ppm over the 22) but bends the peaks. A scan
+stores nothing below its noise, so a weak scan holds less of a peak's flanks
+than a strong one; the flanks then lean towards the strong scans' calibration
+and the top towards all of them, and the peak is written wider or narrower
+than it is. Over the 22 drifting acquisitions 18% of the strong peaks changed
+width by more than 5% that way, against 1% per peak.
+
+**Why crossing peaks share a calibration.** Peaks cross where a grid step is
+small against the spread of the calibrations: 2,742 of the 243,000 profile
+peaks of the 22 drifting acquisitions, in three of them, and 898 of 135,000
+in the six files whose lock mass engaged part-way, at m/z 40-160. Putting the
+samples involved back on the plain mean keeps the order just as well, but the
+plain mean is no ion's calibration where a mass range is in some of the scans
+only. In the acquisition that alternates between two ranges, the positive ions
+below m/z 200 come from one scan in five; its strong positive peaks below
+m/z 100 read 0.61 ppm on the plain mean, 0.19 with that fallback and 0.04
+sharing.
+
+The guard acts on a crossing, not on a squeeze, so two neighbouring peaks can
+be left with almost no room between them. Of the 110,000 valleys between peaks
+in contiguous samples of the 22 drifting acquisitions, 1,967 keep less than a
+quarter of their step and 744 less than a tenth, the smallest 0.0002 of a
+step, which a plot draws as a vertical step. Nearly all lie between weak
+peaks: where both peaks are strong (S:N >= 20) it is a couple at most, in the
+skirts of the reagent ions.
 
 Fitting the axis to the centroid labels -- needed while the reader left the
 profile a few ppm off them -- does worse on every count. A fit matches the
@@ -201,10 +266,13 @@ where a line fitted to mid-range anchors extrapolates it moves the ends of the
 range by up to 10 ppm. On a file whose calibration steps, the nearest label to
 a peak is the densest scan's own, so a fit leaves that scan's offset in place.
 
-The Thermo library's own averaged profile agrees: it puts a peak where the mean
-calibration does, to 0.065 ppm over 31 files, against 0.077 for the densest
-scan's. Where the scans' calibrations spread over several ppm at low m/z its
-averaged peak is smeared across them, and its position is no reference there.
+The Thermo library's own averaged profile agrees: over 31 files it puts a
+strong peak within 0.063 ppm of where it is written per peak, and within 0.065
+of the plain mean, against 0.077 for the densest scan's. Those files hold a
+handful of scans each and their strong ions are there throughout, so they do
+not tell the per-peak calibration from the plain mean. Where the scans'
+calibrations spread over several ppm at low m/z the library's averaged peak is
+smeared across them, and its position is no reference there.
 
 ### 3.3 Baseline zero-fill
 
@@ -215,6 +283,14 @@ gap would draw spurious ramps that, summed over scans, inflate the baseline.
 just outside each cluster edge -- any m/z gap more than a few times the median
 sample spacing is treated as a cluster boundary -- so interpolation stays local
 and the baseline floor matches Thermo.
+
+The gap is judged on the m/z axis, so the boundaries follow where 3.2 writes
+the peaks. Over the 22 drifting acquisitions the per-peak axis gains 1,008
+boundaries the plain mean does not have and loses 1,375, of 118,730. Nearly
+all are real gaps of a missing bin or two whose width sits near the threshold
+on either axis. Seven fall between adjacent bins, across a valley the axis
+stretched, all at noise level. On the demo files it is 14 gained and 10 lost
+of 257,373.
 
 ---
 
@@ -229,8 +305,9 @@ labels:
 2. **Key them by frequency** (`_labels_on_one_calibration`): each scan's label
    m/z is converted to frequency with that scan's Conversion Parameter B/C and
    back with one reference scan's. The profile averaging goes to frequency the
-   same way (section 3.1), though it writes its grid back on the mean
-   calibration (3.2); a key only has to group, so any one scan serves. What
+   same way (section 3.1), though it writes each peak back on the weighted
+   mean of the scans' calibrations (3.2); a key only has to group, so any one
+   scan serves. What
    shifts a label between scans is the per-scan
    calibration, and when a lock mass engages part-way through a file that
    calibration steps by a few ppm at once. At low m/z such a step is wider
@@ -389,10 +466,10 @@ single factor within 1e-6 ppm, and every intensity to equality.
 
 The averaged figure is over 80,416 strong peaks (S:N >= 20) of the 161 demo
 files, each located at the vertex of the parabola through its three top samples,
-the way the Thermo library centroids one (5.3); its signed median is -0.005 ppm,
+the way the Thermo library centroids one (5.3); its signed median is -0.006 ppm,
 and it runs from 0.04 ppm below m/z 150 to 0.09 above m/z 500. It holds where the
-scans' calibrations differ, because the profile is written on their mean
-(3.2). Against a 4-8 ppm FWHM, a tenth of a ppm is not a visible offset.
+scans' calibrations differ, because each peak is written on the weighted mean
+of them (3.2). Against a 4-8 ppm FWHM, a tenth of a ppm is not a visible offset.
 `test_sum_signal_peaks_sit_on_the_centroids` (in `test_thermo_spec_extraction.py`)
 holds the averaged profile to it under each backend, locating peaks the same
 way.
@@ -469,7 +546,7 @@ cluster, which the open reader omits (and which `_zerofill_baseline` puts back).
   `sum_signal`, a filtered one under a hash of its time window and polarity).
   A raw Orbitrap file's cache name also carries what averaged the profile,
   `averaged_profile_signature()` (`sum_signal_suffix`): the reader, its version
-  and `AVERAGED_PROFILE_GENERATION`, as in `sum_signal_<hash>.otf2.0.0-g3`.
+  and `AVERAGED_PROFILE_GENERATION`, as in `sum_signal_<hash>.otf2.0.0-g4`.
 - Computes via `m_thermo.compute_sum_signal(...)` -> `average_profile(...,
   average=False)` (sum, i.e. apex = mean * scans_combined), optionally dividing
   by an averaging factor for the averaged view.
@@ -547,7 +624,7 @@ a tolerance.
 | Per-scan centroids + labels | `centroids_per_scan` |
 | Per-scan profile | `profile_per_scan` |
 | Frequency-domain averaging | `average_profile`, `_mz_to_freq` |
-| Frequency grid back to m/z, on the mean calibration | `_average_profile_in_frequency` |
+| Frequency grid back to m/z, each peak on its weighted calibration | `_frequency_grid_to_mz` |
 | Baseline zero-fill | `_zerofill_baseline` |
 | ppm binning | `_ppm_bin` |
 | Labels keyed by frequency | `_labels_on_one_calibration` |
