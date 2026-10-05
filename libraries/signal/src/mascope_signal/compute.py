@@ -13,6 +13,7 @@ import zarr
 
 import mascope_file.io as m_io
 import mascope_file.name as m_name
+import mascope_thermo.streams as m_streams
 import mascope_thermo.thermo as m_thermo
 import mascope_tofwerk.tofwerk as m_tofwerk
 from mascope_signal.runtime import runtime
@@ -49,6 +50,69 @@ def _refuse_stream_unless_raw_orbitrap(sample_type: str, stream: str | None) -> 
             f"A '{sample_type}' sample file has no scan streams to read apart; "
             f"stream '{stream}' was asked for."
         )
+
+
+def get_peak_streams(base_filename: str) -> list[dict]:
+    """The scan streams a sample file's peaks are detected per, or ``[]``.
+
+    Only a raw Orbitrap file can hold more than one: its scans are read under
+    the experiments of its acquisition method, and the peaks of a file whose
+    method runs more than one in a polarity can be detected per experiment
+    (:func:`mascope_thermo.streams.peak_streams`). Every other sample type is
+    one stream. The census is taken from the file as it reads now, not from
+    its ``.props``, because the keys that select a stream's scans are the
+    reader's own.
+
+    :param base_filename: Sample file filename
+    :type base_filename: str
+    :return: The MS1 streams to detect apart, or ``[]`` for a file that is
+        detected whole
+    :rtype: list[dict]
+    """
+    if m_name.get_sample_file_type(base_filename) != "orbi_raw":
+        return []
+    datafile_path = m_name.filename_to_datafile_path(base_filename)
+    return m_streams.peak_streams(m_streams.file_scan_streams(datafile_path))
+
+
+def peak_store_streams(peak_data: xr.Dataset) -> list[str]:
+    """The stream keys a peak store's peaks were detected per, or ``[]``.
+
+    A per-stream store labels each peak and each scan with its stream:
+    ``stream`` along ``mz`` and ``scan_stream`` along ``time``, both an index
+    into the keys the store's ``streams`` attribute lists. A store with
+    neither is pooled - one peak list per polarity, as every store was before
+    streams could be read apart - and reads the way it always has.
+
+    The keys and the two labels only mean something together, so a dataset
+    that carries some of them and not the rest is refused rather than read
+    as pooled: filled as one, a per-stream store's peak would be handed the
+    scans of every stream.
+
+    :param peak_data: A peak store, or a selection of its peaks or scans
+    :type peak_data: xr.Dataset
+    :raises ValueError: If the dataset carries only part of what a
+        per-stream store does
+    :return: The stream keys, in the order the labels index them
+    :rtype: list[str]
+    """
+    keys = list(peak_data.attrs.get("streams") or [])
+    carried = {
+        "the stream keys": bool(keys),
+        "the stream of each peak": "stream" in peak_data.variables,
+        "the stream of each scan": "scan_stream" in peak_data.variables,
+    }
+    if all(carried.values()):
+        return keys
+    if not any(carried.values()):
+        return []
+    raise ValueError(
+        "A peak store that holds a peak list per scan stream carries its "
+        "stream keys and the stream of each peak and each scan together; "
+        "this one is missing "
+        + " and ".join(name for name, there in carried.items() if not there)
+        + "."
+    )
 
 
 def get_scan_timestamps(
@@ -1115,6 +1179,13 @@ class StalePeakStoreError(ValueError):
     across the good scans instead of sitting in its own, where it can still be
     seen and skipped.
 
+    A store that holds a peak list per scan stream is read back stream by
+    stream, each under the key it was built with, and a key is a name the
+    reader computes. One the file no longer holds a stream under is the same
+    condition by another road: that stream's peaks have no scans left to be
+    read back over, and a rebuild, which keys the file's streams afresh,
+    repairs it.
+
     A ``ValueError`` so the API layer keeps mapping it to a client-class
     failure with its own message rather than a generic 500.
     """
@@ -1177,6 +1248,38 @@ def check_stored_scan_axis(
         raise _stale("their scan times do not line up")
 
 
+async def _read_stream_back(
+    base_filename: str, mzs: np.ndarray, key: str
+) -> xr.DataArray:
+    """One stream of a per-stream store, read back from the file by its key.
+
+    The store names its streams by the keys they had when it was built. What
+    the reader calls an experiment depends on what else its file holds, on
+    the backend that rendered its scan filter and on the version of the code
+    that keys, so a stored key can stop naming anything. The reader refuses
+    such a key, and here that is no one's mistake: the store is stale, and is
+    said to be, so that whoever meets it asks for the rebuild.
+
+    :param base_filename: Sample file filename
+    :type base_filename: str
+    :param mzs: The m/z values of the stream's peaks to read back
+    :type mzs: np.ndarray
+    :param key: The stream's key, as the store lists it
+    :type key: str
+    :raises StalePeakStoreError: If the file holds no stream under the key
+    :return: The peaks' timeseries over the scans of that stream
+    :rtype: xr.DataArray
+    """
+    try:
+        return await get_peak_timeseries(base_filename, mzs, stream=key)
+    except m_thermo.UnknownStreamError as error:
+        raise StalePeakStoreError(
+            f"The peak store holds the peaks of scan stream '{key}', and the "
+            "sample file now reads back no stream under that key. Re-run peak "
+            "detection for this sample file to rebuild the store."
+        ) from error
+
+
 async def check_peak_store(base_filename: str) -> None:
     """Refuse a peak store the sample file does not read back, as matching would.
 
@@ -1187,16 +1290,35 @@ async def check_peak_store(base_filename: str) -> None:
     a rebuild, it is the one place that can tell the two apart.
 
     The file is read back for one m/z, the way ``load_peak_timeseries`` reads
-    it, since the scan axis does not depend on the peak.
+    it, since the scan axis does not depend on the peak. A per-stream store
+    is read back once per stream, each against its own scans of the store's
+    axis.
 
     :param base_filename: Sample file filename
     :type base_filename: str
-    :raises StalePeakStoreError: If the store's scan axis is not the file's
+    :raises StalePeakStoreError: If the store's scan axis is not the file's,
+        or the file holds no stream under a key the store lists
     :return: None
     """
     stored = await asyncio.to_thread(m_io.load_peak_data, base_filename)
     if not stored.mz.size:
         # A blank measurement's store holds no peak to read the file back for
+        return
+    streams = peak_store_streams(stored)
+    if streams:
+        peak_stream = stored.stream.values
+        scan_stream = stored.scan_stream.values
+        for index, key in enumerate(streams):
+            peaks = np.flatnonzero(peak_stream == index)
+            if not peaks.size:
+                # A stream that kept no peak has no m/z to read it back for
+                continue
+            live = await _read_stream_back(
+                base_filename, stored.mz.values[peaks[:1]], key
+            )
+            check_stored_scan_axis(
+                live.time.values, stored.time.values[scan_stream == index]
+            )
         return
     live = await get_peak_timeseries(base_filename, stored.mz.values[:1])
     check_stored_scan_axis(live.time.values, stored.time.values)
@@ -1236,6 +1358,17 @@ async def load_peak_timeseries(
             f"All peak timeseries are cached in {base_filename}, loading from file."
         )
         return peak_timeseries
+
+    # --- A per-stream store fills each peak over its own stream's scans ---
+    streams = peak_store_streams(peak_timeseries)
+    if streams:
+        update_dataset = await _stream_timeseries_update(
+            base_filename, peak_timeseries, to_compute_mask, streams
+        )
+        await m_io.write_peaks(update_dataset, base_filename)
+        return await asyncio.to_thread(
+            _load_deduplicated_peak_data, base_filename, mzs_arr
+        )
 
     # --- Compute the missing peak timeseries ---
     mz_coords = peak_timeseries.mz.values
@@ -1306,6 +1439,105 @@ async def load_peak_timeseries(
 
     # --- Return a clean lazy reference ---
     return await asyncio.to_thread(_load_deduplicated_peak_data, base_filename, mzs_arr)
+
+
+async def _stream_timeseries_update(
+    base_filename: str,
+    peak_timeseries: xr.Dataset,
+    to_compute_mask: np.ndarray,
+    streams: list[str],
+) -> xr.Dataset:
+    """The missing timeseries of a per-stream store, as an update to it.
+
+    Each peak is read back over the scans of its own stream, normalised over
+    them and scaled to its summed intensity, as a pooled store's peak is over
+    every scan. On the other streams' scans it holds no value at all: the
+    instrument was measuring something else then, which is not the same as
+    measuring this ion and finding none. Sparsity is likewise the share of
+    its own stream's scans the peak is absent from.
+
+    The axis is checked per stream, on the coordinates alone, before any chunk
+    is read: a store one of whose streams the file no longer reads back scan
+    for scan is refused, as a pooled one is.
+
+    :param base_filename: Sample file filename
+    :type base_filename: str
+    :param peak_timeseries: The peaks asked for, loaded from the store
+    :type peak_timeseries: xr.Dataset
+    :param to_compute_mask: Which of them have no timeseries yet
+    :type to_compute_mask: np.ndarray
+    :param streams: The store's stream keys, as its labels index them
+    :type streams: list[str]
+    :raises StalePeakStoreError: If a stream's scans are not the file's, or
+        the file holds no stream under its key
+    :return: The rows to write, on the store's whole time axis
+    :rtype: xr.Dataset
+    """
+
+    def _load_update_metadata():
+        missing = peak_timeseries.isel(mz=np.flatnonzero(to_compute_mask))
+        return (
+            missing.mz.values,
+            missing.stream.values,
+            missing.sum_peak_heights.values,
+            missing.sum_peak_areas.values,
+            peak_timeseries.time.values,
+            peak_timeseries.scan_stream.values,
+        )
+
+    (
+        mzs_to_compute,
+        peak_stream,
+        sum_peak_heights,
+        sum_peak_areas,
+        time_coords,
+        scan_stream,
+    ) = await asyncio.to_thread(_load_update_metadata)
+
+    shape = (mzs_to_compute.size, time_coords.size)
+    new_peak_areas = np.full(shape, np.nan, dtype=np.float64)
+    new_peak_heights = np.full(shape, np.nan, dtype=np.float64)
+    sparsity_values = np.zeros(mzs_to_compute.size, dtype=np.float64)
+
+    for index in np.unique(peak_stream):
+        peaks = np.flatnonzero(peak_stream == index)
+        scans = np.flatnonzero(scan_stream == index)
+        new_peak_timeseries = await _read_stream_back(
+            base_filename, mzs_to_compute[peaks], streams[int(index)]
+        )
+        check_stored_scan_axis(new_peak_timeseries.time.values, time_coords[scans])
+
+        # new_peak_timeseries is dask-backed, so .values is where the chunks
+        # are read: off the event loop, like the pooled fill.
+        def _normalised(timeseries=new_peak_timeseries):
+            values = timeseries.values
+            totals = values.sum(axis=1, keepdims=True)
+            return values / np.where(totals == 0, 1, totals)
+
+        normalised = await asyncio.to_thread(_normalised)
+        heights = normalised * sum_peak_heights[peaks][:, np.newaxis]
+        new_peak_areas[np.ix_(peaks, scans)] = (
+            normalised * sum_peak_areas[peaks][:, np.newaxis]
+        )
+        new_peak_heights[np.ix_(peaks, scans)] = heights
+        # NaN counts as missing, as in the pooled fill: NaN > 0 is False
+        sparsity_values[peaks] = np.sum(~(heights > 0), axis=1) / scans.size
+
+    return xr.Dataset(
+        data_vars={
+            "peak_areas": (["mz", "time"], new_peak_areas),
+            "peak_heights": (["mz", "time"], new_peak_heights),
+            "is_timeseries_computed": (
+                ["mz"],
+                np.ones(mzs_to_compute.size, dtype=bool),
+            ),
+            "sparsity": (["mz"], sparsity_values),
+        },
+        coords={
+            "mz": mzs_to_compute,
+            "time": time_coords,
+        },
+    )
 
 
 async def get_peak_timeseries(

@@ -26,7 +26,12 @@ from mascope_thermo.backend import (
     _summarize_acquisition_parameters,
     open_backend,
 )
-from mascope_thermo.streams import pooled_ms1_streams, scan_streams, stream_report
+from mascope_thermo.streams import (
+    peak_streams,
+    pooled_ms1_streams,
+    scan_streams,
+    stream_report,
+)
 
 
 class _ScriptedReader:
@@ -435,6 +440,40 @@ def test_scans_that_record_no_event_are_a_stream_beside_those_that_do():
     assert [_identity(stream) for stream in census] == [
         (f"{NEG_LOW} R=120000", None, None),
         (f"{NEG_LOW} R=120000", 1, 1),
+    ]
+
+
+# -- which streams a file's peaks are detected per -------------------------------
+
+
+def test_a_file_with_one_survey_stream_in_each_polarity_is_detected_whole():
+    """Its polarity is its stream already."""
+    for scans in (
+        [(NEG_LOW, _trailer(), 1)] * 3,
+        [(NEG_LOW, _trailer(), 1), (POS_LOW, _trailer(), 2)] * 2,
+        [(NEG_LOW, _trailer())] * 3,
+    ):
+        assert peak_streams(scan_streams(_ScriptedReader(scans))) == []
+
+
+def test_a_multi_stream_file_is_detected_per_survey_stream_it_holds():
+    """Two experiments in one polarity, and the file is detected per stream.
+    The single experiment of the other polarity is then a stream like them,
+    and a fragmentation stream is not: it gets no peak list of its own."""
+    fragments = "FTMS - p NSI Full ms2 300.0000@hcd30.00 [50.0000-310.0000]"
+    census = scan_streams(
+        _ScriptedReader(
+            [(NEG_LOW, _trailer(), 1)] * 2
+            + [(POS_LOW, _trailer(), 2)] * 2
+            + [(fragments, _trailer(15000), 3)] * 2
+            + [(NEG_HIGH, _trailer(), 4)] * 2
+        )
+    )
+
+    assert [stream["key"] for stream in peak_streams(census)] == [
+        f"{NEG_LOW} R=120000",
+        f"{POS_LOW} R=120000",
+        f"{NEG_HIGH} R=120000",
     ]
 
 

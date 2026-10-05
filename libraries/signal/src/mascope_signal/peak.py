@@ -61,11 +61,54 @@ SIGNAL_TO_NOISE_THRESHOLD = 3
 
 PEAK_ID_LENGTH = 20
 
+#: The ``.props`` entry that says a file's peak store holds a peak list per
+#: scan stream: the keys of the streams its peaks were detected per. Absent,
+#: or empty, for a pooled store, which is every store written before streams
+#: could be read apart. It is what a rebuild of the store goes by, so that
+#: re-detecting a file's peaks never changes what its existing samples mean.
+PEAK_STREAMS_PROP = "peak_streams"
+
+#: The least relative distance between two rows of a per-stream store's m/z
+#: axis: about a part in a trillion, some thousands of steps of a float. Far
+#: below anything the pipeline can tell apart, and far enough that rescaling
+#: the axis cannot bring two rows back onto one double
+#: (:func:`_strictly_increasing`).
+MZ_ROW_SEPARATION = 2.0**-40
+
 
 class PeakDetectionError(Exception):
     """Custom exception for peak detection errors."""
 
     pass
+
+
+def _strictly_increasing(mz: np.ndarray) -> np.ndarray:
+    """A sorted m/z axis with every row set apart from the one before it.
+
+    The peak store finds a peak's row by its m/z, so two rows may not share
+    one. Within one averaged spectrum they do not, but two streams of a file
+    are two spectra on one axis, and two of their centroids can land on the
+    same double. The later one is moved up by :data:`MZ_ROW_SEPARATION` of
+    its m/z, which no tolerance in the pipeline can see.
+
+    One step of a float would separate them, but not for good. An m/z
+    calibration multiplies the stored axis by a factor near one, again at
+    every recalibration, and a product is rounded: two neighbouring doubles
+    can come out as one. Rows this far apart stay apart, since a rescale
+    keeps their relative distance and its rounding can cost a pair one step
+    of the thousands between them.
+
+    :param mz: m/z values, sorted ascending
+    :type mz: np.ndarray
+    :return: The same values, each at least the separation above the last
+    :rtype: np.ndarray
+    """
+    out = np.array(mz, dtype=np.float64)
+    for i in range(1, out.size):
+        least = out[i - 1] * (1.0 + MZ_ROW_SEPARATION)
+        if out[i] < least:
+            out[i] = least
+    return out
 
 
 class BasePeakDetector(ABC):
@@ -77,6 +120,10 @@ class BasePeakDetector(ABC):
         self._sum_signal = m_compute.get_sum_signal(self._filename)
 
         self._peak_timeseries: xarray.Dataset | None = None
+        # The scan streams the peaks are detected per, as the census gives
+        # them; empty for a file detected whole, which is every file but a
+        # raw Orbitrap one its detector takes stream by stream.
+        self._streams: list[dict] = []
 
     @property
     def peak_timeseries(self) -> xarray.Dataset:
@@ -99,7 +146,7 @@ class BasePeakDetector(ABC):
         # Interpolate the index (tof) for each peak m/z
         unique_tofs = np.interp(peak_mzs, mz_axis, np.arange(len(mz_axis)))
 
-        time_coord = m_compute.get_scan_timestamps(self._filename)
+        time_coord, scan_stream = self._scan_axis()
         peak_ids = [gen_id(PEAK_ID_LENGTH) for _ in range(peaks.mz.size)]
         data_coords = {
             "mz": peaks.mz,
@@ -121,12 +168,41 @@ class BasePeakDetector(ABC):
             "is_timeseries_computed": (("mz"), peak_timeseries_computed),
             "sparsity": (("mz"), sparsity),
         }
+        if scan_stream is not None:
+            data_vars["scan_stream"] = (("time"), scan_stream)
 
         peak_timeseries = xarray.Dataset(
             data_vars=data_vars,
             coords=data_coords,
         )
         self._peak_timeseries = xarray.merge([peak_timeseries, peaks])
+        if self._streams:
+            # After the merge, which keeps no attribute of what it merges
+            self._peak_timeseries.attrs["streams"] = [
+                stream["key"] for stream in self._streams
+            ]
+
+    def _scan_axis(self) -> tuple[np.ndarray, np.ndarray | None]:
+        """The scans the store's time axis holds, and each one's stream.
+
+        :return: The scan times [s], and for a file detected per stream the
+            index of each scan's stream among ``self._streams``, else None
+        :rtype: tuple[np.ndarray, np.ndarray | None]
+        """
+        return m_compute.get_scan_timestamps(self._filename), None
+
+    def record_streams(self) -> None:
+        """Record in the file's ``.props`` whether its store is per stream.
+
+        Called once the peaks are detected, before the store is written: the
+        record is the decision, and the store follows it. A store whose write
+        is cut short is then rebuilt the way it was being built. A file
+        detected whole that never was detected per stream is left alone, so
+        its ``.props`` stays what it was.
+        """
+        keys = [stream["key"] for stream in self._streams]
+        if keys or self._sample_file_props.get(PEAK_STREAMS_PROP):
+            m_io.update_props(self._filename, {PEAK_STREAMS_PROP: keys})
 
     async def write_peaks_to_zarr(self, overwrite=True):
         if self.peak_timeseries is None:
@@ -156,6 +232,40 @@ class BasePeakDetector(ABC):
 
 
 class OrbiPeakDetector(BasePeakDetector):
+    """Peak detection for a raw Orbitrap file.
+
+    A file is detected whole, every MS1 scan of a polarity averaged into one
+    peak list, unless it is detected per scan stream: then each experiment of
+    its acquisition method that recorded MS1 scans gets a peak list of its
+    own, averaged over its own scans only (``mascope_thermo.streams``).
+    Pooling two experiments divides each ion by the scans of both, so an ion
+    only one of them measures is diluted.
+
+    :param per_stream: Whether a file that holds more than one MS1 stream in
+        a polarity is detected per stream. None keeps what the file's
+        ``.props`` says its store is, which is what a rebuild of the store
+        wants: a file's samples are defined against its store as it was
+        built, and only an explicit re-processing may change that.
+    """
+
+    def __init__(
+        self,
+        filename: str,
+        instrument_functions: tuple,
+        per_stream: bool | None = None,
+    ):
+        super().__init__(filename, instrument_functions)
+        self._per_stream = per_stream
+
+    def _peak_streams(self) -> list[dict]:
+        """The streams this file's peaks are to be detected per, or ``[]``."""
+        per_stream = self._per_stream
+        if per_stream is None:
+            per_stream = bool(self._sample_file_props.get(PEAK_STREAMS_PROP))
+        if not per_stream:
+            return []
+        return m_compute.get_peak_streams(self._filename)
+
     async def detect_peaks(
         self, progress_callback: Callable[[int], None] | None = None, **kwargs
     ):
@@ -171,6 +281,21 @@ class OrbiPeakDetector(BasePeakDetector):
 
         progress_callback(10)
         runtime.logger.debug("Reading centroids from the Thermo file...")
+        self._streams = self._peak_streams()
+        if self._streams:
+            peaks = await self._extract_peaks_per_stream()
+        else:
+            peaks = await self._extract_peaks_per_polarity()
+
+        progress_callback(80)
+        runtime.logger.debug("Computing peak timeseries...")
+        self._allocate_peak_timeseries(peaks)
+        self._flag_weak_peaks()
+        self._flag_satellite_peaks()
+        progress_callback(100)
+
+    async def _extract_peaks_per_polarity(self) -> xarray.Dataset:
+        """The peaks of a file detected whole: one list per polarity."""
         # Get CALIBRATED centroids for each polarity present in the file.
         # Only a genuinely-absent polarity (NoScansFoundError) is skipped; any
         # other failure is a real error and must propagate with its true cause
@@ -188,23 +313,64 @@ class OrbiPeakDetector(BasePeakDetector):
             raise PeakDetectionError(
                 f"No usable scans found for either polarity in '{self._filename}'."
             )
+        return xarray.concat(datasets, dim="mz").sortby("mz")
+
+    async def _extract_peaks_per_stream(self) -> xarray.Dataset:
+        """The peaks of a file detected per stream: one list per MS1 stream.
+
+        Each peak carries its stream as an index into ``self._streams``. A
+        stream the reader finds no scans for is not skipped the way an absent
+        polarity is: the census just named it, so that is a fault.
+        """
+        runtime.logger.info(
+            f"Detecting the peaks of '{self._filename}' per scan stream: "
+            f"{'; '.join(stream['key'] for stream in self._streams)}"
+        )
+        datasets = []
+        for index, stream in enumerate(self._streams):
+            peaks = await self._extract_peaks_for_polarity(
+                stream["signature"]["polarity"], stream=stream["key"]
+            )
+            datasets.append(
+                peaks.assign(
+                    stream=(("mz"), np.full(peaks.mz.shape, index, dtype=np.int16))
+                )
+            )
         peaks = xarray.concat(datasets, dim="mz").sortby("mz")
+        return peaks.assign_coords(mz=("mz", _strictly_increasing(peaks.mz.values)))
 
-        progress_callback(80)
-        runtime.logger.debug("Computing peak timeseries...")
-        self._allocate_peak_timeseries(peaks)
-        self._flag_weak_peaks()
-        self._flag_satellite_peaks()
-        progress_callback(100)
+    def _scan_axis(self) -> tuple[np.ndarray, np.ndarray | None]:
+        """Detected per stream, a file's axis is its streams' scans, each as
+        its own stream selects them, in time order."""
+        if not self._streams:
+            return super()._scan_axis()
+        times, labels = [], []
+        for index, stream in enumerate(self._streams):
+            stream_times = m_compute.get_scan_timestamps(
+                self._filename, stream=stream["key"]
+            )
+            times.append(stream_times)
+            labels.append(np.full(stream_times.shape, index, dtype=np.int16))
+        times, labels = np.concatenate(times), np.concatenate(labels)
+        order = np.argsort(times, kind="stable")
+        return times[order], labels[order]
 
-    async def _extract_peaks_for_polarity(self, polarity: str) -> xarray.Dataset:
-        """A workaround to extract peaks for a given polarity from Thermo Orbitrap files."""
+    async def _extract_peaks_for_polarity(
+        self, polarity: str, stream: str | None = None
+    ) -> xarray.Dataset:
+        """A workaround to extract peaks for a given polarity from Thermo Orbitrap files.
+
+        :param stream: Key of the one scan stream to average, of that
+            polarity; None averages every MS1 scan of the polarity.
+        """
         (
             peak_mzs,
             peak_heights,
             resolutions,
             signal_to_noise,
-        ) = await m_compute.get_orbi_centroids(self._filename, polarity=polarity)
+        ) = await m_compute.get_orbi_centroids(
+            self._filename, polarity=polarity, stream=stream
+        )
 
         # The m/z peak area is the integral of the analytic peak model, so it is
         # computed on a self-built grid inside calculate_peak_area and does not
@@ -248,9 +414,25 @@ class OrbiPeakDetector(BasePeakDetector):
                 "intensity": self.peak_timeseries.sum_peak_heights.values,
             }
         )
-        peaks_df = flag_satellite_peaks(peaks_df)
+        if not self._streams:
+            peaks_df = flag_satellite_peaks(peaks_df)
+            is_satellite = peaks_df["is_satellite_peak"].values
+        else:
+            # A satellite is a sidelobe of a strong peak of its own spectrum,
+            # and a per-stream store's axis holds one spectrum per stream:
+            # judged together, a real peak of one stream would be read as the
+            # sidelobe of a strong peak of another.
+            is_satellite = np.zeros(len(peaks_df), dtype=bool)
+            peak_stream = self.peak_timeseries.stream.values
+            for index in range(len(self._streams)):
+                in_stream = peak_stream == index
+                if in_stream.any():
+                    flagged = flag_satellite_peaks(
+                        peaks_df[in_stream].reset_index(drop=True)
+                    )
+                    is_satellite[in_stream] = flagged["is_satellite_peak"].values
         self._peak_timeseries = self.peak_timeseries.assign(
-            {"is_satellite": (("mz"), peaks_df["is_satellite_peak"].values)}
+            {"is_satellite": (("mz"), is_satellite)}
         )
 
 
@@ -571,6 +753,7 @@ def compute_peaks(
     filename: str,
     instrument_functions: tuple,
     progress_callback: Callable[[int], None] | None = None,
+    per_stream: bool | None = None,
 ):
     """Compute peaks for a sample file.
 
@@ -580,9 +763,17 @@ def compute_peaks(
     :type instrument_functions: tuple
     :param progress_callback: Optional callback invoked with progress percentage (0-100).
     :type progress_callback: Callable[[int], None] | None
+    :param per_stream: For a raw Orbitrap file, whether one that holds more
+        than one MS1 scan stream in a polarity gets a peak list per stream.
+        Given by whoever decides how the file is processed: its first
+        conversion, or an explicit re-processing. None, the default, rebuilds
+        the store the way the file's ``.props`` says it was built, so that
+        re-detecting a file's peaks never changes what its samples mean.
+    :type per_stream: bool | None
     """
-    peak_detector = get_peak_detector(filename, instrument_functions)
+    peak_detector = get_peak_detector(filename, instrument_functions, per_stream)
     asyncio.run(peak_detector.detect_peaks(progress_callback=progress_callback))
+    peak_detector.record_streams()
     asyncio.run(peak_detector.write_peaks_to_zarr())
 
 
@@ -625,6 +816,7 @@ def write_empty_peak_timeseries(filename: str) -> None:
 def get_peak_detector(
     filename: str,
     instrument_functions: tuple,
+    per_stream: bool | None = None,
 ):
     """Factory function to get the appropriate peak detector based on the sample file type.
 
@@ -632,6 +824,9 @@ def get_peak_detector(
     :type filename: str
     :param instrument_functions: Tuple containing peak shape and resolution function.
     :type instrument_functions: tuple
+    :param per_stream: See :func:`compute_peaks`. Read by the raw Orbitrap
+        detector alone: no other sample type holds more than one scan stream.
+    :type per_stream: bool | None
     :raises PeakDetectionError: If the sample file type is unsupported.
     :return: An instance of the appropriate peak detector.
     :rtype: BasePeakDetector
@@ -639,7 +834,7 @@ def get_peak_detector(
     sample_file_type = m_name.get_sample_file_type(filename)
     match sample_file_type:
         case "orbi_raw":
-            return OrbiPeakDetector(filename, instrument_functions)
+            return OrbiPeakDetector(filename, instrument_functions, per_stream)
         case "tof_h5":
             return TofPeakDetector(filename, instrument_functions)
         case "orbi_zarr":
