@@ -455,9 +455,32 @@ was meant for, it is not the measurement the second one is: a tenth of the
 transients per scan at a third of the ion population, taken while the
 source is still settling (the injection time of its first scans can sit at
 a fifth of the rest). In a per-scan average those two seconds weigh as
-much as the eighteen that follow. The corpus holds the same shape: four
-streams whose scan event number varies, one of them with its microscan
-count (2.2).
+much as the eighteen that follow.
+
+The corpus does not hold this shape. A census of scan events over its 182
+readable Orbitrap files (2026-10-05) found:
+
+- **180 files with one event and one filter.**
+- **No event that spans two filters**, in any file. Splitting by event can
+  only refine today's key, never merge across it.
+- **Two files where one filter carries several events**, both
+  polarity-switching methods of one site. In both the events are *repeats*:
+  the same range, microscans and AGC target defined again later in the
+  method, each one a contiguous block. These are the four streams of 2.2
+  whose event number varies. One file alternates two definitions twice; the
+  other runs eight experiments in an hour, three of them the same positive
+  scan and three the same negative one.
+- **14 files that record no event at all** (event and segment 0), from
+  eleven instruments. Five of those instruments record an event in their
+  other corpus files, so it follows from how an acquisition was started
+  rather than from the instrument. One of the fourteen changes its
+  microscan count part way through - the one stream of 2.2 whose microscans
+  vary - and nothing in the file marks where.
+- **Within one recorded event the AGC target and the microscan count never
+  vary.** The maximum injection time does, in 15 of 192 groups.
+
+So the production method above is the first seen whose events differ in
+their settings under one filter.
 
 The rule proposed for it, open as decision 14: **where the scans of one
 filter carry more than one scan event number, each event is its own
@@ -469,10 +492,16 @@ learned from its next routed file. The event is preferred over comparing
 the settings themselves because it is the method's own statement that the
 operator defined two experiments, while a setting would have to be judged
 for what counts as a difference: the maximum injection time varies within
-a stream in fifteen corpus streams without meaning anything. Before the
-rule is fixed, the four corpus streams are read scan by scan, to see that
-an event boundary is always a block the method set and never something
-that flickers from one scan to the next.
+a stream in fifteen corpus streams without meaning anything.
+
+The census bears the rule out as far as it goes: an event boundary is
+always a block the method set, never something that flickers within a
+filter. It also shows what the rule costs. A method that repeats one
+definition, as both corpus files do, yields one item per repeat - eight
+items from the hour-long file, where the filter alone gives four - so
+repeats of one definition then have to be gathered into one batch by what
+they measured. Whether that is wanted is part of decision 14. A file that
+records no event keeps the filter as its key.
 
 ### 4.2 MS2 and above
 
@@ -1841,8 +1870,10 @@ through a short-lived stacked branch, merged as one unit.
     configurations are named per chemistry.
 14. **Scan events that share a filter.** Raised by a production method read
     on 2026-10-05 (4.1), whose two events differ in microscans and AGC
-    target and in nothing the filter shows. Open, and wanted before the
-    first cut's reader work is finished:
+    target and in nothing the filter shows. The corpus census there adds
+    what the first option costs: a method that repeats one definition gets
+    an item per repeat. Open, and wanted before the first cut's reader work
+    is finished:
     - each event is its own stream wherever one filter carries more than
       one, and the event number joins the key only then (recommended);
     - promote the settings that differ into the signature;
