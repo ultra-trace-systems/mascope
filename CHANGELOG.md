@@ -52,6 +52,64 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   follow a move; and the records held back by a guard, with the sentence a
   parked file of each would carry.
 
+- **Every acquisition sample a file is split into now records how its chemistry
+  was decided**: which rung of the routing ladder bound it. Today that is a
+  filename token or a person's choice, which are the rungs that route; a
+  declaration and the acquisition method are recorded by the rungs that read
+  them, which are still being built, so their absence is not missing data.
+  Until now this could only be reconstructed afterwards, by re-running the
+  token rule over stored file names, which cannot say which acquisition method
+  a given file would have been routed by because part of that identity is read
+  from the file itself.
+
+  Samples processed before this record nothing, and are deliberately left that
+  way: the rung is a decision, not a fact a raw file holds, so it is never
+  filled in after the event. Re-processing a file under the modes its own
+  samples held carries their rung forward unchanged for the same reason -
+  copying a decision forward is nobody's decision. Editing a sample's
+  ionization mode by hand clears the rung, since what is recorded is how
+  automatic processing routed a file and an edited sample is no longer that.
+  Nothing about how a file is routed changes.
+
+  One side effect worth knowing if you compare numbers across the release:
+  re-processing a file under the modes its own samples held no longer counts
+  as an observation of what its acquisition method runs. It did before, and it
+  was counted as though a person had vouched for it. The observation was
+  already recorded when that mode was first matched or chosen, so nothing is
+  lost, but the observation counts on an acquisition method will grow more
+  slowly than they did.
+
+- **A batch's *Batch data* spreadsheet can be traced back to what produced
+  it.** Every row now carries the ids of the records behind it - the sample
+  item and sample file on *Samples*, the target compound and ion on the match
+  sheets - and *Samples* gains each sample's acquisition context: its UTC time,
+  instrument and instrument type, method file, polarity, m/z range, the
+  ionization mode it was processed under, its instrument function, and its m/z
+  calibration - the status, whether it is verified, and the post-fit error in
+  ppm. The *Batch* sheet adds the dataset, batch and target collection ids and
+  names every instrument and method file in the batch, and a new last sheet,
+  *Provenance*, names the deployment and the Mascope, match-score and
+  peak-assignment engine versions that wrote the file, and the records it was
+  built from. Everything is appended: the sheets, columns and rows of earlier
+  exports keep their names and their places. Both *Peak data* CSVs, of a batch
+  and of a sample, gain `sample_batch_id` and `dataset_id` columns, last.
+
+- **Each deployment has an id, named in the provenance of what it exports.**
+  The backend generates it on its first start and keeps it with the data, in
+  `deployment.json` at the root of the env's filestore, so updates and a
+  restore from backup keep it, while `mascope env sync` and the demo bundle
+  leave it behind, so a copy of the data keeps or generates an id of its own.
+  `[backend] deployment_id` names a deployment explicitly (`docs/maintaining.md`,
+  *Deployment identity*). Signed-in users and API tokens read the id, with the
+  versions the server runs, from `GET /api/provenance`.
+
+- **The SDK's loaders record which deployment and build served their data.**
+  The frames `load_peaks`, `load_peak_timeseries`, `load_peaks_by_stage`,
+  `load_batch_ledger` and `load_assignments` return carry the server's
+  provenance on `df.attrs["provenance"]`, and `MascopeClient.provenance()`
+  reads it directly. A server that predates it returns its frames without the
+  attribute, and the load succeeds as before.
+
 ### Changed
 
 - **Orbitrap spectra now show the signal the instrument measured.** The
@@ -121,66 +179,6 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   upgrade that changes the code around that line can open a new issue for the
   same warning, and servers on different versions can report it as separate
   issues.
-
-### Added
-
-- **Every acquisition sample a file is split into now records how its chemistry
-  was decided**: which rung of the routing ladder bound it. Today that is a
-  filename token or a person's choice, which are the rungs that route; a
-  declaration and the acquisition method are recorded by the rungs that read
-  them, which are still being built, so their absence is not missing data.
-  Until now this could only be reconstructed afterwards, by re-running the
-  token rule over stored file names, which cannot say which acquisition method
-  a given file would have been routed by because part of that identity is read
-  from the file itself.
-
-  Samples processed before this record nothing, and are deliberately left that
-  way: the rung is a decision, not a fact a raw file holds, so it is never
-  filled in after the event. Re-processing a file under the modes its own
-  samples held carries their rung forward unchanged for the same reason -
-  copying a decision forward is nobody's decision. Editing a sample's
-  ionization mode by hand clears the rung, since what is recorded is how
-  automatic processing routed a file and an edited sample is no longer that.
-  Nothing about how a file is routed changes.
-
-  One side effect worth knowing if you compare numbers across the release:
-  re-processing a file under the modes its own samples held no longer counts
-  as an observation of what its acquisition method runs. It did before, and it
-  was counted as though a person had vouched for it. The observation was
-  already recorded when that mode was first matched or chosen, so nothing is
-  lost, but the observation counts on an acquisition method will grow more
-  slowly than they did.
-
-- **A batch's *Batch data* spreadsheet can be traced back to what produced
-  it.** Every row now carries the ids of the records behind it - the sample
-  item and sample file on *Samples*, the target compound and ion on the match
-  sheets - and *Samples* gains each sample's acquisition context: its UTC time,
-  instrument and instrument type, method file, polarity, m/z range, the
-  ionization mode it was processed under, its instrument function, and its m/z
-  calibration - the status, whether it is verified, and the post-fit error in
-  ppm. The *Batch* sheet adds the dataset, batch and target collection ids and
-  names every instrument and method file in the batch, and a new last sheet,
-  *Provenance*, names the deployment and the Mascope, match-score and
-  peak-assignment engine versions that wrote the file, and the records it was
-  built from. Everything is appended: the sheets, columns and rows of earlier
-  exports keep their names and their places. Both *Peak data* CSVs, of a batch
-  and of a sample, gain `sample_batch_id` and `dataset_id` columns, last.
-
-- **Each deployment has an id, named in the provenance of what it exports.**
-  The backend generates it on its first start and keeps it with the data, in
-  `deployment.json` at the root of the env's filestore, so updates and a
-  restore from backup keep it, while `mascope env sync` and the demo bundle
-  leave it behind, so a copy of the data keeps or generates an id of its own.
-  `[backend] deployment_id` names a deployment explicitly (`docs/maintaining.md`,
-  *Deployment identity*). Signed-in users and API tokens read the id, with the
-  versions the server runs, from `GET /api/provenance`.
-
-- **The SDK's loaders record which deployment and build served their data.**
-  The frames `load_peaks`, `load_peak_timeseries`, `load_peaks_by_stage`,
-  `load_batch_ledger` and `load_assignments` return carry the server's
-  provenance on `df.attrs["provenance"]`, and `MascopeClient.provenance()`
-  reads it directly. A server that predates it returns its frames without the
-  attribute, and the load succeeds as before.
 
 ### Fixed
 
