@@ -98,6 +98,11 @@ def _num_of_scans(path):
     return m_thermo.RawFileMetadataLegacy(path).num_of_scans
 
 
+def _mass_range(path):
+    with open_backend(path) as backend:
+        return backend.mass_range()
+
+
 @pytest.mark.skipif(not RAW_FILES, reason="no .raw files in test_files/")
 @pytest.mark.parametrize("path", RAW_FILES, ids=lambda p: p.name)
 def test_xic_matches_thermo(monkeypatch, path):
@@ -147,6 +152,18 @@ def test_clean_mappings_match_thermo(monkeypatch, path):
     th_n = _run_under(monkeypatch, "thermo", _num_of_scans, path)
     ot_n = _run_under(monkeypatch, "opentfraw", _num_of_scans, path)
     assert th_n == ot_n
+
+    # The file's mass range is what a per-scan read is cut to when no m/z range
+    # is asked for, so backends that disagreed on it would keep different
+    # samples. Each has its own source for it: the Thermo library reads the run
+    # header, OpenTFRaw takes the extremes of the scans' own ranges. Measured
+    # equal to the last bit on 185 files from four instrument models, all of
+    # them MS1-only.
+    th_range = _run_under(monkeypatch, "thermo", _mass_range, path)
+    ot_range = _run_under(monkeypatch, "opentfraw", _mass_range, path)
+    assert ot_range == th_range, (
+        f"file mass range: OpenTFRaw {ot_range} vs Thermo {th_range}"
+    )
 
     th_t = _run_under(monkeypatch, "thermo", m_thermo.get_scan_timestamps, path)
     ot_t = _run_under(monkeypatch, "opentfraw", m_thermo.get_scan_timestamps, path)
