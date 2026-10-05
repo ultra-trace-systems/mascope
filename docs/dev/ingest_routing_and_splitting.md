@@ -14,8 +14,9 @@ The feature: when a file arrives, Mascope works out on its own
 - **which chemistry applies**, per part of the file, from what the file
   carries - its acquisition method and scan parameters - without a filename
   token or any configuration by the person who uploaded it;
-- **how to split it by scan type**: MS order, polarity, scan range, scan mode,
-  and the rest of what the instrument was told to measure;
+- **how to split it by experiment**: each experiment the acquisition method
+  defines becomes a part of its own, whatever sets it apart - MS order,
+  polarity, scan range, scan mode, microscans or anything else;
 - optionally, **how to split it by time or by a signal trace**.
 
 The unit a person sees is the **chemistry profile**: a shipped, system-owned
@@ -38,9 +39,10 @@ into one item per range is the first cut of the stream work (4.5) - the
 next thing built (decided 2026-10-05).
 
 The design in one paragraph. A physical acquisition (`sample_file`) is
-partitioned into **streams**: scans that share a scan signature and a
-chemistry epoch. Each stream gets its own peak rows, time axis, instrument
-function, m/z calibration and chemistry **binding**. A stream is cut into
+partitioned into **streams**: the scans of one experiment of its method -
+one scan event - within one chemistry epoch. Each stream gets its own peak
+rows, time axis, instrument function, m/z calibration and chemistry
+**binding**. A stream is cut into
 **windows** by a per-instrument, versioned **recipe**. Every (stream, window)
 **part** becomes one sample item.
 
@@ -79,7 +81,7 @@ request for this work updates the table below and ticks its item on #2098.
 | 4 | Per-stream state: calibration, instrument function, one item per stream, MS2 | open; follows 3 on the same track; no rebuild script (4.5, 9.1) |
 | 5 | Chemistry detection: audit first, then provisional binding | deferred behind phases 3, 4 and 8 (decision 3); its reagent libraries are on `develop` |
 | 6 | Recipes: time and trace windows, preview and apply | open |
-| 7 | Declarations from the instrument side, MS2-only parts | open |
+| 7 | Declarations from the instrument side, MS2-only parts, manual acquisitions | open |
 
 Related designs, and how this one relates to them (section 13):
 
@@ -179,7 +181,8 @@ grouped every file's scans by Thermo filter string:
   - One alternates two streams, one scan range per polarity, in 4 blocks.
   - The other has **four** streams, two scan ranges per polarity, in 8
     blocks of 13-41 scans. Today each polarity's two ranges are pooled into
-    one spectrum.
+    one spectrum. Read by scan event (4.1), the eight blocks are eight
+    experiments, and become one item each.
 - No file in this corpus has MS2 scans; the corpus was picked for small
   specimens. 6 streams are SIM.
 - Trailer values that vary *within* a stream: maximum injection time (15
@@ -338,11 +341,16 @@ threshold on one ion's trace finds it.
 - **Scan signature.** What the instrument was told to measure in a scan:
   analyzer, polarity, ionization source, scan mode, MS order, scan ranges,
   source fragmentation, FAIMS CV and resolution setting, with the precursor
-  and activation for MSn (section 4.1).
+  and activation for MSn (section 4.1). It describes a stream and decides
+  which batch its item joins; what a stream *is* comes from the experiment.
 - **Chemistry epoch.** An interval with one chemistry. A stream has exactly
   one epoch unless a recipe cuts epochs (section 6.5).
-- **Stream.** The scans of one acquisition that share a signature and an
-  epoch. A stream owns:
+- **Experiment.** One scan definition of the acquisition method, under the
+  name the method editor gives it. Every scan records the experiment that
+  produced it, as its scan event (section 4.1).
+- **Stream.** The scans of one experiment of one acquisition, within one
+  epoch. Where a file records no experiment - a manual acquisition - it is
+  the scans that share a signature. A stream owns:
   - its peak rows and time axis;
   - its instrument function and m/z calibration;
   - its chemistry binding.
@@ -351,7 +359,6 @@ threshold on one ion's trace finds it.
 - **Binding.** The link from a stream to the ionization mode that interprets
   it, with its source, state and evidence (section 5).
 - **Recipe.** Versioned, per-instrument rules that decide:
-  - which signature fields split streams;
   - how epochs and windows are cut;
   - the chemistry ladder;
   - how parts are batched (section 7).
@@ -421,7 +428,8 @@ at them.
 | Scan ranges | filter (`[lo-hi]`, several for multiplexed SIM) | yes | |
 | Precursor and activation | filter (`123.4567@hcd30.00`) | for targeted MSn only | data-dependent scans fold into one family per parent; this matches today's MS2 grouping key |
 | FT resolution | trailer (`FT Resolution:`) | yes | not in the filter; constant within a filter across the corpus |
-| Microscans, AGC target, injection time, lock-mass state, scan event and segment numbers | trailer | no | recorded on the stream as attributes, with their variation; promoted into the key if one proves to move the peak shape, which then gives it its own fit (4.3); two scan events under one filter are the open case, below |
+| Scan event | scan index; the trailer's `Scan Event:` agrees with it | as identity | the experiment of the method. It decides what a stream is, and joins the key text only where one filter carries more than one (below) |
+| Microscans, AGC target, injection time, lock-mass state, segment number | trailer | no | recorded on the stream as attributes, with their variation. A method that changes one defines another experiment, which is its own stream with its own fit (4.3); the microscan count and the AGC target also say which batch a stream's item joins (4.5) |
 
 The signature needs **one** filter-string parser, written and tested in
 `mascope_thermo`. It serves both backends:
@@ -442,20 +450,20 @@ single-polarity file whose scans all share one signature, the key reduces to
 the polarity, so stores written today read as streams without a rebuild
 (section 9).
 
-**Two scan events can share one filter, and the key does not see them.** A
-production nitrate method, read scan by scan on 2026-10-05, defines two
-scan events with the same analyzer, range and resolution: seven scans of
-one microscan at an AGC target of 3e5 in the file's first two seconds, then
-seven scans of ten microscans at 1e6 over the eighteen that remain. Their
-filter strings are identical. So the census reports one stream in one
-block - with the microscan count, the AGC target, the maximum injection
-time and the scan event among the trailer values that vary - and the
-pipeline averages all fourteen scans as equals. Whatever the first event
-was meant for, it is not the measurement the second one is: a tenth of the
-transients per scan at a third of the ion population, taken while the
-source is still settling (the injection time of its first scans can sit at
-a fifth of the rest). In a per-scan average those two seconds weigh as
-much as the eighteen that follow.
+**Two experiments can share one filter, and the filter cannot tell them
+apart.** A production nitrate method, read scan by scan on 2026-10-05,
+defines two scan events with the same analyzer, range and resolution: seven
+scans of one microscan at an AGC target of 3e5 in the file's first two
+seconds, then seven scans of ten microscans at 1e6 over the eighteen that
+remain. Their filter strings are identical. So the phase 0 census reports one
+stream in one block - with the microscan count, the AGC target, the maximum
+injection time and the scan event among the trailer values that vary - and
+the pipeline averages all fourteen scans as equals. The first event is
+intended, and it is not the measurement the second one is: a tenth of the
+transients per scan at a third of the ion population, taken while the source
+is still settling (the injection time of its first scans can sit at a fifth
+of the rest). In a per-scan average those two seconds weigh as much as the
+eighteen that follow.
 
 The corpus does not hold this shape. A census of scan events over its 182
 readable Orbitrap files (2026-10-05) found:
@@ -482,26 +490,42 @@ readable Orbitrap files (2026-10-05) found:
 So the production method above is the first seen whose events differ in
 their settings under one filter.
 
-The rule proposed for it, open as decision 14: **where the scans of one
-filter carry more than one scan event number, each event is its own
-stream**, and the event number joins the key only then. A file with one
-event per filter - every other file the census has described - keeps the
-key it has, so no store goes stale and no method binding re-keys; a method
-that does gain a stream this way gets a new signature class, and a binding
-learned from its next routed file. The event is preferred over comparing
-the settings themselves because it is the method's own statement that the
-operator defined two experiments, while a setting would have to be judged
-for what counts as a difference: the maximum injection time varies within
-a stream in fifteen corpus streams without meaning anything.
+**One experiment, one stream** (decided 2026-10-05, decision 14). An
+acquisition method is built of experiments, each defining its scan
+parameters, and every scan records the one that produced it as its scan
+event. A stream is the scans of one event. Which parameters set two
+experiments apart is never asked: the operator defined two, so Mascope
+shows two. Nothing is configured, at a site or in a recipe.
 
-The census bears the rule out as far as it goes: an event boundary is
+The event number joins the key text only where one filter carries more than
+one event. A file with one event per filter - 180 of the 182 above - keeps
+the key it has, so no store goes stale and no method binding re-keys; a
+method that gains a stream this way gets a new signature class, and a
+binding learned from its next routed file.
+
+Picking grouping parameters instead - the range, the microscan count and so
+on - was the alternative, and was turned down. Each parameter would need a
+rule for what counts as a difference, and the census shows that is not
+idle: the maximum injection time varies within one event in 15 of 192
+groups without meaning anything. The event is the method's own statement of
+where one measurement ends and the next begins, and an event boundary is
 always a block the method set, never something that flickers within a
-filter. It also shows what the rule costs. A method that repeats one
-definition, as both corpus files do, yields one item per repeat - eight
-items from the hour-long file, where the filter alone gives four - so
-repeats of one definition then have to be gathered into one batch by what
-they measured. Whether that is wanted is part of decision 14. A file that
-records no event keeps the filter as its key.
+filter.
+
+**A repeated experiment is one item per repeat** (decided with it). A method
+that defines the same scan again later, as both corpus files do, yields an
+item for each: eight from the hour-long file, where the filter alone gives
+four. Each is one contiguous block, and nothing is averaged across the gap
+in which the instrument measured something else. The repeats are gathered
+again one level up: items join a batch by what their experiment measured
+(4.5), so three repeats of one definition share a batch and two definitions
+do not.
+
+**A file that records no event keeps the filter as its key.** Those are
+manual acquisitions, started with no method file loaded, and a setting
+changed by hand part way through leaves no mark in them. Splitting them
+where a declared setting changes is recorded under phase 7 and is not a
+priority: methods first.
 
 ### 4.2 MS2 and above
 
@@ -529,7 +553,9 @@ records no event keeps the filter as its key.
 - **Peak detection loops over MS1 streams instead of polarities.**
   - Today's loop is `_extract_peaks_for_polarity`.
   - Scan selection gains a stream predicate, next to polarity, time and MS
-    order, in `OpenTFRawBackend._selected` and `ScanSelector`.
+    order, in `OpenTFRawBackend._selected` and `ScanSelector`. The predicate
+    is the scan event, which the reader takes from the scan index beside the
+    segment number; where a file records none, it is the filter.
 - **Per-peak timeseries are filled with a per-scan stream mask.** This also
   removes today's normalisation of a polarity's rows over the axis of both
   polarities in `load_peak_timeseries`.
@@ -570,6 +596,7 @@ records no event keeps the filter as its key.
 |---|---|
 | `stream_id`, `sample_file_id` | identity |
 | `stream_key`, `epoch` | unique per file |
+| `scan_event` | the experiment's event number in the method; NULL where the file records none |
 | `signature` (JSON) | the parsed key fields, plus the attributes of section 4.1 with their variation |
 | `parent_stream_id` | MSn to its MS1 parent |
 | `scan_count`, `blocks`, `t_first`, `t_last` | census |
@@ -607,10 +634,18 @@ smaller piece of work than the two phases read as a whole:
   spectrum divides by every selected scan, so an ion seen by one range only
   is diluted in the pooled store.
 - **One ACQUISITION item per MS1 stream**, under the one binding the file's
-  polarity resolves to, and the batch name gains the range only when one
-  binding yields more than one class on a day (decision 7, settled
-  2026-10-05). A site that keeps its two ranges in two batches today keeps
-  two batches.
+  polarity resolves to. An item takes its name from the time its own stream
+  starts, so the repeats of one file do not share a name.
+- **Batches gather items by what their experiment measured** (decision 7,
+  settled 2026-10-05): the filter's fields, the resolution, the microscan
+  count and the AGC target, read from the file and never configured. Repeats
+  of one definition share a batch; two definitions do not. The batch name
+  shows only what differs among the kinds one binding yields on a day - the
+  range where the ranges differ, else the microscans, else the AGC target -
+  so a site that keeps two ranges in two batches today keeps two batches,
+  and a site with one experiment sees the names it has. Getting this wrong
+  would misfile an item, never pool the wrong scans: what is pooled is
+  decided by the experiment alone.
 - **Calibration per stream** (phase 4). Not optional for this cut: the
   Orbitrap apply rescales every peak row of the file and removes every item's
   matches, so two calibrating items in one file collide. Per-stream apply is
@@ -631,10 +666,10 @@ smaller piece of work than the two phases read as a whole:
     the space-charge shift goes with the population.
 - **One instrument function per stream** (4.3), fitted on the stream's own
   summed signal; a range too narrow to fit borrows its sibling's.
-- **Streams that differ only in their scan event** join the cut if decision
-  14 goes as proposed (4.1): the same machinery, keyed one field further.
-  It is wanted before the cut's reader work is finished, because it decides
-  whether a stream is identified by its filter alone.
+- **Streams are experiments** (4.1, decision 14). Two experiments under one
+  filter are two items, and a repeated experiment is one item per repeat:
+  the same machinery, keyed on the scan event. A file with one experiment
+  per polarity is not split, as before.
 - **Left for later:** MS2 attachment, polarity-switching files (each polarity
   already gets its own item), and the rebuild of files already ingested,
   which rule 1 of 9.1 replaces with an explicit re-process.
@@ -1220,24 +1255,22 @@ same hysteresis and dwell logic as a trace.
 
 ```json
 {
-  "streams": {
-    "split_on": ["analyzer", "polarity", "data_type", "source", "sid", "cv",
-                 "scan_mode", "ms_order", "ranges", "resolution"],
-    "msn": "attach"
-  },
+  "streams": {"msn": "attach"},
   "epochs": {"by": "none"},
   "windows": {"by": "none"},
   "chemistry": {
     "ladder": ["declared", "explicit", "method", "token", "default", "detected"],
     "detection": "audit"
   },
-  "batching": {"by": ["day", "binding", "signature_class_if_needed"]},
+  "batching": {"by": ["day", "binding", "what_was_measured"]},
   "limits": {"max_items_per_file": 500, "min_window_scans": 3}
 }
 ```
 
-- **Default recipe.** Split by signature, no epochs, no windows, the full
-  ladder with detection in audit mode. A new site configures nothing.
+- **Default recipe.** No epochs, no windows, the full ladder with detection
+  in audit mode. A new site configures nothing. What a stream is does not
+  appear in a recipe at all: it is the experiment of the method, at every
+  site (4.1, decision 14).
 - **Preview.** `POST /api/sample/files/{id}/split-preview` takes a recipe
   body and returns, without writing anything:
   - the streams and their blocks;
@@ -1624,7 +1657,8 @@ unchanged.
 - **Gates:**
   - demo goldens byte-identical;
   - two windowed items over one file give different, correct intensities;
-  - the four-stream corpus file yields four separate peak lists.
+  - the corpus file with eight experiments yields eight separate peak lists,
+    and its repeats of one definition land in one batch.
 
 ### Phase 4: per-stream state (about 2 weeks)
 
@@ -1677,6 +1711,12 @@ unchanged.
   - an analog-input mapping for sites that wire one.
 - **MS2-only parts (#2068).**
 - **Adduct-pair evidence** for methods without reagent ions in range.
+- **Manual acquisitions.** A file started with no method loaded records no
+  scan event - 14 of the corpus's 182 - and a setting changed by hand part
+  way through leaves no mark. Such a file keeps the filter as its key (4.1).
+  Splitting it where a declared setting changes is possible, since the
+  microscan count and the AGC target never vary within a recorded event, and
+  is not a priority: methods first (decided 2026-10-05).
 
 ### Order and parallelism
 
@@ -1807,7 +1847,10 @@ through a short-lived stacked branch, merged as one unit.
 4. **Default stream key.** ~~The full signature including resolution
    (recommended), or polarity plus scan range only.~~ **Decided 2026-09-24:**
    the full signature, resolution included, though resolution is not expected
-   to vary within a file.
+   to vary within a file. **Revised 2026-10-05** by decision 14: a stream is
+   one experiment. The signature describes it and decides its batch, and
+   the key gains the event number only where one filter carries more than
+   one.
 5. **Calibration scope.** ~~Per stream (recommended; required for different
    chemistries in one file).~~ **Decided 2026-10-01:** per stream, and
    required already by the first cut of 4.5, where two ranges of one
@@ -1821,10 +1864,12 @@ through a short-lived stacked branch, merged as one unit.
 6. **MS2.** Attach to the parent item by default (recommended), or separate
    MS2 items.
 7. **Batch naming.** ~~Add the signature class only when needed
-   (recommended), or always.~~ **Decided 2026-10-05:** only when needed.
-   The range joins the batch name when one binding yields more than one
-   class on a day, which keeps a site's two ranges in the two batches it
-   has today (4.5).
+   (recommended), or always.~~ **Decided 2026-10-05:** only when needed, and
+   computed. Items join a batch by what their experiment measured - the
+   filter's fields, the resolution, the microscan count and the AGC target -
+   and the name shows only what differs among the kinds one binding yields
+   on a day, which keeps a site's two ranges in the two batches it has
+   today (4.5).
 8. **Recipe scope.** Per instrument with a site default (recommended), or
    per workspace.
 9. **Token fate.** ~~Keep it as a supported rung and learning source
@@ -1868,16 +1913,15 @@ through a short-lived stacked branch, merged as one unit.
     copy that keeps a shipped name parks once rather than routing by name;
     a changed signature class is noted, not refused; shipped TOF
     configurations are named per chemistry.
-14. **Scan events that share a filter.** Raised by a production method read
-    on 2026-10-05 (4.1), whose two events differ in microscans and AGC
-    target and in nothing the filter shows. The corpus census there adds
-    what the first option costs: a method that repeats one definition gets
-    an item per repeat. Open, and wanted before the first cut's reader work
-    is finished:
-    - each event is its own stream wherever one filter carries more than
-      one, and the event number joins the key only then (recommended);
-    - promote the settings that differ into the signature;
-    - leave such files pooled.
+14. **What a stream is.** Raised by a production method read on 2026-10-05
+    (4.1), whose two experiments differ in microscans and AGC target and in
+    nothing the filter shows. ~~Each scan event its own stream wherever one
+    filter carries more than one (recommended); or promote the settings
+    that differ into the signature; or leave such files pooled.~~ **Decided
+    2026-10-05:** one experiment, one stream, whatever sets the experiments
+    apart, and one item per repeat of an identical experiment. A file that
+    records no scan event falls back to the filter. There are no grouping
+    parameters to choose, at a site or in a recipe.
 15. **What is built after phase 2.** **Decided 2026-10-05:** the stream
     first cut (4.5), ahead of phase 8, which follows it or runs beside it.
 
@@ -1903,7 +1947,7 @@ Function names are the stable reference; line numbers drift.
 |---|---|---|
 | Method identity (shipped, #2155) | `libraries/thermo/src/mascope_thermo/processor.py` `RawProcessor.method_file`; `backend.py` `ReaderBackend.method_file`; `db/scripts/populate_orbitrap_method_file.py` | 0 |
 | Filter parsing, stream census, per-stream parameter sampling | `libraries/thermo/src/mascope_thermo/backend.py` (`acquisition_parameters`, `_sample_evenly`, a new signature accessor); `server/backend/src/mascope_backend/file_converter/schema.py` `SampleFileProps` | 0 |
-| Scan selection | `backend.py` `OpenTFRawBackend._selected`; `thermo.py` `ScanSelector` | 3 |
+| Scan selection and stream identity | `backend.py` `OpenTFRawBackend._selected` and `_all_scans` (`scan_event`, `scan_segment` from the scan index); `thermo.py` `ScanSelector`; `streams.py` `_census` | 3 |
 | Detection and store layout | `libraries/signal/src/mascope_signal/peak.py` (`_extract_peaks_for_polarity`, `_allocate_peak_timeseries`) | 3 |
 | Timeseries fill, stale-axis check, acquisition window | `libraries/signal/src/mascope_signal/compute.py` (`load_peak_timeseries`, `check_stored_scan_axis`, `get_acquisition_window`) | 3 |
 | Peak listing | `server/backend/src/mascope_backend/api/controllers/samples/lib/samples_peaks.py` `extract_peaks` | 3 |
