@@ -130,7 +130,8 @@ class TestPeaksSharingAnMz:
 
     A file that switches polarity keeps both polarities' peaks on one axis,
     and a peak of each can hold exactly the same m/z. Such a pair must not
-    cost the file's other peaks their timeseries.
+    cost the file's other peaks their timeseries, and the kept peak of a pair
+    gets its own.
     """
 
     # Rows 1 and 2 share an m/z, one of each polarity
@@ -161,6 +162,47 @@ class TestPeaksSharingAnMz:
         np.testing.assert_allclose(
             result.peak_heights.values, np.outer(self.HEIGHTS[[0, 3]], _shares(5))
         )
+
+    @pytest.mark.parametrize("dropped", [1, 2])
+    @pytest.mark.asyncio
+    async def test_the_kept_peak_of_a_pair_gets_its_own_timeseries(
+        self, dropped, monkeypatch, write_peak_store
+    ):
+        """Scaled to its own summed intensity, on its own row, and for good.
+
+        The fill is written by m/z. Landing on the dropped peak's row it
+        would leave the kept one empty and uncomputed, to be read back from
+        the file again on every ask.
+        """
+        kept = 3 - dropped
+        is_weak = np.zeros(4, dtype=bool)
+        is_weak[dropped] = True
+        write_peak_store(
+            SCAN_TIMES,
+            self.MZ,
+            self.AREAS,
+            self.HEIGHTS,
+            is_weak=is_weak,
+            polarity=self.POLARITY,
+        )
+        _stub_reader(monkeypatch, SCAN_TIMES)
+
+        result = await m_compute.load_peak_timeseries(SIGNAL_TEST_FILENAME, [200.0])
+
+        assert result.peak_id.values.tolist() == [f"peak_{kept:04d}"]
+        np.testing.assert_allclose(
+            result.peak_heights.values, np.outer(self.HEIGHTS[[kept]], _shares(5))
+        )
+        np.testing.assert_allclose(
+            result.peak_areas.values, np.outer(self.AREAS[[kept]], _shares(5))
+        )
+
+        async def refuse(*args, **kwargs):
+            raise AssertionError("a computed peak was recomputed")
+
+        monkeypatch.setattr(m_compute, "get_peak_timeseries", refuse)
+        again = await m_compute.load_peak_timeseries(SIGNAL_TEST_FILENAME, [200.0])
+        assert again.is_timeseries_computed.values.all()
 
 
 class TestCheckPeakStore:

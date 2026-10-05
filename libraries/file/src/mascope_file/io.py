@@ -539,7 +539,9 @@ async def write_peaks(
     2. Partial update: Updates specific m/z values in an existing zarr file
 
     The partial update uses a read-modify-write pattern on individual chunks
-    to minimize memory usage.
+    to minimize memory usage. It finds each peak's row by its m/z. Where
+    several peaks of the file share an m/z, the update is for the one
+    :func:`load_peak_data` keeps: see :func:`_rows_of_kept_peaks`.
 
     :param peak_timeseries: Dataset containing peak areas and peak heights
     :type peak_timeseries: xr.Dataset
@@ -547,6 +549,8 @@ async def write_peaks(
     :type filename: str
     :param overwrite: Flag to overwrite peaks if they already exist, defaults to False
     :type overwrite: bool, optional
+    :raises ValueError: If a partial update names an m/z the file holds no
+        peak at, or one that does not single out a peak
     :raises Exception: If the path is too long or other I/O errors occur
     :return: None
     """
@@ -719,6 +723,8 @@ def _get_chunk_metadata(
             "Running peak detection first should resolve this issue."
         )
 
+    indexer = _rows_of_kept_peaks(z, existing_mz, indexer)
+
     chunk_indices = indexer // actual_mz_chunk_size
     unique_chunks = np.unique(chunk_indices)
 
@@ -729,6 +735,48 @@ def _get_chunk_metadata(
         "chunk_indices": chunk_indices,
         "unique_chunks": unique_chunks,
     }
+
+
+def _rows_of_kept_peaks(
+    z: zarr.Group,
+    existing_mz: np.ndarray,
+    indexer: np.ndarray,
+) -> np.ndarray:
+    """Point each update at its own row where several peaks share its m/z.
+
+    Two peaks of a file can share an m/z, and a search of the axis finds the
+    first row holding it, whichever of them the update is for. An update's
+    m/z values are read off a loaded store, and a store is loaded without its
+    weak and satellite peaks (:func:`load_peak_data`), so among the rows
+    sharing an m/z the update is for the one that is neither.
+
+    :param z: The peak store
+    :param existing_mz: The store's m/z axis, ascending
+    :param indexer: For each update, the first row holding its m/z
+    :raises ValueError: If the rows sharing an m/z hold no kept peak, or
+        several: the update then names none of them
+    :return: The row each update is for
+    """
+    last_row = np.searchsorted(existing_mz, existing_mz[indexer], side="right") - 1
+    shared = np.flatnonzero(last_row > indexer)
+    if not shared.size:
+        return indexer
+
+    # A boolean variable is int8 in the store, so its inverse is not a mask
+    # until it is cast back
+    bad_peak_mask = (z["is_weak"][:] | z["is_satellite"][:]).astype(bool)
+    indexer = indexer.copy()
+    for i in shared:
+        rows = np.arange(indexer[i], last_row[i] + 1)
+        kept = rows[~bad_peak_mask[rows]]
+        if kept.size != 1:
+            raise ValueError(
+                f"Cannot update m/z {existing_mz[rows[0]]}: {rows.size} peaks "
+                f"share it and {kept.size} of them are neither weak nor a "
+                "satellite, so the update names no single peak."
+            )
+        indexer[i] = kept[0]
+    return indexer
 
 
 def _prepare_chunk_tasks(

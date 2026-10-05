@@ -361,12 +361,26 @@ class TestPeaksSharingAnMz:
     A raw Orbitrap file's polarities are detected apart and stored on one m/z
     axis, and a scan's centroids are single precision, so a peak of each that
     was seen in one scan only can hold exactly the same value. The store is
-    read by m/z, and that may not count on its axis being unique.
+    read and filled by m/z, and neither may count on its axis being unique.
     """
 
     # Rows 1 and 2 share an m/z
     MZ = np.array([100.0, 200.0, 200.0, 300.0, 400.0])
     SHARED_ROWS = (1, 2)
+
+    @staticmethod
+    def _fill(mz: float, time: np.ndarray) -> xr.Dataset:
+        """One peak's timeseries, as a fill of the store writes it."""
+        rising = np.arange(1.0, time.size + 1.0)
+        return xr.Dataset(
+            data_vars={
+                "peak_areas": (["mz", "time"], 7.0 * rising[np.newaxis, :]),
+                "peak_heights": (["mz", "time"], rising[np.newaxis, :]),
+                "is_timeseries_computed": (["mz"], np.array([True])),
+                "sparsity": (["mz"], np.array([0.25])),
+            },
+            coords={"mz": np.array([mz]), "time": time},
+        )
 
     @pytest.mark.parametrize(
         ("weak", "satellite"),
@@ -446,6 +460,101 @@ class TestPeaksSharingAnMz:
             f"peak_{row:04d}" for row in (0, kept, 3, 4)
         ]
         assert loaded.peak_id.sel(mz=200.0).values.item() == f"peak_{kept:04d}"
+
+    @pytest.mark.parametrize("flag", ["is_weak", "is_satellite"])
+    @pytest.mark.parametrize("dropped", SHARED_ROWS)
+    @pytest.mark.asyncio
+    async def test_a_fill_lands_on_the_kept_peak_of_a_shared_mz(
+        self,
+        dropped,
+        flag,
+        create_peak_timeseries_dataset,
+        peak_timeseries_zarr_path,
+    ):
+        """A fill is for the peak a load hands out, whichever row that is.
+
+        A search of the axis finds the first row holding the m/z. With the
+        kept peak on the second, a fill written there lands on the dropped
+        peak, and the kept one reads as never computed on every ask.
+        """
+        kept = sum(self.SHARED_ROWS) - dropped
+        ds = create_peak_timeseries_dataset(mz_values=self.MZ)
+        ds[flag].values[dropped] = True
+        await write_peaks(ds, TEST_FILENAME, overwrite=True)
+        fill = self._fill(200.0, ds.time.values)
+
+        await write_peaks(fill, TEST_FILENAME, overwrite=False)
+
+        stored = xr.open_zarr(peak_timeseries_zarr_path)
+        assert np.flatnonzero(stored.is_timeseries_computed.values).tolist() == [kept]
+        np.testing.assert_array_equal(
+            stored.peak_heights.values[kept], fill.peak_heights.values[0]
+        )
+        np.testing.assert_array_equal(
+            stored.peak_areas.values[kept], fill.peak_areas.values[0]
+        )
+        assert stored.sparsity.values[kept] == 0.25
+        assert np.isnan(stored.peak_heights.values[dropped]).all()
+        stored.close()
+        # And the load that named the peak reads its fill back
+        loaded = m_io.load_peak_data(TEST_FILENAME)
+        assert loaded.is_timeseries_computed.sel(mz=200.0).values.item()
+
+    @pytest.mark.parametrize(
+        "weak",
+        [
+            pytest.param((), id="both kept"),
+            pytest.param(SHARED_ROWS, id="neither kept"),
+        ],
+    )
+    @pytest.mark.asyncio
+    async def test_a_fill_that_names_no_single_peak_is_refused(
+        self,
+        weak,
+        create_peak_timeseries_dataset,
+        peak_timeseries_zarr_path,
+    ):
+        """An m/z two kept peaks share names neither, and so with two dropped.
+
+        Written to the first row found, the fill of one would pass for the
+        fill of the other. Nothing is written instead.
+        """
+        ds = create_peak_timeseries_dataset(mz_values=self.MZ)
+        ds["is_weak"].values[list(weak)] = True
+        await write_peaks(ds, TEST_FILENAME, overwrite=True)
+
+        with pytest.raises(ValueError, match="names no single peak"):
+            await write_peaks(
+                self._fill(200.0, ds.time.values), TEST_FILENAME, overwrite=False
+            )
+
+        stored = xr.open_zarr(peak_timeseries_zarr_path)
+        assert not stored.is_timeseries_computed.values.any()
+        assert np.isnan(stored.peak_heights.values).all()
+        stored.close()
+
+    @pytest.mark.asyncio
+    async def test_a_peak_alone_at_its_mz_is_filled_whatever_its_flags(
+        self,
+        create_peak_timeseries_dataset,
+        peak_timeseries_zarr_path,
+    ):
+        """Only the rows sharing an m/z are told apart by their flags.
+
+        A weak peak alone at its m/z is the row its m/z names, in a store
+        that holds a shared m/z elsewhere as in one that holds none.
+        """
+        ds = create_peak_timeseries_dataset(mz_values=self.MZ)
+        ds["is_weak"].values[[1, 3]] = True
+        await write_peaks(ds, TEST_FILENAME, overwrite=True)
+
+        await write_peaks(
+            self._fill(300.0, ds.time.values), TEST_FILENAME, overwrite=False
+        )
+
+        stored = xr.open_zarr(peak_timeseries_zarr_path)
+        assert np.flatnonzero(stored.is_timeseries_computed.values).tolist() == [3]
+        stored.close()
 
 
 class TestEnsureSparsityExists:
