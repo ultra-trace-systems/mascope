@@ -180,6 +180,29 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   same warning, and servers on different versions can report it as separate
   issues.
 
+- **A file's scan streams now follow the experiments of its acquisition
+  method.** The census Mascope takes of every Orbitrap file - what
+  `mascope file scans` prints, what a file's `.props` holds as `scan_streams`,
+  and the sentence in a file's processing detail when one polarity holds more
+  than one stream - grouped scans by what their scan filter says: polarity,
+  scan range, scan mode, resolution. A method can define two experiments no
+  filter tells apart: a short one at one microscan while the source settles
+  and the measurement itself at ten, or the same scan defined again later in
+  the run. Those were listed as one stream. Every scan records the experiment
+  that produced it, as its scan event, and the census now groups MS1 scans by
+  it, so each experiment is listed on its own, with its own scan count, time
+  span and acquisition parameters. Where two experiments share a filter, the
+  stream's name ends with the event (`... R=120000 event=2`).
+
+  Nothing is processed differently: peak detection still pools every MS1 scan
+  of a polarity, and the census still only says so. A file with one experiment
+  per filter - nearly every file - is listed exactly as before, and so is one
+  acquired with no method loaded, which records no scan event. A method that
+  runs more than one experiment under one filter reads as a new method to the
+  method bindings: its first file after the upgrade binds by its filename
+  token, or waits for a chemistry to be chosen, and the binding is learned
+  again from it.
+
 ### Fixed
 
 - **The averaged Orbitrap profile sits on its peaks when the calibration moves

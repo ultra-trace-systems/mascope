@@ -166,9 +166,12 @@ def _print_report(report: dict) -> None:
     for index, stream in enumerate(report["streams"], start=1):
         console.print()
         console.print(f"{index}. [cyan]{stream['key']}[/cyan]")
+        # A report from a reader that predates the scan event carries none.
+        event = stream.get("scan_event")
         console.print(
             f"   {stream['scans']} scans in {stream['blocks']} block(s), "
             f"{stream['t_first']:.1f}-{stream['t_last']:.1f} s"
+            + (f", scan event {event}" if event is not None else "")
         )
         if stream.get("top_peaks"):
             peaks = ", ".join(f"{mz:.4f}" for mz, _ in stream["top_peaks"])
@@ -216,13 +219,19 @@ def scans(
     """
     Show a raw file's scan streams.
 
-    A scan stream is the scans that share one scan signature: analyzer,
-    polarity, scan type, source, scan mode, MS order, precursors, scan ranges
-    and FT resolution. For each stream this lists its scan count, its blocks,
-    the time it spans and the strongest peaks of its averaged spectrum. It
-    also says when a polarity has more than one MS1 stream, which peak
-    detection pools into one peak list. `--json` adds each stream's parsed
-    signature and acquisition parameters.
+    A scan stream is the scans of one experiment of the acquisition method,
+    which every scan records as its scan event. It is described by its scan
+    signature: analyzer, polarity, scan type, source, scan mode, MS order,
+    precursors, scan ranges and FT resolution. Two experiments that share a
+    signature are told apart by the event, which then closes the stream's
+    name. A file acquired with no method loaded records no event, and its
+    streams are the scans that share a signature.
+
+    For each stream this lists its scan count, its blocks, the time it spans,
+    its scan event and the strongest peaks of its averaged spectrum. It also
+    says when a polarity has more than one MS1 stream, which peak detection
+    pools into one peak list. `--json` adds each stream's parsed signature
+    and acquisition parameters.
 
     \b
     Examples:

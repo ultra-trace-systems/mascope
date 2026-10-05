@@ -26,7 +26,9 @@ then outranks the token the day the reagent changes.
 polarity: analyzer, source, scan mode, scan ranges and resolution, taken from
 the scan-stream census. A method that alternates two ranges within a polarity
 has both in its class, because today's peak detection pools them into one
-peak list. Precursors are deliberately absent: the census keys a
+peak list. So has a method that runs one scan definition as two experiments:
+the census names each by its scan event, and the class holds both names.
+Precursors are deliberately absent: the census keys a
 data-dependent MSn family as one stream, and only MS1 streams are read here
 anyway.
 

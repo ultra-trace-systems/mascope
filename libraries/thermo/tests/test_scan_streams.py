@@ -1,12 +1,12 @@
 """The scan-stream census (``mascope_thermo.streams``).
 
-The census groups a file's scans by signature and records, per stream, how
-many scans it holds, how they are laid out in time, and the acquisition
-parameters of its own scans. A scripted reader drives the layouts no
-committed file has: alternating scan ranges, polarity switching,
-data-dependent fragmentation and a resolution change. The two committed
-sample files then pin the census on real data, through each backend
-available.
+The census groups a file's scans into the experiments of its method and
+records, per stream, how many scans it holds, how they are laid out in time,
+and the acquisition parameters of its own scans. A scripted reader drives the
+layouts no committed file has: alternating scan ranges, polarity switching,
+data-dependent fragmentation, a resolution change, two experiments under one
+filter and an experiment the method repeats. The two committed sample files
+then pin the census on real data, through each backend available.
 """
 
 import json
@@ -16,20 +16,27 @@ import sys
 import pytest
 from thermo_test_support import NEG_ORBI_FILE_PATH, POS_ORBI_FILE_PATH
 
-from mascope_thermo.backend import _summarize_acquisition_parameters, open_backend
+from mascope_thermo.backend import (
+    _SCAN_INDEX_UNSET,
+    OpenTFRawBackend,
+    _method_scan_event,
+    _summarize_acquisition_parameters,
+    open_backend,
+)
 from mascope_thermo.streams import pooled_ms1_streams, scan_streams, stream_report
 
 
 class _ScriptedReader:
-    """Reader stand-in: one ``(filter, trailer)`` per scan, a second apart."""
+    """Reader stand-in: one ``(filter, trailer)`` or ``(filter, trailer,
+    event)`` per scan, a second apart. A scan given no event records none."""
 
     def __init__(self, scans):
-        self._scans = scans
+        self._scans = [(*scan, None)[:3] for scan in scans]
 
     def scan_filters(self):
         return [
-            {"scan": n, "time_s": float(n - 1), "filter": text}
-            for n, (text, _trailer) in enumerate(self._scans, start=1)
+            {"scan": n, "time_s": float(n - 1), "filter": text, "event": event}
+            for n, (text, _trailer, event) in enumerate(self._scans, start=1)
         ]
 
     def scan_trailer(self, scan_number):
@@ -236,6 +243,206 @@ def test_a_file_without_scans_has_no_streams():
     assert scan_streams(_ScriptedReader([])) == []
 
 
+# -- streams are the experiments of the method --------------------------------
+
+
+def test_two_experiments_under_one_filter_are_two_streams():
+    """A method can define two scans that differ in nothing a filter shows: a
+    short one at one microscan while the source settles, then the measurement
+    at ten. The scan event is all that tells them apart."""
+    settling = _trailer(**{"Micro Scan Count:": 1, "AGC Target:": 300000})
+    measuring = _trailer(**{"Micro Scan Count:": 10, "AGC Target:": 1000000})
+    census = scan_streams(
+        _ScriptedReader([(NEG_LOW, settling, 1)] * 7 + [(NEG_LOW, measuring, 2)] * 7)
+    )
+
+    assert [stream["key"] for stream in census] == [
+        f"{NEG_LOW} R=120000 event=1",
+        f"{NEG_LOW} R=120000 event=2",
+    ]
+    assert [stream["scan_event"] for stream in census] == [1, 2]
+    assert [stream["scans"] for stream in census] == [7, 7]
+    assert [stream["blocks"] for stream in census] == [1, 1]
+    assert [(s["t_first"], s["t_last"]) for s in census] == [(0.0, 6.0), (7.0, 13.0)]
+    # One signature for both: what they measure is the same to a filter.
+    assert census[0]["signature"] == census[1]["signature"]
+    # Each stream summarises its own scans, so neither setting reads as varying.
+    assert [
+        stream["acquisition_params"]["constant"]["Micro Scan Count:"]
+        for stream in census
+    ] == [1, 10]
+    assert pooled_ms1_streams(census) == {"-": [stream["key"] for stream in census]}
+
+
+def test_a_repeated_experiment_is_one_stream_per_repeat():
+    """A method that defines the same scan again later runs it as another
+    experiment, with whatever the instrument measured in between."""
+    census = scan_streams(
+        _ScriptedReader(
+            [(NEG_LOW, _trailer(), 1)] * 3
+            + [(POS_LOW, _trailer(), 2)] * 3
+            + [(NEG_LOW, _trailer(), 3)] * 2
+            + [(POS_LOW, _trailer(), 4)] * 2
+        )
+    )
+
+    assert [stream["key"] for stream in census] == [
+        f"{NEG_LOW} R=120000 event=1",
+        f"{POS_LOW} R=120000 event=2",
+        f"{NEG_LOW} R=120000 event=3",
+        f"{POS_LOW} R=120000 event=4",
+    ]
+    assert [stream["scans"] for stream in census] == [3, 3, 2, 2]
+    # Each repeat is one run; by filter alone the two negative ones were one
+    # stream in one block, the positive scans between them not counting.
+    assert [stream["blocks"] for stream in census] == [1, 1, 1, 1]
+    assert pooled_ms1_streams(census) == {
+        "-": [f"{NEG_LOW} R=120000 event=1", f"{NEG_LOW} R=120000 event=3"],
+        "+": [f"{POS_LOW} R=120000 event=2", f"{POS_LOW} R=120000 event=4"],
+    }
+
+
+def test_experiments_their_filters_already_separate_keep_their_keys():
+    """Nearly every file: one experiment per filter. Its keys are the ones it
+    had before streams followed the scan event, so nothing keyed on them
+    moves."""
+    census = scan_streams(
+        _ScriptedReader([(NEG_LOW, _trailer(), 1), (NEG_HIGH, _trailer(), 2)] * 3)
+    )
+
+    assert [stream["key"] for stream in census] == [
+        f"{NEG_LOW} R=120000",
+        f"{NEG_HIGH} R=120000",
+    ]
+    assert [stream["scan_event"] for stream in census] == [1, 2]
+    assert [stream["blocks"] for stream in census] == [3, 3]
+
+
+def test_the_event_joins_only_the_keys_that_need_it():
+    """One file can hold both: an experiment run once, and one repeated."""
+    census = scan_streams(
+        _ScriptedReader(
+            [(NEG_LOW, _trailer(), 1)] * 2
+            + [(NEG_HIGH, _trailer(), 2)] * 2
+            + [(NEG_HIGH, _trailer(), 3)] * 2
+        )
+    )
+
+    assert [stream["key"] for stream in census] == [
+        f"{NEG_LOW} R=120000",
+        f"{NEG_HIGH} R=120000 event=2",
+        f"{NEG_HIGH} R=120000 event=3",
+    ]
+    assert [stream["scan_event"] for stream in census] == [1, 2, 3]
+
+
+def test_a_file_that_records_no_event_is_keyed_by_its_filters():
+    """An acquisition started with no method loaded. A setting changed by hand
+    part way through leaves no mark, so it stays one stream, as it was."""
+    census = scan_streams(
+        _ScriptedReader(
+            [(NEG_LOW, _trailer(**{"Micro Scan Count:": 1}))] * 3
+            + [(NEG_LOW, _trailer(**{"Micro Scan Count:": 10}))] * 3
+        )
+    )
+
+    assert len(census) == 1
+    assert census[0]["key"] == f"{NEG_LOW} R=120000"
+    assert census[0]["scan_event"] is None
+    assert census[0]["scans"] == 6
+    assert "Micro Scan Count:" in census[0]["acquisition_params"]["varying"]
+
+
+def test_fragmentation_scans_are_keyed_by_filter_whatever_their_event():
+    """Only survey scans follow the scan event. A dependent scan's event may
+    count its place in the cycle rather than an experiment, and a family
+    split by it would be one stream per slot."""
+    survey = "FTMS + p NSI Full ms [100.0000-1000.0000]"
+    dependent = "FTMS + c NSI d Full ms2 {mz}@hcd30.00 [50.0000-700.0000]"
+    census = scan_streams(
+        _ScriptedReader(
+            [
+                (survey, _trailer(), 1),
+                (dependent.format(mz="445.1200"), _trailer(15000), 2),
+                (dependent.format(mz="512.3300"), _trailer(15000), 3),
+                (survey, _trailer(), 1),
+                (dependent.format(mz="610.0000"), _trailer(15000), 2),
+            ]
+        )
+    )
+
+    streams = _by_key(census)
+    assert set(streams) == {
+        f"{survey} R=120000",
+        "FTMS + c NSI d Full ms2 *@hcd30.00 R=15000",
+    }
+    family = streams["FTMS + c NSI d Full ms2 *@hcd30.00 R=15000"]
+    assert family["scans"] == 3
+    # Its scans come from two events, so it names neither.
+    assert family["scan_event"] is None
+    assert streams[f"{survey} R=120000"]["scan_event"] == 1
+
+
+def test_a_fragmentation_stream_of_one_event_names_it():
+    targeted = "FTMS + p NSI Full ms2 300.0000@hcd30.00 [50.0000-310.0000]"
+    census = scan_streams(_ScriptedReader([(targeted, _trailer(15000), 2)] * 3))
+
+    assert [stream["scan_event"] for stream in census] == [2]
+    assert census[0]["key"] == f"{targeted} R=15000"
+
+
+def test_a_reader_that_reports_no_event_reads_as_recording_none():
+    """``event`` is read with a default, so a reader double written before the
+    census followed it still takes one."""
+
+    class _Eventless(_ScriptedReader):
+        def scan_filters(self):
+            return [
+                {key: value for key, value in row.items() if key != "event"}
+                for row in super().scan_filters()
+            ]
+
+    census = scan_streams(_Eventless([(NEG_LOW, _trailer())] * 2))
+    assert [(s["key"], s["scan_event"]) for s in census] == [
+        (f"{NEG_LOW} R=120000", None)
+    ]
+
+
+# -- the scan event, from the scan index --------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("index_event", "expected"),
+    [(0, 1), (7, 8), (_SCAN_INDEX_UNSET, None), (-1, None)],
+    ids=["first", "eighth", "unset-in-the-index", "unset-as-thermo-reports-it"],
+)
+def test_the_method_counts_its_scan_events_from_one(index_event, expected):
+    assert _method_scan_event(index_event) == expected
+
+
+class _ScriptedRaw:
+    """The slice of ``opentfraw.RawFile`` ``scan_filters`` reads."""
+
+    def __init__(self, events):
+        self._events = events
+
+    def scan_table(self):
+        scan_numbers = list(range(1, len(self._events) + 1))
+        return {
+            "scan_number": scan_numbers,
+            "scan_event": self._events,
+            "retention_time": [n / 60 for n in scan_numbers],
+            "filter_string": [NEG_LOW] * len(scan_numbers),
+        }
+
+
+def test_opentfraw_reports_each_scans_event_and_none_where_unset():
+    reader = OpenTFRawBackend("unused.raw")
+    reader._raw = _ScriptedRaw([0, 1, _SCAN_INDEX_UNSET])
+
+    assert [row["event"] for row in reader.scan_filters()] == [1, 2, None]
+
+
 # -- the committed sample files, through each backend available --------------
 
 
@@ -257,6 +464,8 @@ def test_a_sample_file_is_one_survey_stream(backend, path, polarity):
     assert signature["scan_ranges"] == [[40.0, 500.0]]
     assert signature["resolution"] == 120000
     assert stream["key"].endswith("[40.0000-500.0000] R=120000")
+    # One experiment, recorded on every scan as the method's first.
+    assert stream["scan_event"] == 1
     # Every scan counts, the outlier first scan included.
     assert stream["scans"] == num_scans
     assert stream["blocks"] == 1

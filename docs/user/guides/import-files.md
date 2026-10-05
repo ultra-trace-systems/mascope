@@ -206,9 +206,10 @@ re-processed long after it was acquired is listed too.
 A file still shown in progress a day after its status was recorded has
 stopped - a server worker restarted under it, say - and its status says so:
 re-process the file, or choose its chemistry. Files processed before Mascope
-recorded the status show none. When an Orbitrap method alternates scan ranges
-or scan modes within one polarity, the detail also says that peak detection
-pools those scan streams into one peak list.
+recorded the status show none. When an Orbitrap method runs more than one
+experiment in one polarity - alternating scan ranges or scan modes, or the same
+scan defined twice - the detail also says that peak detection pools those scan
+streams into one peak list.
 
 ### Choose the chemistry of a file that needs one
 
