@@ -324,11 +324,17 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   of two noise peaks that are never shown, and every read of the file's peaks
   failed with "Reindexing only valid with uniquely valued Index objects": its
   peak list, matching, calibration, timeseries and export. The peaks are now
-  left out by position.
+  left out by position, and a peak's timeseries is written to its own row
+  where a peak that is left out shares its m/z. Files already processed read
+  correctly as they are; nothing needs re-processing.
 
   On a polarity-switching file of the internal regression corpus two pairs
   among 41,639 peaks shared an m/z, all four of them noise. Nothing in error
-  monitoring shows the failure having reached a deployment.
+  monitoring shows the failure having reached a deployment. One case remains:
+  where both peaks of a pair are kept, whatever reads the file's peaks by m/z
+  still fails, matching, calibration and timeseries among it. That takes
+  setting the two apart when the file's peaks are detected, and is not part
+  of this change.
 
 ### Security
 
