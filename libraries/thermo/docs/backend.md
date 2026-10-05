@@ -58,24 +58,24 @@ All methods returning time values convert internal units (minutes) to **seconds*
 Scan selection reads metadata only. The OpenTFRaw backend builds it from `scan_table()`, which reads the scan index and the scan events and touches no peak data; `iter_scans()` would decode every scan's arrays for a selection that only looks at times, polarities and MS orders. On the longest file of the internal regression corpus (1,486 scans) that is 88.9 ms against 19.0 ms, and on a 61-scan file of similar size 22.5 ms against 0.8 ms. `xic()` reads the peaks it needs per scan, for the scans it selected.
 
 - **`polarities()`**: Returns the set of polarities (`+`, `-`) present in the file.
-- **`scan_times(polarity, t_min, t_max, ms_type)`**: Returns the start time in seconds of each selected scan.
-- **`tic_per_scan(polarity, t_min, t_max, ms_type)`**: Returns the start times and Total Ion Current (TIC) of the selected scans.
-- **`scan_statistics(polarity, t_min, t_max, ms_type)`**: Returns the selected scans' metrics (e.g., BasePeakIntensity, ScanType) defined in `SCAN_STAT_FIELDS`, plus `MsType`, with the same keys from both backends.
-- **`scan_acquisition_settings(polarity, t_min, t_max, ms_type)`**: Returns the selected scans' trailers as one table: `header_labels`, the trailer's labels, and `settings`, each scan's values in label order. A file defines its trailer's labels once for all of its scans. OpenTFRaw fills each row by label, so a scan whose trailer lacks a label, or that has no trailer record, gets `None` there and the table keeps a single label list.
+- **`scan_times(polarity, t_min, t_max, ms_type, stream)`**: Returns the start time in seconds of each selected scan.
+- **`tic_per_scan(polarity, t_min, t_max, ms_type, stream)`**: Returns the start times and Total Ion Current (TIC) of the selected scans.
+- **`scan_statistics(polarity, t_min, t_max, ms_type, stream)`**: Returns the selected scans' metrics (e.g., BasePeakIntensity, ScanType) defined in `SCAN_STAT_FIELDS`, plus `MsType`, with the same keys from both backends.
+- **`scan_acquisition_settings(polarity, t_min, t_max, ms_type, stream)`**: Returns the selected scans' trailers as one table: `header_labels`, the trailer's labels, and `settings`, each scan's values in label order. A file defines its trailer's labels once for all of its scans. OpenTFRaw fills each row by label, so a scan whose trailer lacks a label, or that has no trailer record, gets `None` there and the table keeps a single label list.
 - **`scan_filters()`**: Returns every scan's number, start time in seconds, filter text and experiment, in acquisition order, with no scan left out. The experiment is the method segment and the scan event that produced the scan: a method numbers its scan events within each of its segments, so the pair is what names one. Both are read from the scan index and counted from 1, as the method and the trailer's `Scan Segment:` and `Scan Event:` count them, and both are `None` where the file records no event. `scan_statistics()` reports the same two index words as the Thermo library does, from 0 with `-1` for an unset event; `_method_scan_event` is the one bridge between the conventions.
 - **`scan_trailer(scan_number)`**: Returns one scan's trailer, the instrument's own `{label: value}` table. Values are text from the Thermo backend and typed scalars from OpenTFRaw.
 - **`acquisition_parameters(max_scans, scan_numbers)`**: Summarises the trailers of up to `max_scans` scans, sampled evenly from `scan_numbers` (every MS1 scan by default), into the values constant across them and the names of those that vary.
-- **`scan_indices(polarity, t_min, t_max, ms_type)`**: Returns the 1-based numbers of the selected scans.
+- **`scan_indices(polarity, t_min, t_max, ms_type, stream)`**: Returns the 1-based numbers of the selected scans.
 - **`mass_range()`**: Returns the run's `(low, high)` m/z range.
 
 ### Data Access and Processing
 
-- **`profile_per_scan(polarity, t_min, t_max, ms_type, mz_min, mz_max)`**: Retrieves the raw profile m/z and intensity arrays of each selected scan, with the scan times.
-- **`centroids_per_scan(polarity, t_min, t_max, ms_type, mz_min, mz_max)`**: Retrieves the centroided peaks (m/z, intensity, resolution, S/N) of each selected scan.
+- **`profile_per_scan(polarity, t_min, t_max, ms_type, mz_min, mz_max, stream)`**: Retrieves the raw profile m/z and intensity arrays of each selected scan, with the scan times.
+- **`centroids_per_scan(polarity, t_min, t_max, ms_type, mz_min, mz_max, stream)`**: Retrieves the centroided peaks (m/z, intensity, resolution, S/N) of each selected scan.
 - **`centroids_meta()`**: Returns every scan's centroid m/z, intensity, resolution and noise, decoded from its centroid labels.
 - **`average_profile(scan_indices, ppm, average)`**: Averages the selected scans' profiles in the frequency domain, where an ion's peak lines up across scans, and converts the result back to m/z, each peak on the intensity-weighted mean of the scans' calibrations. The result is the measured signal, which is also what the spectrum views draw.
 - **`average_centroids(scan_indices, ppm, average)`**: Returns an approximation of centroids derived from an averaged profile.
-- **`xic(mzs, ppm, polarity, t_min, t_max, ms_type)`**: Generates an Extracted Ion Chromatogram within `ppm` of each target m/z across the selected scans.
+- **`xic(mzs, ppm, polarity, t_min, t_max, ms_type, stream)`**: Generates an Extracted Ion Chromatogram within `ppm` of each target m/z across the selected scans.
 
 ### MS2 Specific Methods
 
@@ -95,6 +95,17 @@ Scan selection reads metadata only. The OpenTFRaw backend builds it from `scan_t
 - **MSn scans are grouped by signature and resolution alone**, whatever they record, and an MSn stream carries neither `scan_segment` nor `scan_event`: a missing key says "not grouped by it", where `None` says "the file records none". Whether a dependent scan's event counts its experiment or its place in the cycle is not measured on any file in reach - the corpus holds no MSn scan - and a family split by it would be one stream per slot.
 - **The pair is how the vendor library addresses a method's events; a second segment is not measured.** `IScanEvents` (`ThermoFisher.CommonCore.Data.Interfaces`, the type of an open file's `ScanEvents`) gives a count of `Segments`, `GetEventCount(segment)` for each, and `GetEvent(segment, eventNumber)`: an event has its number within a segment. On the 171 corpus files that record events, every scan's pair is one of the pairs its method's own table holds, and `test_scan_experiments_are_in_the_methods_table` asserts the same on the committed files where the Thermo library is installed. Every one of those files is in one segment, so grouping on the pair changes nothing there, and that a second segment starts again at event 1 is read off the interface, not off a file. It is what keeps a segmented method from pooling the event 1 of each of its segments.
 - **Both backends read the same experiment** for every scan of all 185 files. `test_scan_experiments_match_thermo` asserts it per scan on the committed files where the Thermo library is installed, and a scripted reader on each side holds both wirings wherever the suite runs.
+
+### Selecting one stream
+
+Every method that selects scans by polarity, time and MS order also takes `stream`, a stream key from the census, and so do the public reads built on them in `mascope_thermo.thermo` (`get_signal`, `compute_sum_signal`, `get_tic_per_scan`, `get_scan_timestamps`, `get_peak_timeseries`, `get_centroids`, `get_centroids_per_scan`). The MS2 reads do not take one yet. `None`, the default, selects as before, and reads no key.
+
+- **The keys are the census's.** Selection compares `stream` with `mascope_thermo.streams.scan_stream_keys`, the function `scan_streams` groups by, so the scans selected for a stream are the ones the census counted into it. A backend reads the keys once per open file: a key holds the FT resolution, which is a trailer read per scan.
+- **A stream is selected within the other filters.** A key of another polarity or MS order than the one asked for selects nothing, so a fragmentation stream needs `ms_type="Ms2"` or `None`. A selection that finds no scan raises `NoScansFoundError`, which names the stream; a key the file does not hold is such a selection.
+- **The first scan.** A file's first scan is left out of every selection when its TIC is five times the median of the others or more. With no stream given, the others are every other scan of the file, of any polarity and MS order. With one given, they are the other scans of the first scan's own stream - the scans that measured what it measured - and a stream that does not hold the first scan loses nothing. On a file with one stream the two are the same comparison, so its stream selects exactly what no stream selects.
+
+  On a file with several, they need not be. Of the internal regression corpus's two such files, one loses its first scan to the file-wide comparison and keeps it under its stream: its TIC equals the median of its own experiment's other scans, and is sixty times the file's median only because the other polarity's scans are that much weaker.
+- **On the corpus**, under both backends: each of the 195 streams selects the scans the census counted into it, less a first scan left out in eleven single-stream files; the backends select the same scans for every key both report; and the selections of a file's streams together are the default selection in 184 of 185 files, the one above being the other.
 
 The two backends render some filters differently, because OpenTFRaw does not render every token of the filter.
 

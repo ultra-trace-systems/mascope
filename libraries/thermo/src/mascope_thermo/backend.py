@@ -91,6 +91,23 @@ class ReaderBackend(Protocol):
     Implementations are context managers: open the file in ``__enter__`` and
     release it in ``__exit__``. All methods return backend-neutral Python/NumPy
     data (never .NET objects), so callers are backend-agnostic.
+
+    **Selecting one scan stream.** The methods that select scans by polarity,
+    time and MS order also take ``stream``: a stream key, as
+    :func:`mascope_thermo.streams.scan_streams` reports it. Given one, only
+    the scans of that stream are selected, among those the other filters
+    allow - so a key of another polarity or MS order than the one asked for
+    selects nothing, and a fragmentation stream needs its ``ms_type``. The
+    keys are those of :func:`mascope_thermo.streams.scan_stream_keys`, the
+    function the census groups by, so a stream the census names is exactly
+    the scans selected for it. ``None``, the default, selects as before.
+
+    **The first scan.** A file's first scan is left out of every selection
+    when its TIC is an outlier: five times the median of the others or more.
+    With no stream given the others are every other scan of the file, of any
+    polarity and MS order. With one given they are the other scans of the
+    first scan's own stream, which measure what it measured; a stream that
+    does not hold the first scan loses nothing.
     """
 
     def __enter__(self) -> ReaderBackend: ...
@@ -106,6 +123,7 @@ class ReaderBackend(Protocol):
         t_min: float | None = None,
         t_max: float | None = None,
         ms_type: MsType | None = "Ms",
+        stream: str | None = None,
     ) -> np.ndarray:
         """Scan start times [s] for the scans matching the given filters."""
         ...
@@ -116,6 +134,7 @@ class ReaderBackend(Protocol):
         t_min: float | None = None,
         t_max: float | None = None,
         ms_type: MsType | None = "Ms",
+        stream: str | None = None,
     ) -> tuple[np.ndarray, np.ndarray]:
         """``(scan_times_s, tic)`` for the scans matching the given filters."""
         ...
@@ -145,6 +164,7 @@ class ReaderBackend(Protocol):
         t_min: float | None = None,
         t_max: float | None = None,
         ms_type: MsType | None = "Ms",
+        stream: str | None = None,
     ) -> dict:
         """Per-scan trailer table ``{"header_labels": [...], "settings": {...}}``.
 
@@ -213,6 +233,7 @@ class ReaderBackend(Protocol):
         t_min: float | None = None,
         t_max: float | None = None,
         ms_type: MsType | None = "Ms",
+        stream: str | None = None,
     ) -> dict:
         """Per-scan statistics keyed by 1-based scan number.
 
@@ -237,6 +258,7 @@ class ReaderBackend(Protocol):
         t_min: float | None = None,
         t_max: float | None = None,
         ms_type: MsType | None = "Ms",
+        stream: str | None = None,
     ) -> list[int]:
         """1-based scan numbers matching the given filters."""
         ...
@@ -249,6 +271,7 @@ class ReaderBackend(Protocol):
         ms_type: MsType | None = None,
         mz_min: float | None = None,
         mz_max: float | None = None,
+        stream: str | None = None,
     ) -> list[dict]:
         """Per-scan centroids: list of dicts with ``masses``, ``intensities``,
         ``resolutions``, ``signal_to_noise``, ``timestamp``."""
@@ -284,6 +307,7 @@ class ReaderBackend(Protocol):
         ms_type: MsType | None = "Ms",
         mz_min: float | None = None,
         mz_max: float | None = None,
+        stream: str | None = None,
     ) -> tuple[list[np.ndarray], list[np.ndarray], np.ndarray]:
         """Per-scan profile spectra: ``(scan_mzs, scan_intensities, scan_times)``,
         the m/z and intensity arrays already restricted to ``[mz_min, mz_max]``.
@@ -315,6 +339,7 @@ class ReaderBackend(Protocol):
         t_min: float | None = None,
         t_max: float | None = None,
         ms_type: MsType | None = "Ms",
+        stream: str | None = None,
     ) -> tuple[np.ndarray, np.ndarray]:
         """Extracted-ion chromatograms for each target m/z within ``ppm``:
         ``(intensities[n_mz, n_scans], scan_times)``.
@@ -539,6 +564,11 @@ def _method_experiment(
     return (1 if unset else index_segment + 1), event
 
 
+def _stream_clause(stream: str | None) -> str:
+    """How a selection's error names the stream it asked for, if it did."""
+    return "" if stream is None else f", stream='{stream}'"
+
+
 def _sample_evenly(items: list, count: int) -> list:
     """Up to *count* items spread evenly across *items*, endpoints included."""
     if count <= 0 or not items:
@@ -752,6 +782,7 @@ class ThermoBackend:
         self.datafile_path = datafile_path
         self._mgr = None
         self._raw = None
+        self._stream_keys: list[str] | None = None
 
     def __enter__(self) -> ThermoBackend:
         from mascope_thermo.thermo import RawFileManager
@@ -767,6 +798,7 @@ class ThermoBackend:
         finally:
             self._mgr = None
             self._raw = None
+            self._stream_keys = None
 
     def _selector(
         self,
@@ -774,6 +806,7 @@ class ThermoBackend:
         t_min: float | None = None,
         t_max: float | None = None,
         ms_type: MsType | None = "Ms",
+        stream: str | None = None,
     ):
         from mascope_thermo.thermo import ScanSelector
 
@@ -783,7 +816,17 @@ class ThermoBackend:
             t_min=t_min,
             t_max=t_max,
             ms_type=ms_type,
+            stream=stream,
+            stream_keys=None if stream is None else self._scan_stream_keys(),
         )
+
+    def _scan_stream_keys(self) -> list[str]:
+        """Every scan's stream key, in scan order, read once per open file."""
+        if self._stream_keys is None:
+            from mascope_thermo.streams import scan_stream_keys
+
+            self._stream_keys = scan_stream_keys(self)
+        return self._stream_keys
 
     def polarities(self) -> set[str]:
         out: set[str] = set()
@@ -801,8 +844,9 @@ class ThermoBackend:
         t_min: float | None = None,
         t_max: float | None = None,
         ms_type: MsType | None = "Ms",
+        stream: str | None = None,
     ) -> np.ndarray:
-        return self._selector(polarity, t_min, t_max, ms_type).scan_times
+        return self._selector(polarity, t_min, t_max, ms_type, stream).scan_times
 
     def tic_per_scan(
         self,
@@ -810,8 +854,9 @@ class ThermoBackend:
         t_min: float | None = None,
         t_max: float | None = None,
         ms_type: MsType | None = "Ms",
+        stream: str | None = None,
     ) -> tuple[np.ndarray, np.ndarray]:
-        selector = self._selector(polarity, t_min, t_max, ms_type)
+        selector = self._selector(polarity, t_min, t_max, ms_type, stream)
         times = selector.scan_times
         tic = np.asarray(
             [
@@ -844,11 +889,12 @@ class ThermoBackend:
         t_min: float | None = None,
         t_max: float | None = None,
         ms_type: MsType | None = "Ms",
+        stream: str | None = None,
     ) -> dict:
         # The file defines its trailer's labels once for all of its scans
         # (GetTrailerExtraHeaderInformation), so each scan's values line up
         # with the first scan's labels by position.
-        selector = self._selector(polarity, t_min, t_max, ms_type)
+        selector = self._selector(polarity, t_min, t_max, ms_type, stream)
         settings: dict[int, list] = {}
         header_labels = None
         for i in selector.scan_indices_1based:
@@ -902,8 +948,9 @@ class ThermoBackend:
         t_min: float | None = None,
         t_max: float | None = None,
         ms_type: MsType | None = "Ms",
+        stream: str | None = None,
     ) -> dict:
-        selector = self._selector(polarity, t_min, t_max, ms_type)
+        selector = self._selector(polarity, t_min, t_max, ms_type, stream)
         return {
             scan_index: {
                 **{
@@ -922,8 +969,11 @@ class ThermoBackend:
         t_min: float | None = None,
         t_max: float | None = None,
         ms_type: MsType | None = "Ms",
+        stream: str | None = None,
     ) -> list[int]:
-        return self._selector(polarity, t_min, t_max, ms_type).scan_indices_1based
+        return self._selector(
+            polarity, t_min, t_max, ms_type, stream
+        ).scan_indices_1based
 
     def centroids_per_scan(
         self,
@@ -933,11 +983,12 @@ class ThermoBackend:
         ms_type: MsType | None = None,
         mz_min: float | None = None,
         mz_max: float | None = None,
+        stream: str | None = None,
     ) -> list[dict]:
         from mascope_thermo.thermo import _validate_mz_range
 
         mz_min, mz_max = _validate_mz_range(self._raw, mz_min, mz_max)
-        selector = self._selector(polarity, t_min, t_max, ms_type)
+        selector = self._selector(polarity, t_min, t_max, ms_type, stream)
 
         out: list[dict] = []
         for scan, timestamp in zip(selector.scans, selector.scan_times):
@@ -1017,11 +1068,12 @@ class ThermoBackend:
         ms_type: MsType | None = "Ms",
         mz_min: float | None = None,
         mz_max: float | None = None,
+        stream: str | None = None,
     ) -> tuple[list[np.ndarray], list[np.ndarray], np.ndarray]:
         from mascope_thermo.thermo import _validate_mz_range
 
         mz_min, mz_max = _validate_mz_range(self._raw, mz_min, mz_max)
-        selector = self._selector(polarity, t_min, t_max, ms_type)
+        selector = self._selector(polarity, t_min, t_max, ms_type, stream)
 
         scan_mzs: list[np.ndarray] = []
         scan_specs: list[np.ndarray] = []
@@ -1066,6 +1118,7 @@ class ThermoBackend:
         t_min: float | None = None,
         t_max: float | None = None,
         ms_type: MsType | None = "Ms",
+        stream: str | None = None,
     ) -> tuple[np.ndarray, np.ndarray]:
         from ThermoFisher.CommonCore.Data.Business import (
             ChromatogramSignal,
@@ -1075,7 +1128,7 @@ class ThermoBackend:
         )
 
         mzs = np.asarray(mzs, dtype=float)
-        selector = self._selector(polarity, t_min, t_max, ms_type)
+        selector = self._selector(polarity, t_min, t_max, ms_type, stream)
         selected_scans = selector.scan_indices_1based
 
         intensities = np.zeros((len(mzs), len(selected_scans)), dtype=np.float64)
@@ -1120,7 +1173,11 @@ class ThermoBackend:
         # centroids when there is actually a gap (the common path has none).
         if has_gaps:
             per_scan = self.centroids_per_scan(
-                polarity=polarity, t_min=t_min, t_max=t_max, ms_type=ms_type
+                polarity=polarity,
+                t_min=t_min,
+                t_max=t_max,
+                ms_type=ms_type,
+                stream=stream,
             )
             scan_centroids = [(d["masses"], d["intensities"]) for d in per_scan]
             for i, row in enumerate(rows):
@@ -1216,6 +1273,7 @@ class OpenTFRawBackend:
         self.datafile_path = datafile_path
         self._raw = None
         self._scans: list[dict] | None = None
+        self._stream_keys: list[str] | None = None
 
     def __enter__(self) -> OpenTFRawBackend:
         import opentfraw
@@ -1226,6 +1284,7 @@ class OpenTFRawBackend:
     def __exit__(self, *exc) -> None:
         self._raw = None
         self._scans = None
+        self._stream_keys = None
 
     # -- scan selection: mirrors thermo.ScanSelector over OpenTFRaw scan dicts --
 
@@ -1261,12 +1320,21 @@ class OpenTFRawBackend:
         tic = np.array([s["total_ion_current"] for s in scans], dtype=np.float64)
         return bool(tic[0] >= 5 * np.median(tic[1:]))
 
+    def _scan_stream_keys(self) -> list[str]:
+        """Every scan's stream key, in scan order, read once per open file."""
+        if self._stream_keys is None:
+            from mascope_thermo.streams import scan_stream_keys
+
+            self._stream_keys = scan_stream_keys(self)
+        return self._stream_keys
+
     def _selected(
         self,
         polarity: Polarity | None = None,
         t_min: float | None = None,
         t_max: float | None = None,
         ms_type: MsType | None = "Ms",
+        stream: str | None = None,
     ) -> list[dict]:
         from mascope_thermo.thermo import (
             InvalidRangeError,
@@ -1316,8 +1384,21 @@ class OpenTFRawBackend:
         # Mirror the ThermoBackend first-scan-outlier exclusion (thermo.py
         # scan_indices_1based) so both backends select the same scan set. The
         # check and mask[0] are over the full file scan list, as on the Thermo
-        # path.
-        if self._bad_first_scan(scans):
+        # path - or, when a stream is asked for, over that stream's own scans
+        # and only if the file's first scan is one of them.
+        if stream is None:
+            compared = scans
+        else:
+            in_stream = np.array(
+                [key == stream for key in self._scan_stream_keys()], dtype=bool
+            )
+            mask &= in_stream
+            compared = (
+                [s for s, keep in zip(scans, in_stream) if keep]
+                if in_stream.size and in_stream[0]
+                else []
+            )
+        if self._bad_first_scan(compared):
             from mascope_thermo.runtime import runtime
 
             # INFO: a data quirk of the file, re-evaluated on every scan
@@ -1333,7 +1414,7 @@ class OpenTFRawBackend:
             raise NoScansFoundError(
                 "No scans found matching the specified filters: "
                 f"polarity='{polarity}', time_range=({t_min}, {t_max}), "
-                f"ms_type='{ms_type}'"
+                f"ms_type='{ms_type}'" + _stream_clause(stream)
             )
         return selected
 
@@ -1348,11 +1429,12 @@ class OpenTFRawBackend:
         t_min: float | None = None,
         t_max: float | None = None,
         ms_type: MsType | None = "Ms",
+        stream: str | None = None,
     ) -> np.ndarray:
         return np.array(
             [
                 s["retention_time"] * _SECONDS_PER_MINUTE
-                for s in self._selected(polarity, t_min, t_max, ms_type)
+                for s in self._selected(polarity, t_min, t_max, ms_type, stream)
             ]
         )
 
@@ -1362,8 +1444,9 @@ class OpenTFRawBackend:
         t_min: float | None = None,
         t_max: float | None = None,
         ms_type: MsType | None = "Ms",
+        stream: str | None = None,
     ) -> tuple[np.ndarray, np.ndarray]:
-        selected = self._selected(polarity, t_min, t_max, ms_type)
+        selected = self._selected(polarity, t_min, t_max, ms_type, stream)
         times = np.array([s["retention_time"] * _SECONDS_PER_MINUTE for s in selected])
         tic = np.array([s["total_ion_current"] for s in selected], dtype=np.float64)
         return times, tic
@@ -1396,10 +1479,11 @@ class OpenTFRawBackend:
         t_min: float | None = None,
         t_max: float | None = None,
         ms_type: MsType | None = "Ms",
+        stream: str | None = None,
     ) -> list[int]:
         return [
             int(s["scan_number"])
-            for s in self._selected(polarity, t_min, t_max, ms_type)
+            for s in self._selected(polarity, t_min, t_max, ms_type, stream)
         ]
 
     def mass_range(self) -> tuple[float, float]:
@@ -1439,6 +1523,7 @@ class OpenTFRawBackend:
         t_min: float | None = None,
         t_max: float | None = None,
         ms_type: MsType | None = "Ms",
+        stream: str | None = None,
     ) -> dict:
         # The trailer scan_trailer() reads, so the labels and their order are
         # the ones the Thermo backend reports. Rows are aligned by label
@@ -1447,7 +1532,7 @@ class OpenTFRawBackend:
         return _trailer_table(
             {
                 int(s["scan_number"]): self.scan_trailer(int(s["scan_number"]))
-                for s in self._selected(polarity, t_min, t_max, ms_type)
+                for s in self._selected(polarity, t_min, t_max, ms_type, stream)
             }
         )
 
@@ -1498,6 +1583,7 @@ class OpenTFRawBackend:
         t_min: float | None = None,
         t_max: float | None = None,
         ms_type: MsType | None = "Ms",
+        stream: str | None = None,
     ) -> dict:
         # Map the per-scan stats OpenTFRaw exposes onto Thermo's ScanStats field
         # names. StartTime is in minutes, matching Thermo's ScanStats.StartTime.
@@ -1511,7 +1597,7 @@ class OpenTFRawBackend:
         # expose are None, not faked (OPENTFRAW_UNAVAILABLE_SCAN_STATS). MsType
         # mirrors Thermo's MSOrder.ToString() ("Ms" / "Ms2").
         stats: dict[int, dict] = {}
-        for s in self._selected(polarity, t_min, t_max, ms_type):
+        for s in self._selected(polarity, t_min, t_max, ms_type, stream):
             scan_number = int(s["scan_number"])
             scan_filter = s["filter_string"] or None
             data_type = parse_scan_filter(scan_filter).data_type
@@ -1562,9 +1648,10 @@ class OpenTFRawBackend:
         ms_type: MsType | None = None,
         mz_min: float | None = None,
         mz_max: float | None = None,
+        stream: str | None = None,
     ) -> list[dict]:
         mz_min, mz_max = self._validate_mz_range(mz_min, mz_max)
-        selected = self._selected(polarity, t_min, t_max, ms_type)
+        selected = self._selected(polarity, t_min, t_max, ms_type, stream)
 
         out: list[dict] = []
         for s in selected:
@@ -1975,9 +2062,10 @@ class OpenTFRawBackend:
         ms_type: MsType | None = "Ms",
         mz_min: float | None = None,
         mz_max: float | None = None,
+        stream: str | None = None,
     ) -> tuple[list[np.ndarray], list[np.ndarray], np.ndarray]:
         mz_min, mz_max = self._validate_mz_range(mz_min, mz_max)
-        selected = self._selected(polarity, t_min, t_max, ms_type)
+        selected = self._selected(polarity, t_min, t_max, ms_type, stream)
 
         scan_mzs: list[np.ndarray] = []
         scan_specs: list[np.ndarray] = []
@@ -2309,6 +2397,7 @@ class OpenTFRawBackend:
         t_min: float | None = None,
         t_max: float | None = None,
         ms_type: MsType | None = "Ms",
+        stream: str | None = None,
     ) -> tuple[np.ndarray, np.ndarray]:
         # NumPy reimplementation of the Thermo MassRange chromatogram: for each
         # target m/z, sum the centroid intensities falling in its ppm
@@ -2319,7 +2408,7 @@ class OpenTFRawBackend:
         # so the window sum is cumsum[right] - cumsum[left] for all targets at
         # once. Scales to "all peaks as targets" on large files.
         mzs = np.asarray(mzs, dtype=float)
-        selected = self._selected(polarity, t_min, t_max, ms_type)
+        selected = self._selected(polarity, t_min, t_max, ms_type, stream)
         lows = mzs - mzs * ppm / 1e6
         highs = mzs + mzs * ppm / 1e6
 
