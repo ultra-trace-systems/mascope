@@ -821,6 +821,42 @@ def test_a_stream_key_the_file_no_longer_holds_is_stale(
     asyncio.run(m_compute.check_peak_store(SAMPLE_FILENAME))
 
 
+def test_a_stream_that_kept_no_peak_is_not_read_back(
+    acquire, instrument_functions, monkeypatch
+):
+    """The check reads the file back for the peaks matching could fill, one
+    of each stream, and a stream all of whose peaks are flagged has none. A
+    key that names nothing any more is then not this check's to report for
+    it: there is no m/z to read the stream back for, and nothing of it that
+    a fill would touch."""
+    acquire(TWO_EXPERIMENTS)
+
+    def flag(peaks):
+        """Every peak of the settling stream a satellite, none of the other."""
+        settling = bool((peaks["mz"].round(6) == 125.0).any())
+        return peaks.assign(is_satellite_peak=settling)
+
+    monkeypatch.setattr(m_peak, "flag_satellite_peaks", flag)
+    m_peak.compute_peaks(SAMPLE_FILENAME, instrument_functions, per_stream=True)
+    kept = m_io.load_peak_data(SAMPLE_FILENAME).compute()
+    assert set(kept.stream.values.tolist()) == {1}
+    assert m_compute.peak_store_streams(kept) == [SETTLING, MEASURING]
+
+    # The settling experiment numbered otherwise: its key is gone, and the
+    # measuring one's is the key it was.
+    acquire(
+        [
+            (text, 3 if event == 1 else event, peaks)
+            for text, event, peaks in TWO_EXPERIMENTS
+        ]
+    )
+    keys = m_streams.scan_stream_keys(m_streams.open_backend(""))
+    assert SETTLING not in keys
+    assert MEASURING in keys
+
+    asyncio.run(m_compute.check_peak_store(SAMPLE_FILENAME))
+
+
 def test_the_scripted_reader_refuses_a_key_as_the_real_one_does(acquire):
     """What the stale-key test rests on: asked for a stream it does not hold,
     the scripted acquisition answers as both reader backends do, and an
