@@ -783,7 +783,8 @@ scan types, each an experiment of the method: a short reagent scan over
 the whole low range at one microscan and an AGC target of 3e5, run five
 times; then three analyte windows at ten microscans and 1e6, each a single
 injection, run three, four and two times - a low window starting just
-above the reagent ions, a mid window and a high window up to m/z 900.
+above the reagent ions, a mid window, and a high window recorded to
+m/z 1200 and used to 900.
 Against the old pair of files - one with the reagent ions in range, one
 without, about 39 seconds of data between them - the one composite file
 finds about twice as many peaks in one chemistry and 1.4 times as many in
@@ -802,10 +803,13 @@ Two things the measurement settled about how such a file must be read:
   the file name, both of which were wrong on those two days. That is what
   the stream census already does (4.1): each of the four is its own
   experiment, so its own stream, with its range in the signature and its
-  microscans and AGC target among the attributes. Whether the method
-  writes "run five times" as one event repeated or as five events is not
-  yet measured on these files; either way the five are one segment
-  (decision 14, revised).
+  microscans and AGC target among the attributes. Read scan by scan on
+  2026-10-06, each scan type is one scan event run several times - events
+  1 to 4 of one segment, five, three, four and two scans - so the census
+  of #2273 lists exactly four streams per file, and no repeat arises. The
+  two chemistries' low windows differ in scan mode, one a full scan and
+  the other a SIM scan; the signature records that, and the stitch does
+  not care.
 - **Pooling blends the scan types.** Averaged as one spectrum, every region
   is scaled by its share of the scans - five elevenths, three elevenths -
   and the gain disappears. That is what the pipeline does with such a
@@ -821,7 +825,9 @@ apart and a window loses signal within a couple of m/z of its edges.
   range trimmed inside its edges, about one per cent at the lower edge and
   two at the upper. Where two segments claim one m/z, the one with more
   microscans owns it; among equals, the window that starts higher, because
-  a window reads weakest toward its top. Rounded to whole m/z, that rule
+  a window reads weakest toward its top - in the overlap of the mid and
+  the high window, the ions both see read 1.3 times higher in the high one
+  (measured 2026-10-06). Rounded to whole m/z, that rule
   gives the site's own map as it drew it: the reagent scan owns the bottom
   of the range and the band between the low and the mid window, which
   keeps the reagent dimer out of any analyte window, and the mid window
@@ -837,9 +843,13 @@ apart and a window loses signal within a couple of m/z of its edges.
   an ion taken from the one-microscan reagent scan at half of what a
   ten-microscan window would give it - so any factor that turns counts
   into a concentration belongs to the layout, and the item records which
-  segment each peak came from. Whether the reader's intensities are
-  already per unit of injection time is measured on the site's files
-  before the stitch is written; the averaging weights nothing by it today.
+  segment each peak came from. The reader's intensities are already per
+  unit of injection time, so the averaging needs no weighting by it
+  (measured 2026-10-06 on the newest file of each chemistry): in the
+  overlap of the reagent scan and the low window, the ions both see read
+  1.25 times (nitrate) and 2.6 times (uronium) higher in the window, where
+  raw counts would read 5 and 9 times higher, the ratio of the two fills.
+  What remains between windows is the layout's own factor, above.
 - **A composite is a stream of streams** (3.1). It has a row in
   `acquisition_stream` (4.4) that its segments point at, its peak rows are
   its segments' rows within the m/z each owns - a per-peak mask in the
@@ -864,7 +874,10 @@ apart and a window loses signal within a couple of m/z of its edges.
   own summed signal; a window too thin to fit borrows its sibling's.
 - **Calibration per segment** (phase 4). Not optional: the site measured
   offsets of about a ppm between its segments, and three to four ppm below
-  m/z 50 from the instrument itself; and the Orbitrap apply rescales every
+  m/z 50 from the instrument itself - the shared ions of the reagent scan
+  and the low window sit 0.7 ppm (nitrate) and 0.1 ppm (uronium) apart,
+  those of the mid and the high window 0.4 ppm, medians measured
+  2026-10-06; and the Orbitrap apply rescales every
   peak row of the file, so the segments' rows must be rescaled each by its
   own fit, which the stream label makes possible.
   - **One binding, one calibrant collection**, counted per segment, on the
@@ -884,8 +897,11 @@ apart and a window loses signal within a couple of m/z of its edges.
   file-wide comparison drops a valid scan from every file of one of the
   site's two chemistries, and its item starts at the second scan. Since
   #2278 the comparison is with the other scans of the first scan's own
-  stream (4.3), which is what the site asks for; it is checked on the
-  site's files before the cut ships.
+  stream (4.3), which is what the site asks for. Checked on the newest
+  file of each chemistry (2026-10-06): the uronium file's first scan is
+  5.8 times the median of the file's other scans and 0.98 times the
+  median of its own event's, so the file-wide rule drops it and the
+  per-stream rule keeps it; the nitrate file's is 2.2 times, kept by both.
 - **The reagent-segment normalisation** the site wants - each analyte's
   counts over the reagent ions of the same file - becomes possible once
   the reagent ions are in every file again, and is a consumer of the
@@ -2096,7 +2112,10 @@ through a short-lived stacked branch, merged as one unit.
   - the re-baselined manifest (routing per file);
   - the two polarity-switching files (streams);
   - one composite file of each chemistry from the site that runs them
-    (segments, the stitch map, the first-scan rule): still to be added;
+    (segments, the stitch map, the first-scan rule): a working set of 641
+    files - an hour of composite files and a day of the old file pairs -
+    sits on the internal test box since 2026-10-06, and one of each still
+    has to join the corpus;
   - the labelled streams (detection confusion);
   - the exposure file (trace windows).
   The corpus is internal. Anything committed as a fixture must be synthetic
@@ -2246,10 +2265,10 @@ through a short-lived stacked branch, merged as one unit.
     microscans owning an m/z two claim, the higher window among equals -
     or fixed per layout by the catalogue entry or the recipe; or both, the
     layout overriding the default (recommended). Fitted so far to one
-    site's layout, which it reproduces. Whether the reader's intensities
-    are already per unit of injection time, and so comparable across
-    segments as they are, is measured on the site's files before the
-    stitch is written.
+    site's layout, which it reproduces. Measured 2026-10-06: the reader's
+    intensities are per unit of injection time (4.5), so segments compare
+    as they are, up to the layout's own window-to-window factor, which the
+    overlap reports.
 
 ---
 
