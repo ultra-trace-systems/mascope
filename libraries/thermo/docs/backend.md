@@ -138,6 +138,7 @@ Every method that selects scans by polarity, time and MS order also takes `strea
 The `average_profile` algorithm operates in the **frequency domain**.
 
 - **Grid**: One point per native FFT bin, at the mean of the frequencies the scans sampled in it; a constant **0.2 ppm** m/z grid only for scans without Conversion Parameters.
+- **Sum**: Each scan is interpolated onto the grid and added from **0.5** bin before its first stored sample to **0.5** bin after its last, which takes in the grid points of its own end samples, and nowhere further than **2.0** bins from one of its samples, so it adds nothing across the stretches it stored nothing in.
 - **m/z Axis**: The frequency grid is converted back to m/z peak by peak. Each profile peak, the samples between two valleys, is written on the mean of the scans' Conversion Parameters B and C weighted by what each scan contributes to its tallest sample, which is the calibration its averaged centroid sits on. Neighbouring peaks that would cross share one calibration. Nothing is fitted to the centroids.
 - **S/N Scaling**: Averaged Signal-to-Noise is scaled by $n/\sqrt{N}$.
 
@@ -145,5 +146,5 @@ The `average_profile` algorithm operates in the **frequency domain**.
 
 - **Peak Sourcing**: Peak heights are refined from the profile apex within a 3.0 ppm window.
 - **Centroid Merging**: Centroids are merged if their gap is below **0.5 \* local FWHM**.
-- **Zero-filling**: Baseline zeros are placed 2.0 ppm outside cluster edges.
-  Boundaries are defined where gaps exceed **4.0 \* median spacing**.
+- **Zero-filling**: Baseline zeros are placed 2.0 ppm outside cluster edges; a gap narrower than 4 ppm takes one zero, at its middle.
+  A cluster ends where the step to the next occupied bin exceeds **4.0 \* the median step**, both relative, so in bins the threshold is lower the higher the m/z. The step is read off the frequency grid, so the boundaries do not depend on the calibrations the peaks are written on; it is read off the m/z axis only for scans without Conversion Parameters.
