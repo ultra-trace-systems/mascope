@@ -742,6 +742,29 @@ def test_only_the_peaks_asked_for_are_filled(acquire, instrument_functions):
     assert computed == {62.0: False, 125.0: False, 188.0: True}
 
 
+def test_an_mz_two_streams_hold_is_answered_by_the_row_that_kept_it(
+    acquire, instrument_functions
+):
+    """``load_peak_timeseries`` takes no stream: it resolves an asked m/z to
+    the nearest kept peak, of whichever stream. Both experiments hold the
+    reagent ion at 62.0. The row that kept that m/z answers, filled over its
+    own stream, and the other stream's row, set just above it, is found only
+    by its own m/z. It is what a consumer that asks by stream has to change,
+    and it is pinned so that the change is made on purpose."""
+    acquire(TWO_EXPERIMENTS)
+    m_peak.compute_peaks(SAMPLE_FILENAME, instrument_functions, per_stream=True)
+    set_above = float(_store().mz.values[1])
+    assert set_above == 62.0 * (1 + m_peak.MZ_ROW_SEPARATION)
+
+    answered = _fill([62.0])
+
+    assert answered.mz.values.tolist() == [62.0]
+    assert answered.stream.values.tolist() == [0]
+    nan = pytest.approx(np.nan, nan_ok=True)
+    assert answered.peak_heights.values.tolist() == [[100.0, 100.0, nan, nan, nan, nan]]
+    assert _fill([set_above]).stream.values.tolist() == [1]
+
+
 def test_a_per_stream_store_just_built_reads_back(acquire, instrument_functions):
     acquire(TWO_EXPERIMENTS)
     m_peak.compute_peaks(SAMPLE_FILENAME, instrument_functions, per_stream=True)
