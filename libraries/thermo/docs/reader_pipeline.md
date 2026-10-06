@@ -94,7 +94,8 @@ frequency. The steps (`average_profile`, the frequency branch):
    see 3.1.1.
 3. Linear-interpolate each scan onto the frequency grid and sum. Because the
    peaks are aligned, this is the true mean shape (times `scans_combined`) with
-   no integral rescaling.
+   no integral rescaling. A scan counts beside its own samples only: within
+   two bins of one, and half a bin past the two ends of its range (3.1.2).
 4. Convert the frequency grid back to m/z, each profile peak on the
    intensity-weighted mean of the scans' calibrations (3.2).
 
@@ -111,9 +112,10 @@ across the peak instead of the measured value, and the apex read off it comes
 out low.
 
 Every scan of a file is transformed on the same FFT bin grid, so a cell holds
-one sample per scan and they agree to within a few percent of a bin. Their mean
-is therefore a frequency the instrument actually sampled, and interpolating
-there returns what it measured.
+one sample per scan. Where those agree to within a few percent of a bin, as
+they do in over half the cells (3.1.2 has the rest), their mean is a frequency
+the instrument actually sampled, and interpolating there returns what it
+measured.
 
 The single-scan case measures this, because with one scan nothing is averaged
 and the apex must reproduce that scan's own centroid label -- the instrument's
@@ -156,6 +158,67 @@ axis. That is what made reader 1.4.1's axis correction look like a height
 change: measured against the Thermo library over 29,493 matched peaks, the
 averaged-centroid bias differs by 1.3 percentage points between reader 1.4.0 and
 2.0.0 on cell centres, and by 0.1 on cell means.
+
+### 3.1.2 Where a scan is in the sum
+
+A raw file keeps a scan's profile around its peaks only, so every scan has
+stretches it stored nothing in, and step 3 has to say where a scan counts.
+
+- **Not across what it left out.** Interpolating a scan from one cluster to
+  the next would draw a ramp under every peak another scan holds in between,
+  and summed over the scans those ramps inflate and flat-top the peaks that
+  are in a few scans only. A scan is added within `_AVG_PROFILE_GAP_DF`
+  (2) bins of one of its own samples, and is zero beyond. Beside each of its
+  clusters it therefore still adds, for a bin or two, the chord towards its
+  next cluster.
+- **At its own first and last samples.** A grid point is the mean of what
+  every scan sampled in its cell (3.1.1), so a scan's own sample lies a little
+  to one side of it, above as often as below. At the two ends of a scan's
+  stored range, where another scan sampled the same cell, the grid point
+  therefore falls outside the range about half the time, and a search bounded
+  by the scan's own end frequencies leaves the scan out of the sum at its own
+  end sample. The search reaches `_AVG_PROFILE_END_DF` (half a) bin beyond
+  either end instead: far enough for the grid point of the scan's own cell,
+  short of the next bin's. The scan adds its end sample's value there.
+
+The two-bin threshold sits on a lattice distance. The grid point two bins
+past one of a scan's clusters lies two bins give or take the scan's sub-bin
+offset from the cluster's last sample, so it is kept for one sign of the
+offset and zeroed for the other: of such contributions about a quarter are
+kept, 14,487 of 60,023 on the demo files and 773,524 of 2,966,994 on the
+corpus. A threshold of 1.5 or 2.5 bins would not turn on the offset. Of the
+two, 1.5 is the closer to the Thermo library. At the 2,816 grid points of 11
+demo files that the choice changes, the sum is 1.25 times Thermo's with 1.5,
+1.33 times with 2 and 1.68 times with 2.5, and the 676 centroid heights it
+changes read a median 1.10, 1.11 and 1.13 of Thermo's. Neither is a small
+change, though. With 1.5, 2,916 of the demo files' 310,095 centroid heights
+change, 515 of them at S:N 3 or above by more than 1%, and 14,133 of the
+corpus's 473,670; with 2.5 it is 8,628 and 56,687. The threshold stays at 2
+until that is a change of its own.
+
+Bounded by the end frequencies, 376 of the 1,288 end samples of the 161 demo
+files stayed out of the sum, and 1,625 of the 10,788 of the internal
+regression corpus. A scan alone in its cell is its grid point; of the demo
+files' 815 end samples that share theirs with another scan, the 376 are 46%.
+With the half bin it is none and 4. Those four lie more than half a bin from
+the mean of their cell, because the scans' samples in one cell do not always
+agree closely: of the demo files' cells that hold more than one sample, 44%
+spread over more than a twentieth of a bin and 5.7% over more than half of
+one.
+
+It is two samples per scan, at the ends of its whole stored range, which
+usually lie on the outer skirt of the first and last peak the scan stored: a
+median 4e-7 of a corpus acquisition's summed signal, and 0.17% at most. It
+shows where several scans begin on the flank of one peak. In a 12-scan
+acquisition of the corpus they begin on three neighbouring bins of a peak's
+rising flank, and those three samples read 31%, 39% and 16% low in the sum;
+the instrument-function fit read that peak's resolution 8% high, and the
+acquisition's resolution coefficient `a` moves by 3.2% once the samples are
+in. Elsewhere little moves: the figures of 3.2 are the same to the last digit
+shown, one of the demo files' 310,095 centroid heights changes (below S:N 9),
+and 102 of the corpus's 473,670 do, eight of them at S:N 9 or above, by 0.19%
+at most. Of 182 corpus acquisitions with a fit, `a` moves by more than 0.1% in
+seven, and by more than 1% in that one alone.
 
 ### 3.2 Which calibration the averaged profile is written on
 
@@ -280,20 +343,79 @@ smeared across them, and its position is no reference there.
 ### 3.3 Baseline zero-fill
 
 OpenTFRaw returns only non-zero profile samples; Thermo's profile has explicit
-zero baseline between peak clusters. Linear interpolation across a large empty
-gap would draw spurious ramps that, summed over scans, inflate the baseline.
-`_zerofill_baseline()` (driven by `_ZEROFILL_GAP_FACTOR`) inserts a zero
-just outside each cluster edge -- any m/z gap more than a few times the median
-sample spacing is treated as a cluster boundary -- so interpolation stays local
-and the baseline floor matches Thermo.
+zero baseline between peak clusters. Left as it comes off the grid, the
+averaged profile would run in a straight line from the last sample of one
+cluster to the first of the next, however far apart they lie.
+`_zerofill_baseline()` inserts a zero just outside each cluster edge, so the
+profile drops to the baseline between clusters, whatever reads it interpolates
+locally, and the floor matches Thermo.
 
-The gap is judged on the m/z axis, so the boundaries follow where 3.2 writes
-the peaks. Over the 22 drifting acquisitions the per-peak axis gains 1,008
-boundaries the plain mean does not have and loses 1,375, of 118,730. Nearly
-all are real gaps of a missing bin or two whose width sits near the threshold
-on either axis. Seven fall between adjacent bins, across a valley the axis
-stretched, all at noise level. On the demo files it is 14 gained and 10 lost
-of 257,373.
+**Where a cluster ends** is read off the frequency grid: at a step to the next
+occupied cell more than `_ZEROFILL_GAP_FACTOR` (4) times the grid's median
+step, each step taken relative to its frequency. It is not read off the m/z
+axis, because 3.2 writes every peak on a calibration of its own, which
+stretches or squeezes the step between two neighbouring peaks by up to a few
+ppm. A threshold on the written axis moves with the scans' calibrations; the
+cells the scans occupied do not. Judged on the written axis, the 22 drifting
+acquisitions had 1,008 boundaries the plain mean's axis does not give and
+lacked 1,375 it does, of 118,730, seven of them between adjacent bins, across
+a valley the axis had stretched.
+
+m/z goes as 1/f^2, so a relative step in frequency is half the relative step
+in m/z all along the grid, and on one calibration the two axes pick the same
+gaps. Against the m/z rule on the plain mean's axis, the frequency rule
+differs in none of the corpus's 353,485 boundaries and in one of the demo
+files' 257,373. It is one rule (`_zerofill_baseline`), handed the axis to
+read the steps off: the frequency grid here, and the m/z grid itself in the
+m/z fallback, which has no other.
+
+The threshold is relative, so it is not a number of bins. A bin is the same
+step in frequency all along the grid, a larger share of the frequency the
+higher the m/z, and a step of n bins ends a cluster only above (4/n)^2 times
+the median m/z of the occupied cells. On a grid from m/z 50 to 750 with that
+median at 126, one missing bin ends a cluster above about m/z 500, and four
+missing bins do not end one below about m/z 80. Where the boundaries fall
+thus still depends on where a file's peaks lie, though no longer on its
+calibration.
+
+**Where the zeros go**: `_ZEROFILL_EDGE_PPM` (2 ppm) outside each of the two
+edge samples. A gap under 4 ppm wide has no room for that. The two zeros
+would pass each other, and in a gap under 2 ppm each would land among the
+next cluster's samples, a zero inside a peak. Such a gap takes one zero, at
+its middle. That is where the two meet as a gap narrows to 4 ppm, so the
+baseline does not jump with a width the calibrations still stretch and
+squeeze. The demo files have no such gap. Of the 353,485 boundaries this rule
+finds on the corpus 3,182 are that narrow, 232 of them under 2 ppm, all in
+seven acquisitions whose bins are under 1 ppm wide, where four median steps
+come to less than 4 ppm. Of the 353,058 boundaries read off the written axis
+it was 2,317 and 180: the rule here also marks 1,317 narrow gaps that the
+written axis had squeezed under its threshold, which then got no zero at all.
+
+**Why a threshold and not every missing bin.** The cells are exact, a bin is
+missing or it is not, so a boundary could go at every missing bin instead.
+That is closer to Thermo's profile. Over 11 demo files it reads zero inside
+all 17,599 gaps the threshold marks, and also inside all but 9 of the 741 gaps
+of two or more missing bins the threshold leaves bridged; in the 505 of one
+missing bin it dips to a median quarter of the lower edge sample. At Thermo's
+points inside those gaps the bridged profile is off Thermo's by 0.59 of the
+taller edge sample on average, and by 0.10 with a zero at every missing bin.
+It is 7% more boundaries (275,223 against 257,372 on the demo files, 377,580
+against 353,485 on the corpus), nearly all of one to four missing bins at the
+lower end of the mass range, where a median step is the most bins.
+
+It also moves what reads the profile, on files whose calibration is steady,
+which reading the boundaries off the frequency grid was not meant to do. A
+zero beside a peak's top sample changes the parabola its height is read off
+(section 4): on the corpus 142 centroid heights change, seven of them at
+S:N 9 or above, by up to 11%. The instrument-function fit sees the zeros in
+its windows, and its resolution coefficient moves in every demo file, by up to
+0.39%. With the threshold the demo files keep their centroid heights and
+their fit (`a` moves by 2e-10 at most), and on the corpus four heights
+change, none at S:N 9 or above, and `a` moves by more than 0.1% in two
+acquisitions of 182. A boundary at every missing bin is a change to make on
+its own, with its own generation. So is a third rule, between the two and
+not measured here: a fixed number of bins, the same all along the grid, as
+`_frequency_grid_to_mz` counts its gaps.
 
 ---
 
@@ -549,7 +671,7 @@ cluster, which the open reader omits (and which `_zerofill_baseline` puts back).
   `sum_signal`, a filtered one under a hash of its time window and polarity).
   A raw Orbitrap file's cache name also carries what averaged the profile,
   `averaged_profile_signature()` (`sum_signal_suffix`): the reader, its version
-  and `AVERAGED_PROFILE_GENERATION`, as in `sum_signal_<hash>.otf2.0.0-g4`.
+  and `AVERAGED_PROFILE_GENERATION`, as in `sum_signal_<hash>.otf2.0.0-g5`.
 - Computes via `m_thermo.compute_sum_signal(...)` -> `average_profile(...,
   average=False)` (sum, i.e. apex = mean * scans_combined), optionally dividing
   by an averaging factor for the averaged view.
