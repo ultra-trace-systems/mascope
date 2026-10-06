@@ -1,12 +1,14 @@
 # Automatic ingest: chemistry routing and acquisition splitting - design
 
 Status: **phases 0 and 1 shipped; phase 2 shipped up to its backfill
-re-run and per-site switch; the stream first cut of phases 3 and 4 is
-being built, its census keyed on the method's experiments; phase 8
+re-run and per-site switch; the stream work of phases 3 and 4 is being
+built as the composite cut - several m/z ranges of one chemistry stitched
+into one spectrum - its census keyed on the method's experiments; phase 8
 follows it; detection deferred**
-(2026-10-05). Written for issue #2098 ("Split files into samples by scan
+(2026-10-06). Written for issue #2098 ("Split files into samples by scan
 attributes"), which carries the checklist of pull requests. Decisions 1 to
-5, 7, 9 and 12 to 15 in section 12 are settled; 6, 8, 10 and 11 are open.
+5, 7, 9 and 12 to 16 in section 12 are settled; 6, 8, 10, 11 and 17 are
+open.
 
 ## Picking this up
 
@@ -35,15 +37,19 @@ file per chemistry and instrument type for the operator to load, and a
 catalogue entry naming the profile it runs. A site on a shipped method gets
 its chemistry on its first file with no click at all; a site on its own
 method gets it after one (5.3). The standard methods are also where files
-with several scan ranges of one chemistry come from, and splitting those
-into one item per range is the first cut of the stream work (4.5) - the
-next thing built (decided 2026-10-05).
+with several scan ranges of one chemistry come from, and stitching those
+ranges into one spectrum per polarity - the composite cut - is the first
+cut of the stream work (4.5), the thing being built (decided 2026-10-05
+as a split, turned into a stitch on 2026-10-06 on a site's measurement).
 
 The design in one paragraph. A physical acquisition (`sample_file`) is
 partitioned into **streams**: the scans of one experiment of its method -
 one scan event - within one chemistry epoch. Each stream gets its own peak
 rows, time axis, instrument function, m/z calibration and chemistry
-**binding**. A stream is cut into
+**binding**. Where a method measures one chemistry as several m/z ranges,
+those streams are the **segments** of a **composite**: one spectrum per
+polarity, each m/z taken from the segment that owns it, and one item, as a
+file gets today (4.5). A stream is cut into
 **windows** by a per-instrument, versioned **recipe**. Every (stream, window)
 **part** becomes one sample item.
 
@@ -67,7 +73,7 @@ suggestion to the parked file; it is deferred behind the stream and profile
 work (decision 3).
 
 Read sections 1 and 2 for the problem and the evidence, 3 for the model, 4.5
-for the first stream cut, 5.1 for the profile, 5.3 for the catalogue, and 10
+for the composite cut, 5.1 for the profile, 5.3 for the catalogue, and 10
 for the plan and how it lands. Section 9.1 carries
 the three rules that keep already-processed files as they are. Every pull
 request for this work updates the table below and ticks its item on #2098.
@@ -78,8 +84,8 @@ request for this work updates the table below and ticks its item on #2098.
 | 1 | Per-file processing state, persistent notifications, "needs a chemistry" | shipped (#2164, #2166-#2169) |
 | 2 | Method bindings: routing without tokens | learned in shadow on every server (#2193, #2196, #2206, #2226), measured (5.7), item provenance (#2254), the row-following learner (#2255), the rung (#2264) and the disagreement report (#2267) shipped; the backfill re-run and the per-site switch remain, section 10 lists them |
 | 8 | Chemistry profiles as the unit: complete the seeded profiles, ship the standard methods and their catalogue, list the profiles, a profile-first surface, batches named after the profile | open; follows the stream first cut, or runs beside it when there are hands for both (decided 2026-10-05) |
-| 3 | The part contract: stream and window honoured by every consumer | **in progress**: the first cut, for files with more than one MS1 stream in a polarity (4.5), leads the work after phase 2 (decided 2026-10-05). The census keys streams on the method's experiments (#2273) and the reader selects one stream's scans (#2278); the store, the items and the consumers follow, and section 10 lists them |
-| 4 | Per-stream state: calibration, instrument function, one item per stream, MS2 | open; follows 3 on the same track; no rebuild script (4.5, 9.1) |
+| 3 | The part contract: stream and window honoured by every consumer | **in progress**: the composite cut, for files with more than one MS1 stream in a polarity (4.5), leads the work after phase 2 (decided 2026-10-05; a stitch, not a split, since 2026-10-06). The census keys streams on the method's experiments (#2273) and the reader selects one stream's scans (#2278); per-stream detection (#2279) is open; the stitch, the composite row and its item, the consumers and the per-segment fits follow, and section 10 lists them |
+| 4 | Per-stream state: calibration and instrument function per segment, MS2 | open; its per-segment calibration is part of the composite cut; follows 3 on the same track; no rebuild script (4.5, 9.1) |
 | 5 | Chemistry detection: audit first, then provisional binding | deferred behind phases 3, 4 and 8 (decision 3); its reagent libraries are on `develop` |
 | 6 | Recipes: time and trace windows, preview and apply | open |
 | 7 | Declarations from the instrument side, MS2-only parts, manual acquisitions | open |
@@ -355,8 +361,20 @@ threshold on one ion's trace finds it.
   - its peak rows and time axis;
   - its instrument function and m/z calibration;
   - its chemistry binding.
+- **Segment.** A stream that is one of several m/z ranges a method measures
+  of one chemistry, with its own range, microscans, AGC target and fill
+  (4.5).
+- **Composite.** One polarity's segments stitched into one spectrum: each
+  m/z is taken from the one segment that owns it under a stitch map (4.5).
+  A composite is a stream of streams - it has a row, its peak rows and sum
+  signal are its segments' within the m/z each owns, and its calibration
+  is theirs - and it is what a composite file's item points at.
+- **Stitch map.** Which segment owns each m/z interval of a composite:
+  computed from the segments' ranges and microscans by default, fixed by
+  an acquisition layout where one is known.
 - **Window.** An interval [t0, t1] inside a stream.
-- **Part.** A (stream, window) pair. **One part is one sample item.**
+- **Part.** A (stream, window) pair, the stream a composite where the file
+  holds one. **One part is one sample item.**
 - **Binding.** The link from a stream to the ionization mode that interprets
   it, with its source, state and evidence (section 5).
 - **Recipe.** Versioned, per-instrument rules that decide:
@@ -367,7 +385,8 @@ threshold on one ion's trace finds it.
 ### 3.2 The part contract
 
 > A sample item's signal is the aggregate of the scans of its stream that
-> fall inside [t0, t1].
+> fall inside [t0, t1]; for a composite, of each segment's scans, within
+> the m/z that segment owns.
 
 Every consumer honours this: peak listing, spectrum, matching, assignment,
 calibration candidates, TIC, exports and MS2.
@@ -382,7 +401,7 @@ byte-identical results.
 ```mermaid
 graph LR
     U[Upload] --> C["Convert:<br/>props + stream census"]
-    C --> D[Detect peaks<br/>per stream]
+    C --> D["Detect peaks per stream,<br/>stitch the composites"]
     D --> B["Bind chemistry per stream<br/>(ladder + audit)"]
     B -->|bound| W[Cut windows<br/>by recipe]
     B -->|unresolved| P[Park:<br/>needs a chemistry]
@@ -430,7 +449,7 @@ at them.
 | Precursor and activation | filter (`123.4567@hcd30.00`) | for targeted MSn only | data-dependent scans fold into one family per parent; this matches today's MS2 grouping key |
 | FT resolution | trailer (`FT Resolution:`) | yes | not in the filter; constant within a filter across the corpus |
 | Scan segment and scan event | scan index; the trailer's `Scan Segment:` and `Scan Event:` agree with it | as identity | the experiment of the method: its scan event, numbered within its segment. The pair decides what a stream is, and joins the key text only where one filter carries more than one (below) |
-| Microscans, AGC target, injection time, lock-mass state | trailer | no | recorded on the stream as attributes, with their variation. A method that changes one defines another experiment, which is its own stream with its own fit (4.3); the microscan count and the AGC target also say which batch a stream's item joins (4.5) |
+| Microscans, AGC target, injection time, lock-mass state | trailer | no | recorded on the stream as attributes, with their variation. A method that changes one defines another experiment, which is its own stream with its own fit (4.3); the microscan count says which segment owns an m/z two segments of a composite claim (4.5) |
 
 The signature needs **one** filter-string parser, written and tested in
 `mascope_thermo`. It serves both backends:
@@ -548,14 +567,18 @@ where one measurement ends and the next begins, and an event boundary is
 always a block the method set, never something that flickers within a
 filter.
 
-**A repeated experiment is one item per repeat** (decided with it). A method
-that defines the same scan again later, as both corpus files do, yields an
-item for each: eight from the hour-long file, where the filter alone gives
-four. Each is one contiguous block, and nothing is averaged across the gap
-in which the instrument measured something else. The repeats are gathered
-again one level up: items join a batch by what their experiment measured
-(4.5), so three repeats of one definition share a batch and two definitions
-do not.
+**A repeated experiment is one stream per repeat in the census** (decided
+with it), and the census is where that ends. A method that defines the
+same scan again later, as both corpus files do, lists a stream for each:
+eight from the hour-long file, where the filter alone gives four, each one
+contiguous block. The items no longer follow the census one to one
+(revised 2026-10-06, decision 14): streams of one signature and the same
+settings are one segment of their polarity's composite (4.5), so that file
+gets one item per polarity, as it does today, and its repeats are averaged
+together, gap and all, as the pipeline averages them now. Cutting them
+apart by time is a window's job (section 6). One item per repeat, and
+batches gathered by what was measured, are withdrawn with the split they
+served.
 
 **A file that records no event keeps the filter as its key.** Those are
 manual acquisitions, started with no method file loaded, and a setting
@@ -615,6 +638,11 @@ it. Four things the build settled:
     label.
   - The time axis gains a per-scan `stream` label.
   - Sum signals become per stream.
+  - A composite adds a per-peak `composite` mask: whether the peak's own
+    segment owns its m/z under the stitch map (4.5). The composite's peak
+    list is its segments' rows with the mask set, and its sum signal is
+    its segments' sum signals cut at the map's boundaries. Nothing is
+    rescaled: a peak's intensity is what its segment measured.
 - **Peak detection loops over MS1 streams instead of polarities.**
   - Today's loop is `_extract_peaks_for_polarity`.
   - Scan selection gains a stream predicate, next to polarity, time and MS
@@ -639,7 +667,7 @@ it. Four things the build settled:
   single-stream files.** Any change to what the default selection returns
   makes every existing store stale (`check_stored_scan_axis`), so per-stream
   evaluation applies only to multi-stream files. Those are the files the
-  first cut takes on (4.5). As built (#2278): a selection that names no
+  composite cut takes on (4.5). As built (#2278): a selection that names no
   stream compares the file's first scan with every other scan, as before,
   and one that names a stream compares it with the other scans of its own
   stream - only that stream can lose it. On a single-stream file the two are
@@ -682,7 +710,10 @@ it. Four things the build settled:
   The same 641 files show what the file-wide comparison costs a
   multi-experiment file. All 53 positive ones of four experiments lose an
   ordinary first scan to it: 5.7 to 6.0 times the median of the file's
-  other scans, and 0.97 to 1.01 of its own stream's.
+  other scans, and 0.97 to 1.01 of its own stream's. Those are the
+  composite files of 4.5: each opens with a short reagent scan, and
+  measured against analyte windows that read many times weaker it was
+  being dropped as an outlier.
 - **The instrument function is fitted per stream, always.** Today's fit is
   one per file, on the file's whole summed signal: up to a hundred of the
   brightest peaks, their width against m/z, an inverse-square-root model for
@@ -701,13 +732,16 @@ it. Four things the build settled:
   both summed together, which is a correction rather than a cost.
 - **m/z calibration moves to the stream.**
   - The Orbitrap apply scales only that stream's peak rows and sum signals.
+  - A segment short of anchors takes the fit of the nearest segment in m/z
+    of its polarity, and its quality block says so (decision 5, revised
+    2026-10-06; 4.5).
   - `sample_file.mz_calibration` keeps a copy of the primary stream's fit
     until every reader has moved.
   - This removes the per-file hazard in section 2.1.
 - **Existing multi-stream files stay as they were processed.** No rebuild
   script: rule 1 of 9.1 applies, and an explicit re-process of such a file
-  splits it under the rules then current. The maintenance script once
-  planned here is dropped.
+  re-cuts it under the rules then current, stitched where its ranges make
+  a composite. The maintenance script once planned here is dropped.
 
 ### 4.4 `acquisition_stream`
 
@@ -718,85 +752,159 @@ it. Four things the build settled:
 | `signature_key`, `scan_segment`, `scan_event` | the stream's identity across files: what it measured, and the experiment's segment and event number in the method; the last two NULL where the file records none. Which of the three a consumer compares is the consumer's own (4.1) |
 | `signature` (JSON) | the parsed key fields, plus the attributes of section 4.1 with their variation |
 | `parent_stream_id` | MSn to its MS1 parent |
+| `composite_stream_id` | a segment's composite; NULL on a composite itself and on every stream of a file that has none (4.5) |
+| `stitch` (JSON) | on a composite: the map it was built with, each segment's owned m/z intervals, and the layout it came from when one applied |
 | `scan_count`, `blocks`, `t_first`, `t_last` | census |
 | `instrument_function_id` | per-stream fit |
 | `mz_calibration` (JSON) | per-stream calibration |
 | `ionization_mode_id`, `binding_source`, `binding_state`, `binding_evidence` (JSON) | the chemistry binding (section 5) |
 | `state`, `state_detail`, `state_updated_utc` | processing state (section 5.6) |
 
+A composite is a row like any stream, with no scan event of its own and
+its segments pointing at it, so an item points at one stream whether or
+not that stream is stitched.
+
 `sample_item` gains a nullable `stream_id`. NULL means today's semantics, so
 every existing item keeps its meaning. Copy and move carry it.
 
-### 4.5 The first cut: several m/z ranges, one chemistry
+### 4.5 The composite cut: several m/z ranges, one chemistry, one spectrum
 
-What sites want first is to acquire several scan ranges of one chemistry in
-one file and get one sample item per range. Today each item is one stream
-only because the pipeline pools a polarity, so files are acquired one range
-at a time. The corpus already holds the case: a file with two ranges per
-polarity in eight blocks, pooled into one spectrum per polarity (2.2).
+What sites want first is to acquire several scan ranges of one chemistry
+in one file. The first version of this section had Mascope split such a
+file into one item per range, which is how the ranges are acquired today:
+as separate files, one range at a time, because the pipeline pools a
+polarity. On 2026-10-05 and 06 one site ran it the other way round on an
+Orbitrap Exploris 120, and what it measured changed the cut (decision 16):
+the ranges are measured so that each fills the trap on its own, and they
+are **stitched into one spectrum**, not kept apart.
 
-**This cut is the next thing built** (decided 2026-10-05), ahead of phase
-8. A site that cycles its ranges as separate files loses two fifths of
-every cycle to the gaps between them (2.2), and nothing waits on the
-profiles.
+**What the site measured.** One 25-second file per chemistry holds four
+scan types, each an experiment of the method: a short reagent scan over
+the whole low range at one microscan and an AGC target of 3e5, run five
+times; then three analyte windows at ten microscans and 1e6, each a single
+injection, run three, four and two times - a low window starting just
+above the reagent ions, a mid window and a high window up to m/z 900.
+Against the old pair of files - one with the reagent ions in range, one
+without, about 39 seconds of data between them - the one composite file
+finds about twice as many peaks in one chemistry and 1.4 times as many in
+the other, reaches m/z 900 where the pair stopped at 600, and samples each
+chemistry twice as often; per-scan noise in the mid range fell by more
+than half. The gain is in each scan, not in their number: the instrument
+stores nothing below a signal-to-noise of about two, so averaging more
+scans cannot lift a buried peak, while keeping the dominant reagent ions
+out of a window lets its whole fill go to the analytes.
 
-The first cut of phases 3 and 4 is scoped to exactly that, and it is a
-smaller piece of work than the two phases read as a whole:
+Two things the measurement settled about how such a file must be read:
 
-- **Only files with more than one MS1 stream in a polarity are split.** A
-  single-stream file takes the path it takes today, byte for byte, which the
-  demo goldens pin. The census already says which files qualify, and the
-  processing detail already names them (phase 0, item 3).
-- **Per-stream peak detection, time axis and TIC** (4.3), and the stream
-  scope honoured by peak listing, matching, assignment loading and the
-  exports (phase 3). This is the part that cannot be skipped: an averaged
-  spectrum divides by every selected scan, so an ion seen by one range only
-  is diluted in the pooled store.
-- **One ACQUISITION item per MS1 stream**, under the one binding the file's
-  polarity resolves to. An item takes its name from the time its own stream
-  starts, so the repeats of one file do not share a name.
-- **Batches gather items by what their experiment measured** (decision 7,
-  settled 2026-10-05): the filter's fields, the resolution, the microscan
-  count and the AGC target, read from the file and never configured. Repeats
-  of one definition share a batch; two definitions do not. The batch name
-  shows only what differs among the kinds one binding yields on a day - the
-  range where the ranges differ, else the microscans, else the AGC target -
-  so a site that keeps two ranges in two batches today keeps two batches,
-  and a site with one experiment sees the names it has. Getting this wrong
-  would misfile an item, never pool the wrong scans: what is pooled is
-  decided by the experiment alone.
-- **Calibration per stream** (phase 4). Not optional for this cut: the
-  Orbitrap apply rescales every peak row of the file and removes every item's
-  matches, so two calibrating items in one file collide. Per-stream apply is
-  what makes two ranges in one file safe.
-  - **One binding, one calibrant collection.** A site that acquires its
-    ranges as separate files usually holds a mode row per range, each with
-    a collection that suits it. A file with both ranges resolves to one
-    binding per polarity, so both items calibrate against one collection,
-    and it has to hold anchors inside every range: the range that starts
-    above the reagent ion needs calibrants of its own. An anchor outside a
-    stream's range is simply unmatched there, and the minimum the fit
-    requires is counted per stream, on what its range can show.
-  - **A stream with too few anchors fails visibly** and does not take its
-    sibling's fit (decided 2026-10-05). The instrument function may be
-    borrowed, because the analyzer and the resolution are the same. The
-    mass error may not: the two ranges trap different ion populations -
-    leaving the reagent ion out is the whole point of the second one - and
-    the space-charge shift goes with the population.
-- **One instrument function per stream** (4.3), fitted on the stream's own
-  summed signal; a range too narrow to fit borrows its sibling's.
-- **Streams are experiments** (4.1, decision 14). Two experiments under one
-  filter are two items, and a repeated experiment is one item per repeat:
-  the same machinery, keyed on the scan event. A file with one experiment
-  per polarity is not split, as before.
-- **Left for later:** MS2 attachment, polarity-switching files (each polarity
-  already gets its own item), and the rebuild of files already ingested,
-  which rule 1 of 9.1 replaces with an explicit re-process.
+- **Each scan type is a segment, read from the file.** The site's own
+  conclusion is that the segments have to come from the scan trailer -
+  range, microscans, AGC target, resolution - and never from the method or
+  the file name, both of which were wrong on those two days. That is what
+  the stream census already does (4.1): each of the four is its own
+  experiment, so its own stream, with its range in the signature and its
+  microscans and AGC target among the attributes. Whether the method
+  writes "run five times" as one event repeated or as five events is not
+  yet measured on these files; either way the five are one segment
+  (decision 14, revised).
+- **Pooling blends the scan types.** Averaged as one spectrum, every region
+  is scaled by its share of the scans - five elevenths, three elevenths -
+  and the gain disappears. That is what the pipeline does with such a
+  file today.
 
-An Orbitrap feature by construction: a TofDaq file is one acquisition on one
-mass axis and has nothing to split. The standard methods of 5.3 are where the
-multi-range acquisitions will come from, and a catalogue entry carries the
-expected signature class, so the split needs no configuration at a site.
+**The composite.** One polarity's segments are stitched into one
+spectrum: every m/z is taken from exactly one segment, the one that owns
+it under a **stitch map**, and overlaps between windows serve only as a
+drift check, because two windows read the same ion up to three times
+apart and a window loses signal within a couple of m/z of its edges.
+
+- **The map, by default, is computed from the file.** A segment claims its
+  range trimmed inside its edges, about one per cent at the lower edge and
+  two at the upper. Where two segments claim one m/z, the one with more
+  microscans owns it; among equals, the window that starts higher, because
+  a window reads weakest toward its top. Rounded to whole m/z, that rule
+  gives the site's own map as it drew it: the reagent scan owns the bottom
+  of the range and the band between the low and the mid window, which
+  keeps the reagent dimer out of any analyte window, and the mid window
+  hands over to the high one a few m/z above the high window's edge. The
+  trim and the two tie-breaks are the whole rule, fitted to one layout so
+  far (decision 17).
+- **A layout may fix the map.** A shipped standard method's catalogue
+  entry (5.3) carries the boundaries the method was designed with, and a
+  site's own layout can set them in its recipe (section 7). The default
+  is for files no entry describes.
+- **Nothing is rescaled at a boundary.** A peak's intensity is what its
+  segment measured. The same ion reads differently in different windows -
+  an ion taken from the one-microscan reagent scan at half of what a
+  ten-microscan window would give it - so any factor that turns counts
+  into a concentration belongs to the layout, and the item records which
+  segment each peak came from. Whether the reader's intensities are
+  already per unit of injection time is measured on the site's files
+  before the stitch is written; the averaging weights nothing by it today.
+- **A composite is a stream of streams** (3.1). It has a row in
+  `acquisition_stream` (4.4) that its segments point at, its peak rows are
+  its segments' rows within the m/z each owns - a per-peak mask in the
+  store, beside the stream label of 4.3 - and its sum signal is its
+  segments' sum signals cut at the map's boundaries.
+- **One item per polarity**, pointing at the composite, named and batched
+  as a file's item is today (decision 7, revised). The items of the
+  earlier text - one per range, one per repeat, batched by what was
+  measured - are withdrawn. The split had been built as far as the store
+  before the change, and everything up to there is what the composite
+  stands on.
+
+**What stays from the first version, and why.**
+
+- **Only files with more than one MS1 stream in a polarity are touched.**
+  A single-stream file takes the path it takes today, byte for byte,
+  which the demo goldens pin.
+- **Per-stream peak detection, time axis and TIC** (4.3). A segment's
+  peaks are found on its own averaged scans, against its own noise, which
+  is where the gain is; a peak's timeseries runs over its segment's scans.
+- **One instrument function per segment** (4.3), fitted on the segment's
+  own summed signal; a window too thin to fit borrows its sibling's.
+- **Calibration per segment** (phase 4). Not optional: the site measured
+  offsets of about a ppm between its segments, and three to four ppm below
+  m/z 50 from the instrument itself; and the Orbitrap apply rescales every
+  peak row of the file, so the segments' rows must be rescaled each by its
+  own fit, which the stream label makes possible.
+  - **One binding, one calibrant collection**, counted per segment, on the
+    anchors inside its range. The analyte windows exclude the reagent ions
+    by design, so their anchors are analyte ions the collection has to
+    carry.
+  - **A segment short of anchors borrows the fit of the nearest segment in
+    m/z** of its polarity, and its quality block says so (decision 5,
+    revised 2026-10-06). The earlier rule had it fail and borrow nothing,
+    on the argument that two ranges trap different ion populations; the
+    measurement bears the argument out and bounds its cost at about a ppm,
+    where an uncalibrated segment's error is unbounded.
+- **The first-scan rule within the segment.** The reader leaves a file's
+  first scan out when its TIC is five times the median of the others. In a
+  composite file the first scan is a reagent scan with the reagent ions in
+  range, and most of the others are analyte windows without them, so the
+  file-wide comparison drops a valid scan from every file of one of the
+  site's two chemistries, and its item starts at the second scan. Since
+  #2278 the comparison is with the other scans of the first scan's own
+  stream (4.3), which is what the site asks for; it is checked on the
+  site's files before the cut ships.
+- **The reagent-segment normalisation** the site wants - each analyte's
+  counts over the reagent ions of the same file - becomes possible once
+  the reagent ions are in every file again, and is a consumer of the
+  profile's reagent ions (phase 8), not of the stitch.
+- **Left for later:** MS2 attachment, polarity-switching files (each
+  polarity already gets its own item), items per segment for a site that
+  wants them (phase 7), and the rebuild of files already ingested, which
+  rule 1 of 9.1 replaces with an explicit re-process - the site's
+  composite batches among them.
+
+Scale: at 25 seconds a file and the two chemistries in turn, an instrument
+writes some two thousand files a day, each with four segments and one
+composite, so the stream table takes about ten thousand rows a day from
+it.
+
+An Orbitrap feature by construction: a TofDaq file is one acquisition on
+one mass axis and has nothing to stitch. The standard methods of 5.3 are
+where composite layouts will come from, and a catalogue entry carries the
+expected signature class and the map, so a site configures nothing.
 
 ---
 
@@ -1380,7 +1488,7 @@ same hysteresis and dwell logic as a trace.
 
 ```json
 {
-  "streams": {"msn": "attach"},
+  "streams": {"msn": "attach", "composite": "auto"},
   "epochs": {"by": "none"},
   "windows": {"by": "none"},
   "chemistry": {
@@ -1395,7 +1503,9 @@ same hysteresis and dwell logic as a trace.
 - **Default recipe.** No epochs, no windows, the full ladder with detection
   in audit mode. A new site configures nothing. What a stream is does not
   appear in a recipe at all: it is the experiment of the method, at every
-  site (4.1, decision 14).
+  site (4.1, decision 14). A composite is stitched by the default map;
+  `composite` takes a layout's own boundaries where a site wants them
+  elsewhere (4.5, decision 17).
 - **Preview.** `POST /api/sample/files/{id}/split-preview` takes a recipe
   body and returns, without writing anything:
   - the streams and their blocks;
@@ -1425,6 +1535,8 @@ same hysteresis and dwell logic as a trace.
     binding on one day, the name gains the class ("... Nitrate acquisition
     (m/z 40-160)"). The batch ledger's anchors assume comparable spectra.
   - Single-signature instruments keep today's names.
+  - A composite file's one item per polarity joins the batch its binding
+    and day give, as any file's does; its segments are not batched (4.5).
 - **Matching, assignment, calibration candidates, exports and MS2** take a
   scan scope (stream, t0, t1) wherever they take a polarity today.
 - **The profile resolved for assignment** still follows the item's mode. The
@@ -1433,7 +1545,10 @@ same hysteresis and dwell logic as a trace.
   Existing calls keep their meaning.
 - **FAIR.** The stream signature, recipe version and binding source are the
   provenance `ionization_method_config.md` section 7 asks for. Exports should
-  carry them.
+  carry them, and the segment each peak of a composite came from.
+- **The reagent-segment normalisation** a composite makes possible - an
+  analyte's counts over the reagent ions of the same file - is a consumer
+  of the profile's reagent ions (phase 8), not of the stitch.
 
 ---
 
@@ -1497,7 +1612,7 @@ What that leaves in place, and what happens to it:
 | Files processed before phase 1, with no status or registration time | NULL, shown as no status |
 | Items bound under the token rule before #2158, or calibrated in the order before #2153 | as bound; a re-process applies the current rules |
 | Items bound to one of several mode rows for a chemistry | as bound; the binding follows the newest row for the files that arrive later, and a retired mode keeps its batches |
-| Multi-stream files processed before the split: two polarities as two items, several ranges pooled into one | as processed; an explicit re-process splits them under the rules then current |
+| Multi-stream files processed before the composite cut: two polarities as two items, several ranges pooled into one spectrum that blends the scan types | as processed; an explicit re-process stitches them under the rules then current. A site already acquiring composite files re-processes those batches once the cut ships |
 | Bindings the backfill read from history (`source = history`) | kept; they carry no per-file rung, and provenance starts with the item columns |
 | Files with no acquisition sample | parked, or older than the parked state; an explicit bind routes them under the current rules |
 
@@ -1757,12 +1872,13 @@ unchanged.
 
 ### Phase 3: the part contract (2-3 weeks, beside phase 8)
 
-- **First cut:** section 4.5. Files with more than one MS1 stream in a
-  polarity are split, behind the phase 4 flag; every other file is
-  byte-identical. Two ranges of one chemistry in one file is the case it is
-  built for. **Being built** (decided 2026-10-05). The flag stays off until
-  all of it is in, so the cut delivers at its end, not step by step. In
-  order:
+- **The composite cut:** section 4.5. A file whose polarity holds more
+  than one MS1 stream is detected per stream and, where the streams are
+  m/z ranges of one chemistry, stitched into one spectrum per polarity,
+  behind the flag; every other file is byte-identical. **Being built**
+  (decided 2026-10-05; a stitch rather than a split since 2026-10-06,
+  decision 16). The flag stays off until all of it is in, so the cut
+  delivers at its end, not step by step. In order:
   1. ~~the census keys streams on the method's experiments (4.1)~~ - built
      in #2273: `scan_filters` reports each scan's segment and event from
      the scan index, and `mascope_thermo.streams` groups MS1 scans by
@@ -1780,16 +1896,29 @@ unchanged.
      `get_scan_timestamps`, `get_peak_timeseries`, `get_centroids`,
      `get_centroids_per_scan`); the MS2 reads wait for phase 4. Nothing in
      processing passes one yet, and a selection that names none reads no
-     key, so no file is read differently;
+     key, so no file is read differently; the first scan is compared within
+     its own stream;
   3. per-stream peak detection, store labels and timeseries fill, behind
-     the flag;
-  4. the stream table and one item per stream;
-  5. the consumers: peak listing, matching, the item TIC, the exports, and
-     assignment loading;
-  6. calibration and the instrument function per stream;
-  7. batches gathered by what was measured, and their names.
-- **The scope object.** A scan scope (stream, t0, t1) replaces the bare
-  polarity in:
+     the flag (#2279), its setting and its wording saying "per stream"
+     rather than "split";
+  4. the stitch: the default map from the segments' ranges and
+     microscans, the per-peak mask and the stitched sum signal, recorded
+     beside the store;
+  5. the stream table with the composite column (#2282, amended), and one
+     item per polarity pointing at its composite (#2283, reworked from one
+     item per stream);
+  6. the consumers read the composite: peak listing, matching, the item
+     TIC, the exports and assignment loading take the masked rows of the
+     item's stream;
+  7. calibration and the instrument function per segment, the fit
+     borrowed from the nearest segment where anchors are short, the
+     quality block per segment;
+  8. a re-process rebuilds a file's store under the current rule, so a
+     site's composite batches can be re-processed;
+  9. the layout override in the catalogue entry and the recipe, and the
+     overlap drift in the processing detail.
+- **The scope object.** A scan scope (stream, t0, t1), the stream a
+  composite where the file holds one, replaces the bare polarity in:
   - reader selection;
   - peak detection and the store labels;
   - timeseries filling;
@@ -1799,27 +1928,36 @@ unchanged.
   - `create_sample_items` (windowed TIC);
   - the exports.
 - **Supporting changes:**
-  - `acquisition_stream` and `sample_item.stream_id`;
-  - eager timeseries for split files.
+  - `acquisition_stream` with `composite_stream_id`, and
+    `sample_item.stream_id`.
 - **This absorbs** phase 1 of `multi_sample_items_per_file.md`.
 - **Gates:**
   - demo goldens byte-identical;
   - two windowed items over one file give different, correct intensities;
-  - the corpus file with eight experiments yields eight separate peak lists,
-    and its repeats of one definition land in one batch.
+  - one composite file of each chemistry yields one item per polarity
+    whose peak list spans the file's whole range, each region from the
+    segment that owns it under the site's own map, with the first reagent
+    scan kept and the offset per segment and the overlap drift reported;
+    the pooled store of the same file shows the loss the site measured;
+  - the corpus file with eight experiments yields eight peak lists in its
+    store and one item per polarity.
 
 ### Phase 4: per-stream state (about 2 weeks)
 
-- **Per-stream fits:** calibration and instrument function per stream.
-- **Items and batches:** one ACQUISITION item per MS1 stream; the batch name
-  gains the signature class when needed.
+- **Per-stream fits:** calibration and instrument function per segment,
+  which the composite cut needs and builds (phase 3, step 7).
+- **Items and batches:** the composite cut leaves one ACQUISITION item per
+  polarity, as today; windows (phase 6) cut more. The batch name gains the
+  signature class only where one binding yields more than one class on a
+  day (section 8).
 - **MSn:** streams attach to their parents; the MS2 routes take the stream.
-- **Existing data:** nothing rebuilt; an explicit re-process splits a file
-  already ingested (4.5, 9.1).
+- **Existing data:** nothing rebuilt; an explicit re-process stitches a
+  file already ingested (4.5, 9.1).
 - **Gates:**
-  - two ranges of one chemistry in one file give two calibrated items with
-    separate peak lists, and a re-process of a pooled file splits it;
-  - the polarity-switching corpus files get one calibrated item per stream;
+  - a composite file's segments are each calibrated, its item carries all
+    of them, and a re-process of a pooled file stitches it;
+  - the polarity-switching corpus files get one calibrated item per
+    polarity, their repeats as one segment;
   - the internal MS2 acquisitions keep their spectra;
   - the dual-polarity match loss of 2.1 does not reproduce.
 
@@ -1865,13 +2003,17 @@ unchanged.
   Splitting it where a declared setting changes is possible, since the
   microscan count and the AGC target never vary within a recorded event, and
   is not a priority: methods first (decided 2026-10-05).
+- **Items per segment.** A site that wants each range of a composite as
+  its own item and batch, which the composite cut does not make, would get
+  it from a recipe setting; the census, the store and the stream rows are
+  the same either way. Not asked for (2026-10-06).
 
 ### Order and parallelism
 
 ```mermaid
 graph LR
     P0[0 foundations] --> P1[1 state + review]
-    P0 --> P3[3 part contract, first cut next]
+    P0 --> P3[3 part contract, composite cut]
     P1 --> P2[2 method bindings]
     P2 --> P8[8 profiles + standard methods]
     P2 -.one migration at a time.-> P3
@@ -1886,10 +2028,11 @@ graph LR
 
 After phase 2's rung there are two tracks: phases 3-4 (streams, first for
 multi-range files) and phase 8 (the profiles and the standard methods).
-**The stream first cut leads** (decided 2026-10-05). Sites are waiting to
-acquire several ranges in one file; the cut needs nothing from phase 8,
-since a split file binds as a file does today, once per polarity, and its
-items inherit that; and what remains of phase 2 is operations work gated
+**The composite cut leads** (decided 2026-10-05; a stitch since
+2026-10-06). One site already acquires several ranges in one file; the cut
+needs nothing from phase 8, since a composite file binds as a file does
+today, once per polarity, and its item inherits that; and what remains of
+phase 2 is operations work gated
 on a release. Phase 8 follows the cut, or runs beside it when there are
 hands for both. Phase 5 is deferred until both are in, and then ships as
 an audit.
@@ -1952,6 +2095,8 @@ through a short-lived stacked branch, merged as one unit.
 - **Fleet regression corpus:**
   - the re-baselined manifest (routing per file);
   - the two polarity-switching files (streams);
+  - one composite file of each chemistry from the site that runs them
+    (segments, the stitch map, the first-scan rule): still to be added;
   - the labelled streams (detection confusion);
   - the exposure file (trace windows).
   The corpus is internal. Anything committed as a fixture must be synthetic
@@ -1965,7 +2110,7 @@ through a short-lived stacked branch, merged as one unit.
   disagreement rate per site read before rung 5 is enabled.
 - **A fresh install:** phase 8's first-file gate, run against a database that
   holds nothing but the catalogue.
-- **A shareable multi-range and MS2 acquisition** is needed for committed
+- **A shareable composite and MS2 acquisition** is needed for committed
   fixtures. The corpus files cannot be used; a standard method of 5.3 run on
   the internal instrument is the way to make one.
 
@@ -2009,6 +2154,13 @@ through a short-lived stacked branch, merged as one unit.
    visibly and borrows nothing, because two ranges of one file trap
    different ion populations (4.5). Both items of a split file calibrate
    against the one collection their binding carries, counted per stream.
+   **Revised 2026-10-06** for the composite cut (4.5): a segment too short
+   of anchors takes the fit of the nearest segment in m/z of its polarity
+   and says so, rather than failing. The site's measurement puts the offset
+   between segments at about a ppm, which bounds the cost of borrowing
+   where an uncalibrated segment's error is not bounded; and the analyte
+   windows exclude the reagent ions by design, so their anchors are
+   analyte ions the collection must carry.
 6. **MS2.** Attach to the parent item by default (recommended), or separate
    MS2 items.
 7. **Batch naming.** ~~Add the signature class only when needed
@@ -2017,7 +2169,10 @@ through a short-lived stacked branch, merged as one unit.
    filter's fields, the resolution, the microscan count and the AGC target -
    and the name shows only what differs among the kinds one binding yields
    on a day, which keeps a site's two ranges in the two batches it has
-   today (4.5).
+   today (4.5). **Revised 2026-10-06:** a composite file's one item per
+   polarity joins the batch its binding and day give, as today; grouping
+   by what was measured applies to nothing the composite cut makes, and is
+   withdrawn with the split.
 8. **Recipe scope.** Per instrument with a site default (recommended), or
    per workspace.
 9. **Token fate.** ~~Keep it as a supported rung and learning source
@@ -2069,9 +2224,32 @@ through a short-lived stacked branch, merged as one unit.
     2026-10-05:** one experiment, one stream, whatever sets the experiments
     apart, and one item per repeat of an identical experiment. A file that
     records no scan event falls back to the filter. There are no grouping
-    parameters to choose, at a site or in a recipe.
+    parameters to choose, at a site or in a recipe. **Revised
+    2026-10-06:** the census keeps one stream per event, repeats included;
+    the items do not follow it one to one. Streams of one signature and
+    the same settings are one segment of their composite, and a composite
+    file gets one item per polarity (4.5). One item per repeat is
+    withdrawn; a cut by time is a window's (section 6).
 15. **What is built after phase 2.** **Decided 2026-10-05:** the stream
     first cut (4.5), ahead of phase 8, which follows it or runs beside it.
+    **Revised 2026-10-06:** the composite cut, in the same place.
+16. **Stitch, not split.** Raised 2026-10-06 by a site's composite method
+    (4.5): several ranges of one chemistry in one file, each measured so
+    that it fills the trap on its own. ~~One item per range, as the first
+    cut was first written; or one spectrum per polarity stitched from the
+    ranges.~~ **Decided 2026-10-06:** one spectrum per polarity, stitched,
+    and one item, as a file gets today. The per-range split of the earlier
+    text is withdrawn; what it had built up to the store is the
+    composite's foundation.
+17. **The stitch map.** Computed by default from what the file carries -
+    each segment's range trimmed inside its edges, the segment with more
+    microscans owning an m/z two claim, the higher window among equals -
+    or fixed per layout by the catalogue entry or the recipe; or both, the
+    layout overriding the default (recommended). Fitted so far to one
+    site's layout, which it reproduces. Whether the reader's intensities
+    are already per unit of injection time, and so comparable across
+    segments as they are, is measured on the site's files before the
+    stitch is written.
 
 ---
 
