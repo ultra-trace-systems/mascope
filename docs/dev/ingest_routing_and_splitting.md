@@ -861,6 +861,29 @@ apart and a window loses signal within a couple of m/z of its edges.
   entry (5.3) carries the boundaries the method was designed with, and a
   site's own layout can set them in its recipe (section 7). The default
   is for files no entry describes.
+- **In an overlap the owner's peak is the composite's, whole.** Where two
+  segments both record an ion, the composite takes the owning segment's
+  peak and nothing of the other's: not an average, which would be a number
+  no scan measured, and not a weighted one, since the two readings are not
+  on one scale (below). The other segment's peak stays in the store under
+  its own stream label, masked out of the composite, and is what the drift
+  reading is made of: the m/z offset between the two readings feeds the
+  calibration fallback (decision 5), and their intensity ratio is reported
+  per file as the layout's window factor. A step in intensity at a boundary
+  is therefore expected, and left visible.
+- **A disagreement far beyond the window factor is chemistry, not drift.**
+  The site found that its ammonia channel, at m/z 78.07, reads twenty times
+  higher in any window that holds the reagent dimer, because the dimer
+  loses HNCO after the quadrupole and lands on the same m/z; and that a low
+  window starting at 66 let the reagent ion itself slip past the edge and
+  react in the trap, until the edge moved to 72. So one m/z can measure
+  different things in different segments, and the owner rule gives the
+  composite the window the method designed to measure it cleanly. Where to
+  put an edge so that reagent ions stay out is what no default can know,
+  and what the layout override is for. The drift reading takes a robust
+  median over the shared ions and lists the ions that disagree by more
+  than the factor; the profile's reagent-ion library (phase 8) can name
+  the ones the instrument makes.
 - **Nothing is rescaled at a boundary.** A peak's intensity is what its
   segment measured. The same ion reads differently in different windows -
   an ion taken from the one-microscan reagent scan at half of what a
