@@ -649,21 +649,40 @@ it. Four things the build settled:
   weaker, so today's rule drops an ordinary scan there, and the per-stream
   one keeps it.
 
-  **That the rule stays a rule about the file's first scan is a choice, not
-  a measurement.** The other reading - leave out the opening scan of every
-  stream that opens with an outlier - selects the same scans on every corpus
-  file. The eleven files that show the outlier each hold one stream, and
-  neither multi-stream file shows it anywhere: their first streams open at
-  0.99 and 1.00 of the median of their own other scans, and their ten later
-  streams at 0.71 to 1.29 for nine and 2.85 for one. So whether the outlier
-  belongs to the acquisition's first scan or to the first scan of each
-  experiment is measured on no file in reach. If its cause is the gain
-  control having no earlier scan to go by, each experiment would start the
-  same way. What would settle it is a file of several streams from an
-  instrument whose single-stream files show the outlier, and the place it
-  would show is a short later stream, whose opening scan then outweighs the
-  rest of its average. The reading chosen leaves out less, and leaves every
-  later stream as it reads today.
+  **That the rule stays a rule about the file's first scan is a choice the
+  files in reach support and do not prove.** The other reading - leave out
+  the opening scan of every stream that opens with an outlier - selects the
+  same scans on every file measured:
+
+  - **On the corpus,** the eleven files that show the outlier each hold one
+    stream, and neither multi-stream file shows it anywhere: their first
+    streams open at 0.99 and 1.00 of the median of their own other scans,
+    and their ten later streams at 0.71 to 1.29 for nine and 2.85 for one.
+  - **On 641 files of one other instrument,** acquired over two days: one of
+    its three single-experiment methods, a negative range that leaves the
+    reagent ion out, opens with the outlier in 27 of 134 files, at up to 9.6
+    times, and the other two never do. None of its 239 multi-experiment
+    files shows it at the opening of any stream, the first included: 688
+    openings, none above 1.21. Fifty-two of those files run reagent-free
+    negative windows as their third and fourth experiments - the kind of
+    scan that opens an acquisition with the outlier one time in five - and
+    there those open between 0.97 and 1.02.
+
+  So where the outlier has been seen, it is at the start of an acquisition,
+  and an experiment that comes later has not been seen to open with it. If
+  its cause were the gain control having no earlier scan to go by, each
+  experiment would start the same way, and on these files none does. That
+  is support and not proof: the later windows are not the method that shows
+  the outlier on its own. What would settle it is a multi-experiment file
+  that does show it, at one opening or at several; the place the other
+  reading would matter is a short later stream, whose opening scan then
+  outweighs the rest of its average. Until then the reading chosen leaves
+  out less, and leaves every later stream as it reads today.
+
+  The same 641 files show what the file-wide comparison costs a
+  multi-experiment file. All 53 positive ones of four experiments lose an
+  ordinary first scan to it: 5.7 to 6.0 times the median of the file's
+  other scans, and 0.97 to 1.01 of its own stream's.
 - **The instrument function is fitted per stream, always.** Today's fit is
   one per file, on the file's whole summed signal: up to a hundred of the
   brightest peaks, their width against m/z, an inverse-square-root model for
