@@ -330,11 +330,11 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
   On a polarity-switching file of the internal regression corpus two pairs
   among 41,639 peaks shared an m/z, all four of them noise. Nothing in error
-  monitoring shows the failure having reached a deployment. One case remains:
-  where both peaks of a pair are kept, whatever reads the file's peaks by m/z
-  still fails, matching, calibration and timeseries among it. That takes
-  setting the two apart when the file's peaks are detected, and is not part
-  of this change.
+  monitoring shows a polarity-switching file having failed this way on a
+  deployment. One case remains: where both peaks of a pair are kept, whatever
+  reads the file's peaks by m/z still fails, matching, calibration and
+  timeseries among it. That takes setting the two apart when the file's peaks
+  are detected, and is not part of this change.
 
 ### Security
 
