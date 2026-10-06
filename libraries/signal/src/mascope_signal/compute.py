@@ -201,7 +201,9 @@ def _get_averaging_factor(
         signal_slice = signal.sel(time=slice(closest_t_min, closest_t_max))
         return signal_slice.sizes["time"]
 
-    time_coord = get_scan_timestamps(base_filename, t_min, t_max, polarity, stream)
+    time_coord = get_scan_timestamps(
+        base_filename, t_min, t_max, polarity, stream=stream
+    )
     return time_coord.size
 
 
@@ -242,7 +244,9 @@ def get_sum_signal(
 
     sample_type = m_name.get_sample_file_type(base_filename)
     _refuse_stream_unless_raw_orbitrap(sample_type, stream)
-    cached_name = _get_sum_signal_hash_name(t_min, t_max, polarity, sample_type, stream)
+    cached_name = _get_sum_signal_hash_name(
+        t_min, t_max, polarity, sample_type, stream=stream
+    )
     averaging_factor = None
     if average:
         averaging_factor = _get_averaging_factor(
@@ -251,7 +255,7 @@ def get_sum_signal(
             t_min,
             t_max,
             polarity,
-            stream,
+            stream=stream,
         )
 
     try:
@@ -543,7 +547,7 @@ def load_signal(
             case "orbi_raw":
                 datafile_path = os.path.join(sample_path, "data.raw")
                 signal = m_thermo.get_signal(
-                    datafile_path, t_min, t_max, mz_min, mz_max, polarity, stream
+                    datafile_path, t_min, t_max, mz_min, mz_max, polarity, stream=stream
                 )
                 # Handle m/z axis calibration
                 props = m_io.read_props(base_filename)
@@ -649,7 +653,7 @@ def get_tic_per_scan(
         case "orbi_raw":
             datafile_path = m_name.filename_to_datafile_path(base_filename)
             tic_time, tic_per_scan = m_thermo.get_tic_per_scan(
-                datafile_path, timestamps, polarity, stream
+                datafile_path, timestamps, polarity, stream=stream
             )
         case "tof_h5":
             datafile_path = m_name.filename_to_datafile_path(base_filename)
