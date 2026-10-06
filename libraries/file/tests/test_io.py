@@ -463,9 +463,17 @@ class TestPeaksSharingAnMz:
 
     @pytest.mark.parametrize("flag", ["is_weak", "is_satellite"])
     @pytest.mark.parametrize("dropped", SHARED_ROWS)
+    @pytest.mark.parametrize(
+        "rows_per_chunk",
+        [
+            pytest.param(None, id="one chunk"),
+            pytest.param(2, id="pair across chunks"),
+        ],
+    )
     @pytest.mark.asyncio
     async def test_a_fill_lands_on_the_kept_peak_of_a_shared_mz(
         self,
+        rows_per_chunk,
         dropped,
         flag,
         create_peak_timeseries_dataset,
@@ -476,11 +484,23 @@ class TestPeaksSharingAnMz:
         A search of the axis finds the first row holding the m/z. With the
         kept peak on the second, a fill written there lands on the dropped
         peak, and the kept one reads as never computed on every ask.
+
+        The chunk a fill is written in is worked out from its row too, so the
+        pair is also put either side of a chunk boundary. Sent to the first
+        row's chunk and addressed to the second row, a fill is written
+        nowhere, and nothing says so.
         """
         kept = sum(self.SHARED_ROWS) - dropped
         ds = create_peak_timeseries_dataset(mz_values=self.MZ)
         ds[flag].values[dropped] = True
+        if rows_per_chunk:
+            # Rows 0-1 | 2-3 | 4: the pair is the last row of one chunk and
+            # the first of the next
+            ds = ds.chunk({"mz": rows_per_chunk})
         await write_peaks(ds, TEST_FILENAME, overwrite=True)
+        if rows_per_chunk:
+            store = zarr.open(peak_timeseries_zarr_path, mode="r")
+            assert store["peak_areas"].chunks[0] == rows_per_chunk
         fill = self._fill(200.0, ds.time.values)
 
         await write_peaks(fill, TEST_FILENAME, overwrite=False)
