@@ -222,6 +222,15 @@ def get_sum_signal(
     spectrum endpoints return it as it is, and the instrument-function fit
     reads its peak shapes from it.
 
+    A cached signal is answered before the reader is asked, and a stream's
+    signal is cached under its key. So this read, alone among those that
+    take a stream, can answer under a key the file no longer holds a stream
+    under, with what that key named when the signal was cached, where the
+    others hand on the reader's ``UnknownStreamError``. Averaged it does
+    refuse, because the scans are counted first. Whoever reads by a key it
+    has stored has to ask the reader for the key before it trusts the
+    cache.
+
     :param base_filename: Sample file filename
     :type base_filename: str
     :param t_min: Min time value [s], defaults to None
