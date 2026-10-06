@@ -10,6 +10,7 @@ files then pin, through each backend available, that a single-stream file's
 only stream selects what no stream selects.
 """
 
+import re
 from contextlib import contextmanager
 from types import SimpleNamespace
 
@@ -27,7 +28,7 @@ from mascope_thermo.backend import (
 from mascope_thermo.lib import thermo_available
 from mascope_thermo.runtime import runtime
 from mascope_thermo.streams import scan_stream_keys, scan_streams
-from mascope_thermo.thermo import NoScansFoundError
+from mascope_thermo.thermo import NoScansFoundError, UnknownStreamError
 
 
 NEG_LOW = "FTMS - p NSI Full ms [40.0000-160.0000]"
@@ -198,9 +199,12 @@ def test_two_experiments_under_one_filter_are_selected_apart(scripted):
 
     assert reader.scan_indices(stream=f"{LOW} event=1") == [1, 2, 3]
     assert reader.scan_indices(stream=f"{LOW} event=2") == [4, 5, 6, 7]
-    # The bare signature names no stream of this file.
-    with pytest.raises(NoScansFoundError):
+    # The bare signature names no stream of this file - though it is the
+    # key of the first experiment in a run stopped before the second, which
+    # is how a key that was right for one file is stale for the next.
+    with pytest.raises(UnknownStreamError) as raised:
         reader.scan_indices(stream=LOW)
+    assert raised.value.held == [f"{LOW} event=1", f"{LOW} event=2"]
 
 
 def test_the_same_event_in_two_segments_is_selected_apart(scripted):
@@ -245,11 +249,82 @@ def test_a_fragmentation_stream_needs_its_scan_type(scripted):
         reader.scan_indices(stream=key)
 
 
-def test_an_unknown_stream_is_an_empty_selection_that_names_it(scripted):
+def test_a_key_the_file_does_not_hold_is_not_an_empty_selection(scripted):
+    """A stored key can be stale without being mistyped: it is a name, and
+    the name of an experiment depends on what else its file holds, on the
+    backend that rendered its filter and on the version of the keying. Read
+    as "no scans", a stale key would be taken by the code above the reader
+    for a polarity the file does not carry, or an empty window."""
     reader = scripted(ALTERNATING)
 
-    with pytest.raises(NoScansFoundError, match="stream='no such stream'"):
+    with pytest.raises(UnknownStreamError) as raised:
         reader.scan_indices(stream="no such stream")
+
+    assert not isinstance(raised.value, (NoScansFoundError, ValueError))
+    assert raised.value.stream == "no such stream"
+    # The keys the file does hold, in the order its streams first appear
+    assert raised.value.held == [
+        LOW,
+        HIGH,
+        f"{POS_LOW} R=120000",
+        f"{MS2} R=15000",
+    ]
+    message = str(raised.value)
+    assert "'no such stream'" in message
+    assert all(key in message for key in raised.value.held)
+
+
+def test_a_key_the_file_does_not_hold_is_refused_whatever_else_is_asked(scripted):
+    """Not only where the other filters would have left something to select:
+    the key is wrong before the window or the polarity is."""
+    reader = scripted(ALTERNATING)
+
+    # The last window lies between two scans and holds none of any stream.
+    for filters in (
+        {"polarity": "+"},
+        {"ms_type": "Ms2"},
+        {"t_min": 6.4, "t_max": 6.6},
+    ):
+        with pytest.raises(UnknownStreamError):
+            reader.scan_indices(stream="no such stream", **filters)
+
+
+def test_a_real_stream_with_no_scan_in_the_window_is_an_empty_selection(scripted):
+    """LOW holds scans 1, 3 and 5, at 0, 2 and 4 s. A window after them holds
+    none of it, which is an empty selection and says so by the stream's name:
+    the stream exists, and has nothing there."""
+    reader = scripted(ALTERNATING)
+
+    with pytest.raises(NoScansFoundError, match=re.escape(f"stream='{LOW}'")):
+        reader.scan_indices(t_min=4.5, t_max=7.0, stream=LOW)
+
+
+def test_a_file_with_no_scans_has_no_stream_to_select(scripted):
+    """Such a file holds no key at all, so no key is unknown to it: a stream
+    asked of it is the empty selection the scanless-file handling is built
+    on, and not an index into an empty mask."""
+    with pytest.raises(NoScansFoundError):
+        scripted([]).scan_indices(stream=LOW)
+
+
+def test_a_key_selects_under_the_rendering_that_reported_it(scripted):
+    """The two real backends render some filter tokens differently, the
+    source fragmentation among them, and the token is part of the key. So a
+    key belongs to the census it came from. Here a file that records no
+    experiment holds two scans acquired with in-source CID and three without:
+    read with the token, the plain key is the three; read without it, all
+    five pool under that key, and the other key does not exist."""
+    with_sid = "FTMS - p NSI sid=20.00 Full ms [40.0000-160.0000]"
+    kept = scripted([_scan(with_sid)] * 2 + [_scan(NEG_LOW)] * 3)
+    dropped = scripted([_scan(NEG_LOW)] * 5)
+    sid_key = scan_stream_keys(kept)[0]
+    assert sid_key != LOW
+
+    assert kept.scan_indices(stream=LOW) == [3, 4, 5]
+    assert kept.scan_indices(stream=sid_key) == [1, 2]
+    assert dropped.scan_indices(stream=LOW) == [1, 2, 3, 4, 5]
+    with pytest.raises(UnknownStreamError):
+        dropped.scan_indices(stream=sid_key)
 
 
 def test_a_selection_without_a_stream_names_none(scripted):
@@ -566,8 +641,18 @@ def test_a_single_stream_files_stream_selects_what_no_stream_selects(backend, pa
         ):
             np.testing.assert_array_equal(with_stream, without)
         assert reader.scan_statistics(stream=key) == reader.scan_statistics()
-        with pytest.raises(NoScansFoundError):
+        with pytest.raises(UnknownStreamError) as raised:
             reader.scan_indices(stream="no such stream")
+        assert raised.value.held == [key]
+
+
+@pytest.mark.parametrize("path", [POS_ORBI_FILE_PATH, NEG_ORBI_FILE_PATH])
+def test_a_public_read_does_not_swallow_a_key_the_file_does_not_hold(backend, path):
+    """The reads built on the reader hand the refusal on as it is."""
+    with pytest.raises(UnknownStreamError):
+        m_thermo.get_scan_timestamps(path, stream="no such stream")
+    with pytest.raises(UnknownStreamError):
+        m_thermo.get_tic_per_scan(path, stream="no such stream")
 
 
 @pytest.mark.parametrize("path", [POS_ORBI_FILE_PATH, NEG_ORBI_FILE_PATH])

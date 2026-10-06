@@ -624,7 +624,14 @@ it. Four things the build settled:
     (#2278) it is the stream's key, compared with the key of every scan: the
     one function that keys the census also answers the selection, so a stream
     the census names is exactly the scans selected for it, and a reader reads
-    the keys once per open file.
+    the keys once per open file. A key the file holds no stream under is
+    refused as such, with the keys the file does hold, and not read as an
+    empty selection - which the code above the reader takes to mean a
+    polarity the file does not carry. Anything that stores a key and reads
+    with it later has to expect that: a key is a name, and it can go stale
+    with what else the file holds, with the backend that rendered its filter
+    and with the version of the code that keys. It also selects only under
+    the backend whose census reported it.
 - **Per-peak timeseries are filled with a per-scan stream mask.** This also
   removes today's normalisation of a polarity's rows over the axis of both
   polarities in `load_peak_timeseries`.
@@ -641,6 +648,22 @@ it. Four things the build settled:
   the file's median only because the other polarity's scans are that much
   weaker, so today's rule drops an ordinary scan there, and the per-stream
   one keeps it.
+
+  **That the rule stays a rule about the file's first scan is a choice, not
+  a measurement.** The other reading - leave out the opening scan of every
+  stream that opens with an outlier - selects the same scans on every corpus
+  file. The eleven files that show the outlier each hold one stream, and
+  neither multi-stream file shows it anywhere: their first streams open at
+  0.99 and 1.00 of the median of their own other scans, and their ten later
+  streams at 0.71 to 1.29 for nine and 2.85 for one. So whether the outlier
+  belongs to the acquisition's first scan or to the first scan of each
+  experiment is measured on no file in reach. If its cause is the gain
+  control having no earlier scan to go by, each experiment would start the
+  same way. What would settle it is a file of several streams from an
+  instrument whose single-stream files show the outlier, and the place it
+  would show is a short later stream, whose opening scan then outweighs the
+  rest of its average. The reading chosen leaves out less, and leaves every
+  later stream as it reads today.
 - **The instrument function is fitted per stream, always.** Today's fit is
   one per file, on the file's whole summed signal: up to a hundred of the
   brightest peaks, their width against m/z, an inverse-square-root model for
