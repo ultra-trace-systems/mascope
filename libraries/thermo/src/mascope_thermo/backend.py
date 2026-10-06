@@ -40,13 +40,18 @@ ENV_BACKEND = "MASCOPE_THERMO_BACKEND"
 # The generation of the OpenTFRaw backend's average_profile, which
 # averaged_profile_signature names: bump it whenever average_profile returns a
 # different profile from the same samples, or a cached profile computed the old
-# way keeps being served as the new one. Generation 4 converts the frequency
-# grid back to m/z peak by peak, each on the intensity-weighted mean of the
-# scans' calibrations; generation 3 used their plain mean throughout, and
-# generation 2 the densest scan's, fitting the axis to the centroid labels.
-# From generation 2 each grid point sits at the mean of the real frequencies in
-# its cell; generation 1 placed it at the cell's centre.
-AVERAGED_PROFILE_GENERATION = 4
+# way keeps being served as the new one. Generation 5 adds every scan to the
+# sum at its own first and last samples, which earlier ones left out wherever
+# the grid point there lay outside the scan's own range, and finds the clusters
+# its baseline zeros go around on the frequency grid; generation 4 found them
+# on the m/z axis it had just written.
+# From generation 4 the frequency grid is converted back to m/z peak by peak,
+# each on the intensity-weighted mean of the scans' calibrations; generation 3
+# used their plain mean throughout, and generation 2 the densest scan's,
+# fitting the axis to the centroid labels. From generation 2 each grid point
+# sits at the mean of the real frequencies in its cell; generation 1 placed it
+# at the cell's centre.
+AVERAGED_PROFILE_GENERATION = 5
 
 Polarity = Literal["+", "-"]
 MsType = Literal["Ms", "Ms2"]
@@ -665,6 +670,7 @@ _AVG_PROFILE_GRID_PPM = 0.2
 
 _AVG_PROFILE_FREQ_NEWTON = 4  # Newton iterations for the m/z -> frequency inverse
 _AVG_PROFILE_GAP_DF = 2.0  # zero a scan's interp beyond this * FFT bin from its samples
+_AVG_PROFILE_END_DF = 0.5  # a scan's end samples reach grid points this * FFT bin out
 _AVG_PROFILE_PEAK_GAP_DF = 1.5  # grid points further apart than this * FFT bin: a gap
 _AVG_CENTROID_HEIGHT_PPM = 3.0  # window to source centroid height from profile apex
 _AVG_CENTROID_HEIGHT_BAND = (0.85, 1.15)  # apply the apex only as a modest refinement
@@ -679,7 +685,7 @@ _AVG_CENTROID_EXCLUSIVE_MIN_ALTERNATIONS = (
 )
 # min per-scan S:N on each side; below it a real ion's label often misses a scan
 _AVG_CENTROID_EXCLUSIVE_MIN_SN = 10.0
-_ZEROFILL_GAP_FACTOR = 4.0  # profile m/z gap > this * median = a cluster boundary
+_ZEROFILL_GAP_FACTOR = 4.0  # relative step > this * the median one: a cluster boundary
 _ZEROFILL_EDGE_PPM = 2.0  # place baseline zeros this far outside each cluster edge
 
 
@@ -2134,42 +2140,69 @@ class OpenTFRawBackend:
         if not scans:
             return np.array([]), np.array([]), num_combined
 
+        judge_on = None
         if all(b is not None for (_, _, b, _) in scans):
-            grid, summed = self._average_profile_in_frequency(scans)
+            grid, summed, judge_on = self._average_profile_in_frequency(scans)
         else:
             grid, summed = self._average_profile_in_mz(scans)
 
         if average and num_combined:
             summed = summed / num_combined
 
-        grid, summed = self._zerofill_baseline(grid, summed)
+        grid, summed = self._zerofill_baseline(grid, summed, judge_on)
         return grid, summed, num_combined
 
     @staticmethod
     def _zerofill_baseline(
-        grid: np.ndarray, summed: np.ndarray
+        grid: np.ndarray, summed: np.ndarray, judge_on: np.ndarray | None = None
     ) -> tuple[np.ndarray, np.ndarray]:
         """Insert baseline zeros around peak clusters. OpenTFRaw's profile()
         omits the zeros Thermo's SegmentedScan carries around each peak, so the
         averaged profile (occupied cells only) never returns to 0 between
-        clusters. Add a zero just outside each cluster edge -- at every m/z gap
-        large versus the within-cluster spacing -- so the profile drops to
-        baseline between peaks, matching Thermo and the pipeline's other paths
-        (which fillna(0))."""
+        clusters. Add a zero just outside each cluster edge, so the profile
+        drops to baseline between peaks, matching Thermo and the pipeline's
+        other paths (which fillna(0)).
+
+        A cluster ends at a step to the next sample that is large against the
+        median step, each step taken relative to where it lies. ``judge_on``
+        is the axis the steps are read off, sample for sample alongside
+        ``grid``. The frequency path passes its frequency grid: each peak of
+        its ``grid`` is written on a calibration of its own, which stretches
+        or squeezes the step between two neighbouring peaks by up to a few
+        ppm, so a threshold on ``grid`` would move with the scans'
+        calibrations, and the cells the scans occupied do not. m/z goes as
+        1/f^2, so a relative step in frequency is half the one in m/z all
+        along the grid, and on one calibration the two axes pick the same
+        gaps. Without ``judge_on`` the steps are read off ``grid`` itself,
+        which is all the m/z fallback has.
+
+        The threshold is relative, not a number of bins. A bin is a smaller
+        share of the frequency the lower the m/z, so a cluster ends at one
+        missing bin high in the mass range and only at several low in it.
+        """
         if grid.size < 2:
             return grid, summed
-        gap_ppm = np.diff(grid) / grid[:-1] * 1e6
-        med = float(np.median(gap_ppm))
+        axis = grid if judge_on is None else judge_on
+        step_ppm = np.abs(np.diff(axis)) / np.minimum(axis[:-1], axis[1:]) * 1e6
+        med = float(np.median(step_ppm))
         if not np.isfinite(med) or med <= 0:
             return grid, summed
-        boundary = np.flatnonzero(gap_ppm > _ZEROFILL_GAP_FACTOR * med)
+        boundary = np.flatnonzero(step_ppm > _ZEROFILL_GAP_FACTOR * med)
         if boundary.size == 0:
             return grid, summed
         off = _ZEROFILL_EDGE_PPM / 1e6
         left_z = grid[boundary] * (1 + off)
         right_z = grid[boundary + 1] * (1 - off)
-        new_mz = np.concatenate([grid, left_z, right_z])
-        new_v = np.concatenate([summed, np.zeros(left_z.size + right_z.size)])
+        # A gap narrower than twice the offset has no room for both: the two
+        # zeros would pass each other, and under half that width land among
+        # the neighbouring cluster's samples. Such a gap takes one zero, at
+        # its middle, which is where the two meet as a gap narrows to that
+        # width, so the baseline does not jump there.
+        narrow = right_z <= left_z
+        middle = (grid[boundary] + grid[boundary + 1]) / 2
+        zeros = np.concatenate([np.where(narrow, middle, left_z), right_z[~narrow]])
+        new_mz = np.concatenate([grid, zeros])
+        new_v = np.concatenate([summed, np.zeros(zeros.size)])
         order = np.argsort(new_mz, kind="stable")
         return new_mz[order], new_v[order]
 
@@ -2204,8 +2237,12 @@ class OpenTFRawBackend:
 
     def _average_profile_in_frequency(
         self, scans: list[tuple[np.ndarray, np.ndarray, float, float]]
-    ) -> tuple[np.ndarray, np.ndarray]:
-        """Average profiles in the frequency domain (see average_profile)."""
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray | None]:
+        """Average profiles in the frequency domain (see average_profile).
+
+        Returns the m/z grid, the sum, and the frequency of each grid point,
+        which ``_zerofill_baseline`` reads the cluster boundaries off.
+        """
         freqs = [self._mz_to_freq(mz, b, c) for (mz, _, b, c) in scans]
         ref = max(range(len(freqs)), key=lambda i: freqs[i].size)  # densest scan
         d = np.diff(np.sort(freqs[ref]))
@@ -2214,15 +2251,15 @@ class OpenTFRawBackend:
         # large inter-cluster gaps via the lower half of the diffs).
         df = float(np.median(d[d <= np.median(d)])) if d.size else 0.0
         if df <= 0:
-            return self._average_profile_in_mz(scans)
+            return (*self._average_profile_in_mz(scans), None)
 
         # Quantize the scans' samples into native-density cells, then place each
         # grid point at the MEAN OF THE REAL FREQUENCIES in its cell rather than
         # at the cell's centre. Every scan of a file is transformed on the same
-        # FFT bin grid, so a cell holds one sample per scan and they agree to a
-        # few percent of a bin: their mean is a frequency the instrument
-        # actually sampled, and the interpolation below returns the measured
-        # value there instead of a chord across it.
+        # FFT bin grid, so a cell holds one sample per scan, and in over half
+        # the cells they agree to a few percent of a bin: their mean is a
+        # frequency the instrument actually sampled, and the interpolation
+        # below returns the measured value there instead of a chord across it.
         #
         # A synthetic cell centre does not, and the stored profile is far too
         # sparse to forgive that -- a raw file keeps about 3 points per FWHM, so
@@ -2254,11 +2291,18 @@ class OpenTFRawBackend:
         summed = np.zeros(fgrid.shape, dtype=np.float64)
         b_drift = np.zeros(fgrid.shape, dtype=np.float64)
         c_drift = np.zeros(fgrid.shape, dtype=np.float64)
+        end_reach = _AVG_PROFILE_END_DF * df
         for f, (_, intensity, b, c) in zip(freqs, scans):
             order = np.argsort(f, kind="stable")
             f_sorted, int_sorted = f[order], intensity[order]
-            lo = int(np.searchsorted(fgrid, f_sorted[0], side="left"))
-            hi = int(np.searchsorted(fgrid, f_sorted[-1], side="right"))
+            # A grid point is the mean of what every scan sampled in its cell.
+            # Where another scan sampled the cell of this scan's first or last
+            # sample too, that grid point lies outside this scan's own range
+            # as often as inside it. Half a bin beyond either end takes it in
+            # and stops short of the next bin, and np.interp holds the end
+            # sample's value there.
+            lo = int(np.searchsorted(fgrid, f_sorted[0] - end_reach, side="left"))
+            hi = int(np.searchsorted(fgrid, f_sorted[-1] + end_reach, side="right"))
             if hi <= lo:
                 continue
             seg = fgrid[lo:hi]
@@ -2268,7 +2312,11 @@ class OpenTFRawBackend:
             # straight across a gap; summed over scans those spurious ramps inflate
             # and flat-top sparse/intermittent peaks (a peak present in one scan
             # picks up 11 ramps from the others). Keep only grid points within a
-            # couple of FFT bins of an actual sample of this scan.
+            # couple of FFT bins of an actual sample of this scan. The threshold
+            # sits on a lattice distance: the grid point two bins past one of
+            # the scan's clusters is two bins give or take the scan's sub-bin
+            # offset away, so it is kept for one sign of the offset and zeroed
+            # for the other.
             j = np.clip(np.searchsorted(f_sorted, seg), 1, f_sorted.size - 1)
             near = np.minimum(np.abs(seg - f_sorted[j - 1]), np.abs(seg - f_sorted[j]))
             vals[near > _AVG_PROFILE_GAP_DF * df] = 0.0
@@ -2280,7 +2328,7 @@ class OpenTFRawBackend:
             fgrid, df, summed, b_mean, c_mean, b_drift, c_drift
         )
         order = np.argsort(mz_grid)
-        return mz_grid[order], summed[order]
+        return mz_grid[order], summed[order], fgrid[order]
 
     @staticmethod
     def _frequency_grid_to_mz(
@@ -2545,7 +2593,7 @@ def averaged_profile_signature() -> str:
 
     Names the reader ``MASCOPE_THERMO_BACKEND`` selects and, for OpenTFRaw, the
     reader's version and :data:`AVERAGED_PROFILE_GENERATION`:
-    ``"otf2.0.0-g4"``. The Thermo library averages by itself and is named
+    ``"otf2.0.0-g5"``. The Thermo library averages by itself and is named
     alone, ``"thermo"``.
 
     A profile one signature computed is not what another computes - reader
@@ -2554,7 +2602,7 @@ def averaged_profile_signature() -> str:
     it on this. A reader upgrade changes it by itself; a change to the
     averaging has to bump the generation.
 
-    :return: The signature, e.g. ``"otf2.0.0-g4"``
+    :return: The signature, e.g. ``"otf2.0.0-g5"``
     :rtype: str
     """
     name = os.environ.get(ENV_BACKEND, "opentfraw").lower()

@@ -32,7 +32,7 @@ from mascope_file.runtime import runtime as file_runtime
 
 FILENAME = "OrbiTest_1001.01.01_12h00m00s_TestFile"
 MODULE = "mascope_backend.api.controllers.calibration.lib.calibration_mz_fit"
-CACHED = "sum_signal.otf2.0.0-g4"
+CACHED = "sum_signal.otf2.0.0-g5"
 
 
 def _handler(filename: str = FILENAME) -> OrbiCalibrationHandler:
