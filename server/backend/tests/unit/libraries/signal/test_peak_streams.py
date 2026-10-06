@@ -410,18 +410,25 @@ def test_satellites_are_judged_within_a_stream(
 
 # -- what a rebuild of the store goes by -------------------------------------------
 
+DECIDED_PER_STREAM = {"mz_calibration": None, "peaks_per_stream": True}
 
-def test_a_per_stream_store_is_recorded_beside_the_file(
+# The scans of TWO_EXPERIMENTS read back as one experiment, as another reader
+# or another keying might: nothing in them is left to detect apart.
+AS_ONE_EXPERIMENT = [(text, 1, peaks) for text, _event, peaks in TWO_EXPERIMENTS]
+
+
+def test_the_decision_is_recorded_beside_the_file(
     acquire, instrument_functions, sample_file_path
 ):
+    """One bit of it, and no stream: the keys a store's labels index are the
+    store's own, and a second list beside the file could disagree with them
+    exactly where it matters, between a record written and a store whose
+    write was cut short."""
     acquire(TWO_EXPERIMENTS)
 
     m_peak.compute_peaks(SAMPLE_FILENAME, instrument_functions, per_stream=True)
 
-    assert _props(sample_file_path) == {
-        "mz_calibration": None,
-        "peak_streams": [SETTLING, MEASURING],
-    }
+    assert _props(sample_file_path) == DECIDED_PER_STREAM
 
 
 def test_a_store_whose_write_fails_is_rebuilt_as_it_was_being_built(
@@ -440,7 +447,7 @@ def test_a_store_whose_write_fails_is_rebuilt_as_it_was_being_built(
         with pytest.raises(OSError):
             m_peak.compute_peaks(SAMPLE_FILENAME, instrument_functions, per_stream=True)
 
-    assert _props(sample_file_path)["peak_streams"] == [SETTLING, MEASURING]
+    assert _props(sample_file_path) == DECIDED_PER_STREAM
     m_peak.compute_peaks(SAMPLE_FILENAME, instrument_functions)
     assert m_compute.peak_store_streams(_store()) == [SETTLING, MEASURING]
 
@@ -480,10 +487,82 @@ def test_only_an_explicit_decision_changes_what_a_store_is(
     m_peak.compute_peaks(SAMPLE_FILENAME, instrument_functions, per_stream=False)
 
     assert m_compute.peak_store_streams(_store()) == []
-    # Recorded as pooled again, so the next rebuild leaves it pooled
-    assert _props(sample_file_path)["peak_streams"] == []
+    # Recorded as decided against, so the next rebuild leaves it pooled
+    assert _props(sample_file_path) == {
+        "mz_calibration": None,
+        "peaks_per_stream": False,
+    }
     m_peak.compute_peaks(SAMPLE_FILENAME, instrument_functions)
     assert m_compute.peak_store_streams(_store()) == []
+
+
+def test_the_decision_holds_through_a_rebuild_that_finds_one_stream(
+    acquire, instrument_functions, sample_file_path
+):
+    """A rebuild is handed no decision, so it never writes the record. Where
+    the file reads back one stream in each polarity, the store is rebuilt
+    pooled, because there is nothing to detect apart, and the decision
+    stands: once the file reads back its streams, the store is per stream
+    again. Written by the rebuild, the record would say pooled for good, with
+    no one having decided it."""
+    acquire(TWO_EXPERIMENTS)
+    m_peak.compute_peaks(SAMPLE_FILENAME, instrument_functions, per_stream=True)
+
+    acquire(AS_ONE_EXPERIMENT)
+    m_peak.compute_peaks(SAMPLE_FILENAME, instrument_functions)
+
+    assert m_compute.peak_store_streams(_store()) == []
+    assert _props(sample_file_path) == DECIDED_PER_STREAM
+
+    acquire(TWO_EXPERIMENTS)
+    m_peak.compute_peaks(SAMPLE_FILENAME, instrument_functions)
+
+    assert m_compute.peak_store_streams(_store()) == [SETTLING, MEASURING]
+    assert _props(sample_file_path) == DECIDED_PER_STREAM
+
+
+def test_a_rebuild_writes_nothing_beside_the_file(
+    acquire, instrument_functions, monkeypatch
+):
+    """Whatever the store was built by, and whatever the file reads back."""
+    written = []
+    update_props = m_io.update_props
+
+    def recording(filename, props):
+        written.append(props)
+        return update_props(filename, props)
+
+    acquire(TWO_EXPERIMENTS)
+    m_peak.compute_peaks(SAMPLE_FILENAME, instrument_functions, per_stream=True)
+    monkeypatch.setattr(m_io, "update_props", recording)
+
+    for scans in (TWO_EXPERIMENTS, AS_ONE_EXPERIMENT, TWO_EXPERIMENTS):
+        acquire(scans)
+        m_peak.compute_peaks(SAMPLE_FILENAME, instrument_functions)
+
+    assert written == []
+
+
+def test_an_explicit_decision_replaces_the_one_recorded(
+    acquire, instrument_functions, sample_file_path
+):
+    """Once a file carries a decision, an explicit one replaces it whatever
+    the file reads back at the time: asked for per stream while it reads back
+    one stream, it is pooled and decided per stream."""
+    acquire(TWO_EXPERIMENTS)
+    m_peak.compute_peaks(SAMPLE_FILENAME, instrument_functions, per_stream=True)
+    m_peak.compute_peaks(SAMPLE_FILENAME, instrument_functions, per_stream=False)
+
+    acquire(AS_ONE_EXPERIMENT)
+    m_peak.compute_peaks(SAMPLE_FILENAME, instrument_functions, per_stream=True)
+
+    assert m_compute.peak_store_streams(_store()) == []
+    assert _props(sample_file_path) == DECIDED_PER_STREAM
+
+    acquire(TWO_EXPERIMENTS)
+    m_peak.compute_peaks(SAMPLE_FILENAME, instrument_functions)
+
+    assert m_compute.peak_store_streams(_store()) == [SETTLING, MEASURING]
 
 
 @pytest.mark.parametrize(
@@ -737,7 +816,8 @@ def test_a_stream_key_the_file_no_longer_holds_is_stale(
 
     rekeyed = [f"{NEG} R=120000 event=3", f"{NEG} R=120000 event=4"]
     assert m_compute.peak_store_streams(_store()) == rekeyed
-    assert _props(sample_file_path)["peak_streams"] == rekeyed
+    # The record holds no key to go stale with them
+    assert _props(sample_file_path) == DECIDED_PER_STREAM
     asyncio.run(m_compute.check_peak_store(SAMPLE_FILENAME))
 
 
