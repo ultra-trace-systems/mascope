@@ -250,6 +250,22 @@ def load_coord(base_filename, var, coord_name):
     return coord_array
 
 
+def _bad_peaks(is_weak, is_satellite):
+    """Which peaks of a store a load leaves out: the weak and the satellites.
+
+    Stated once, because two things have to agree on it. A load drops these
+    peaks (:func:`load_peak_data`), and a fill tells the rows sharing an m/z
+    apart by them (:func:`_rows_of_kept_peaks`). A rule the load alone changed
+    would leave the fill settling such a pair by the old one, and nothing
+    would fail.
+
+    :param is_weak: The store's ``is_weak`` flags
+    :param is_satellite: Its ``is_satellite`` flags, as the same kind of array
+    :return: Their union, as that kind of array
+    """
+    return is_weak | is_satellite
+
+
 def load_peak_data(base_filename: str, drop_bad_peaks: bool = True) -> xr.Dataset:
     """Load peak data from sample file.
     The function DOES NOT guarantee that the timeseries data is complete.
@@ -290,7 +306,7 @@ def load_peak_data(base_filename: str, drop_bad_peaks: bool = True) -> xr.Datase
     # never physically written — xarray uses fill_value=NaN for float64 by default)
     peak_data["sparsity"] = peak_data.sparsity.fillna(0.0)
     if drop_bad_peaks:
-        bad_peak_mask = peak_data.is_weak | peak_data.is_satellite
+        bad_peak_mask = _bad_peaks(peak_data.is_weak, peak_data.is_satellite)
         # By position: selecting by m/z needs every m/z on the axis to be
         # unique, the ones being dropped included, and two peaks of a file can
         # share one
@@ -748,7 +764,9 @@ def _rows_of_kept_peaks(
     first row holding it, whichever of them the update is for. An update's
     m/z values are read off a loaded store, and a store is loaded without its
     weak and satellite peaks (:func:`load_peak_data`), so among the rows
-    sharing an m/z the update is for the one that is neither.
+    sharing an m/z the update is for the one that is neither
+    (:func:`_bad_peaks`). A peak a load drops can therefore not be filled by
+    its m/z while a kept one shares it.
 
     :param z: The peak store
     :param existing_mz: The store's m/z axis, ascending
@@ -764,7 +782,7 @@ def _rows_of_kept_peaks(
 
     # A boolean variable is int8 in the store, so its inverse is not a mask
     # until it is cast back
-    bad_peak_mask = (z["is_weak"][:] | z["is_satellite"][:]).astype(bool)
+    bad_peak_mask = _bad_peaks(z["is_weak"][:], z["is_satellite"][:]).astype(bool)
     indexer = indexer.copy()
     for i in shared:
         rows = np.arange(indexer[i], last_row[i] + 1)
