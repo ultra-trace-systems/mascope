@@ -430,6 +430,27 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   timeseries among it. That takes setting the two apart when the file's peaks
   are detected, and is not part of this change.
 
+- **A peak's timeseries can no longer be written to the peak next to it.** A
+  timeseries is stored by the m/z of its peak, and the row found for that m/z
+  was accepted up to 10 ppm away from it, where two peaks of a file can be
+  closer together than that. The m/z values are read off the file itself, so
+  they miss a row only when the file's m/z axis was rewritten after they were
+  read, which applying an m/z calibration does. A timeseries being computed
+  while a calibration of the same file was applied could then be stored on a
+  neighbouring peak, scaled to that peak's summed intensity, and stay there
+  until the file's peaks were detected again. The m/z now has to be on the
+  axis exactly. A timeseries that is not is refused with "Cannot update m/z
+  values not present in existing data" and nothing of it is stored, so the
+  request that computed it fails and the next one computes it against the
+  file as it then is. An m/z above the file's last peak is refused the same
+  way, where it failed with an IndexError.
+
+  This was found by reading the code, and the overlap has not been
+  reproduced. Error monitoring shows no such IndexError on a deployment, and
+  would not show a timeseries stored on the wrong peak. A calibration and a
+  timeseries of one file can still overlap, and whether to keep them apart or
+  to compute a refused timeseries again is not part of this change.
+
 ### Security
 
 - **Creating an ionization mechanism refuses one too long to store while the

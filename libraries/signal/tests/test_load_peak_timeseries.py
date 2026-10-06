@@ -125,6 +125,31 @@ async def test_a_computed_store_is_served_without_reading_the_file(
     assert result.is_timeseries_computed.values.all()
 
 
+@pytest.mark.asyncio
+async def test_a_peak_asked_for_off_the_axis_is_filled_at_its_stored_mz(
+    monkeypatch, write_peak_store
+):
+    """An m/z asked for names the nearest peak, and the fill carries that peak's.
+
+    What is asked for need not be on the store's axis: the API takes a peak's
+    m/z from its caller and serves the nearest peak within a tolerance. The
+    store takes a fill only at an m/z on its axis exactly, so the fill has to
+    be built from the m/z read off the store, not the one asked for.
+    """
+    # 1.3 ppm above what is asked for, and no round numbers
+    stored_mz = MZ_VALUES * (1 + 1.3e-6)
+    write_peak_store(SCAN_TIMES, stored_mz, SUM_AREAS, SUM_HEIGHTS)
+    _stub_reader(monkeypatch, SCAN_TIMES)
+
+    result = await m_compute.load_peak_timeseries(SIGNAL_TEST_FILENAME, MZ_VALUES)
+
+    np.testing.assert_array_equal(result.mz.values, stored_mz)
+    assert result.is_timeseries_computed.values.all()
+    np.testing.assert_allclose(
+        result.peak_heights.values, np.outer(SUM_HEIGHTS, _shares(5))
+    )
+
+
 class TestPeaksSharingAnMz:
     """Filling a store two of whose peaks sit on the same m/z.
 

@@ -577,6 +577,81 @@ class TestPeaksSharingAnMz:
         stored.close()
 
 
+class TestAnMzOffTheAxis:
+    """A fill for an m/z the store's axis does not hold.
+
+    A fill's m/z values are read off the store, so they are on its axis to the
+    last bit, unless the axis was rewritten after they were read: an m/z
+    calibration moves every peak of a file. Such a fill is for no row of the
+    store as it then stands, and the nearest one is no stand-in. Two peaks of
+    a file can be a few ppm apart, and a per-stream store sets two rows a part
+    in a trillion apart, so the row found for an m/z that is off the axis is
+    as likely the next peak's.
+    """
+
+    # Rows 1 and 2 are 5 ppm apart
+    MZ = np.array([100.0, 200.0, 200.001, 300.0])
+
+    @pytest.mark.parametrize(
+        "mz",
+        [
+            # 2 ppm above row 1 and 3 ppm below row 2, the first row at or
+            # above it: within a tolerance it is written there
+            pytest.param(200.0004, id="between two rows"),
+            # 7 ppm above row 3, with no row at or above it at all
+            pytest.param(300.002, id="above the last row"),
+            # Row 1 is the first row at or above it, and no tolerance however
+            # tight tells the two apart
+            pytest.param(np.nextafter(200.0, 0.0), id="the last bit below a row"),
+        ],
+    )
+    @pytest.mark.asyncio
+    async def test_a_fill_naming_an_mz_off_the_axis_is_refused_whole(
+        self,
+        mz,
+        create_peak_timeseries_dataset,
+        create_update_dataset,
+        peak_timeseries_zarr_path,
+    ):
+        """One m/z off the axis refuses the fill, the peaks it does name included.
+
+        The fill is for two peaks, and row 0 is named exactly. Written to the
+        row found for the other, it would be scaled to another peak's summed
+        intensity and flag that peak computed, until the file's peaks are
+        detected again.
+        """
+        ds = create_peak_timeseries_dataset(mz_values=self.MZ)
+        await write_peaks(ds, TEST_FILENAME, overwrite=True)
+        before = xr.open_zarr(peak_timeseries_zarr_path).load()
+        fill = create_update_dataset(np.array([100.0, mz]), ds.time.values, [0, 1])
+
+        with pytest.raises(ValueError, match="not present in existing data"):
+            await write_peaks(fill, TEST_FILENAME, overwrite=False)
+
+        after = xr.open_zarr(peak_timeseries_zarr_path).load()
+        xr.testing.assert_identical(after, before)
+        assert not after.is_timeseries_computed.values.any()
+
+    @pytest.mark.asyncio
+    async def test_a_fill_of_a_store_without_peaks_is_refused(
+        self,
+        create_peak_timeseries_dataset,
+        create_update_dataset,
+        peak_timeseries_zarr_path,
+    ):
+        """A blank measurement's store has no row to hold an m/z up against."""
+        ds = create_peak_timeseries_dataset(mz_values=np.array([]))
+        await write_peaks(ds, TEST_FILENAME, overwrite=True)
+        fill = create_update_dataset(np.array([100.0]), ds.time.values, [0])
+
+        with pytest.raises(ValueError, match="not present in existing data"):
+            await write_peaks(fill, TEST_FILENAME, overwrite=False)
+
+        stored = zarr.open(peak_timeseries_zarr_path, mode="r")
+        assert stored["mz"].shape == (0,)
+        assert stored["peak_heights"].shape == (0, TEST_TIME_SIZE)
+
+
 class TestEnsureSparsityExists:
     """Tests for ensure_sparsity_exists backwards compatibility function."""
 
