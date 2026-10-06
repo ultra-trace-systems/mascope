@@ -61,12 +61,15 @@ SIGNAL_TO_NOISE_THRESHOLD = 3
 
 PEAK_ID_LENGTH = 20
 
-#: The ``.props`` entry that says a file's peak store holds a peak list per
-#: scan stream: the keys of the streams its peaks were detected per. Absent,
-#: or empty, for a pooled store, which is every store written before streams
-#: could be read apart. It is what a rebuild of the store goes by, so that
-#: re-detecting a file's peaks never changes what its existing samples mean.
-PEAK_STREAMS_PROP = "peak_streams"
+#: The ``.props`` entry that records the decision a file's peak store is built
+#: by: true where its peaks are detected per scan stream. Absent where nobody
+#: has decided, which is every file converted before streams could be read
+#: apart, and false once per stream has been decided against. It is what a
+#: rebuild of the store goes by, so that re-detecting a file's peaks follows
+#: what was decided for the file and never the setting of the day. It lists
+#: no streams: the store's own ``streams`` attribute is the list its labels
+#: index.
+PER_STREAM_PROP = "peaks_per_stream"
 
 #: The least relative distance between two rows of a per-stream store's m/z
 #: axis: about a part in a trillion, some thousands of steps of a float. Far
@@ -120,6 +123,9 @@ class BasePeakDetector(ABC):
         self._sum_signal = m_compute.get_sum_signal(self._filename)
 
         self._peak_timeseries: xarray.Dataset | None = None
+        # The decision this detection was handed: per stream, pooled, or none
+        # for a rebuild. Only the raw Orbitrap detector is handed one.
+        self._per_stream: bool | None = None
         # The scan streams the peaks are detected per, as the census gives
         # them; empty for a file detected whole, which is every file but a
         # raw Orbitrap one its detector takes stream by stream.
@@ -191,18 +197,31 @@ class BasePeakDetector(ABC):
         """
         return m_compute.get_scan_timestamps(self._filename), None
 
-    def record_streams(self) -> None:
-        """Record in the file's ``.props`` whether its store is per stream.
+    def record_decision(self) -> None:
+        """Record in the file's ``.props`` the decision its store is built by.
+
+        Whether a file's peaks are detected per scan stream is decided by
+        whoever processes the file: its first conversion, or an explicit
+        re-processing. The record is that decision and nothing else. A
+        rebuild is handed none, so it reads the record and never writes it,
+        and the decision holds also through a rebuild that finds nothing to
+        detect apart: the store is pooled meanwhile, and per stream again
+        once the file reads back its streams.
 
         Called once the peaks are detected, before the store is written: the
-        record is the decision, and the store follows it. A store whose write
-        is cut short is then rebuilt the way it was being built. A file
-        detected whole that never was detected per stream is left alone, so
-        its ``.props`` stays what it was.
+        store follows the record, so that a store whose write is cut short is
+        rebuilt the way it was being built. A file nobody has decided for,
+        with nothing to detect apart, is left alone, so its ``.props`` stays
+        what it was.
         """
-        keys = [stream["key"] for stream in self._streams]
-        if keys or self._sample_file_props.get(PEAK_STREAMS_PROP):
-            m_io.update_props(self._filename, {PEAK_STREAMS_PROP: keys})
+        decision = self._per_stream
+        if decision is None:
+            return
+        recorded = self._sample_file_props.get(PER_STREAM_PROP)
+        if recorded is None and not (decision and self._streams):
+            return
+        if recorded is not decision:
+            m_io.update_props(self._filename, {PER_STREAM_PROP: decision})
 
     async def write_peaks_to_zarr(self, overwrite=True):
         if self.peak_timeseries is None:
@@ -242,10 +261,10 @@ class OrbiPeakDetector(BasePeakDetector):
     only one of them measures is diluted.
 
     :param per_stream: Whether a file that holds more than one MS1 stream in
-        a polarity is detected per stream. None keeps what the file's
-        ``.props`` says its store is, which is what a rebuild of the store
+        a polarity is detected per stream. None goes by the decision the
+        file's ``.props`` records, which is what a rebuild of the store
         wants: a file's samples are defined against its store as it was
-        built, and only an explicit re-processing may change that.
+        decided, and only an explicit re-processing may change that.
     """
 
     def __init__(
@@ -273,7 +292,7 @@ class OrbiPeakDetector(BasePeakDetector):
         """
         per_stream = self._per_stream
         if per_stream is None:
-            per_stream = bool(self._sample_file_props.get(PEAK_STREAMS_PROP))
+            per_stream = bool(self._sample_file_props.get(PER_STREAM_PROP))
         if not per_stream:
             return []
         try:
@@ -787,13 +806,14 @@ def compute_peaks(
         than one MS1 scan stream in a polarity gets a peak list per stream.
         Given by whoever decides how the file is processed: its first
         conversion, or an explicit re-processing. None, the default, rebuilds
-        the store the way the file's ``.props`` says it was built, so that
-        re-detecting a file's peaks never changes what its samples mean.
+        the store by the decision the file's ``.props`` records and leaves
+        that record as it is, so that re-detecting a file's peaks never
+        changes what was decided for it.
     :type per_stream: bool | None
     """
     peak_detector = get_peak_detector(filename, instrument_functions, per_stream)
     asyncio.run(peak_detector.detect_peaks(progress_callback=progress_callback))
-    peak_detector.record_streams()
+    peak_detector.record_decision()
     asyncio.run(peak_detector.write_peaks_to_zarr())
 
 

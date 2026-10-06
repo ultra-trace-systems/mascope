@@ -4,8 +4,8 @@ A raw Orbitrap file whose method runs more than one experiment in a polarity
 can have its peaks detected per experiment (``mascope_signal.peak``). The
 deployment's ``[backend] composite_scan_streams`` decides that, once, when
 the file is first converted. A rebuild of the store decides nothing: it
-keeps what the file's ``.props`` says the store is, because the file's
-samples are defined against the store as it was built.
+goes by the decision the file's ``.props`` records, because the file's
+samples are defined against the store as it was decided.
 
 So the converter hands the setting to peak detection, and the worker that
 rebuilds a store hands it nothing.

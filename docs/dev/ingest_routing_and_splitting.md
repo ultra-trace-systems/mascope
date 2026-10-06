@@ -807,16 +807,33 @@ throughout, because nothing here cuts a file into items, and it writes no
 - **Satellites are judged within a stream.** A sidelobe belongs to a strong
   peak of its own spectrum; judged over the whole axis, a real peak of one
   experiment would be read as the sidelobe of another's.
-- **A rebuild keeps what a store is.** The file's first conversion decides
-  whether its store is per stream and records it in `.props`
-  (`peak_streams`, the keys); a rebuild of the store - the stale-axis
-  repair, a re-run of peak detection, the maintenance refit - goes by that
-  record and not by the flag. Otherwise switching the flag would take a
-  pooled store apart by stream, or pool a per-stream one, under samples
-  that already exist, which is rule 1 of 9.1 broken from underneath. Only
-  an explicit decision changes it, and the re-process of step 8 is where
-  one is made. The record is written before the store, so that a store
-  whose write is cut short is rebuilt the way it was being built.
+- **The record beside the file is the decision, and a rebuild never
+  writes it.** The file's first conversion decides whether its peaks are
+  detected per stream and records that in `.props` (`peaks_per_stream`:
+  true, false once it has been decided against, absent where nobody has
+  decided, which is every file so far). A rebuild of the store - the
+  stale-axis repair, a re-run of peak detection, the maintenance refit - is
+  handed no decision: it goes by the record and leaves it as it is.
+  Otherwise switching the flag would take a pooled store apart by stream,
+  or pool a per-stream one, under samples that already exist, which is rule
+  1 of 9.1 broken from underneath. Only an explicit decision changes the
+  record, and the re-process of step 8 is where one is made. It is written
+  before the store, so that a store whose write is cut short is rebuilt the
+  way it was being built.
+  - **The decision holds where a rebuild finds nothing to detect apart.**
+    Under another reader or another keying a file can read back one stream
+    in each polarity. The store is then rebuilt pooled, readers go by the
+    store, and the record stands: once the file reads back its streams the
+    store is per stream again. A rebuild that wrote what it found would
+    have recorded pooled there, for good, with no one having decided it.
+  - **It lists no streams.** The keys a store's labels index are the
+    store's own `streams` attribute. A second list beside the file would
+    disagree with it exactly where the ordering matters, between a record
+    written and a store whose write was cut short, and anything that paired
+    the file's list with the store's labels would be wrong there.
+  - **A file nobody has decided for, with nothing to detect apart, gets no
+    record,** so the `.props` of a single-stream file is what it was,
+    whichever way the flag is set.
 - **The streams to detect are asked of the file, not of `.props`.** The
   census there was taken by the reader of the day the file was converted,
   and a stream's scans are selected by a key today's reader computes.
@@ -2085,9 +2102,11 @@ unchanged.
      signal library's reads take a stream; the peaks of a file with more
      than one MS1 stream in a polarity are detected per stream and labelled
      in its store; its timeseries are filled over each peak's own stream; a
-     rebuild keeps the store as it was built, and a store whose stream key
-     the file no longer holds is stale, so rebuilt (4.3). With the flag on,
-     such a file still gets one item per polarity, and until steps 4 to 6
+     rebuild goes by the decision recorded at the file's conversion and
+     never rewrites it, and a store whose stream key the file no longer
+     holds is stale, so rebuilt (4.3). With the flag on, every conversion
+     of a raw Orbitrap file depends on the read of its streams, and a
+     multi-stream file still gets one item per polarity: until steps 4 to 6
      that item reads the peak lists of every stream of its polarity
      together, an ion two of them measure counted twice; the file's status
      detail and the converter's census line still call its streams pooled -
@@ -2487,7 +2506,7 @@ Function names are the stable reference; line numbers drift.
 | Method identity (shipped, #2155) | `libraries/thermo/src/mascope_thermo/processor.py` `RawProcessor.method_file`; `backend.py` `ReaderBackend.method_file`; `db/scripts/populate_orbitrap_method_file.py` | 0 |
 | Filter parsing, stream census, per-stream parameter sampling | `libraries/thermo/src/mascope_thermo/backend.py` (`acquisition_parameters`, `_sample_evenly`, a new signature accessor); `server/backend/src/mascope_backend/file_converter/schema.py` `SampleFileProps` | 0 |
 | Scan selection and stream identity | `backend.py` `scan_filters` (the scan event from the scan index, `_method_scan_event`), `OpenTFRawBackend._selected` and `_all_scans`; `thermo.py` `ScanSelector`; `backend.py` `_method_experiment` (segment and event, as the method counts them); `streams.py` `_keyed_scans` (which stream a scan belongs to), `scan_stream_keys` (what selection compares) and `_census`; `scan_filter.py` `ScanFilter.stream_key`; `method_keys.py` `signature_class` (built from signature keys) | 3 |
-| Detection and store layout | `libraries/signal/src/mascope_signal/peak.py` (`OrbiPeakDetector._peak_streams`, `_extract_peaks_per_stream`, `_scan_axis`, `_strictly_increasing`, `record_streams`, `_allocate_peak_timeseries`); `libraries/thermo/src/mascope_thermo/streams.py` `peak_streams`; `file_converter/base_processor.py` `composites_scan_streams` | 3 |
+| Detection and store layout | `libraries/signal/src/mascope_signal/peak.py` (`OrbiPeakDetector._peak_streams`, `_extract_peaks_per_stream`, `_scan_axis`, `_strictly_increasing`, `record_decision`, `_allocate_peak_timeseries`); `libraries/thermo/src/mascope_thermo/streams.py` `peak_streams`; `file_converter/base_processor.py` `composites_scan_streams` | 3 |
 | Timeseries fill, stale-axis check, acquisition window | `libraries/signal/src/mascope_signal/compute.py` (`load_peak_timeseries`, `_stream_timeseries_update`, `_read_stream_back`, `peak_store_streams`, `check_peak_store`, `check_stored_scan_axis`, `get_acquisition_window`) | 3 |
 | Peak listing | `server/backend/src/mascope_backend/api/controllers/samples/lib/samples_peaks.py` `extract_peaks` | 3 |
 | Matching | `libraries/match/src/mascope_match/compute/isotopes.py` `compute_match_isotopes`; `api/controllers/match/lib/match_compute.py` | 3 |

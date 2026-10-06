@@ -486,8 +486,8 @@ class BackendConfig(ModuleConfig):
     #
     # A file with one experiment in each polarity - nearly every file - is
     # processed exactly as before whichever way this is set. A file already
-    # converted keeps the peak store it has: rebuilding a store never changes
-    # whether it holds a peak list per experiment, so this applies to files
+    # converted keeps what was decided for it then: rebuilding a store goes by
+    # that decision and never by this setting, so this applies to files
     # converted from then on.
     #
     # Read by the file converter, which is where peaks are detected.
