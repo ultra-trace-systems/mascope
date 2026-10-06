@@ -54,6 +54,37 @@ class NoScansFoundError(ValueError):
     pass
 
 
+class UnknownStreamError(LookupError):
+    """A scan stream was asked for by a key the file holds no stream under.
+
+    Deliberately not a :class:`NoScansFoundError`, and not a ``ValueError``.
+    An empty selection is an ordinary answer, and the code above the reader
+    handles it as one: a polarity the file does not carry is skipped, a
+    window that holds no scan reads as nothing found. A key the file does not
+    hold is another thing, and caught with those it would be read as "no
+    scans".
+
+    A key is a stream's name, not its identity, so one that was stored and is
+    read with later can have gone stale without anything being mistyped. The
+    name of one experiment depends on what else its file holds, on which
+    reader backend rendered its scan filter, and on the version of the code
+    that keys (``mascope_thermo.streams``).
+
+    :param stream: The key that was asked for.
+    :param keys: The stream key of every scan of the file, or any iterable of
+        the keys the file holds.
+    """
+
+    def __init__(self, stream: str, keys: Iterable[str]):
+        self.stream = stream
+        #: The keys the file does hold, in the order its streams first appear.
+        self.held = list(dict.fromkeys(keys))
+        super().__init__(
+            f"The file holds no scan stream '{stream}'. Its streams: "
+            + "; ".join(self.held)
+        )
+
+
 def _validate_mz_range(
     RawFile, mz_min: float | None, mz_max: float | None
 ) -> tuple[float, float]:
@@ -261,6 +292,10 @@ class ScanSelector:
             bad_first_scan = self._bad_first_scan()
         else:
             in_stream = self._stream_mask()
+            # A file with no scans holds no key, and stays the empty
+            # selection its handling is built on.
+            if in_stream.size and not in_stream.any():
+                raise UnknownStreamError(self._stream, self._stream_keys)
             mask &= in_stream
             bad_first_scan = bool(
                 in_stream.size and in_stream[0] and self._bad_first_scan(in_stream)

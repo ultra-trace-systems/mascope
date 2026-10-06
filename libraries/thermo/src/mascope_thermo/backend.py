@@ -102,6 +102,12 @@ class ReaderBackend(Protocol):
     function the census groups by, so a stream the census names is exactly
     the scans selected for it. ``None``, the default, selects as before.
 
+    A key the file holds no stream under is not an empty selection: it raises
+    :class:`mascope_thermo.thermo.UnknownStreamError`, which lists the keys
+    the file does hold. And a key belongs to the census of this file as this
+    backend reads it - the other backend can render the same scans' filters
+    differently, and so key them differently.
+
     **The first scan.** A file's first scan is left out of every selection
     when its TIC is an outlier: five times the median of the others or more.
     With no stream given the others are every other scan of the file, of any
@@ -1341,6 +1347,7 @@ class OpenTFRawBackend:
             NoScansFoundError,
             PolarityError,
             ScanTypeError,
+            UnknownStreamError,
         )
 
         scans = self._all_scans()
@@ -1389,9 +1396,15 @@ class OpenTFRawBackend:
         if stream is None:
             compared = scans
         else:
-            in_stream = np.array(
-                [key == stream for key in self._scan_stream_keys()], dtype=bool
-            )
+            keys = self._scan_stream_keys()
+            in_stream = np.array([key == stream for key in keys], dtype=bool)
+            # The key of every scan is in hand, so "no stream of this file
+            # has that key" can be told from "this stream has no scan in this
+            # selection", and is: the second is an empty selection, the first
+            # is a stale key. A file with no scans holds no key, and stays
+            # the empty selection its handling is built on.
+            if in_stream.size and not in_stream.any():
+                raise UnknownStreamError(stream, keys)
             mask &= in_stream
             compared = (
                 [s for s, keep in zip(scans, in_stream) if keep]
