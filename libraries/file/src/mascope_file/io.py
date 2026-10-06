@@ -564,9 +564,12 @@ async def write_peaks(
     2. Partial update: Updates specific m/z values in an existing zarr file
 
     The partial update uses a read-modify-write pattern on individual chunks
-    to minimize memory usage. It finds each peak's row by its m/z. Where
-    several peaks of the file share an m/z, the update is for the one
-    :func:`load_peak_data` keeps: see :func:`_rows_of_kept_peaks`.
+    to minimize memory usage. It finds each peak's row by its m/z, which has
+    to be on the file's m/z axis exactly: an update is built from m/z values
+    read off the file, and one the axis no longer holds is for none of its
+    rows, however near it comes to one. Where several peaks of the file share
+    an m/z, the update is for the one :func:`load_peak_data` keeps: see
+    :func:`_rows_of_kept_peaks`.
 
     :param peak_timeseries: Dataset containing peak areas and peak heights
     :type peak_timeseries: xr.Dataset
@@ -732,14 +735,19 @@ def _get_chunk_metadata(
     mz_update = peak_timeseries.coords["mz"].values
     existing_mz = z["mz"][:]
 
-    # Find indices for matching
+    # The first row at or above each m/z: one past the last row for an m/z
+    # above them all
     indexer = np.searchsorted(existing_mz, mz_update)
 
-    # Clip indices to valid range before comparison
-    clipped_indexer = np.clip(indexer, 0, len(existing_mz) - 1)
-
-    # Verify exact matches
-    exact_match_mask = np.isclose(existing_mz[clipped_indexer], mz_update)
+    # An update's m/z values are read off the store, never computed, so the
+    # row found has to hold exactly that m/z. Within a tolerance it could as
+    # well be a neighbouring peak's: an m/z the axis does not hold finds the
+    # next row up, and two peaks of a file can be a few ppm apart. In a
+    # per-stream store two rows are set a part in a trillion apart on purpose
+    # (``mascope_signal.peak.MZ_ROW_SEPARATION``), nearer than any tolerance.
+    has_row = indexer < existing_mz.size
+    exact_match_mask = has_row.copy()
+    exact_match_mask[has_row] = existing_mz[indexer[has_row]] == mz_update[has_row]
 
     if not np.all(exact_match_mask):
         missing_mz = mz_update[np.invert(exact_match_mask)]
