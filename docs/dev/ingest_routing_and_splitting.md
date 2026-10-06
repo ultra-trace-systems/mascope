@@ -643,6 +643,12 @@ it. Four things the build settled:
     list is its segments' rows with the mask set, and its sum signal is
     its segments' sum signals cut at the map's boundaries. Nothing is
     rescaled: a peak's intensity is what its segment measured.
+  - **The segment index is stored and shown** (asked 2026-10-06). Every
+    peak and every scan already carries its stream label; the stitched
+    sum signal carries the segment index per sample too, and the spectrum
+    and peak-listing routes return them, so the sum spectrum view can draw
+    each segment in its own colour with the boundaries of the map, and the
+    peak table can show a peak's segment.
 - **Peak detection loops over MS1 streams instead of polarities.**
   - Today's loop is `_extract_peaks_for_polarity`.
   - Scan selection gains a stream predicate, next to polarity, time and MS
@@ -901,17 +907,27 @@ apart and a window loses signal within a couple of m/z of its edges.
     anchors inside its range. The analyte windows exclude the reagent ions
     by design, so their anchors are analyte ions the collection has to
     carry.
-  - **A segment short of anchors borrows the fit of the nearest segment in
-    m/z** of its polarity, and its quality block says so (decision 5,
-    revised 2026-10-06). The earlier rule had it fail and borrow nothing,
+  - **Each segment is calibrated on its own anchors whenever it holds
+    enough** (decided 2026-10-06: a ppm is a large error, so what follows
+    are fallbacks, and the quality block names which one a segment got).
+    That asks something of the collections: the profile's calibrant
+    collection (phase 8) carries anchors that reach every window of the
+    standard layouts - reagent ions where the range holds them, known
+    analyte ions elsewhere - and a site's own collection is checked
+    against its layout, the processing detail naming a window no anchor
+    of the collection falls in.
+  - **A segment still short of anchors borrows the fit of the nearest
+    segment in m/z** of its polarity, and its quality block says so
+    (decision 5, revised 2026-10-06). The earlier rule had it fail and
+    borrow nothing,
     on the argument that two ranges trap different ion populations; the
     measurement bears the argument out and bounds its cost at about a ppm,
     where an uncalibrated segment's error is unbounded.
   - **The overlaps carry the calibration across** (proposed 2026-10-06, on
-    the user's point that not every segment holds a known anchor). The
-    Orbitrap calibration is one factor per segment. The segment that holds
-    anchors - the reagent scan, with the reagent ions - is fitted as today.
-    A neighbouring segment short of anchors takes that factor shifted by
+    the user's point that not every segment holds a known anchor), as the
+    first of the fallbacks. The Orbitrap calibration is one factor per
+    segment. A segment that holds anchors is fitted on them, as today. A
+    neighbouring segment short of anchors takes that factor shifted by
     the median m/z offset of the ions both segments measure in their
     overlap, chained segment to segment; a segment with no usable overlap
     takes its neighbour's factor unshifted, and the quality block says
@@ -1587,6 +1603,10 @@ same hysteresis and dwell logic as a trace.
     and day give, as any file's does; its segments are not batched (4.5).
 - **Matching, assignment, calibration candidates, exports and MS2** take a
   scan scope (stream, t0, t1) wherever they take a polarity today.
+- **The spectrum and the peak listing carry the segment** of each sample
+  and each peak of a composite; the sample spectrum view draws the
+  segments apart, with the map's boundaries, and the peak table shows the
+  segment (4.3).
 - **The profile resolved for assignment** still follows the item's mode. The
   mode now comes from the stream's binding.
 - **The SDK** gains the stream on items, and the preview and apply routes.
@@ -1957,7 +1977,8 @@ unchanged.
      item per stream);
   6. the consumers read the composite: peak listing, matching, the item
      TIC, the exports and assignment loading take the masked rows of the
-     item's stream;
+     item's stream, and the spectrum and peak-listing routes return each
+     sample's and each peak's segment for the views;
   7. calibration and the instrument function per segment, the fit
      borrowed from the nearest segment where anchors are short, the
      quality block per segment;
@@ -2222,8 +2243,13 @@ through a short-lived stacked branch, merged as one unit.
    overlaps carry the calibration across - a segment short of anchors takes
    its neighbour's factor shifted by the offset the ions both measure in
    their overlap show, chained from the reagent scan outward, and only a
-   segment with no usable overlap borrows unshifted (4.5). Open until the
-   test set has shown how many overlaps hold enough shared ions.
+   segment with no usable overlap borrows unshifted (4.5). **Decided
+   2026-10-06:** each segment on its own anchors whenever it holds enough -
+   a ppm is a large error - and the overlap shift, then the unshifted
+   borrow, only as fallbacks, each named in the quality block; the
+   collections are to carry anchors that reach every window of a layout
+   (4.5). How many overlaps hold enough shared ions is still to be read
+   off the test set.
 6. **MS2.** Attach to the parent item by default (recommended), or separate
    MS2 items.
 7. **Batch naming.** ~~Add the signature class only when needed
