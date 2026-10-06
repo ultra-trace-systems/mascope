@@ -70,11 +70,14 @@ def raw_orbitrap(monkeypatch, sample_file_path):
 
 
 def _stream_asked(asked: dict) -> object:
-    """The stream a recorded read was asked for, however it was passed."""
-    if "stream" in asked:
-        return asked["stream"]
-    # The reads that take it positionally name it last.
-    return asked["args"][-1]
+    """The stream a recorded read was asked for, which it has to be by name.
+
+    The reader's functions take other optional arguments beside the stream,
+    and not all in one order: handed on by position, a stream would land on
+    whichever parameter sits there, and a recorder that takes any arguments
+    could not tell.
+    """
+    return asked["stream"]
 
 
 # One entry per read: how to call it, and which reader call it makes.
@@ -134,8 +137,7 @@ def test_a_read_given_no_stream_asks_the_reader_for_none(raw_orbitrap, read):
     call()
 
     asked = raw_orbitrap[reader_call]
-    # Asked for nothing, or not mentioned at all: either way every stream.
-    assert asked.get("stream") is None
+    assert _stream_asked(asked) is None
     assert STREAM not in asked["args"]
 
 
