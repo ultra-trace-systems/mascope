@@ -258,13 +258,33 @@ class OrbiPeakDetector(BasePeakDetector):
         self._per_stream = per_stream
 
     def _peak_streams(self) -> list[dict]:
-        """The streams this file's peaks are to be detected per, or ``[]``."""
+        """The streams this file's peaks are to be detected per, or ``[]``.
+
+        Asked for per stream, a file's streams have to be read: where that
+        fails, the detection fails. The converter's own census of the same
+        file is best-effort, because nothing is processed by it. This one
+        decides how the file is processed. Detected whole instead, a file of
+        several experiments would get the pooled store the decision was made
+        to prevent, with nothing to show for it, and a file of one experiment
+        cannot be told from it while its streams are unread.
+
+        :raises PeakDetectionError: If the file's streams are asked for and
+            cannot be read
+        """
         per_stream = self._per_stream
         if per_stream is None:
             per_stream = bool(self._sample_file_props.get(PEAK_STREAMS_PROP))
         if not per_stream:
             return []
-        return m_compute.get_peak_streams(self._filename)
+        try:
+            return m_compute.get_peak_streams(self._filename)
+        except Exception as error:
+            raise PeakDetectionError(
+                f"Could not read the scan streams of '{self._filename}', which "
+                "its peaks were to be detected per, so none were detected. "
+                "Detected whole, a file of several experiments would have "
+                "been pooled."
+            ) from error
 
     async def detect_peaks(
         self, progress_callback: Callable[[int], None] | None = None, **kwargs

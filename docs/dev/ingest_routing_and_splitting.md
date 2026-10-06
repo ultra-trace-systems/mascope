@@ -820,6 +820,18 @@ throughout, because nothing here cuts a file into items, and it writes no
 - **The streams to detect are asked of the file, not of `.props`.** The
   census there was taken by the reader of the day the file was converted,
   and a stream's scans are selected by a key today's reader computes.
+- **Asked for per stream, a file's streams have to be read.** The
+  converter's own census is best-effort and never costs a file, because
+  nothing is processed by it. Detection's decides how the file is
+  processed, so where it cannot be taken the detection fails and says why,
+  at a first conversion and at the rebuild of a per-stream store alike.
+  Detected whole instead, a file of several experiments would get the
+  pooled store the setting exists to prevent, with nothing to show for it,
+  and a file of one experiment cannot be told from it while its streams
+  are unread. With the flag on, then, every conversion of a raw Orbitrap
+  file depends on this read. It is one trailer per scan: under 2 ms on the
+  median corpus file, 70 ms on the longest, of 1,486 scans, and it failed
+  on none of the 187.
 - **No eager timeseries yet.** An item of this cut covers its segments
   whole, and their sums peak detection has already measured; the timeseries
   stay lazy. They become eager with windows (6.3).

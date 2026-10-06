@@ -528,6 +528,58 @@ def test_only_a_raw_orbitrap_file_has_peak_streams(monkeypatch, sample_file_path
         assert m_compute.get_peak_streams(SAMPLE_FILENAME) == []
 
 
+# -- a file whose streams cannot be read -------------------------------------------
+
+
+def _unreadable(scan_number):
+    raise OSError("the scan trailer could not be read")
+
+
+def test_a_file_whose_streams_cannot_be_read_is_not_detected_whole(
+    acquire, instrument_functions, sample_file_path, monkeypatch
+):
+    """Asked for per stream, a file's streams have to be read, and where they
+    cannot be the detection fails. Detected whole instead, a file of several
+    experiments would be pooled with nothing to show for it, and this file,
+    which has one, cannot be told from such a file while its streams are
+    unread. Nobody asking, the streams are never read and it is detected."""
+    acquisition = acquire([(NEG, 1, {62.0: 100.0, 125.0: 10.0})] * 3)
+    monkeypatch.setattr(acquisition, "scan_trailer", _unreadable)
+
+    m_peak.compute_peaks(SAMPLE_FILENAME, instrument_functions, per_stream=False)
+    assert _store().mz.values.tolist() == [62.0, 125.0]
+
+    with pytest.raises(m_peak.PeakDetectionError, match="scan streams") as failed:
+        m_peak.compute_peaks(SAMPLE_FILENAME, instrument_functions, per_stream=True)
+
+    assert isinstance(failed.value.__cause__, OSError)
+    assert SAMPLE_FILENAME in str(failed.value)
+    # The attempt wrote nothing: no decision, and the store is the one before
+    assert _props(sample_file_path) == {"mz_calibration": None}
+    assert _store().mz.values.tolist() == [62.0, 125.0]
+
+
+def test_a_rebuild_that_cannot_read_the_streams_leaves_the_store_as_it_was(
+    acquire, instrument_functions, sample_file_path, monkeypatch
+):
+    """A rebuild of a per-stream store goes by its record, so it asks for the
+    file's streams too. Pooling it because they could not be read would
+    change what the store is with no decision made."""
+    acquisition = acquire(TWO_EXPERIMENTS)
+    m_peak.compute_peaks(SAMPLE_FILENAME, instrument_functions, per_stream=True)
+    before, recorded = _store(), _props(sample_file_path)
+    monkeypatch.setattr(acquisition, "scan_trailer", _unreadable)
+
+    with pytest.raises(m_peak.PeakDetectionError, match="scan streams"):
+        m_peak.compute_peaks(SAMPLE_FILENAME, instrument_functions)
+
+    after = _store()
+    assert m_compute.peak_store_streams(after) == [SETTLING, MEASURING]
+    assert after.mz.values.tolist() == before.mz.values.tolist()
+    assert after.stream.values.tolist() == before.stream.values.tolist()
+    assert _props(sample_file_path) == recorded
+
+
 # -- timeseries of a per-stream store ------------------------------------------------
 
 
