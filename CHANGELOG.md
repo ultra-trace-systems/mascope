@@ -253,6 +253,39 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   ten of them at S:N 9 or above. A profile cached by the old averaging is not
   served again; it is averaged anew on first view.
 
+- **The averaged Orbitrap profile counts every scan out to the ends of its
+  range, and its baseline no longer moves with the calibration.** Two
+  corrections to how a file's scans are averaged into the profile the spectra
+  draw and the instrument-function fit reads.
+
+  A scan is added to the profile over the range of signal it stored, and at
+  the first and the last sample of that range it could be left out. It was
+  for 376 of the 1,288 such samples in the demo dataset, about half of those
+  another scan sampled too, and for 15% of those in an internal corpus. That
+  is two samples per scan, usually on the outer skirt of a peak, a median
+  4e-7 of an acquisition's signal. It shows where several scans begin on the
+  flank of one peak: in a 12-scan acquisition three samples of one flank read
+  16 to 39% low, and its fitted resolution coefficient moves by 3.2% with
+  them back in.
+
+  The profile drops to zero between clusters of peaks, and where a cluster
+  ends was judged on the m/z axis. With each peak of the profile written on a
+  calibration of its own, that moved the boundaries as the calibration
+  drifted: 2% of them over 22 drifting acquisitions, seven of those falling
+  between neighbouring samples with nothing missing in between. They are now
+  read off the frequency bins the scans stored signal in, which no
+  calibration moves. And where two clusters lie under 4 ppm apart, which
+  takes bins finer than 1 ppm, one zero now goes midway between them, where
+  two used to pass each other or land among the next cluster's samples.
+
+  Files with a steady calibration read as before. Over the demo dataset the
+  profile sits 0.053 ppm from its strong peaks as it did, one of 310,095
+  peaks changes height, by 1.9% at S:N 4, and the resolution coefficient
+  moves by less than a part in a billion. Of the corpus's 473,670 peaks 106 change
+  height, eight of them at S:N 9 or above, by 0.19% at most. Peak positions
+  are unchanged. A profile cached by the old averaging is not served again;
+  it is averaged anew on first view.
+
 - **A raw Orbitrap file's cached profile no longer outlives the reader that
   averaged it.** Sum signals are cached per time window and polarity, and
   nothing in the cache said which reader computed them, so a file processed
@@ -261,7 +294,7 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   re-run. With the spectra now drawing that profile, it would also have shown
   up a little off its own peaks. A raw Orbitrap file's cache is now named
   after its reader, the reader's version and the averaging generation, as in
-  `sum_signal.otf2.0.0-g4.zarr`, and is recomputed when any of them changes;
+  `sum_signal.otf2.0.0-g5.zarr`, and is recomputed when any of them changes;
   the first view of each sample after the upgrade averages it again. TOF and
   zarr files keep their caches.
 

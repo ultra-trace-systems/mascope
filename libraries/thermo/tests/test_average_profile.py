@@ -5,14 +5,20 @@ Conversion Parameters B and C from its trailer. A non-FTMS scan carries none,
 and then the m/z-domain fallback runs: a constant-ppm m/z grid, summed with an
 integral-conserving interpolation. The first tests drive that fallback with a
 fake reader whose trailer holds no conversion parameters. The rest drive the
-frequency path: its grid has to land on the samples it averages, and each of
-its peaks be written on the calibration of the scans that peak came from.
+frequency path: its grid has to land on the samples it averages, every scan
+count beside its own samples only, each of its peaks be written on the
+calibration of the scans that peak came from, and the baseline fall where no
+scan stored anything.
 """
 
 import numpy as np
 import pytest
 
-from mascope_thermo.backend import OpenTFRawBackend
+from mascope_thermo.backend import (
+    _ZEROFILL_EDGE_PPM,
+    _ZEROFILL_GAP_FACTOR,
+    OpenTFRawBackend,
+)
 
 
 MZ = 301.2
@@ -120,7 +126,7 @@ def test_the_frequency_grid_lands_on_the_samples_it_averages():
     which is how a change in the reader's m/z axis used to move peak heights.
     """
     mz, intensity = _ftms_scan()
-    grid, summed = OpenTFRawBackend("unused.raw")._average_profile_in_frequency(
+    grid, summed, _ = OpenTFRawBackend("unused.raw")._average_profile_in_frequency(
         [(mz, intensity, _B, _C)]
     )
 
@@ -137,6 +143,118 @@ def test_the_frequency_grid_lands_on_the_samples_it_averages():
     )
     # The apex is the tallest sample itself, not an interpolation short of it.
     assert summed.max() == pytest.approx(stored_intensity.max(), rel=1e-9)
+
+
+# -- scans that sample the same bins a few percent of a bin apart --
+
+
+def _scans_on_shared_bins(
+    spans: tuple, heights: tuple, shifts: tuple, points: int = 200
+) -> tuple[list[tuple], np.ndarray]:
+    """Flat profiles on one lattice of bins, each scan displaced from it by its
+    own fraction of a bin and holding its own runs of bins.
+
+    The scans of a file sample the same bins, but the frequencies recovered
+    from what each one wrote agree to a few percent of a bin, not to the last
+    digit. A flat profile reads the same wherever it is interpolated, so the
+    sum at a grid point is exactly the heights of the scans that reach it.
+    Returns the scans and, bin by bin, the heights of the scans storing it.
+    """
+    f_start = np.sqrt(_B / 301.0)
+    df = (np.sqrt(_B / 300.0) - f_start) / points
+    offsets = np.concatenate(([0.0], np.arange(1, points) + _SUB_CELL))
+    scans, stored = [], np.zeros(points)
+    for runs, height, shift in zip(spans, heights, shifts):
+        held = np.zeros(points, dtype=bool)
+        for first, last in runs:
+            held[first : last + 1] = True
+        freq = f_start + (offsets[held] + shift) * df
+        mz = _B / freq**2 + _C / freq**4
+        scans.append((mz, np.full(mz.size, height), _B, _C))
+        stored[held] += height
+    return scans, stored
+
+
+@pytest.mark.parametrize(
+    ("spans", "heights", "shifts"),
+    [
+        pytest.param(
+            ([(0, 199)], [(40, 159)], [(40, 159)]),
+            (1.0, 2.0, 4.0),
+            (0.0, 0.03, -0.03),
+            id="scans a few percent of a bin apart",
+        ),
+        pytest.param(
+            ([(0, 199)], [(0, 199)], [(40, 199)]),
+            (1.0, 2.0, 4.0),
+            (0.0, 0.0, 0.7),
+            id="a grid point nearly half a bin outside the range",
+        ),
+        pytest.param(
+            ([(0, 199)], [(40, 159)]),
+            (1.0, 2.0),
+            (0.0, 0.4),
+            id="the next bin's grid point just over half a bin away",
+        ),
+    ],
+)
+def test_a_scan_reaches_the_sum_at_its_first_and_last_samples(spans, heights, shifts):
+    """Every scan adds its first and its last stored sample to the sum, and
+    nothing in the bin beyond them.
+
+    A grid point is the mean of the frequencies the scans sampled in its cell,
+    so a scan's own sample lies to one side of it, above as often as below. At
+    the two ends of a scan's stored range that leaves the grid point outside
+    the range half the time, and the scan belongs in the sum there all the
+    same. In the first case the second scan's first sample lies 3% of a bin
+    above its grid point and the third scan's last sample as far below its
+    own. In the second the third scan begins 0.47 of a bin above its grid
+    point, so less than half a bin of reach would not do. In the third the
+    grid point of the bin after the second scan's last lies 0.6 of a bin
+    beyond it, so much more than half a bin would be too much.
+    """
+    scans, stored = _scans_on_shared_bins(spans, heights, shifts)
+    backend = OpenTFRawBackend("unused.raw")
+    grid, summed, _ = backend._average_profile_in_frequency(scans)
+
+    assert grid.size == stored.size
+    # The grid ascends in m/z, the bins in frequency.
+    np.testing.assert_allclose(summed[::-1], stored, rtol=1e-12)
+
+
+def test_a_scan_adds_nothing_where_it_stored_nothing():
+    """A scan stays out of the sum away from its own samples: between two of
+    its clusters, and from the bin next to either end of its range.
+
+    A raw file keeps a scan's profile around its peaks only, and interpolating
+    a scan across what it left out would draw a ramp from one cluster to the
+    next, under every peak another scan holds in between. A scan therefore
+    counts within two bins of its own samples and no further, and past the two
+    ends of its range for its own end bins alone.
+
+    The second scan is displaced by 0.4 of a bin, which keeps every grid point
+    clear of the two-bin threshold: the bins between its clusters lie 0.6, 1.6
+    and 2.6 bins from its last sample on one side, and 1.4, 2.4 and 3.4 from
+    its first on the other. Displaced by a few percent they would lie on the
+    threshold itself, two bins give or take the displacement away.
+    """
+    scans, stored = _scans_on_shared_bins(
+        spans=([(0, 199)], [(40, 79), (120, 159)]),
+        heights=(1.0, 2.0),
+        shifts=(0.0, 0.4),
+    )
+    backend = OpenTFRawBackend("unused.raw")
+    grid, summed, _ = backend._average_profile_in_frequency(scans)
+    summed = summed[::-1]
+
+    assert grid.size == stored.size
+    np.testing.assert_allclose(summed[stored == 3.0], 3.0, rtol=1e-12)
+    # Bins 39 and 160 lie next to the second scan's range.
+    assert summed[39] == 1.0 and summed[160] == 1.0
+    # Bins 80-119 lie between its clusters. It still counts in the three
+    # within two bins of a sample of its own, and in none of the rest.
+    np.testing.assert_allclose(summed[[80, 81, 119]], 3.0, rtol=1e-12)
+    np.testing.assert_allclose(summed[82:119], 1.0, rtol=1e-12)
 
 
 # -- several scans, each written on a calibration of its own --
@@ -311,7 +429,7 @@ def test_a_profile_peak_moves_as_a_whole():
     ), "the weak scans are meant to store less of the peak"
 
     masses, *_ = backend.average_centroids(_STEP_SCANS)
-    grid, summed = backend._average_profile_in_frequency(
+    grid, summed, _ = backend._average_profile_in_frequency(
         [(*scans[n]["profile"], *scans[n]["params"].values()) for n in _STEP_SCANS]
     )
 
@@ -351,7 +469,7 @@ def test_a_peak_keeps_its_edge_sample_beside_a_gap():
         scan["profile"] = (mz[intensity > 0], intensity[intensity > 0])
     backend = _stepped_backend(scans)
 
-    grid, _ = backend._average_profile_in_frequency(
+    grid, _, _ = backend._average_profile_in_frequency(
         [(*scans[n]["profile"], *scans[n]["params"].values()) for n in _STEP_SCANS]
     )
 
@@ -386,7 +504,7 @@ def test_peaks_that_would_cross_share_a_calibration():
     scans, freq = _stepped_ftms_scans(ions=((300, after), (308, before)), step_ppm=step)
     backend = _stepped_backend(scans)
 
-    grid, summed = backend._average_profile_in_frequency(
+    grid, summed, _ = backend._average_profile_in_frequency(
         [(*scans[n]["profile"], *scans[n]["params"].values()) for n in _STEP_SCANS]
     )
 
@@ -405,3 +523,170 @@ def test_peaks_that_would_cross_share_a_calibration():
     peaks = summed > 0.5 * 3 * short
     assert peaks.sum() >= 6
     np.testing.assert_allclose(shift[peaks], shared, atol=1e-3)
+
+
+# -- the baseline between clusters --
+
+
+def test_no_baseline_zero_goes_between_adjacent_bins():
+    """Two peaks in neighbouring bins get no baseline between them, however far
+    apart their calibrations write them.
+
+    The ion at the higher m/z is only in the scans before a 12 ppm step, which
+    write it higher still, and the other one only in the scans after it. The
+    step across the valley between them is written five times as wide as any
+    other, and no bin is missing there: every scan stored every sample. A
+    baseline zero belongs where the scans stored nothing, which is read off
+    the occupied cells of the frequency grid and not off the m/z axis.
+    """
+    before, after = [1e5, 1e5, 1e5, 0, 0, 0, 0], [0, 0, 0, 1e5, 1e5, 1e5, 1e5]
+    scans, freq = _stepped_ftms_scans(ions=((300, before), (308, after)), step_ppm=12.0)
+
+    grid, summed, _ = _stepped_backend(scans).average_profile(_STEP_SCANS)
+
+    # The premise: the valley is written wide enough to pass for a gap.
+    steps = np.diff(grid) / grid[:-1]
+    assert steps.max() > _ZEROFILL_GAP_FACTOR * np.median(steps)
+    assert grid.size == freq.size, "a baseline zero went in between adjacent bins"
+    measured = sum(scans[n]["profile"][1] for n in _STEP_SCANS)[::-1]
+    np.testing.assert_allclose(summed, measured, rtol=1e-9, atol=1e-6)
+
+
+def test_a_cluster_ends_at_a_step_over_four_median_steps():
+    """A cluster ends where the step to the next occupied cell is more than
+    four of the grid's median steps.
+
+    The bins here all lie within a third of a percent of one m/z, so a step
+    is the same number of bins wherever it falls: the one bin missing after
+    bin 59 makes a step of two and ends nothing, and the five missing after
+    bin 119 make a step of six and end a cluster.
+    """
+    scans, stored = _scans_on_shared_bins(
+        spans=([(0, 59), (61, 119), (125, 199)],), heights=(1.0,), shifts=(0.0,)
+    )
+    backend = OpenTFRawBackend("unused.raw")
+    grid, summed, frequency = backend._average_profile_in_frequency(scans)
+    _, filled = OpenTFRawBackend._zerofill_baseline(grid, summed, frequency)
+
+    assert grid.size == np.count_nonzero(stored)
+    # Ascending m/z is descending bins: bins 199-125 come first, 75 of them.
+    np.testing.assert_array_equal(np.flatnonzero(filled == 0), [75, 76])
+
+
+def test_the_threshold_is_a_relative_step_not_a_count_of_bins():
+    """One missing bin ends a cluster high in the mass range and not low in it.
+
+    A bin is the same step in frequency all along the grid, which is a larger
+    share of the frequency the higher the m/z. The grid here runs from m/z 50
+    to 750 with its median near 126, where four median steps come to two bins
+    from about m/z 500 up: the bin missing near m/z 600 ends a cluster, and
+    the one missing near m/z 100 does not.
+    """
+    frequency = np.linspace(np.sqrt(_B / 750.0), np.sqrt(_B / 50.0), 3001)
+    missing = [np.abs(_B / frequency**2 - mz).argmin() for mz in (100.0, 600.0)]
+    frequency = np.delete(frequency, missing)[::-1]
+    grid = _B / frequency**2
+
+    filled_mz, filled = OpenTFRawBackend._zerofill_baseline(
+        grid, np.ones(grid.size), frequency
+    )
+
+    zeros = filled_mz[filled == 0]
+    assert zeros.size == 2
+    np.testing.assert_allclose(zeros, 600.0, rtol=0, atol=2.0)
+
+
+def _gapped_profile(step_ppm: float) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """The averaged profile of scans that drop what lies under their noise, and
+    the bins any of them stored.
+
+    The two ions in the middle are in the scans of one side of the calibration
+    step each, four empty bins apart, and the step writes them towards each
+    other. The outer two keep the scans' first and last samples away.
+    """
+    after, before = [0, 0, 0, 1e5, 1e5, 1e5, 1e5], [1e5, 1e5, 1e5, 0, 0, 0, 0]
+    ions = ((60, 5e4), (300, after), (311, before), (1100, 5e4))
+    scans, freq = _stepped_ftms_scans(ions=ions, step_ppm=step_ppm, floor=1e3)
+    stored = np.zeros(freq.size, dtype=bool)
+    for scan in scans.values():
+        mz, intensity = scan["profile"]
+        stored |= intensity > 0
+        scan["profile"] = (mz[intensity > 0], intensity[intensity > 0])
+    grid, summed, _ = _stepped_backend(scans).average_profile(_STEP_SCANS)
+    return grid, summed, stored
+
+
+@pytest.mark.parametrize("step_ppm", [0.0, 6.0])
+def test_the_baseline_falls_where_bins_are_missing(step_ppm):
+    """A baseline zero goes in on either side of every stretch of bins no scan
+    stored, and the scans' calibrations do not move it.
+
+    The gap between the two middle ions is five bins wide, 14 ppm, and a
+    6 ppm calibration step between the scans holding one and the other writes
+    it as 8 ppm, which is under four of the grid's steps. It is the same four
+    empty bins either way, and the profile drops to the baseline in it.
+    """
+    grid, summed, stored = _gapped_profile(step_ppm)
+
+    # Ascending m/z is descending bins; two zeros follow each cluster but the last.
+    bins = np.flatnonzero(stored)[::-1]
+    ends_cluster = np.flatnonzero(np.diff(bins) < -1)
+    assert np.any(np.diff(bins)[ends_cluster] == -5), "the five-bin gap is the premise"
+    expected = np.insert(
+        np.zeros(bins.size, dtype=bool), np.repeat(ends_cluster + 1, 2), True
+    )
+    assert np.all(np.diff(grid) > 0)
+    np.testing.assert_array_equal(summed == 0, expected)
+    # Each zero sits just outside the sample its cluster ends or begins on.
+    left, right = np.flatnonzero(expected)[::2], np.flatnonzero(expected)[1::2]
+    np.testing.assert_allclose(
+        grid[left] / grid[left - 1] - 1, _ZEROFILL_EDGE_PPM / 1e6, rtol=1e-6
+    )
+    np.testing.assert_allclose(
+        1 - grid[right] / grid[right + 1], _ZEROFILL_EDGE_PPM / 1e6, rtol=1e-6
+    )
+
+
+@pytest.mark.parametrize(
+    ("gap_ppm", "zeros_ppm"),
+    [(14.5, [2.0, 12.5]), (4.1, [2.0, 2.1]), (3.9, [1.95]), (1.5, [0.75])],
+)
+def test_baseline_zeros_stay_between_the_clusters(gap_ppm, zeros_ppm):
+    """A zero goes 2 ppm outside each of the two samples a gap lies between,
+    and a gap too narrow for both takes one zero, at its middle.
+
+    Under 4 ppm the two would pass each other, and under 2 ppm each would land
+    among the next cluster's samples. The middle is where the two meet as a
+    gap narrows to 4 ppm, so the baseline does not jump on the way: they sit
+    2.0 and 2.1 ppm into a gap of 4.1, and the one zero 1.95 into a gap of 3.9.
+    """
+    inside = 0.3 * np.arange(10.0)
+    ppm = np.concatenate([inside, inside[-1] + gap_ppm + inside])
+    grid = 300.0 * (1 + ppm / 1e6)
+    summed = np.arange(1.0, ppm.size + 1)
+
+    filled_mz, filled = OpenTFRawBackend._zerofill_baseline(grid, summed)
+
+    assert np.all(np.diff(filled_mz) > 0)
+    np.testing.assert_array_equal(filled_mz[filled > 0], grid)
+    np.testing.assert_array_equal(filled[filled > 0], summed)
+    into_gap = (filled_mz[filled == 0] / grid[9] - 1) * 1e6
+    np.testing.assert_allclose(into_gap, zeros_ppm, atol=1e-4)
+
+
+def test_the_fallback_finds_its_clusters_on_the_mz_axis():
+    """Without a frequency grid a cluster ends at an m/z gap large against the
+    spacing inside the clusters, as the m/z fallback's grid has no bins to
+    count.
+    """
+    ppm = np.concatenate([np.arange(10.0), 30.0 + np.arange(10.0)])
+    grid = 300.0 * (1 + ppm / 1e6)
+    summed = np.ones(ppm.size)
+
+    filled_mz, filled = OpenTFRawBackend._zerofill_baseline(grid, summed)
+
+    assert np.all(np.diff(filled_mz) > 0)
+    zeros = np.flatnonzero(filled == 0)
+    np.testing.assert_array_equal(zeros, [10, 11])
+    at_ppm = (filled_mz[zeros] / 300.0 - 1) * 1e6
+    np.testing.assert_allclose(at_ppm, [11.0, 28.0], atol=1e-4)
