@@ -182,9 +182,11 @@ def test_a_key_the_file_does_not_hold_is_refused_by_every_read(
     raw_orbitrap, monkeypatch, read
 ):
     """The reader refuses a key the file holds no stream under, and no read
-    above it turns the refusal into an answer. ``load_signal`` is the one that
-    would: it answers the reader's other failures with an empty signal, and an
-    empty signal of a stream that is not there reads "no data"."""
+    that reaches the reader turns the refusal into an answer. ``load_signal``
+    is the one that would: it answers the reader's other failures with an
+    empty signal, and an empty signal of a stream that is not there reads "no
+    data". The sum signal has a cache in front of the reader, which the test
+    of that cache covers; nothing is cached here."""
     call, reader_call = _READS[read]
 
     def refuses(datafile_path, *args, **kwargs):
@@ -274,6 +276,33 @@ def test_a_streams_sum_signal_is_cached_apart_from_the_files(raw_orbitrap, monke
     assert computed == [None, STREAM]
     name = m_compute._get_sum_signal_hash_name(None, None, None, "orbi_raw", STREAM)
     assert os.path.exists(m_name.filename_to_zarr_path(SIGNAL_TEST_FILENAME, name))
+
+
+def test_a_cached_stream_signal_answers_before_the_reader_is_asked(
+    raw_orbitrap, monkeypatch
+):
+    """Once cached, a stream's sum signal is served under its key without the
+    file being read, so also under a key the file no longer holds a stream
+    under: the one read here that does not hand the reader's refusal on.
+    Averaged it does, because the scans are counted first. It is what the
+    key named when the signal was cached, not wrong data, and it is pinned
+    so that whoever reads by a stored key asks the reader before the
+    cache."""
+    cached = m_compute.get_sum_signal(SIGNAL_TEST_FILENAME, stream=STREAM).compute()
+
+    def refuses(datafile_path, *args, **kwargs):
+        raise UnknownStreamError(STREAM, [OTHER_STREAM])
+
+    for reader_call in ("compute_sum_signal", "get_scan_timestamps"):
+        monkeypatch.setattr(m_compute.m_thermo, reader_call, refuses)
+
+    served = m_compute.get_sum_signal(SIGNAL_TEST_FILENAME, stream=STREAM).compute()
+
+    np.testing.assert_array_equal(served.values, cached.values)
+    with pytest.raises(UnknownStreamError):
+        m_compute.get_scan_timestamps(SIGNAL_TEST_FILENAME, stream=STREAM)
+    with pytest.raises(UnknownStreamError):
+        m_compute.get_sum_signal(SIGNAL_TEST_FILENAME, stream=STREAM, average=True)
 
 
 def test_a_streams_average_divides_by_its_own_scans(raw_orbitrap, monkeypatch):

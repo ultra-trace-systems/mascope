@@ -852,6 +852,30 @@ throughout, because nothing here cuts a file into items, and it writes no
 - **No eager timeseries yet.** An item of this cut covers its segments
   whole, and their sums peak detection has already measured; the timeseries
   stay lazy. They become eager with windows (6.3).
+- **What the steps after this one meet in a per-stream store.** Three
+  things, each right for what is built and each a consumer's to settle:
+  - **A stream's cached sum signal answers before the reader is asked.**
+    `get_sum_signal` caches a stream's signal under its key and serves the
+    cache first, so it answers under a key the file no longer holds a
+    stream under, where every other read refuses and the store beside it
+    reports the same key stale. It is the signal of what the key named when
+    it was cached. The stitched sum signal of step 4 is the first thing to
+    read by key what was cached by key: it asks the reader for the key
+    first, or the cache name carries more than the key.
+  - **A read that pairs the store's scan axis with a file-wide read refuses
+    the file.** The per-scan peak export does: it reads the TIC file-wide
+    and checks its scans against the store's. Where the first-scan rule
+    drops a scan file-wide that the per-stream rule keeps, the two differ
+    by that scan - on the corpus's positive composite file the store's axis
+    holds 14 scans and the file-wide read 13 - and the export refuses with
+    the stale-store message, which asks for a rebuild. No rebuild repairs
+    this one: the store is right, and the export has to read per stream
+    (step 6).
+  - **`load_peak_timeseries` takes no stream.** It resolves an asked m/z
+    to the nearest kept peak, of whichever stream. Where two streams hold a
+    peak at one m/z, the row that kept the m/z answers and the other, set
+    just above it, is not found by that m/z. Consumers pass the m/z of rows
+    they hold, and step 6 is where they start asking by stream.
 - **What stays per file for now:** the instrument function and the m/z
   calibration, which step 7 moves to the segment, and the `tof` coordinate,
   which only orders peaks along the axis.
@@ -2113,7 +2137,8 @@ unchanged.
      which is why the flag stays off;
   4. the stitch: the default map from the segments' ranges and
      microscans, the per-peak mask and the stitched sum signal, recorded
-     beside the store;
+     beside the store; a stream's cached sum signal is not stitched under a
+     key the file no longer holds (4.3);
   5. the stream table with the composite column (#2282, amended), and one
      item per polarity pointing at its composite (#2283, reworked from one
      item per stream);
