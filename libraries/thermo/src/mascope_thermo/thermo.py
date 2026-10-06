@@ -70,18 +70,31 @@ class UnknownStreamError(LookupError):
     reader backend rendered its scan filter, and on the version of the code
     that keys (``mascope_thermo.streams``).
 
+    The message names the first :attr:`KEYS_IN_MESSAGE` of the file's keys
+    and counts the rest, because a message travels into logs and error
+    events and a file can hold many streams: a targeted MSn method has one
+    for each precursor. :attr:`held` keeps them all.
+
     :param stream: The key that was asked for.
     :param keys: The stream key of every scan of the file, or any iterable of
         the keys the file holds.
     """
 
+    #: How many of the file's keys the message prints. Enough for every MS1
+    #: layout seen so far, the widest of which holds eight streams.
+    KEYS_IN_MESSAGE = 8
+
     def __init__(self, stream: str, keys: Iterable[str]):
         self.stream = stream
-        #: The keys the file does hold, in the order its streams first appear.
+        #: The keys the file does hold, all of them, in the order its streams
+        #: first appear.
         self.held = list(dict.fromkeys(keys))
+        shown = self.held[: self.KEYS_IN_MESSAGE]
+        more = len(self.held) - len(shown)
         super().__init__(
             f"The file holds no scan stream '{stream}'. Its streams: "
-            + "; ".join(self.held)
+            + "; ".join(shown)
+            + (f"; and {more} more" if more else "")
         )
 
 

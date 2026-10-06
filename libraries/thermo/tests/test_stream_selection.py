@@ -274,6 +274,46 @@ def test_a_key_the_file_does_not_hold_is_not_an_empty_selection(scripted):
     assert all(key in message for key in raised.value.held)
 
 
+def test_the_refusal_stays_short_on_a_file_of_many_streams(scripted):
+    """A targeted MSn method has a stream for each precursor, and the message
+    travels into logs and error events. It names the first few keys and
+    counts the rest; the error itself still holds every one."""
+    precursors = [
+        f"FTMS - p NSI Full ms2 {300 + n}.0000@hcd30.00 [50.0000-310.0000]"
+        for n in range(11)
+    ]
+    reader = scripted([_scan(text, resolution=15000) for text in precursors])
+
+    with pytest.raises(UnknownStreamError) as raised:
+        reader.scan_indices(ms_type="Ms2", stream="no such stream")
+
+    held = [f"{text} R=15000" for text in precursors]
+    shown = UnknownStreamError.KEYS_IN_MESSAGE
+    assert shown == 8
+    assert raised.value.held == held
+    message = str(raised.value)
+    assert all(key in message for key in held[:shown])
+    assert not any(key in message for key in held[shown:])
+    assert message.endswith("; and 3 more")
+
+
+def test_the_refusal_names_every_key_of_a_file_that_holds_few(scripted):
+    """Nothing is counted where nothing is left out: eight streams, the most
+    any MS1 layout seen so far holds, are all named."""
+    ranges = [
+        f"FTMS - p NSI Full ms [{40 + n}.0000-600.0000]"
+        for n in range(UnknownStreamError.KEYS_IN_MESSAGE)
+    ]
+    reader = scripted([_scan(text) for text in ranges])
+
+    with pytest.raises(UnknownStreamError) as raised:
+        reader.scan_indices(stream="no such stream")
+
+    message = str(raised.value)
+    assert all(f"{text} R=120000" in message for text in ranges)
+    assert "more" not in message
+
+
 def test_a_key_the_file_does_not_hold_is_refused_whatever_else_is_asked(scripted):
     """Not only where the other filters would have left something to select:
     the key is wrong before the window or the polarity is."""
