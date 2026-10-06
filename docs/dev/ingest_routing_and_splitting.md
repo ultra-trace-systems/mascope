@@ -814,6 +814,23 @@ Two things the measurement settled about how such a file must be read:
   is scaled by its share of the scans - five elevenths, three elevenths -
   and the gain disappears. That is what the pipeline does with such a
   file today.
+- **The layout changes while the method is tuned, and the rules must not
+  care** (the user's requirement, 2026-10-06). A survey of the site's
+  files of 2026-10-02 to 06, by each file's own census, found 21 layouts
+  under eleven method names: the four old single-range methods; a
+  settle-then-measure method with two events under one filter; four
+  two-segment trials of the AGC targets and the polarity order, one of
+  them switching polarity between its segments; and ten four-segment
+  composites that moved a window's edge, its scan mode (full scan or
+  SIM), its scan count - down to a single scan - or the high window's
+  top between one file and the next, all under one unchanged method
+  name. So the stitch map is computed per file from that file's own
+  ranges and microscans; a layout override applies only to files whose
+  ranges it names, and a file whose ranges differ takes the default with
+  a note in its detail; a segment may hold one scan; and nothing
+  persistent is keyed on exact ranges - the signature class may churn
+  with every tweak, which costs nothing while the token routes, and the
+  item stays in its binding's batch for the day.
 
 **The composite.** One polarity's segments are stitched into one
 spectrum: every m/z is taken from exactly one segment, the one that owns
@@ -890,6 +907,21 @@ apart and a window loses signal within a couple of m/z of its edges.
     on the argument that two ranges trap different ion populations; the
     measurement bears the argument out and bounds its cost at about a ppm,
     where an uncalibrated segment's error is unbounded.
+  - **The overlaps carry the calibration across** (proposed 2026-10-06, on
+    the user's point that not every segment holds a known anchor). The
+    Orbitrap calibration is one factor per segment. The segment that holds
+    anchors - the reagent scan, with the reagent ions - is fitted as today.
+    A neighbouring segment short of anchors takes that factor shifted by
+    the median m/z offset of the ions both segments measure in their
+    overlap, chained segment to segment; a segment with no usable overlap
+    takes its neighbour's factor unshifted, and the quality block says
+    which of the three it got. It needs no anchor outside the reagent scan
+    and no configuration; what it needs is enough shared ions above the
+    noise in each overlap, which the layout decides: in the site's layout
+    the low and the mid window do not overlap at all, the reagent scan
+    reaches the mid window over six m/z (two shared ions), and the mid and
+    the high window share twenty (67 ions). The shipped standard methods
+    should overlap neighbouring windows by a few m/z for this reason.
 - **The first-scan rule within the segment.** The reader leaves a file's
   first scan out when its TIC is five times the median of the others. In a
   composite file the first scan is a reagent scan with the reagent ions in
@@ -1956,7 +1988,10 @@ unchanged.
     scan kept and the offset per segment and the overlap drift reported;
     the pooled store of the same file shows the loss the site measured;
   - the corpus file with eight experiments yields eight peak lists in its
-    store and one item per polarity.
+    store and one item per polarity;
+  - every layout of the test set stitches with nothing configured, a
+    one-scan segment and a SIM window included, and a layout override is
+    ignored with a note where a file's ranges differ from it.
 
 ### Phase 4: per-stream state (about 2 weeks)
 
@@ -2112,10 +2147,13 @@ through a short-lived stacked branch, merged as one unit.
   - the re-baselined manifest (routing per file);
   - the two polarity-switching files (streams);
   - one composite file of each chemistry from the site that runs them
-    (segments, the stitch map, the first-scan rule): a working set of 641
-    files - an hour of composite files and a day of the old file pairs -
-    sits on the internal test box since 2026-10-06, and one of each still
-    has to join the corpus;
+    (segments, the stitch map, the first-scan rule): a test set of about
+    2,600 files, 2 GB, covering every one of the 21 layouts the site ran
+    between 2026-10-04 and 06 - all its composite files, the two-segment
+    trials, the settle-then-measure files and the old pairs around its
+    own comparison - sits on the internal test box since 2026-10-06, with
+    a manifest line per file; one file of each chemistry still has to
+    join the corpus;
   - the labelled streams (detection confusion);
   - the exposure file (trace windows).
   The corpus is internal. Anything committed as a fixture must be synthetic
@@ -2179,7 +2217,13 @@ through a short-lived stacked branch, merged as one unit.
    between segments at about a ppm, which bounds the cost of borrowing
    where an uncalibrated segment's error is not bounded; and the analyte
    windows exclude the reagent ions by design, so their anchors are
-   analyte ions the collection must carry.
+   analyte ions the collection must carry. **Proposed the same day,** on
+   the user's point that a segment need not hold any known anchor: the
+   overlaps carry the calibration across - a segment short of anchors takes
+   its neighbour's factor shifted by the offset the ions both measure in
+   their overlap show, chained from the reagent scan outward, and only a
+   segment with no usable overlap borrows unshifted (4.5). Open until the
+   test set has shown how many overlaps hold enough shared ions.
 6. **MS2.** Attach to the parent item by default (recommended), or separate
    MS2 items.
 7. **Batch naming.** ~~Add the signature class only when needed
