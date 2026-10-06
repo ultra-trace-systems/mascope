@@ -112,6 +112,15 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 ### Changed
 
+- **The demo dataset is now bundle v1.3.1**
+  ([10.5281/zenodo.23187550](https://doi.org/10.5281/zenodo.23187550)), rebuilt
+  now that the averaged Orbitrap profile counts every scan out to the ends of
+  its range (under Fixed), so its goldens match what the pipeline produces.
+  Same 161 acquisitions and the same reference data. Of the 42,521 golden
+  peaks two change height, by 1.9% and by 0.3%, and one its match score;
+  every peak's m/z is unchanged to the last digit. `mascope demo` picks it up
+  by default, and 1.3.0 stays registered so a pinned run still resolves.
+
 - **Orbitrap spectra now show the signal the instrument measured.** The
   sample spectrum and the Match tab's per-isotope spectra drew the profile as
   one Gaussian per detected peak, built from the peak's position, height and
