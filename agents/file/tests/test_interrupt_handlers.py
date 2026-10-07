@@ -69,10 +69,18 @@ def lost_interrupts(source: str, name: str) -> list[str]:
 def _is_the_python_this_was_worked_out_for():
     """The rule above is 3.12's, and so is the bytecode it is read from.
 
-    3.13 looks for the signal before it jumps, and there the jump that loses
-    an interrupt is another one: the loop's own, back from the end of its
-    body, which that compiler leaves outside the block. 3.14 loses neither. A
-    move to another Python has to work the rule out again, not skip it.
+    From 3.13 the signal is looked for before the jump, and the handler is
+    looked up at the jump itself. That mends the ``continue``, and loses an
+    interrupt on other jumps, which the compiler leaves outside the block:
+
+    - on 3.13, a ``while`` loop's own jump back from the end of its body;
+    - on 3.13 and on 3.14, a ``for`` loop's jump back from an ``if`` that
+      failed, and a comprehension's from a filter that did. Under a
+      ``with lock:`` that leaves the lock held, and the agent has the
+      shape: ``FileUploader.finish()`` lists its workers so.
+
+    So no later Python is simply the way out. A move to one has to work the
+    rule out again for that interpreter, not skip it.
     """
     assert sys.version_info[:2] == (3, 12), (
         "this holds a rule of CPython 3.12's; see the function's docstring "
@@ -115,12 +123,14 @@ def test_the_scan_knows_a_loop_that_loses_an_interrupt():
 
 def test_no_loop_of_the_agent_loses_an_interrupt():
     _is_the_python_this_was_worked_out_for()
-    modules = sorted(PACKAGE.glob("*.py"))
+    # Every module, in a subpackage too on the day there is one.
+    modules = sorted(PACKAGE.rglob("*.py"))
     assert len(modules) > 5, f"found too little of the agent under {PACKAGE}"
 
     found = []
     for module in modules:
-        found += lost_interrupts(module.read_text(encoding="utf-8"), module.name)
+        name = module.relative_to(PACKAGE).as_posix()
+        found += lost_interrupts(module.read_text(encoding="utf-8"), name)
 
     assert found == [], (
         "an interrupt taken on these jumps is not seen by the handlers around "
