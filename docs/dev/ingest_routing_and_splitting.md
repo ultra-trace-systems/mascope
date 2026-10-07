@@ -1001,7 +1001,15 @@ apart and a window loses signal within a couple of m/z of its edges.
   two segments claim one m/z, the one with more microscans owns it; among
   equals, the window that starts higher, because a window reads weakest
   toward its top - in the overlap of the mid and the high window, the ions
-  both see read 1.3 times higher in the high one (measured 2026-10-06). An
+  both see read 1.25 times higher in the high one in the nitrate layouts,
+  file after file over a night (measured 2026-10-06 and 07). In the
+  uronium layouts the same overlap holds three ions, which read 0.83 of
+  the mid window in the high one; the tie-break stands on the edge, not on
+  that factor, and the site drew the same boundary for both. The window
+  factor is the layout's and the chemistry's: between the reagent scan and
+  the low window it is 1.37 for nitrate and 2.2 to 2.5 for uronium, each
+  steady to about a tenth from file to file, so the drift reading of step
+  9 can report it per file and track it. An
   m/z no trimmed claim covers goes to the segment whose untrimmed range
   holds it, which is how the top of the highest window and a band between
   two windows that touch without overlapping are owned; an m/z no range
@@ -1120,11 +1128,24 @@ apart and a window loses signal within a couple of m/z of its edges.
     takes its neighbour's factor unshifted, and the quality block says
     which of the three it got. It needs no anchor outside the reagent scan
     and no configuration; what it needs is enough shared ions above the
-    noise in each overlap, which the layout decides: in the site's layout
-    the low and the mid window do not overlap at all, the reagent scan
-    reaches the mid window over six m/z (two shared ions), and the mid and
-    the high window share twenty (67 ions). The shipped standard methods
-    should overlap neighbouring windows by a few m/z for this reason.
+    noise in each overlap, which the layout decides. Measured 2026-10-07 on
+    264 files of the test set, every composite layout sampled and the two
+    settled ones over a night (ions seen in at least half of a segment's
+    scans, matched within 5 ppm, inside the trimmed overlap): in the
+    nitrate layouts the reagent scan and the low window share 25 ions and
+    the mid and the high window 29, file after file; in the uronium ones
+    the reagent scan and the low window share 11, and the mid and the high
+    window only 3. The reagent scan reaches the mid window over two m/z
+    and shares nothing with it in either chemistry, and the low and the
+    mid window do not overlap at all. So in both of the site's layouts the
+    chain from the reagent scan breaks at the mid window - the window that
+    holds most of the analytes - which therefore needs anchors of its own
+    (the collection requirement above) or borrows unshifted. The offsets
+    the overlaps do measure are small and stable: nitrate's two read -0.44
+    ppm, within a quarter of a ppm from file to file over the night;
+    uronium's reagent-to-low -0.2, and its three-ion mid-to-high +0.8. The
+    shipped standard methods should overlap neighbouring windows by a few
+    m/z, the low and the mid window included, for this reason.
 - **The first-scan rule within the segment.** The reader leaves a file's
   first scan out when its TIC is five times the median of the others. In a
   composite file the first scan is a reagent scan with the reagent ions in
@@ -2216,7 +2237,11 @@ unchanged.
        the median and quartiles of their intensity ratio and of their m/z
        offset, and the ions that disagree with the median by more than
        the window factor - computed from the two peak lists, recorded in
-       the store beside the map, surfaced by step 9;
+       the store beside the map, surfaced by step 9. Measured on the test
+       set (4.5): an overlap of a few m/z holds nothing, one of forty holds
+       ten to thirty ions, and the factor and the offset of an overlap are
+       steady from file to file, so a reading is a per-file number with a
+       layout-level value to compare it with;
      - the gates: every composite layout of the test set stitches with
        nothing configured, a one-scan segment and a SIM window included;
        the demo goldens and every single-stream store stay byte-identical;
@@ -2426,8 +2451,12 @@ through a short-lived stacked branch, merged as one unit.
     between 2026-10-04 and 06 - all its composite files, the two-segment
     trials, the settle-then-measure files and the old pairs around its
     own comparison - sits on the internal test box since 2026-10-06, with
-    a manifest line per file; one file of each chemistry still has to
-    join the corpus;
+    a manifest line per file, and one file of each chemistry is in the
+    corpus. Read off it so far: the default map of every composite layout
+    (4.5, 2026-10-07), the shared ions and the window factor of every
+    overlap and their stability over a night (4.5), and the first-scan
+    rule, which drops no opening scan of any stream of any layout when
+    compared within the stream (4.3);
   - the labelled streams (detection confusion);
   - the exposure file (trace windows).
   The corpus is internal. Anything committed as a fixture must be synthetic
@@ -2501,8 +2530,12 @@ through a short-lived stacked branch, merged as one unit.
    a ppm is a large error - and the overlap shift, then the unshifted
    borrow, only as fallbacks, each named in the quality block; the
    collections are to carry anchors that reach every window of a layout
-   (4.5). How many overlaps hold enough shared ions is still to be read
-   off the test set.
+   (4.5). **Read off the test set 2026-10-07:** in the site's layouts the
+   overlaps that carry anything are reagent-to-low (25 ions nitrate, 11
+   uronium) and mid-to-high (29 nitrate, 3 uronium); nothing reaches the
+   mid window from the reagent scan, so the mid window - where the
+   analytes are - calibrates on its own anchors or borrows unshifted, and
+   the collections must carry anchors inside it (4.5).
 6. **MS2.** Attach to the parent item by default (recommended), or separate
    MS2 items.
 7. **Batch naming.** ~~Add the signature class only when needed
