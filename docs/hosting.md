@@ -84,8 +84,9 @@ and the checkout.
      `.runtime/secrets/`): works immediately; each user clicks through a one-time
      browser warning. The generated certificate carries a fixed placeholder
      name (`mascope.app`), so the warning appears whatever address the server
-     is reached at; the File Agent is unaffected (it does not verify TLS
-     certificates). For a warning-free deployment use one of the options
+     is reached at. The File Agent verifies the certificate too, so each
+     agent's setup has to be told not to (`verify_tls = false` in its
+     configuration). For a warning-free deployment use one of the options
      below - whichever certificate you install, its file names in
      `.runtime/secrets/` stay `mascope.app.pem`/`.key`.
    - **Internal CA** (e.g. [mkcert](https://github.com/FiloSottile/mkcert) or an
