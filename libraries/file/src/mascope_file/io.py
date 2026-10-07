@@ -742,8 +742,9 @@ def _get_chunk_metadata(
     # An update's m/z values are read off the store, never computed, so the
     # row found has to hold exactly that m/z. Within a tolerance it could as
     # well be a neighbouring peak's: an m/z the axis does not hold finds the
-    # next row up, and two peaks of a file can be a few ppm apart. In a
-    # per-stream store two rows are set a part in a trillion apart on purpose
+    # next row up, and two peaks of a file can be a few ppm apart. A store
+    # of more than one peak list sets two rows that would share an m/z a part
+    # in a trillion apart on purpose
     # (``mascope_signal.peak.MZ_ROW_SEPARATION``), nearer than any tolerance.
     has_row = indexer < existing_mz.size
     exact_match_mask = has_row.copy()

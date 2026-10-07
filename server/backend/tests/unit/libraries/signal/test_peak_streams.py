@@ -376,6 +376,59 @@ def test_a_calibrated_per_stream_store_still_tells_its_rows_apart(
     ]
 
 
+# -- a file detected whole whose polarities share an m/z ---------------------------
+
+# A file that switches polarity, one experiment in each, detected whole. Both
+# polarities record an ion at the same m/z to the last bit, and neither peak
+# is weak or a satellite: both are kept.
+SHARED_ACROSS_POLARITIES = [
+    (POS, 1, {59.0: 70.0, 62.0: 40.0}),
+    (NEG, 2, {62.0: 100.0, 125.0: 10.0}),
+] * 2
+
+
+def test_two_polarities_peaks_at_one_mz_are_two_rows(acquire, instrument_functions):
+    """A pooled store holds both polarities' peak lists on one axis, as a
+    per-stream store holds its streams', and is found by m/z the same way.
+    The negative peak is set a part in a trillion above the positive one, and
+    nothing else on the axis moves."""
+    acquire(SHARED_ACROSS_POLARITIES)
+
+    m_peak.compute_peaks(SAMPLE_FILENAME, instrument_functions)
+
+    store = _store()
+    assert store.mz.values.tolist() == [59.0, 62.0, 62.0 * APART, 125.0]
+    assert store.polarity.values.tolist() == ["+", "+", "-", "-"]
+    assert store.sum_peak_heights.values.tolist() == [140.0, 80.0, 200.0, 20.0]
+    assert not (store.is_weak | store.is_satellite).values.any()
+    # Pooled all the same: nothing about streams is written
+    assert set(store.data_vars) == LEGACY_VARIABLES
+    assert m_compute.peak_store_streams(store) == []
+
+
+def test_two_kept_peaks_at_one_mz_are_read_and_filled_each_on_its_own_row(
+    acquire, instrument_functions
+):
+    """With both peaks kept, the axis a load hands out held the m/z twice,
+    and nothing could be selected from it by m/z, whatever was asked for:
+    not these two peaks, and not any other peak of the file."""
+    acquire(SHARED_ACROSS_POLARITIES)
+    m_peak.compute_peaks(SAMPLE_FILENAME, instrument_functions)
+    assert m_io.load_peak_data(SAMPLE_FILENAME).mz.size == 4
+    positive, negative = _store().mz.values[[1, 2]]
+
+    assert _fill([125.0]).polarity.values.tolist() == ["-"]
+    filled = _fill([positive, negative])
+
+    assert filled.polarity.values.tolist() == ["+", "-"]
+    assert filled.is_timeseries_computed.values.all()
+    # Each scaled to its own summed intensity: the fill found its own row
+    np.testing.assert_allclose(
+        np.nansum(filled.peak_heights.values, axis=1), [80.0, 200.0]
+    )
+    assert _store().is_timeseries_computed.values.tolist() == [False, True, True, True]
+
+
 def test_satellites_are_judged_within_a_stream(
     acquire, instrument_functions, monkeypatch
 ):
