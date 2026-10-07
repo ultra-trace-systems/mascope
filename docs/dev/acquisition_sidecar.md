@@ -1,10 +1,9 @@
 # The acquisition record: what an instrument's control program says of a file
 
-Status: **the schema and the File Agent's half are built; the server's half
-is not** (2026-10-07). A control program can write a record and an agent
-sends it to a server that announces it keeps one. No server announces that
-yet: storing the record, routing by it and exporting its identifiers are the
-next change, and [The server](#the-server) says what that will be.
+Status: **built** (2026-10-07): the schema, the File Agent's half and the
+server's. A control program writes a record, an agent sends it with the
+file's upload, and the server keeps it on the file, binds the file by the
+chemistry it names and exports its identifiers.
 
 ## What it is for
 
@@ -81,7 +80,7 @@ Only the first six are required. A program writes what it knows.
 | `sequence` | `name`, `cycle`, `step_index`, `loop`, `steps` (each a `mode` and a `duration` in seconds) and the `hash` of the definition as run |
 | `configuration` | The configuration files as loaded when the run started, each a `path` relative to the program's configuration folder and a `sha256` |
 | `mode` | The mode the step put the instrument in: `name`, its `definition` in full, and the definition's `hash` |
-| `ionization` | The chemistry, as the token of an ionization mode on the server: the string that would otherwise have to be in the file's name |
+| `ionization` | The chemistry, as the token of an ionization mode on the server: the string that would otherwise have to be in the file's name. The whole token and nothing else ([The server](#the-server)) |
 | `triggered_at`, `acknowledged_at` | When the program asked the instrument to acquire, and when the instrument answered |
 | `step_started_at`, `step_finished_at` | The step's own start and end |
 | `settle_time` | Seconds the step waited for the mode to settle |
@@ -205,21 +204,80 @@ the machine is paired again.
 
 ## The server
 
-Not built. What the next change does:
+A server that keeps records announces `files_accept_acquisition_metadata`.
+It accepts request headers of the size a record needs: the backend's HTTP
+parser takes 64 KB for a request's headers together, and the nginx in front
+of it a header line of 32 KB (`large_client_header_buffers`). A proxy of a
+site's own in front of that has to allow the same (`docs/hosting.md`). Where
+it does not, it refuses the request, and the agent sends the file again
+without its record.
 
-- announces `files_accept_acquisition_metadata`, and accepts request headers
-  of the size the record needs, in the backend and in the nginx in front of
-  it;
-- validates `acquisition` with `mascope_sdk.acquisition.parse()` and keeps the
-  document on the sample file, with `acquisition_id`, `step_id`,
-  `sequence_run_id` and `agent_id` as indexed columns of their own and
-  `acquisition_id` unique, so that every file of a run is one query and a
-  repeated upload makes no second record;
-- keeps `sha256` beside them;
-- binds the file to the mode `ionization` names before it looks at the file's
-  name, as rung 0 of the ladder;
-- shows all of it in the file's API model, and adds the identifiers to the
-  exports.
+**When the upload is created** the record is read with
+`mascope_sdk.acquisition.parse()` and checked to be the record of the file
+being uploaded. One that cannot be kept is refused there, with 422 and the
+reason, because that is the one moment the uploader can act on it: the agent
+logs the reason where the instrument's operator sees it, and sends the file
+without the record. A hash that is not a SHA-256 is passed over, not
+refused: the agent has no second try for a hash.
+
+**When the upload has arrived** the server hashes the bytes it received and
+compares them with the hash the uploader reported. Equal, the hash is
+recorded. Different, the file is kept and processed all the same, since a
+finished upload cannot be un-accepted; no hash is recorded, and a warning
+names the file and both hashes. An upload that reports no hash is not hashed.
+
+**On the sample file** (`sample_file`, migration `8b3f5d2a6c47`):
+
+| Column | Content |
+|---|---|
+| `acquisition` | The record as it was sent, fields this version does not know included |
+| `acquisition_id` | Unique. An acquisition is one file: a second file naming the same one is stored without its record, with a warning |
+| `step_id`, `sequence_run_id`, `agent_id` | Indexed, so that every file of a run is one query |
+| `sha256` | The file's hash, where one was reported and the bytes received had it |
+
+All are NULL for a file that came with neither, and for every file registered
+before the columns existed. The record reaches the registration the way the
+uploading device and the file's own name do: through the converter's context
+for the file. Nothing after the upload's creation raises for a record's sake;
+one that turns out unusable later is left out with a line in the log.
+
+**In the API** the four identifiers and the hash are part of every sample
+file row: in listings, in the file's socket events, and in the sample view,
+which is where the spreadsheet export reads them (the columns "Acquisition
+ID", "Step ID", "Sequence run ID", "Agent ID" and "File SHA-256" of its
+samples sheet). The record itself is up to 16 KB, so it is loaded only by
+`GET /api/sample/files/{id}`.
+
+**In routing** the record is rung 0, "declared"
+([ingest_routing_and_splitting.md](ingest_routing_and_splitting.md), section
+5.2). A file nobody chose modes for is bound by `ionization` before its name
+is read:
+
+- The token has to be a mode's token exactly. A file name is searched for
+  tokens because nothing says where in it the chemistry is; a declaration is
+  the chemistry and nothing else.
+- It is read within the file's instrument, and the instrument's own mode wins
+  over a shared one of the same token, as for a name.
+- Every polarity of the file must be answered, as under every rung. A token
+  names one mode, so a file holding two polarities is not bound by a
+  declaration: it falls to the next rung whole.
+- A declaration that binds nothing does not park the file. The rungs below
+  get their turn, and if the file parks after all, its status says what the
+  record named.
+- Items bound this way record `bound_by = "declared"`, the file's status
+  reads "Bound to ... by its acquisition record.", and the declaration teaches
+  the file's method binding, as a token does.
+- A person's choice of modes for a file is not second-guessed by its record.
+
+Not built:
+
+- **The keys of the chemistries Mascope ships** (`nitrate`, `bromide`, ...)
+  are not read as `ionization`. They are the one vocabulary that is the same
+  on every server, but a shipped mode calibrates and matches nothing until a
+  site adopts it, so binding to one today would leave a file unprocessed.
+- **The FAIR roadmap's phase 1 exports** do not exist yet. When they do, the
+  identifiers go into them as `urn:uuid:<id>`.
+- **The web app** shows none of this beyond the status sentence.
 
 ## Reading the record as provenance
 

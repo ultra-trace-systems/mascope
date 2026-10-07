@@ -7,8 +7,8 @@ into one spectrum - its streams detected and stitched in the peak store,
 with nothing reading the stitch yet; phase 8 follows it; detection
 deferred** (2026-10-07). Written for issue #2098 ("Split files into
 samples by scan attributes"), which carries the checklist of pull
-requests. Decisions 1 to 5, 7, 9 and 12 to 16 in section 12 are settled;
-6, 8, 10, 11 and 17 are open.
+requests. Decisions 1 to 5, 7, 9 and 11 to 16 in section 12 are settled;
+6, 8, 10 and 17 are open.
 
 ## Picking this up
 
@@ -88,7 +88,7 @@ request for this work updates the table below and ticks its item on #2098.
 | 4 | Per-stream state: calibration and instrument function per segment, MS2 | open; its per-segment calibration is part of the composite cut; follows 3 on the same track; no rebuild script (4.5, 9.1) |
 | 5 | Chemistry detection: audit first, then provisional binding | deferred behind phases 3, 4 and 8 (decision 3); its reagent libraries are on `develop` |
 | 6 | Recipes: time and trace windows, preview and apply | open |
-| 7 | Declarations from the instrument side, MS2-only parts, manual acquisitions | open |
+| 7 | Declarations from the instrument side, MS2-only parts, manual acquisitions | open; its first declaration channel is built: a record of the whole file that the control program writes and the File Agent sends, which binds the file at rung 0 ([acquisition_sidecar.md](acquisition_sidecar.md)) |
 
 Related designs, and how this one relates to them (section 13):
 
@@ -2662,9 +2662,11 @@ unchanged.
   - an agent-uploaded sidecar, aligned by the existing CSV aligner.
     Its first form is a record of the whole file, not of epochs within
     it: the control program names the file's chemistry and the step
-    that acquired it in a JSON document beside the file. The schema
-    and the File Agent's half are built, and the server's half is
-    next ([acquisition_sidecar.md](acquisition_sidecar.md));
+    that acquired it in a JSON document beside the file. That is built
+    ([acquisition_sidecar.md](acquisition_sidecar.md)): the server keeps
+    the record on the file and binds the file by the mode whose token
+    it names, ahead of the file's name. Epochs declared within a file,
+    and the channel readings to align them by, are not;
   - a control program paired as its own device and posting journal events;
   - an analog-input mapping for sites that wire one.
 - **MS2-only parts (#2068).**
@@ -2881,8 +2883,14 @@ through a short-lived stacked branch, merged as one unit.
    to the token, so it stays the floor the ladder rests on.
 10. **Long-file windows.** Aligned to acquisition start or to UTC boundaries.
     UTC boundaries line up across instruments.
-11. **First declaration channel.** An agent sidecar (cheapest; the aligner
-    exists), control-program pairing, or analog-input wiring.
+11. **First declaration channel.** ~~An agent sidecar (cheapest; the aligner
+    exists), control-program pairing, or analog-input wiring.~~ **Decided
+    2026-10-06:** an agent sidecar, and first as a record of the whole
+    file rather than of epochs within it: the control program writes a JSON
+    document beside each file, the File Agent sends it with the upload, and
+    the file is bound by the chemistry it names
+    ([acquisition_sidecar.md](acquisition_sidecar.md)). Control-program
+    pairing and analog-input wiring stay open.
 12. **What a binding learns from, and whether it may change its mind.**
     Raised by 5.7, and it gates the per-site switch. The design so far reads
     a method's whole history and fixes a binding on the first answer. The
