@@ -174,9 +174,13 @@ class Credentials:
             return
         try:
             self._persist(token)
-        except OSError as e:
+        except Exception as e:
             # The in-memory token still works this session; only restart continuity
-            # is at risk, so warn rather than fail.
+            # is at risk, so warn rather than fail. Whatever it raised: the
+            # function is the embedding program's, with a store of its own to
+            # fail in, and an error let through here would end the agent just
+            # after a pairing succeeded, or cost an upload its retry on the
+            # token that was just obtained.
             self.logger.warning(f"Could not persist the renewed token: {e}")
 
     def renewal_loop(self, stop_event) -> None:
