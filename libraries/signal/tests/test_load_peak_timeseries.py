@@ -15,6 +15,9 @@ Also here: filling a store two of whose peaks share an m/z
 (``TestPeaksSharingAnMz``).
 """
 
+import threading
+import time
+
 import numpy as np
 import pytest
 import xarray as xr
@@ -273,6 +276,51 @@ class TestAFillMeetingARewrittenAxis:
 
         assert result.peak_id.values.tolist() == ["anew_0000", "anew_0001", "anew_0002"]
         np.testing.assert_array_equal(result.mz.values, MZ_VALUES * (1 + 2e-6))
+        assert result.is_timeseries_computed.values.all()
+
+    @pytest.mark.asyncio
+    async def test_the_second_attempt_waits_for_the_calibration_to_finish(
+        self, monkeypatch, write_peak_store
+    ):
+        """A rewritten axis is not a finished calibration. The Orbitrap one
+        records its factor after the axis, and the file is read back by that
+        factor: read again before it is recorded, the file is read at m/z
+        values off by the calibration, and what is found there is stored as
+        the peak's. The fill that was refused starts right behind the apply,
+        so it waits for the lock the apply holds."""
+        write_peak_store(SCAN_TIMES, MZ_VALUES, SUM_AREAS, SUM_HEIGHTS)
+        events = []
+        applying = threading.Event()
+
+        def the_rest_of_the_apply():
+            lock = m_io.mz_calibration_lock_path(SIGNAL_TEST_FILENAME)
+            with m_io.zarr_write_lock(lock):
+                applying.set()
+                time.sleep(0.2)
+                events.append("the apply finished")
+
+        async def reader(base_filename, mzs, *args, **kwargs):
+            mzs = np.asarray(mzs, dtype=float)
+            events.append("read")
+            if events == ["read"]:
+                stored = m_io.load_coord(base_filename, "peak_timeseries", "mz")
+                m_io.update_zarr_array_coord(
+                    base_filename, "peak_timeseries", "mz", stored * (1 + 2e-6)
+                )
+                threading.Thread(target=the_rest_of_the_apply).start()
+                assert applying.wait(5)
+            return xr.DataArray(
+                np.tile(_shares(len(SCAN_TIMES)), (len(mzs), 1)),
+                dims=("mz", "time"),
+                coords={"mz": mzs, "time": SCAN_TIMES},
+                name="signal",
+            )
+
+        monkeypatch.setattr(m_compute, "get_peak_timeseries", reader)
+
+        result = await m_compute.load_peak_timeseries(SIGNAL_TEST_FILENAME, MZ_VALUES)
+
+        assert events == ["read", "the apply finished", "read"]
         assert result.is_timeseries_computed.values.all()
 
     @pytest.mark.asyncio

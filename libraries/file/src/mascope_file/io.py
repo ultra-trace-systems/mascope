@@ -140,6 +140,29 @@ def zarr_write_lock(
             process_lock.release()
 
 
+def mz_calibration_lock_path(base_filename: str) -> str:
+    """Path naming the lock an m/z calibration of a sample file is applied under.
+
+    Not a store - only the name a lock file is derived from
+    (:func:`zarr_write_lock`). It sits beside the sample's stores and is
+    deliberately distinct from any of them, so taking it does not collide with
+    the per-array locks the writes of an apply take for themselves.
+
+    An apply holds it from its first write to its last: the m/z axes of the
+    file's stores, and the calibration recorded in its properties. Until it
+    lets go the two can disagree, so whoever needs them to agree waits for
+    it here.
+
+    :param base_filename: Sample file filename
+    :type base_filename: str
+    :return: The path the lock is named by
+    :rtype: str
+    """
+    return os.path.join(
+        m_name.parse_path_from_item_filename(base_filename), "mz_calibration"
+    )
+
+
 def remove_path(path: str) -> None:
     """Delete a store directory or a side-car file left beside one.
 

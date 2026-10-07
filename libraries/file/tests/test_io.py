@@ -675,6 +675,15 @@ class TestAnMzOffTheAxis:
         assert not isinstance(refusal.value, m_io.MzNotOnAxisError)
 
 
+def test_the_calibration_lock_is_named_beside_the_samples_stores(sample_file_path):
+    """Beside them and none of them: taking it must not collide with the
+    lock of a store the apply it guards goes on to write."""
+    path = m_io.mz_calibration_lock_path(TEST_FILENAME)
+
+    assert path == os.path.join(sample_file_path, "mz_calibration")
+    assert not path.endswith(".zarr")
+
+
 class TestEnsureSparsityExists:
     """Tests for ensure_sparsity_exists backwards compatibility function."""
 

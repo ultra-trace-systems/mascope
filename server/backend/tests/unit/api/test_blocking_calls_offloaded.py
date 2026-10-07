@@ -376,6 +376,12 @@ class TestCalibrationApplyIsOneUnit:
         guarded = inspect.getsource(mod.BaseCalibrationHandler._guarded_apply)
         assert "zarr_write_lock" in guarded
         assert "self._apply_sync(fit)" in guarded
+        # And the lock is the one the file library names. A fill of the peak
+        # store that met a rewritten m/z axis waits for it by that name, and
+        # would wait for nothing if the apply held another.
+        assert "self._calibration_lock_path()" in guarded
+        named = inspect.getsource(mod.BaseCalibrationHandler._calibration_lock_path)
+        assert "m_io.mz_calibration_lock_path(self.filename)" in named
 
     @pytest.mark.asyncio
     async def test_two_applies_for_one_sample_do_not_overlap(self, tmp_path):
