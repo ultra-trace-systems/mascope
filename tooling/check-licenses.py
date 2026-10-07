@@ -21,6 +21,13 @@
 # portable spelling, which also works on Windows where there is no `python3`,
 # is:
 #   uv run --no-project python tooling/check-licenses.py
+#
+# The File Agent is its own uv project with its own lockfile, which the root
+# lockfile's check never reads. `agent` checks that one, against the agent's
+# own environment, and on Windows: the agent is a Windows program, so its
+# lockfile's Windows packages are the ones a build installs and ships.
+#   uv sync --all-groups --directory agents/file
+#   uv run --no-sync --directory agents/file python ../../tooling/check-licenses.py agent
 from __future__ import annotations
 
 import json
@@ -32,6 +39,11 @@ from pathlib import Path
 
 LOCKFILES = ("server/frontend/package-lock.json",)
 PYTHON_LOCKFILE = "uv.lock"
+AGENT_LOCKFILE = "agents/file/uv.lock"
+
+# Every Python lockfile. PYTHON_REVIEWED is one map for all of them, so an
+# entry is stale only when none of them locks it any more.
+PYTHON_LOCKFILES = (PYTHON_LOCKFILE, AGENT_LOCKFILE)
 
 # Permissive licences cleared for anything that declares them. Every entry is
 # one somebody looked at; adding one is a deliberate act, not a convenience.
@@ -76,13 +88,48 @@ ALLOWED = {
 # rather than a version: a grant reasoned out for one dependency should not be
 # inherited in silence by the next thing that happens to share its licence.
 #
-# Empty at the moment. MPL-2.0 lived here while the only MPL dependency was
-# lightningcss and the argument for it rested on node_modules never shipping.
-# The Python tree then turned up five more that do ship, and the general
-# argument - unmodified, per-file obligations - covers all of them, so it moved
-# to ALLOWED. The mechanism stays for the next licence whose justification
-# really is about one package rather than about the licence.
+# One map per ecosystem, for the reason REVIEWED has one each: a package name
+# means something only within its own registry, and a grant argued for a PyPI
+# package must not clear an npm package that happens to share its name.
+#
+# The npm map is empty at the moment. MPL-2.0 lived here while the only MPL
+# dependency was lightningcss and the argument for it rested on node_modules
+# never shipping. The Python tree then turned up five more that do ship, and
+# the general argument - unmodified, per-file obligations - covers all of them,
+# so it moved to ALLOWED. The mechanism stays for the next licence whose
+# justification really is about one package rather than about the licence.
 SCOPED: dict[str, tuple[str, ...]] = {}
+
+PYTHON_SCOPED: dict[str, tuple[str, ...]] = {
+    # GPL, cleared for PyInstaller and for nothing else. The File Agent's
+    # Windows program is built with it (agents/file/build.ps1), so PyInstaller
+    # and pyinstaller-hooks-contrib are in the agent's lockfile, in its dev
+    # group. Neither is a dependency of the library published to PyPI.
+    #
+    # PyInstaller is GPL-2.0-or-later with a Bootloader Exception (COPYING.txt
+    # in its wheel): unlimited permission to embed the compiled bootloader and
+    # the files of PyInstaller/loader in other programs and to distribute the
+    # result "without any restriction coming from the use of those files".
+    # Those, and its run-time hooks, are what a built program contains, and
+    # the run-time hooks are Apache-2.0 - in PyInstaller and in
+    # pyinstaller-hooks-contrib alike, whose LICENSE says the same of its
+    # rthooks directory. Everything else in the two packages is the build tool
+    # and its analysis hooks, which run when the program is built and are not
+    # in it. So nothing under the GPL is redistributed, and the program's own
+    # licence is untouched - the position of a program compiled with GCC.
+    #
+    # That argument is about these two packages, which is why it is here and
+    # GPL is not in ALLOWED: a GPL package that a shipped program imports is
+    # the case this gate exists to stop. It would stop holding if PyInstaller
+    # were vendored or patched, or shipped as itself rather than as the
+    # program it built - and it is not re-read at each release, which a
+    # version pin in PYTHON_REVIEWED would force and this does not.
+    #
+    # Keyed by the identifier the GPLv2 classifier maps to (see CLASSIFIERS),
+    # which is how both packages declare their licence. Values are name
+    # prefixes: "pyinstaller" covers the hooks package as well.
+    "GPL-2.0-only": ("pyinstaller",),
+}
 
 # SPDX exceptions - the right-hand side of `X WITH Y`. An exception only ever
 # widens what its licence permits, but it is still text somebody has to read,
@@ -102,6 +149,9 @@ ALLOWED_EXCEPTIONS = {
 _ALLOWED_FOLDED = {identifier.casefold() for identifier in ALLOWED}
 _SCOPED_FOLDED = {
     identifier.casefold(): prefixes for identifier, prefixes in SCOPED.items()
+}
+_PYTHON_SCOPED_FOLDED = {
+    identifier.casefold(): prefixes for identifier, prefixes in PYTHON_SCOPED.items()
 }
 _EXCEPTIONS_FOLDED = {exception.casefold() for exception in ALLOWED_EXCEPTIONS}
 
@@ -158,6 +208,9 @@ PYTHON_REVIEWED = {
     # A package is platform-conditional when every dependency edge naming it in
     # uv.lock carries a `sys_platform` / `os_name` / `platform_system` marker.
     "appnope@0.1.4": "BSD-2-Clause - License-Expression in the project's PyPI metadata",
+    # In the File Agent's lockfile only, as PyInstaller's macOS dependency. The
+    # agent is built on Windows, where this is never installed.
+    "macholib@1.16.4": "MIT - `License: MIT` and the MIT classifier on PyPI",
     "pexpect@4.9.0": "ISC - `License: ISC license` and the ISC classifier on PyPI",
     "ptyprocess@0.7.0": "ISC - ISC classifier on PyPI",
     "pywinpty@3.0.3": "MIT - MIT classifier on PyPI for this version",
@@ -298,18 +351,18 @@ def _render(node: tuple) -> str:
     return "(" + joiner.join(_render(operand) for operand in node[1]) + ")"
 
 
-def _clearance(name: str, package: str) -> str | None:
+def _clearance(name: str, package: str, scoped: dict) -> str | None:
     """Why ``name`` is not cleared for ``package``, or ``None`` if it is."""
     folded = name.casefold()
     if folded in _ALLOWED_FOLDED:
         return None
-    prefixes = _SCOPED_FOLDED.get(folded)
+    prefixes = scoped.get(folded)
     if prefixes is None:
         return "licence"
     return None if package.startswith(prefixes) else "scoped"
 
 
-def _unmet(node: tuple, package: str) -> list[tuple[str, str]]:
+def _unmet(node: tuple, package: str, scoped: dict) -> list[tuple[str, str]]:
     """Return what stops ``node`` being allowed, as ``(kind, detail)`` pairs.
 
     An empty list means allowed. AND needs every operand, so its operands'
@@ -318,20 +371,23 @@ def _unmet(node: tuple, package: str) -> list[tuple[str, str]]:
     which points at the failing subexpression rather than at identifiers the
     reader might otherwise take for requirements.
 
-    ``package`` is the npm package name, which decides the SCOPED grants.
+    ``package`` is the package name, which decides the scoped grants, and
+    ``scoped`` the grants of the ecosystem it comes from.
     """
     if node[0] == "licence":
         _, name, exception = node
         reasons = []
-        kind = _clearance(name, package)
+        kind = _clearance(name, package, scoped)
         if kind is not None:
             reasons.append((kind, name))
         if exception is not None and exception.casefold() not in _EXCEPTIONS_FOLDED:
             reasons.append(("exception", exception))
         return reasons
     if node[0] == "and":
-        return [reason for operand in node[1] for reason in _unmet(operand, package)]
-    per_option = [_unmet(option, package) for option in node[1]]
+        return [
+            reason for operand in node[1] for reason in _unmet(operand, package, scoped)
+        ]
+    per_option = [_unmet(option, package, scoped) for option in node[1]]
     if any(not reasons for reasons in per_option):
         return []
     return [("choice", _render(node))]
@@ -352,18 +408,21 @@ def _describe(reasons: list[tuple[str, str]]) -> str:
     return "; ".join(parts)
 
 
-def judge(ident: str, declared: str) -> list[tuple[str, str, str]]:
+def judge(
+    ident: str, declared: str, scoped: dict | None = None
+) -> list[tuple[str, str, str]]:
     """Return findings for one package's declared licence string.
 
     ``ident`` is ``name@version`` as built by ``check``; the package name is
     recovered from it because SCOPED grants are decided by which package
-    declares the licence, not just by the licence.
+    declares the licence, not just by the licence. ``scoped`` holds the grants
+    of the ecosystem the package comes from, folded; npm's when not given.
     """
     package = ident.rsplit("@", 1)[0]
     node = parse_expression(declared)
     if node is None:
         return [(ident, declared, NOT_SPDX)]
-    reasons = _unmet(node, package)
+    reasons = _unmet(node, package, _SCOPED_FOLDED if scoped is None else scoped)
     if not reasons:
         return []
     return [(ident, declared, _describe(reasons))]
@@ -460,6 +519,12 @@ CLASSIFIERS = {
     # where the distinction would matter can be pinned in REVIEWED instead.
     "License :: OSI Approved :: BSD License": "BSD-3-Clause",
     "License :: OSI Approved :: Apache Software License": "Apache-2.0",
+    # Mapped so that PYTHON_SCOPED can name it, not to allow it: GPL is on no
+    # allowlist, so a package declaring this is a finding unless a scoped grant
+    # names that package. Coarser than SPDX like the two above - the classifier
+    # says "v2" of projects that mean "v2 or later" as well - and it does not
+    # matter which, since neither is cleared for anything by this entry.
+    "License :: OSI Approved :: GNU General Public License v2 (GPLv2)": "GPL-2.0-only",
 }
 
 # Free-text `License:` values that are an SPDX identifier in all but spelling.
@@ -528,8 +593,14 @@ def _declared(metadata) -> tuple[str | None, str]:
     return None, "nothing"
 
 
-def check_python(lock_path: Path) -> list[tuple[str, str, str]]:
-    """Return ``(package, declared licence, reason)`` for every failing package."""
+def check_python(
+    lock_path: Path, other_locks: tuple[Path, ...] = ()
+) -> list[tuple[str, str, str]]:
+    """Return ``(package, declared licence, reason)`` for every failing package.
+
+    ``other_locks`` are the other Python lockfiles PYTHON_REVIEWED serves: an
+    entry one of them still locks is not stale just because this one does not.
+    """
     import importlib.metadata
 
     locked, first_party = _locked(lock_path)
@@ -576,7 +647,7 @@ def check_python(lock_path: Path) -> list[tuple[str, str, str]]:
             problems.add((ident, "<none>", "declares no licence"))
             continue
 
-        findings = judge(ident, declared)
+        findings = judge(ident, declared, _PYTHON_SCOPED_FOLDED)
         if findings and source != "License-Expression":
             # Say where a verdict came from: a classifier or a free-text field
             # is weaker evidence than a declared SPDX expression, and that
@@ -584,7 +655,13 @@ def check_python(lock_path: Path) -> list[tuple[str, str, str]]:
             findings = [(i, d, f"{r} (from the {source})") for i, d, r in findings]
         problems.update(findings)
 
-    for stale in sorted(set(PYTHON_REVIEWED) - seen_reviewed):
+    locked_elsewhere = {
+        f"{name}@{version}"
+        for other in other_locks
+        if other.is_file()
+        for name, version in _locked(other)[0].items()
+    }
+    for stale in sorted(set(PYTHON_REVIEWED) - seen_reviewed - locked_elsewhere):
         _note(f"{stale} is no longer locked - drop it from PYTHON_REVIEWED")
 
     if not problems:
@@ -592,29 +669,40 @@ def check_python(lock_path: Path) -> list[tuple[str, str, str]]:
     return sorted(problems)
 
 
-USAGE = """usage: check-licenses.py [npm|python|all]
+USAGE = """usage: check-licenses.py [npm|python|agent|all]
 
   npm     server/frontend/package-lock.json  (no install, no network)
   python  uv.lock, read through the installed distributions
-  all     both (the default)
+  agent   agents/file/uv.lock, read through the distributions installed in the
+          File Agent's own environment - run it with that interpreter
+  all     npm and python (the default); the agent's has its own environment
 """
 
 
 def main(argv: list[str] | None = None) -> int:
     argv = sys.argv[1:] if argv is None else argv
     target = argv[0] if argv else "all"
-    if target not in ("npm", "python", "all") or len(argv) > 1:
+    if target not in ("npm", "python", "agent", "all") or len(argv) > 1:
         sys.exit(USAGE)
 
     root = Path(__file__).resolve().parent.parent
     findings: list[tuple[Path, list[tuple[str, str, str]]]] = []
+
+    def python(name: str):
+        """The Python check of one lockfile, told which the others are."""
+        others = tuple(root / other for other in PYTHON_LOCKFILES if other != name)
+        return lambda lock_path: check_python(lock_path, others)
 
     # (lockfile, checker) in the order they are reported.
     wanted: list[tuple[str, object]] = []
     if target in ("npm", "all"):
         wanted += [(name, check) for name in LOCKFILES]
     if target in ("python", "all"):
-        wanted.append((PYTHON_LOCKFILE, check_python))
+        wanted.append((PYTHON_LOCKFILE, python(PYTHON_LOCKFILE)))
+    if target == "agent":
+        # Not part of "all": it reads the agent's environment, and one
+        # interpreter cannot be in both.
+        wanted.append((AGENT_LOCKFILE, python(AGENT_LOCKFILE)))
 
     for name, checker in wanted:
         lock_path = root / name
