@@ -40,12 +40,15 @@ def _shares(scan_count):
     return weights / weights.sum()
 
 
-def _stub_reader(monkeypatch, scan_times, rescaling=None, rescaled_reads=0):
+def _stub_reader(
+    monkeypatch, scan_times, rescaling=None, rescaled_reads=0, new_ids=False
+):
     """Make `get_peak_timeseries` return a rising series over `scan_times`.
 
     With `rescaling`, the store's m/z axis is multiplied by it during each of
     the first `rescaled_reads` reads, as an m/z calibration applied while the
-    file is being read back rescales it.
+    file is being read back rescales it. With `new_ids` its peaks are given
+    new ids as well, as detecting the file's peaks again gives them.
 
     :return: The m/z values each read was asked for, in the order of the reads
     """
@@ -59,6 +62,13 @@ def _stub_reader(monkeypatch, scan_times, rescaling=None, rescaled_reads=0):
             m_io.update_zarr_array_coord(
                 base_filename, "peak_timeseries", "mz", stored * rescaling
             )
+            if new_ids:
+                m_io.update_zarr_array_coord(
+                    base_filename,
+                    "peak_timeseries",
+                    "peak_id",
+                    [f"anew_{i:04d}" for i in range(stored.size)],
+                )
         return xr.DataArray(
             np.tile(_shares(len(scan_times)), (len(mzs), 1)),
             dims=("mz", "time"),
@@ -204,6 +214,66 @@ class TestAFillMeetingARewrittenAxis:
         )
         # Read back for the axis as it was loaded, then for the one it became
         assert asked == [MZ_VALUES.tolist(), rescaled.tolist()]
+
+    # Rows 1 and 2 are 3 ppm apart: nearer each other than twice the 2 ppm
+    # the axis moves by
+    CLOSE_MZ = np.array([100.0, 200.0, 200.0006, 300.0])
+    CLOSE_AREAS = np.array([1000.0, 2000.0, 3000.0, 4000.0])
+    CLOSE_HEIGHTS = np.array([10.0, 20.0, 30.0, 40.0])
+
+    @pytest.mark.parametrize(
+        "rescaling",
+        [
+            pytest.param(1 + 2e-6, id="axis moved up"),
+            pytest.param(1 - 2e-6, id="axis moved down"),
+        ],
+    )
+    @pytest.mark.asyncio
+    async def test_peaks_nearer_each_other_than_the_axis_moved_are_all_computed(
+        self, rescaling, monkeypatch, write_peak_store
+    ):
+        """The m/z values asked for were read off the store: labels of the
+        axis as it was. Taken to the nearest row of the axis as it has
+        become, both labels of the close pair name one row, and whoever
+        asked for four peaks is handed three and not told. The same peaks
+        are found by their ids instead, which a calibration leaves alone."""
+        write_peak_store(
+            SCAN_TIMES, self.CLOSE_MZ, self.CLOSE_AREAS, self.CLOSE_HEIGHTS
+        )
+        _stub_reader(monkeypatch, SCAN_TIMES, rescaling, rescaled_reads=1)
+
+        result = await m_compute.load_peak_timeseries(
+            SIGNAL_TEST_FILENAME, self.CLOSE_MZ
+        )
+
+        assert result.peak_id.values.tolist() == [
+            "peak_0000",
+            "peak_0001",
+            "peak_0002",
+            "peak_0003",
+        ]
+        np.testing.assert_array_equal(result.mz.values, self.CLOSE_MZ * rescaling)
+        assert result.is_timeseries_computed.values.all()
+        # Each scaled to its own summed intensity, so each on its own row
+        np.testing.assert_allclose(
+            result.peak_heights.values, np.outer(self.CLOSE_HEIGHTS, _shares(5))
+        )
+
+    @pytest.mark.asyncio
+    async def test_peaks_detected_again_are_found_by_the_mz_asked_for(
+        self, monkeypatch, write_peak_store
+    ):
+        """A new detection gives every peak a new id, so no peak of the store
+        is one the refused fill had loaded. The m/z values asked for are all
+        there is to go by then, as they are for any call."""
+        write_peak_store(SCAN_TIMES, MZ_VALUES, SUM_AREAS, SUM_HEIGHTS)
+        _stub_reader(monkeypatch, SCAN_TIMES, 1 + 2e-6, rescaled_reads=1, new_ids=True)
+
+        result = await m_compute.load_peak_timeseries(SIGNAL_TEST_FILENAME, MZ_VALUES)
+
+        assert result.peak_id.values.tolist() == ["anew_0000", "anew_0001", "anew_0002"]
+        np.testing.assert_array_equal(result.mz.values, MZ_VALUES * (1 + 2e-6))
+        assert result.is_timeseries_computed.values.all()
 
     @pytest.mark.asyncio
     async def test_it_is_logged_as_one_issue_for_error_monitoring_to_count(

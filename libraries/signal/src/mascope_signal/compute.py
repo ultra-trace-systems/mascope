@@ -1349,9 +1349,10 @@ async def load_peak_timeseries(
     the store's m/z axis to be rewritten meanwhile: an m/z calibration of the
     file rescales it, and nothing keeps the two apart. The store then refuses
     the fill, whose m/z values are those of the axis as it was
-    (``mascope_file.io.MzNotOnAxisError``), and the peaks are loaded and
-    computed once more, against the store as it has become. A second refusal
-    is raised.
+    (``mascope_file.io.MzNotOnAxisError``), and the same peaks are loaded and
+    computed once more, on the store as it has become. They are found there
+    by their peak ids (:func:`_mzs_of_the_same_peaks`), so what is returned
+    is on the store's new axis. A second refusal is raised.
 
     :param base_filename: Sample file filename
     :type base_filename: str
@@ -1363,8 +1364,16 @@ async def load_peak_timeseries(
     :rtype: xr.Dataset
     """
     mzs_arr = np.unique(np.asarray(mzs))
+    peak_timeseries, to_compute_mask = await _load_peaks_to_fill(base_filename, mzs_arr)
+    if not np.any(to_compute_mask):
+        return peak_timeseries
+
+    # What a second attempt finds these peaks by. Read before the file is,
+    # while the store is still the one they were loaded from: once it has
+    # been rewritten, this load no longer reads it back reliably.
+    peak_ids = await asyncio.to_thread(lambda: peak_timeseries.peak_id.values)
     try:
-        return await _load_or_compute_peak_timeseries(base_filename, mzs_arr)
+        await _fill_peak_timeseries(base_filename, peak_timeseries, to_compute_mask)
     except m_io.MzNotOnAxisError:
         # A warning although the second attempt is expected to succeed:
         # nothing else says how often a fill meets a rewritten axis, and that
@@ -1378,24 +1387,71 @@ async def load_peak_timeseries(
             "while peak timeseries were being computed for it. They were not "
             "stored, and are computed again."
         )
-    return await _load_or_compute_peak_timeseries(base_filename, mzs_arr)
+        mzs_arr = await asyncio.to_thread(
+            _mzs_of_the_same_peaks, base_filename, peak_ids, mzs_arr
+        )
+        peak_timeseries, to_compute_mask = await _load_peaks_to_fill(
+            base_filename, mzs_arr
+        )
+        if np.any(to_compute_mask):
+            await _fill_peak_timeseries(base_filename, peak_timeseries, to_compute_mask)
+
+    # --- Return a clean lazy reference ---
+    return await asyncio.to_thread(_load_deduplicated_peak_data, base_filename, mzs_arr)
 
 
-async def _load_or_compute_peak_timeseries(
+def _mzs_of_the_same_peaks(
+    base_filename: str,
+    peak_ids: np.ndarray,
+    mzs_arr: np.ndarray,
+) -> np.ndarray:
+    """Where the peaks of a refused fill are on the store's axis as it now is.
+
+    The m/z values a fill is asked for are, for most callers, read off the
+    store: labels of the axis as it was. On a rewritten axis the row nearest
+    such a label is its own peak only where the axis moved by less than half
+    the distance to the next kept peak, and two labels nearer each other than
+    that name one row, so the caller would get fewer peaks than it asked for.
+    An m/z calibration rewrites the m/z values of a store and nothing else,
+    so its peaks are found by their ids.
+
+    Where an id is gone the file's peaks were detected again, and no peak of
+    the store is one the fill was for. The m/z values asked for are then all
+    there is to go by, for every peak: a new detection replaces every id.
+
+    Synchronous and blocking (it opens the zarr store), so callers on the event
+    loop must hand it to a worker thread.
+
+    :param base_filename: Sample file filename
+    :type base_filename: str
+    :param peak_ids: The ids of the peaks the refused fill had loaded
+    :type peak_ids: np.ndarray
+    :param mzs_arr: The m/z values it was asked for, sorted and unique
+    :type mzs_arr: np.ndarray
+    :return: The m/z values to ask for instead, sorted and unique
+    :rtype: np.ndarray
+    """
+    stored = m_io.load_peak_data(base_filename)
+    mz_by_id = dict(zip(stored.peak_id.values.tolist(), stored.mz.values.tolist()))
+    peak_ids = peak_ids.tolist()
+    if not all(peak_id in mz_by_id for peak_id in peak_ids):
+        return mzs_arr
+    return np.unique([mz_by_id[peak_id] for peak_id in peak_ids])
+
+
+async def _load_peaks_to_fill(
     base_filename: str,
     mzs_arr: np.ndarray,
-) -> xr.Dataset:
-    """One attempt of :func:`load_peak_timeseries`: load, compute what is
-    missing, write it, load again.
+) -> tuple[xr.Dataset, np.ndarray]:
+    """Load the peaks asked for, and say which of them have no timeseries yet.
 
     :param base_filename: Sample file filename
     :type base_filename: str
     :param mzs_arr: Sorted unique target m/z values
     :type mzs_arr: np.ndarray
-    :raises MzNotOnAxisError: If the store's m/z axis was rewritten between
-        the load and the write
-    :return: The peak timeseries dataset
-    :rtype: xr.Dataset
+    :return: The peaks nearest those m/z values, and a mask over them of the
+        ones whose timeseries is still to be computed
+    :rtype: tuple[xr.Dataset, np.ndarray]
     """
     # --- Load existing peak timeseries from the sample file ---
     peak_timeseries = await asyncio.to_thread(
@@ -1415,8 +1471,26 @@ async def _load_or_compute_peak_timeseries(
         runtime.logger.debug(
             f"All peak timeseries are cached in {base_filename}, loading from file."
         )
-        return peak_timeseries
+    return peak_timeseries, to_compute_mask
 
+
+async def _fill_peak_timeseries(
+    base_filename: str,
+    peak_timeseries: xr.Dataset,
+    to_compute_mask: np.ndarray,
+) -> None:
+    """Compute the timeseries the loaded peaks are missing, and store them.
+
+    :param base_filename: Sample file filename
+    :type base_filename: str
+    :param peak_timeseries: The peaks asked for, loaded from the store
+    :type peak_timeseries: xr.Dataset
+    :param to_compute_mask: Which of them have no timeseries yet
+    :type to_compute_mask: np.ndarray
+    :raises MzNotOnAxisError: If the store's m/z axis was rewritten between
+        the load of the peaks and the write
+    :return: None
+    """
     # --- A per-stream store fills each peak over its own stream's scans ---
     streams = peak_store_streams(peak_timeseries)
     if streams:
@@ -1424,9 +1498,7 @@ async def _load_or_compute_peak_timeseries(
             base_filename, peak_timeseries, to_compute_mask, streams
         )
         await m_io.write_peaks(update_dataset, base_filename)
-        return await asyncio.to_thread(
-            _load_deduplicated_peak_data, base_filename, mzs_arr
-        )
+        return
 
     # --- Compute the missing peak timeseries ---
     mz_coords = peak_timeseries.mz.values
@@ -1494,9 +1566,6 @@ async def _load_or_compute_peak_timeseries(
 
     # --- Write the updates to disk ---
     await m_io.write_peaks(update_dataset, base_filename)
-
-    # --- Return a clean lazy reference ---
-    return await asyncio.to_thread(_load_deduplicated_peak_data, base_filename, mzs_arr)
 
 
 async def _stream_timeseries_update(
