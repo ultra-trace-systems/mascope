@@ -44,7 +44,12 @@ def _shares(scan_count):
 
 
 def _stub_reader(
-    monkeypatch, scan_times, rescaling=None, rescaled_reads=0, new_ids=False
+    monkeypatch,
+    scan_times,
+    rescaling=None,
+    rescaled_reads=0,
+    new_ids=False,
+    meanwhile=None,
 ):
     """Make `get_peak_timeseries` return a rising series over `scan_times`.
 
@@ -52,6 +57,8 @@ def _stub_reader(
     the first `rescaled_reads` reads, as an m/z calibration applied while the
     file is being read back rescales it. With `new_ids` its peaks are given
     new ids as well, as detecting the file's peaks again gives them.
+    `meanwhile` is called during the first read, for whatever else is to
+    happen to the store while the file is read back.
 
     :return: The m/z values each read was asked for, in the order of the reads
     """
@@ -60,6 +67,8 @@ def _stub_reader(
     async def fake_get_peak_timeseries(base_filename, mzs, *args, **kwargs):
         mzs = np.asarray(mzs, dtype=float)
         asked.append(mzs.tolist())
+        if meanwhile is not None and len(asked) == 1:
+            meanwhile()
         if len(asked) <= rescaled_reads:
             stored = m_io.load_coord(base_filename, "peak_timeseries", "mz")
             m_io.update_zarr_array_coord(
@@ -277,6 +286,38 @@ class TestAFillMeetingARewrittenAxis:
         assert result.peak_id.values.tolist() == ["anew_0000", "anew_0001", "anew_0002"]
         np.testing.assert_array_equal(result.mz.values, MZ_VALUES * (1 + 2e-6))
         assert result.is_timeseries_computed.values.all()
+
+    @pytest.mark.asyncio
+    async def test_a_refused_fills_peaks_are_known_before_the_store_is_replaced(
+        self, monkeypatch, write_peak_store
+    ):
+        """The ids a second attempt goes by are read while the store is still
+        the one the peaks were loaded from. Read after the refusal, off the
+        first attempt's load, they are whatever ids the store now holds on
+        the same rows: found in it, and leading to peaks nobody asked for.
+        Here a new detection puts a peak at 50 on the row the peak at 100 was
+        on, and it is neither returned nor filled."""
+        write_peak_store(SCAN_TIMES, MZ_VALUES, SUM_AREAS, SUM_HEIGHTS)
+        detected_again = np.array([50.0, 100.0002, 200.0004])
+
+        def detect_the_peaks_again():
+            write_peak_store(SCAN_TIMES, detected_again, SUM_AREAS, SUM_HEIGHTS)
+            m_io.update_zarr_array_coord(
+                SIGNAL_TEST_FILENAME,
+                "peak_timeseries",
+                "peak_id",
+                ["anew_0000", "anew_0001", "anew_0002"],
+            )
+
+        asked = _stub_reader(monkeypatch, SCAN_TIMES, meanwhile=detect_the_peaks_again)
+
+        result = await m_compute.load_peak_timeseries(SIGNAL_TEST_FILENAME, MZ_VALUES)
+
+        # The peaks nearest what was asked for: 300 is nearest the last one
+        assert result.peak_id.values.tolist() == ["anew_0001", "anew_0002"]
+        assert asked == [MZ_VALUES.tolist(), detected_again[1:].tolist()]
+        stored = m_io.load_peak_data(SIGNAL_TEST_FILENAME)
+        assert stored.is_timeseries_computed.values.tolist() == [False, True, True]
 
     @pytest.mark.asyncio
     async def test_the_second_attempt_waits_for_the_calibration_to_finish(
