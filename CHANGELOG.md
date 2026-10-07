@@ -458,13 +458,13 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   The m/z now has to be on the axis exactly. A timeseries that is not is not
   stored at all: it is computed once more for the same peaks, found by their
   ids on the file's m/z axis as it then is, so whatever asked for it still
-  gets it. The second attempt first waits for a calibration that is being
-  applied to the file to finish, since the file is read back by the
-  calibration recorded for it, and an apply records that last. An m/z above
-  the file's last peak is handled the same way,
-  where it failed with an IndexError. Should the file's m/z axis be rewritten
-  during the second attempt too, the request fails with "Cannot update m/z
-  values not present in existing data", which no longer advises detecting the
+  gets it. An m/z above the file's last peak is handled the same way, where
+  it failed with an IndexError. The second attempt first waits for a
+  calibration that is being applied to the file to finish: a raw Orbitrap
+  file is read back by the calibration recorded for it, and an Orbitrap
+  apply records that last. Should the file's m/z axis be rewritten during
+  the second attempt too, the request fails with "Cannot update m/z values
+  not present in existing data", which no longer advises detecting the
   file's peaks again: asking again is enough.
 
   This was found by reading the code, and the overlap has not been
