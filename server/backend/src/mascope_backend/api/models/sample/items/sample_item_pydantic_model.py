@@ -133,7 +133,31 @@ class SampleItemCreate(SampleItemValidator, SampleItemBase):
     )
 
 
-class AcquisitionItemCreate(SampleItemCreate):
+class StreamItemCreate(SampleItemCreate):
+    """A sample item that reads one scan stream of its file.
+
+    Deliberately not the model any route takes. Which stream an item reads
+    is decided by the ingest pipeline from the file's own peak store, and is
+    carried over when such an item is copied; a request that could set it
+    would be able to point an item at a stream of another file, or at a
+    spectrum the file's store does not hold. The routes keep
+    :class:`SampleItemCreate`, and an item made through them spans every MS1
+    scan of its polarity, as it always has
+    (``docs/dev/ingest_routing_and_splitting.md``, section 4.4).
+    """
+
+    stream_id: str | None = Field(
+        None,
+        description=(
+            "The scan stream of its file this item reads "
+            "(acquisition_stream.stream_id): the polarity's composite where "
+            "the file holds one, else its one stream. None for an item over "
+            "every MS1 scan of its polarity."
+        ),
+    )
+
+
+class AcquisitionItemCreate(StreamItemCreate):
     """An ACQUISITION item the ingest pipeline creates, with its provenance.
 
     Deliberately not the model any route takes. The two fields below say how

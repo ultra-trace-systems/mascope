@@ -77,6 +77,37 @@ def get_peak_streams(base_filename: str) -> list[dict]:
     return m_streams.peak_streams(m_streams.file_scan_streams(datafile_path))
 
 
+def has_scan_streams(base_filename: str) -> bool:
+    """Whether a sample file is read for its scan streams: a raw Orbitrap
+    file is, every other type has only what its conversion stored.
+
+    :param base_filename: Sample file filename
+    :type base_filename: str
+    :return: True for a raw Orbitrap file
+    :rtype: bool
+    """
+    return m_name.get_sample_file_type(base_filename) == "orbi_raw"
+
+
+def get_scan_streams(base_filename: str) -> list[dict]:
+    """The scan streams of a raw Orbitrap file, as it reads now.
+
+    The whole census (:func:`mascope_thermo.streams.scan_streams`), taken from
+    the file with the reader of the day, as :func:`get_peak_streams` takes
+    the streams peaks are detected per: whatever is built on the two then
+    rests on one reading. The census stored at conversion keeps serving the
+    readers that take it from ``.props``.
+
+    :param base_filename: Sample file filename
+    :type base_filename: str
+    :return: The census, or ``[]`` for a sample type that has none
+    :rtype: list[dict]
+    """
+    if not has_scan_streams(base_filename):
+        return []
+    return m_streams.file_scan_streams(m_name.filename_to_datafile_path(base_filename))
+
+
 def peak_store_streams(peak_data: xr.Dataset) -> list[str]:
     """The stream keys a peak store's peaks were detected per, or ``[]``.
 
