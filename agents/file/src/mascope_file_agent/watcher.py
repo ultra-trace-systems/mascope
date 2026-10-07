@@ -4,16 +4,23 @@ import logging
 import os
 import time
 from queue import Queue
-from threading import Event, Lock, Thread, current_thread
+from threading import Event, Lock
 from typing import Callable, Iterable
 
 import watchdog
 from watchdog.events import PatternMatchingEventHandler
 from watchdog.observers import Observer
 
+from mascope_file_agent._threads import Task
+
 
 #: Seconds between two looks at a file that is still being written.
 POLL_INTERVAL = 1
+
+#: Seconds the observer's own thread is given to end once it is told to. It
+#: only ever hands a path over, so it ends at once; the bound is there so that
+#: a stop with no deadline is never a wait an interrupt cannot reach.
+OBSERVER_STOP_TIME = 5
 
 
 class FileSystemWatcher:
@@ -95,9 +102,7 @@ class FileSystemWatcher:
         # stopping it waits for that lock - so a handler that waited for a
         # file to complete would hold up the stop for as long as it took.
         self._seen = Queue()
-        self._handling = Thread(
-            target=self._handle_seen, name="file-agent-watcher", daemon=True
-        )
+        self._handling = Task(self._handle_seen, "file-agent-watcher")
         self._lock = Lock()
         self._watching = False
 
@@ -222,14 +227,14 @@ class FileSystemWatcher:
                 self._seen.put(None)
         if self.observer.ident is None:
             return True  # never started
-        self.observer.join(timeout)
-        if self._handling is current_thread():
-            return False
-        self._handling.join(
+        self.observer.join(
+            OBSERVER_STOP_TIME if timeout is None else min(timeout, OBSERVER_STOP_TIME)
+        )
+        # The thread that handles the files is the one a stop can have to wait
+        # for. Asked from one of its own callbacks, it ends after the callback.
+        ended = self._handling.wait(
             None if deadline is None else max(0.0, deadline - time.monotonic())
         )
-        if self.observer.is_alive() or self._handling.is_alive():
-            return False
-        if watching:
+        if ended and watching:
             self.logger.info("File system watcher stopped")
-        return True
+        return ended

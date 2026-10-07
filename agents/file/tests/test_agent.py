@@ -352,7 +352,7 @@ def test_a_deadline_ends_the_wait_for_a_retry(
     )
     assert len(uploads.calls) == 1
     assert not (tmp_path / "failed_uploads").exists()
-    assert wait_for(lambda: not any(w.is_alive() for w in agent.uploader._workers))
+    assert wait_for(lambda: all(w.ended for w in agent.uploader._workers))
     # One line for the file, and the one that is true of it.
     assert not agent.logger.said("warning", "x.raw: its upload had not ended")
 

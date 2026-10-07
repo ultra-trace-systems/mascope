@@ -11,8 +11,9 @@ import os
 import shutil
 import time
 from queue import Empty, Queue
-from threading import Event, Lock, Thread, current_thread
+from threading import Event, Lock
 
+from mascope_file_agent._threads import Task
 from mascope_sdk import api_post_file_tus
 from mascope_sdk.exceptions import (
     AuthenticationError,
@@ -135,7 +136,7 @@ class FileUploader:
         # upload stuck on a server that never answers would hold a stopping
         # process open for as long as the request's timeout.
         self._uploads = Queue()
-        self._workers: list[Thread] = []
+        self._workers: list[Task] = []
         self._lock = Lock()
         # The files a worker has begun, and those of them that are between
         # two attempts rather than in one.
@@ -157,9 +158,7 @@ class FileUploader:
             if self._workers or self._finishing:
                 return
             self._workers = [
-                Thread(
-                    target=self._work, name=f"file-agent-upload-{number}", daemon=True
-                )
+                Task(self._work, f"file-agent-upload-{number}")
                 for number in range(1, UPLOAD_WORKERS + 1)
             ]
             for worker in self._workers:
@@ -259,15 +258,18 @@ class FileUploader:
         """
         with self._lock:
             first, self._finishing = not self._finishing, True
-            workers = [w for w in self._workers if w is not current_thread()]
+            # Not the worker this is called from, if it is one: a Repair that
+            # stops the agent on a refused upload is on a worker's thread, and
+            # that thread cannot wait for its own end.
+            workers = [w for w in self._workers if not w.is_current]
         if first:
             self._release_workers()
         deadline = None if timeout is None else time.monotonic() + timeout
         for worker in workers:
-            worker.join(
+            worker.wait(
                 None if deadline is None else max(0.0, deadline - time.monotonic())
             )
-        done = not any(worker.is_alive() for worker in workers)
+        done = all(worker.ended for worker in workers)
         if not done:
             with self._lock:
                 # Not the ones between two attempts: the abort ends their
