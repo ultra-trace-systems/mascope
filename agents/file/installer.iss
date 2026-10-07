@@ -75,6 +75,14 @@ Name: "startup"; Description: "Start the File Agent automatically when you sign 
 
 [Files]
 Source: "dist\Mascope-File-Agent.exe"; DestDir: "{app}"; Flags: {#PayloadFlags}
+; What the program is licensed under, and the licences of the open-source
+; software inside it, most of which make their text a condition of passing it
+; on. build.ps1 writes the notices beside the exe from its build environment;
+; LICENSE and NOTICE are the repository's own, given a .txt name so that
+; Windows opens them. Plain text, so no signcheck: only the exe is signed.
+Source: "dist\THIRD_PARTY_NOTICES.txt"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\..\LICENSE"; DestDir: "{app}"; DestName: "LICENSE.txt"; Flags: ignoreversion
+Source: "..\..\NOTICE"; DestDir: "{app}"; DestName: "NOTICE.txt"; Flags: ignoreversion
 
 [Icons]
 Name: "{userprograms}\Mascope File Agent"; Filename: "{app}\Mascope-File-Agent.exe"

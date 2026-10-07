@@ -960,6 +960,15 @@ cd agents/file
 ./build.ps1 -Version v1.4.0 -Installer   # stamped exe + installer
 ```
 
+Beside the exe the build writes `dist/THIRD_PARTY_NOTICES.txt`: the licences of
+the open-source packages PyInstaller assembled the program from, and of the
+Python interpreter inside it. `tooling/third-party-notices.py` generates it from
+the build environment (`--for agent --interpreter`), as it does for the server
+image, and the installer puts it in the program's folder with Mascope's own
+`LICENSE` and `NOTICE`. The exe itself holds almost none of that text -
+PyInstaller packs code, not the licence files beside it - so an exe handed on
+without the installer should have the notices file handed on with it.
+
 `-Installer` compiles `installer.iss` and requires Inno Setup 6 (preinstalled
 on GitHub windows runners; locally `winget install JRSoftware.InnoSetup`).
 The installer is per-user (no admin rights), offers a run-at-login startup

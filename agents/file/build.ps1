@@ -1,6 +1,8 @@
 #Requires -Version 7.0 -PSEdition Core
 
 # Build the File Agent executable, and optionally the Windows installer.
+# Beside the exe goes THIRD_PARTY_NOTICES.txt, the licences of the open-source
+# software inside it, which the installer installs with it.
 #
 #   ./build.ps1                              # exe only, version from git
 #   ./build.ps1 -Version v1.4.0 -Installer   # stamped exe + installer (CI)
@@ -239,6 +241,20 @@ uv run pyinstaller @(
     '--collect-all', 'tzlocal'                    # name this machine's IANA zone
 )
 if ($LASTEXITCODE -ne 0) { throw 'PyInstaller build failed' }
+
+# The licences of the open-source software the exe has just been assembled
+# from, and of the interpreter it carries. Most of them make their text a
+# condition of passing the software on, and the exe holds almost none of it:
+# PyInstaller packs code, not the licence files beside it. Written from this
+# environment - the one PyInstaller read - so the list cannot drift from what
+# was bundled, and put beside the exe, where installer.iss picks it up.
+uv run python '../../tooling/third-party-notices.py' @(
+    '--for', 'agent'                              # the heading
+    '--interpreter'                               # Python itself is in the exe
+    '--lock', './uv.lock'                         # names our own packages
+    '--output', './dist/THIRD_PARTY_NOTICES.txt'
+)
+if ($LASTEXITCODE -ne 0) { throw 'Writing the third-party notices failed' }
 
 if ($Sign) {
     # Sign the payload exe now, while it is still a standalone PE. Inno
