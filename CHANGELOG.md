@@ -296,9 +296,9 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   installer installed the exe alone, and the exe holds almost none of that
   text. It now puts `THIRD_PARTY_NOTICES.txt` beside the program, in
   `%LocalAppData%\Programs\Mascope File Agent`, with the licence of each
-  package and of the interpreter, generated from the build environment as the
-  server image's notices are, and Mascope's own `LICENSE.txt` and `NOTICE.txt`
-  with it.
+  package, of the interpreter and of the libraries built into it, generated
+  from the build environment as the server image's notices are, and Mascope's
+  own `LICENSE.txt` and `NOTICE.txt` with it.
 
 - **The averaged Orbitrap profile sits on its peaks when the calibration moves
   between scans.** Every scan is written out on its own calibration, and when

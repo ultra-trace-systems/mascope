@@ -169,7 +169,8 @@ The agent is open-source software under the Apache License 2.0, and is built
 from other open-source packages. The installer puts their licences beside the
 program, in `%LocalAppData%\Programs\Mascope File Agent`: `LICENSE.txt` and
 `NOTICE.txt` are Mascope's own, and `THIRD_PARTY_NOTICES.txt` holds the licence
-of each package inside the program and of the Python interpreter it runs on.
+of each package inside the program, and of the Python interpreter it runs on
+with the libraries built into that.
 
 ### What became of each file
 
