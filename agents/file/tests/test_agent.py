@@ -458,6 +458,43 @@ def test_a_waiting_file_that_disappears_does_not_stop_the_agent(
     assert uploads.calls[0]["filepath"] == sample
 
 
+def test_a_waiting_file_that_cannot_be_read_just_now_is_looked_at_again(
+    make_agent, monkeypatch, uploads, sample
+):
+    """A network folder drops out, a scanner holds a file: it is still there.
+
+    Only a file that is not found is gone. Anything else the look at it raises
+    says nothing of the file, so it keeps its place in the queue - and the log
+    says so once, not once a second for as long as it lasts.
+    """
+    agent = make_agent()
+    look = agent.uploader.seconds_since_last_access
+    failures = [PermissionError("in use"), OSError("the network name is gone")]
+
+    def unreadable_twice(fname):
+        if failures:
+            raise failures.pop(0)
+        return look(fname)
+
+    monkeypatch.setattr(agent.uploader, "seconds_since_last_access", unreadable_twice)
+    agent.start()
+
+    agent.uploader.enqueue(sample)
+
+    assert wait_for(lambda: uploads.calls)
+    assert uploads.calls[0]["filepath"] == sample
+    assert agent.running
+    said = [
+        message
+        for level, message in agent.logger.lines
+        if level == "warning" and "could not be looked at" in message
+    ]
+    assert said == [
+        "x.raw: could not be looked at just now (in use). It stays in the queue "
+        "and is uploaded once it can be."
+    ]
+
+
 # ---------------------------------------------------------------------------
 # Stopping at an awkward moment
 # ---------------------------------------------------------------------------
