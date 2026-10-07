@@ -275,7 +275,10 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   it, the agent: nothing was uploaded from then on until somebody started it
   again, and the only trace was an "Unexpected error in the upload loop" in
   its log. It now logs a warning that names the file and carries on. A file
-  that was renamed is uploaded under its new name.
+  renamed to a name the agent watches for is uploaded under that name. A file
+  the agent cannot look at when its turn comes - a network folder that dropped
+  out for a moment, a file something holds locked - is not taken for gone: it
+  keeps its place and is uploaded once it can be read.
 
 - **The averaged Orbitrap profile sits on its peaks when the calibration moves
   between scans.** Every scan is written out on its own calibration, and when

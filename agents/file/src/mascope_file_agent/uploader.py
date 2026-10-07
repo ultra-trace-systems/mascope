@@ -142,6 +142,9 @@ class FileUploader:
         # two attempts rather than in one.
         self._in_flight: set[str] = set()
         self._retrying: set[str] = set()
+        # Files the loop could not look at when their turn came, so that the log
+        # says so once for each and not once a second. The loop's own.
+        self._unreadable: set[str] = set()
         # Set once finish() has begun: no file is taken after that, so every
         # file is either handed to a worker ahead of the workers' release or
         # named in the log as not uploaded - never left in a queue nobody reads.
@@ -202,7 +205,8 @@ class FileUploader:
 
         Exceptions Handled:
             - Empty: Raised when the `jobs` queue is empty.
-            - OSError: Raised when the file is gone by the time its turn comes.
+            - FileNotFoundError: Raised when the file is gone by the time its turn comes.
+            - OSError: Raised when the file cannot be looked at just now.
             - KeyboardInterrupt: Raised when the process is interrupted by the user.
             - Exception: Catches all other exceptions and logs them as critical errors.
 
@@ -217,16 +221,33 @@ class FileUploader:
                     self.logger.debug(fname)
                     try:
                         untouched = self.seconds_since_last_access(fname)
-                    except OSError as e:
+                    except FileNotFoundError as e:
                         # Deleted or renamed since it appeared, which acquisition
                         # software does as a matter of course. One file less to
                         # upload, not a reason to stop uploading the others.
+                        self._unreadable.discard(fname)
                         self.logger.warning(
                             f"{os.path.basename(fname)}: not uploaded, as it was "
-                            f"gone when its turn came ({e}). A file that was "
-                            "renamed is uploaded under its new name."
+                            f"gone when its turn came ({e}). A file renamed to a "
+                            "name the agent watches for is uploaded under that "
+                            "name."
                         )
                         continue
+                    except OSError as e:
+                        # Still there, for all this says: a folder on a network
+                        # that dropped out for a moment, a file something has
+                        # locked. It waits its turn again, as a file not yet
+                        # left alone does, and the log says so once.
+                        if fname not in self._unreadable:
+                            self._unreadable.add(fname)
+                            self.logger.warning(
+                                f"{os.path.basename(fname)}: could not be looked "
+                                f"at just now ({e}). It stays in the queue and "
+                                "is uploaded once it can be."
+                            )
+                        self._put(self.jobs, fname)
+                        continue
+                    self._unreadable.discard(fname)
                     if untouched < self.settings.timeout:
                         self._put(self.jobs, fname)
                         self.logger.debug(f"Put {fname} back to queue")
