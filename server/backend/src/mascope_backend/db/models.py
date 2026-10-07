@@ -24,6 +24,7 @@ from sqlalchemy import (
     Boolean,
     Float,
     ForeignKey,
+    ForeignKeyConstraint,
     Index,
     Integer,
     MetaData,
@@ -916,11 +917,26 @@ class AcquisitionStream(Base):
     so an item points at one stream whether or not that stream is stitched.
 
     Rows are written for every raw Orbitrap file whose census is read, one
-    per stream, once the step that writes them is in; a file with one stream
-    in a polarity gets that one row, and its item points at it, which means
-    what the polarity has always meant. Nothing writes rows yet. An item
-    made before then carries no ``stream_id``, and never will: NULL says the
-    item spans every MS1 scan of its polarity, as it was made.
+    per stream; a file with one stream in a polarity gets that one row, and
+    its item points at it, which means what the polarity has always meant.
+    An item with no ``stream_id`` is one made before the table existed, and
+    it stays so: NULL says the item spans every MS1 scan of its polarity, as
+    it was made.
+
+    **A stream carries a census and no map; a composite carries the map and
+    no census.** A composite has no scans of its own, so ``signature_key``,
+    ``acquisition_params``, ``scan_count``, ``blocks``, ``t_first`` and
+    ``t_last`` are NULL on it, and its ``signature`` holds its polarity. The
+    ``census_or_map`` check pins both shapes, so a reader tells the two apart
+    by either; ``not_its_own_composite`` says what it says.
+
+    **A rebuild updates a file's rows in place**, matched on (file, key): a
+    stream keeps its id, and whatever points at it still does. A composite's
+    key is fixed by its polarity (``composite <polarity>``), so it comes out
+    the same on every run. A row the new census no longer gives is deleted -
+    unless an item still reads it, which the database refuses: such a row is
+    kept, and the file's processing detail names it and the item, until the
+    item is gone.
 
     Two names for a stream, kept apart on purpose:
 
@@ -940,12 +956,36 @@ class AcquisitionStream(Base):
     """
 
     __tablename__ = "acquisition_stream"
-    # Also the index that finds a file's streams and that the file's ON
-    # DELETE CASCADE walks: sample_file_id leads it, so the column needs none
-    # of its own.
     __table_args__ = (
+        # Also the index that finds a file's streams and that the file's ON
+        # DELETE CASCADE walks: sample_file_id leads it, so the column needs
+        # none of its own.
         UniqueConstraint(
             "sample_file_id", "stream_key", name="uq_acquisition_stream_file_key"
+        ),
+        # What the two references on the pair point at: an item's and a
+        # segment's. Both carry the file, so a pointer into another file
+        # cannot be written.
+        UniqueConstraint(
+            "sample_file_id", "stream_id", name="uq_acquisition_stream_file_stream"
+        ),
+        ForeignKeyConstraint(
+            ["sample_file_id", "composite_stream_id"],
+            ["acquisition_stream.sample_file_id", "acquisition_stream.stream_id"],
+        ),
+        CheckConstraint(
+            "(stitch IS NULL"
+            " AND signature_key IS NOT NULL AND scan_count IS NOT NULL"
+            " AND blocks IS NOT NULL AND t_first IS NOT NULL AND t_last IS NOT NULL)"
+            " OR (stitch IS NOT NULL AND composite_stream_id IS NULL"
+            " AND signature_key IS NULL AND acquisition_params IS NULL"
+            " AND scan_count IS NULL AND blocks IS NULL"
+            " AND t_first IS NULL AND t_last IS NULL)",
+            name="census_or_map",
+        ),
+        CheckConstraint(
+            "composite_stream_id IS NULL OR composite_stream_id <> stream_id",
+            name="not_its_own_composite",
         ),
     )
 
@@ -957,41 +997,55 @@ class AcquisitionStream(Base):
         ForeignKey("sample_file.sample_file_id", ondelete="CASCADE"),
     )
     # As wide as method_binding.signature_class, which holds the signature
-    # keys of a whole polarity joined together.
+    # keys of a whole polarity joined together. A composite's key is
+    # "composite <polarity>": it selects no scans, and names the row in its
+    # file.
     stream_key: Mapped[str] = mapped_column(String(512))
-    signature_key: Mapped[str] = mapped_column(String(512))
+    # The census of a stream, NULL on a composite (census_or_map):
+    signature_key: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
     # Counted from 1, as the method counts them. Both NULL where the file
     # records no experiment, which is an acquisition started with no method
-    # loaded.
+    # loaded, and on a composite.
     scan_segment: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     scan_event: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
-    # The parsed fields of the signature, as the census reports them.
+    # The parsed fields of the signature, as the census reports them, and
+    # only those. A composite's holds its polarity and MS order, and
+    # "composite": true.
     signature: Mapped[dict] = mapped_column(JSON)
-    scan_count: Mapped[int] = mapped_column(Integer)
+    # The attributes of section 4.1 as the census samples them from the
+    # stream's scans - the trailer values the sampled scans agree on, the
+    # names of those that varied, and what was sampled (``acquisition_params``
+    # of ``mascope_thermo.streams.scan_streams``). What the stitch rule and
+    # the repeat guard read. NULL on a composite.
+    acquisition_params: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    scan_count: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     # Contiguous runs of the stream's scans: 1 for an experiment that runs
     # once, the number of repeats for one that alternates with another.
-    blocks: Mapped[int] = mapped_column(Integer)
+    blocks: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     # First and last scan time [s] from the start of the acquisition.
-    t_first: Mapped[float] = mapped_column(Float)
-    t_last: Mapped[float] = mapped_column(Float)
+    t_first: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    t_last: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     # The composite this stream is a segment of (section 4.5). NULL on a
     # composite row itself, and on every stream of a file that has none.
+    # The reference is on (sample_file_id, composite_stream_id), in
+    # __table_args__, so a segment points at a composite of its own file.
     #
     # No ON DELETE action, as for sample_item.stream_id: a composite goes
-    # only with its file or when the file is processed again, in one
-    # statement with its segments, and a segment left pointing at a
-    # composite deleted on its own is a fault to refuse. Indexed for the
-    # question asked of a composite, its segments.
+    # only with its file or when the new census no longer gives it, its
+    # segments unpointed first, and a segment left pointing at a composite
+    # deleted on its own is a fault to refuse. Indexed for the question
+    # asked of a composite, its segments.
     composite_stream_id: Mapped[Optional[str]] = mapped_column(
-        String(16),
-        ForeignKey("acquisition_stream.stream_id"),
-        nullable=True,
-        index=True,
+        String(16), nullable=True, index=True
     )
-    # On a composite row: the stitch map it was built with, as the peak
-    # store records it - the rule's version, the runs of m/z each segment
-    # owns, whether the rule or a layout drew them, and what was left out
-    # (``mascope_signal.stitch``). NULL on every other row.
+    # On a composite row: its own polarity's part of the stitch map the peak
+    # store records (``mascope_signal.stitch``) - {"rule": the rule's
+    # version, "runs": [[lower, upper, stream_key], ...] the m/z each segment
+    # owns with the owner named by its key in this file, "source": whether
+    # the rule or a layout drew them, "notes": what was left out}. The store
+    # names an owner by its place among the store's streams, which no column
+    # here holds; the key is what the row beside it carries. NULL on every
+    # other row.
     stitch: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
 
 
@@ -1017,6 +1071,13 @@ class SampleItem(Base):
             + ", ".join(f"'{rung}'" for rung in BINDING_RUNGS)
             + ")",
             name="bound_by_rung",
+        ),
+        # The stream an item reads is a stream of its own file: the
+        # reference carries the file, and a NULL stream_id leaves the pair
+        # unchecked, so an item made before streams is as it was.
+        ForeignKeyConstraint(
+            ["sample_file_id", "stream_id"],
+            ["acquisition_stream.sample_file_id", "acquisition_stream.stream_id"],
         ),
     )
 
@@ -1105,19 +1166,20 @@ class SampleItem(Base):
     # afterwards - an item made under the polarity rule says what it said
     # (``docs/dev/ingest_routing_and_splitting.md``, sections 4.4 and 9.1).
     #
-    # No ON DELETE action, deliberately. A stream row goes only with its file
-    # or when the file is processed again, and its items go first both times.
-    # An item still pointing at a stream being deleted is therefore a fault
-    # to refuse, and SET NULL would instead turn it, silently, into an item
-    # over the whole polarity.
+    # No ON DELETE action, deliberately. A stream row goes with its file, and
+    # on a rebuild only where nothing reads it: the rows are updated in place
+    # and a stream keeps its id, so an item keeps pointing at the same
+    # stream, and a row the new census no longer gives is kept while an item
+    # still reads it (AcquisitionStream). An item pointing at a stream being
+    # deleted is therefore a fault to refuse, and SET NULL would instead turn
+    # it, silently, into an item over the whole polarity.
     #
     # Indexed for the question asked the other way round - a stream's items -
     # and so that deleting a stream does not scan every item for references.
+    # The reference itself is on (sample_file_id, stream_id), in
+    # __table_args__.
     stream_id: Mapped[Optional[str]] = mapped_column(
-        String(16),
-        ForeignKey("acquisition_stream.stream_id"),
-        nullable=True,
-        index=True,
+        String(16), nullable=True, index=True
     )
     t0: Mapped[Optional[float]] = mapped_column(Float)
     t1: Mapped[Optional[float]] = mapped_column(Float)

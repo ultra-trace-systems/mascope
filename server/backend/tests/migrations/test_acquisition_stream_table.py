@@ -19,9 +19,10 @@ And a file holds a key once, while two files may hold the same key - a key is
 a stream's name within its file and nothing more.
 
 A composite is a row like any stream: its segments point at it, it carries
-the map they were stitched by, and it is not taken from under its segments
-any more than a stream from under its item. With its file it goes in one
-statement, segments and all.
+the map they were stitched by and no census, and it is not taken from under
+its segments any more than a stream from under its item. With its file it
+goes in one statement, segments and all. Both references carry the file, so
+neither an item nor a segment can point into another file.
 """
 
 from datetime import datetime, timezone
@@ -58,12 +59,19 @@ _MEASURING = "st-streams00002"
 _COMPOSITE = "st-streams-comp"
 _LOW = "st-streams-low1"
 _HIGH = "st-streams-hig1"
-_STITCH = (
-    '{"rule": 1, "runs": {"-": [[40, 122, 1], [122, 600, 2]]}, '
-    '"sources": {"-": "default"}, "notes": []}'
-)
 
 _KEY = "FTMS - p NSI Full ms [40.0000-600.0000] R=120000"
+
+#: A composite's own polarity's part of the map, its owners named by key.
+_STITCH = (
+    '{"rule": 1, "runs": [[40, 122, "%s"], [122, 600, "%s"]], '
+    '"source": "default", "notes": []}' % (f"{_KEY} event=3", f"{_KEY} event=4")
+)
+_PARAMS = (
+    '{"source": "opentfraw", "scans_sampled": 4, '
+    '"constant": {"Micro Scan Count:": 10, "AGC Target:": 1000000}, '
+    '"varying": ["Ion Injection Time (ms):"]}'
+)
 
 _FILE_SQL = """
     INSERT INTO sample_file (sample_file_id, filename, instrument, "datetime",
@@ -114,25 +122,40 @@ def _insert_stream(
     event: int | None = 1,
     composite: str | None = None,
     stitch: str | None = None,
+    census: bool | None = None,
 ) -> None:
+    """A stream with its census, or, given a map, a composite without one;
+    ``census`` forces either shape, for the tests of the check."""
+    if census is None:
+        census = stitch is None
     conn.execute(
         text(
             "INSERT INTO acquisition_stream ("
             "  stream_id, sample_file_id, stream_key, signature_key,"
-            "  scan_segment, scan_event, signature, scan_count, blocks,"
-            "  t_first, t_last, composite_stream_id, stitch"
+            "  scan_segment, scan_event, signature, acquisition_params,"
+            "  scan_count, blocks, t_first, t_last, composite_stream_id, stitch"
             ") VALUES (:id, :file, :key, :signature_key, :segment, :event,"
-            "          CAST(:signature AS json), 4, 1, 0.0, 3.0,"
+            "          CAST(:signature AS json), CAST(:params AS json),"
+            "          :scan_count, :blocks, :t_first, :t_last,"
             "          :composite, CAST(:stitch AS json))"
         ),
         {
             "id": stream_id,
             "file": file_id,
             "key": key,
-            "signature_key": _KEY,
+            "signature_key": _KEY if census else None,
             "segment": None if event is None else 1,
             "event": event,
-            "signature": '{"ms_order": 1, "polarity": "-"}',
+            "signature": (
+                '{"ms_order": 1, "polarity": "-"}'
+                if stitch is None
+                else '{"ms_order": 1, "polarity": "-", "composite": true}'
+            ),
+            "params": _PARAMS if census else None,
+            "scan_count": 4 if census else None,
+            "blocks": 1 if census else None,
+            "t_first": 0.0 if census else None,
+            "t_last": 3.0 if census else None,
             "composite": composite,
             "stitch": stitch,
         },
@@ -276,12 +299,45 @@ def test_a_stream_is_no_segment_and_carries_no_map_unless_written_so(
     with upgraded.connect() as conn:
         row = conn.execute(
             text(
-                "SELECT composite_stream_id, stitch FROM acquisition_stream "
-                "WHERE stream_id = :id"
+                "SELECT composite_stream_id, stitch, acquisition_params "
+                "FROM acquisition_stream WHERE stream_id = :id"
             ),
             {"id": _MEASURING},
         ).one()
     assert (row.composite_stream_id, row.stitch) == (None, None)
+    # Its parameters are stored as the census samples them
+    assert row.acquisition_params["constant"]["Micro Scan Count:"] == 10
+    assert row.acquisition_params["varying"] == ["Ion Injection Time (ms):"]
+
+
+@pytest.mark.parametrize(
+    ("stitch", "census"),
+    [(_STITCH, True), (None, False)],
+    ids=["a-composite-with-a-census", "a-stream-without-one"],
+)
+def test_a_row_is_a_stream_with_a_census_or_a_composite_with_a_map(
+    upgraded: Engine, stitch, census
+):
+    """Either shape, and nothing between: a reader tells the two apart by
+    whichever it looks at first."""
+    with pytest.raises(IntegrityError, match="census_or_map"):
+        with upgraded.begin() as conn:
+            _insert_stream(
+                conn,
+                "st-streams-shap",
+                "neither",
+                event=None,
+                stitch=stitch,
+                census=census,
+            )
+
+
+def test_no_stream_is_its_own_composite(upgraded: Engine):
+    with pytest.raises(IntegrityError, match="not_its_own_composite"):
+        with upgraded.begin() as conn:
+            _insert_stream(
+                conn, "st-streams-self", "itself", event=5, composite="st-streams-self"
+            )
 
 
 def test_a_composite_carries_its_map_and_its_segments_point_at_it(upgraded: Engine):
@@ -309,8 +365,24 @@ def test_a_composite_carries_its_map_and_its_segments_point_at_it(upgraded: Engi
             {"id": _COMPOSITE},
         ).scalar_one()
     assert segments == sorted([_LOW, _HIGH])
-    assert stitch["runs"] == {"-": [[40, 122, 1], [122, 600, 2]]}
-    assert stitch["rule"] == 1
+    # Its own polarity's part of the map, the owners named by their key
+    assert stitch["runs"] == [
+        [40, 122, f"{_KEY} event=3"],
+        [122, 600, f"{_KEY} event=4"],
+    ]
+    assert (stitch["rule"], stitch["source"]) == (1, "default")
+    # A composite has no census of its own
+    with upgraded.connect() as conn:
+        census = conn.execute(
+            text(
+                "SELECT signature_key, acquisition_params, scan_count, blocks,"
+                " t_first, t_last, signature FROM acquisition_stream"
+                " WHERE stream_id = :id"
+            ),
+            {"id": _COMPOSITE},
+        ).one()
+    assert tuple(census)[:6] == (None,) * 6
+    assert census.signature == {"ms_order": 1, "polarity": "-", "composite": True}
 
 
 def test_a_segment_points_at_a_stream_of_the_table(upgraded: Engine):
@@ -322,6 +394,58 @@ def test_a_segment_points_at_a_stream_of_the_table(upgraded: Engine):
                 f"{_KEY} event=5",
                 event=5,
                 composite="st-nowhere",
+            )
+
+
+def test_a_composite_is_no_segment(upgraded: Engine):
+    """A composite, map and all, that points at another composite is neither
+    shape: the check refuses it."""
+    with pytest.raises(IntegrityError, match="census_or_map"):
+        with upgraded.begin() as conn:
+            _insert_stream(
+                conn,
+                "st-streams-nest",
+                "composite of a composite",
+                event=None,
+                composite=_COMPOSITE,
+                stitch=_STITCH,
+            )
+
+
+def test_a_segment_points_at_a_composite_of_its_own_file_only(upgraded: Engine):
+    """The reference carries the file. The other file is there from the
+    tests above."""
+    with pytest.raises(IntegrityError):
+        with upgraded.begin() as conn:
+            _insert_stream(
+                conn,
+                "st-streams-xfil",
+                f"{_KEY} event=9",
+                file_id=_OTHER_FILE_ID,
+                event=9,
+                composite=_COMPOSITE,
+            )
+
+
+def test_an_item_reads_a_stream_of_its_own_file_only(upgraded: Engine):
+    """The reference carries the file: an item of one file cannot point at
+    a stream of another, however the stream is named."""
+    with pytest.raises(IntegrityError):
+        with upgraded.begin() as conn:
+            conn.execute(
+                text(
+                    "INSERT INTO sample_item ("
+                    "  sample_item_id, sample_batch_id, sample_file_id,"
+                    "  sample_item_name, sample_item_type, polarity, stream_id"
+                    ") VALUES (:id, :batch, :file, 'another file''s stream',"
+                    "          'ACQUISITION', '-', :stream)"
+                ),
+                _IDS
+                | {
+                    "id": "si-streams-xfil",
+                    "file": _OTHER_FILE_ID,
+                    "stream": _COMPOSITE,
+                },
             )
 
 
@@ -363,15 +487,17 @@ def test_the_reference_carries_the_names_the_models_give_it(upgraded: Engine):
             .scalars()
             .all()
         )
-    assert "fk_sample_item_stream_id_acquisition_stream" in constraints, constraints
-    assert "fk_acquisition_stream_sample_file_id_sample_file" in constraints, (
-        constraints
-    )
-    assert "uq_acquisition_stream_file_key" in constraints, constraints
-    assert "pk_acquisition_stream" in constraints, constraints
-    assert "fk_acquisition_stream_composite_stream_id_acquisition_stream" in (
-        constraints
-    ), constraints
+    expected = {
+        "fk_sample_item_sample_file_id_acquisition_stream",
+        "fk_acquisition_stream_sample_file_id_sample_file",
+        "fk_acquisition_stream_sample_file_id_acquisition_stream",
+        "uq_acquisition_stream_file_key",
+        "uq_acquisition_stream_file_stream",
+        "pk_acquisition_stream",
+        "ck_acquisition_stream_census_or_map",
+        "ck_acquisition_stream_not_its_own_composite",
+    }
+    assert expected <= set(constraints), set(constraints)
     assert "ix_sample_item_stream_id" in indexes, indexes
     assert "ix_acquisition_stream_composite_stream_id" in indexes, indexes
 

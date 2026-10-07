@@ -913,11 +913,12 @@ throughout, because nothing here cuts a file into items, and it writes no
 | `stream_id`, `sample_file_id` | identity |
 | `stream_key`, `epoch` | unique per file, and a name there only: the same experiment can be keyed differently in another file of its method (4.1) |
 | `signature_key`, `scan_segment`, `scan_event` | the stream's identity across files: what it measured, and the experiment's segment and event number in the method; the last two NULL where the file records none. Which of the three a consumer compares is the consumer's own (4.1) |
-| `signature` (JSON) | the parsed key fields, plus the attributes of section 4.1 with their variation |
+| `signature` (JSON) | the parsed key fields; a composite's holds its polarity and MS order, and `composite: true` |
+| `acquisition_params` (JSON) | the attributes of section 4.1 as the census samples them from the stream's scans, with their variation; what the stitch rule and the repeat guard read; NULL on a composite |
 | `parent_stream_id` | MSn to its MS1 parent |
-| `composite_stream_id` | a segment's composite; NULL on a composite itself and on every stream of a file that has none (4.5) |
-| `stitch` (JSON) | on a composite: the map it was built with, each segment's owned m/z intervals, and the layout it came from when one applied |
-| `scan_count`, `blocks`, `t_first`, `t_last` | census |
+| `composite_stream_id` | a segment's composite; NULL on a composite itself and on every stream of a file that has none (4.5). The reference carries the file, so a segment points at a composite of its own file |
+| `stitch` (JSON) | on a composite: its own polarity's part of the map as the peak store records it - the rule, the runs of m/z with each owner named by its stream key, whether the rule or a layout drew them, and the map's notes; NULL elsewhere |
+| `scan_count`, `blocks`, `t_first`, `t_last` | census; NULL on a composite, which has no scans of its own |
 | `instrument_function_id` | per-stream fit |
 | `mz_calibration` (JSON) | per-stream calibration |
 | `ionization_mode_id`, `binding_source`, `binding_state`, `binding_evidence` (JSON) | the chemistry binding (section 5) |
@@ -925,10 +926,13 @@ throughout, because nothing here cuts a file into items, and it writes no
 
 A composite is a row like any stream, with no scan event of its own and
 its segments pointing at it, so an item points at one stream whether or
-not that stream is stitched.
+not that stream is stitched. A stream carries a census and no map; a
+composite carries the map and no census, and a check pins the two shapes,
+so a reader tells them apart by whichever it looks at first.
 
 `sample_item` gains a nullable `stream_id`. NULL means today's semantics, so
-every existing item keeps its meaning. Copy and move carry it.
+every existing item keeps its meaning. The reference carries the file, so
+an item points at a stream of its own file. Copy and move carry it.
 
 **Rows for every file** (decided 2026-10-07). Once the step that writes
 them is in, every raw Orbitrap file whose census is read gets one row per
@@ -944,31 +948,48 @@ yet:
 
 - **The columns a census gives, and the two a composite needs.**
   `stream_id`, `sample_file_id`, `stream_key`, `signature_key`,
-  `scan_segment`, `scan_event`, `signature`, `scan_count`, `blocks`,
-  `t_first`, `t_last`; `composite_stream_id`, a segment's composite, NULL
-  on a composite itself and on every stream of a file that has none; and
-  `stitch`, on a composite the map it was built with as the peak store
-  records it (`stitch_map` of 4.5), NULL elsewhere. The fits, the binding,
-  the state, `parent_stream_id` and `epoch` arrive with the steps that
-  write them, each in its own revision, so that no column sits in the
-  schema unwritten for long.
+  `scan_segment`, `scan_event`, `signature`, `acquisition_params`,
+  `scan_count`, `blocks`, `t_first`, `t_last`; `composite_stream_id`, a
+  segment's composite; and `stitch`, on a composite its own polarity's
+  part of the map with each owner named by stream key (the table above).
+  The fits, the binding, the state, `parent_stream_id` and `epoch` arrive
+  with the steps that write them, each in its own revision.
+- **A composite carries no census** (settled in the review of #2282). It
+  has no scans of its own, so `signature_key`, `acquisition_params`,
+  `scan_count`, `blocks`, `t_first` and `t_last` are NULL on it, and
+  "taken from the file" stays true of every value in them; its `signature`
+  holds its polarity. The check `census_or_map` pins both shapes, and
+  `not_its_own_composite` what it says. A composite is no segment: the
+  same check refuses a map on a row that points at a composite.
 - **One row per (file, key).** The key is a name within its file (4.1), so
   the uniqueness is per file and the identity columns carry no constraint.
-  A composite's key is the writer's to choose, unique in the file like any
-  other.
+  A composite's key is `composite <polarity>`: it selects no scans, names
+  the row in its file, and comes out the same on every run.
+- **Both references carry the file.** `(sample_file_id, stream_id)` is
+  unique on the table, and the item's reference and the segment's
+  reference are on that pair, so neither an item nor a segment can point
+  into another file; a NULL `stream_id` leaves the pair unchecked, so
+  every existing item is as it was.
 - **Nothing is written for what already exists, and nothing ever will be
   (9.1).** An item made before the column reads NULL and keeps reading
   NULL.
-- **A stream goes with its file. An item does not go with its stream, and
-  cannot lose it either.** `sample_item.stream_id` has no ON DELETE
-  action: SET NULL would turn the item silently into one over the whole
-  polarity, and CASCADE would delete a sample because a description of its
-  file was rewritten. A stream row is deleted only with its file, or when
-  the file is processed again, and its items go first both times. The
-  same for a composite and its segments: `composite_stream_id` has no ON
-  DELETE action, a composite goes with its file or on a re-process in one
-  statement with its segments, and a composite deleted on its own under
-  its segments is refused.
+- **A rebuild updates a file's rows in place** (settled in the review of
+  #2282), matched on (file, key): a stream keeps its id, and whatever
+  points at it still does, a person's copy included - a bind and a
+  process-on-request rebuild a file that has a person's sample, removing
+  only the pipeline's own items, so the rows cannot be deleted and
+  re-inserted there. A row the new census no longer gives is deleted
+  unless an item still reads it, which the database refuses: such a row is
+  kept, and the file's processing detail names it and the item, until the
+  item is gone. A stream row goes with its file.
+- **An item does not go with its stream, and cannot lose it either.**
+  `sample_item.stream_id` has no ON DELETE action: SET NULL would turn the
+  item silently into one over the whole polarity, and CASCADE would delete
+  a sample because a description of its file was rewritten. The same for
+  a composite and its segments: `composite_stream_id` has no ON DELETE
+  action, a composite goes with its file or when the new census no longer
+  gives it, its segments unpointed first, and a composite deleted on its
+  own under its segments is refused.
 - **`sample_view` does not carry the column yet.** The view's columns reach
   every client as they are, so the stream joins it with the consumers that
   read by it, not before.
