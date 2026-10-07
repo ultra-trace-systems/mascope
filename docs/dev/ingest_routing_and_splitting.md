@@ -940,8 +940,10 @@ stream and, where a polarity is stitched, one composite row its segments
 point at; a polarity with a single stream gets that one row, and its item
 points at it, which means what the polarity has always meant. Rows are
 data no consumer reads before step 6, and writing them only behind the
-flag would leave step 6 with two code paths. NULL stays the mark of an
-item made before the table existed.
+flag would leave step 6 with two code paths. NULL says the item spans
+every MS1 scan of its polarity, by meaning and not by date: an item made
+before the table existed, one of a polarity pooled from several streams,
+and one of a file with no census all carry it.
 
 **As built** (#2282), the table and the column, with nothing writing them
 yet:

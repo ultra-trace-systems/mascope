@@ -916,12 +916,13 @@ class AcquisitionStream(Base):
     an item at the stream it reads, the composite where its polarity has one,
     so an item points at one stream whether or not that stream is stitched.
 
-    Rows are written for every raw Orbitrap file whose census is read, one
-    per stream; a file with one stream in a polarity gets that one row, and
-    its item points at it, which means what the polarity has always meant.
-    An item with no ``stream_id`` is one made before the table existed, and
-    it stays so: NULL says the item spans every MS1 scan of its polarity, as
-    it was made.
+    Rows are written for every file whose census names its streams, one per
+    stream; a file with one stream in a polarity gets that one row, and its
+    item points at it, which means what the polarity has always meant. An
+    item with no ``stream_id`` spans every MS1 scan of its polarity, by
+    meaning and not by date: an item made before the table existed, one of a
+    polarity pooled from several streams, and one of a file with no census
+    all carry NULL, and a NULL is never filled in afterwards.
 
     **A stream carries a census and no map; a composite carries the map and
     no census.** A composite has no scans of its own, so ``signature_key``,
