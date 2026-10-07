@@ -74,9 +74,8 @@ PER_STREAM_PROP = "peaks_per_stream"
 #: The least relative distance between two rows of the m/z axis of a store
 #: that holds more than one peak list, a per-stream store or a pooled one of
 #: two polarities: about a part in a trillion, some thousands of steps of a
-#: float. Far
-#: below anything the pipeline can tell apart, and far enough that rescaling
-#: the axis cannot bring two rows back onto one double
+#: float. Far below anything the pipeline can tell apart, and far enough
+#: that rescaling the axis cannot bring two rows back onto one double
 #: (:func:`_strictly_increasing`).
 MZ_ROW_SEPARATION = 2.0**-40
 

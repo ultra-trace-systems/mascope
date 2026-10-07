@@ -429,6 +429,31 @@ def test_two_kept_peaks_at_one_mz_are_read_and_filled_each_on_its_own_row(
     assert _store().is_timeseries_computed.values.tolist() == [False, True, True, True]
 
 
+def test_each_row_of_a_pooled_pair_holds_the_scans_of_both_polarities(
+    acquire, instrument_functions
+):
+    """Set apart, the pair can be read. What its rows hold is still a pooled
+    store's: the file read over every scan, whichever polarity the scan is,
+    and scaled to the row's own sum. The ion is at 40 on the positive scans
+    and at 100 on the negative ones, and neither row reads that. It is what
+    a consumer that asks by polarity has to change, and it is pinned so that
+    the change is made on purpose."""
+    acquire(SHARED_ACROSS_POLARITIES)
+    m_peak.compute_peaks(SAMPLE_FILENAME, instrument_functions)
+
+    filled = _fill(_store().mz.values[[1, 2]])
+
+    assert filled.polarity.values.tolist() == ["+", "-"]
+    # The scans alternate, positive first: 40 and 100 of every 140
+    np.testing.assert_allclose(
+        filled.peak_heights.values,
+        [
+            [80.0 * 40 / 280, 80.0 * 100 / 280] * 2,
+            [200.0 * 40 / 280, 200.0 * 100 / 280] * 2,
+        ],
+    )
+
+
 def test_satellites_are_judged_within_a_stream(
     acquire, instrument_functions, monkeypatch
 ):

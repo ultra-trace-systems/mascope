@@ -757,11 +757,12 @@ throughout, because nothing here cuts a file into items, and it writes no
 `composite` mask, which is the stitch's to add (step 4 of section 10).
 
 - **Only a per-stream store says anything about streams.** A file with one
-  MS1 stream in each polarity is detected and stored as before, to the
-  byte, whichever way the flag is set. A file with more than one in a
-  polarity is detected per stream as a whole: every MS1 stream of it gets
-  its own peak list, the only stream of another polarity included, so that
-  no peak of such a file is left without one.
+  MS1 stream in each polarity is detected and stored the same, to the byte,
+  whichever way the flag is set: pooled, as before, but for two rows of a
+  file whose polarities tie (the bullet on a pooled store below). A file
+  with more than one in a polarity is detected per stream as a whole: every
+  MS1 stream of it gets its own peak list, the only stream of another
+  polarity included, so that no peak of such a file is left without one.
 - **Labels are indexes, and the keys are in the store.** Each peak carries
   `stream` and each scan `scan_stream`, both an index into the keys the
   store's `streams` attribute lists - a key of eighty characters on every
@@ -792,6 +793,21 @@ throughout, because nothing here cuts a file into items, and it writes no
   left out by position, and a fill finds the kept peak of a pair. Where both
   peaks of a pair are kept, whatever reads it by m/z fails until the file's
   peaks are detected again.
+- **The rule makes such a pair readable, and no more.** What its two rows
+  hold is a pooled store's, not each polarity's own. A pooled fill reads the
+  file over every scan and scales what it reads to the row's own sum, so
+  each row holds values on the scans of both polarities, in the proportion
+  the two polarities have to each other. With the ion at 40 on the positive
+  scans and 100 on the negative ones, the positive row reads 11.4 and 28.6
+  and the negative row 28.6 and 71.4. Nor does a read by m/z take a
+  polarity: `load_peaks` narrows to one on the time axis only, and matching
+  takes the row nearest its target, so which row of the pair a target is
+  matched to goes by the side of the pair it falls on and not by the
+  sample's polarity. None of that comes with the tie. It is what a pooled
+  store does wherever both polarities hold an ion within the reader's 5 ppm
+  of one m/z, and a tied pair is only the one that could not be read at
+  all. It is pinned under the pooled tests so that a change is made on
+  purpose.
 - **A peak holds values only on the scans of its own stream.** Its
   timeseries is read back over them, normalised over them and scaled to its
   sum; on the other streams' scans it holds nothing, because the instrument
