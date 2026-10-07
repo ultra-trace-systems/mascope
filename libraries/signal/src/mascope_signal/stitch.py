@@ -18,8 +18,14 @@ from nothing else:
   :data:`LOWER_TRIM` of the m/z at the lower edge and :data:`UPPER_TRIM` of
   the m/z at the upper, each rounded to a whole m/z. A window reads weakest
   toward its edges, and toward the upper one most;
+- neither trim takes more than :data:`MOST_TRIMMED` of the window's width,
+  so every window claims its middle half at the least. A share of an m/z
+  is more than the whole of a narrow window high up, and a narrow window is
+  the one its method aimed: left with no claim it would lose its m/z to
+  whatever wider window lies over it;
 - where two claims meet, the stream with more microscans owns the m/z, and
-  among equals the one whose range starts higher;
+  among equals the one whose range starts higher, as a window that lies
+  inside a wider one always does;
 - an m/z no claim covers goes to a stream whose untrimmed range holds it,
   by the same order. That is how the top of the highest window is owned,
   and a band between two windows that touch without overlapping;
@@ -64,6 +70,10 @@ LOWER_TRIM = Fraction(1, 100)
 
 #: The same at the upper edge, where a window loses more.
 UPPER_TRIM = Fraction(2, 100)
+
+#: The most of a window's width either trim takes. The two together then
+#: leave a window its middle half, however narrow it is for its m/z.
+MOST_TRIMMED = Fraction(1, 4)
 
 #: The trailer value that says how many transients a scan averaged, as both
 #: reader backends name it among a stream's ``acquisition_params``.
@@ -161,15 +171,22 @@ def segments(streams: list[dict]) -> list[Segment]:
 
 
 def _windows(segment: Segment) -> list[_Window]:
-    return [
-        _Window(
-            segment,
-            lower,
-            (round(lower * (1 + LOWER_TRIM)), round(upper * (1 - UPPER_TRIM))),
-            (math.floor(lower), math.ceil(upper)),
+    """A segment's scan ranges, each with what it claims and what it holds."""
+    windows = []
+    for lower, upper in segment.ranges:
+        most = (upper - lower) * MOST_TRIMMED
+        windows.append(
+            _Window(
+                segment,
+                lower,
+                (
+                    round(lower + min(lower * LOWER_TRIM, most)),
+                    round(upper - min(upper * UPPER_TRIM, most)),
+                ),
+                (math.floor(lower), math.ceil(upper)),
+            )
         )
-        for lower, upper in segment.ranges
-    ]
+    return windows
 
 
 def _owner(mz: int, windows: list[_Window]) -> int | None:
