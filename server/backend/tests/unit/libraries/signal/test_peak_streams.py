@@ -827,7 +827,9 @@ def test_a_fill_a_calibration_overtakes_is_not_written_to_another_streams_row(
     the first at or above the upper one's old m/z is now the lower one, and
     within a tolerance the measuring stream's timeseries was written there,
     over the settling stream's. The store refuses the fill instead, and the
-    peaks are loaded and filled again on the axis as it has become."""
+    same peaks are filled again on the axis as it has become. They are found
+    there by their ids: the m/z values asked for are labels of the old axis,
+    and to the nearest row both of the reagent ion's now name the lower one."""
     acquisition = acquire(TWO_EXPERIMENTS)
     m_peak.compute_peaks(SAMPLE_FILENAME, instrument_functions, per_stream=True)
     before = _store().mz.values
@@ -853,15 +855,14 @@ def test_a_fill_a_calibration_overtakes_is_not_written_to_another_streams_row(
 
     stored = _store()
     assert stored.mz.values.tolist() == (before * rescaling).tolist()
+    assert stored.is_timeseries_computed.values.all()
     reagent = stored.isel(mz=[0, 1])
     assert reagent.stream.values.tolist() == [0, 1]
     nan = pytest.approx(np.nan, nan_ok=True)
-    assert reagent.peak_heights.values[0].tolist() == [100.0, 100.0, nan, nan, nan, nan]
-    # The measuring stream's row was asked for by an m/z that now names the
-    # row below it, so it is left for an ask by its own m/z: unfilled, and no
-    # other row filled in its place
-    assert stored.is_timeseries_computed.values.tolist() == [True, False, True, True]
-    assert np.isnan(reagent.peak_heights.values[1]).all()
+    assert reagent.peak_heights.values.tolist() == [
+        [100.0, 100.0, nan, nan, nan, nan],
+        [nan, nan, 1000.0, 1000.0, 1000.0, 1000.0],
+    ]
 
 
 def test_a_per_stream_store_just_built_reads_back(acquire, instrument_functions):

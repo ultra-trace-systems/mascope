@@ -453,11 +453,12 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   they miss a row only when the file's m/z axis was rewritten after they were
   read, which applying an m/z calibration does. A timeseries being computed
   while a calibration of the same file was applied could then be stored on a
-  neighbouring peak, scaled to that peak's summed intensity, and stay there
-  until the file's peaks were detected again. The m/z now has to be on the
-  axis exactly. A timeseries that is not is not stored at all: it is computed
-  once more, for the file's peaks as they then are, so whatever asked for it
-  still gets it. An m/z above the file's last peak is handled the same way,
+  neighbouring peak, still scaled to the summed intensity of the peak it was
+  computed for, and stay there until the file's peaks were detected again.
+  The m/z now has to be on the axis exactly. A timeseries that is not is not
+  stored at all: it is computed once more for the same peaks, found by their
+  ids on the file's m/z axis as it then is, so whatever asked for it still
+  gets it. An m/z above the file's last peak is handled the same way,
   where it failed with an IndexError. Should the file's m/z axis be rewritten
   during the second attempt too, the request fails with "Cannot update m/z
   values not present in existing data", which no longer advises detecting the
