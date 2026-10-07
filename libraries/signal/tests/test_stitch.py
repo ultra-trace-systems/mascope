@@ -141,6 +141,37 @@ def test_a_trim_is_a_share_of_the_edges_mz_and_not_of_the_ranges_width():
     assert [133, 444, 2] in runs
 
 
+def test_a_narrow_window_claims_its_middle_half():
+    """One per cent of 400 and two of 410 are four and eight m/z: more than
+    there is of a window ten m/z wide. Trimmed by its edges alone it would
+    claim nothing, and lose its m/z to the wide window it lies in. Neither
+    trim takes more than a quarter of the window's width, so it claims from
+    402.5 to 407.5, 402 to 408 in whole m/z. There the two tie on
+    microscans, and the window that starts higher owns: the narrow one,
+    which is the one the method aimed."""
+    runs = _runs(_streams(((100, 600), 10), ((400, 410), 10, "SIM")))
+
+    assert runs == [[100, 402, 0], [402, 408, 1], [408, 600, 0]]
+
+
+def test_each_trim_is_held_to_a_quarter_of_the_width_by_itself():
+    """Two of 210 is more than a quarter of a window ten m/z wide and one of
+    200 is not: the lower trim is its two m/z and the upper one is cut to
+    two and a half, 207.5 and so 208 where the trim alone would stop at
+    206."""
+    runs = _runs(_streams(((100, 600), 10), ((200, 210), 10, "SIM")))
+
+    assert runs == [[100, 202, 0], [202, 208, 1], [208, 600, 0]]
+
+
+def test_a_narrow_window_of_fewer_microscans_still_yields():
+    """What a narrow window is given is a claim. Whether the claim holds is
+    decided as for any other: by microscans first."""
+    runs = _runs(_streams(((100, 600), 10), ((400, 410), 1, "SIM")))
+
+    assert runs == [[100, 600, 0]]
+
+
 def test_more_microscans_own_an_mz_two_streams_claim():
     """Whichever of them starts higher. The ten-microscan window owns all it
     claims, 40 to 196, and the one-microscan window gets what is left of its
@@ -280,16 +311,17 @@ def test_a_census_with_no_acquisition_parameters_is_still_mapped():
 
 def test_a_multiplexed_stream_claims_each_of_its_ranges():
     """A multiplexed scan measures several ranges at once, and each is
-    trimmed inside its own edges."""
+    trimmed inside its own edges: by one per cent below, and above by the
+    quarter of its twenty m/z that two per cent would pass."""
     wide = _stream((100, 600), 1, event=1)
     multiplexed = _stream([(300, 320), (400, 420)], 10, scan_mode="SIM", event=2)
 
     assert _runs([wide, multiplexed]) == [
         [100, 303, 0],
-        [303, 314, 1],
-        [314, 404, 0],
-        [404, 412, 1],
-        [412, 600, 0],
+        [303, 315, 1],
+        [315, 404, 0],
+        [404, 415, 1],
+        [415, 600, 0],
     ]
 
 
