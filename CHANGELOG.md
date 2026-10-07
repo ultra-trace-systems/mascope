@@ -155,14 +155,29 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   The Windows program is built from the same code, and its installer, its
   configuration and its guided setup are as they were.
 
-- **A table for the scan streams of a file, with nothing in it yet.**
-  Migration `5a0e9de94ed9` adds `acquisition_stream` - one row per
-  experiment of a file, and one for the spectrum the experiments of a
-  polarity are stitched into, with the map that stitched them - and an
-  empty `sample_item.stream_id`. They belong to the per-experiment
-  processing above, and nothing writes either until its next step. Every
-  existing sample keeps an empty `stream_id`, which means what a sample has
-  always meant: it spans every MS1 scan of its polarity.
+- **A table for the scan streams of a file.** Migration `5a0e9de94ed9`
+  adds `acquisition_stream` - one row per experiment of a file, and one for
+  the spectrum the experiments of a polarity are stitched into, with the
+  map that stitched them - and a nullable `sample_item.stream_id`, the
+  stream a sample reads. They belong to the per-experiment processing
+  above. Every existing sample keeps an empty `stream_id`, which means what
+  a sample has always meant: it spans every MS1 scan of its polarity.
+
+- **Every file's scan streams are now rows, and a sample points at the one
+  it reads.** When a raw Orbitrap file is processed, each experiment of its
+  acquisition method gets a row in `acquisition_stream`, read from the file
+  as it is then, and where the experiments of a polarity were detected
+  apart and stitched, so does the spectrum they make, with its map. A
+  sample made from the file points at that spectrum's row, or at the one
+  experiment of its polarity; a sample of a polarity pooled from several
+  experiments, or of a file with no census, points at nothing, as every
+  sample did before. A copy points at what its source pointed at, and a
+  sample moved to another file or polarity by hand points at nothing again.
+  A file's processing detail says which polarities are stitched, where it
+  said they were pooled, and names a stream the file no longer holds but a
+  sample still reads, which is kept for it. Nothing reads a sample's stream
+  yet: a sample of a stitched polarity still reads the peak lists of every
+  experiment of its polarity together.
 
 ### Changed
 

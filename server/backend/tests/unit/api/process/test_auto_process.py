@@ -25,11 +25,16 @@ from mascope_backend.api.controllers.sample.files.process.bindings import (
 from mascope_backend.api.controllers.sample.files.process.service import (
     ItemProvenance,
 )
+
+# Module path prefix for patching
+from mascope_backend.api.controllers.sample.files.process.streams import (
+    StoreStreams,
+    StreamRows,
+)
 from mascope_backend.runtime import runtime
 from mascope_runtime.logging import SENTRY_FINGERPRINT
 
 
-# Module path prefix for patching
 _SVC = "mascope_backend.api.controllers.sample.files.process.service"
 _NOTIF = "mascope_backend.socket.notifications"
 _UTILS = "mascope_backend.api.lib.utils"
@@ -184,13 +189,16 @@ def status():
     with (
         patch(f"{_SVC}.record_processing_status", new_callable=AsyncMock) as record,
         patch(f"{_SVC}.read_scan_streams", new_callable=AsyncMock) as census,
+        patch(f"{_SVC}.read_store_stream_keys", new_callable=AsyncMock) as stitched,
         patch(f"{_SVC}.pooled_streams_note") as note,
         patch(f"{_SVC}.learn_method_bindings", new_callable=AsyncMock) as learn,
     ):
         census.return_value = []
+        stitched.return_value = []
         note.return_value = None
         record.note = note
         record.census = census
+        record.stitched = stitched
         record.learn = learn
         yield record
 
@@ -223,7 +231,12 @@ async def test_passes_instrument_year_and_user_to_get_acquisition_dataset():
 
     mocks["fetch_sample_file"].return_value = sample_file
     mocks["get_acquisition_dataset"].return_value = {"data": dataset}
-    mocks["create_batches"].return_value = ([sample_item], [batch])
+    mocks["create_batches"].return_value = (
+        [sample_item],
+        [batch],
+        StreamRows(),
+        StoreStreams(),
+    )
     mocks["fetch_affected"].return_value = _make_affected_data([sample_item])
 
     # Mock the async context manager for session.get(IonizationMode, ...)
@@ -278,7 +291,12 @@ async def test_derives_year_from_instrument_local_datetime():
 
     mocks["fetch_sample_file"].return_value = sample_file
     mocks["get_acquisition_dataset"].return_value = {"data": dataset}
-    mocks["create_batches"].return_value = ([sample_item], [batch])
+    mocks["create_batches"].return_value = (
+        [sample_item],
+        [batch],
+        StreamRows(),
+        StoreStreams(),
+    )
     mocks["fetch_affected"].return_value = _make_affected_data([sample_item])
 
     mock_session = AsyncMock()
@@ -321,7 +339,12 @@ async def test_calibrates_when_calibration_collection_is_set():
 
     mocks["fetch_sample_file"].return_value = sample_file
     mocks["get_acquisition_dataset"].return_value = {"data": dataset}
-    mocks["create_batches"].return_value = ([sample_item], [batch])
+    mocks["create_batches"].return_value = (
+        [sample_item],
+        [batch],
+        StreamRows(),
+        StoreStreams(),
+    )
     mocks["fetch_affected"].return_value = _make_affected_data([sample_item])
 
     mock_session = AsyncMock()
@@ -367,7 +390,12 @@ async def test_failed_calibration_skips_matching_and_assignment():
 
     mocks["fetch_sample_file"].return_value = sample_file
     mocks["get_acquisition_dataset"].return_value = {"data": dataset}
-    mocks["create_batches"].return_value = ([sample_item], [batch])
+    mocks["create_batches"].return_value = (
+        [sample_item],
+        [batch],
+        StreamRows(),
+        StoreStreams(),
+    )
     mocks["fetch_affected"].return_value = _make_affected_data([sample_item])
     mocks["calibrate"].return_value = _outcome(False, "The m/z calibration failed.")
 
@@ -414,7 +442,12 @@ async def test_blank_file_skips_calibration_matching_and_assignment():
 
     mocks["fetch_sample_file"].return_value = sample_file
     mocks["get_acquisition_dataset"].return_value = {"data": dataset}
-    mocks["create_batches"].return_value = ([sample_item], [batch])
+    mocks["create_batches"].return_value = (
+        [sample_item],
+        [batch],
+        StreamRows(),
+        StoreStreams(),
+    )
     mocks["fetch_affected"].return_value = _make_affected_data([sample_item])
 
     mock_session = AsyncMock()
@@ -456,7 +489,12 @@ async def test_skips_calibration_when_no_calibration_collection():
 
     mocks["fetch_sample_file"].return_value = sample_file
     mocks["get_acquisition_dataset"].return_value = {"data": dataset}
-    mocks["create_batches"].return_value = ([sample_item], [batch])
+    mocks["create_batches"].return_value = (
+        [sample_item],
+        [batch],
+        StreamRows(),
+        StoreStreams(),
+    )
     mocks["fetch_affected"].return_value = _make_affected_data([sample_item])
 
     mock_session = AsyncMock()
@@ -521,6 +559,8 @@ async def test_processes_multiple_ionization_modes():
     mocks["create_batches"].return_value = (
         [sample_neg, sample_pos],
         [batch_neg, batch_pos],
+        StreamRows(),
+        StoreStreams(),
     )
     mocks["fetch_affected"].return_value = _make_affected_data([sample_neg, sample_pos])
 
@@ -584,6 +624,8 @@ def _start_dual_polarity(*, calibrate, neg_collection="cal-neg", pos_collection=
             _make_batch(sample_batch_id="batch-neg"),
             _make_batch(sample_batch_id="batch-pos"),
         ],
+        StreamRows(),
+        StoreStreams(),
     )
     mocks["fetch_affected"].return_value = _make_affected_data(samples)
 
@@ -801,7 +843,12 @@ async def test_creates_batches_with_correct_dataset_id():
 
     mocks["fetch_sample_file"].return_value = sample_file
     mocks["get_acquisition_dataset"].return_value = {"data": dataset}
-    mocks["create_batches"].return_value = ([sample_item], [batch])
+    mocks["create_batches"].return_value = (
+        [sample_item],
+        [batch],
+        StreamRows(),
+        StoreStreams(),
+    )
     mocks["fetch_affected"].return_value = _make_affected_data([sample_item])
 
     mock_session = AsyncMock()
@@ -847,7 +894,12 @@ async def test_return_structure():
 
     mocks["fetch_sample_file"].return_value = sample_file
     mocks["get_acquisition_dataset"].return_value = {"data": dataset}
-    mocks["create_batches"].return_value = ([sample_item], [batch])
+    mocks["create_batches"].return_value = (
+        [sample_item],
+        [batch],
+        StreamRows(),
+        StoreStreams(),
+    )
     mocks["fetch_affected"].return_value = _make_affected_data([sample_item])
 
     mock_session = AsyncMock()
@@ -1256,7 +1308,12 @@ def _start_single(
     mocks["fetch_sample_file"].return_value = sample_file
     mocks["get_acquisition_dataset"].return_value = {"data": _make_dataset()}
     mocks["resolve"].return_value = [ion_mode]
-    mocks["create_batches"].return_value = ([sample_item], [_make_batch()])
+    mocks["create_batches"].return_value = (
+        [sample_item],
+        [_make_batch()],
+        StreamRows(),
+        StoreStreams(),
+    )
     mocks["fetch_affected"].return_value = _make_affected_data([sample_item])
 
     mock_session = AsyncMock()
@@ -1745,6 +1802,74 @@ async def test_a_mode_missing_from_the_kept_provenance_records_nothing(status):
         await _run_pipeline(ionization_mode_ids=["im-001"], kept_provenance={})
 
     assert _recorded_provenance(mocks) == {"im-001": ItemProvenance()}
+
+
+@pytest.mark.asyncio
+async def test_the_note_is_told_which_streams_the_store_stitched(status):
+    """A file whose peaks were detected per stream is not described as
+    pooled: the note is given the census and the store's streams."""
+    census = [{"key": "A", "signature": {"polarity": "-", "ms_order": 1}}]
+    status.census.return_value = census
+    status.stitched.return_value = ["A", "B"]
+    _start_single()
+
+    await _run_pipeline()
+
+    status.note.assert_called_once_with(census, ["A", "B"])
+
+
+@pytest.mark.asyncio
+async def test_a_row_kept_for_a_sample_is_named_in_every_later_status(status):
+    """A stream row the file no longer describes, kept because a sample still
+    reads it, is reported from the status after the items on."""
+    mocks, _sample_file = _start_single()
+    samples, batches, _rows, _found = mocks["create_batches"].return_value
+    mocks["create_batches"].return_value = (
+        samples,
+        batches,
+        StreamRows(
+            kept={"FTMS - p NSI Full ms [40.0000-138.0000] R=120000": ["si-copy"]}
+        ),
+        StoreStreams(),
+    )
+
+    await _run_pipeline()
+
+    details = [detail for _status, detail in _recorded(status)]
+    after_items = details[
+        details.index(next(d for d in details if d and "is kept because" in d)) :
+    ]
+    assert after_items and all(
+        "Scan stream 'FTMS - p NSI Full ms [40.0000-138.0000] R=120000' is no longer "
+        "among the file's streams and is kept because a sample si-copy still reads it."
+        in detail
+        for detail in after_items
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_stale_peak_store_is_named_in_every_later_status(status):
+    """A per-stream store the file no longer reads back is not refused: the
+    rows are written pooled, and the statuses from the items on say why."""
+    mocks, _sample_file = _start_single()
+    samples, batches, rows, _found = mocks["create_batches"].return_value
+    mocks["create_batches"].return_value = (
+        samples,
+        batches,
+        rows,
+        StoreStreams(streams=[{"key": "A", "signature": {}}], stale=["A event=2"]),
+    )
+
+    await _run_pipeline()
+
+    details = [detail for _status, detail in _recorded(status)]
+    first = details.index(next(d for d in details if d and "peak store" in d))
+    assert all(
+        "The file's peak store holds scan streams the file does not read back "
+        "now: A event=2. Its peaks are detected again when a match meets it; "
+        "until then its streams are recorded as pooled." in detail
+        for detail in details[first:]
+    )
 
 
 @pytest.mark.asyncio

@@ -480,10 +480,11 @@ class BackendConfig(ModuleConfig):
     # steps (docs/dev/ingest_routing_and_splitting.md, section 4.5), and so
     # far only peak detection follows it: the peaks of each experiment are
     # detected over its own scans, and marked with whether they belong to the
-    # stitched spectrum of their polarity. Nothing reads that mark yet. Such
-    # a file still gets one sample per polarity, which reads the peak lists
-    # of every experiment of that polarity together. The flag exists so that
-    # each step ships inert and can be exercised on a development server.
+    # stitched spectrum of their polarity. Such a file gets one sample per
+    # polarity, which points at that spectrum's row but still reads the peak
+    # lists of every experiment of its polarity together: nothing reads the
+    # mark yet. The flag exists so that each step ships inert and can be
+    # exercised on a development server.
     #
     # A file with one experiment in each polarity - nearly every file - is
     # processed exactly as before whichever way this is set, and so is one
