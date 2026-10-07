@@ -15,6 +15,7 @@ from threading import Event, Lock
 
 from mascope_file_agent._threads import Task
 from mascope_sdk import api_post_file_tus
+from mascope_sdk.acquisition import sidecar_path
 from mascope_sdk.exceptions import (
     AuthenticationError,
     NotFoundError,
@@ -108,6 +109,9 @@ class FileUploader:
         leaves the server reading it from the file name.
     :param status_follower: Told of each uploaded file, to follow what the
         server makes of it; None to follow nothing.
+    :param provenance: Asked for what goes with each upload to say where the
+        file came from - its acquisition record and its hash; None to send
+        neither.
     """
 
     def __init__(
@@ -120,6 +124,7 @@ class FileUploader:
         timezone: str | None = None,
         instrument: str | None = None,
         status_follower=None,
+        provenance=None,
     ):
         self.settings = settings
         self.url = url
@@ -129,6 +134,7 @@ class FileUploader:
         self.timezone = timezone
         self.instrument = instrument
         self.status_follower = status_follower
+        self.provenance = provenance
         #: Complete files waiting to have been left alone for long enough.
         self.jobs = Queue()
         # Files handed to the workers. Daemon threads rather than an executor:
@@ -471,6 +477,7 @@ class FileUploader:
         try:
             failed_dir = mkdir(self.settings.source, FAILED_UPLOADS_DIR)
             shutil.copyfile(filepath, os.path.join(failed_dir, name))
+            self._keep_sidecar(filepath, failed_dir)
         except OSError as e:
             # The file can disappear mid-retry (an operator tidying up, an
             # instrument rewriting it). Nothing left to preserve, and this runs in
@@ -483,6 +490,31 @@ class FileUploader:
             "once the cause is fixed, put it back in the watched folder to "
             "upload it."
         )
+
+    def _keep_sidecar(self, filepath: str, failed_dir: str) -> None:
+        """Set a file's acquisition record aside with it, if it has one.
+
+        So that the file put back in the watched folder is uploaded with its
+        record, when the record comes back with it. A record that cannot be
+        copied does not keep the file from being set aside.
+
+        :param filepath: Full path of the file being set aside
+        :type filepath: str
+        :param failed_dir: The folder its copy is in
+        :type failed_dir: str
+        """
+        sidecar = sidecar_path(filepath)
+        try:
+            shutil.copyfile(
+                sidecar, os.path.join(failed_dir, os.path.basename(sidecar))
+            )
+        except FileNotFoundError:
+            pass
+        except OSError as e:
+            self.logger.warning(
+                f"Could not keep the acquisition record of "
+                f"{os.path.basename(filepath)} with its copy: {e}"
+            )
 
     def upload_sample_file(self, filepath: str) -> None:
         """Upload the acquired file to Mascope server using Mascope API
@@ -510,6 +542,56 @@ class FileUploader:
                 f"Uploading file {os.path.basename(filepath)} as {upload_filename}"
             )
 
+        record, sha256 = None, None
+        if self.provenance is not None:
+            record, sha256 = self.provenance.for_upload(filepath)
+        try:
+            self._send(filepath, upload_filename, record, sha256)
+        except ValidationError as refused:
+            if record is None:
+                raise
+            # The record must not cost the file its upload, and it is large
+            # for a request header: a proxy in front of the server can refuse
+            # the request for it. Whatever else was refused is refused again.
+            self.logger.warning(
+                f"{os.path.basename(filepath)}: refused with its acquisition "
+                f"record ({refused}). Uploading it without the record."
+            )
+            record = None
+            self._send(filepath, upload_filename, None, sha256)
+        self.logger.info(f"File upload of file {os.path.basename(filepath)} succeeded!")
+        if record is not None:
+            self.logger.info(
+                f"{os.path.basename(filepath)}: its acquisition record went with it."
+            )
+        if self.status_follower is not None:
+            # By the name it had here, which the server keeps as its
+            # source_filename whatever name it was uploaded under.
+            self.status_follower.follow(os.path.basename(filepath))
+
+    def _send(
+        self,
+        filepath: str,
+        upload_filename: str | None,
+        record: bytes | None,
+        sha256: str | None,
+    ) -> None:
+        """Make one upload of a file, with what goes with it.
+
+        :param filepath: Full path to the file to be uploaded
+        :type filepath: str
+        :param upload_filename: The name to upload it under; None for its own
+        :type upload_filename: str | None
+        :param record: The document of its acquisition record; None for none
+        :type record: bytes | None
+        :param sha256: Its SHA-256; None to send none
+        :type sha256: str | None
+        """
+        with_it = {}
+        if record is not None:
+            with_it["acquisition"] = record
+        if sha256 is not None:
+            with_it["sha256"] = sha256
         # Raises a typed mascope_sdk exception carrying the specific cause
         # (rejected token, timeout, connection error, server error message).
         api_post_file_tus(
@@ -522,9 +604,5 @@ class FileUploader:
             upload_filename=upload_filename,
             timezone=self.timezone,
             instrument=self.instrument,
+            **with_it,
         )
-        self.logger.info(f"File upload of file {os.path.basename(filepath)} succeeded!")
-        if self.status_follower is not None:
-            # By the name it had here, which the server keeps as its
-            # source_filename whatever name it was uploaded under.
-            self.status_follower.follow(os.path.basename(filepath))

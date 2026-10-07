@@ -9,6 +9,7 @@ agent's real identity.
 """
 
 import pytest
+import requests
 
 import mascope_sdk
 from mascope_file_agent import AgentSettings, identity
@@ -21,6 +22,27 @@ def agent_sdk_identity(monkeypatch):
     for name in ("SERVICE_NAME", "AGENT_VERSION", "VERIFY_TLS"):
         monkeypatch.setattr(mascope_sdk, name, getattr(mascope_sdk, name))
     identity()
+
+
+@pytest.fixture(autouse=True)
+def no_network(monkeypatch):
+    """Fail a test that reaches a network, and keep it from getting there.
+
+    Every test stands in for the server at the function that would ask it, so
+    a request that gets as far as a session is one nobody stood in for. It is
+    refused as an unreachable server would refuse it, since the code that made
+    it may be on a thread where nothing else would be seen, and reported when
+    the test ends.
+    """
+    reached = []
+
+    def refuse(self, method, url, **kwargs):
+        reached.append(f"{method} {url}")
+        raise requests.exceptions.ConnectionError("a test reached the network")
+
+    monkeypatch.setattr(requests.sessions.Session, "request", refuse)
+    yield
+    assert not reached, f"reached the network: {sorted(set(reached))}"
 
 
 @pytest.fixture

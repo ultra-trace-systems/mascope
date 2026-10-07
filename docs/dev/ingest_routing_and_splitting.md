@@ -2659,7 +2659,12 @@ unchanged.
 ### Phase 7: declarations and the long tail (open)
 
 - **Rung 0 and declared epochs:**
-  - an agent-uploaded sidecar, aligned by the existing CSV aligner;
+  - an agent-uploaded sidecar, aligned by the existing CSV aligner.
+    Its first form is a record of the whole file, not of epochs within
+    it: the control program names the file's chemistry and the step
+    that acquired it in a JSON document beside the file. The schema
+    and the File Agent's half are built, and the server's half is
+    next ([acquisition_sidecar.md](acquisition_sidecar.md));
   - a control program paired as its own device and posting journal events;
   - an analog-input mapping for sites that wire one.
 - **MS2-only parts (#2068).**

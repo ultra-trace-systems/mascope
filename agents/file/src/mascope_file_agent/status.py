@@ -20,6 +20,7 @@ from typing import Callable
 
 import requests
 
+from mascope_file_agent.capabilities import ServerCapabilities
 from mascope_sdk import agent_headers
 
 
@@ -93,6 +94,8 @@ class StatusFollower:
     :param logger: Where the lines go.
     :param verify: Whether to verify the server's TLS certificate.
     :param clock: Monotonic seconds, replaceable in tests.
+    :param server: Asked what the server can do; None for one of the
+        follower's own.
     """
 
     def __init__(
@@ -102,12 +105,16 @@ class StatusFollower:
         logger,
         verify: bool = True,
         clock: Callable[[], float] = time.monotonic,
+        server: ServerCapabilities | None = None,
     ):
         self._url = url
         self._access_token = access_token
         self._logger = logger
         self._verify = verify
         self._clock = clock
+        self._server = server or ServerCapabilities(
+            url, access_token, logger, verify=verify
+        )
         self._lock = threading.Lock()
         self._followed: dict[str, _Followed] = {}
         #: None until the server says whether it can be asked; then whether
@@ -209,29 +216,12 @@ class StatusFollower:
 
         :return: Whether it answered; :attr:`enabled` then says what.
         """
-        try:
-            resp = requests.get(
-                f"{self._url}/api/version",
-                headers=agent_headers(self._access_token()),
-                verify=self._verify,
-                timeout=REQUEST_TIMEOUT,
-            )
-        except requests.exceptions.RequestException as e:
-            self._logger.debug(f"Could not ask the server what it can do: {e}")
+        capabilities = self._server.ask()
+        if capabilities is None:
             return False
-        if resp.status_code >= 500:
-            self._logger.debug(
-                f"Could not ask the server what it can do: HTTP {resp.status_code}"
-            )
-            return False
-        capabilities = {}
-        if resp.status_code == 200:
-            try:
-                capabilities = (resp.json().get("data") or {}).get("capabilities") or {}
-            except (ValueError, AttributeError):
-                capabilities = {}
-        # A server that refuses the question predates it: it cannot be asked
-        # with a device token, and cannot answer the questions either.
+        # A server that refuses the question predates it, and is answered for
+        # with no capabilities: it cannot be asked with a device token, and
+        # cannot answer the questions either.
         self.enabled = capabilities.get(CAPABILITY) is True
         if not self.enabled:
             self._logger.info(

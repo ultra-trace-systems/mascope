@@ -15,9 +15,9 @@ requires-python = ">=3.12,<3.13"
 license = "Apache-2.0"
 dependencies = [
     "mascope_runtime",
-    # The first release with everything the agent calls: the agent headers,
-    # and the instrument reported with an upload.
-    "mascope_sdk>=2026.9.30",
+    # The first release with everything the agent calls: the acquisition
+    # record's schema, and the record and the hash sent with an upload.
+    "mascope_sdk>=2026.10.7",
     "requests>=2.34.2,<3",
     "tzlocal>=5.4.4",
     "watchdog~=4.0",

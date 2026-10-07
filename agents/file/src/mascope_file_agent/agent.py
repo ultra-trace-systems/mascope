@@ -22,8 +22,10 @@ import mascope_sdk
 from mascope_file_agent import __version__
 from mascope_file_agent import config as agent_config
 from mascope_file_agent._threads import Task
+from mascope_file_agent.capabilities import ServerCapabilities
 from mascope_file_agent.config import ConfigError
 from mascope_file_agent.credentials import Credentials, Repair
+from mascope_file_agent.provenance import UploadProvenance
 from mascope_file_agent.settings import AgentSettings
 from mascope_file_agent.status import StatusFollower
 from mascope_file_agent.uploader import FAILED_UPLOADS_DIR, FileUploader
@@ -208,11 +210,19 @@ class Agent:
             persist=persist_token,
             repair=repair,
         )
+        #: Asked what the server can do, by whatever needs to know.
+        self.server = ServerCapabilities(
+            self.url,
+            self.credentials.current_access_token,
+            self.logger,
+            verify=settings.verify_tls,
+        )
         self.status_follower = StatusFollower(
             self.url,
             self.credentials.current_access_token,
             self.logger,
             verify=settings.verify_tls,
+            server=self.server,
         )
         self.uploader = FileUploader(
             settings,
@@ -223,6 +233,7 @@ class Agent:
             timezone=self.timezone,
             instrument=self.instrument,
             status_follower=self.status_follower,
+            provenance=UploadProvenance(self.server, self.logger),
         )
         self.watcher = FileSystemWatcher(
             settings.source,
@@ -250,8 +261,11 @@ class Agent:
 
         The callbacks run on the watcher's thread in the order they were
         added, and the file is handed to the uploader after the last of them:
-        whatever one writes beside the file is there when it is uploaded. An
-        error in one is logged, and the file goes on to the rest.
+        whatever one writes beside the file is there when it is uploaded. That
+        is where a program writes the file's acquisition record,
+        ``<file>.mascope.json``, which then goes with the upload
+        (:mod:`mascope_sdk.acquisition`). An error in one is logged, and the
+        file goes on to the rest.
 
         :param callback: Takes the file's full path
         :type callback: Callable[[str], None]
