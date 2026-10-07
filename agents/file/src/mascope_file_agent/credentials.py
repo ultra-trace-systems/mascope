@@ -113,9 +113,8 @@ class ConsoleRepair(Repair):
 class Credentials:
     """The access token an agent presents, and what keeps it accepted.
 
-    :param url: The server's base URL, which the renewal is asked at.
-    :param host: The configured server address, which the startup check and
-        pairing are asked at.
+    :param url: The server's base URL, which the check at start, the renewal
+        and a pairing are all asked at.
     :param access_token: The token the agent starts with.
     :param logger: Where the lines go.
     :param verify_tls: Whether to verify the server's TLS certificate.
@@ -129,7 +128,6 @@ class Credentials:
     def __init__(
         self,
         url: str,
-        host: str,
         access_token: str | None,
         logger,
         verify_tls: bool = True,
@@ -138,7 +136,6 @@ class Credentials:
         repair: Repair | None = None,
     ):
         self.url = url
-        self.host = host
         self.logger = logger
         self.verify_tls = verify_tls
         self.instrument = instrument
@@ -263,9 +260,9 @@ class Credentials:
 
     def _pair(self) -> str | None:
         """Pair this machine at the console; the new token, or None."""
-        return run_pairing(
-            self.host, verify=self.verify_tls, instrument=self.instrument
-        )
+        # By its URL, which the wizard's functions take as they take a bare
+        # host: an address with a scheme is used as it is.
+        return run_pairing(self.url, verify=self.verify_tls, instrument=self.instrument)
 
     def check_at_start(self) -> None:
         """Ask the server about this machine's credential before any file needs it.
@@ -281,7 +278,7 @@ class Credentials:
         neither, so those are logged and left to the upload retries.
         """
         outcome, message = check_credential(
-            self.host,
+            self.url,
             self.current_access_token(),
             verify=self.verify_tls,
         )

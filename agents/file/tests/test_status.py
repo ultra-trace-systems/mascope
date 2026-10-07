@@ -549,9 +549,7 @@ def test_an_uploaded_file_is_followed_by_its_name_here(
     file_uploader = FileUploader(
         settings,
         "https://mascope.example.com",
-        Credentials(
-            "https://mascope.example.com", settings.host, settings.access_token, logger
-        ),
+        Credentials("https://mascope.example.com", settings.access_token, logger),
         logger=logger,
         instrument="Orbi-1",
         status_follower=Follower(),

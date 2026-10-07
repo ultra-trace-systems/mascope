@@ -42,7 +42,7 @@ def make_uploader(make_settings):
 
     def make(access_token="tok", **arguments):
         settings = make_settings(access_token=access_token)
-        credentials = Credentials(URL, settings.host, access_token, StubLogger())
+        credentials = Credentials(URL, access_token, StubLogger())
         return FileUploader(
             settings, URL, credentials, logger=StubLogger(), **arguments
         )

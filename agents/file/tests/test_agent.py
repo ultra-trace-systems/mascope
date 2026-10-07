@@ -120,6 +120,41 @@ def test_an_agent_takes_its_server_from_the_settings(make_agent):
     assert make_agent(host="http://localhost:8090").url == "http://localhost:8090"
 
 
+def test_a_given_url_is_where_everything_is_asked(make_agent, monkeypatch):
+    """Uploads, the renewal, the check at start and a pairing: one address.
+
+    A program trying the agent against a local server names it once, and is
+    not told that an address it never named could not be reached.
+    """
+    asked = []
+    monkeypatch.setattr(
+        credentials,
+        "check_credential",
+        lambda host, token, verify: (
+            asked.append(("check", host)) or (CREDENTIAL_OK, "")
+        ),
+    )
+    monkeypatch.setattr(
+        credentials,
+        "run_pairing",
+        lambda host, verify, instrument=None: asked.append(("pair", host)),
+    )
+    agent = make_agent()
+    local = Agent(agent.settings, "http://localhost:8090", logger=RecordingLogger())
+
+    for built in (agent, local):
+        built.credentials.check_at_start()
+        built.credentials._pair()
+
+    assert asked == [
+        ("check", "https://mascope.example.com"),
+        ("pair", "https://mascope.example.com"),
+        ("check", "http://localhost:8090"),
+        ("pair", "http://localhost:8090"),
+    ]
+    assert local.uploader.url == local.status_follower._url == "http://localhost:8090"
+
+
 @pytest.mark.parametrize(
     "settings, complaint",
     [
