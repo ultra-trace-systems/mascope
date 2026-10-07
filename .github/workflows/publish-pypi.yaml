@@ -1,8 +1,8 @@
 name: Publish packages to PyPI
 
-# Publishes mascope-sdk, mascope-tools, mascope-runtime and mascope-cli when
-# their pyproject version changes on master: bump the version in a PR, merge,
-# and this workflow uploads the new release. Idempotent — a version that
+# Publishes mascope-sdk, mascope-tools, mascope-runtime, mascope-cli and
+# mascope-file-agent when their pyproject version changes on master: bump the
+# version in a PR, merge, and this workflow uploads the new release. Idempotent — a version that
 # already exists on PyPI is skipped, so re-runs and unrelated pushes are safe.
 #
 # Auth is PyPI Trusted Publishing (OIDC), no tokens: each PyPI project must
@@ -17,6 +17,7 @@ on:
       - libraries/tools/pyproject.toml
       - libraries/runtime/pyproject.toml
       - tooling/cli/pyproject.toml
+      - agents/file/pyproject.toml
   workflow_dispatch:
 
 permissions:
@@ -65,3 +66,9 @@ jobs:
 
       - name: Publish mascope-cli (if the version is new)
         run: bash .github/scripts/publish-package.sh tooling/cli mascope-cli mascope_cli
+
+      # Last: it depends on mascope-sdk and mascope-runtime, and nothing here
+      # depends on it. The File Agent is its own uv project rather than a
+      # workspace member, hence --standalone.
+      - name: Publish mascope-file-agent (if the version is new)
+        run: bash .github/scripts/publish-package.sh agents/file mascope-file-agent mascope_file_agent --standalone

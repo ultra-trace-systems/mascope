@@ -1,13 +1,23 @@
 [project]
 name = "mascope_file_agent"
-version = "0.0.0"
-description = "Mascope's instrument machine agent. Sends sample files to the Mascope server."
+version = "2026.10.7"
+description = "Mascope's File Agent: watches a folder on an instrument machine and uploads new data files to a Mascope server."
+classifiers = [
+    "Topic :: Scientific/Engineering :: Atmospheric Science",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
 authors = [{ name = "Ultra Trace Systems Oy", email = "support@ultratrace.eu" }]
+maintainers = [
+    { name = "Oskari Kausiala", email = "oskari.kausiala@ultratrace.eu" },
+]
+readme = "README.md"
 requires-python = ">=3.12,<3.13"
 license = "Apache-2.0"
 dependencies = [
     "mascope_runtime",
-    "mascope_sdk",
+    # The first release with everything the agent calls: the agent headers,
+    # and the instrument reported with an upload.
+    "mascope_sdk>=2026.9.30",
     "requests>=2.34.2,<3",
     "tzlocal>=5.4.4",
     "watchdog~=4.0",
@@ -15,6 +25,12 @@ dependencies = [
 
 [project.scripts]
 mascope-file-agent = "mascope_file_agent.main:run"
+
+[project.urls]
+homepage = "https://ultratrace.eu/"
+repository = "https://github.com/ultra-trace-systems/mascope"
+documentation = "https://github.com/ultra-trace-systems/mascope/blob/master/docs/user/instruments/index.md"
+"Bug Tracker" = "https://github.com/ultra-trace-systems/mascope/issues"
 
 [dependency-groups]
 dev = [
@@ -26,6 +42,12 @@ dev = [
 mascope_runtime = { path = "../../libraries/runtime", editable = true }
 mascope_sdk = { path = "../../libraries/sdk", editable = true }
 
+[tool.uv.build-backend]
+# build.ps1 stamps the Windows program's release into this file. It is not
+# part of the library, which reports the version it was published under.
+source-exclude = ["src/mascope_file_agent/_version.py"]
+wheel-exclude = ["mascope_file_agent/_version.py"]
+
 [build-system]
-requires = ["uv_build>=0.6,<0.7"]
+requires = ["uv_build>=0.12.5,<0.13"]
 build-backend = "uv_build"
