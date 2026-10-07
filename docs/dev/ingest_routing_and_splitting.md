@@ -995,18 +995,32 @@ drift check, because two windows read the same ion up to three times
 apart and a window loses signal within a couple of m/z of its edges.
 
 - **The map, by default, is computed from the file.** A segment claims its
-  range trimmed inside its edges, about one per cent at the lower edge and
-  two at the upper. Where two segments claim one m/z, the one with more
-  microscans owns it; among equals, the window that starts higher, because
-  a window reads weakest toward its top - in the overlap of the mid and
-  the high window, the ions both see read 1.3 times higher in the high one
-  (measured 2026-10-06). Rounded to whole m/z, that rule
-  gives the site's own map as it drew it: the reagent scan owns the bottom
-  of the range and the band between the low and the mid window, which
-  keeps the reagent dimer out of any analyte window, and the mid window
-  hands over to the high one a few m/z above the high window's edge. The
-  trim and the two tie-breaks are the whole rule, fitted to one layout so
-  far (decision 17).
+  range trimmed inside its edges, one per cent of the m/z at the lower edge
+  and two at the upper, rounded to whole m/z - of the edge's m/z, not of
+  the range's width, which is what reproduces the site's boundaries. Where
+  two segments claim one m/z, the one with more microscans owns it; among
+  equals, the window that starts higher, because a window reads weakest
+  toward its top - in the overlap of the mid and the high window, the ions
+  both see read 1.3 times higher in the high one (measured 2026-10-06). An
+  m/z no trimmed claim covers goes to the segment whose untrimmed range
+  holds it, which is how the top of the highest window and a band between
+  two windows that touch without overlapping are owned; an m/z no range
+  holds is nobody's, and the composite has a gap there - the site's uronium
+  layout has one, between a reagent scan that ends at 131 and a mid window
+  that starts at 132. That rule gives the site's own map as it drew it:
+  the reagent scan owns the bottom of the range and the band between the
+  low and the mid window, which keeps the reagent dimer out of any analyte
+  window, and the mid window hands over to the high one a few m/z above
+  the high window's edge. Checked 2026-10-07 on the test set (11.1): each
+  of the twelve composite layouts the site ran gives one map, the same for
+  every file of the layout, including the layouts with a one-scan window,
+  a SIM window, a high window to 1200, and two windows that touch without
+  overlapping; the two maps the site drew match m/z for m/z, except that
+  the drawing gave the reagent scan the two m/z above its own range. A
+  layout whose settle scans and measurement scans share one range - the
+  site's settle-then-measure method, two events under one filter - gives
+  the measurement the whole range, and the settle stream owns nothing. The
+  trim and the two tie-breaks are the whole rule (decision 17).
 - **A layout may fix the map.** A shipped standard method's catalogue
   entry (5.3) carries the boundaries the method was designed with, and a
   site's own layout can set them in its recipe (section 7). The default
@@ -2119,8 +2133,11 @@ unchanged.
   behind the flag; every other file is byte-identical. **Being built**
   (decided 2026-10-05; a stitch rather than a split since 2026-10-06,
   decision 16). The flag stays off until all of it is in, so the cut
-  delivers at its end, not step by step. In order:
-  1. ~~the census keys streams on the method's experiments (4.1)~~ - built
+  delivers at its end, not step by step. In order - and these numbered
+  items are what the pull requests, the hand-overs, #2098 and the plan
+  page call **step 1** to **step 9**:
+  1. **Step 1, the census.** ~~The census keys streams on the method's
+     experiments (4.1)~~ - built
      in #2273: `scan_filters` reports each scan's segment and event from
      the scan index, and `mascope_thermo.streams` groups MS1 scans by
      signature, segment and event, the experiment closing the key only
@@ -2129,9 +2146,10 @@ unchanged.
      so it ships with no flag: `.props`, `mascope file scans` and the pooled
      note in a file's processing detail list the experiments, and peak
      detection pools them as before;
-  2. ~~the reader selects one stream's scans: a stream predicate beside
-     polarity, time and MS order, answered by the same function the census
-     keys its streams with~~ - built in #2278: every selecting method of both
+  2. **Step 2, the reader.** ~~The reader selects one stream's scans: a
+     stream predicate beside polarity, time and MS order, answered by the
+     same function the census keys its streams with~~ - built in #2278:
+     every selecting method of both
      reader backends takes `stream`, and so do the public reads built on
      them (`get_signal`, `compute_sum_signal`, `get_tic_per_scan`,
      `get_scan_timestamps`, `get_peak_timeseries`, `get_centroids`,
@@ -2139,8 +2157,9 @@ unchanged.
      processing passes one yet, and a selection that names none reads no
      key, so no file is read differently; the first scan is compared within
      its own stream;
-  3. ~~per-stream peak detection, store labels and timeseries fill, behind
-     the flag~~ - built in #2279: `backend.composite_scan_streams`, off by
+  3. **Step 3, detection per stream.** ~~Per-stream peak detection, store
+     labels and timeseries fill, behind the flag~~ - built in #2279:
+     `backend.composite_scan_streams`, off by
      default, read by the file converter at a file's first conversion. The
      signal library's reads take a stream; the peaks of a file with more
      than one MS1 stream in a polarity are detected per stream and labelled
@@ -2154,24 +2173,71 @@ unchanged.
      together, an ion two of them measure counted twice; the file's status
      detail and the converter's census line still call its streams pooled -
      which is why the flag stays off;
-  4. the stitch: the default map from the segments' ranges and
-     microscans, the per-peak mask and the stitched sum signal, recorded
-     beside the store; a stream's cached sum signal is not stitched under a
-     key the file no longer holds (4.3);
-  5. the stream table with the composite column (#2282, amended), and one
-     item per polarity pointing at its composite (#2283, reworked from one
-     item per stream);
-  6. the consumers read the composite: peak listing, matching, the item
-     TIC, the exports and assignment loading take the masked rows of the
-     item's stream, and the spectrum and peak-listing routes return each
-     sample's and each peak's segment for the views;
-  7. calibration and the instrument function per segment, the fit
-     borrowed from the nearest segment where anchors are short, the
-     quality block per segment;
-  8. a re-process rebuilds a file's store under the current rule, so a
-     site's composite batches can be re-processed;
-  9. the layout override in the catalogue entry and the recipe, and the
-     overlap drift in the processing detail.
+  4. **Step 4, the stitch** - next, not started. Pure library work, no
+     migration, behind the same flag; a single-stream file is untouched by
+     it. What it adds, on top of step 3's per-stream store:
+     - the **stitch map** of each polarity that holds more than one MS1
+       stream, computed from the store's own streams - each stream's range
+       from its signature and its microscans from its acquisition
+       parameters - by the rule of 4.5 as pinned on 2026-10-07: a segment
+       claims its range trimmed by one per cent of the m/z at the lower
+       edge and two per cent at the upper, rounded to whole m/z; where two
+       claims meet, more microscans wins, and among equals the window whose
+       lower edge is higher; an m/z no trimmed claim covers goes to the
+       segment whose untrimmed range holds it, under the same tie-breaks;
+       an m/z no range holds belongs to nobody, and the composite has a
+       gap there. Checked on the test set (11.1): the twelve composite
+       layouts the site ran give one map each, the same for every file of
+       the layout, the two maps the site drew for its settled layouts among
+       them, m/z for m/z, except where the site's drawing gave the reagent
+       scan an m/z its range does not reach. A layout whose windows
+       neither overlap nor touch gets no gap from the rule - the untrimmed
+       ranges fill it - and a layout whose settle scans and measurement
+       scans share one range gives the measurement the whole of it, the
+       settle stream owning nothing;
+     - the per-peak **`composite` mask** along `mz`: whether the peak's
+       own stream owns its m/z under the map. True on every peak of a
+       stream that is its polarity's only one, so a consumer can read the
+       mask of any per-stream store;
+     - the map itself, **recorded beside the store** as an attribute
+       (`stitch_map`: one `[lo, hi, stream index]` per run of the map, per
+       polarity, and the rule's version), so a consumer and the processing
+       detail read the boundaries without recomputing them, and a rebuild
+       under a changed rule is told apart from one under the same;
+     - the **stitched sum signal** of each polarity: its segments' cached
+       sum signals cut at the map's boundaries and concatenated on one
+       axis, with a per-sample `segment` label (the stream index), cached
+       under the composite's own name beside the per-stream signals; a
+       stream's cached signal is not stitched under a key the file no
+       longer holds (4.3);
+     - the **overlap reading** that the drift check and decision 5's
+       fallback consume: for every pair of segments of one polarity whose
+       ranges overlap, the ions both measure inside the trimmed overlap,
+       the median and quartiles of their intensity ratio and of their m/z
+       offset, and the ions that disagree with the median by more than
+       the window factor - computed from the two peak lists, recorded in
+       the store beside the map, surfaced by step 9;
+     - the gates: every composite layout of the test set stitches with
+       nothing configured, a one-scan segment and a SIM window included;
+       the demo goldens and every single-stream store stay byte-identical;
+       a layout override that names ranges a file does not hold is
+       ignored with a note (step 9 reads it, step 4 leaves the hook).
+  5. **Step 5, the composite row and its item:** the stream table with the
+     composite column (#2282, amended), and one item per polarity pointing
+     at its composite (#2283, reworked from one item per stream);
+  6. **Step 6, the consumers** read the composite: peak listing, matching,
+     the item TIC, the exports and assignment loading take the masked rows
+     of the item's stream, and the spectrum and peak-listing routes return
+     each sample's and each peak's segment for the views;
+  7. **Step 7, the fits per segment:** calibration and the instrument
+     function per segment, each segment on its own anchors where it holds
+     enough, the overlap shift and the unshifted borrow as fallbacks, the
+     quality block per segment naming which (decision 5);
+  8. **Step 8, re-process:** a re-process rebuilds a file's store under
+     the current rule, so a site's composite batches can be re-processed;
+  9. **Step 9, the override and the drift:** the layout override in the
+     catalogue entry and the recipe, and the overlap drift in the
+     processing detail.
 - **The scope object.** A scan scope (stream, t0, t1), the stream a
   composite where the file holds one, replaces the bare polarity in:
   - reader selection;
@@ -2521,8 +2587,12 @@ through a short-lived stacked branch, merged as one unit.
     each segment's range trimmed inside its edges, the segment with more
     microscans owning an m/z two claim, the higher window among equals -
     or fixed per layout by the catalogue entry or the recipe; or both, the
-    layout overriding the default (recommended). Fitted so far to one
-    site's layout, which it reproduces. Measured 2026-10-06: the reader's
+    layout overriding the default (recommended). Fitted to one site's
+    layout and checked 2026-10-07 on the twelve composite layouts of its
+    test set, every one of which it maps without configuration (4.5), so
+    the default stands on its own and the override is for edges a default
+    cannot know, such as where a reagent ion must stay out (4.5). Measured
+    2026-10-06: the reader's
     intensities are per unit of injection time (4.5), so segments compare
     as they are, up to the layout's own window-to-window factor, which the
     overlap reports.
