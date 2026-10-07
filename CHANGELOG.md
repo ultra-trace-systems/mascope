@@ -269,6 +269,14 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 ### Fixed
 
+- **The File Agent no longer stops when a new file is gone before its
+  upload.** A file deleted or renamed in the seconds between appearing in the
+  watched folder and being uploaded ended the agent's upload loop and, with
+  it, the agent: nothing was uploaded from then on until somebody started it
+  again, and the only trace was an "Unexpected error in the upload loop" in
+  its log. It now logs a warning that names the file and carries on. A file
+  that was renamed is uploaded under its new name.
+
 - **The averaged Orbitrap profile sits on its peaks when the calibration moves
   between scans.** Every scan is written out on its own calibration, and when
   the lock mass engages part-way through a file, or its correction wanders

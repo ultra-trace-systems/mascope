@@ -203,6 +203,7 @@ class FileUploader:
 
         Exceptions Handled:
             - Empty: Raised when the `jobs` queue is empty.
+            - OSError: Raised when the file is gone by the time its turn comes.
             - KeyboardInterrupt: Raised when the process is interrupted by the user.
             - Exception: Catches all other exceptions and logs them as critical errors.
 
@@ -215,7 +216,19 @@ class FileUploader:
                 try:
                     fname = self.jobs.get_nowait()
                     self.logger.debug(fname)
-                    if self.seconds_since_last_access(fname) < self.settings.timeout:
+                    try:
+                        untouched = self.seconds_since_last_access(fname)
+                    except OSError as e:
+                        # Deleted or renamed since it appeared, which acquisition
+                        # software does as a matter of course. One file less to
+                        # upload, not a reason to stop uploading the others.
+                        self.logger.warning(
+                            f"{os.path.basename(fname)}: not uploaded, as it was "
+                            f"gone when its turn came ({e}). A file that was "
+                            "renamed is uploaded under its new name."
+                        )
+                        continue
+                    if untouched < self.settings.timeout:
                         self._put(self.jobs, fname)
                         self.logger.debug(f"Put {fname} back to queue")
                         continue

@@ -432,6 +432,33 @@ def test_a_failing_on_ready_step_does_not_keep_the_file_from_the_uploader(
 
 
 # ---------------------------------------------------------------------------
+# A file that is gone when its turn comes
+# ---------------------------------------------------------------------------
+
+
+def test_a_waiting_file_that_disappears_does_not_stop_the_agent(
+    make_agent, uploads, tmp_path, sample
+):
+    """Acquisition software renames and tidies files; the agent has to outlive it.
+
+    A file deleted or renamed between appearing and being uploaded used to end
+    the upload loop, and the agent with it: nothing was uploaded from then on
+    until somebody noticed and started it again.
+    """
+    agent = make_agent()
+    agent.start()
+
+    agent.uploader.enqueue(str(tmp_path / "gone.raw"))
+
+    assert wait_for(lambda: agent.logger.said("warning", "gone.raw: not uploaded"))
+    assert agent.running
+    # And the next file is uploaded as if nothing had happened.
+    agent.uploader.enqueue(sample)
+    assert wait_for(lambda: uploads.calls)
+    assert uploads.calls[0]["filepath"] == sample
+
+
+# ---------------------------------------------------------------------------
 # Stopping at an awkward moment
 # ---------------------------------------------------------------------------
 
