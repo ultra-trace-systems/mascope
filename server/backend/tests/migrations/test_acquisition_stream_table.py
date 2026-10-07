@@ -17,6 +17,11 @@ CASCADE would delete a sample because a description of its file was rewritten.
 
 And a file holds a key once, while two files may hold the same key - a key is
 a stream's name within its file and nothing more.
+
+A composite is a row like any stream: its segments point at it, it carries
+the map they were stitched by, and it is not taken from under its segments
+any more than a stream from under its item. With its file it goes in one
+statement, segments and all.
 """
 
 from datetime import datetime, timezone
@@ -49,6 +54,14 @@ _OLD_ITEM = "si-streams-old1"
 _NEW_ITEM = "si-streams-new1"
 _SETTLING = "st-streams00001"
 _MEASURING = "st-streams00002"
+#: A composite and the two segments stitched into it.
+_COMPOSITE = "st-streams-comp"
+_LOW = "st-streams-low1"
+_HIGH = "st-streams-hig1"
+_STITCH = (
+    '{"rule": 1, "runs": {"-": [[40, 122, 1], [122, 600, 2]]}, '
+    '"sources": {"-": "default"}, "notes": []}'
+)
 
 _KEY = "FTMS - p NSI Full ms [40.0000-600.0000] R=120000"
 
@@ -94,16 +107,23 @@ _IDS = {
 
 
 def _insert_stream(
-    conn, stream_id: str, key: str, file_id: str = _FILE_ID, event: int | None = 1
+    conn,
+    stream_id: str,
+    key: str,
+    file_id: str = _FILE_ID,
+    event: int | None = 1,
+    composite: str | None = None,
+    stitch: str | None = None,
 ) -> None:
     conn.execute(
         text(
             "INSERT INTO acquisition_stream ("
             "  stream_id, sample_file_id, stream_key, signature_key,"
             "  scan_segment, scan_event, signature, scan_count, blocks,"
-            "  t_first, t_last"
+            "  t_first, t_last, composite_stream_id, stitch"
             ") VALUES (:id, :file, :key, :signature_key, :segment, :event,"
-            "          CAST(:signature AS json), 4, 1, 0.0, 3.0)"
+            "          CAST(:signature AS json), 4, 1, 0.0, 3.0,"
+            "          :composite, CAST(:stitch AS json))"
         ),
         {
             "id": stream_id,
@@ -113,6 +133,8 @@ def _insert_stream(
             "segment": None if event is None else 1,
             "event": event,
             "signature": '{"ms_order": 1, "polarity": "-"}',
+            "composite": composite,
+            "stitch": stitch,
         },
     )
 
@@ -248,6 +270,74 @@ def test_a_stream_no_item_points_at_can_go(upgraded: Engine):
     assert _count(upgraded, "acquisition_stream", "stream_id = :id", id=_SETTLING) == 0
 
 
+def test_a_stream_is_no_segment_and_carries_no_map_unless_written_so(
+    upgraded: Engine,
+):
+    with upgraded.connect() as conn:
+        row = conn.execute(
+            text(
+                "SELECT composite_stream_id, stitch FROM acquisition_stream "
+                "WHERE stream_id = :id"
+            ),
+            {"id": _MEASURING},
+        ).one()
+    assert (row.composite_stream_id, row.stitch) == (None, None)
+
+
+def test_a_composite_carries_its_map_and_its_segments_point_at_it(upgraded: Engine):
+    """The composite is a row like any stream of its file, and its segments
+    name it; the map that cut them is on the composite and nowhere else."""
+    with upgraded.begin() as conn:
+        _insert_stream(conn, _COMPOSITE, "composite -", event=None, stitch=_STITCH)
+        _insert_stream(conn, _LOW, f"{_KEY} event=3", event=3, composite=_COMPOSITE)
+        _insert_stream(conn, _HIGH, f"{_KEY} event=4", event=4, composite=_COMPOSITE)
+
+    with upgraded.connect() as conn:
+        segments = (
+            conn.execute(
+                text(
+                    "SELECT stream_id FROM acquisition_stream "
+                    "WHERE composite_stream_id = :id ORDER BY stream_id"
+                ),
+                {"id": _COMPOSITE},
+            )
+            .scalars()
+            .all()
+        )
+        stitch = conn.execute(
+            text("SELECT stitch FROM acquisition_stream WHERE stream_id = :id"),
+            {"id": _COMPOSITE},
+        ).scalar_one()
+    assert segments == sorted([_LOW, _HIGH])
+    assert stitch["runs"] == {"-": [[40, 122, 1], [122, 600, 2]]}
+    assert stitch["rule"] == 1
+
+
+def test_a_segment_points_at_a_stream_of_the_table(upgraded: Engine):
+    with pytest.raises(IntegrityError):
+        with upgraded.begin() as conn:
+            _insert_stream(
+                conn,
+                "st-streams-orph",
+                f"{_KEY} event=5",
+                event=5,
+                composite="st-nowhere",
+            )
+
+
+def test_a_composite_is_not_taken_from_under_its_segments(upgraded: Engine):
+    """Refused, as a stream is not taken from under its item: a segment left
+    pointing at nothing would be a stream of a composite that is not there."""
+    with pytest.raises(IntegrityError):
+        with upgraded.begin() as conn:
+            conn.execute(
+                text("DELETE FROM acquisition_stream WHERE stream_id = :stream"),
+                {"stream": _COMPOSITE},
+            )
+
+    assert _count(upgraded, "acquisition_stream", "stream_id = :id", id=_COMPOSITE) == 1
+
+
 def test_the_reference_carries_the_names_the_models_give_it(upgraded: Engine):
     """A migrated database and one created from the models must agree, or
     the next revision to touch either would fail on one of them."""
@@ -279,12 +369,21 @@ def test_the_reference_carries_the_names_the_models_give_it(upgraded: Engine):
     )
     assert "uq_acquisition_stream_file_key" in constraints, constraints
     assert "pk_acquisition_stream" in constraints, constraints
+    assert "fk_acquisition_stream_composite_stream_id_acquisition_stream" in (
+        constraints
+    ), constraints
     assert "ix_sample_item_stream_id" in indexes, indexes
+    assert "ix_acquisition_stream_composite_stream_id" in indexes, indexes
 
 
 def test_a_files_streams_and_items_go_with_the_file(upgraded: Engine):
-    """One statement takes the file, its items and its streams: the item's
-    reference to its stream is checked at the end of it, when both are gone."""
+    """One statement takes the file, its items, its streams and its
+    composite with its segments: the references between them are checked at
+    the end of it, when all are gone."""
+    assert (
+        _count(upgraded, "acquisition_stream", "sample_file_id = :file", file=_FILE_ID)
+        == 4
+    )
     with upgraded.begin() as conn:
         conn.execute(text("DELETE FROM sample_file WHERE sample_file_id = :file"), _IDS)
 

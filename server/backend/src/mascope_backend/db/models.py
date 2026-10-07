@@ -901,17 +901,26 @@ class SampleFile(Base):
 
 class AcquisitionStream(Base):
     """One scan stream of a sample file: the scans of one experiment of its
-    acquisition method.
+    acquisition method, or the composite its polarity's streams are stitched
+    into.
 
     A raw Orbitrap file whose method runs more than one MS1 experiment in a
-    polarity can be processed per experiment, each with a peak list and a
-    sample item of its own (``docs/dev/ingest_routing_and_splitting.md``,
-    sections 4.4 and 4.5). A row here is one such stream of one file, and
-    ``sample_item.stream_id`` points an item at the stream it is cut from.
+    polarity is processed per experiment, each with a peak list of its own,
+    and where the experiments are m/z ranges of one chemistry they are
+    stitched into one spectrum, the polarity's composite
+    (``docs/dev/ingest_routing_and_splitting.md``, sections 4.4 and 4.5). A
+    composite is a row like any stream, with no scans of its own: its
+    segments point at it through ``composite_stream_id``, and it carries the
+    map they were stitched by in ``stitch``. ``sample_item.stream_id`` points
+    an item at the stream it reads, the composite where its polarity has one,
+    so an item points at one stream whether or not that stream is stitched.
 
-    Only a file processed per stream has rows. A file with one stream in each
-    polarity has none, and its items carry no ``stream_id``: there the
-    polarity already says which scans an item is cut from, as it always has.
+    Rows are written for every raw Orbitrap file whose census is read, one
+    per stream, once the step that writes them is in; a file with one stream
+    in a polarity gets that one row, and its item points at it, which means
+    what the polarity has always meant. Nothing writes rows yet. An item
+    made before then carries no ``stream_id``, and never will: NULL says the
+    item spans every MS1 scan of its polarity, as it was made.
 
     Two names for a stream, kept apart on purpose:
 
@@ -965,6 +974,25 @@ class AcquisitionStream(Base):
     # First and last scan time [s] from the start of the acquisition.
     t_first: Mapped[float] = mapped_column(Float)
     t_last: Mapped[float] = mapped_column(Float)
+    # The composite this stream is a segment of (section 4.5). NULL on a
+    # composite row itself, and on every stream of a file that has none.
+    #
+    # No ON DELETE action, as for sample_item.stream_id: a composite goes
+    # only with its file or when the file is processed again, in one
+    # statement with its segments, and a segment left pointing at a
+    # composite deleted on its own is a fault to refuse. Indexed for the
+    # question asked of a composite, its segments.
+    composite_stream_id: Mapped[Optional[str]] = mapped_column(
+        String(16),
+        ForeignKey("acquisition_stream.stream_id"),
+        nullable=True,
+        index=True,
+    )
+    # On a composite row: the stitch map it was built with, as the peak
+    # store records it - the rule's version, the runs of m/z each segment
+    # owns, whether the rule or a layout drew them, and what was left out
+    # (``mascope_signal.stitch``). NULL on every other row.
+    stitch: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
 
 
 class SampleItem(Base):
@@ -1070,12 +1098,11 @@ class SampleItem(Base):
         nullable=True,
         index=True,
     )
-    # The scan stream this item is cut from, for an item of a file processed
-    # per stream (``AcquisitionStream``). NULL means the item spans every MS1
-    # scan of its polarity: what an item meant before streams could be read
-    # apart, and what it still means for every file with one stream in each
-    # polarity. So a NULL is never filled in afterwards - an item made under
-    # the polarity rule says what it said
+    # The scan stream this item reads (``AcquisitionStream``): its polarity's
+    # composite where the file holds one, else its polarity's one stream.
+    # NULL means the item spans every MS1 scan of its polarity: what an item
+    # meant before streams could be read apart. So a NULL is never filled in
+    # afterwards - an item made under the polarity rule says what it said
     # (``docs/dev/ingest_routing_and_splitting.md``, sections 4.4 and 9.1).
     #
     # No ON DELETE action, deliberately. A stream row goes only with its file
