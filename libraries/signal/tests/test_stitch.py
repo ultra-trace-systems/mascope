@@ -219,17 +219,34 @@ def test_a_trimmed_edge_on_a_half_goes_to_the_even_mz(window, claim):
     assert runs == [[10, claim[0], 0], [claim[0], claim[1], 1], [claim[1], 1000, 0]]
 
 
-def test_an_edge_is_read_at_the_four_decimals_its_key_states():
-    """A reader can hand an edge back a float away from what the method
-    states. As floats, 50.00000001 trims to 51 and 125.00000001 to 123; read
-    as the 50.0000 and 125.0000 the stream's key shows, they trim to 50 and
-    122, like the edges they are."""
-    stated = _runs(_streams(((10, 1000), 1), ((50, 125), 10)))
-    noisy = _runs(_streams(((10, 1000), 1), ((50.00000001, 125.00000001), 10)))
+@pytest.mark.parametrize(
+    ("edges", "stated", "claim"),
+    [
+        ((50.0001, 125.0001), "[50.0001-125.0001]", (51, 123)),
+        ((50.00004, 125.00004), "[50.0000-125.0000]", (50, 122)),
+        ((50.00000001, 125.00000001), "[50.0000-125.0000]", (50, 122)),
+    ],
+    ids=["a-fourth-decimal-counts", "a-fifth-does-not", "nor-a-floats-noise"],
+)
+def test_an_edge_is_read_at_the_four_decimals_its_key_states(edges, stated, claim):
+    """A stream's key states its range to four decimals, and the map is drawn
+    from the edge as the key states it, so that two streams of one key get
+    one map. Edges of 50 and 125 trim to 50.5 and 122.5, and so to 50 and
+    122. A ten-thousandth above them the key says so, and the trims pass the
+    half: 51 and 123. A hundred-thousandth above them, or a float away from
+    what the method states, the key still reads 50.0000 and 125.0000, and
+    the map is that of 50 and 125, where the edges read as the floats they
+    are would trim to 51 and 123."""
+    streams = _streams(((10, 1000), 1), (edges, 10))
 
-    assert round(50.00000001 * 1.01) == 51
-    assert round(125.00000001 * 0.98) == 123
-    assert noisy == stated
+    assert stated in streams[1]["key"]
+    assert round(edges[0] * 1.01) == 51
+    assert round(edges[1] * 0.98) == 123
+    assert _runs(streams) == [
+        [10, claim[0], 0],
+        [claim[0], claim[1], 1],
+        [claim[1], 1000, 0],
+    ]
 
 
 @pytest.mark.parametrize("ten", [10, 10.0, "10", " 10 "])
