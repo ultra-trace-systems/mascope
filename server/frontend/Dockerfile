@@ -53,6 +53,9 @@ RUN mkdocs build --strict && \
 # docs/user/assets, by the licence files kept beside them. Served beside the
 # web app's own notices at /legal/, where the About tab reads them.
 COPY tooling/third-party-notices.py tooling/check-licenses.py ./tooling/
+# And the licence texts kept for what ships none, which the generator looks
+# for beside itself.
+COPY tooling/licence-texts ./tooling/licence-texts/
 RUN python tooling/third-party-notices.py --for docs --vendored docs/user/assets \
     -o DOCS_THIRD_PARTY_NOTICES.txt
 

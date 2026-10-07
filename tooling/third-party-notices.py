@@ -116,10 +116,10 @@ ships. Generated when the program is built, from the distributions installed in
 its build environment (tooling/third-party-notices.py) - do not edit.
 
 Every package installed in that environment has an entry, and so has every
-other project that one of them carries a copy of. The program is made from
-some of them, and a few are build tools of which it contains little or
-nothing: of PyInstaller itself, the bootloader and the run-time hooks, which
-its licence below provides for.
+other project that one of them carries a copy of along with its metadata.
+The program is made from some of them, and a few are build tools of which it
+contains little or nothing: of PyInstaller itself, the bootloader and the
+run-time hooks, which its licence below provides for.
 """,
 }
 
