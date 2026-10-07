@@ -388,6 +388,8 @@ class BaseFileProcessor(Thread, ABC, metaclass=FileProcessorMeta):
                 access_token=file_context.access_token,
                 device_id=getattr(file_context, "device_id", None),
                 source_filename=getattr(file_context, "source_filename", None),
+                acquisition=getattr(file_context, "acquisition", None),
+                sha256=getattr(file_context, "sha256", None),
             )
 
         except Exception as e:

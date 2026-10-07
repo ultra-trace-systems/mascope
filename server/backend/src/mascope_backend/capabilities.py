@@ -26,4 +26,10 @@ SERVER_CAPABILITIES: dict[str, bool] = {
     # processing got - what a File Agent asks about each file it uploaded. An
     # older server ignores the filters and answers with other files.
     "files_listed_by_source_filename": True,
+    # An acquisition record sent with an upload (the Upload-Metadata key
+    # `acquisition`) is kept on the file, and a file's hash sent the same
+    # way (`sha256`) is checked against the bytes received and kept. The
+    # record makes the request's headers larger than an older server
+    # accepts, which is why an agent asks before it sends one.
+    "files_accept_acquisition_metadata": True,
 }

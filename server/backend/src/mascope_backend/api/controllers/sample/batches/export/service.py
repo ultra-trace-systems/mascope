@@ -162,6 +162,14 @@ async def sample_batch_export_spreadsheet(
                 "m/z calibration": calibration,
                 "m/z calibration verified": verified,
                 "m/z calibration error (ppm)": error_ppm,
+                # What the instrument's control program said of the file, by
+                # identifier, and the file's hash as it was uploaded. Empty
+                # for a file that came with no acquisition record.
+                "Acquisition ID": sample.get("acquisition_id"),
+                "Step ID": sample.get("step_id"),
+                "Sequence run ID": sample.get("sequence_run_id"),
+                "Agent ID": sample.get("agent_id"),
+                "File SHA-256": sample.get("sha256"),
             }
         )
     samples_df = pd.DataFrame(samples_data)

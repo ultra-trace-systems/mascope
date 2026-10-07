@@ -68,4 +68,10 @@ def run():
         reload_excludes=["libraries/sdk/**"] if enable_reload else None,
         log_level="critical",
         use_colors=True,
+        # An upload's acquisition record travels in the headers of the
+        # request that creates the upload: up to 16 KB of JSON, 22 KB once
+        # encoded. By default the parser gives up on a request whose headers
+        # have not all arrived within 16 KB, which is how a network delivers
+        # ones this long.
+        h11_max_incomplete_event_size=64 * 1024,
     )
