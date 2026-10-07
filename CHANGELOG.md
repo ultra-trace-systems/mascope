@@ -275,10 +275,19 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   it, the agent: nothing was uploaded from then on until somebody started it
   again, and the only trace was an "Unexpected error in the upload loop" in
   its log. It now logs a warning that names the file and carries on. A file
-  renamed to a name the agent watches for is uploaded under that name. A file
-  the agent cannot look at when its turn comes - a network folder that dropped
-  out for a moment, a file something holds locked - is not taken for gone: it
-  keeps its place and is uploaded once it can be read.
+  gone within the second the agent gives a new file to settle is one warning
+  line as well, where it was an "Unexpected error handling filesystem
+  event" with a traceback. A file the agent cannot look at when its turn
+  comes - a network folder that dropped out for a moment, a file something
+  holds locked - is not taken for gone: it keeps its place and is uploaded
+  once it can be read.
+
+  A file renamed to a name the agent watches for is uploaded under that
+  name. One renamed to a name it does not watch for, `x.raw` to `x.raw.bak`
+  say, is left alone. The agent used to take up the new name, refuse it for
+  its extension, log that it had given up on the file and copy it into
+  `failed_uploads`, and it did so whenever a watched file was renamed that
+  way, one it had already uploaded included.
 
 - **The averaged Orbitrap profile sits on its peaks when the calibration moves
   between scans.** Every scan is written out on its own calibration, and when
