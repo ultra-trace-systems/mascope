@@ -238,8 +238,10 @@ class FileUploader:
         The issue is not being fixed in 3.12. Python 3.13 looks before it
         jumps, which mends the ``continue``, but leaves such a loop's own
         jump back from the end of its body outside the block, and an
-        interrupt taken there is lost the same way. 3.14 has neither. So
-        the loop stays apart while the agent runs on 3.12 or on 3.13.
+        interrupt taken there is lost the same way. 3.14 mends both of
+        these, though not every jump that looks for signals, so no later
+        Python is simply the way out: see
+        ``tests/test_interrupt_handlers.py`` before the agent moves to one.
         """
         while not self.shutdown_event.wait(POLL_INTERVAL):
             fname = None
