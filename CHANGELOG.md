@@ -11,8 +11,7 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   each file it acquires, `<file>.mascope.json`, saying which step of which
   run the file belongs to, in which mode, and under which chemistry. The
   agent sends it with the upload, together with the file's SHA-256, to a
-  server that announces it keeps them; no server does yet, so until the
-  server's half ships an agent sends neither. A record never costs a file
+  server that announces it keeps them. A record never costs a file
   its upload: one the agent cannot use is left behind with a warning, an
   upload refused together with its record is made again without it, and a
   file set aside in `failed_uploads` has its record copied with it. The
@@ -22,6 +21,25 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   became of each file alike; and an answer that asks for another try, a
   rate limit above all, is no longer taken for a server that can do
   nothing new (`docs/dev/acquisition_sidecar.md`).
+
+- **The server keeps an upload's acquisition record, and binds the file by
+  the chemistry it names.** A record sent with an upload is stored on the
+  sample file, with its four identifiers - the acquisition, the step, the
+  sequence run and the installation - as indexed columns, so every file of
+  a run is one query. Where the record names the file's chemistry as the
+  token of an ionization mode, the file is bound to that mode before its
+  name is read: rung 0, "declared", of the binding ladder. A file bound
+  this way reads "Bound to ... by its acquisition record." in Raw files; a
+  record naming a token no mode has leaves the file to be bound by its name
+  as before. The file's SHA-256, sent the same way, is checked against the
+  bytes received and recorded when they have it. The identifiers and the
+  hash are in the spreadsheet export's samples sheet. A record that cannot
+  be kept is refused when the upload is created, so the agent can say why
+  and send the file without it; nothing after that costs a file its place
+  on the server. A reverse proxy of a site's own in front of Mascope has
+  to let a request header line of 32 KB through on the upload path
+  (`docs/hosting.md`); where it does not, files still arrive, without
+  their records (`docs/dev/acquisition_sidecar.md`).
 
 - **`mascope_sdk.acquisition` defines the acquisition record,
   `mascope-acquisition/1`.** `AcquisitionRecord` is the model, `parse()`

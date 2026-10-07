@@ -211,6 +211,14 @@ none uploads the file as before.
 run_0042.raw: its acquisition record went with it.
 ```
 
+The server keeps the record with the file. Where the record names the file's
+chemistry, the file is bound to the ionization mode that has that token,
+before the server looks for a token in the file's name, and Raw files says
+so: "Bound to 'Nitrate' (-) by its acquisition record." A record that names a
+token no mode has does not hold the file up: it is bound by its name as
+before, or waits for a chemistry with a status that says what the record
+named.
+
 A record never keeps a file from being uploaded:
 
 - A record the agent cannot use - damaged, too large, or written for
