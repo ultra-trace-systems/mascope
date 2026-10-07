@@ -289,6 +289,17 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   `failed_uploads`, and it did so whenever a watched file was renamed that
   way, one it had already uploaded included.
 
+- **The File Agent's installer now carries the licences of the open-source
+  software in the program.** The program is assembled from some thirty
+  open-source Python packages and the Python interpreter, and most of their
+  licences make their text a condition of passing the software on. The
+  installer installed the exe alone, and the exe holds almost none of that
+  text. It now puts `THIRD_PARTY_NOTICES.txt` beside the program, in
+  `%LocalAppData%\Programs\Mascope File Agent`, with the licence of each
+  package and of the interpreter, generated from the build environment as the
+  server image's notices are, and Mascope's own `LICENSE.txt` and `NOTICE.txt`
+  with it.
+
 - **The averaged Orbitrap profile sits on its peaks when the calibration moves
   between scans.** Every scan is written out on its own calibration, and when
   the lock mass engages part-way through a file, or its correction wanders
