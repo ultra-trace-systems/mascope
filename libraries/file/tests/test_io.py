@@ -625,7 +625,7 @@ class TestAnMzOffTheAxis:
         before = xr.open_zarr(peak_timeseries_zarr_path).load()
         fill = create_update_dataset(np.array([100.0, mz]), ds.time.values, [0, 1])
 
-        with pytest.raises(ValueError, match="not present in existing data"):
+        with pytest.raises(m_io.MzNotOnAxisError, match="not present in existing"):
             await write_peaks(fill, TEST_FILENAME, overwrite=False)
 
         after = xr.open_zarr(peak_timeseries_zarr_path).load()
@@ -644,12 +644,35 @@ class TestAnMzOffTheAxis:
         await write_peaks(ds, TEST_FILENAME, overwrite=True)
         fill = create_update_dataset(np.array([100.0]), ds.time.values, [0])
 
-        with pytest.raises(ValueError, match="not present in existing data"):
+        with pytest.raises(m_io.MzNotOnAxisError, match="not present in existing"):
             await write_peaks(fill, TEST_FILENAME, overwrite=False)
 
         stored = zarr.open(peak_timeseries_zarr_path, mode="r")
         assert stored["mz"].shape == (0,)
         assert stored["peak_heights"].shape == (0, TEST_TIME_SIZE)
+
+    def test_the_refusal_is_a_value_error(self):
+        """The API layer maps a ValueError to a client-class failure."""
+        assert issubclass(m_io.MzNotOnAxisError, ValueError)
+
+    @pytest.mark.asyncio
+    async def test_a_fill_naming_no_single_peak_is_another_refusal(
+        self,
+        create_peak_timeseries_dataset,
+        create_update_dataset,
+        peak_timeseries_zarr_path,
+    ):
+        """Two kept peaks at one m/z: the m/z is on the axis, and reading the
+        store again tells the two no better apart. What computes a fill again
+        for an m/z off the axis must not take this for one."""
+        ds = create_peak_timeseries_dataset(mz_values=np.array([100.0, 200.0, 200.0]))
+        await write_peaks(ds, TEST_FILENAME, overwrite=True)
+        fill = create_update_dataset(np.array([200.0]), ds.time.values, [0])
+
+        with pytest.raises(ValueError, match="names no single peak") as refusal:
+            await write_peaks(fill, TEST_FILENAME, overwrite=False)
+
+        assert not isinstance(refusal.value, m_io.MzNotOnAxisError)
 
 
 class TestEnsureSparsityExists:

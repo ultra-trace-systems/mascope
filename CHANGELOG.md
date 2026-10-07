@@ -455,17 +455,25 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   while a calibration of the same file was applied could then be stored on a
   neighbouring peak, scaled to that peak's summed intensity, and stay there
   until the file's peaks were detected again. The m/z now has to be on the
-  axis exactly. A timeseries that is not is refused with "Cannot update m/z
-  values not present in existing data" and nothing of it is stored, so the
-  request that computed it fails and the next one computes it against the
-  file as it then is. An m/z above the file's last peak is refused the same
-  way, where it failed with an IndexError.
+  axis exactly. A timeseries that is not is not stored at all: it is computed
+  once more, for the file's peaks as they then are, so whatever asked for it
+  still gets it. An m/z above the file's last peak is handled the same way,
+  where it failed with an IndexError. Should the file's m/z axis be rewritten
+  during the second attempt too, the request fails with "Cannot update m/z
+  values not present in existing data", which no longer advises detecting the
+  file's peaks again: asking again is enough.
 
   This was found by reading the code, and the overlap has not been
   reproduced. Error monitoring shows no such IndexError on a deployment, and
   would not show a timeseries stored on the wrong peak. A calibration and a
-  timeseries of one file can still overlap, and whether to keep them apart or
-  to compute a refused timeseries again is not part of this change.
+  timeseries of one file can still overlap. The timeseries is then computed
+  twice, and whether the two should be kept apart instead depends on how
+  often that happens.
+
+  Operators: each time it does, a warning that a peak store's m/z axis "was
+  rewritten while peak timeseries were being computed" is logged, as one
+  issue in error monitoring whichever file it names. It is there to be
+  counted, and needs no action.
 
 ### Security
 

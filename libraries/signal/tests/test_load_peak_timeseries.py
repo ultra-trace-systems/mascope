@@ -40,11 +40,25 @@ def _shares(scan_count):
     return weights / weights.sum()
 
 
-def _stub_reader(monkeypatch, scan_times):
-    """Make `get_peak_timeseries` return a rising series over `scan_times`."""
+def _stub_reader(monkeypatch, scan_times, rescaling=None, rescaled_reads=0):
+    """Make `get_peak_timeseries` return a rising series over `scan_times`.
+
+    With `rescaling`, the store's m/z axis is multiplied by it during each of
+    the first `rescaled_reads` reads, as an m/z calibration applied while the
+    file is being read back rescales it.
+
+    :return: The m/z values each read was asked for, in the order of the reads
+    """
+    asked = []
 
     async def fake_get_peak_timeseries(base_filename, mzs, *args, **kwargs):
         mzs = np.asarray(mzs, dtype=float)
+        asked.append(mzs.tolist())
+        if len(asked) <= rescaled_reads:
+            stored = m_io.load_coord(base_filename, "peak_timeseries", "mz")
+            m_io.update_zarr_array_coord(
+                base_filename, "peak_timeseries", "mz", stored * rescaling
+            )
         return xr.DataArray(
             np.tile(_shares(len(scan_times)), (len(mzs), 1)),
             dims=("mz", "time"),
@@ -53,6 +67,7 @@ def _stub_reader(monkeypatch, scan_times):
         )
 
     monkeypatch.setattr(m_compute, "get_peak_timeseries", fake_get_peak_timeseries)
+    return asked
 
 
 @pytest.mark.asyncio
@@ -148,6 +163,112 @@ async def test_a_peak_asked_for_off_the_axis_is_filled_at_its_stored_mz(
     np.testing.assert_allclose(
         result.peak_heights.values, np.outer(SUM_HEIGHTS, _shares(5))
     )
+
+
+class TestAFillMeetingARewrittenAxis:
+    """A fill whose store was recalibrated while the file was being read back.
+
+    Reading a file back takes seconds, and nothing keeps an m/z calibration
+    of the same file from being applied meanwhile. The fill then carries the
+    m/z values of an axis the store no longer has, and the store refuses it.
+    The peaks asked for are still there, on the axis as it has become, so
+    they are loaded and computed once more.
+    """
+
+    @pytest.mark.parametrize(
+        "rescaling",
+        [
+            # The first row at or above a peak's old m/z is then its own
+            pytest.param(1 + 2e-6, id="axis moved up"),
+            # And then the next peak's
+            pytest.param(1 - 2e-6, id="axis moved down"),
+        ],
+    )
+    @pytest.mark.asyncio
+    async def test_the_peaks_are_computed_again_on_the_axis_as_it_has_become(
+        self, rescaling, monkeypatch, write_peak_store
+    ):
+        write_peak_store(SCAN_TIMES, MZ_VALUES, SUM_AREAS, SUM_HEIGHTS)
+        asked = _stub_reader(monkeypatch, SCAN_TIMES, rescaling, rescaled_reads=1)
+
+        result = await m_compute.load_peak_timeseries(SIGNAL_TEST_FILENAME, MZ_VALUES)
+
+        rescaled = MZ_VALUES * rescaling
+        np.testing.assert_array_equal(result.mz.values, rescaled)
+        assert result.is_timeseries_computed.values.all()
+        np.testing.assert_allclose(
+            result.peak_heights.values, np.outer(SUM_HEIGHTS, _shares(5))
+        )
+        np.testing.assert_allclose(
+            result.peak_areas.values, np.outer(SUM_AREAS, _shares(5))
+        )
+        # Read back for the axis as it was loaded, then for the one it became
+        assert asked == [MZ_VALUES.tolist(), rescaled.tolist()]
+
+    @pytest.mark.asyncio
+    async def test_it_is_logged_as_one_issue_for_error_monitoring_to_count(
+        self, monkeypatch, write_peak_store
+    ):
+        """Nothing else says how often a fill meets a rewritten axis. The
+        refusal's message carries the m/z values, so left to group itself
+        the event would open an issue close to per file."""
+        write_peak_store(SCAN_TIMES, MZ_VALUES, SUM_AREAS, SUM_HEIGHTS)
+        _stub_reader(monkeypatch, SCAN_TIMES, 1 + 2e-6, rescaled_reads=1)
+        logger = m_compute.runtime.logger
+        logger.reset_mock()
+
+        await m_compute.load_peak_timeseries(SIGNAL_TEST_FILENAME, MZ_VALUES)
+
+        logger.bind.assert_called_once_with(
+            sentry_fingerprint=["peak-fill-met-a-rewritten-axis"]
+        )
+        logger.bind.return_value.opt.assert_called_once_with(exception=True)
+        warning = logger.bind.return_value.opt.return_value.warning
+        warning.assert_called_once()
+        assert SIGNAL_TEST_FILENAME in warning.call_args.args[0]
+
+    @pytest.mark.asyncio
+    async def test_a_fill_that_is_not_refused_logs_nothing(
+        self, monkeypatch, write_peak_store
+    ):
+        write_peak_store(SCAN_TIMES, MZ_VALUES, SUM_AREAS, SUM_HEIGHTS)
+        asked = _stub_reader(monkeypatch, SCAN_TIMES)
+        logger = m_compute.runtime.logger
+        logger.reset_mock()
+
+        await m_compute.load_peak_timeseries(SIGNAL_TEST_FILENAME, MZ_VALUES)
+
+        assert len(asked) == 1
+        logger.bind.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_a_second_refusal_is_raised(self, monkeypatch, write_peak_store):
+        """Once more, not until it works: an axis rewritten during both
+        attempts is not a calibration that happened to be applied meanwhile."""
+        write_peak_store(SCAN_TIMES, MZ_VALUES, SUM_AREAS, SUM_HEIGHTS)
+        asked = _stub_reader(monkeypatch, SCAN_TIMES, 1 + 2e-6, rescaled_reads=2)
+
+        with pytest.raises(m_io.MzNotOnAxisError, match="not present in existing"):
+            await m_compute.load_peak_timeseries(SIGNAL_TEST_FILENAME, MZ_VALUES)
+
+        assert len(asked) == 2
+        stored = m_io.load_peak_data(SIGNAL_TEST_FILENAME)
+        assert not stored.is_timeseries_computed.values.any(), "nothing was written"
+        assert np.isnan(stored.peak_areas.values).all()
+
+    @pytest.mark.asyncio
+    async def test_no_other_refusal_is_answered_by_computing_again(
+        self, monkeypatch, write_peak_store
+    ):
+        """A store the file has outgrown is refused the same on every read,
+        and it is a ValueError as well. Only peak detection repairs it."""
+        write_peak_store(SCAN_TIMES, MZ_VALUES, SUM_AREAS, SUM_HEIGHTS)
+        asked = _stub_reader(monkeypatch, SCAN_TIMES[1:])
+
+        with pytest.raises(m_compute.StalePeakStoreError):
+            await m_compute.load_peak_timeseries(SIGNAL_TEST_FILENAME, MZ_VALUES)
+
+        assert len(asked) == 1
 
 
 class TestPeaksSharingAnMz:

@@ -552,6 +552,23 @@ def calculate_mz_chunk_size(
     return int(chunk_mz)
 
 
+class MzNotOnAxisError(ValueError):
+    """A partial update of a peak store naming an m/z its axis does not hold.
+
+    An update is built from m/z values read off the store, so the axis was
+    rewritten after they were read: applying an m/z calibration rescales it,
+    and detecting the file's peaks again replaces it. Nothing of the update
+    was written.
+
+    A class of its own because of what answers it. Reading the store again
+    and building the update from the axis it then holds is all it takes,
+    which a caller cannot say of any other refusal of an update.
+
+    A ``ValueError``, so the API layer keeps mapping it to a client-class
+    failure with its own message rather than a generic 500.
+    """
+
+
 async def write_peaks(
     peak_timeseries: xr.Dataset,
     filename: str,
@@ -577,8 +594,10 @@ async def write_peaks(
     :type filename: str
     :param overwrite: Flag to overwrite peaks if they already exist, defaults to False
     :type overwrite: bool, optional
-    :raises ValueError: If a partial update names an m/z the file holds no
-        peak at, or one that does not single out a peak
+    :raises MzNotOnAxisError: If a partial update names an m/z that is not on
+        the file's m/z axis
+    :raises ValueError: If a partial update names an m/z that does not single
+        out a peak
     :raises Exception: If the path is too long or other I/O errors occur
     :return: None
     """
@@ -752,9 +771,11 @@ def _get_chunk_metadata(
 
     if not np.all(exact_match_mask):
         missing_mz = mz_update[np.invert(exact_match_mask)]
-        raise ValueError(
+        raise MzNotOnAxisError(
             f"Cannot update m/z values not present in existing data: {missing_mz}. "
-            "Running peak detection first should resolve this issue."
+            "The file's m/z axis has most likely been rewritten since they "
+            "were read, as an m/z calibration or a new peak detection does. "
+            "Asking again reads the axis as it is now."
         )
 
     indexer = _rows_of_kept_peaks(z, existing_mz, indexer)

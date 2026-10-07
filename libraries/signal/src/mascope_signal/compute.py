@@ -16,6 +16,7 @@ import mascope_file.name as m_name
 import mascope_thermo.streams as m_streams
 import mascope_thermo.thermo as m_thermo
 import mascope_tofwerk.tofwerk as m_tofwerk
+from mascope_runtime.logging import SENTRY_FINGERPRINT
 from mascope_signal.runtime import runtime
 from mascope_thermo.backend import averaged_profile_signature
 from mascope_tools.alignment.calibration import CentroidedSpectrum, MassAligner, Spectra
@@ -1344,15 +1345,59 @@ async def load_peak_timeseries(
     """Loads peak timeseries from the sample file.
     Computes missing peak timeseries if needed.
 
+    Computing them means reading the file back, which takes long enough for
+    the store's m/z axis to be rewritten meanwhile: an m/z calibration of the
+    file rescales it, and nothing keeps the two apart. The store then refuses
+    the fill, whose m/z values are those of the axis as it was
+    (``mascope_file.io.MzNotOnAxisError``), and the peaks are loaded and
+    computed once more, against the store as it has become. A second refusal
+    is raised.
+
     :param base_filename: Sample file filename
     :type base_filename: str
     :param mzs: List of target m/z values
     :type mzs: list[float]
+    :raises MzNotOnAxisError: If the store's m/z axis was rewritten during
+        both attempts
+    :return: The peak timeseries dataset
+    :rtype: xr.Dataset
+    """
+    mzs_arr = np.unique(np.asarray(mzs))
+    try:
+        return await _load_or_compute_peak_timeseries(base_filename, mzs_arr)
+    except m_io.MzNotOnAxisError:
+        # A warning although the second attempt is expected to succeed:
+        # nothing else says how often a fill meets a rewritten axis, and that
+        # is what decides whether the two want keeping apart instead. Pinned
+        # to one issue, since the refusal's message carries the m/z values
+        # and monitoring would otherwise group it close to per file.
+        runtime.logger.bind(
+            **{SENTRY_FINGERPRINT: ["peak-fill-met-a-rewritten-axis"]}
+        ).opt(exception=True).warning(
+            f"The m/z axis of the peak store of '{base_filename}' was rewritten "
+            "while peak timeseries were being computed for it. They were not "
+            "stored, and are computed again."
+        )
+    return await _load_or_compute_peak_timeseries(base_filename, mzs_arr)
+
+
+async def _load_or_compute_peak_timeseries(
+    base_filename: str,
+    mzs_arr: np.ndarray,
+) -> xr.Dataset:
+    """One attempt of :func:`load_peak_timeseries`: load, compute what is
+    missing, write it, load again.
+
+    :param base_filename: Sample file filename
+    :type base_filename: str
+    :param mzs_arr: Sorted unique target m/z values
+    :type mzs_arr: np.ndarray
+    :raises MzNotOnAxisError: If the store's m/z axis was rewritten between
+        the load and the write
     :return: The peak timeseries dataset
     :rtype: xr.Dataset
     """
     # --- Load existing peak timeseries from the sample file ---
-    mzs_arr = np.unique(np.asarray(mzs))
     peak_timeseries = await asyncio.to_thread(
         _load_deduplicated_peak_data, base_filename, mzs_arr
     )

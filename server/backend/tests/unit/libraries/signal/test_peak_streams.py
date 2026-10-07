@@ -818,6 +818,52 @@ def test_an_mz_two_streams_hold_is_answered_by_the_row_that_kept_it(
     assert _fill([set_above]).stream.values.tolist() == [1]
 
 
+def test_a_fill_a_calibration_overtakes_is_not_written_to_another_streams_row(
+    acquire, instrument_functions, monkeypatch
+):
+    """An m/z calibration applied while a fill reads the file back: the axis
+    rescaled in place, the factor recorded beside the file. The fill carries
+    the m/z values of the axis as it was. Of the two rows at the reagent ion,
+    the first at or above the upper one's old m/z is now the lower one, and
+    within a tolerance the measuring stream's timeseries was written there,
+    over the settling stream's. The store refuses the fill instead, and the
+    peaks are loaded and filled again on the axis as it has become."""
+    acquisition = acquire(TWO_EXPERIMENTS)
+    m_peak.compute_peaks(SAMPLE_FILENAME, instrument_functions, per_stream=True)
+    before = _store().mz.values
+    rescaling = 1 + 3e-6
+    read = acquisition.xic
+    reads = []
+
+    def read_while_calibrated(*args, **kwargs):
+        reads.append(args)
+        if len(reads) == 1:
+            m_io.update_zarr_array_coord(
+                SAMPLE_FILENAME, "peak_timeseries", "mz", before * rescaling
+            )
+            m_io.update_props(
+                SAMPLE_FILENAME,
+                {"mz_calibration": {"par": {"calibration_factor": rescaling}}},
+            )
+        return read(*args, **kwargs)
+
+    monkeypatch.setattr(acquisition, "xic", read_while_calibrated)
+
+    _fill(before)
+
+    stored = _store()
+    assert stored.mz.values.tolist() == (before * rescaling).tolist()
+    reagent = stored.isel(mz=[0, 1])
+    assert reagent.stream.values.tolist() == [0, 1]
+    nan = pytest.approx(np.nan, nan_ok=True)
+    assert reagent.peak_heights.values[0].tolist() == [100.0, 100.0, nan, nan, nan, nan]
+    # The measuring stream's row was asked for by an m/z that now names the
+    # row below it, so it is left for an ask by its own m/z: unfilled, and no
+    # other row filled in its place
+    assert stored.is_timeseries_computed.values.tolist() == [True, False, True, True]
+    assert np.isnan(reagent.peak_heights.values[1]).all()
+
+
 def test_a_per_stream_store_just_built_reads_back(acquire, instrument_functions):
     acquire(TWO_EXPERIMENTS)
     m_peak.compute_peaks(SAMPLE_FILENAME, instrument_functions, per_stream=True)
