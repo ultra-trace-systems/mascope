@@ -229,11 +229,17 @@ class FileUploader:
         the handlers there are a frame away from it. CPython 3.12 acts on a
         pending interrupt at a loop's backward jump only once it has jumped,
         and looks for the handler at the instruction before the jump's
-        target. For a loop that opens a ``try`` block that instruction is
-        outside the block, so an interrupt taken on a ``continue`` is not
-        seen by a handler written around the loop in the same function. One
-        that leaves this function reaches the caller's handlers as any
-        exception does.
+        target (python/cpython#108214). For a loop that opens a ``try``
+        block that instruction is outside the block, so an interrupt taken
+        on a ``continue`` is not seen by a handler written around the loop
+        in the same function. One that leaves this function reaches the
+        caller's handlers as any exception does.
+
+        The issue is not being fixed in 3.12. Python 3.13 looks before it
+        jumps, which mends the ``continue``, but leaves such a loop's own
+        jump back from the end of its body outside the block, and an
+        interrupt taken there is lost the same way. 3.14 has neither. So
+        the loop stays apart while the agent runs on 3.12 or on 3.13.
         """
         while not self.shutdown_event.wait(POLL_INTERVAL):
             fname = None

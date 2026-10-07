@@ -281,7 +281,8 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   interrupt that arrived in that instant went past the handling written
   around the loop, so once in a great while the agent ended with a traceback
   where "Shutdown requested by user." belongs. The uploads under way were
-  waited for all the same.
+  waited for all the same. The wait for a pairing to be approved had the
+  same flaw, rarer still, and is mended the same way.
 
 - **The File Agent no longer stops when a new file is gone before its
   upload.** A file deleted or renamed in the seconds between appearing in the
