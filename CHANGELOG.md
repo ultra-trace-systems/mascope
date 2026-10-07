@@ -121,13 +121,17 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   file converter detects such a file's peaks per experiment, each over its
   own scans.
 
-  It is the first step of several, which is why it is off and should stay
-  off on a production server: so far only peak detection follows it. Such a
-  file still gets one sample per polarity, and that sample then reads the
-  peak lists of every experiment of the polarity together. The steps that
-  stitch the experiments' ranges into one spectrum per polarity, and
-  calibrate each range on its own, follow, and the setting will be announced
-  again when they are in.
+  It is built in steps, which is why it is off and should stay off on a
+  production server: so far only peak detection follows it. Detection also
+  stitches the experiments' ranges. From their scan ranges and microscans
+  alone it decides which experiment owns each m/z of the one spectrum they
+  make, marks every peak with whether it belongs to that spectrum, and
+  records the map and what two experiments read of the ions both measure
+  beside the peaks. Nothing reads any of that yet. Such a file still gets
+  one sample per polarity, and that sample reads the peak lists of every
+  experiment of the polarity together. The steps that make the sample read
+  the stitched spectrum, and calibrate each range on its own, follow, and
+  the setting will be announced again when they are in.
 
   A file with one experiment in each polarity, which is nearly every file, is
   processed exactly as before whichever way this is set. A file already

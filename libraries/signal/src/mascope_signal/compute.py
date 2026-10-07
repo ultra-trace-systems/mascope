@@ -13,6 +13,7 @@ import zarr
 
 import mascope_file.io as m_io
 import mascope_file.name as m_name
+import mascope_signal.stitch as m_stitch
 import mascope_thermo.streams as m_streams
 import mascope_thermo.thermo as m_thermo
 import mascope_tofwerk.tofwerk as m_tofwerk
@@ -114,6 +115,40 @@ def peak_store_streams(peak_data: xr.Dataset) -> list[str]:
         + " and ".join(name for name, there in carried.items() if not there)
         + "."
     )
+
+
+def peak_store_stitch_map(peak_data: xr.Dataset) -> dict | None:
+    """The stitch map a peak store's composites are read by, or None.
+
+    A per-stream store says which of its peaks make up each polarity's
+    composite: ``composite`` along ``mz``, and the map that decided it in its
+    ``stitch_map`` attribute (:func:`mascope_signal.stitch.stitch_map`). A
+    pooled store has no streams to stitch, and answers None.
+
+    The detection that labels a store's streams draws its map, so a
+    per-stream store without one was not written by it, and one that lost
+    its mask or its map on the way cannot say what its composites hold. Both
+    are refused as stale: detecting the file's peaks again writes all of it.
+
+    :param peak_data: A peak store, or a selection of its peaks or scans
+    :type peak_data: xr.Dataset
+    :raises ValueError: If the dataset carries only part of what a
+        per-stream store does (:func:`peak_store_streams`)
+    :raises StalePeakStoreError: If it is a per-stream store with no map or
+        no mask
+    :return: The map, or None for a pooled store
+    :rtype: dict | None
+    """
+    if not peak_store_streams(peak_data):
+        return None
+    stitch = peak_data.attrs.get(m_stitch.STITCH_MAP_ATTR)
+    if not stitch or "composite" not in peak_data.variables:
+        raise StalePeakStoreError(
+            "The peak store holds a peak list per scan stream and no stitch "
+            "map of them. Re-run peak detection for this sample file to "
+            "rebuild the store."
+        )
+    return stitch
 
 
 def get_scan_timestamps(
@@ -1198,7 +1233,8 @@ class StalePeakStoreError(ValueError):
     reader computes. One the file no longer holds a stream under is the same
     condition by another road: that stream's peaks have no scans left to be
     read back over, and a rebuild, which keys the file's streams afresh,
-    repairs it.
+    repairs it. So is a per-stream store that carries no stitch map of its
+    streams (:func:`peak_store_stitch_map`): the rebuild draws one.
 
     A ``ValueError`` so the API layer keeps mapping it to a client-class
     failure with its own message rather than a generic 500.

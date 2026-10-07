@@ -18,7 +18,7 @@ import os
 
 import numpy as np
 import pytest
-from scripted_acquisition import SAMPLE_FILENAME, ScriptedAcquisition
+from scripted_acquisition import SAMPLE_FILENAME
 
 import mascope_file.io as m_io
 import mascope_signal.compute as m_compute
@@ -47,29 +47,6 @@ TWO_EXPERIMENTS = [
     (NEG, 2, {62.0: 1000.0}),
     (NEG, 2, {62.0: 1000.0, 188.0: 50.0}),
 ]
-
-
-@pytest.fixture
-def instrument_functions():
-    """A Gaussian peak shape. Peak areas follow it; nothing here reads them."""
-    x = np.linspace(-5.0, 5.0, 101)
-    return {"x": x, "y": np.exp(-(x**2) / 2)}, lambda mz: np.full_like(mz, 1e5)
-
-
-@pytest.fixture
-def acquire(monkeypatch, sample_file_path):
-    """Make the test sample a raw Orbitrap file read from scripted scans."""
-
-    def _acquire(scans):
-        acquisition = ScriptedAcquisition(scans)
-        monkeypatch.setattr(
-            m_compute.m_name, "get_sample_file_type", lambda _: "orbi_raw"
-        )
-        monkeypatch.setattr(m_thermo, "open_backend", lambda path: acquisition)
-        monkeypatch.setattr(m_streams, "open_backend", lambda path: acquisition)
-        return acquisition
-
-    return _acquire
 
 
 def _store():

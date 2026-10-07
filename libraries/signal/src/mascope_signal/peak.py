@@ -19,6 +19,7 @@ import mascope_file.io as m_io
 import mascope_file.name as m_name
 import mascope_signal.compute as m_compute
 import mascope_signal.fitting as m_fitting
+import mascope_signal.stitch as m_stitch
 from mascope_backend.db.id import gen_id
 from mascope_match.params import (
     ORBI_FITTING_THRESHOLD,
@@ -262,6 +263,11 @@ class OrbiPeakDetector(BasePeakDetector):
     Pooling two experiments divides each ion by the scans of both, so an ion
     only one of them measures is diluted.
 
+    A file detected per stream is stitched as well: the streams of one
+    polarity are the segments of one composite spectrum, in which each m/z is
+    taken from the one stream that owns it (``mascope_signal.stitch``). Its
+    store says which peaks that leaves, and by which map.
+
     :param per_stream: Whether a file that holds more than one MS1 stream in
         a polarity is detected per stream. None goes by the decision the
         file's ``.props`` records, which is what a rebuild of the store
@@ -333,7 +339,54 @@ class OrbiPeakDetector(BasePeakDetector):
         self._allocate_peak_timeseries(peaks)
         self._flag_weak_peaks()
         self._flag_satellite_peaks()
+        if self._streams:
+            self._stitch()
         progress_callback(100)
+
+    def _stitch(self) -> None:
+        """Stitch a file detected per stream: mark the peaks of its composites.
+
+        Adds what a reader of the store needs to take one spectrum per
+        polarity out of several peak lists:
+
+        - ``composite`` along ``mz``: whether the peak's own stream owns its
+          m/z under the stitch map. Every peak of a polarity with a single
+          stream is its composite's, so the mask reads the same way for any
+          per-stream store;
+        - the map itself as the ``stitch_map`` attribute, so that nobody has
+          to draw it again to know where the boundaries are, and a store
+          stitched under another rule can be told from this one;
+        - the ``stitch_overlaps`` attribute: what two streams read where
+          both measure, which is what the composite leaves unused
+          (:func:`mascope_signal.stitch.overlap_readings`).
+
+        The map is in m/z as the instrument recorded them, and the peaks are
+        on the file's calibrated axis, so a peak is placed by the factor the
+        file carries. A file's mask is then the same whenever its peaks are
+        detected, before its calibration or after.
+        """
+        store = self.peak_timeseries
+        calibration = self._sample_file_props.get("mz_calibration")
+        factor = calibration["par"]["calibration_factor"] if calibration else 1.0
+        peak_mz, peak_stream = store.mz.values, store.stream.values
+
+        stitch = m_stitch.stitch_map(self._streams)
+        composite = m_stitch.composite_mask(
+            peak_mz, peak_stream, store.polarity.values, stitch, calibration=factor
+        )
+        overlaps = m_stitch.overlap_readings(
+            self._streams,
+            peak_mz,
+            peak_stream,
+            store.sum_peak_heights.values,
+            # The peaks a load of the store keeps
+            ~(store.is_weak.values | store.is_satellite.values),
+            np.bincount(store.scan_stream.values, minlength=len(self._streams)),
+            calibration=factor,
+        )
+        self._peak_timeseries = store.assign({"composite": (("mz"), composite)})
+        self._peak_timeseries.attrs[m_stitch.STITCH_MAP_ATTR] = stitch
+        self._peak_timeseries.attrs[m_stitch.STITCH_OVERLAPS_ATTR] = overlaps
 
     async def _extract_peaks_per_polarity(self) -> xarray.Dataset:
         """The peaks of a file detected whole: one list per polarity."""
