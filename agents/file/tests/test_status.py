@@ -12,7 +12,9 @@ import threading
 import pytest
 import requests
 
-from mascope_file_agent import main, status
+from mascope_file_agent import status, uploader
+from mascope_file_agent.credentials import Credentials
+from mascope_file_agent.uploader import FileUploader
 
 
 class RecordingLogger:
@@ -529,20 +531,9 @@ def test_an_upload_that_finishes_after_the_follower_stopped_says_so(
 # ---------------------------------------------------------------------------
 
 
-class StubConfig:
-    mask = "*.raw"
-    access_token = "tok"
-    filename_prefix = "pre_"
-    filename_suffix = ""
-
-
-class StubRuntime:
-    def __init__(self):
-        self.logger = RecordingLogger()
-        self.config = StubConfig()
-
-
-def test_an_uploaded_file_is_followed_by_its_name_here(monkeypatch, tmp_path):
+def test_an_uploaded_file_is_followed_by_its_name_here(
+    monkeypatch, tmp_path, make_settings
+):
     """Not by the prefixed name it was uploaded under."""
     followed = []
 
@@ -552,12 +543,20 @@ def test_an_uploaded_file_is_followed_by_its_name_here(monkeypatch, tmp_path):
 
     sample = tmp_path / "x.raw"
     sample.write_bytes(b"data")
-    monkeypatch.setattr(main, "runtime", StubRuntime())
-    monkeypatch.setattr(main, "URL", "https://mascope.example.com")
-    monkeypatch.setattr(main, "_instrument", "Orbi-1")
-    monkeypatch.setattr(main, "api_post_file_tus", lambda **kwargs: None)
-    monkeypatch.setattr(main, "_status_follower", Follower())
+    monkeypatch.setattr(uploader, "api_post_file_tus", lambda **kwargs: None)
+    settings = make_settings(filename_prefix="pre_")
+    logger = RecordingLogger()
+    file_uploader = FileUploader(
+        settings,
+        "https://mascope.example.com",
+        Credentials(
+            "https://mascope.example.com", settings.host, settings.access_token, logger
+        ),
+        logger=logger,
+        instrument="Orbi-1",
+        status_follower=Follower(),
+    )
 
-    main.upload_sample_file(str(sample))
+    file_uploader.upload_sample_file(str(sample))
 
     assert followed == [("x.raw",)]

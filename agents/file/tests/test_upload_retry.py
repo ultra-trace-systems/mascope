@@ -1,12 +1,14 @@
-"""Unit tests for the upload retry policy in main.process_file_upload.
+"""Unit tests for the upload retry policy in FileUploader.process_file_upload.
 
-Hermetic: the upload call and runtime are monkeypatched; no sleeping, no
+Hermetic: the upload call is monkeypatched; no waiting between attempts, no
 network.
 """
 
 import pytest
 
-from mascope_file_agent import main
+from mascope_file_agent import uploader
+from mascope_file_agent.credentials import Credentials
+from mascope_file_agent.uploader import FileUploader
 from mascope_sdk.exceptions import (
     AuthenticationError,
     MascopeAPIError,
@@ -33,33 +35,28 @@ class StubLogger:
         pass
 
 
-class StubConfig:
-    def __init__(self, source):
-        self.source = source
-
-
-class StubRuntime:
-    def __init__(self, source):
-        self.logger = StubLogger()
-        self.config = StubConfig(source)
-
-
 @pytest.fixture
-def stub_runtime(monkeypatch, tmp_path):
-    runtime = StubRuntime(str(tmp_path))
-    monkeypatch.setattr(main, "runtime", runtime)
-    monkeypatch.setattr(main.time, "sleep", lambda seconds: None)
-    return runtime
+def file_uploader(monkeypatch, make_settings):
+    """An uploader watching the test's folder, with no wait between attempts."""
+    monkeypatch.setattr(uploader, "RETRY_DELAY", 0)
+    settings = make_settings()
+    logger = StubLogger()
+    credentials = Credentials(
+        "https://mascope.example.com", settings.host, settings.access_token, logger
+    )
+    return FileUploader(
+        settings, "https://mascope.example.com", credentials, logger=logger
+    )
 
 
-def _failing_upload(monkeypatch, exception):
+def _failing_upload(monkeypatch, file_uploader, exception):
     calls = []
 
     def fail(filepath):
         calls.append(filepath)
         raise exception
 
-    monkeypatch.setattr(main, "upload_sample_file", fail)
+    monkeypatch.setattr(file_uploader, "upload_sample_file", fail)
     return calls
 
 
@@ -75,32 +72,34 @@ def _failing_upload(monkeypatch, exception):
     ],
 )
 def test_no_retry_on_client_errors(
-    stub_runtime, monkeypatch, tmp_path, exception, expected_guidance
+    file_uploader, monkeypatch, tmp_path, exception, expected_guidance
 ):
-    calls = _failing_upload(monkeypatch, exception)
+    calls = _failing_upload(monkeypatch, file_uploader, exception)
     sample = tmp_path / "x.raw"
     sample.write_text("data")
 
-    main.process_file_upload(str(sample))
+    file_uploader.process_file_upload(str(sample))
 
     assert len(calls) == 1  # failed fast, no retries
     assert (tmp_path / "failed_uploads" / "x.raw").exists()
-    assert any(expected_guidance in e for e in stub_runtime.logger.errors)
+    assert any(expected_guidance in e for e in file_uploader.logger.errors)
 
 
-def test_retries_on_connection_errors(stub_runtime, monkeypatch, tmp_path):
-    calls = _failing_upload(monkeypatch, MascopeConnectionError("refused"))
+def test_retries_on_connection_errors(file_uploader, monkeypatch, tmp_path):
+    calls = _failing_upload(
+        monkeypatch, file_uploader, MascopeConnectionError("refused")
+    )
     sample = tmp_path / "x.raw"
     sample.write_text("data")
 
-    main.process_file_upload(str(sample), max_retries=3)
+    file_uploader.process_file_upload(str(sample), max_retries=3)
 
     assert len(calls) == 3  # transient errors keep retrying to the cap
     assert (tmp_path / "failed_uploads" / "x.raw").exists()
 
 
 def test_unknown_instrument_explains_the_filename_rule(
-    stub_runtime, monkeypatch, tmp_path
+    file_uploader, monkeypatch, tmp_path
 ):
     """The commonest permanent rejection must name the fix, not just the fault.
 
@@ -110,6 +109,7 @@ def test_unknown_instrument_explains_the_filename_rule(
     """
     calls = _failing_upload(
         monkeypatch,
+        file_uploader,
         ValidationError(
             "Invalid value. Failed to get instrument type for instrument x.",
             status_code=400,
@@ -118,53 +118,61 @@ def test_unknown_instrument_explains_the_filename_rule(
     sample = tmp_path / "x_run.raw"
     sample.write_text("data")
 
-    main.process_file_upload(str(sample))
+    file_uploader.process_file_upload(str(sample))
 
     assert len(calls) == 1
-    guidance = " ".join(stub_runtime.logger.errors)
+    guidance = " ".join(file_uploader.logger.errors)
     assert "filename_prefix" in guidance
     assert "first underscore" in guidance
 
 
-def test_rate_limiting_is_still_retried(stub_runtime, monkeypatch, tmp_path):
+def test_rate_limiting_is_still_retried(file_uploader, monkeypatch, tmp_path):
     """429 is the one 4xx worth waiting out - it clears on its own."""
     calls = _failing_upload(
-        monkeypatch, MascopeAPIError("Too many requests", status_code=429)
+        monkeypatch,
+        file_uploader,
+        MascopeAPIError("Too many requests", status_code=429),
     )
     sample = tmp_path / "x.raw"
     sample.write_text("data")
 
-    main.process_file_upload(str(sample), max_retries=3)
+    file_uploader.process_file_upload(str(sample), max_retries=3)
 
     assert len(calls) == 3
 
 
-def test_the_give_up_line_says_where_the_file_went(stub_runtime, monkeypatch, tmp_path):
+def test_the_give_up_line_says_where_the_file_went(
+    file_uploader, monkeypatch, tmp_path
+):
     """Operators need to find the file and know how to make it try again."""
-    _failing_upload(monkeypatch, ValidationError("Invalid.", status_code=400))
+    _failing_upload(
+        monkeypatch, file_uploader, ValidationError("Invalid.", status_code=400)
+    )
     sample = tmp_path / "x.raw"
     sample.write_text("data")
 
-    main.process_file_upload(str(sample))
+    file_uploader.process_file_upload(str(sample))
 
-    tail = " ".join(stub_runtime.logger.errors)
+    tail = " ".join(file_uploader.logger.errors)
     assert "failed_uploads" in tail
     assert "1 attempt." in tail  # not "1 attempts"
     assert "watched folder" in tail
 
 
 def test_a_vanished_file_does_not_raise_in_the_worker(
-    stub_runtime, monkeypatch, tmp_path
+    file_uploader, monkeypatch, tmp_path
 ):
     """A file deleted mid-retry must not throw where nobody sees it.
 
-    process_file_upload runs in a thread pool whose exceptions are never
-    collected, so the copy that preserves a failed file has to fail loudly in
-    the log instead of silently killing the task.
+    process_file_upload runs on a worker thread, where nobody is waiting for
+    what it raises, so the copy that preserves a failed file has to fail
+    loudly in the log instead of silently ending the upload.
     """
-    _failing_upload(monkeypatch, ValidationError("Invalid.", status_code=400))
+    _failing_upload(
+        monkeypatch, file_uploader, ValidationError("Invalid.", status_code=400)
+    )
     missing = tmp_path / "gone.raw"
 
-    main.process_file_upload(str(missing))
+    file_uploader.process_file_upload(str(missing))
 
-    assert any("could not keep a copy" in e for e in stub_runtime.logger.errors)
+    assert any("could not keep a copy" in e for e in file_uploader.logger.errors)

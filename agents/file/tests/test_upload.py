@@ -1,6 +1,7 @@
 """Unit tests for the agent's TUS upload path.
 
-Hermetic: the SDK upload function and the runtime are monkeypatched.
+Hermetic: the SDK upload function is monkeypatched, and the uploader is
+built on its own, with no agent around it.
 
 There is no legacy fallback. Every supported server accepts agent TUS
 uploads, so a refusal at upload creation is a real failure - a rejected
@@ -12,8 +13,13 @@ blamed the server version for what was a revoked or expired credential.
 
 import pytest
 
-from mascope_file_agent import main
+from mascope_file_agent import agent, credentials, main, uploader, watcher
+from mascope_file_agent.credentials import Credentials
+from mascope_file_agent.uploader import FileUploader
 from mascope_sdk.exceptions import AuthenticationError, NotFoundError
+
+
+URL = "https://mascope.example.com"
 
 
 class StubLogger:
@@ -30,35 +36,34 @@ class StubLogger:
         pass
 
 
-class StubConfig:
-    mask = "*.raw"
-    access_token = "tok"
-    filename_prefix = ""
-    filename_suffix = ""
+@pytest.fixture
+def make_uploader(make_settings):
+    """An uploader as the agent builds it, with nothing set but what is given."""
 
+    def make(access_token="tok", **arguments):
+        settings = make_settings(access_token=access_token)
+        credentials = Credentials(URL, settings.host, access_token, StubLogger())
+        return FileUploader(
+            settings, URL, credentials, logger=StubLogger(), **arguments
+        )
 
-class StubRuntime:
-    def __init__(self):
-        self.logger = StubLogger()
-        self.config = StubConfig()
+    return make
 
 
 @pytest.fixture
-def sample_file(monkeypatch, tmp_path):
-    monkeypatch.setattr(main, "runtime", StubRuntime())
-    monkeypatch.setattr(main, "URL", "https://mascope.example.com")
+def sample_file(tmp_path):
     sample = tmp_path / "x.raw"
     sample.write_bytes(b"data")
     return str(sample)
 
 
-def test_uploads_via_tus(monkeypatch, sample_file):
+def test_uploads_via_tus(monkeypatch, make_uploader, sample_file):
     tus_calls = []
     monkeypatch.setattr(
-        main, "api_post_file_tus", lambda **kwargs: tus_calls.append(kwargs)
+        uploader, "api_post_file_tus", lambda **kwargs: tus_calls.append(kwargs)
     )
 
-    main.upload_sample_file(sample_file)
+    make_uploader().upload_sample_file(sample_file)
 
     assert len(tus_calls) == 1
     assert tus_calls[0]["filepath"] == sample_file
@@ -67,24 +72,25 @@ def test_uploads_via_tus(monkeypatch, sample_file):
     assert tus_calls[0]["instrument"] is None
 
 
-def test_reports_the_configured_instrument(monkeypatch, sample_file):
+def test_reports_the_configured_instrument(monkeypatch, make_uploader, sample_file):
     tus_calls = []
     monkeypatch.setattr(
-        main, "api_post_file_tus", lambda **kwargs: tus_calls.append(kwargs)
+        uploader, "api_post_file_tus", lambda **kwargs: tus_calls.append(kwargs)
     )
-    monkeypatch.setattr(main, "_instrument", "Orbi-Lab2")
 
-    main.upload_sample_file(sample_file)
+    make_uploader(instrument="Orbi-Lab2").upload_sample_file(sample_file)
 
     assert tus_calls[0]["instrument"] == "Orbi-Lab2"
 
 
-def test_uploads_with_the_live_token_not_the_config_snapshot(monkeypatch, sample_file):
+def test_uploads_with_the_live_token_not_the_config_snapshot(
+    monkeypatch, make_uploader, sample_file
+):
     """Renewal rotates the token under the uploader; the send must follow it.
 
     The server keeps only the newest two tokens per device, so the one the
     agent booted with is reaped at the second renewal - about 15 days in for
-    a 30-day credential. An uploader reading runtime.config's snapshot would
+    a 30-day credential. An uploader reading the settings' snapshot would
     send that dead token from then on, and a 401 is terminal in
     process_file_upload: no retry, straight to failed_uploads. Renewal keeps
     succeeding on the live token meanwhile, so nothing else complains and a
@@ -92,17 +98,16 @@ def test_uploads_with_the_live_token_not_the_config_snapshot(monkeypatch, sample
     """
     tus_calls = []
     monkeypatch.setattr(
-        main, "api_post_file_tus", lambda **kwargs: tus_calls.append(kwargs)
+        uploader, "api_post_file_tus", lambda **kwargs: tus_calls.append(kwargs)
     )
-    # The config still holds what the agent booted with; renewal has since
-    # rotated the live token. Both globals go through monkeypatch so the
-    # rotation is undone afterwards - they are shared module state.
-    main.runtime.config.access_token = "stale-boot-token"
-    monkeypatch.setattr(main, "_access_token", None)
-    monkeypatch.setattr(main, "_timezone", "Europe/Helsinki")
-    main._set_access_token("live-token")
+    # The settings still hold what the agent booted with; renewal has since
+    # rotated the live token.
+    file_uploader = make_uploader(
+        access_token="stale-boot-token", timezone="Europe/Helsinki"
+    )
+    file_uploader.credentials.set_access_token("live-token")
 
-    main.upload_sample_file(sample_file)
+    file_uploader.upload_sample_file(sample_file)
 
     assert tus_calls[0]["access_token"] == "live-token"
     # The zone resolved at start travels with every upload; without it the
@@ -117,7 +122,7 @@ def test_uploads_with_the_live_token_not_the_config_snapshot(monkeypatch, sample
         NotFoundError("No such route", status_code=404),
     ],
 )
-def test_upload_errors_keep_their_type(monkeypatch, sample_file, error):
+def test_upload_errors_keep_their_type(monkeypatch, make_uploader, sample_file, error):
     """A refused upload must surface as itself, not as a server-version problem.
 
     401 is the one that matters: a revoked device, a device token that
@@ -129,13 +134,13 @@ def test_upload_errors_keep_their_type(monkeypatch, sample_file, error):
     def failing_tus(**kwargs):
         raise error
 
-    monkeypatch.setattr(main, "api_post_file_tus", failing_tus)
+    monkeypatch.setattr(uploader, "api_post_file_tus", failing_tus)
 
     with pytest.raises(type(error)):
-        main.upload_sample_file(sample_file)
+        make_uploader().upload_sample_file(sample_file)
 
 
-def test_no_legacy_upload_path_remains(monkeypatch, sample_file):
+def test_no_legacy_upload_path_remains():
     """The fallback cannot creep back: nothing may call the legacy endpoint.
 
     A latch that survives one bad response degrades every later upload in
@@ -145,24 +150,30 @@ def test_no_legacy_upload_path_remains(monkeypatch, sample_file):
     assert not hasattr(main, "api_post_file")
     assert not hasattr(main, "_legacy_upload")
     assert not hasattr(main, "FILE_UPLOAD_SIZE_LIMIT")
+    # main held the whole agent when this was written; the same holds for
+    # every module its code has since moved to.
+    for module in (agent, credentials, uploader, watcher):
+        assert not hasattr(module, "api_post_file")
+        assert not hasattr(module, "_legacy_upload")
+        assert not hasattr(module, "FILE_UPLOAD_SIZE_LIMIT")
 
 
-def test_upload_has_no_size_cap(monkeypatch, sample_file):
+def test_upload_has_no_size_cap(monkeypatch, make_uploader, sample_file):
     """TUS uploads are chunked; the agent imposes no size limit of its own."""
     tus_calls = []
     monkeypatch.setattr(
-        main, "api_post_file_tus", lambda **kwargs: tus_calls.append(kwargs)
+        uploader, "api_post_file_tus", lambda **kwargs: tus_calls.append(kwargs)
     )
-    monkeypatch.setattr(main.os.path, "getsize", lambda _: 50 * 1024**3)
+    monkeypatch.setattr(uploader.os.path, "getsize", lambda _: 50 * 1024**3)
 
-    main.upload_sample_file(sample_file)
+    make_uploader().upload_sample_file(sample_file)
 
     assert len(tus_calls) == 1
 
 
-def test_rejects_extension_not_matching_mask(monkeypatch, tmp_path, sample_file):
+def test_rejects_extension_not_matching_mask(make_uploader, tmp_path):
     wrong = tmp_path / "x.txt"
     wrong.write_bytes(b"data")
 
     with pytest.raises(ValueError, match="not an allowed file extension"):
-        main.upload_sample_file(str(wrong))
+        make_uploader().upload_sample_file(str(wrong))
