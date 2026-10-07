@@ -969,6 +969,17 @@ image, and the installer puts it in the program's folder with Mascope's own
 PyInstaller packs code, not the licence files beside it - so an exe handed on
 without the installer should have the notices file handed on with it.
 
+Two things have no licence file of their own to copy, and their texts are kept
+in `tooling/licence-texts` (its README says where each came from): a package
+whose wheel ships none, by name and exact version, and the libraries built
+into the interpreter - OpenSSL, libffi, Expat and the rest - which the
+`LICENSE.txt` of a Python installation names in part or not at all, depending
+on who built it. The build refuses to write the notices when a package has no
+licence text in either place, or when there is no such file for the Python it
+runs on, so a dependency bump or a move to a new Python that needs a text
+added fails in CI's `Dependency licences (File Agent)` job before it fails a
+release.
+
 `-Installer` compiles `installer.iss` and requires Inno Setup 6 (preinstalled
 on GitHub windows runners; locally `winget install JRSoftware.InnoSetup`).
 The installer is per-user (no admin rights), offers a run-at-login startup

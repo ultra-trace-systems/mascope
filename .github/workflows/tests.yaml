@@ -151,10 +151,11 @@ jobs:
       - name: Write the notices the installer carries
         # What build.ps1 runs once the exe is built, here without the build.
         # The release job is otherwise the first to learn that a runner's
-        # interpreter keeps its licence where the generator does not look, or
-        # that a package's licence file no longer reads - and a release is the
-        # wrong moment to learn it. This is the same environment on the same
-        # kind of runner.
+        # interpreter keeps its licence where the generator does not look,
+        # that a package has come in with no licence text at all, or that the
+        # Python being built on has no account of what is built into it in
+        # tooling/licence-texts - and a release is the wrong moment to learn
+        # it. This is the same environment on the same kind of runner.
         working-directory: agents/file
         run: uv run --no-sync python ../../tooling/third-party-notices.py --for agent --interpreter --lock uv.lock --output "$env:RUNNER_TEMP/THIRD_PARTY_NOTICES.txt"
 

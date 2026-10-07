@@ -63,6 +63,49 @@ def _dist(site: Path, name: str, version: str, metadata: str = "", files=None):
     return PathDistribution(info)
 
 
+def _carry(owner, name: str, version: str, metadata: str = "", files=None):
+    """A copy of another project inside ``owner``, as setuptools keeps its own.
+
+    Its metadata directory sits under the owner's package, off the import
+    path, and the owner's record of files is the only thing that names it.
+    """
+    site = owner._path.parent
+    relative = f"{owner.metadata['Name']}/_vendor/{name}-{version}.dist-info"
+    info = site / relative
+    info.mkdir(parents=True)
+    (info / "METADATA").write_text(
+        f"Metadata-Version: 2.4\nName: {name}\nVersion: {version}\n{metadata}",
+        encoding="utf-8",
+    )
+    record = [f"{relative}/METADATA,,"]
+    for inside, content in (files or {}).items():
+        target = info / inside
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(content.encode("utf-8"))
+        record.append(f"{relative}/{inside},,")
+    with (owner._path / "RECORD").open("a", encoding="utf-8") as handle:
+        handle.write("\n".join(record) + "\n")
+
+
+@pytest.fixture
+def kept(tmp_path, monkeypatch):
+    """An empty stand-in for tooling/licence-texts, and a way to fill it."""
+    directory = tmp_path / "licence-texts"
+    directory.mkdir()
+    monkeypatch.setattr(notices, "KEPT_TEXTS", directory)
+
+    def keep(name: str, content: str) -> None:
+        (directory / name).write_bytes(content.encode("utf-8"))
+
+    return keep
+
+
+def _incorporated() -> str:
+    """The name of CPython's account of itself, for the Python running this."""
+    major, minor = sys.version_info[:2]
+    return notices.INCORPORATED.format(major=major, minor=minor)
+
+
 def test_pep639_licence_files_are_carried_verbatim(tmp_path):
     text = "MIT License\n\nCopyright (c) 2024 Alpha authors\n"
     dist = _dist(
@@ -278,15 +321,21 @@ def test_a_vendored_directory_without_licence_files_is_refused(tmp_path, monkeyp
         notices.main(["--vendored", str(tmp_path / "assets"), "--lock", str(lock)])
 
 
-def test_an_interpreter_entry_carries_the_licence_its_installation_ships(tmp_path):
+def test_an_interpreter_entry_carries_the_licence_its_installation_ships(
+    tmp_path, kept
+):
     """A frozen program carries CPython, which no distribution's metadata
-    describes: its entry comes from the licence file in its installation."""
+    describes: its entry comes from the licence file in its installation,
+    and from CPython's account of the software built into it, which no
+    installation can be relied on to have."""
+    kept(_incorporated(), "OpenSSL\r\nlibffi\r\n")
     (tmp_path / "LICENSE.txt").write_bytes(
         b"A. HISTORY OF THE SOFTWARE\r\n\r\nPYTHON SOFTWARE FOUNDATION LICENSE\r\n"
     )
 
     entry = notices.collect_interpreter(tmp_path)
 
+    major, minor = sys.version_info[:2]
     assert entry["name"] == "Python"
     assert entry["version"] == platform.python_version()
     assert entry["licence"] == notices.INTERPRETER_LICENCE
@@ -294,17 +343,37 @@ def test_an_interpreter_entry_carries_the_licence_its_installation_ships(tmp_pat
         (
             "LICENSE.txt",
             "A. HISTORY OF THE SOFTWARE\n\nPYTHON SOFTWARE FOUNDATION LICENSE\n",
-        )
+        ),
+        (
+            notices.INCORPORATED_LABEL.format(major=major, minor=minor),
+            "OpenSSL\nlibffi\n",
+        ),
     ]
 
 
-def test_an_interpreter_outside_windows_keeps_its_licence_with_the_library(tmp_path):
+def test_an_interpreter_with_no_account_of_what_is_built_into_it_is_refused(
+    tmp_path, kept
+):
+    """Its licence file alone names some of those libraries or none, by who
+    built the interpreter, so an entry made of that file would leave out
+    what the program carries and say nothing of it."""
+    (tmp_path / "LICENSE.txt").write_text("PSF", encoding="utf-8")
+    kept("cpython-2.7.rst", "another Python's")
+
+    with pytest.raises(SystemExit, match="Doc/license.rst of CPython"):
+        notices.collect_interpreter(tmp_path)
+
+
+def test_an_interpreter_outside_windows_keeps_its_licence_with_the_library(
+    tmp_path, kept
+):
+    kept(_incorporated(), "built in")
     major, minor = sys.version_info[:2]
     library = tmp_path / "lib" / f"python{major}.{minor}"
     library.mkdir(parents=True)
     (library / "LICENSE.txt").write_text("PSF", encoding="utf-8")
 
-    assert notices.collect_interpreter(tmp_path)["files"] == [("LICENSE.txt", "PSF")]
+    assert notices.collect_interpreter(tmp_path)["files"][0] == ("LICENSE.txt", "PSF")
 
 
 def test_an_interpreter_that_ships_no_licence_file_is_refused(tmp_path):
@@ -313,8 +382,9 @@ def test_an_interpreter_that_ships_no_licence_file_is_refused(tmp_path):
         notices.collect_interpreter(tmp_path)
 
 
-def _agent_build(tmp_path, monkeypatch):
+def _agent_build(tmp_path, monkeypatch, kept):
     """A build environment of one package, on an interpreter with a licence."""
+    kept(_incorporated(), "Built into the interpreter")
     (tmp_path / "base").mkdir()
     (tmp_path / "base" / "LICENSE.txt").write_text("PSF text", encoding="utf-8")
     monkeypatch.setattr(notices.sys, "base_prefix", str(tmp_path / "base"))
@@ -334,9 +404,9 @@ def _agent_build(tmp_path, monkeypatch):
 
 
 def test_agent_notices_lead_with_the_interpreter_the_program_carries(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, kept
 ):
-    lock = _agent_build(tmp_path, monkeypatch)
+    lock = _agent_build(tmp_path, monkeypatch, kept)
     output = tmp_path / "THIRD_PARTY_NOTICES.txt"
 
     argv = ["--for", "agent", "--interpreter", "--lock", str(lock)]
@@ -348,12 +418,14 @@ def test_agent_notices_lead_with_the_interpreter_the_program_carries(
     assert text.index("\nPython ") < text.index("\nrequests 2.34.2\n")
     assert f"License: {notices.INTERPRETER_LICENCE}\n" in text
     assert "--- LICENSE.txt\nPSF text\n" in text
+    assert "Built into the interpreter\n" in text
+    assert text.index("PSF text") < text.index("Built into the interpreter")
     assert "--- licenses/LICENSE\nApache text\n" in text
 
 
-def test_the_interpreter_is_attributed_only_when_asked_for(tmp_path, monkeypatch):
+def test_the_interpreter_is_attributed_only_when_asked_for(tmp_path, monkeypatch, kept):
     """The server image and the docs site do not carry one of their own."""
-    lock = _agent_build(tmp_path, monkeypatch)
+    lock = _agent_build(tmp_path, monkeypatch, kept)
     output = tmp_path / "THIRD_PARTY_NOTICES.txt"
 
     assert notices.main(["--lock", str(lock), "-o", str(output)]) == 0
@@ -381,3 +453,168 @@ def test_the_real_environment_yields_licence_text(tmp_path):
     text = output.read_text(encoding="utf-8")
     assert text.startswith("Mascope server - third-party notices")
     assert "\r\n" not in text
+
+
+# --------------------------------------------------------------------------
+# Copies carried inside a distribution
+# --------------------------------------------------------------------------
+
+
+def test_a_copy_carried_inside_a_distribution_gets_an_entry_of_its_own(tmp_path):
+    """setuptools keeps a dozen other projects under `_vendor`, each with its
+    metadata and off the import path: no list of what is installed has them."""
+    owner = _dist(
+        tmp_path, "setuptools", "83.0.0", files={"licenses/LICENSE": "MIT, setuptools"}
+    )
+    _carry(
+        owner,
+        "tomli",
+        "2.4.0",
+        metadata="License-Expression: MIT\n",
+        files={"licenses/LICENSE": "MIT, tomli"},
+    )
+    _carry(owner, "wheel", "0.46.3", files={"LICENSE.txt": "MIT, wheel"})
+
+    packages = notices.collect(set(), [PathDistribution(owner._path)])
+
+    assert [(p["name"], p["version"], p.get("within")) for p in packages] == [
+        ("setuptools", "83.0.0", None),
+        ("tomli", "2.4.0", "setuptools 83.0.0"),
+        ("wheel", "0.46.3", "setuptools 83.0.0"),
+    ]
+    assert packages[1]["licence"] == "MIT"
+    assert packages[1]["files"] == [("licenses/LICENSE", "MIT, tomli")]
+    assert packages[2]["files"] == [("LICENSE.txt", "MIT, wheel")]
+
+    text = notices.render(packages)
+    assert (
+        "\ntomli 2.4.0\nLicense: MIT\nA copy carried inside setuptools 83.0.0.\n"
+        in text
+    )
+    assert "3 packages." in text
+
+
+def test_a_copy_of_what_is_installed_in_its_own_right_is_listed_by_version(tmp_path):
+    """The same version says nothing new; another version is another text."""
+    owner = _dist(tmp_path, "setuptools", "83.0.0", files={"LICENSE": "setuptools"})
+    _carry(owner, "packaging", "26.0", files={"LICENSE": "packaging 26.0, carried"})
+    _carry(owner, "tomli", "2.3.0", files={"LICENSE": "tomli 2.3.0, carried"})
+    installed = [
+        PathDistribution(owner._path),
+        _dist(tmp_path, "packaging", "26.0", files={"LICENSE": "packaging 26.0"}),
+        _dist(tmp_path, "tomli", "2.4.0", files={"LICENSE": "tomli 2.4.0"}),
+    ]
+
+    packages = notices.collect(set(), installed)
+
+    assert [(p["name"], p["version"], p.get("within")) for p in packages] == [
+        ("packaging", "26.0", None),
+        ("setuptools", "83.0.0", None),
+        ("tomli", "2.4.0", None),
+        ("tomli", "2.3.0", "setuptools 83.0.0"),
+    ]
+
+
+def test_a_carried_copy_is_read_without_a_record_of_its_own(tmp_path):
+    """The owner's record names the copy; the copy's own may be gone."""
+    owner = _dist(tmp_path, "setuptools", "83.0.0", files={"LICENSE": "setuptools"})
+    _carry(
+        owner, "zipp", "3.23.0", files={"LICENSE": "MIT, zipp", "top_level.txt": "zipp"}
+    )
+    carried = tmp_path / "setuptools" / "_vendor" / "zipp-3.23.0.dist-info"
+    assert not (carried / "RECORD").exists()
+
+    packages = notices.collect(set(), [PathDistribution(owner._path)])
+
+    assert packages[1]["files"] == [("LICENSE", "MIT, zipp")]
+
+
+# --------------------------------------------------------------------------
+# Licence texts kept in the repository
+# --------------------------------------------------------------------------
+
+
+def test_a_kept_licence_stands_in_for_one_the_package_does_not_ship(tmp_path, kept):
+    """loguru's wheel has no licence file, and MIT's condition is its notice."""
+    kept("some-lib@1.2.3.txt", "MIT License\r\n\r\nCopyright (c) 2017\r\n")
+    dist = _dist(tmp_path, "Some_Lib", "1.2.3")
+
+    [package] = notices.collect(set(), [dist])
+
+    assert package["files"] == [
+        (notices.KEPT_LICENCE_LABEL, "MIT License\n\nCopyright (c) 2017\n")
+    ]
+    assert notices.NO_FILES not in notices.render([package])
+
+
+def test_a_kept_licence_is_for_one_version(tmp_path, kept):
+    """A new version comes back for a look, as a reviewed package does."""
+    kept("some-lib@1.2.3.txt", "MIT License")
+
+    [package] = notices.collect(set(), [_dist(tmp_path, "some-lib", "1.2.4")])
+
+    assert package["files"] == []
+
+
+def test_a_kept_licence_gives_way_to_the_one_a_package_ships(tmp_path, kept):
+    kept("some-lib@1.2.3.txt", "kept")
+    dist = _dist(tmp_path, "some-lib", "1.2.3", files={"LICENSE": "its own"})
+
+    [package] = notices.collect(set(), [dist])
+
+    assert package["files"] == [("LICENSE", "its own")]
+
+
+def _build_with_a_bare_package(tmp_path, monkeypatch, kept):
+    lock = _agent_build(tmp_path, monkeypatch, kept)
+    installed = [
+        *notices.importlib.metadata.distributions(),
+        _dist(tmp_path / "site", "barelib", "0.7.3"),
+    ]
+    monkeypatch.setattr(notices.importlib.metadata, "distributions", lambda: installed)
+    return lock
+
+
+def test_agent_notices_are_refused_for_a_package_with_no_licence_text(
+    tmp_path, monkeypatch, kept
+):
+    """The installer hands this file on in place of the texts: one entry of a
+    name and a classifier would leave that package where it was without it."""
+    lock = _build_with_a_bare_package(tmp_path, monkeypatch, kept)
+    output = tmp_path / "THIRD_PARTY_NOTICES.txt"
+
+    argv = ["--for", "agent", "--interpreter", "--lock", str(lock)]
+    with pytest.raises(SystemExit, match="no licence text for barelib 0.7.3"):
+        notices.main([*argv, "-o", str(output)])
+    assert not output.exists()
+
+    kept("barelib@0.7.3.txt", "MIT, barelib")
+    assert notices.main([*argv, "-o", str(output)]) == 0
+    assert "MIT, barelib" in output.read_text(encoding="utf-8")
+
+
+def test_the_servers_notices_still_say_which_package_ships_no_file(
+    tmp_path, monkeypatch, kept
+):
+    """Its list runs to hundreds of packages, and is not refused for one."""
+    lock = _build_with_a_bare_package(tmp_path, monkeypatch, kept)
+    output = tmp_path / "THIRD_PARTY_NOTICES.txt"
+
+    assert notices.main(["--lock", str(lock), "-o", str(output)]) == 0
+
+    assert notices.NO_FILES in output.read_text(encoding="utf-8")
+
+
+def test_the_kept_texts_are_those_the_agents_build_needs():
+    """What the real directory holds, for the Python the agent is built on."""
+    kept_texts = REPO_ROOT / "tooling" / "licence-texts"
+    assert notices.KEPT_TEXTS == kept_texts
+
+    incorporated = (kept_texts / "cpython-3.12.rst").read_text(encoding="utf-8")
+    for library in ("OpenSSL", "libffi", "expat", "libmpdec", "zlib"):
+        assert f"\n{library}\n---" in incorporated, library
+    assert "Apache License" in incorporated
+
+    loguru = (kept_texts / "loguru@0.7.3.txt").read_text(encoding="utf-8")
+    assert loguru.startswith("MIT License\n")
+    assert "Permission is hereby granted, free of charge" in loguru
