@@ -5,7 +5,12 @@ follower's questions are monkeypatched, so nothing reaches a network. The
 agent's own threads are real, and watch the test's own folder.
 """
 
+import ctypes
+import functools
+import operator
 import os
+import queue
+import signal
 import threading
 import time
 
@@ -283,6 +288,52 @@ def test_run_until_complete_returns_once_interrupted(make_agent, monkeypatch):
     assert agent.logger.said("info", "File system watcher stopped")
     assert not agent.running
     assert not agent.watcher.observer.is_alive()
+
+
+def test_an_interrupt_taken_on_the_upload_loops_own_jump_is_handled(
+    make_agent, monkeypatch
+):
+    """A Ctrl+C that arrives between two looks at the queue, not during one.
+
+    The interpreter acts on a pending signal where it next looks for one,
+    and a loop's backward jump is such a place. CPython 3.12 hands what the
+    signal raises there to the handler of the instruction before the jump's
+    target, which for a loop that opens a ``try`` block is no handler of
+    that block.
+
+    So the interrupt here is a real one, placed on the ``continue`` of an
+    empty queue: one C call raises the signal and then ``Empty``, and since
+    a call that ends in an exception does not look for signals, the
+    ``continue`` is the first instruction that does. The signal goes
+    through the C library, because ``signal.raise_signal`` acts on it
+    before it returns.
+    """
+    agent = make_agent()
+    libc = ctypes.CDLL("ucrtbase" if os.name == "nt" else None)
+    interrupt = functools.partial(getattr(libc, "raise"), int(signal.SIGINT))
+    empty = queue.SimpleQueue().get_nowait
+    looks = []
+
+    def interrupted_as_it_looks():
+        looks.append(len(looks))
+        if len(looks) > 3:
+            # The interrupt went nowhere: end the loop, and fail below.
+            agent.shutdown_event.set()
+        list(map(operator.call, [interrupt, empty]))
+
+    monkeypatch.setattr(agent.uploader.jobs, "get_nowait", interrupted_as_it_looks)
+    # Python's own handler, whatever the suite was started with.
+    before = signal.signal(signal.SIGINT, signal.default_int_handler)
+    try:
+        agent.uploader.run_until_complete()
+    except KeyboardInterrupt:
+        pytest.fail("the interrupt went past the handlers of the upload loop")
+    finally:
+        signal.signal(signal.SIGINT, before)
+
+    assert len(looks) == 1
+    assert agent.logger.said("info", "Shutdown requested by user.")
+    assert agent.shutdown_event.is_set()
 
 
 # ---------------------------------------------------------------------------
