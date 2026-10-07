@@ -15,12 +15,13 @@ embeds the agent builds for itself::
 
 import logging
 import time
-from threading import Event, RLock, Thread, current_thread
+from threading import Event, RLock
 from typing import Callable
 
 import mascope_sdk
 from mascope_file_agent import __version__
 from mascope_file_agent import config as agent_config
+from mascope_file_agent._threads import Task
 from mascope_file_agent.config import ConfigError
 from mascope_file_agent.credentials import Credentials, Repair
 from mascope_file_agent.settings import AgentSettings
@@ -234,8 +235,8 @@ class Agent:
         self._lock = RLock()
         self._started = False
         self._stop_asked = False
-        self._thread: Thread | None = None
-        self._helpers: list[Thread] = []
+        self._thread: Task | None = None
+        self._helpers: list[Task] = []
 
     @property
     def running(self) -> bool:
@@ -266,9 +267,7 @@ class Agent:
         # finds the agent either not started or started, never in between.
         with self._lock:
             self._begin()
-            self._thread = Thread(
-                target=self._run_on_thread, name="file-agent", daemon=True
-            )
+            self._thread = Task(self._run_on_thread, "file-agent")
             self._thread.start()
 
     def run_until_complete(self) -> None:
@@ -338,12 +337,11 @@ class Agent:
         return stopped
 
     @staticmethod
-    def _join(thread: Thread | None, timeout: float | None) -> bool:
+    def _join(task: Task | None, timeout: float | None) -> bool:
         """Wait for one of the agent's threads; whether it has ended."""
-        if thread is None or thread is current_thread():
+        if task is None or task.is_current:
             return True
-        thread.join(timeout)
-        return not thread.is_alive()
+        return task.wait(timeout)
 
     def _begin(self) -> None:
         """Start what watches and uploads; the steps before the credential check."""
@@ -417,17 +415,15 @@ class Agent:
             if not self.shutdown_event.is_set():
                 self.credentials.check_at_start()
             helpers = [
-                Thread(
-                    target=self.credentials.renewal_loop,
-                    args=(self.shutdown_event,),
-                    name="file-agent-renewal",
-                    daemon=True,
+                Task(
+                    self.credentials.renewal_loop,
+                    "file-agent-renewal",
+                    (self.shutdown_event,),
                 ),
-                Thread(
-                    target=self.status_follower.run,
-                    args=(self.shutdown_event,),
-                    name="file-agent-status",
-                    daemon=True,
+                Task(
+                    self.status_follower.run,
+                    "file-agent-status",
+                    (self.shutdown_event,),
                 ),
             ]
             for helper in helpers:
