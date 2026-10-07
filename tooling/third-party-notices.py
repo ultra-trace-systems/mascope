@@ -18,6 +18,10 @@
 # image, whose build runs this with `--for docs` (server/frontend/Dockerfile):
 # the packages that build the site copy their theme, scripts and styles into
 # it, and the assets vendored under docs/user/assets keep their licence files.
+# And the File Agent's Windows program, which PyInstaller assembles from the
+# packages of its build environment together with the interpreter itself:
+# agents/file/build.ps1 runs this with `--for agent --interpreter` in that
+# environment, and the installer puts the result beside the program.
 #
 # It reads the environment rather than uv.lock, because the question is what
 # ships, and uv.lock records no licence metadata anyway. uv.lock is read only to
@@ -25,6 +29,8 @@
 # with the interpreter whose packages should be attributed:
 #   /opt/uv/tools/mascope/bin/python tooling/third-party-notices.py -o FILE
 #   python tooling/third-party-notices.py --for docs --vendored docs/user/assets
+#   uv run python ../../tooling/third-party-notices.py --for agent --interpreter \
+#       --lock uv.lock -o dist/THIRD_PARTY_NOTICES.txt   # in agents/file
 #   uv run python tooling/third-party-notices.py \
 #       -o "$MASCOPE_PATH/THIRD_PARTY_NOTICES.txt"   # a checkout; includes dev tools
 # The backend serves the file from its runtime home, MASCOPE_PATH - in a
@@ -41,6 +47,7 @@ from __future__ import annotations
 import argparse
 import importlib.metadata
 import importlib.util
+import platform
 import re
 import sys
 from collections.abc import Iterable
@@ -92,7 +99,33 @@ declared licence, followed by the licence and notice files it ships; each
 vendored asset, the licence files kept with it. Generated at build time
 (tooling/third-party-notices.py) - do not edit.
 """,
+    "agent": """\
+Mascope File Agent - third-party notices
+
+The Mascope File Agent program is assembled by PyInstaller from the open-source
+Python packages below and the Python interpreter that runs them, and carries
+them inside its executable. Each entry gives the package, its version and
+declared licence, followed by the licence and notice files the package itself
+ships. Generated when the program is built, from the distributions installed in
+its build environment (tooling/third-party-notices.py) - do not edit.
+
+Every Python package the program contains is among them. A few entries are
+build tools of which it contains little or nothing: of PyInstaller itself, the
+bootloader and the run-time hooks, which its licence below provides for.
+""",
 }
+
+# Where an interpreter keeps the licence it ships under, relative to its base
+# prefix: the root on Windows, the standard library's directory elsewhere. On
+# Windows the file also holds the terms of the libraries built into that
+# binary - OpenSSL, bzip2, libffi and the rest - which a frozen program carries
+# along with the interpreter.
+_INTERPRETER_LICENCES = (
+    "LICENSE.txt",
+    "LICENSE",
+    "lib/python{major}.{minor}/LICENSE.txt",
+)
+INTERPRETER_LICENCE = "Python Software Foundation License Version 2 (PSF-2.0)"
 
 RULE = "-" * 79
 NO_FILES = "(The package ships no licence file; its declared licence is given above.)"
@@ -194,6 +227,37 @@ def collect(first_party: set[str], distributions: Iterable | None = None) -> lis
     return [packages[key] for key in sorted(packages)]
 
 
+def collect_interpreter(base: Path | None = None) -> dict:
+    """An entry for the running Python interpreter, with the licence it ships.
+
+    For a program that carries its interpreter with it, as a frozen executable
+    does: no distribution's metadata describes CPython, so its entry comes from
+    the licence file in the interpreter's own installation.
+
+    :param base: The interpreter's base prefix, by default the running one's -
+        the installation a virtual environment was made from, not the
+        environment, which holds no licence.
+    """
+    base = Path(sys.base_prefix) if base is None else base
+    major, minor = sys.version_info[:2]
+    for candidate in _INTERPRETER_LICENCES:
+        path = base / candidate.format(major=major, minor=minor)
+        if path.is_file():
+            files = [(path.name, _read_text(path))]
+            break
+    else:
+        # Asked for, so an entry without its text would be the gap this exists
+        # to close, written out as if it were closed.
+        sys.exit(f"{base}: the interpreter ships no licence file - refusing to write")
+    return {
+        "name": "Python",
+        "version": platform.python_version(),
+        "licence": INTERPRETER_LICENCE,
+        "homepage": "https://www.python.org/",
+        "files": files,
+    }
+
+
 def collect_vendored(root: Path) -> list[dict]:
     """An entry for each directory under ``root`` that keeps licence files.
 
@@ -223,13 +287,21 @@ def render(
     packages: list[dict],
     vendored: list[dict] = (),
     header: str = HEADERS["server"],
+    interpreter: dict | None = None,
 ) -> str:
-    """The notices file for ``packages`` and ``vendored``, as the About tab shows it."""
+    """The notices file for ``packages`` and ``vendored``, as the About tab shows it.
+
+    ``interpreter`` is the entry of an interpreter shipped with them, which
+    comes first: everything else in the file runs on it.
+    """
     count = f"{len(packages)} packages"
+    if interpreter is not None:
+        count = f"The Python interpreter, {count}"
     if vendored:
         count += f", {len(vendored)} vendored assets"
     lines = [header, f"{count}.", ""]
-    for package in [*packages, *vendored]:
+    leading = [interpreter] if interpreter is not None else []
+    for package in [*leading, *packages, *vendored]:
         lines += [RULE, f"{package['name']} {package['version']}"]
         lines.append(f"License: {package['licence']}")
         if package["homepage"]:
@@ -270,6 +342,12 @@ def main(argv: list[str] | None = None) -> int:
         help="directory of vendored third-party assets whose licence files to "
         "carry as well",
     )
+    parser.add_argument(
+        "--interpreter",
+        action="store_true",
+        help="also attribute the Python interpreter running this, for a "
+        "program that carries its interpreter with it",
+    )
     args = parser.parse_args(argv)
 
     if not args.lock.is_file():
@@ -288,7 +366,9 @@ def main(argv: list[str] | None = None) -> int:
             # Asked for, so a wrong path rather than assets that need nothing.
             sys.exit(f"{args.vendored}: no licence files found - refusing to write")
 
-    text = render(packages, vendored, HEADERS[args.subject])
+    interpreter = collect_interpreter() if args.interpreter else None
+
+    text = render(packages, vendored, HEADERS[args.subject], interpreter)
     if args.output is None:
         sys.stdout.buffer.write(text.encode("utf-8"))
     else:
@@ -297,7 +377,8 @@ def main(argv: list[str] | None = None) -> int:
         args.output.write_text(text, encoding="utf-8", newline="\n")
         print(
             f"wrote {args.output}: {len(packages)} packages, "
-            f"{len(vendored)} vendored assets",
+            f"{len(vendored)} vendored assets"
+            + (", the interpreter" if interpreter is not None else ""),
             file=sys.stderr,
         )
     return 0
