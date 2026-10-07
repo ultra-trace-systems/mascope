@@ -907,9 +907,39 @@ agents/           # Agent applications
 
 The File Agent is responsible for uploading files from instrument machines unchanged to the server. This is designed for use in Orbitrap machines.
 
-Agents authenticate with a service access token, obtained either manually (web app → API Access Tokens) or via device pairing (`server/backend/src/mascope_backend/api/new/auth/pairing/`): the agent requests a short code from `/api/auth/pairing/start`, an editor approves it in the web app, and the agent polls `/api/auth/pairing/poll` for its token. Pairing creates tokens additively — one per machine — while the regenerate endpoint replaces all of a user's tokens for the service.
+The File Agent authenticates with a device token, and pairing is the only way it gets one (`server/backend/src/mascope_backend/api/new/auth/pairing/`): the agent requests a short code from `/api/auth/pairing/start`, an editor approves it in the web app, and the agent polls `/api/auth/pairing/poll` for its token. Each paired machine has a token of its own, which the agent renews before it expires (`/api/auth/devices/token`) and which regenerating a person's API tokens does not replace.
 
 To run all services needed to emulate the Orbitrap acquisition workflow in development, run `mascope dev run orbi`.
+
+### The File Agent as a library
+
+The agent is also a Python library, `mascope-file-agent` on PyPI, for a program that runs on the instrument computer already and wants the uploads in its own process. The program and the library are the same code: `mascope_file_agent.main.run()`, the console entry and the PyInstaller target, finds the settings, starts the runtime, builds an `Agent` and runs it.
+
+```py
+from mascope_file_agent import Agent, AgentSettings, identity
+
+settings = AgentSettings.from_file(config_path)
+identity("file-agent", version="1.2.3", verify_tls=settings.verify_tls)
+
+agent = Agent(settings, persist_token=settings.token_writer(config_path))
+agent.start()
+...
+agent.stop(timeout=30)
+```
+
+The two calls are `identity()` and the `Agent`'s `start()`:
+
+- `identity(service_name, version, verify_tls)` sets what every request the process makes reports to the server. The SDK keeps these for the whole process (`mascope_sdk.SERVICE_NAME`, `AGENT_VERSION`, `VERIFY_TLS`), so the process that runs an agent sets them, once, before it pairs or starts one. Importing the package sets none of them, and an `Agent` refuses to start in a process that has not made the call.
+- `Agent(settings, url=None, logger=None, repair=None, persist_token=None)` owns the folder watcher, the uploader and its workers, the token renewal, the status follower and the one event that stops them. `start()` runs it on threads of its own and returns; `run_until_complete()` runs it on the calling thread until interrupted, which is what the console entry does; `stop(timeout)` waits for the uploads under way, abandons the rest when the time runs out and returns whether everything ended. An agent runs once.
+
+The modules behind it hold no state of their own: `settings.py` (`AgentSettings`, the keys of `config.toml`'s `[file-agent]` section), `watcher.py` (`FileSystemWatcher`, which reports a file once nothing is writing it), `uploader.py` (`FileUploader`: the wait until a file has been left alone, the retry policy and `failed_uploads`), `credentials.py` (`Credentials`: the live token, the check at start, the renewal, and the `Repair` that decides what a refused credential leads to - `ConsoleRepair` asks at the console, the base class only logs), `status.py` and `agent.py`. `Agent.on_ready(callback)` adds a step that is called with each complete file before the uploader has it.
+
+Everything exported from `mascope_file_agent` is public API. A change that breaks it needs a changelog entry and a new version, and so does anything else that should reach a program depending on the library:
+
+1. Set `version` in `agents/file/pyproject.toml` to the commit date, as for the SDK ([Publish](#publish)), and run `uv lock --directory agents/file`.
+2. Merge to `master`. The `publish-pypi` workflow uploads the version if PyPI does not have it. The project is not a workspace member, so the workflow passes `--standalone` to `.github/scripts/publish-package.sh`, which builds it from its own directory.
+
+The version of the library is not the version of the Windows program, which is stamped with the release tag when it is built.
 
 ### Building File Agent for production
 
@@ -935,11 +965,12 @@ on GitHub windows runners; locally `winget install JRSoftware.InnoSetup`).
 The installer is per-user (no admin rights), offers a run-at-login startup
 task, and leaves `%AppData%\Mascope\FileAgent` untouched on uninstall. The
 build stamps the version into `src/mascope_file_agent/_version.py`
-(gitignored); unstamped source builds report `dev`.
+(gitignored, and left out of the library's wheel); without that file the agent
+reports the library's version.
 
 Then run the executable found in `agents/file/dist`.
 
-When you run this executable, the `MASCOPE_PATH` will be `%AppData%\Mascope\FileAgent`. On first start (or when started with `--setup`) the agent runs a guided setup in the console, asking for the server address, an access token and the folder to watch, and verifies the token against the server before saving. Settings are stored in a single user-facing file:
+When you run this executable, the `MASCOPE_PATH` will be `%AppData%\Mascope\FileAgent`. On first start (or when started with `--setup`) the agent runs a guided setup in the console, asking for the server address, the folder to watch and the instrument name, then pairs the machine and checks the token it received against the server before saving. Settings are stored in a single user-facing file:
 
 ```
 %AppData%\Mascope\FileAgent\config.toml
@@ -949,7 +980,7 @@ On every start the agent merges `config.toml` over built-in defaults and regener
 
 The end-user installation guide lives in `docs/user/instruments/index.md`.
 
-Unit tests for the config handling are hermetic; run them with `uv run pytest` in `agents/file`.
+The agent's tests are hermetic - no runtime, no server, no network - and cover the configuration, the guided setup, the upload and retry policy, the credential handling and the `Agent`'s life; run them with `uv run pytest tests/` in `agents/file`.
 
 > [!IMPORTANT]
 > Windows prevents applications from writing into `Program Files` directory. Therefore, when testing the agent with TofDaq Recorder, its data directory must be outside `Program Files`.
@@ -2994,9 +3025,10 @@ This library exposes a public Python SDK for end-users to leverage especially in
 
 #### Publish
 
-Publishing to [PyPI](https://pypi.org/) is automated for both `mascope-sdk` and
-`mascope-tools` by the `publish-pypi` workflow
-(`.github/workflows/publish-pypi.yaml`). To release a new version:
+Publishing to [PyPI](https://pypi.org/) is automated for `mascope-sdk`,
+`mascope-tools`, `mascope-runtime`, `mascope-cli` and `mascope-file-agent` by
+the `publish-pypi` workflow (`.github/workflows/publish-pypi.yaml`). To release
+a new version:
 
 1. In a PR, set `version` in the package's `pyproject.toml`
    (`libraries/sdk/` or `libraries/tools/`) to the commit date in unpadded
@@ -3014,7 +3046,9 @@ Authentication uses [PyPI Trusted Publishing](https://docs.pypi.org/trusted-publ
 (OIDC) — there are no tokens to manage. Each PyPI project is configured
 (pypi.org → project → Publishing) to trust this repository's
 `publish-pypi.yaml` workflow and the `pypi` GitHub environment; approval
-requirements can be set on that environment in the repository settings.
+requirements can be set on that environment in the repository settings. A
+package PyPI has never had needs a *pending* publisher there (pypi.org →
+account → Publishing) before its first version can be uploaded.
 
 To publish manually (e.g. from a fork or in an emergency), the underlying
 steps are in `.github/scripts/publish-package.sh`: `uv build --package

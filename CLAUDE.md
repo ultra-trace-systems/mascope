@@ -51,6 +51,7 @@ unaffected. See `docs/dev/developer_guide.md` →
 | Backend (pytest) | `mascope test run` or `uv run pytest server/backend/tests/` | Postgres (`mascope dev up`) | minutes |
 | Libraries (pytest) | `mascope test run libraries` | nothing | fast |
 | CLI (pytest) | `uv run pytest tooling/cli/tests/` | nothing (hermetic conftest) | seconds |
+| File Agent (pytest) | `uv run pytest tests/` in `agents/file` | nothing (its own uv project; hermetic) | seconds |
 | Frontend unit (Vitest) | `npm run test:unit` in `server/frontend` | nothing | ~1 s |
 | Frontend e2e (Playwright) | `npm run test:e2e` in `server/frontend` | a running stack, see below | minutes |
 | Deployment smoke | `bash tooling/smoke-test.sh` | a running stack | seconds |
@@ -153,8 +154,8 @@ It comes preloaded with the published demo dataset and login `demo@mascope.app` 
   If it fails on something you added, read the actual licence - widening the
   allowlist to get green is the one response that defeats the check.
 - CI (`.github/workflows/tests.yaml`) runs the "Lint and format" (ruff) job plus
-  backend pytest, library pytest, CLI pytest, frontend unit, the dependency
-  licence check, and the demo-stack e2e suite on every PR; releases are gated on
+  backend pytest, library pytest, CLI pytest, File Agent pytest, frontend unit,
+  the dependency licence check, and the demo-stack e2e suite on every PR; releases are gated on
   `tooling/smoke-test.sh`.
 - The golden-dataset reproducibility check
   (`.github/workflows/reproducibility.yaml`) is required on PRs into `master`
