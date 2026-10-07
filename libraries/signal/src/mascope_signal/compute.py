@@ -1387,6 +1387,11 @@ async def load_peak_timeseries(
             "while peak timeseries were being computed for it. They were not "
             "stored, and are computed again."
         )
+        # A rewritten axis is not a finished calibration: the Orbitrap one
+        # records its factor after the axis, and the file is read back by
+        # that factor. This is the one fill known to start right behind an
+        # apply, so it alone waits for it.
+        await asyncio.to_thread(_wait_for_mz_calibration, base_filename)
         mzs_arr = await asyncio.to_thread(
             _mzs_of_the_same_peaks, base_filename, peak_ids, mzs_arr
         )
@@ -1398,6 +1403,27 @@ async def load_peak_timeseries(
 
     # --- Return a clean lazy reference ---
     return await asyncio.to_thread(_load_deduplicated_peak_data, base_filename, mzs_arr)
+
+
+def _wait_for_mz_calibration(base_filename: str) -> None:
+    """Return once no m/z calibration of the file is being applied.
+
+    An apply holds the file's calibration lock from its first write to its
+    last (``mascope_file.io.mz_calibration_lock_path``). Taking the lock and
+    letting go of it at once is waiting for an apply in progress to finish,
+    and no wait at all where there is none.
+
+    Synchronous and blocking, so callers on the event loop must hand it to a
+    worker thread.
+
+    :param base_filename: Sample file filename
+    :type base_filename: str
+    :raises TimeoutError: If another process held the lock for longer than
+        ``mascope_file.io.ZARR_PROCESS_LOCK_TIMEOUT``
+    :return: None
+    """
+    with m_io.zarr_write_lock(m_io.mz_calibration_lock_path(base_filename)):
+        pass
 
 
 def _mzs_of_the_same_peaks(

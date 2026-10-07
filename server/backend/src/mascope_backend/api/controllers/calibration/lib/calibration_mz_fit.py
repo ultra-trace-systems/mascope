@@ -26,7 +26,6 @@ General calibration workflow:
 
 import asyncio
 import math
-import os
 from abc import abstractmethod
 from itertools import combinations
 
@@ -126,14 +125,12 @@ class BaseCalibrationHandler:
     def _calibration_lock_path(self) -> str:
         """Path naming the lock that guards a whole ``apply`` for this sample.
 
-        Not a store - only the name a lock file is derived from. It sits beside
-        the sample's stores and is deliberately distinct from any of them, so
-        taking it does not collide with the per-array locks the writes inside
-        ``_apply_sync`` take for themselves.
+        The file library names it (``mascope_file.io.mz_calibration_lock_path``),
+        because an apply is not alone in taking it: a fill of the file's peak
+        store that met a rewritten m/z axis waits for it before it reads the
+        file again (``mascope_signal.compute.load_peak_timeseries``).
         """
-        return os.path.join(
-            m_name.parse_path_from_item_filename(self.filename), "mz_calibration"
-        )
+        return m_io.mz_calibration_lock_path(self.filename)
 
     def _guarded_apply(self, fit: dict):
         """Run ``_apply_sync`` under a lock covering the whole recalibration.
