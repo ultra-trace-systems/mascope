@@ -11,6 +11,8 @@ text to travel with the code.
 """
 
 import importlib.util
+import platform
+import sys
 from importlib.metadata import PathDistribution
 from pathlib import Path
 
@@ -274,6 +276,91 @@ def test_a_vendored_directory_without_licence_files_is_refused(tmp_path, monkeyp
 
     with pytest.raises(SystemExit, match="no licence files"):
         notices.main(["--vendored", str(tmp_path / "assets"), "--lock", str(lock)])
+
+
+def test_an_interpreter_entry_carries_the_licence_its_installation_ships(tmp_path):
+    """A frozen program carries CPython, which no distribution's metadata
+    describes: its entry comes from the licence file in its installation."""
+    (tmp_path / "LICENSE.txt").write_bytes(
+        b"A. HISTORY OF THE SOFTWARE\r\n\r\nPYTHON SOFTWARE FOUNDATION LICENSE\r\n"
+    )
+
+    entry = notices.collect_interpreter(tmp_path)
+
+    assert entry["name"] == "Python"
+    assert entry["version"] == platform.python_version()
+    assert entry["licence"] == notices.INTERPRETER_LICENCE
+    assert entry["files"] == [
+        (
+            "LICENSE.txt",
+            "A. HISTORY OF THE SOFTWARE\n\nPYTHON SOFTWARE FOUNDATION LICENSE\n",
+        )
+    ]
+
+
+def test_an_interpreter_outside_windows_keeps_its_licence_with_the_library(tmp_path):
+    major, minor = sys.version_info[:2]
+    library = tmp_path / "lib" / f"python{major}.{minor}"
+    library.mkdir(parents=True)
+    (library / "LICENSE.txt").write_text("PSF", encoding="utf-8")
+
+    assert notices.collect_interpreter(tmp_path)["files"] == [("LICENSE.txt", "PSF")]
+
+
+def test_an_interpreter_that_ships_no_licence_file_is_refused(tmp_path):
+    """Asked for and absent would be the gap written out as if it were closed."""
+    with pytest.raises(SystemExit, match="ships no licence file"):
+        notices.collect_interpreter(tmp_path)
+
+
+def _agent_build(tmp_path, monkeypatch):
+    """A build environment of one package, on an interpreter with a licence."""
+    (tmp_path / "base").mkdir()
+    (tmp_path / "base" / "LICENSE.txt").write_text("PSF text", encoding="utf-8")
+    monkeypatch.setattr(notices.sys, "base_prefix", str(tmp_path / "base"))
+    lock = tmp_path / "uv.lock"
+    lock.write_text("version = 1\n", encoding="utf-8")
+    installed = [
+        _dist(
+            tmp_path / "site",
+            "requests",
+            "2.34.2",
+            "License-Expression: Apache-2.0\n",
+            files={"licenses/LICENSE": "Apache text"},
+        )
+    ]
+    monkeypatch.setattr(notices.importlib.metadata, "distributions", lambda: installed)
+    return lock
+
+
+def test_agent_notices_lead_with_the_interpreter_the_program_carries(
+    tmp_path, monkeypatch
+):
+    lock = _agent_build(tmp_path, monkeypatch)
+    output = tmp_path / "THIRD_PARTY_NOTICES.txt"
+
+    argv = ["--for", "agent", "--interpreter", "--lock", str(lock)]
+    assert notices.main([*argv, "-o", str(output)]) == 0
+
+    text = output.read_text(encoding="utf-8")
+    assert text.startswith("Mascope File Agent - third-party notices")
+    assert "The Python interpreter, 1 packages." in text
+    assert text.index("\nPython ") < text.index("\nrequests 2.34.2\n")
+    assert f"License: {notices.INTERPRETER_LICENCE}\n" in text
+    assert "--- LICENSE.txt\nPSF text\n" in text
+    assert "--- licenses/LICENSE\nApache text\n" in text
+
+
+def test_the_interpreter_is_attributed_only_when_asked_for(tmp_path, monkeypatch):
+    """The server image and the docs site do not carry one of their own."""
+    lock = _agent_build(tmp_path, monkeypatch)
+    output = tmp_path / "THIRD_PARTY_NOTICES.txt"
+
+    assert notices.main(["--lock", str(lock), "-o", str(output)]) == 0
+
+    text = output.read_text(encoding="utf-8")
+    assert "\n1 packages.\n" in text
+    assert "PSF text" not in text
 
 
 @pytest.mark.skipif(not LOCK.is_file(), reason="needs the repository's uv.lock")
