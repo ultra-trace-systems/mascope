@@ -22,6 +22,9 @@ from sqlalchemy.dialects import postgresql
 from mascope_backend.api.controllers.sample.files.process.service import (
     ItemProvenance,
 )
+from mascope_backend.api.controllers.sample.files.process.streams import (
+    StoreStreams,
+)
 from mascope_backend.api.models.sample.items.sample_item_pydantic_model import (
     AcquisitionItemCreate,
     SampleItemCreate,
@@ -71,6 +74,14 @@ async def _items_created(modes, provenance):
             f"{_SVC}._with_live_bindings",
             new_callable=AsyncMock,
             side_effect=lambda held: held,
+        ),
+        # A file with no census, as the fixture file has none: nothing to
+        # point an item at, which is its own question, tested in
+        # test_stream_items
+        patch(
+            f"{_SVC}.read_store_streams",
+            new_callable=AsyncMock,
+            return_value=StoreStreams(),
         ),
         patch(
             f"{_SVC}.create_sample_items", new_callable=AsyncMock
@@ -270,6 +281,35 @@ async def test_a_hand_set_mode_clears_the_rung_that_decided_the_old_one():
 
     assert stored.ionization_mode_id == "im-by-hand"
     assert (stored.bound_by, stored.method_binding_id) == (None, None)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "changes",
+    [{"polarity": "+"}, {"sample_file_id": "sf-another"}],
+    ids=["another-polarity", "another-file"],
+)
+async def test_a_changed_file_or_polarity_clears_the_stream_the_item_read(changes):
+    """The stream was a stream of the old file and polarity. Cleared, the
+    item reads what a hand-made item reads, where left alone it would read a
+    spectrum of the other polarity or be refused as a stream of another
+    file, as a database error."""
+    stored = _stored_item()
+    stored.stream_id = "st-composite"
+
+    stored = await _updated(stored, **changes)
+
+    assert stored.stream_id is None
+
+
+@pytest.mark.asyncio
+async def test_an_update_that_leaves_the_file_and_polarity_alone_keeps_the_stream():
+    stored = _stored_item()
+    stored.stream_id = "st-composite"
+
+    stored = await _updated(stored, sample_item_name="renamed")
+
+    assert stored.stream_id == "st-composite"
 
 
 @pytest.mark.asyncio

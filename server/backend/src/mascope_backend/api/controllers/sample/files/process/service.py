@@ -40,7 +40,15 @@ from mascope_backend.api.controllers.sample.files.process.status import (
     compose_detail,
     pooled_streams_note,
     read_scan_streams,
+    read_store_stream_keys,
     record_processing_status,
+)
+from mascope_backend.api.controllers.sample.files.process.streams import (
+    StreamRows,
+    kept_rows_note,
+    read_store_streams,
+    stale_store_note,
+    sync_stream_rows,
 )
 from mascope_backend.api.controllers.sample.items.sample_items_controller import (
     create_sample_items,
@@ -996,7 +1004,9 @@ async def _auto_process_sample_file(
     # Describes the file rather than a stage, so every status this run
     # records carries it.
     scan_streams = await read_scan_streams(sample_file.filename)
-    streams_note = pooled_streams_note(scan_streams or [])
+    streams_note = pooled_streams_note(
+        scan_streams or [], await read_store_stream_keys(sample_file.filename)
+    )
 
     # --- Get ACQUISITION dataset for the instrument --- #
     # The year-dataset and the daily batch inside it must be dated off the SAME
@@ -1133,11 +1143,19 @@ async def _auto_process_sample_file(
     (
         acquisition_samples,
         acquisition_sample_batches,
+        stream_rows,
+        found_streams,
     ) = await create_acquisition_batches_and_items(
         sample_file=sample_file,
         dataset_id=acquisition_dataset.get("dataset_id"),
         ionization_modes=bound_modes,
         provenance=provenance,
+    )
+    # A stale peak store, and a stream row the file no longer describes but
+    # a sample still reads, are as much facts about the file as its streams
+    # are: every status from here on says so.
+    streams_note = compose_detail(
+        streams_note, stale_store_note(found_streams), kept_rows_note(stream_rows)
     )
     await record_processing_status(
         sample_file_id,
@@ -2126,6 +2144,17 @@ async def create_acquisition_batches_and_items(
     acquisition_sample_batches = []
     provenance = await _with_live_bindings(provenance)
 
+    # The rows of the file's scan streams, and the one each item below reads
+    # (process.streams): its polarity's composite where the file holds one,
+    # else the polarity's one stream, else none, which is an item over every
+    # MS1 scan of its polarity as before.
+    found = await read_store_streams(sample_file.filename)
+    rows = (
+        await sync_stream_rows(sample_file.sample_file_id, found)
+        if found.streams
+        else StreamRows()
+    )
+
     for ionization_mode in ionization_modes:
         # --- Generate daily ACQUISITION batch name for this ionization mode ---
         ion_mode_name = ionization_mode.ionization_mode_name
@@ -2196,6 +2225,7 @@ async def create_acquisition_batches_and_items(
                 ionization_mode_id=ionization_mode.ionization_mode_id,
                 bound_by=held.bound_by,
                 method_binding_id=held.method_binding_id,
+                stream_id=rows.item_stream(ionization_mode.ionization_mode_polarity),
             )
         )
     # Step 3: Create ACQUISITION sample items
@@ -2205,7 +2235,7 @@ async def create_acquisition_batches_and_items(
         )
     ).get("data", [])
 
-    return acquisition_samples, acquisition_sample_batches
+    return acquisition_samples, acquisition_sample_batches, rows, found
 
 
 async def _record_calibration_failure(
