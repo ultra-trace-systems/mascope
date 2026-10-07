@@ -162,9 +162,10 @@ It comes preloaded with the published demo dataset and login `demo@mascope.app` 
   uv run --no-sync --directory agents/file python ../../tooling/check-licenses.py agent
   ```
 
-  PyInstaller is in that lockfile and is GPL. It is cleared by name
-  (`PYTHON_SCOPED` in the script, which says why) and GPL is on no allowlist:
-  a GPL package anywhere else is still a finding.
+  PyInstaller is in that lockfile and is GPL. It is cleared by its whole name
+  and for that lockfile alone (`PYTHON_SCOPED` in the script, which says why),
+  and GPL is on no allowlist: a GPL package anywhere else is still a finding,
+  PyInstaller in the root lockfile included.
 
   If it fails on something you added, read the actual licence - widening the
   allowlist to get green is the one response that defeats the check.

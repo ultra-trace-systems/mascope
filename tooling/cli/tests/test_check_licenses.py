@@ -408,9 +408,6 @@ def scoped(monkeypatch):
 
     def install(identifier, prefixes):
         monkeypatch.setattr(licences, "SCOPED", {identifier: prefixes})
-        monkeypatch.setattr(
-            licences, "_SCOPED_FOLDED", {identifier.casefold(): prefixes}
-        )
 
     return install
 
@@ -801,6 +798,11 @@ GPLV2 = "License :: OSI Approved :: GNU General Public License v2 (GPLv2)"
 APACHE = "License :: OSI Approved :: Apache Software License"
 
 
+def agent_grants():
+    """The grants of the File Agent's lockfile, as its check is given them."""
+    return licences.python_grants(licences.AGENT_LOCKFILE)
+
+
 def test_gpl_is_on_no_allowlist():
     """The grant is for two packages by name; nothing allows the licence."""
     assert not [
@@ -809,7 +811,11 @@ def test_gpl_is_on_no_allowlist():
         if identifier.upper().startswith(("GPL", "AGPL"))
     ]
     assert licences.CLASSIFIERS[GPLV2] not in licences.ALLOWED
-    assert licences.PYTHON_SCOPED == {"GPL-2.0-only": ("pyinstaller",)}
+    assert licences.PYTHON_SCOPED == {
+        "agents/file/uv.lock": {
+            "GPL-2.0-only": ("pyinstaller", "pyinstaller-hooks-contrib")
+        }
+    }
 
 
 def test_pyinstaller_and_its_hooks_are_cleared_as_they_declare_themselves(
@@ -830,25 +836,65 @@ def test_pyinstaller_and_its_hooks_are_cleared_as_they_declare_themselves(
     lock = uv_lock(
         tmp_path, {"pyinstaller": "6.20.0", "pyinstaller-hooks-contrib": "2026.5"}
     )
-    assert licences.check_python(lock) == []
+    assert licences.check_python(lock, grants=agent_grants()) == []
 
 
 def test_the_grant_does_not_carry_to_another_gpl_package(tmp_path, environment):
     """A GPL package a shipped program imports is what the gate is for."""
     environment([FakeMetadata("readline-gpl", classifiers=[GPLV2])])
-    findings = licences.check_python(uv_lock(tmp_path, {"readline-gpl": "1.0.0"}))
+    findings = licences.check_python(
+        uv_lock(tmp_path, {"readline-gpl": "1.0.0"}), grants=agent_grants()
+    )
     assert [(ident, declared) for ident, declared, _ in findings] == [
         ("readline-gpl@1.0.0", "GPL-2.0-only")
     ]
     assert "cleared only for other packages: GPL-2.0-only" in findings[0][2]
 
 
-def test_the_grant_is_by_name_prefix_not_by_a_name_that_contains_it(
-    tmp_path, environment
-):
-    environment([FakeMetadata("not-pyinstaller", classifiers=[GPLV2])])
-    findings = licences.check_python(uv_lock(tmp_path, {"not-pyinstaller": "1.0.0"}))
-    assert len(findings) == 1
+@pytest.mark.parametrize(
+    "name", ["pyinstaller-versionfile", "pyinstallerx", "not-pyinstaller"]
+)
+def test_the_grant_is_for_two_whole_names(tmp_path, environment, name):
+    """On PyPI a name that starts like PyInstaller's is somebody else's."""
+    environment([FakeMetadata(name, classifiers=[GPLV2])])
+    findings = licences.check_python(
+        uv_lock(tmp_path, {name: "1.0.0"}), grants=agent_grants()
+    )
+    assert [(ident, declared) for ident, declared, _ in findings] == [
+        (f"{name}@1.0.0", "GPL-2.0-only")
+    ]
+    assert "cleared only for other packages: GPL-2.0-only" in findings[0][2]
+
+
+def test_the_grant_reads_a_name_as_the_lockfile_spells_it():
+    """uv.lock has names normalised, whatever the project calls itself."""
+    assert licences.judge("pyinstaller@6.20.0", "GPL-2.0-only", agent_grants()) == []
+    assert (
+        licences.judge(
+            "pyinstaller-hooks-contrib@2026.5", "GPL-2.0-only", agent_grants()
+        )
+        == []
+    )
+
+
+@pytest.mark.parametrize(
+    "grants",
+    [
+        pytest.param(None, id="none-given"),
+        pytest.param("uv.lock", id="the-root-lockfile"),
+    ],
+)
+def test_the_grant_is_for_the_agents_lockfile_alone(tmp_path, environment, grants):
+    """PyInstaller among the server's dependencies would ship as itself."""
+    environment([FakeMetadata("pyinstaller", classifiers=[GPLV2])])
+    given = {} if grants is None else {"grants": licences.python_grants(grants)}
+    findings = licences.check_python(
+        uv_lock(tmp_path, {"pyinstaller": "6.20.0"}), **given
+    )
+    assert [(ident, declared) for ident, declared, _ in findings] == [
+        ("pyinstaller@6.20.0", "GPL-2.0-only")
+    ]
+    assert "not on the allowlist: GPL-2.0-only" in findings[0][2]
 
 
 def test_pyinstaller_declaring_its_licence_another_way_comes_back(
@@ -867,7 +913,9 @@ def test_pyinstaller_declaring_its_licence_another_way_comes_back(
             )
         ]
     )
-    findings = licences.check_python(uv_lock(tmp_path, {"pyinstaller": "7.0.0"}))
+    findings = licences.check_python(
+        uv_lock(tmp_path, {"pyinstaller": "7.0.0"}), grants=agent_grants()
+    )
     assert len(findings) == 1
     assert "GPL-2.0-or-later" in findings[0][2]
     assert "Bootloader-exception" in findings[0][2]
@@ -935,6 +983,21 @@ def test_a_reviewed_package_no_lockfile_locks_is_still_stale(
     assert "macholib@1.16.4 is no longer locked" in capsys.readouterr().out
 
 
+def test_what_is_stale_is_said_by_one_check_and_not_by_each(
+    tmp_path, environment, capsys, monkeypatch
+):
+    """Every lockfile's check would find the same entries stale."""
+    monkeypatch.setattr(licences, "PYTHON_REVIEWED", {"macholib@1.16.4": "MIT"})
+    environment([FakeMetadata("requests", expression="Apache-2.0")])
+    here, elsewhere = _two_locks(
+        tmp_path, {"requests": "2.34.2"}, {"macholib": "1.16.5"}
+    )
+
+    assert licences.check_python(here, (elsewhere,), report_stale=False) == []
+
+    assert "macholib" not in capsys.readouterr().out
+
+
 @pytest.fixture
 def checks(monkeypatch):
     """Record which lockfile each check is asked about, and pass them all."""
@@ -945,7 +1008,9 @@ def checks(monkeypatch):
     monkeypatch.setattr(
         licences,
         "check_python",
-        lambda path, others=(): asked.append(("python", path, others)) or [],
+        lambda path, others=(), grants=None, report_stale=True: (
+            asked.append(("python", path, others, grants, report_stale)) or []
+        ),
     )
     return asked
 
@@ -958,8 +1023,12 @@ def test_the_agent_target_checks_the_agents_lockfile_and_nothing_else(checks):
             "python",
             REPO_ROOT / "agents" / "file" / "uv.lock",
             (REPO_ROOT / "uv.lock",),
+            # Its own grants, and what is stale left to the root's check.
+            agent_grants(),
+            False,
         )
     ]
+    assert agent_grants().names
 
 
 def test_all_leaves_the_agents_lockfile_to_its_own_environment(checks):
@@ -972,5 +1041,8 @@ def test_all_leaves_the_agents_lockfile_to_its_own_environment(checks):
             "python",
             REPO_ROOT / "uv.lock",
             (REPO_ROOT / "agents" / "file" / "uv.lock",),
+            # No grant of the agent's, and the one check that says what is stale.
+            licences.Grants({}, whole=True),
+            True,
         ),
     ]

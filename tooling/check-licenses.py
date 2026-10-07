@@ -35,6 +35,7 @@ import os
 import re
 import sys
 from pathlib import Path
+from typing import NamedTuple
 
 
 LOCKFILES = ("server/frontend/package-lock.json",)
@@ -83,14 +84,17 @@ ALLOWED = {
 }
 
 # Licences cleared only for the packages named here, because the argument for
-# them is about those packages rather than about the licence. Values are
-# package-name prefixes. This is REVIEWED's instinct applied to a licence
-# rather than a version: a grant reasoned out for one dependency should not be
-# inherited in silence by the next thing that happens to share its licence.
+# them is about those packages rather than about the licence. This is
+# REVIEWED's instinct applied to a licence rather than a version: a grant
+# reasoned out for one dependency should not be inherited in silence by the
+# next thing that happens to share its licence.
 #
 # One map per ecosystem, for the reason REVIEWED has one each: a package name
 # means something only within its own registry, and a grant argued for a PyPI
 # package must not clear an npm package that happens to share its name.
+#
+# npm's values are package-name prefixes, which is what a family of
+# platform-suffixed packages needs.
 #
 # The npm map is empty at the moment. MPL-2.0 lived here while the only MPL
 # dependency was lightningcss and the argument for it rested on node_modules
@@ -100,35 +104,48 @@ ALLOWED = {
 # justification really is about one package rather than about the licence.
 SCOPED: dict[str, tuple[str, ...]] = {}
 
-PYTHON_SCOPED: dict[str, tuple[str, ...]] = {
-    # GPL, cleared for PyInstaller and for nothing else. The File Agent's
-    # Windows program is built with it (agents/file/build.ps1), so PyInstaller
-    # and pyinstaller-hooks-contrib are in the agent's lockfile, in its dev
-    # group. Neither is a dependency of the library published to PyPI.
-    #
-    # PyInstaller is GPL-2.0-or-later with a Bootloader Exception (COPYING.txt
-    # in its wheel): unlimited permission to embed the compiled bootloader and
-    # the files of PyInstaller/loader in other programs and to distribute the
-    # result "without any restriction coming from the use of those files".
-    # Those, and its run-time hooks, are what a built program contains, and
-    # the run-time hooks are Apache-2.0 - in PyInstaller and in
-    # pyinstaller-hooks-contrib alike, whose LICENSE says the same of its
-    # rthooks directory. Everything else in the two packages is the build tool
-    # and its analysis hooks, which run when the program is built and are not
-    # in it. So nothing under the GPL is redistributed, and the program's own
-    # licence is untouched - the position of a program compiled with GCC.
-    #
-    # That argument is about these two packages, which is why it is here and
-    # GPL is not in ALLOWED: a GPL package that a shipped program imports is
-    # the case this gate exists to stop. It would stop holding if PyInstaller
-    # were vendored or patched, or shipped as itself rather than as the
-    # program it built - and it is not re-read at each release, which a
-    # version pin in PYTHON_REVIEWED would force and this does not.
-    #
-    # Keyed by the identifier the GPLv2 classifier maps to (see CLASSIFIERS),
-    # which is how both packages declare their licence. Values are name
-    # prefixes: "pyinstaller" covers the hooks package as well.
-    "GPL-2.0-only": ("pyinstaller",),
+# Python's grants are per lockfile, and name each package whole.
+#
+# Per lockfile, because an argument about what a package is used for is an
+# argument about one tree: a build tool of the File Agent would be something
+# else among the server's runtime dependencies, installed into the image as
+# itself. A lockfile with no entry here has no grants.
+#
+# Whole names, because on PyPI a prefix is nobody's to hand out: a package
+# whose name merely starts like a cleared one is a third party's.
+PYTHON_SCOPED: dict[str, dict[str, tuple[str, ...]]] = {
+    AGENT_LOCKFILE: {
+        # GPL, cleared for PyInstaller and its hooks package, and for nothing
+        # else. The File Agent's Windows program is built with PyInstaller
+        # (agents/file/build.ps1), so it and pyinstaller-hooks-contrib are in
+        # the agent's lockfile, in its dev group. Neither is a dependency of
+        # the library published to PyPI.
+        #
+        # PyInstaller is GPL-2.0-or-later with a Bootloader Exception
+        # (COPYING.txt in its wheel): unlimited permission to embed the
+        # compiled bootloader and the files of PyInstaller/loader in other
+        # programs and to distribute the result "without any restriction
+        # coming from the use of those files". Those, and its run-time hooks,
+        # are what a built program contains, and the run-time hooks are
+        # Apache-2.0 - in PyInstaller and in pyinstaller-hooks-contrib alike,
+        # whose LICENSE says the same of its rthooks directory. Everything
+        # else in the two packages is the build tool and its analysis hooks,
+        # which run when the program is built and are not in it. So nothing
+        # under the GPL is redistributed, and the program's own licence is
+        # untouched - the position of a program compiled with GCC.
+        #
+        # That argument is about these two packages in this tree, which is
+        # why it is here and GPL is not in ALLOWED: a GPL package that a
+        # shipped program imports is the case this gate exists to stop. It
+        # would stop holding if PyInstaller were vendored or patched, or
+        # shipped as itself rather than as the program it built - and it is
+        # not re-read at each release, which a version pin in
+        # PYTHON_REVIEWED would force and this does not.
+        #
+        # Keyed by the identifier the GPLv2 classifier maps to (see
+        # CLASSIFIERS), which is how both packages declare their licence.
+        "GPL-2.0-only": ("pyinstaller", "pyinstaller-hooks-contrib"),
+    },
 }
 
 # SPDX exceptions - the right-hand side of `X WITH Y`. An exception only ever
@@ -147,13 +164,40 @@ ALLOWED_EXCEPTIONS = {
 # "not on the allowlist" - naming a licence that is in fact approved, and
 # inviting a second ALLOWED entry for the same thing.
 _ALLOWED_FOLDED = {identifier.casefold() for identifier in ALLOWED}
-_SCOPED_FOLDED = {
-    identifier.casefold(): prefixes for identifier, prefixes in SCOPED.items()
-}
-_PYTHON_SCOPED_FOLDED = {
-    identifier.casefold(): prefixes for identifier, prefixes in PYTHON_SCOPED.items()
-}
 _EXCEPTIONS_FOLDED = {exception.casefold() for exception in ALLOWED_EXCEPTIONS}
+
+
+class Grants(NamedTuple):
+    """The scoped grants one check goes by."""
+
+    # Folded licence identifier -> the package names it is cleared for.
+    names: dict[str, tuple[str, ...]]
+    # Whether a name clears that package alone, or every package whose name
+    # starts with it.
+    whole: bool
+
+
+def npm_grants() -> Grants:
+    """SCOPED as a check reads it."""
+    return Grants(
+        {identifier.casefold(): names for identifier, names in SCOPED.items()},
+        whole=False,
+    )
+
+
+def python_grants(lockfile: str | None) -> Grants:
+    """PYTHON_SCOPED for one lockfile, named as in PYTHON_LOCKFILES.
+
+    No grants at all for a lockfile it does not name, or for ``None``.
+    """
+    return Grants(
+        {
+            identifier.casefold(): tuple(_normalize(name) for name in names)
+            for identifier, names in PYTHON_SCOPED.get(lockfile, {}).items()
+        },
+        whole=True,
+    )
+
 
 # Packages whose registry metadata carries no licence field, verified by hand.
 # Pinned to an exact version so a bump comes back for a fresh look instead of
@@ -244,13 +288,15 @@ Each finding above is one of these:
     saying who decided and on what basis;
 
   * a licence cleared only for named packages ("cleared only for other
-    packages") - the argument recorded in SCOPED was made about a different
-    dependency, so it does not carry over. Read this one, and either widen
-    that entry's prefixes with the reasoning, or treat it as below;
+    packages") - the argument recorded in SCOPED or PYTHON_SCOPED was made
+    about a different dependency, so it does not carry over. Read this
+    one. If that argument holds for it as written, name it in the entry
+    and say so there; if it does not - a GPL package that a shipped
+    program imports is not a build tool - treat it as below;
 
   * a package with no licence in its registry metadata - verify it by hand
-    (its LICENSE file, or its README) and add name@version to REVIEWED with
-    the evidence;
+    (its LICENSE file, or its README) and add name@version to NPM_REVIEWED
+    or PYTHON_REVIEWED with the evidence;
 
   * a dependency that is genuinely not usable here - pin it back to its last
     acceptable version, replace it, or drop it.
@@ -351,18 +397,19 @@ def _render(node: tuple) -> str:
     return "(" + joiner.join(_render(operand) for operand in node[1]) + ")"
 
 
-def _clearance(name: str, package: str, scoped: dict) -> str | None:
+def _clearance(name: str, package: str, scoped: Grants) -> str | None:
     """Why ``name`` is not cleared for ``package``, or ``None`` if it is."""
     folded = name.casefold()
     if folded in _ALLOWED_FOLDED:
         return None
-    prefixes = scoped.get(folded)
-    if prefixes is None:
+    names = scoped.names.get(folded)
+    if names is None:
         return "licence"
-    return None if package.startswith(prefixes) else "scoped"
+    cleared = package in names if scoped.whole else package.startswith(names)
+    return None if cleared else "scoped"
 
 
-def _unmet(node: tuple, package: str, scoped: dict) -> list[tuple[str, str]]:
+def _unmet(node: tuple, package: str, scoped: Grants) -> list[tuple[str, str]]:
     """Return what stops ``node`` being allowed, as ``(kind, detail)`` pairs.
 
     An empty list means allowed. AND needs every operand, so its operands'
@@ -409,20 +456,21 @@ def _describe(reasons: list[tuple[str, str]]) -> str:
 
 
 def judge(
-    ident: str, declared: str, scoped: dict | None = None
+    ident: str, declared: str, scoped: Grants | None = None
 ) -> list[tuple[str, str, str]]:
     """Return findings for one package's declared licence string.
 
     ``ident`` is ``name@version`` as built by ``check``; the package name is
     recovered from it because SCOPED grants are decided by which package
     declares the licence, not just by the licence. ``scoped`` holds the grants
-    of the ecosystem the package comes from, folded; npm's when not given.
+    the package is judged by: those of its Python lockfile, or npm's when not
+    given.
     """
     package = ident.rsplit("@", 1)[0]
     node = parse_expression(declared)
     if node is None:
         return [(ident, declared, NOT_SPDX)]
-    reasons = _unmet(node, package, _SCOPED_FOLDED if scoped is None else scoped)
+    reasons = _unmet(node, package, npm_grants() if scoped is None else scoped)
     if not reasons:
         return []
     return [(ident, declared, _describe(reasons))]
@@ -594,13 +642,21 @@ def _declared(metadata) -> tuple[str | None, str]:
 
 
 def check_python(
-    lock_path: Path, other_locks: tuple[Path, ...] = ()
+    lock_path: Path,
+    other_locks: tuple[Path, ...] = (),
+    grants: Grants | None = None,
+    report_stale: bool = True,
 ) -> list[tuple[str, str, str]]:
     """Return ``(package, declared licence, reason)`` for every failing package.
 
     ``other_locks`` are the other Python lockfiles PYTHON_REVIEWED serves: an
     entry one of them still locks is not stale just because this one does not.
+    ``grants`` are the scoped grants of the lockfile being read, none when
+    not given. ``report_stale`` is off for all but one lockfile's check: what
+    is stale is the same whichever lockfile is being read, and one note for
+    it is enough.
     """
+    grants = python_grants(None) if grants is None else grants
     import importlib.metadata
 
     locked, first_party = _locked(lock_path)
@@ -647,7 +703,7 @@ def check_python(
             problems.add((ident, "<none>", "declares no licence"))
             continue
 
-        findings = judge(ident, declared, _PYTHON_SCOPED_FOLDED)
+        findings = judge(ident, declared, grants)
         if findings and source != "License-Expression":
             # Say where a verdict came from: a classifier or a free-text field
             # is weaker evidence than a declared SPDX expression, and that
@@ -655,14 +711,16 @@ def check_python(
             findings = [(i, d, f"{r} (from the {source})") for i, d, r in findings]
         problems.update(findings)
 
-    locked_elsewhere = {
-        f"{name}@{version}"
-        for other in other_locks
-        if other.is_file()
-        for name, version in _locked(other)[0].items()
-    }
-    for stale in sorted(set(PYTHON_REVIEWED) - seen_reviewed - locked_elsewhere):
-        _note(f"{stale} is no longer locked - drop it from PYTHON_REVIEWED")
+    if report_stale:
+        locked_elsewhere = {
+            f"{name}@{version}"
+            for other in other_locks
+            if other.is_file()
+            for name, version in _locked(other)[0].items()
+        }
+        stale_entries = set(PYTHON_REVIEWED) - seen_reviewed - locked_elsewhere
+        for stale in sorted(stale_entries):
+            _note(f"{stale} is no longer locked - drop it from PYTHON_REVIEWED")
 
     if not problems:
         print(f"OK  {lock_path}: {len(locked)} packages, every licence allowed")
@@ -691,7 +749,10 @@ def main(argv: list[str] | None = None) -> int:
     def python(name: str):
         """The Python check of one lockfile, told which the others are."""
         others = tuple(root / other for other in PYTHON_LOCKFILES if other != name)
-        return lambda lock_path: check_python(lock_path, others)
+        # The root lockfile's check is the one that says what is stale.
+        return lambda lock_path: check_python(
+            lock_path, others, python_grants(name), name == PYTHON_LOCKFILE
+        )
 
     # (lockfile, checker) in the order they are reported.
     wanted: list[tuple[str, object]] = []
