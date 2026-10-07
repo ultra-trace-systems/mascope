@@ -112,6 +112,42 @@ jobs:
       - name: Check Python dependency licences against the allowlist
         run: uv run --no-sync python tooling/check-licenses.py python
 
+  agent-licences:
+    # The File Agent is its own uv project with its own lockfile, which the job
+    # above never reads. On Windows, and not as a step of that job: the agent
+    # is a Windows program, so the packages its lockfile names for Windows are
+    # the ones a build installs and ships, and only there are they installed
+    # for the check to read. On Linux five of them would be "locked but not
+    # installed" - the five that matter - and each would need a hand-verified
+    # entry that goes stale at every bump.
+    name: Dependency licences (File Agent)
+    runs-on: windows-latest
+    timeout-minutes: 10
+    env:
+      # uv and the checker print paths and names; keep captured output UTF-8.
+      PYTHONUTF8: "1"
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          version: "0.11.2"
+
+      - name: Install every dependency group of the File Agent
+        # As for the root lockfile: what is not installed cannot be read, and
+        # comes back as a finding rather than a silent pass. The dev group is
+        # where PyInstaller is.
+        working-directory: agents/file
+        run: uv sync --all-groups
+
+      - name: Check the File Agent's dependency licences against the allowlist
+        working-directory: agents/file
+        run: uv run --no-sync python ../../tooling/check-licenses.py agent
+
   docs:
     name: Docs strict build
     runs-on: ubuntu-latest
