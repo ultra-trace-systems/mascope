@@ -32,12 +32,15 @@ class ScriptedAcquisition:
     own, and its tests are in ``libraries/thermo/tests``.
 
     :param scans: One ``(filter, event, {m/z: intensity})`` per scan.
+    :param microscans: ``{event: count}``, the microscan count the trailers
+        of an event's scans report. An event it leaves out reports none.
     """
 
     RESOLUTION = 120000
 
-    def __init__(self, scans):
+    def __init__(self, scans, microscans=None):
         self._scans = list(scans)
+        self._microscans = dict(microscans or {})
         self.trailer_reads = 0
 
     def __enter__(self):
@@ -65,7 +68,21 @@ class ScriptedAcquisition:
         return {"FT Resolution:": self.RESOLUTION}
 
     def acquisition_parameters(self, max_scans=5, scan_numbers=None):
-        return {"source": "scripted", "scans_sampled": 0, "constant": {}, "varying": []}
+        """What the trailers of these scans agree on: their microscan count,
+        where their events were scripted with one and it is the same."""
+        counts = {
+            self._microscans.get(self._scans[number - 1][1])
+            for number in scan_numbers or []
+        }
+        constant = {}
+        if len(counts) == 1 and None not in counts:
+            constant["Micro Scan Count:"] = counts.pop()
+        return {
+            "source": "scripted",
+            "scans_sampled": 0,
+            "constant": constant,
+            "varying": [],
+        }
 
     # -- selection --
 

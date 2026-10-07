@@ -322,6 +322,15 @@ def load_peak_data(base_filename: str, drop_bad_peaks: bool = True) -> xr.Datase
     own stream. Read them through ``mascope_signal.compute.peak_store_streams``,
     which answers ``[]`` for a pooled store.
 
+    The streams of one polarity are stitched into one spectrum, so such a
+    store carries as well:
+    - composite (mz): whether the peak is in its polarity's composite, which
+      takes each m/z from the one stream that owns it
+    and, as attributes, the ``stitch_map`` that decided it and the
+    ``stitch_overlaps`` two streams read where both measure
+    (``mascope_signal.stitch``). ``mascope_signal.compute.peak_store_stitch_map``
+    reads the map, and answers None for a pooled store.
+
     :param base_filename: Sample file filename
     :type base_filename: str
     :param drop_bad_peaks: Flag to drop weak and satellite peaks, defaults to True

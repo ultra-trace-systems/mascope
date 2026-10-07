@@ -8,7 +8,9 @@ runs without. So a test that imports ``mascope_signal.peak`` cannot be
 collected there, and lives here.
 
 The filestore is a temporary directory, as in the signal library's own
-tests: one sample, with a ``.props`` beside it and nothing else.
+tests: one sample, with a ``.props`` beside it and nothing else. The sample
+is made a raw Orbitrap file by ``acquire``, which hands the reader a scripted
+acquisition in the place of a file.
 """
 
 import os
@@ -16,8 +18,15 @@ import shutil
 import tempfile
 from unittest.mock import MagicMock, patch
 
+import numpy as np
 import pytest
-from scripted_acquisition import SAMPLE_FILENAME
+from composite_acquisition import COMPOSITE, MICROSCANS
+from scripted_acquisition import SAMPLE_FILENAME, ScriptedAcquisition
+
+import mascope_signal.compute as m_compute
+import mascope_signal.peak as m_peak
+import mascope_thermo.streams as m_streams
+import mascope_thermo.thermo as m_thermo
 
 
 @pytest.fixture(scope="session")
@@ -66,3 +75,35 @@ def sample_file_path(temp_filestore):
     yield sample_path
 
     shutil.rmtree(sample_path, ignore_errors=True)
+
+
+@pytest.fixture
+def instrument_functions():
+    """A Gaussian peak shape. Peak areas follow it; nothing here reads them."""
+    x = np.linspace(-5.0, 5.0, 101)
+    return {"x": x, "y": np.exp(-(x**2) / 2)}, lambda mz: np.full_like(mz, 1e5)
+
+
+@pytest.fixture
+def acquire(monkeypatch, sample_file_path):
+    """Make the test sample a raw Orbitrap file read from scripted scans."""
+
+    def _acquire(scans, microscans=None):
+        acquisition = ScriptedAcquisition(scans, microscans)
+        monkeypatch.setattr(
+            m_compute.m_name, "get_sample_file_type", lambda _: "orbi_raw"
+        )
+        monkeypatch.setattr(m_thermo, "open_backend", lambda path: acquisition)
+        monkeypatch.setattr(m_streams, "open_backend", lambda path: acquisition)
+        return acquisition
+
+    return _acquire
+
+
+@pytest.fixture
+def composite(acquire, instrument_functions):
+    """The composite file of ``composite_acquisition``, its peaks detected
+    per stream."""
+    acquisition = acquire(COMPOSITE, MICROSCANS)
+    m_peak.compute_peaks(SAMPLE_FILENAME, instrument_functions, per_stream=True)
+    return acquisition
