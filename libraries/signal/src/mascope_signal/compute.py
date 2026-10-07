@@ -265,7 +265,7 @@ def get_sum_signal(
     others hand on the reader's ``UnknownStreamError``. Averaged it does
     refuse, because the scans are counted first. Whoever reads by a key it
     has stored has to ask the reader for the key before it trusts the
-    cache.
+    cache, as :func:`get_composite_sum_signal` does.
 
     :param base_filename: Sample file filename
     :type base_filename: str
@@ -539,6 +539,188 @@ def _write_cached_sum_signal(
             raise
 
     return None
+
+
+def get_composite_sum_signal(
+    base_filename: str,
+    polarity: Literal["+", "-"],
+    t_min: float | None = None,
+    t_max: float | None = None,
+    average: bool = False,
+) -> xr.DataArray:
+    """Get the stitched sum signal of one polarity of a composite acquisition.
+
+    A composite's spectrum is its streams' sum signals, each cut to the m/z
+    the stream owns under the file's stitch map and laid end to end on one
+    axis (``mascope_signal.stitch``). Every sample is labelled with the
+    stream it came from, as ``segment``: an index into the store's stream
+    keys, as a peak's ``stream`` is. Nothing is rescaled where two streams
+    meet, so the signal can step at a boundary, and where the map has a gap
+    the signal has no samples.
+
+    The map is the peak store's, so the signal and the store's ``composite``
+    mask cut the file in the same places. It is in m/z as the instrument
+    recorded them, and a stream's signal is on the file's calibrated axis,
+    so it is cut by the factor the file carries.
+
+    Averaged, each sample is divided by the scans of its own stream inside
+    the time range, since the streams of a composite hold different numbers
+    of scans. A stream with no scan inside the range is left out, and the
+    m/z it owns is a gap of that range's signal.
+
+    The reader is asked for every stream before a cached signal is served,
+    this one or a stream's own. A store names its streams by key, a key can
+    stop naming anything, and a cached signal answers under its key without
+    the file being read (:func:`get_sum_signal`). The stitched signal is
+    cached beside the streams', under a name that carries the runs it was
+    cut by and the keys they index, so a store rebuilt to another map is
+    not handed a signal stitched for the last.
+
+    :param base_filename: Sample file filename
+    :type base_filename: str
+    :param polarity: The polarity whose composite to read
+    :type polarity: str
+    :param t_min: Min time value [s], defaults to None
+    :type t_min: float, optional
+    :param t_max: Max time value [s], defaults to None
+    :type t_max: float, optional
+    :param average: Whether to return the average signal
+    :type average: bool, optional
+    :raises FileNotFoundError: If the sample file has no peak store
+    :raises ValueError: If its store stitches no streams of that polarity:
+        a pooled store, or a polarity with a single stream, whose signal is
+        that stream's own
+    :raises StalePeakStoreError: If the file holds no stream under a key the
+        store lists, or the store carries no map
+    :raises mascope_thermo.thermo.NoScansFoundError: If no stream of the
+        composite has a scan inside the time range
+    :return: The stitched sum signal, with ``segment`` along ``mz``
+    :rtype: xr.DataArray
+    """
+    stored = m_io.load_array(base_filename, var="peak_timeseries")
+    stitch = peak_store_stitch_map(stored)
+    runs = stitch["runs"].get(polarity) if stitch else None
+    if not runs:
+        raise ValueError(
+            f"'{base_filename}' holds no composite of polarity '{polarity}': "
+            "its peak store stitches no scan streams of that polarity."
+        )
+    keys = peak_store_streams(stored)
+
+    scans = {
+        index: _scans_of_stream(base_filename, keys[index], t_min, t_max)
+        for index in sorted({index for _lower, _upper, index in runs})
+    }
+    if not any(scans.values()):
+        raise m_thermo.NoScansFoundError(
+            f"No scans found for the composite of polarity '{polarity}' of "
+            f"'{base_filename}' (t_min={t_min}, t_max={t_max})."
+        )
+
+    cached_name = _composite_sum_signal_name(
+        t_min, t_max, polarity, m_name.get_sample_file_type(base_filename), runs, keys
+    )
+    stitched = _try_get_cached_sum_signal(base_filename, cached_name)
+    if stitched is None:
+        stitched = _stitch_sum_signals(base_filename, t_min, t_max, runs, keys, scans)
+        concurrent = _write_cached_sum_signal(base_filename, cached_name, stitched)
+        if concurrent is not None:
+            stitched = concurrent
+
+    if average:
+        scans_of = np.zeros(len(keys))
+        for index, count in scans.items():
+            scans_of[index] = count
+        return stitched / scans_of[stitched.segment.values]
+    return stitched
+
+
+def _composite_sum_signal_name(
+    t_min: float | None,
+    t_max: float | None,
+    polarity: str,
+    sample_type: str,
+    runs: list,
+    keys: list[str],
+) -> str:
+    """The name a polarity's stitched sum signal is cached under.
+
+    It is a sum signal like the others of its file, named the same way and
+    with the same suffix (:func:`_get_sum_signal_hash_name`), so that
+    whatever moves or removes a file's cached sum signals takes it along. It
+    is the signal of one map of one set of streams, so the name carries the
+    runs and the keys they index.
+
+    :return: The name, with the suffix of ``sample_type``
+    :rtype: str
+    """
+    members = {index: keys[index] for index in sorted({run[2] for run in runs})}
+    key_str = json.dumps([t_min, t_max, polarity, "composite", runs, members])
+    hash_addition = hashlib.sha1(key_str.encode()).hexdigest()[:12]
+    return f"sum_signal_{hash_addition}" + sum_signal_suffix(sample_type)
+
+
+def _scans_of_stream(
+    base_filename: str, key: str, t_min: float | None, t_max: float | None
+) -> int:
+    """How many scans of one stream of a per-stream store a time range holds.
+
+    Asked of the reader, which is what makes it the place a stored key is
+    found to name nothing any more.
+
+    :raises StalePeakStoreError: If the file holds no stream under the key
+    :return: The number of scans, zero where the range holds none
+    :rtype: int
+    """
+    try:
+        return get_scan_timestamps(base_filename, t_min, t_max, stream=key).size
+    except m_thermo.UnknownStreamError as error:
+        raise _stale_stream_key(key) from error
+    except m_thermo.NoScansFoundError:
+        return 0
+
+
+def _stitch_sum_signals(
+    base_filename: str,
+    t_min: float | None,
+    t_max: float | None,
+    runs: list,
+    keys: list[str],
+    scans: dict[int, int],
+) -> xr.DataArray:
+    """The sum signals of a composite's streams, cut by its runs and joined.
+
+    :param runs: The polarity's runs ``[lower, upper, stream index]``, in
+        m/z order
+    :param keys: The store's stream keys, as the runs index them
+    :param scans: How many scans of each stream the time range holds
+    :return: The stitched signal, ``segment`` naming each sample's stream
+    :rtype: xr.DataArray
+    """
+    calibration = m_io.read_props(base_filename)["mz_calibration"]
+    factor = calibration["par"]["calibration_factor"] if calibration else 1.0
+
+    signals: dict[int, xr.DataArray] = {}
+    parts = []
+    for lower, upper, index in runs:
+        if not scans[index]:
+            continue
+        if index not in signals:
+            signals[index] = get_sum_signal(
+                base_filename, t_min, t_max, stream=keys[index]
+            )
+        signal = signals[index]
+        part = signal.isel(
+            mz=m_stitch.owned_slice(signal.mz.values, lower, upper, factor)
+        )
+        parts.append(
+            part.assign_coords(
+                segment=("mz", np.full(part.mz.size, index, dtype=np.int16))
+            )
+        )
+    # One chunk, as a stream's own signal is: the pieces come in the sizes of
+    # the runs, and a zarr array is not stored in chunks of unequal size
+    return xr.concat(parts, dim="mz").chunk({"mz": -1})
 
 
 def load_signal(
@@ -1323,11 +1505,16 @@ async def _read_stream_back(
     try:
         return await get_peak_timeseries(base_filename, mzs, stream=key)
     except m_thermo.UnknownStreamError as error:
-        raise StalePeakStoreError(
-            f"The peak store holds the peaks of scan stream '{key}', and the "
-            "sample file now reads back no stream under that key. Re-run peak "
-            "detection for this sample file to rebuild the store."
-        ) from error
+        raise _stale_stream_key(key) from error
+
+
+def _stale_stream_key(key: str) -> StalePeakStoreError:
+    """What a stream key of a per-stream store that names nothing is raised as."""
+    return StalePeakStoreError(
+        f"The peak store holds the peaks of scan stream '{key}', and the "
+        "sample file now reads back no stream under that key. Re-run peak "
+        "detection for this sample file to rebuild the store."
+    )
 
 
 async def check_peak_store(base_filename: str) -> None:
