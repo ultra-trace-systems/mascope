@@ -1,13 +1,18 @@
 """Add acquisition_stream, and the stream a sample item is cut from
 
 A raw Orbitrap file whose acquisition method runs more than one MS1
-experiment in a polarity can be processed per experiment: a scan stream, with
-a peak list of its own (``docs/dev/ingest_routing_and_splitting.md``,
-sections 4.4 and 4.5). A sample item has had only its polarity to say which
-scans it is cut from, and two streams of one polarity share that.
+experiment in a polarity is processed per experiment: a scan stream, with a
+peak list of its own, and where the streams of a polarity are m/z ranges of
+one chemistry they are stitched into one spectrum, the polarity's composite
+(``docs/dev/ingest_routing_and_splitting.md``, sections 4.4 and 4.5). A
+sample item has had only its polarity to say which scans it is cut from, and
+two streams of one polarity share that.
 
-``acquisition_stream`` holds one row per stream of a file processed that way,
-and ``sample_item.stream_id`` points an item at its stream.
+``acquisition_stream`` holds one row per stream of a file, a composite being
+a row like any stream, with its segments pointing at it through
+``composite_stream_id`` and the map they were stitched by in its ``stitch``;
+``sample_item.stream_id`` points an item at the stream it reads, the
+composite where its polarity has one.
 
 **The table starts empty and the column starts NULL, and nothing fills them
 in for what already exists.** NULL means the item spans every MS1 scan of its
@@ -17,8 +22,8 @@ already processed keeps its pooled items until someone re-processes it
 decision is never backfilled.
 
 Nothing writes either yet. The columns here are the ones a stream's census
-gives; its fits, its binding and its state arrive with the steps that write
-them, each in its own revision.
+gives, and the two a composite needs; a stream's fits, its binding and its
+state arrive with the steps that write them, each in its own revision.
 
 One row per (file, stream key). The key is a stream's name within its file
 and is not stable across files, so the uniqueness is per file and the
@@ -29,6 +34,9 @@ file, or when the file is processed again, and its items go first both times;
 an item left pointing at a stream being deleted is a fault to refuse. SET
 NULL would turn such an item silently into one over the whole polarity, and
 CASCADE would delete a sample because a description of its file was rewritten.
+``composite_stream_id`` has none either: a composite goes only with its file
+or on a re-process, in one statement with its segments, and a segment left
+pointing at a composite being deleted on its own is the same fault.
 
 Revision ID: 5a0e9de94ed9
 Revises: 7a2d5c8e3b94
@@ -53,6 +61,7 @@ depends_on: Union[str, Sequence[str], None] = None
 # (``models.NAMING_CONVENTION``), so the drift test sees one schema.
 _STREAM_FK = "fk_sample_item_stream_id_acquisition_stream"
 _STREAM_INDEX = "ix_sample_item_stream_id"
+_COMPOSITE_INDEX = "ix_acquisition_stream_composite_stream_id"
 
 
 def upgrade() -> None:
@@ -69,10 +78,19 @@ def upgrade() -> None:
         sa.Column("blocks", sa.Integer(), nullable=False),
         sa.Column("t_first", sa.Float(), nullable=False),
         sa.Column("t_last", sa.Float(), nullable=False),
+        # A segment's composite; NULL on a composite itself and on every
+        # stream of a file that has none
+        sa.Column("composite_stream_id", sa.String(length=16), nullable=True),
+        # On a composite: the map it was stitched by; NULL elsewhere
+        sa.Column("stitch", sa.JSON(), nullable=True),
         sa.ForeignKeyConstraint(
             ["sample_file_id"],
             ["sample_file.sample_file_id"],
             ondelete="CASCADE",
+        ),
+        sa.ForeignKeyConstraint(
+            ["composite_stream_id"],
+            ["acquisition_stream.stream_id"],
         ),
         sa.PrimaryKeyConstraint("stream_id"),
         # Its index also finds a file's streams and serves the file's
@@ -90,6 +108,8 @@ def upgrade() -> None:
         ["stream_id"],
     )
     op.create_index(_STREAM_INDEX, "sample_item", ["stream_id"])
+    # The question asked of a composite: its segments
+    op.create_index(_COMPOSITE_INDEX, "acquisition_stream", ["composite_stream_id"])
 
 
 def downgrade() -> None:
@@ -100,4 +120,5 @@ def downgrade() -> None:
     op.drop_index(_STREAM_INDEX, table_name="sample_item")
     op.drop_constraint(_STREAM_FK, "sample_item", type_="foreignkey")
     op.drop_column("sample_item", "stream_id")
+    # The composite index and reference go with the table
     op.drop_table("acquisition_stream")

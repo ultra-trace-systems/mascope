@@ -84,7 +84,7 @@ request for this work updates the table below and ticks its item on #2098.
 | 1 | Per-file processing state, persistent notifications, "needs a chemistry" | shipped (#2164, #2166-#2169) |
 | 2 | Method bindings: routing without tokens | learned in shadow on every server (#2193, #2196, #2206, #2226), measured (5.7), item provenance (#2254), the row-following learner (#2255), the rung (#2264) and the disagreement report (#2267) shipped; the backfill re-run and the per-site switch remain, section 10 lists them |
 | 8 | Chemistry profiles as the unit: complete the seeded profiles, ship the standard methods and their catalogue, list the profiles, a profile-first surface, batches named after the profile | open; follows the stream first cut, or runs beside it when there are hands for both (decided 2026-10-05) |
-| 3 | The part contract: stream and window honoured by every consumer | **in progress**: the composite cut, for files whose method measures more than one thing in a polarity (4.5), leads the work after phase 2 (decided 2026-10-05; a stitch, not a split, since 2026-10-06). The census keys streams on the method's experiments (#2273), the reader selects one stream's scans (#2278), and peak detection and the peak store follow a stream behind `composite_scan_streams` (#2279), and the store is stitched - the map, the per-peak mask, the overlap readings and the stitched sum signal (#2297); the composite row and its item, the consumers and the per-segment fits follow, and section 10 lists them |
+| 3 | The part contract: stream and window honoured by every consumer | **in progress**: the composite cut, for files whose method measures more than one thing in a polarity (4.5), leads the work after phase 2 (decided 2026-10-05; a stitch, not a split, since 2026-10-06). The census keys streams on the method's experiments (#2273), the reader selects one stream's scans (#2278), and peak detection and the peak store follow a stream behind `composite_scan_streams` (#2279), and the store is stitched - the map, the per-peak mask, the overlap readings and the stitched sum signal (#2297); the stream table is in the schema with its composite column, unwritten (#2282); the item that points at the composite, the consumers and the per-segment fits follow, and section 10 lists them |
 | 4 | Per-stream state: calibration and instrument function per segment, MS2 | open; its per-segment calibration is part of the composite cut; follows 3 on the same track; no rebuild script (4.5, 9.1) |
 | 5 | Chemistry detection: audit first, then provisional binding | deferred behind phases 3, 4 and 8 (decision 3); its reagent libraries are on `develop` |
 | 6 | Recipes: time and trace windows, preview and apply | open |
@@ -929,6 +929,49 @@ not that stream is stitched.
 
 `sample_item` gains a nullable `stream_id`. NULL means today's semantics, so
 every existing item keeps its meaning. Copy and move carry it.
+
+**Rows for every file** (decided 2026-10-07). Once the step that writes
+them is in, every raw Orbitrap file whose census is read gets one row per
+stream and, where a polarity is stitched, one composite row its segments
+point at; a polarity with a single stream gets that one row, and its item
+points at it, which means what the polarity has always meant. Rows are
+data no consumer reads before step 6, and writing them only behind the
+flag would leave step 6 with two code paths. NULL stays the mark of an
+item made before the table existed.
+
+**As built** (#2282), the table and the column, with nothing writing them
+yet:
+
+- **The columns a census gives, and the two a composite needs.**
+  `stream_id`, `sample_file_id`, `stream_key`, `signature_key`,
+  `scan_segment`, `scan_event`, `signature`, `scan_count`, `blocks`,
+  `t_first`, `t_last`; `composite_stream_id`, a segment's composite, NULL
+  on a composite itself and on every stream of a file that has none; and
+  `stitch`, on a composite the map it was built with as the peak store
+  records it (`stitch_map` of 4.5), NULL elsewhere. The fits, the binding,
+  the state, `parent_stream_id` and `epoch` arrive with the steps that
+  write them, each in its own revision, so that no column sits in the
+  schema unwritten for long.
+- **One row per (file, key).** The key is a name within its file (4.1), so
+  the uniqueness is per file and the identity columns carry no constraint.
+  A composite's key is the writer's to choose, unique in the file like any
+  other.
+- **Nothing is written for what already exists, and nothing ever will be
+  (9.1).** An item made before the column reads NULL and keeps reading
+  NULL.
+- **A stream goes with its file. An item does not go with its stream, and
+  cannot lose it either.** `sample_item.stream_id` has no ON DELETE
+  action: SET NULL would turn the item silently into one over the whole
+  polarity, and CASCADE would delete a sample because a description of its
+  file was rewritten. A stream row is deleted only with its file, or when
+  the file is processed again, and its items go first both times. The
+  same for a composite and its segments: `composite_stream_id` has no ON
+  DELETE action, a composite goes with its file or on a re-process in one
+  statement with its segments, and a composite deleted on its own under
+  its segments is refused.
+- **`sample_view` does not carry the column yet.** The view's columns reach
+  every client as they are, so the stream joins it with the consumers that
+  read by it, not before.
 
 ### 4.5 The composite cut: several m/z ranges, one chemistry, one spectrum
 
@@ -2422,9 +2465,12 @@ unchanged.
      run and leaves the others out, so the flag stays off for a file of
      that kind until the reader selects several streams as one and its
      repeats are one segment (#2098, decision 14);
-  5. **Step 5, the composite row and its item:** the stream table with the
-     composite column (#2282, amended), and one item per polarity pointing
-     at its composite (#2283, reworked from one item per stream);
+  5. **Step 5, the composite row and its item.** ~~The stream table with
+     the composite column~~ - built in #2282: `acquisition_stream` with
+     `composite_stream_id` and `stitch`, and a nullable
+     `sample_item.stream_id`, in the schema and unwritten so far (4.4);
+     and one item per polarity pointing at its composite (#2283, reworked
+     from one item per stream), which writes the rows for every file;
   6. **Step 6, the consumers** read the composite: peak listing, matching,
      the item TIC, the exports and assignment loading take the masked rows
      of the item's stream, and the spectrum and peak-listing routes return
