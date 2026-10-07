@@ -312,14 +312,18 @@ class FileUploader:
                     break
                 if fname is not None:
                     self.not_uploaded(fname)
-        if not done:
-            self._release_workers()
+        # Emptying the queue took with it the release of every worker that had
+        # not picked its own up yet: one still in an upload when the wait ran
+        # out, or the one this was called from. Each gets it again, or it
+        # would wait for it for ever once its upload is over.
+        self._release_workers()
         return done
 
     def _release_workers(self) -> None:
-        """Tell each worker to end once it finds nothing left to upload."""
-        for _ in self._workers:
-            self._uploads.put(None)
+        """Tell each worker still running to end once nothing is left to upload."""
+        for worker in self._workers:
+            if not worker.ended:
+                self._uploads.put(None)
 
     def not_uploaded(self, fname: str) -> None:
         """Say that a file was left behind because the agent stopped.

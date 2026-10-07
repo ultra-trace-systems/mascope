@@ -5,6 +5,7 @@ follower's questions are monkeypatched, so nothing reaches a network. The
 agent's own threads are real, and watch the test's own folder.
 """
 
+import os
 import threading
 import time
 
@@ -13,13 +14,14 @@ import pytest
 from mascope_file_agent import (
     Agent,
     ConfigError,
+    Repair,
     credentials,
     status,
     uploader,
     watcher,
 )
 from mascope_file_agent.wizard import CREDENTIAL_OK
-from mascope_sdk.exceptions import MascopeConnectionError
+from mascope_sdk.exceptions import AuthenticationError, MascopeConnectionError
 
 
 class RecordingLogger:
@@ -726,3 +728,146 @@ def test_an_uploader_that_has_finished_starts_no_workers(make_agent):
 
     assert agent.uploader._workers == []
     assert set(threading.enumerate()) == before
+
+
+# ---------------------------------------------------------------------------
+# What stop() says of files and threads it cannot simply wait for
+# ---------------------------------------------------------------------------
+
+
+def test_a_file_waiting_for_a_free_worker_at_a_deadline_is_named(
+    make_agent, uploads, tmp_path
+):
+    """Three workers, four files: the fourth has been handed over and not begun."""
+    uploads.hold()
+    agent = make_agent()
+    agent.start()
+    names = {"a.raw", "b.raw", "c.raw", "d.raw"}
+    for name in sorted(names):
+        (tmp_path / name).write_bytes(b"data")
+        agent.uploader.enqueue(str(tmp_path / name))
+    assert wait_for(lambda: len(uploads.calls) == 3 and agent.uploader.jobs.empty())
+
+    assert agent.stop(timeout=0.3) is False
+
+    begun = {os.path.basename(call["filepath"]) for call in uploads.calls}
+    (waiting,) = names - begun
+    assert agent.logger.said(
+        "warning", f"{waiting}: not uploaded, as the agent is stopping."
+    )
+    for name in begun:
+        assert agent.logger.said("warning", f"{name}: its upload had not ended")
+    # And it is not begun once a worker comes free.
+    uploads.release.set()
+    assert wait_for(lambda: all(w.ended for w in agent.uploader._workers))
+    assert len(uploads.calls) == 3
+
+
+def test_a_worker_that_comes_free_after_the_deadline_begins_nothing(
+    make_agent, uploads, sample
+):
+    """The file it would have taken next is named instead."""
+    agent = make_agent()
+    agent.uploader._abort.set()
+    agent.uploader._uploads.put(sample)
+    agent.uploader._uploads.put(None)
+
+    agent.uploader._work()
+
+    assert not uploads.calls
+    assert agent.logger.said(
+        "warning", "x.raw: not uploaded, as the agent is stopping."
+    )
+
+
+def test_stop_from_an_on_ready_step_does_not_wait_for_its_own_thread(
+    make_agent, sample
+):
+    """False at once, as the docstring says: the thread ends after the step."""
+    agent = make_agent()
+    stops = []
+
+    def stop_the_agent(path):
+        began = time.monotonic()
+        stops.append((agent.stop(timeout=5), time.monotonic() - began))
+
+    agent.on_ready(stop_the_agent)
+    agent.start()
+
+    agent.watcher.seen(sample)
+
+    assert wait_for(lambda: stops)
+    ((stopped, took),) = stops
+    assert stopped is False
+    assert took < 2
+    assert wait_for(lambda: agent.watcher._handling.ended)
+    assert not agent.logger.said("exception", "Unexpected error")
+    # The file the step was handed reaches an uploader that takes no more.
+    assert agent.logger.said(
+        "warning", "x.raw: not uploaded, as the agent is stopping."
+    )
+
+
+def test_a_repair_that_stops_the_agent_does_not_wait_for_its_own_worker(
+    make_settings, monkeypatch, uploads, sample
+):
+    """A program that answers a refused credential by stopping the agent.
+
+    Its offer runs on the worker whose upload was refused, and that worker
+    cannot wait for its own end. The other workers are waited for, and the
+    stop is not counted as having run out of time.
+    """
+    monkeypatch.setattr(uploader, "POLL_INTERVAL", 0.01)
+    monkeypatch.setattr(
+        credentials, "check_credential", lambda host, token, verify: (CREDENTIAL_OK, "")
+    )
+    monkeypatch.setattr(status.StatusFollower, "poll_due", lambda self: None)
+    stops = []
+
+    class StopsTheAgent(Repair):
+        def offer(self, reason, pair):
+            began = time.monotonic()
+            stops.append((agent.stop(timeout=5), time.monotonic() - began))
+            return None
+
+    agent = Agent(
+        make_settings(timeout=0), logger=RecordingLogger(), repair=StopsTheAgent()
+    )
+    uploads.error = AuthenticationError("Credential refused", status_code=401)
+    agent.start()
+
+    agent.uploader.enqueue(sample)
+
+    assert wait_for(lambda: stops)
+    ((stopped, took),) = stops
+    assert stopped is True
+    assert took < 2
+    assert wait_for(lambda: all(w.ended for w in agent.uploader._workers))
+    assert not agent.logger.said("warning", "its upload had not ended")
+    assert not agent.logger.said("exception", "Unexpected error")
+
+
+def test_an_agent_stopped_during_its_start_does_not_ask_the_server(
+    make_agent, monkeypatch
+):
+    """The check at start can take a connection timeout; a stop does not wait
+    for a question whose answer nobody will use."""
+    asked = []
+    monkeypatch.setattr(
+        credentials,
+        "check_credential",
+        lambda host, token, verify: asked.append(host) or (CREDENTIAL_OK, ""),
+    )
+    agent = make_agent()
+    watch = agent.watcher.start
+
+    def stopped_while_starting():
+        watch()
+        agent.shutdown_event.set()
+
+    monkeypatch.setattr(agent.watcher, "start", stopped_while_starting)
+
+    agent.start()
+
+    assert wait_for(lambda: agent._thread.ended)
+    assert asked == []
