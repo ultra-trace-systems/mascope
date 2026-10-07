@@ -3031,7 +3031,8 @@ the `publish-pypi` workflow (`.github/workflows/publish-pypi.yaml`). To release
 a new version:
 
 1. In a PR, set `version` in the package's `pyproject.toml`
-   (`libraries/sdk/` or `libraries/tools/`) to the commit date in unpadded
+   (under `libraries/sdk/`, `libraries/tools/`, `libraries/runtime/`,
+   `tooling/cli/` or `agents/file/`) to the commit date in unpadded
    CalVer (e.g. `2026.7.6` — no leading zeros; PEP 440 strips them anyway):
 
    ```sh
@@ -3053,7 +3054,9 @@ account → Publishing) before its first version can be uploaded.
 To publish manually (e.g. from a fork or in an emergency), the underlying
 steps are in `.github/scripts/publish-package.sh`: `uv build --package
 mascope_sdk` from the repo root (note: `dist/` is created in the root, not in
-the package directory), then `uv publish --token <MY_TOKEN>`.
+the package directory), then `uv publish --token <MY_TOKEN>`. The File Agent is
+not a workspace member, so `--package` does not find it: build it with
+`uv build agents/file --out-dir dist` instead, also from the repo root.
 
 ### Chemical formulas and custom elements
 
