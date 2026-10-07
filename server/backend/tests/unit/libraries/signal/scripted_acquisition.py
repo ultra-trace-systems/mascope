@@ -9,6 +9,7 @@ which in a run spanning several test directories is another directory's.
 
 import numpy as np
 
+from mascope_thermo.scan_filter import parse_scan_filter
 from mascope_thermo.streams import scan_stream_keys
 from mascope_thermo.thermo import NoScansFoundError, UnknownStreamError
 
@@ -38,10 +39,15 @@ class ScriptedAcquisition:
 
     RESOLUTION = 120000
 
+    # The spacing of a scan's profile [m/z]. A power of two, so that every
+    # sample is the same float in each scan's profile.
+    PROFILE_STEP = 0.25
+
     def __init__(self, scans, microscans=None):
         self._scans = list(scans)
         self._microscans = dict(microscans or {})
         self.trailer_reads = 0
+        self.profiles_averaged = 0
 
     def __enter__(self):
         return self
@@ -147,11 +153,24 @@ class ScriptedAcquisition:
         )
 
     def average_profile(self, scan_indices, ppm=1, average=False):
-        """A flat profile over the acquisition's m/z range: nothing here reads
-        its shape, only its axis."""
-        everything = [mz for _text, _event, peaks in self._scans for mz in peaks]
-        axis = np.linspace(min(everything) - 1.0, max(everything) + 1.0, 2000)
-        return axis, np.ones_like(axis), len(scan_indices)
+        """The scans' profiles summed, or averaged. A scan's profile is flat
+        over its own scan range, at the sum of its centroids: nothing here
+        reads a peak's shape off it, and a level per scan is enough to tell
+        which scans a profile was summed over and where it was cut."""
+        self.profiles_averaged += 1
+        levels: dict[float, float] = {}
+        for number in scan_indices:
+            text, _event, peaks = self._scans[number - 1]
+            ((lower, upper),) = parse_scan_filter(text).scan_ranges
+            for mz in np.arange(
+                lower, upper + self.PROFILE_STEP / 2, self.PROFILE_STEP
+            ):
+                levels[float(mz)] = levels.get(float(mz), 0.0) + sum(peaks.values())
+        axis = np.array(sorted(levels))
+        values = np.array([levels[mz] for mz in axis])
+        if average:
+            values = values / len(scan_indices)
+        return axis, values, len(scan_indices)
 
     def xic(
         self,
