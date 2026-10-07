@@ -134,7 +134,10 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   the setting will be announced again when they are in.
 
   A file with one experiment in each polarity, which is nearly every file, is
-  processed exactly as before whichever way this is set. A file already
+  processed exactly as before whichever way this is set. So is a file whose
+  method only runs the same experiment again in a polarity, the same scan at
+  the same microscans and AGC target: there is nothing in it to tell apart,
+  and its runs are averaged together as they always were. A file already
   converted keeps what was decided for it then: rebuilding a store, as
   Mascope does when it finds one out of date, goes by that decision and
   never by this setting.

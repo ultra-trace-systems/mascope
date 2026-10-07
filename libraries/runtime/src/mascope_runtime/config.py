@@ -486,7 +486,9 @@ class BackendConfig(ModuleConfig):
     # each step ships inert and can be exercised on a development server.
     #
     # A file with one experiment in each polarity - nearly every file - is
-    # processed exactly as before whichever way this is set. A file already
+    # processed exactly as before whichever way this is set, and so is one
+    # whose method only runs the same experiment again in a polarity (the
+    # same scan at the same microscans and AGC target). A file already
     # converted keeps what was decided for it then: rebuilding a store goes by
     # that decision and never by this setting, so this applies to files
     # converted from then on.

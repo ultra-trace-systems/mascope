@@ -58,6 +58,8 @@ from typing import NamedTuple
 
 import numpy as np
 
+import mascope_thermo.streams as m_streams
+
 
 #: The rule :func:`stitch_map` draws a default map by, recorded with every
 #: map: a store stitched under another rule is told apart from one stitched
@@ -74,10 +76,6 @@ UPPER_TRIM = Fraction(2, 100)
 #: The most of a window's width either trim takes. The two together then
 #: leave a window its middle half, however narrow it is for its m/z.
 MOST_TRIMMED = Fraction(1, 4)
-
-#: The trailer value that says how many transients a scan averaged, as both
-#: reader backends name it among a stream's ``acquisition_params``.
-MICROSCANS = "Micro Scan Count:"
 
 #: The peak store attribute holding the map of :func:`stitch_map`.
 STITCH_MAP_ATTR = "stitch_map"
@@ -133,18 +131,10 @@ def _edge(value: float) -> Fraction:
 
 
 def _microscans(stream: dict) -> float:
-    """A stream's microscan count, or zero where its census holds none.
-
-    A reader reports it as a number or as text, by backend. A count that
-    varied among the scans sampled is listed by name only, and reads as
-    unknown here.
-    """
-    constant = (stream.get("acquisition_params") or {}).get("constant") or {}
-    try:
-        count = float(constant.get(MICROSCANS))
-    except (TypeError, ValueError):
-        return 0.0
-    return count if math.isfinite(count) else 0.0
+    """A stream's microscan count as its census reads it
+    (``mascope_thermo.streams.microscans``), or zero where it holds none."""
+    count = m_streams.microscans(stream)
+    return 0.0 if count is None else count
 
 
 def segments(streams: list[dict]) -> list[Segment]:

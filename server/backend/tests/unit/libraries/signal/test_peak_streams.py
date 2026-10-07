@@ -49,6 +49,23 @@ TWO_EXPERIMENTS = [
 ]
 
 
+@pytest.fixture
+def acquire(acquire):
+    """The scripted reader, with what sets two experiments under one filter
+    apart: their microscans. A method scripted here settles the source at
+    one microscan in its first experiment and measures at ten in every
+    other, unless a test says otherwise with ``microscans``. At the same
+    count, two experiments under one filter are one experiment run twice."""
+
+    def _acquire(scans, microscans=None):
+        if microscans is None:
+            events = sorted({event for _text, event, _peaks in scans if event})
+            microscans = {event: 1 if event == events[0] else 10 for event in events}
+        return acquire(scans, microscans)
+
+    return _acquire
+
+
 def _store():
     """The whole peak store, weak and satellite peaks included."""
     return m_io.load_peak_data(SAMPLE_FILENAME, drop_bad_peaks=False).compute()
@@ -135,6 +152,52 @@ def test_a_file_with_one_stream_in_each_polarity_is_always_detected_whole(
     for name in ("sum_peak_heights", "sum_peak_areas", "polarity", "signal_to_noise"):
         assert asked[name].values.tolist() == not_asked[name].values.tolist()
     assert asked.mz.values.tolist() == not_asked.mz.values.tolist()
+    assert asked.time.values.tolist() == not_asked.time.values.tolist()
+    assert _props(sample_file_path) == {"mz_calibration": None}
+
+
+def test_a_polarity_that_runs_one_experiment_again_is_detected_whole(
+    acquire, instrument_functions, sample_file_path
+):
+    """A method that switches polarity and comes back defines the same scan
+    twice, at the same microscans. The census lists two streams, and they are
+    one experiment: there is nothing in them to detect apart. Asked for per
+    stream, the file is stored exactly as when nobody asks, its two runs
+    averaged together. Detected apart, the second run would be a peak list
+    of its own that no stitch map could tell from the first."""
+    scans = (
+        [(NEG, 1, {62.0: 100.0, 125.0: 10.0})] * 2
+        + [(POS, 2, {59.0: 70.0})] * 2
+        + [(NEG, 3, {62.0: 300.0, 188.0: 50.0})] * 2
+    )
+    acquire(scans, microscans={1: 10, 2: 10, 3: 10})
+    census = m_streams.file_scan_streams("")
+    assert [stream["scan_event"] for stream in census] == [1, 2, 3]
+    assert m_streams.pooled_ms1_streams(census) == {
+        "-": [f"{NEG} R=120000 event=1", f"{NEG} R=120000 event=3"]
+    }
+
+    m_peak.compute_peaks(SAMPLE_FILENAME, instrument_functions, per_stream=True)
+    asked = _store()
+    m_peak.compute_peaks(SAMPLE_FILENAME, instrument_functions, per_stream=False)
+    not_asked = _store()
+
+    assert set(asked.data_vars) == LEGACY_VARIABLES
+    assert "streams" not in asked.attrs
+    for name in ("sum_peak_heights", "sum_peak_areas", "polarity", "signal_to_noise"):
+        assert asked[name].values.tolist() == not_asked[name].values.tolist()
+    assert (
+        asked.mz.values.tolist()
+        == not_asked.mz.values.tolist()
+        == [
+            59.0,
+            62.0,
+            125.0,
+            188.0,
+        ]
+    )
+    # The reagent ion over all four negative scans, both runs
+    assert asked.sum_peak_heights.values.tolist() == [140.0, 800.0, 20.0, 100.0]
     assert asked.time.values.tolist() == not_asked.time.values.tolist()
     assert _props(sample_file_path) == {"mz_calibration": None}
 

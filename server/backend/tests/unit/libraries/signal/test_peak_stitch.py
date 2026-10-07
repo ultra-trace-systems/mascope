@@ -162,28 +162,13 @@ def test_every_peak_of_a_polarity_with_one_stream_is_its_composites(
     assert _in_composite(store)[(4, 80.0)] is True
 
 
-def test_streams_the_census_cannot_tell_apart_are_stitched_by_their_order(
-    acquire, instrument_functions
-):
-    """Two experiments on one range whose trailers say nothing of their
-    microscans: the first owns the range, and the second's peaks stay out of
-    the composite, whole."""
-    settle = (REAGENT, 1, {62.0: 100.0, 125.0: 10.0})
-    measure = (REAGENT, 2, {62.0: 1000.0, 100.0: 50.0})
-    acquire([settle] * 2 + [measure] * 4)
-
-    m_peak.compute_peaks(SAMPLE_FILENAME, instrument_functions, per_stream=True)
-
-    store = _store()
-    assert store.attrs[m_stitch.STITCH_MAP_ATTR]["runs"] == {"-": [[40, 138, 0]]}
-    assert store.composite.values.tolist() == (store.stream.values == 0).tolist()
-
-
 def test_the_measurement_owns_a_range_it_shares_with_a_settling_scan(
     acquire, instrument_functions
 ):
-    """The same two experiments, their microscans read: one against ten. The
-    measurement owns the whole range and the settling scans own nothing."""
+    """Two experiments on one range under one filter, one microscan against
+    ten: a short scan while the source settles, and the measurement. They
+    measured two things, so they are detected apart, and the measurement
+    owns the whole range. The settling scans own nothing."""
     settle = (REAGENT, 1, {62.0: 100.0, 125.0: 10.0})
     measure = (REAGENT, 2, {62.0: 1000.0, 100.0: 50.0})
     acquire([settle] * 2 + [measure] * 4, {1: 1, 2: 10})
@@ -193,6 +178,66 @@ def test_the_measurement_owns_a_range_it_shares_with_a_settling_scan(
     store = _store()
     assert store.attrs[m_stitch.STITCH_MAP_ATTR]["runs"] == {"-": [[40, 138, 1]]}
     assert store.composite.values.tolist() == (store.stream.values == 1).tolist()
+
+
+def test_one_experiment_run_twice_is_not_stitched_at_all(acquire, instrument_functions):
+    """The same two events at the same microscans are one experiment the
+    method runs twice. There is nothing in them to detect apart, so the file is
+    detected whole, both runs averaged together, and its store carries
+    nothing of the stitch. Stitched, the two would tie for every m/z, and
+    the composite would be the first run alone."""
+    run = (REAGENT, 1, {62.0: 100.0, 125.0: 10.0})
+    again = (REAGENT, 2, {62.0: 300.0, 100.0: 50.0})
+    acquire([run] * 2 + [again] * 2, {1: 10, 2: 10})
+
+    m_peak.compute_peaks(SAMPLE_FILENAME, instrument_functions, per_stream=True)
+
+    store = _store()
+    assert m_compute.peak_store_streams(store) == []
+    assert "composite" not in store.variables
+    assert m_stitch.STITCH_MAP_ATTR not in store.attrs
+    assert store.mz.values.tolist() == [62.0, 100.0, 125.0]
+    assert store.sum_peak_heights.values.tolist() == [800.0, 100.0, 20.0]
+
+
+def test_a_run_repeated_beside_another_window_is_stitched_from_its_first_run(
+    acquire, instrument_functions
+):
+    """What is not built. A reagent scan and then the same low window twice:
+    the polarity measured two things, so the file is detected per stream, and
+    the two runs of the low window are streams the map cannot tell apart.
+    The first owns the window, and the second run's peaks are left out of
+    the composite whole, where pooled the two runs would be averaged
+    together. Making them one segment needs the reader to select several
+    streams as one. It is pinned so that the change is made on purpose."""
+    reagent = (REAGENT, 1, {62.0: 1000.0, 125.0: 400.0})
+    low = (LOW, 2, {80.0: 14.0, 100.0: 50.0})
+    again = (LOW, 3, {80.0: 16.0, 100.0: 70.0})
+    acquire([reagent] * 2 + [low] * 2 + [again] * 2, {1: 1, 2: 10, 3: 10})
+
+    m_peak.compute_peaks(SAMPLE_FILENAME, instrument_functions, per_stream=True)
+
+    store = _store()
+    assert m_compute.peak_store_streams(store) == [
+        KEYS[0],
+        f"{KEYS[1]} event=2",
+        f"{KEYS[1]} event=3",
+    ]
+    assert store.attrs[m_stitch.STITCH_MAP_ATTR]["runs"] == {
+        "-": [[40, 67, 0], [67, 122, 1], [122, 138, 0]]
+    }
+    in_composite = {
+        int(stream): flags.tolist()
+        for stream, flags in (
+            (index, store.composite.values[store.stream.values == index])
+            for index in range(3)
+        )
+    }
+    assert in_composite == {0: [True, True], 1: [True, True], 2: [False, False]}
+    # Its overlap with the first run says they are one thing: the same ions,
+    # read alike
+    twice = store.attrs[m_stitch.STITCH_OVERLAPS_ATTR][-1]
+    assert (twice["streams"], twice["shared"]) == ([1, 2], 2)
 
 
 @pytest.mark.parametrize("per_stream", [False, None])

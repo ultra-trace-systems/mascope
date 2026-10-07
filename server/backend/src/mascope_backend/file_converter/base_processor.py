@@ -48,8 +48,9 @@ def composites_scan_streams() -> bool:
     file that decides whether its peak store holds a peak list per scan
     stream; a rebuild of the store keeps what was decided then.
 
-    :return: True when a file holding more than one MS1 scan stream in a
-        polarity is to get a peak list per stream.
+    :return: True when a file whose method measures more than one thing in a
+        polarity is to get a peak list per stream
+        (``mascope_thermo.streams.peak_streams``).
     :rtype: bool
     """
     backend = runtime.full_config.backend
