@@ -782,13 +782,16 @@ throughout, because nothing here cuts a file into items, and it writes no
   back onto one - a rescale by -5 ppm does it to 62.0 and the float above
   it. Rows some thousands of floats apart keep their relative distance
   through a rescale, and its rounding can cost a pair one float at a time.
-- **A pooled store has no such rule.** It never had one, and a file whose
-  two polarities tie writes a pooled store with two rows at one m/z. Such a
-  store loads since #2280, its weak and satellite peaks left out by
-  position, and a fill finds the kept peak of a pair. Where both peaks of a
-  pair are kept, whatever reads the store by m/z still fails, and setting
-  them apart at detection, as a per-stream store's rows are, is what that
-  takes. It is left as it is in this step, so that no pooled store changes.
+- **A pooled store of two polarities follows the same rule.** Its two
+  polarities are two averaged spectra on one axis as well, and a centroid of
+  each can land on the same double (#2288). The later row, the negative
+  polarity's, is set apart in the same way where the store is built. A file
+  of one polarity is one spectrum, which does not tie with itself, so its
+  store is what it was. A pooled store written before that can still hold
+  two rows at one m/z. It loads since #2280, its weak and satellite peaks
+  left out by position, and a fill finds the kept peak of a pair. Where both
+  peaks of a pair are kept, whatever reads it by m/z fails until the file's
+  peaks are detected again.
 - **A peak holds values only on the scans of its own stream.** Its
   timeseries is read back over them, normalised over them and scaled to its
   sum; on the other streams' scans it holds nothing, because the instrument

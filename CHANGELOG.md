@@ -425,10 +425,26 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   On a polarity-switching file of the internal regression corpus two pairs
   among 41,639 peaks shared an m/z, all four of them noise. Nothing in error
   monitoring shows a polarity-switching file having failed this way on a
-  deployment. One case remains: where both peaks of a pair are kept, whatever
-  reads the file's peaks by m/z still fails, matching, calibration and
-  timeseries among it. That takes setting the two apart when the file's peaks
-  are detected, and is not part of this change.
+  deployment. One case was left by it: where both peaks of a pair are kept,
+  whatever reads the file's peaks by m/z still failed, matching, calibration
+  and timeseries among it. That case has an entry of its own.
+
+- **A file that switches polarity can be read where two peaks that are both
+  shown share an m/z.** Where a positive and a negative peak of a raw Orbitrap
+  file sit on exactly the same m/z and neither is weak or a satellite,
+  everything that reads the file's peaks by m/z failed with "Reindexing only
+  valid with uniquely valued Index objects", whichever peak was asked for:
+  matching, the calibration fit, timeseries and the file's peak list. When
+  such a file's peaks are detected, the negative peak of the pair is now
+  stored a part in a trillion above the positive one, far below anything m/z
+  values are compared on, so that every peak of the file has an m/z of its
+  own. A file of one polarity is stored exactly as before.
+
+  A file already processed that holds such a pair is not repaired by this: it
+  has to be re-processed. Nothing in error monitoring shows a deployment
+  holding one. In short acquisitions cut from a polarity-switching file of
+  the internal regression corpus, 1.7% of those of one scan per polarity and
+  0.7% of those of two held such a pair, and none of four scans or more.
 
 - **A peak's timeseries can no longer be written to the peak next to it.** A
   timeseries is stored by the m/z of its peak, and the row found for that m/z

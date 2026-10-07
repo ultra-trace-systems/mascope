@@ -71,8 +71,10 @@ PEAK_ID_LENGTH = 20
 #: index.
 PER_STREAM_PROP = "peaks_per_stream"
 
-#: The least relative distance between two rows of a per-stream store's m/z
-#: axis: about a part in a trillion, some thousands of steps of a float. Far
+#: The least relative distance between two rows of the m/z axis of a store
+#: that holds more than one peak list, a per-stream store or a pooled one of
+#: two polarities: about a part in a trillion, some thousands of steps of a
+#: float. Far
 #: below anything the pipeline can tell apart, and far enough that rescaling
 #: the axis cannot bring two rows back onto one double
 #: (:func:`_strictly_increasing`).
@@ -90,9 +92,10 @@ def _strictly_increasing(mz: np.ndarray) -> np.ndarray:
 
     The peak store finds a peak's row by its m/z, so two rows may not share
     one. Within one averaged spectrum they do not, but two streams of a file
-    are two spectra on one axis, and two of their centroids can land on the
-    same double. The later one is moved up by :data:`MZ_ROW_SEPARATION` of
-    its m/z, which no tolerance in the pipeline can see.
+    are two spectra on one axis, as its two polarities are, and two of their
+    centroids can land on the same double. The later one is moved up by
+    :data:`MZ_ROW_SEPARATION` of its m/z, which no tolerance in the pipeline
+    can see.
 
     One step of a float would separate them, but not for good. An m/z
     calibration multiplies the stored axis by a factor near one, again at
@@ -352,7 +355,11 @@ class OrbiPeakDetector(BasePeakDetector):
             raise PeakDetectionError(
                 f"No usable scans found for either polarity in '{self._filename}'."
             )
-        return xarray.concat(datasets, dim="mz").sortby("mz")
+        # Two polarities are two spectra on one axis, as two streams are, and
+        # a centroid of each can land on the same m/z. One polarity is one
+        # spectrum, which does not tie with itself.
+        peaks = xarray.concat(datasets, dim="mz").sortby("mz")
+        return peaks.assign_coords(mz=("mz", _strictly_increasing(peaks.mz.values)))
 
     async def _extract_peaks_per_stream(self) -> xarray.Dataset:
         """The peaks of a file detected per stream: one list per MS1 stream.
