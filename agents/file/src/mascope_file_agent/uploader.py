@@ -214,55 +214,69 @@ class FileUploader:
         to an exception.
         """
         try:
-            while not self.shutdown_event.wait(POLL_INTERVAL):
-                fname = None
-                try:
-                    fname = self.jobs.get_nowait()
-                    self.logger.debug(fname)
-                    try:
-                        untouched = self.seconds_since_last_access(fname)
-                    except FileNotFoundError as e:
-                        # Deleted or renamed since it appeared, which acquisition
-                        # software does as a matter of course. One file less to
-                        # upload, not a reason to stop uploading the others.
-                        self._unreadable.discard(fname)
-                        self.logger.warning(
-                            f"{os.path.basename(fname)}: not uploaded, as it was "
-                            f"gone when its turn came ({e}). A file renamed to a "
-                            "name the agent watches for is uploaded under that "
-                            "name."
-                        )
-                        continue
-                    except OSError as e:
-                        # Still there, for all this says: a folder on a network
-                        # that dropped out for a moment, a file something has
-                        # locked. It waits its turn again, as a file not yet
-                        # left alone does, and the log says so once.
-                        if fname not in self._unreadable:
-                            self._unreadable.add(fname)
-                            self.logger.warning(
-                                f"{os.path.basename(fname)}: could not be looked "
-                                f"at just now ({e}). It stays in the queue and "
-                                "is uploaded once it can be."
-                            )
-                        self._put(self.jobs, fname)
-                        continue
-                    self._unreadable.discard(fname)
-                    if untouched < self.settings.timeout:
-                        self._put(self.jobs, fname)
-                        self.logger.debug(f"Put {fname} back to queue")
-                        continue
-                    # Hand the file to the upload workers
-                    self._put(self._uploads, fname)
-                except Empty:
-                    continue
-
+            self._poll()
         except KeyboardInterrupt:
             self.logger.info("Shutdown requested by user.")
         except Exception:
             self.logger.exception("Unexpected error in the upload loop")
         finally:
             self.shutdown_event.set()
+
+    def _poll(self) -> None:
+        """Hand each waiting file to the workers once it has been left alone.
+
+        The loop of ``run_until_complete``, in a function of its own so that
+        the handlers there are a frame away from it. CPython 3.12 acts on a
+        pending interrupt at a loop's backward jump only once it has jumped,
+        and looks for the handler at the instruction before the jump's
+        target. For a loop that opens a ``try`` block that instruction is
+        outside the block, so an interrupt taken on a ``continue`` is not
+        seen by a handler written around the loop in the same function. One
+        that leaves this function reaches the caller's handlers as any
+        exception does.
+        """
+        while not self.shutdown_event.wait(POLL_INTERVAL):
+            fname = None
+            try:
+                fname = self.jobs.get_nowait()
+                self.logger.debug(fname)
+                try:
+                    untouched = self.seconds_since_last_access(fname)
+                except FileNotFoundError as e:
+                    # Deleted or renamed since it appeared, which acquisition
+                    # software does as a matter of course. One file less to
+                    # upload, not a reason to stop uploading the others.
+                    self._unreadable.discard(fname)
+                    self.logger.warning(
+                        f"{os.path.basename(fname)}: not uploaded, as it was "
+                        f"gone when its turn came ({e}). A file renamed to a "
+                        "name the agent watches for is uploaded under that "
+                        "name."
+                    )
+                    continue
+                except OSError as e:
+                    # Still there, for all this says: a folder on a network
+                    # that dropped out for a moment, a file something has
+                    # locked. It waits its turn again, as a file not yet
+                    # left alone does, and the log says so once.
+                    if fname not in self._unreadable:
+                        self._unreadable.add(fname)
+                        self.logger.warning(
+                            f"{os.path.basename(fname)}: could not be looked "
+                            f"at just now ({e}). It stays in the queue and "
+                            "is uploaded once it can be."
+                        )
+                    self._put(self.jobs, fname)
+                    continue
+                self._unreadable.discard(fname)
+                if untouched < self.settings.timeout:
+                    self._put(self.jobs, fname)
+                    self.logger.debug(f"Put {fname} back to queue")
+                    continue
+                # Hand the file to the upload workers
+                self._put(self._uploads, fname)
+            except Empty:
+                continue
 
     def finish(self, timeout: float | None = None) -> bool:
         """Let the uploads already handed to the workers end, then stop them.

@@ -276,6 +276,13 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 ### Fixed
 
+- **A Ctrl+C that reaches the File Agent between two looks at its upload
+  queue is handled like any other.** On the Python the agent runs on, an
+  interrupt that arrived in that instant went past the handling written
+  around the loop, so once in a great while the agent ended with a traceback
+  where "Shutdown requested by user." belongs. The uploads under way were
+  waited for all the same.
+
 - **The File Agent no longer stops when a new file is gone before its
   upload.** A file deleted or renamed in the seconds between appearing in the
   watched folder and being uploaded ended the agent's upload loop and, with
