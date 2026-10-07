@@ -11,9 +11,11 @@ is fixed before an acquisition needs it - but only on an answered refusal,
 never when the server simply could not be reached.
 """
 
+import sys
+
 import pytest
 
-from mascope_file_agent import main
+from mascope_file_agent import Agent, ConsoleRepair, credentials
 from mascope_file_agent.wizard import (
     CREDENTIAL_OK,
     CREDENTIAL_REJECTED,
@@ -39,60 +41,53 @@ class StubLogger:
         pass
 
 
-class StubConfig:
-    mask = "*.raw"
-    access_token = "dead-token"
-    filename_prefix = ""
-    filename_suffix = ""
-    verify_tls = True
-    source = ""
+@pytest.fixture
+def agent(monkeypatch, make_settings):
+    """An agent as the console program builds it, holding a dead credential.
 
-
-class StubRuntime:
-    def __init__(self):
-        self.logger = StubLogger()
-        self.config = StubConfig()
+    Not started: the tests call what its upload workers and its start call.
+    It watches the test's own folder, so giving up on a file - which copies it
+    beside the watched folder - cannot litter the repo.
+    """
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True, raising=False)
+    return Agent(
+        make_settings(access_token="dead-token"),
+        logger=StubLogger(),
+        repair=ConsoleRepair(),
+    )
 
 
 @pytest.fixture
-def agent(monkeypatch, tmp_path):
-    monkeypatch.setattr(main, "runtime", StubRuntime())
-    monkeypatch.setattr(main, "URL", "https://mascope.example.com")
-    monkeypatch.setattr(main, "HOST", "mascope.example.com")
-    monkeypatch.setattr(main, "_repair_declined", False)
-    monkeypatch.setattr(main, "_persist_token", lambda token: None)
-    main._set_access_token("dead-token")
-    monkeypatch.setattr(main.sys.stdin, "isatty", lambda: True, raising=False)
-    # Giving up on a file copies it beside the watched folder; point that at
-    # the tmp dir so the suite cannot litter the repo.
-    monkeypatch.setattr(StubConfig, "source", str(tmp_path))
+def sample(tmp_path):
     sample = tmp_path / "x.raw"
     sample.write_bytes(b"data")
     return str(sample)
 
 
-def test_offers_to_pair_and_retries_the_file(monkeypatch, agent):
+def test_offers_to_pair_and_retries_the_file(monkeypatch, agent, sample):
     """Accepting the offer swaps the credential and the upload is retried."""
     monkeypatch.setattr("builtins.input", lambda _: "y")
     monkeypatch.setattr(
-        main, "run_pairing", lambda host, verify, instrument=None: "fresh-token"
+        credentials,
+        "run_pairing",
+        lambda host, verify, instrument=None: "fresh-token",
     )
 
     attempts = []
 
     def flaky_upload(path):
-        attempts.append(main.current_access_token())
+        attempts.append(agent.credentials.current_access_token())
         if len(attempts) == 1:
             raise AuthenticationError("Credential refused", status_code=401)
 
-    monkeypatch.setattr(main, "upload_sample_file", flaky_upload)
+    monkeypatch.setattr(agent.uploader, "upload_sample_file", flaky_upload)
 
-    main.process_file_upload(agent, max_retries=3)
+    agent.uploader.process_file_upload(sample, max_retries=3)
 
     assert attempts == ["dead-token", "fresh-token"]
 
 
-def test_declining_stops_asking(monkeypatch, agent):
+def test_declining_stops_asking(monkeypatch, agent, sample):
     """A "no" is remembered - the console must not nag once per file."""
     asked = []
 
@@ -102,39 +97,39 @@ def test_declining_stops_asking(monkeypatch, agent):
 
     monkeypatch.setattr("builtins.input", answer)
     monkeypatch.setattr(
-        main,
+        credentials,
         "run_pairing",
         lambda host, verify, instrument=None: pytest.fail("must not pair"),
     )
     monkeypatch.setattr(
-        main,
+        agent.uploader,
         "upload_sample_file",
         lambda path: (_ for _ in ()).throw(
             AuthenticationError("Credential refused", status_code=401)
         ),
     )
 
-    main.process_file_upload(agent, max_retries=2)
-    main.process_file_upload(agent, max_retries=2)
+    agent.uploader.process_file_upload(sample, max_retries=2)
+    agent.uploader.process_file_upload(sample, max_retries=2)
 
     assert len(asked) == 1
 
 
-def test_no_console_falls_back_to_the_log(monkeypatch, agent):
+def test_no_console_falls_back_to_the_log(monkeypatch, agent, sample):
     """A machine started without a console must not block on input()."""
-    monkeypatch.setattr(main.sys.stdin, "isatty", lambda: False, raising=False)
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: False, raising=False)
     monkeypatch.setattr(
         "builtins.input", lambda _: pytest.fail("must not prompt without a console")
     )
     monkeypatch.setattr(
-        main,
+        agent.uploader,
         "upload_sample_file",
         lambda path: (_ for _ in ()).throw(
             AuthenticationError("Credential refused", status_code=401)
         ),
     )
 
-    main.process_file_upload(agent, max_retries=2)
+    agent.uploader.process_file_upload(sample, max_retries=2)
 
 
 def test_a_concurrent_repair_is_reused(monkeypatch, agent):
@@ -142,26 +137,28 @@ def test_a_concurrent_repair_is_reused(monkeypatch, agent):
     monkeypatch.setattr(
         "builtins.input", lambda _: pytest.fail("another worker already fixed it")
     )
-    main._set_access_token("someone-elses-fresh-token")
+    agent.credentials.set_access_token("someone-elses-fresh-token")
 
-    assert main._offer_repair("dead-token", "refused") is True
+    assert agent.credentials.offer_repair("dead-token", "refused") is True
 
 
 def test_startup_offers_to_pair_when_the_credential_is_refused(monkeypatch, agent):
     """A machine revoked while it was off is fixed before any file needs it."""
     monkeypatch.setattr(
-        main,
+        credentials,
         "check_credential",
         lambda host, token, verify: (CREDENTIAL_REJECTED, "refused"),
     )
     monkeypatch.setattr("builtins.input", lambda _: "y")
     monkeypatch.setattr(
-        main, "run_pairing", lambda host, verify, instrument=None: "fresh-token"
+        credentials,
+        "run_pairing",
+        lambda host, verify, instrument=None: "fresh-token",
     )
 
-    main._check_credential_at_start()
+    agent.credentials.check_at_start()
 
-    assert main.current_access_token() == "fresh-token"
+    assert agent.credentials.current_access_token() == "fresh-token"
 
 
 def test_startup_does_not_prompt_when_the_server_is_unreachable(monkeypatch, agent):
@@ -171,7 +168,7 @@ def test_startup_does_not_prompt_when_the_server_is_unreachable(monkeypatch, age
     starts the agent at sign-in, before the network is up.
     """
     monkeypatch.setattr(
-        main,
+        credentials,
         "check_credential",
         lambda host, token, verify: (CREDENTIAL_UNREACHABLE, "no route to host"),
     )
@@ -179,24 +176,26 @@ def test_startup_does_not_prompt_when_the_server_is_unreachable(monkeypatch, age
         "builtins.input", lambda _: pytest.fail("must not prompt when unreachable")
     )
     monkeypatch.setattr(
-        main,
+        credentials,
         "run_pairing",
         lambda host, verify, instrument=None: pytest.fail("must not pair"),
     )
 
-    main._check_credential_at_start()
+    agent.credentials.check_at_start()
 
-    assert main.current_access_token() == "dead-token"
+    assert agent.credentials.current_access_token() == "dead-token"
 
 
 def test_startup_is_silent_when_the_credential_is_good(monkeypatch, agent):
     monkeypatch.setattr(
-        main, "check_credential", lambda host, token, verify: (CREDENTIAL_OK, "")
+        credentials,
+        "check_credential",
+        lambda host, token, verify: (CREDENTIAL_OK, ""),
     )
     monkeypatch.setattr(
         "builtins.input", lambda _: pytest.fail("a good credential must not prompt")
     )
 
-    main._check_credential_at_start()
+    agent.credentials.check_at_start()
 
-    assert main.current_access_token() == "dead-token"
+    assert agent.credentials.current_access_token() == "dead-token"

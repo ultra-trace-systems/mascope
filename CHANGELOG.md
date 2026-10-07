@@ -137,6 +137,17 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 ### Changed
 
+- **The File Agent names the files it leaves behind when it is stopped.**
+  Stopped with Ctrl+C it waits, as before, for every upload it has handed to a
+  worker, retries included. A file that had appeared but had not got that far -
+  still being written, or still waiting to be left alone - has always been
+  dropped at that point without a word; the log now names each one and says
+  how to have it uploaded. A second Ctrl+C during the wait used to print a
+  traceback and go on waiting, and nothing short of closing the window ended
+  it: the agent now logs that it is still waiting, and a third Ctrl+C stops it
+  without those uploads and names them. An error that ends an upload worker's
+  turn at a file unexpectedly is logged as well, where it used to vanish.
+
 - **The demo dataset is now bundle v1.3.1**
   ([10.5281/zenodo.23187550](https://doi.org/10.5281/zenodo.23187550)), rebuilt
   now that the averaged Orbitrap profile counts every scan out to the ends of

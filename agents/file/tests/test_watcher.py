@@ -1,14 +1,14 @@
-"""Unit tests for the watcher wiring and failed_uploads exclusion in main.
+"""Unit tests for the watcher wiring and failed_uploads exclusion in the agent.
 
-Hermetic: the runtime is stubbed and sleeps are patched out; no observer
-threads are started.
+Hermetic: the agent is built and not started, and the wait between two looks
+at a file is patched out; no observer threads are started.
 """
 
 from queue import Empty
 
 import pytest
 
-from mascope_file_agent import main
+from mascope_file_agent import Agent, watcher
 
 
 class StubLogger:
@@ -25,46 +25,43 @@ class StubLogger:
         pass
 
 
-class StubRuntime:
-    def __init__(self):
-        self.logger = StubLogger()
-
-
 @pytest.fixture
-def stub_runtime(monkeypatch):
-    runtime = StubRuntime()
-    monkeypatch.setattr(main, "runtime", runtime)
-    monkeypatch.setattr(main.time, "sleep", lambda seconds: None)
-    return runtime
+def make_agent(monkeypatch, make_settings):
+    monkeypatch.setattr(watcher, "POLL_INTERVAL", 0)
+
+    def make(**settings):
+        return Agent(make_settings(**settings), logger=StubLogger())
+
+    return make
 
 
-def test_recursive_flag_reaches_the_watcher(stub_runtime, tmp_path):
-    uploader = main.FileUploader(str(tmp_path), "*.raw", recursive=True)
-    assert uploader.watcher.recursive is True
+def test_recursive_flag_reaches_the_watcher(make_agent):
+    agent = make_agent(recursive=True)
+    assert agent.watcher.recursive is True
     # and the default stays non-recursive
-    assert main.FileUploader(str(tmp_path), "*.raw").watcher.recursive is False
+    assert make_agent().watcher.recursive is False
 
 
-def test_file_in_subfolder_is_queued(stub_runtime, tmp_path):
-    uploader = main.FileUploader(str(tmp_path), "*.raw", recursive=True)
+def test_file_in_subfolder_is_queued(make_agent, tmp_path):
+    agent = make_agent(recursive=True)
     sample = tmp_path / "day1" / "x.raw"
     sample.parent.mkdir()
     sample.write_text("data")
 
-    uploader.on_filesystem_object_created(str(sample))
+    agent.watcher.on_filesystem_object_created(str(sample))
 
-    assert uploader.jobs.get(timeout=5) == str(sample)
+    assert agent.uploader.jobs.get(timeout=5) == str(sample)
 
 
-def test_file_in_failed_uploads_is_ignored(stub_runtime, tmp_path):
+def test_file_in_failed_uploads_is_ignored(make_agent, tmp_path):
     # failed_uploads holds copies of files that already failed; picking
     # them up under recursive watching would loop them forever
-    uploader = main.FileUploader(str(tmp_path), "*.raw", recursive=True)
+    agent = make_agent(recursive=True)
     failed = tmp_path / "failed_uploads" / "x.raw"
     failed.parent.mkdir()
     failed.write_text("data")
 
-    uploader.on_filesystem_object_created(str(failed))
+    agent.watcher.on_filesystem_object_created(str(failed))
 
     with pytest.raises(Empty):
-        uploader.jobs.get(timeout=0.2)
+        agent.uploader.jobs.get(timeout=0.2)
