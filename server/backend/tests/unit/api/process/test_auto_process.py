@@ -182,8 +182,11 @@ def status():
     """The processing-status writer, recorded instead of written.
 
     Also stubs the scan stream census, which would read the file's props
-    from the filestore, and the method-binding learner, which would write to
-    the database. Request the fixture by name to read what was recorded:
+    from the filestore, the method-binding learner, which would write to
+    the database, and the reading of the file's acquisition record, which
+    would query it: these files have none, and the rung that reads it is
+    covered in test_auto_process_declared.py. Request the fixture by name to
+    read what was recorded:
     ``[(status, detail), ...]`` in order via :func:`_recorded`.
     """
     with (
@@ -192,6 +195,11 @@ def status():
         patch(f"{_SVC}.read_store_stream_keys", new_callable=AsyncMock) as stitched,
         patch(f"{_SVC}.pooled_streams_note") as note,
         patch(f"{_SVC}.learn_method_bindings", new_callable=AsyncMock) as learn,
+        patch(
+            f"{_SVC}._modes_its_record_declares",
+            new_callable=AsyncMock,
+            return_value=([], None),
+        ),
     ):
         census.return_value = []
         stitched.return_value = []

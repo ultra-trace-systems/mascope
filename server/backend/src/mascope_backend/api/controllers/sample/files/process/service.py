@@ -11,6 +11,7 @@ from sqlalchemy import and_, delete, select
 from sqlalchemy.exc import InterfaceError, OperationalError, SQLAlchemyError
 from sqlalchemy.exc import TimeoutError as SQLAlchemyTimeoutError
 
+from mascope_backend.acquisition_record import declared_ionization
 from mascope_backend.api.controllers.calibration.calibration_controller import (
     calibration_mz_calibrate_sample,
     is_unfitted_record,
@@ -79,6 +80,7 @@ from mascope_backend.api.models.sample.items.sample_item_pydantic_model import (
 from mascope_backend.api.new.ionization.modes.util import (
     NoTokenMatchError,
     one_mode_per_polarity,
+    resolve_ionization_modes_by_declaration,
     resolve_ionization_modes_by_tokens,
 )
 from mascope_backend.api.new.peak_assignments.service import (
@@ -462,22 +464,85 @@ async def _record_failed(sample_file_id: str, error: Exception) -> None:
         raise
 
 
+async def _modes_its_record_declares(
+    sample_file: SampleFile,
+) -> tuple[list[IonizationMode], str | None]:
+    """Bind a file by the chemistry its acquisition record names.
+
+    Rung 0 of the ladder (section 5.2 of the ingest design): the acquisition's
+    own word, from the program that put the instrument in the mode, ahead of
+    anything read off the file's name.
+
+    A declaration that names no mode here does not park the file. It is one
+    rung that did not answer, and the rungs below get their turn: a control
+    program configured with a token this server does not use is a
+    configuration to fix, and until it is, the file routes as it would have
+    with no record at all. What the declaration said goes into the reason if
+    the file parks after all.
+
+    :param sample_file: The file to bind.
+    :return: One mode per polarity and None when the record binds it; no
+        modes and None when it has no record, or the record names no
+        chemistry; no modes and a sentence when it names one that binds
+        nothing here.
+    :rtype: tuple[list[IonizationMode], str | None]
+    """
+    async with async_session() as session:
+        record = await session.scalar(
+            select(SampleFile.acquisition).where(
+                SampleFile.sample_file_id == sample_file.sample_file_id
+            )
+        )
+    declared = declared_ionization(record)
+    if declared is None:
+        return [], None
+    modes, unanswered = await resolve_ionization_modes_by_declaration(
+        sample_file, declared
+    )
+    if unanswered is None:
+        return modes, None
+    # INFO: a configuration condition somebody resolves, fires per file
+    runtime.logger.info(
+        f"The acquisition record of '{sample_file.filename}' names the "
+        f"chemistry '{declared}', but {unanswered}; binding it by the rungs "
+        "below"
+    )
+    return [], (
+        f"Its acquisition record names the chemistry '{declared}', but {unanswered}"
+    )
+
+
+def _beside_the_declaration(undeclared: str | None, reason: str) -> str:
+    """A parking reason, after what the file's record said and could not bind.
+
+    :param undeclared: The sentence from :func:`_modes_its_record_declares`,
+        or None when the record was not in question.
+    :param reason: What the rungs below found.
+    """
+    if undeclared is None:
+        return reason
+    return f"{undeclared.rstrip('.')}. {reason}"
+
+
 def _bound_detail(ionization_modes: list[IonizationMode], rung: str) -> str:
     """Name the modes a file was bound to, and what bound it.
 
     Read by whoever is looking at the file in Raw files, so it says which rung
-    answered. ``"token"`` and ``"method"`` each get their own sentence; a
-    person's choice and a mode kept from the file's own samples share one,
-    because what a reader needs there is that no file name chose it.
+    answered. ``"declared"``, ``"token"`` and ``"method"`` each get their
+    own sentence; a person's choice and a mode kept from the file's own
+    samples share one, because what a reader needs there is that no file name
+    chose it.
 
     :param ionization_modes: The modes it bound to, one per polarity.
-    :param rung: What bound it this run - "token", "method", "explicit" or
-        "kept".
+    :param rung: What bound it this run - "declared", "token", "method",
+        "explicit" or "kept".
     """
     names = " and ".join(
         f"'{mode.ionization_mode_name}' ({mode.ionization_mode_polarity})"
         for mode in ionization_modes
     )
+    if rung == "declared":
+        return f"Bound to {names} by its acquisition record."
     if rung == "method":
         return f"Bound to {names} by its acquisition method."
     if rung != "token":
@@ -1031,7 +1096,15 @@ async def _auto_process_sample_file(
     # its instrument's workspace, which is where its modes are configured.
     by_token = ionization_mode_ids is None
     routed_by_method: list[MethodRouting] = []
+    # Rung 0, for a file nobody chose modes for: what its acquisition record
+    # declares. A record that binds nothing leaves the rungs below their turn.
+    declared_modes: list[IonizationMode] = []
+    undeclared: str | None = None
     if by_token:
+        declared_modes, undeclared = await _modes_its_record_declares(sample_file)
+    if declared_modes:
+        bound_modes = declared_modes
+    elif by_token:
         try:
             bound_modes = await resolve_ionization_modes_by_tokens(sample_file)
         except NoTokenMatchError as no_token:
@@ -1041,7 +1114,9 @@ async def _auto_process_sample_file(
             # stands in for (section 5.3).
             if not routes_on_method_binding():
                 return await _park_needing_chemistry(
-                    sample_file, str(no_token), streams_note
+                    sample_file,
+                    _beside_the_declaration(undeclared, str(no_token)),
+                    streams_note,
                 )
             routed_by_method, declined = await resolve_modes_by_method_binding(
                 sample_file, scan_streams
@@ -1058,14 +1133,19 @@ async def _auto_process_sample_file(
                 # whole detail, so the first two would run together.
                 return await _park_needing_chemistry(
                     sample_file,
-                    f"{str(no_token).rstrip('.')}. Its acquisition method "
-                    f"does not say either: {declined.reason}. "
-                    f"{declined.remedy}",
+                    _beside_the_declaration(
+                        undeclared,
+                        f"{str(no_token).rstrip('.')}. Its acquisition method "
+                        f"does not say either: {declined.reason}. "
+                        f"{declined.remedy}",
+                    ),
                     streams_note,
                 )
             bound_modes = [routing.mode for routing in routed_by_method]
         except ValueError as e:
-            return await _park_needing_chemistry(sample_file, str(e), streams_note)
+            return await _park_needing_chemistry(
+                sample_file, _beside_the_declaration(undeclared, str(e)), streams_note
+            )
     else:
         try:
             bound_modes = choose_ionization_modes(
@@ -1089,7 +1169,16 @@ async def _auto_process_sample_file(
     # recorded when the mode was first chosen or matched, and repeating it
     # would claim a strength nobody gave and let a batch of re-processed
     # files build a run back toward the row they were bound under.
-    if routed_by_method:
+    teaches: BindingRung | None
+    if declared_modes:
+        # The acquisition's own record, which is evidence about the method as
+        # a token is: it teaches the binding under its own name.
+        provenance = {
+            mode.ionization_mode_id: ItemProvenance("declared") for mode in bound_modes
+        }
+        teaches = "declared"
+        rung = "declared"
+    elif routed_by_method:
         # The binding bound it, so there is nothing for the binding to learn:
         # it would be teaching itself what it already holds, and counting the
         # files it routed as observations of the chemistry it chose for them.
@@ -1099,7 +1188,7 @@ async def _auto_process_sample_file(
             )
             for routing in routed_by_method
         }
-        teaches: BindingRung | None = None
+        teaches = None
         # What the file's status says bound it. Not read off `provenance`: a
         # kept mode's rung is whatever bound it originally and can differ per
         # polarity, while the status describes this run in one sentence.
