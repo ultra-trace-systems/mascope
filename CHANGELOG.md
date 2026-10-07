@@ -6,6 +6,21 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 ### Added
 
+- **The File Agent sends a file's acquisition record with its upload.** A
+  program that controls the instrument can leave a JSON document beside
+  each file it acquires, `<file>.mascope.json`, saying which step of which
+  run the file belongs to, in which mode, and under which chemistry. The
+  agent sends it with the upload, together with the file's SHA-256, to a
+  server that announces it keeps them; no server does yet, so until the
+  server's half ships an agent sends neither. A record never costs a file
+  its upload: one the agent cannot use is left behind with a warning, an
+  upload refused together with its record is made again without it, and a
+  file set aside in `failed_uploads` has its record copied with it. The
+  agent now asks the server what it can do once for all its parts and
+  again after an hour, so a server updated under a running agent is
+  noticed without a restart
+  (`docs/dev/acquisition_sidecar.md`).
+
 - **`mascope_sdk.acquisition` defines the acquisition record,
   `mascope-acquisition/1`.** `AcquisitionRecord` is the model, `parse()`
   and `dump()` read and write the document, and `read_sidecar()` finds a

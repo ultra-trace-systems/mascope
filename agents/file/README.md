@@ -51,6 +51,14 @@ agent.stop(timeout=30)
 - `Agent.on_ready(callback)` calls `callback(path)` with each complete file
   before it is uploaded, one file at a time, on the watcher's thread. A step
   that raises is logged, and the file is uploaded all the same.
+- A file's acquisition record goes with its upload: a JSON document the
+  program writes beside the file, `<file>.mascope.json`, saying which
+  step of which run acquired it and under which chemistry. Write it in
+  an `on_ready` step and it is there when the file is uploaded.
+  `mascope_sdk.acquisition` holds the schema: build an
+  `AcquisitionRecord` and write `acquisition.dump(record)`. A record
+  the agent cannot use, or a server too old to keep one, never keeps
+  the file from being uploaded.
 - `logger=` takes anything with the methods of a standard `logging.Logger`;
   without one the agent logs to the `mascope_file_agent` logger.
 - `repair=` decides what happens when the server refuses the machine's

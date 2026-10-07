@@ -18,6 +18,7 @@ import time
 from mascope_file_agent import (
     Agent,
     AgentSettings,
+    capabilities,
     credentials,
     identity,
     status,
@@ -70,6 +71,7 @@ uploader.api_post_file_tus = held_upload
 uploader.POLL_INTERVAL = 0.05
 credentials.check_credential = lambda host, token, verify: (CREDENTIAL_OK, "")
 status.StatusFollower.poll_due = lambda self: None
+capabilities.ServerCapabilities.ask = lambda self: {}
 
 # A process started with SIGINT ignored keeps it ignored, and Python then
 # installs no handler of its own, so the interrupts would do nothing. A shell

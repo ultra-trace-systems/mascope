@@ -1,8 +1,9 @@
 """Unit tests for the agent's life: built, started, stopped.
 
-Hermetic: the SDK upload, the startup credential check and the status
-follower's questions are monkeypatched, so nothing reaches a network. The
-agent's own threads are real, and watch the test's own folder.
+Hermetic: the SDK upload, the startup credential check, the status
+follower's questions and the question of what the server can do are
+monkeypatched, so nothing reaches a network. The agent's own threads are
+real, and watch the test's own folder.
 """
 
 import ctypes
@@ -20,6 +21,7 @@ from mascope_file_agent import (
     Agent,
     ConfigError,
     Repair,
+    capabilities,
     credentials,
     status,
     uploader,
@@ -94,6 +96,9 @@ def make_agent(monkeypatch, make_settings, uploads):
         credentials, "check_credential", lambda host, token, verify: (CREDENTIAL_OK, "")
     )
     monkeypatch.setattr(status.StatusFollower, "poll_due", lambda self: None)
+    # A server that announces nothing: uploads go as they did before a server
+    # could keep anything with them.
+    monkeypatch.setattr(capabilities.ServerCapabilities, "ask", lambda self: {})
     made = []
 
     def make(**settings):
@@ -873,6 +878,7 @@ def test_a_repair_that_stops_the_agent_does_not_wait_for_its_own_worker(
         credentials, "check_credential", lambda host, token, verify: (CREDENTIAL_OK, "")
     )
     monkeypatch.setattr(status.StatusFollower, "poll_due", lambda self: None)
+    monkeypatch.setattr(capabilities.ServerCapabilities, "ask", lambda self: {})
     stops = []
 
     class StopsTheAgent(Repair):

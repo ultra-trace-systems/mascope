@@ -13,6 +13,7 @@ from watchdog.observers import Observer
 from watchdog.utils.patterns import match_any_paths
 
 from mascope_file_agent._threads import Task
+from mascope_sdk.acquisition import SIDECAR_SUFFIX
 
 
 #: Seconds between two looks at a file that is still being written.
@@ -57,7 +58,9 @@ class FileSystemWatcher:
 
         def __init__(self, client, patterns):
             self.client = client
-            super().__init__(patterns=patterns)
+            # An acquisition record beside a data file goes with that file's
+            # upload and is never a file to upload, whatever the mask takes.
+            super().__init__(patterns=patterns, ignore_patterns=[f"*{SIDECAR_SUFFIX}"])
 
         def on_created(self, event: watchdog.events.FileSystemEvent) -> None:
             """New file created

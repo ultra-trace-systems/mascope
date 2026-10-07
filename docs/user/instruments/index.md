@@ -196,6 +196,36 @@ of them. A server too old to report processing is not asked. Stopping the
 agent says how many files it was still following, and names a file whose
 upload finished as it stopped; their outcome shows in Raw files.
 
+### Acquisition records
+
+A program that controls the instrument can leave a record beside each
+file it acquires, saying which step of which run the file belongs to
+and under which chemistry it was measured. The record is a small file
+named after the data file, `run_0042.raw.mascope.json` beside
+`run_0042.raw`. The agent sends it with the file's upload, and never
+uploads, changes or deletes the record itself. Nothing has to be
+configured: an agent that finds a record sends it, and one that finds
+none uploads the file as before.
+
+```
+run_0042.raw: its acquisition record went with it.
+```
+
+A record never keeps a file from being uploaded:
+
+- A record the agent cannot use - damaged, too large, or written for
+  another file - is left where it is, a warning line says why, and the
+  file is uploaded without it.
+- A server too old to keep records is sent none. The agent says so
+  once, for the first file that had one, and starts sending them
+  within the hour once the server has been updated.
+- A file set aside in `failed_uploads` has its record copied with it.
+  Put both back in the watched folder to upload them together.
+
+To a server that keeps records the agent also sends each file's
+SHA-256, so that the copy on the server can be told to be the file the
+instrument wrote.
+
 ### Troubleshooting uploads
 
 - Logs are written to `%APPDATA%\Mascope\FileAgent\logs\prod\`.
