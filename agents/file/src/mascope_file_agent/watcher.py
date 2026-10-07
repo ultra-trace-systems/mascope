@@ -10,6 +10,7 @@ from typing import Callable, Iterable
 import watchdog
 from watchdog.events import PatternMatchingEventHandler
 from watchdog.observers import Observer
+from watchdog.utils.patterns import match_any_paths
 
 from mascope_file_agent._threads import Task
 
@@ -72,7 +73,18 @@ class FileSystemWatcher:
             :param event: Filesystem event
             :type event: watchdog.events.FileSystemEvent
             """
-            self.client.seen(event.dest_path)
+            # A move is reported when either of its two names matches. Only
+            # the new one says whether this is now a file to upload: one
+            # renamed away from the mask - to x.raw.bak, say - is not, and
+            # taken all the same it is refused for its extension and copied
+            # to failed_uploads as if it had been tried.
+            if match_any_paths(
+                [event.dest_path],
+                included_patterns=self.patterns,
+                excluded_patterns=self.ignore_patterns,
+                case_sensitive=self.case_sensitive,
+            ):
+                self.client.seen(event.dest_path)
 
     def __init__(
         self,
@@ -149,7 +161,19 @@ class FileSystemWatcher:
             self.logger.debug(f"Ignoring file in {ignored}: {fname}")
             return
         self.logger.info(f"File created: {fname}")
-        if not self._wait_until_complete(fname):
+        try:
+            complete = self._wait_until_complete(fname)
+        except FileNotFoundError as e:
+            # Deleted or renamed while it was still being written, which
+            # acquisition software does as a matter of course - a temporary
+            # name until the file is whole, say. Nothing went wrong here.
+            self.logger.warning(
+                f"{os.path.basename(fname)}: not uploaded, as it was gone "
+                f"before it was complete ({e}). A file renamed to a name the "
+                "agent watches for is uploaded under that name."
+            )
+            return
+        if not complete:
             if self.on_dropped is not None:
                 self.on_dropped(fname)
             return
