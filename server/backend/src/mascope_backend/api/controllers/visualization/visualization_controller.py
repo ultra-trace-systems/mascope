@@ -420,8 +420,10 @@ def _process_isotope(
                 peak = filtered_isotope_peak_heights.sel(mz=iso.mz, method="nearest")
                 isotope_result.main_isotope_height = peak.item()
             except KeyError:
-                # Fall-back if no peak is found
-                isotope_result.main_isotope_height = np.max(averaged_spec_y)
+                # Fall-back if no peak is found. The height goes into a trace
+                # as a bare number, and the JSON encoder takes a float but
+                # not the numpy float32 the profile is held in.
+                isotope_result.main_isotope_height = float(np.max(averaged_spec_y))
 
         # Calculate expected height based on relative abundance
         isotope_expected_height = isotope_result.main_isotope_height * (

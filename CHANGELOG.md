@@ -536,6 +536,16 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   issue in error monitoring whichever file it names. It is there to be
   counted, and needs no action.
 
+- **Selecting a target ion whose main isotope has no detected peak draws its
+  isotope plots again.** The spectrum and time series of a selected ion
+  failed with "Failed to visualize ion focus. Object of type float32 is not
+  JSON serializable" when the ion's most abundant isotope had profile signal
+  near its expected m/z but no detected peak there - a target absent from
+  the sample, or matched only well off its expected mass. The red
+  expected-height markers are then scaled from the profile instead of a
+  peak, and that height was sent in a number type the plot message cannot
+  carry. This has been so since 1.8.0.
+
 ### Security
 
 - **Creating an ionization mechanism refuses one too long to store while the
