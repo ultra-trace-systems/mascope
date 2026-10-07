@@ -179,11 +179,12 @@ provides-extras = ["logs", "sentry"]
 
 [[package]]
 name = "mascope-sdk"
-version = "2026.9.30"
+version = "2026.10.7"
 source = { editable = "../../libraries/sdk" }
 dependencies = [
     { name = "loguru" },
     { name = "pandas" },
+    { name = "pydantic" },
     { name = "python-dotenv" },
     { name = "requests" },
     { name = "tqdm" },
@@ -198,6 +199,7 @@ requires-dist = [
     { name = "numpy", marker = "extra == 'examples'", specifier = ">=1.24.0" },
     { name = "pandas", specifier = ">=2.0.0" },
     { name = "plotly", marker = "extra == 'examples'", specifier = ">=5.18.0" },
+    { name = "pydantic", specifier = ">=2.6,<3" },
     { name = "python-dotenv", specifier = ">=1.0.0" },
     { name = "requests", specifier = ">=2.34.2,<3" },
     { name = "scipy", marker = "extra == 'examples'", specifier = ">=1.11.0" },
