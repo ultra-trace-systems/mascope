@@ -83,7 +83,7 @@ def test_run_builds_the_agent_the_configuration_describes(run, tmp_path):
     assert agent.watcher.mask == "*.d"
     assert agent.watcher.recursive is True
     assert agent.credentials.current_access_token() == "tok"
-    assert agent.credentials.host == "mascope.example.com"
+    assert agent.credentials.url == "https://mascope.example.com"
     assert agent.credentials.verify_tls is False
     # Reported with each upload, as it was resolved at start.
     assert agent.uploader.instrument == "Orbi-Lab2"
@@ -128,6 +128,8 @@ def test_a_development_run_talks_to_the_backend_port(run, tmp_path):
     agent = run(_runtime(tmp_path, mode="dev", host="localhost"))
 
     assert agent.url == "http://localhost:8090"
+    # The check at start and a pairing ask there too, not https://localhost.
+    assert agent.credentials.url == "http://localhost:8090"
 
 
 def test_a_production_run_saves_a_new_token_to_config_toml(run, tmp_path):

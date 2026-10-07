@@ -159,7 +159,10 @@ class Agent:
 
     :param settings: What to watch, where to upload, and as which instrument.
     :param url: The server's base URL; None to take it from ``settings.host``,
-        with https unless the host names a scheme.
+        with https unless the host names a scheme. Given, it is where
+        everything the agent asks goes - uploads, the renewal, what became of
+        each upload, the check at start and a pairing - and ``settings.host``
+        is not asked anything.
     :param logger: Where the agent's lines go: anything with the methods of a
         standard :class:`logging.Logger`. None for the ``mascope_file_agent``
         logger.
@@ -198,7 +201,6 @@ class Agent:
         self.instrument = settings.instrument.strip()
         self.credentials = Credentials(
             self.url,
-            settings.host,
             settings.access_token,
             self.logger,
             verify_tls=settings.verify_tls,

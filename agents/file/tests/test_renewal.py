@@ -38,7 +38,7 @@ class FakeStop:
 @pytest.fixture
 def held():
     """A credential with no token yet, and nowhere to save one."""
-    return Credentials("http://testserver", "testserver", None, _silent_logger())
+    return Credentials("http://testserver", None, _silent_logger())
 
 
 def test_renewal_loop_rotates_token_and_reschedules(monkeypatch, held):
@@ -155,7 +155,6 @@ def test_persist_token_writes_it_back_to_config(tmp_path, make_settings):
     settings = make_settings(access_token="old-token")
     held = Credentials(
         "http://testserver",
-        "testserver",
         "old-token",
         _silent_logger(),
         persist=settings.token_writer(str(cfg)),

@@ -42,7 +42,7 @@ def file_uploader(monkeypatch, make_settings):
     settings = make_settings()
     logger = StubLogger()
     credentials = Credentials(
-        "https://mascope.example.com", settings.host, settings.access_token, logger
+        "https://mascope.example.com", settings.access_token, logger
     )
     return FileUploader(
         settings, "https://mascope.example.com", credentials, logger=logger
