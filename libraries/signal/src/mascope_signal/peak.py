@@ -268,9 +268,10 @@ class OrbiPeakDetector(BasePeakDetector):
     taken from the one stream that owns it (``mascope_signal.stitch``). Its
     store says which peaks that leaves, and by which map.
 
-    :param per_stream: Whether a file that holds more than one MS1 stream in
-        a polarity is detected per stream. None goes by the decision the
-        file's ``.props`` records, which is what a rebuild of the store
+    :param per_stream: Whether a file whose method measures more than one
+        thing in a polarity is detected per stream
+        (``mascope_thermo.streams.peak_streams``). None goes by the decision
+        the file's ``.props`` records, which is what a rebuild of the store
         wants: a file's samples are defined against its store as it was
         decided, and only an explicit re-processing may change that.
     """

@@ -31,8 +31,10 @@ counts - the experiment, or a dependent scan's place in its cycle - is not
 measured on any file in reach, and nothing reads their streams yet.
 
 Peak detection pools every MS1 scan of a polarity unless a deployment asks
-for more, and then a file that holds more than one MS1 stream in a polarity
-has its peaks detected per stream (:func:`peak_streams`). The census records
+for more, and then a file whose method measures more than one thing in a
+polarity has its peaks detected per stream (:func:`peak_streams`). An
+experiment the method only runs again is not another thing measured
+(:func:`measured`), and its runs stay pooled. The census records
 what each file holds, so that the pooling can be seen, and so that what is
 built on streams rests on evidence
 (``docs/dev/ingest_routing_and_splitting.md``, section 4). The reader selects
@@ -44,6 +46,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import sys
 from typing import NamedTuple
@@ -55,6 +58,13 @@ from mascope_thermo.scan_filter import ScanFilter, parse_scan_filter
 
 
 FT_RESOLUTION = "FT Resolution:"
+
+#: The two settings of an experiment that a method changes from one to the
+#: next without its scan filter showing it, as a scan's trailer names them:
+#: how many transients each scan averages, and how many ions it is filled
+#: to. Neither varies among the scans of one experiment.
+MICROSCANS = "Micro Scan Count:"
+AGC_TARGET = "AGC Target:"
 
 # Trailers sampled per stream for its acquisition parameters, as many as the
 # whole-file capture samples.
@@ -289,20 +299,94 @@ def pooled_ms1_streams(streams: list[dict]) -> dict[str, list[str]]:
     return {polarity: keys for polarity, keys in by_polarity.items() if len(keys) > 1}
 
 
+def _setting(stream: dict, name: str) -> float | None:
+    """One setting of a stream's experiment, or ``None`` where its census
+    does not say.
+
+    The value the stream's sampled scans agree on (``acquisition_params``).
+    A reader reports it as a number or as text, by backend, and it is a
+    number here either way. A setting that varied among the scans sampled is
+    listed by name only, and reads as unknown like one no trailer carried.
+    """
+    constant = (stream.get("acquisition_params") or {}).get("constant") or {}
+    try:
+        value = float(constant.get(name))
+    except (TypeError, ValueError):
+        return None
+    return value if math.isfinite(value) else None
+
+
+def microscans(stream: dict) -> float | None:
+    """How many transients each scan of a stream averaged, or ``None`` where
+    its census does not say.
+
+    :param stream: A stream of a census from :func:`scan_streams`.
+    :return: The count, or ``None``.
+    """
+    return _setting(stream, MICROSCANS)
+
+
+def measured(stream: dict) -> tuple[str, float | None, float | None]:
+    """What a stream's experiment measured, to tell the streams of one file
+    apart by: its signature, its microscan count and its AGC target.
+
+    The signature is what the scan filter says of its scans, and the two
+    settings are what a method changes without the filter showing it. A
+    method that settles the source with a short scan and then measures
+    defines two experiments under one filter, and these settings are all
+    that says so. Where an experiment sits in the method, its segment and
+    scan event, is no part of it: two streams that agree on all three are
+    one experiment the method runs more than once
+    (``docs/dev/ingest_routing_and_splitting.md``, 4.1).
+
+    No other trailer value counts. What a scan reports of itself, its
+    injection time for one, varies within an experiment and says nothing of
+    what the method asked for.
+
+    A setting the census does not hold is ``None`` and compares as a value
+    like any other, so streams of one signature whose settings cannot be
+    read count as one experiment.
+
+    :param stream: A stream of a census from :func:`scan_streams`.
+    :return: ``(signature key, microscan count, AGC target)``.
+    """
+    return (
+        stream["signature_key"],
+        microscans(stream),
+        _setting(stream, AGC_TARGET),
+    )
+
+
 def peak_streams(streams: list[dict]) -> list[dict]:
     """The MS1 streams a file's peaks are detected per, or ``[]``.
 
-    A file is detected per stream when some polarity holds more than one MS1
-    stream (:func:`pooled_ms1_streams`). Every MS1 stream of the file then
-    gets a peak list of its own, the only stream of another polarity
-    included, so that each peak of such a file belongs to exactly one stream.
-    A file with one MS1 stream in each polarity is detected whole: there its
-    polarity already is its stream.
+    A file is detected per stream when some polarity holds MS1 streams that
+    measured more than one thing (:func:`measured`): two scan ranges, or one
+    range at two settings. Every MS1 stream of the file then gets a peak list
+    of its own, the only stream of another polarity included, so that each
+    peak of such a file belongs to exactly one stream.
+
+    A polarity whose streams all measured the same thing is one experiment
+    its method runs more than once, and there is nothing in it to detect
+    apart: pooled, its runs are averaged together, which is what they are.
+    Detected apart, each run would be a peak list of its own with nothing to
+    say which of them is the polarity's. So a file of such polarities is
+    detected whole, like one with a single MS1 stream in each polarity, where
+    the polarity already is the stream.
+
+    A run that repeats beside another experiment is not reached by this: its
+    file is detected per stream for the other experiment's sake, and each
+    run in it is a stream.
 
     :param streams: A census from :func:`scan_streams`.
     :return: The MS1 streams, in the order they first appear, or ``[]``.
     """
-    if not pooled_ms1_streams(streams):
+    kinds: dict[str | None, set[tuple]] = {}
+    for stream in streams:
+        signature = stream["signature"]
+        if signature.get("ms_order") == 1:
+            kinds.setdefault(signature.get("polarity"), set()).add(measured(stream))
+    if not any(len(found) > 1 for found in kinds.values()):
         return []
     return [stream for stream in streams if stream["signature"].get("ms_order") == 1]
 

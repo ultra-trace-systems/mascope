@@ -27,6 +27,8 @@ from mascope_thermo.backend import (
     open_backend,
 )
 from mascope_thermo.streams import (
+    measured,
+    microscans,
     peak_streams,
     pooled_ms1_streams,
     scan_streams,
@@ -447,11 +449,14 @@ def test_scans_that_record_no_event_are_a_stream_beside_those_that_do():
 
 
 def test_a_file_with_one_survey_stream_in_each_polarity_is_detected_whole():
-    """Its polarity is its stream already."""
+    """Its polarity is its stream already. Fragmentation scans beside the
+    survey stream are no second experiment of its polarity."""
+    fragments = "FTMS - p NSI Full ms2 300.0000@hcd30.00 [50.0000-310.0000]"
     for scans in (
         [(NEG_LOW, _trailer(), 1)] * 3,
         [(NEG_LOW, _trailer(), 1), (POS_LOW, _trailer(), 2)] * 2,
         [(NEG_LOW, _trailer())] * 3,
+        [(NEG_LOW, _trailer(), 1), (fragments, _trailer(15000), 2)] * 2,
     ):
         assert peak_streams(scan_streams(_ScriptedReader(scans))) == []
 
@@ -474,6 +479,195 @@ def test_a_multi_stream_file_is_detected_per_survey_stream_it_holds():
         f"{NEG_LOW} R=120000",
         f"{POS_LOW} R=120000",
         f"{NEG_HIGH} R=120000",
+    ]
+
+
+def test_a_polarity_that_only_runs_one_experiment_again_is_detected_whole():
+    """A method that switches polarity and comes back defines the same scan
+    twice. The census lists each run, and a polarity of two is still what it
+    calls pooled. But the two measured one thing, so there is nothing to
+    detect apart: pooled, they are averaged together, which is what they
+    are."""
+    census = scan_streams(
+        _ScriptedReader(
+            [(NEG_LOW, _trailer(), 1)] * 2
+            + [(POS_LOW, _trailer(), 2)] * 2
+            + [(NEG_LOW, _trailer(), 3)] * 2
+            + [(POS_LOW, _trailer(), 4)] * 2
+        )
+    )
+
+    assert [stream["scan_event"] for stream in census] == [1, 2, 3, 4]
+    assert set(pooled_ms1_streams(census)) == {"-", "+"}
+    assert measured(census[0]) == measured(census[2])
+    assert peak_streams(census) == []
+
+
+@pytest.mark.parametrize("setting", ["Micro Scan Count:", "AGC Target:"])
+def test_one_filter_at_two_settings_is_two_things_measured(setting):
+    """A short scan while the source settles, and then the measurement: one
+    filter, and the microscans or the AGC target are all that says they are
+    two experiments. Told apart by the filter alone they would be read as
+    one experiment run twice, and pooled, which is what detecting per stream
+    is there to undo."""
+    settling = _trailer(**{setting: 1})
+    measuring = _trailer(**{setting: 10})
+    census = scan_streams(
+        _ScriptedReader([(NEG_LOW, settling, 1)] * 2 + [(NEG_LOW, measuring, 2)] * 4)
+    )
+
+    assert census[0]["signature_key"] == census[1]["signature_key"]
+    assert measured(census[0]) != measured(census[1])
+    assert [stream["key"] for stream in peak_streams(census)] == [
+        f"{NEG_LOW} R=120000 event=1",
+        f"{NEG_LOW} R=120000 event=2",
+    ]
+
+
+def test_what_a_stream_measured_is_its_signature_and_its_two_settings():
+    """And not where it sits in the method: the segment and the scan event
+    are how a file names an experiment, not what the experiment is."""
+    trailer = _trailer(**{"Micro Scan Count:": 10})
+    census = scan_streams(
+        _ScriptedReader([(NEG_LOW, trailer, 1)] * 2 + [(NEG_LOW, trailer, 3, 2)] * 2)
+    )
+
+    assert [_identity(stream)[1:] for stream in census] == [(1, 1), (2, 3)]
+    assert [measured(stream) for stream in census] == [
+        (f"{NEG_LOW} R=120000", 10.0, 100000.0)
+    ] * 2
+    assert peak_streams(census) == []
+
+
+def test_what_a_scan_reports_of_itself_sets_no_streams_apart():
+    """Two runs of one experiment whose scans happened to fill in different
+    times. The injection time is what a scan took, not what its method asked
+    for, and it varies within an experiment: counted, it would set apart
+    runs that are one."""
+    census = scan_streams(
+        _ScriptedReader(
+            [(NEG_LOW, _trailer(**{"Ion Injection Time (ms):": 3.5}), 1)] * 2
+            + [(NEG_LOW, _trailer(**{"Ion Injection Time (ms):": 50.0}), 2)] * 2
+        )
+    )
+
+    assert [
+        stream["acquisition_params"]["constant"]["Ion Injection Time (ms):"]
+        for stream in census
+    ] == [3.5, 50.0]
+    assert measured(census[0]) == measured(census[1])
+    assert peak_streams(census) == []
+
+
+@pytest.mark.parametrize(
+    ("reported", "value"),
+    [
+        (10, 10.0),
+        ("10", 10.0),
+        (" 10 ", 10.0),
+        (1.0, 1.0),
+        ("ten", None),
+        (None, None),
+        (float("nan"), None),
+        (float("inf"), None),
+    ],
+)
+@pytest.mark.parametrize("place", [1, 2])
+def test_a_setting_is_a_number_however_the_reader_reports_it(reported, value, place):
+    """One backend reports trailer values as text and the other as typed
+    scalars, and a setting is the same setting either way. What is no number
+    is unknown."""
+    name = {1: "Micro Scan Count:", 2: "AGC Target:"}[place]
+    stream = {"signature_key": "", "acquisition_params": {"constant": {name: reported}}}
+
+    assert measured(stream)[place] == value
+    assert measured(stream)[3 - place] is None
+    if place == 1:
+        assert microscans(stream) == value
+
+
+def test_a_setting_the_census_does_not_hold_is_unknown():
+    """No trailer carried it, it varied among the scans sampled, or the
+    stream carries no summary at all, as a fragmentation stream does not."""
+    varying = scan_streams(
+        _ScriptedReader(
+            [
+                (
+                    NEG_LOW,
+                    _trailer(**{"AGC Target:": target, "Micro Scan Count:": count}),
+                    1,
+                )
+                for target, count in ((300000, 1), (1000000, 10))
+            ]
+        )
+    )[0]
+
+    assert {"Micro Scan Count:", "AGC Target:"} <= set(
+        varying["acquisition_params"]["varying"]
+    )
+    assert measured(varying)[1:] == (None, None)
+    assert microscans(varying) is None
+    assert microscans({"acquisition_params": {"constant": {}}}) is None
+    assert microscans({"acquisition_params": {}}) is None
+    assert microscans({}) is None
+
+
+def test_streams_whose_settings_the_census_does_not_hold_count_as_one_experiment():
+    """A trailer that carries neither setting, or a setting that varied
+    among the scans sampled: there is nothing to say two streams of one
+    filter apart by, and pooled is what such a file has always been."""
+    bare = {"FT Resolution:": 120000}
+    unreadable = scan_streams(
+        _ScriptedReader([(NEG_LOW, bare, 1)] * 2 + [(NEG_LOW, bare, 2)] * 2)
+    )
+    varying = scan_streams(
+        _ScriptedReader(
+            [
+                (NEG_LOW, _trailer(**{"Micro Scan Count:": count}), event)
+                for event in (1, 2)
+                for count in (1, 10)
+            ]
+        )
+    )
+
+    assert measured(unreadable[0]) == (f"{NEG_LOW} R=120000", None, None)
+    assert peak_streams(unreadable) == []
+    assert "Micro Scan Count:" in varying[0]["acquisition_params"]["varying"]
+    assert peak_streams(varying) == []
+
+
+def test_a_setting_only_one_of_two_runs_states_sets_them_apart():
+    """Unknown is a value like any other: a run whose microscans are read
+    beside one whose are not are two things measured, and the stitch map
+    then gives the m/z to the one that says how many it took."""
+    census = scan_streams(
+        _ScriptedReader(
+            [(NEG_LOW, _trailer(), 1)] * 2
+            + [(NEG_LOW, _trailer(**{"Micro Scan Count:": 10}), 2)] * 2
+        )
+    )
+
+    assert [measured(stream)[1] for stream in census] == [None, 10.0]
+    assert len(peak_streams(census)) == 2
+
+
+def test_a_run_that_repeats_beside_another_experiment_is_a_stream_of_its_own():
+    """What leaving a polarity of repeats whole does not reach: a wide scan
+    and then the same narrower one twice. The polarity measured two things,
+    so the file is detected per stream, and each run of the narrower scan is
+    one of its streams."""
+    census = scan_streams(
+        _ScriptedReader(
+            [(NEG_LOW, _trailer(), 1)] * 2
+            + [(NEG_HIGH, _trailer(), 2)] * 2
+            + [(NEG_HIGH, _trailer(), 3)] * 2
+        )
+    )
+
+    assert [stream["key"] for stream in peak_streams(census)] == [
+        f"{NEG_LOW} R=120000",
+        f"{NEG_HIGH} R=120000 event=2",
+        f"{NEG_HIGH} R=120000 event=3",
     ]
 
 
