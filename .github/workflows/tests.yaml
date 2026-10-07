@@ -253,9 +253,39 @@ jobs:
           version: "0.11.2"
 
       - name: Run File Agent tests
-        # Hermetic: config and wizard logic only, no runtime or network.
+        # Hermetic: no runtime, no server, no network. Not only logic, though:
+        # the agent's own threads and a real folder observer run, and two
+        # tests start the console program in a process of its own.
         # The agent is its own uv project (not a workspace member), so run
         # from its directory.
+        working-directory: agents/file
+        run: uv run pytest tests/ -v
+
+  file-agent-windows:
+    # The same suite where the program runs. It ships for Windows only, and
+    # the platforms differ in exactly what the suite exercises: whether a
+    # wait can be interrupted, how the observer reports a rename, what a
+    # file held open by its writer does. A job of its own rather than a
+    # matrix on the one above, whose name branch protection knows.
+    name: File Agent tests (Windows)
+    runs-on: windows-latest
+    timeout-minutes: 15
+    env:
+      # mascope terminal logs contain a glyph that breaks cp1252 when
+      # output is captured (see the developer guide)
+      PYTHONUTF8: "1"
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          version: "0.11.2"
+
+      - name: Run File Agent tests
         working-directory: agents/file
         run: uv run pytest tests/ -v
 
