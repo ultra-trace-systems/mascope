@@ -151,6 +151,21 @@ It comes preloaded with the published demo dataset and login `demo@mascope.app` 
   but the Python half only on master: auditing it means installing the tree,
   which runs its build backends, and the audit will not do that for another
   branch. develop's Python tree is covered by the per-PR gate alone.
+
+  The File Agent's lockfile, `agents/file/uv.lock`, is checked on its own: it
+  is another uv project with another environment, and the check has to run in
+  that one. CI does it on Windows, where the agent is built and where the
+  packages its lockfile names for Windows are installed to be read:
+
+  ```sh
+  uv sync --all-groups --directory agents/file
+  uv run --no-sync --directory agents/file python ../../tooling/check-licenses.py agent
+  ```
+
+  PyInstaller is in that lockfile and is GPL. It is cleared by name
+  (`PYTHON_SCOPED` in the script, which says why) and GPL is on no allowlist:
+  a GPL package anywhere else is still a finding.
+
   If it fails on something you added, read the actual licence - widening the
   allowlist to get green is the one response that defeats the check.
 - CI (`.github/workflows/tests.yaml`) runs the "Lint and format" (ruff) job plus
