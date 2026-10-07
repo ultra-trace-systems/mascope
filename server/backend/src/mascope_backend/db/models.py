@@ -1016,8 +1016,12 @@ class AcquisitionStream(Base):
     # stream's scans - the trailer values the sampled scans agree on, the
     # names of those that varied, and what was sampled (``acquisition_params``
     # of ``mascope_thermo.streams.scan_streams``). What the stitch rule and
-    # the repeat guard read. NULL on a composite.
-    acquisition_params: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    # the repeat guard read. NULL on a composite - SQL NULL, which the shape
+    # check reads, and not the JSON text "null" the type would otherwise
+    # store a None as.
+    acquisition_params: Mapped[Optional[dict]] = mapped_column(
+        JSON(none_as_null=True), nullable=True
+    )
     scan_count: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     # Contiguous runs of the stream's scans: 1 for an experiment that runs
     # once, the number of repeats for one that alternates with another.
@@ -1045,8 +1049,11 @@ class AcquisitionStream(Base):
     # the rule or a layout drew them, "notes": what was left out}. The store
     # names an owner by its place among the store's streams, which no column
     # here holds; the key is what the row beside it carries. NULL on every
-    # other row.
-    stitch: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    # other row - SQL NULL, as for acquisition_params, since the shape check
+    # reads it.
+    stitch: Mapped[Optional[dict]] = mapped_column(
+        JSON(none_as_null=True), nullable=True
+    )
 
 
 class SampleItem(Base):
