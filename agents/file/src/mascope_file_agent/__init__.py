@@ -5,12 +5,18 @@ Installed as a program it is ``mascope-file-agent``. As a library it is
 who it is with :func:`identity`; see :mod:`mascope_file_agent.agent`.
 """
 
+from importlib.metadata import PackageNotFoundError, version
+
+
 try:
     # Written by build.ps1 so the frozen exe reports its release version;
     # absent (and gitignored) in a source checkout.
     from mascope_file_agent._version import __version__
 except ImportError:
-    __version__ = "dev"
+    try:
+        __version__ = version("mascope_file_agent")
+    except PackageNotFoundError:
+        __version__ = "dev"
 
 # Below the version, which the modules they import read from this package.
 from mascope_file_agent.agent import Agent, identity  # noqa: E402

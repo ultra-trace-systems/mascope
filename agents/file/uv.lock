@@ -125,7 +125,7 @@ wheels = [
 
 [[package]]
 name = "mascope-file-agent"
-version = "0.0.0"
+version = "2026.10.7"
 source = { editable = "." }
 dependencies = [
     { name = "mascope-runtime" },

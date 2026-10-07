@@ -135,6 +135,19 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   Mascope does when it finds one out of date, goes by that decision and
   never by this setting.
 
+- **The File Agent is also a Python library, `mascope-file-agent` on PyPI.** A
+  program that already runs on the instrument computer can have the uploads in
+  its own process instead of a second program beside it: it builds an `Agent`
+  from the settings of a File Agent `config.toml`, says who the process is
+  with `identity()`, and calls `start()`; `stop()` ends it, with a deadline if
+  one is given. `Agent.on_ready()` adds a step that is called with each
+  complete file before it is uploaded. The library is versioned by date, as
+  the SDK is, and everything exported from `mascope_file_agent` is its public
+  API (`docs/dev/developer_guide.md`, *The File Agent as a library*).
+
+  The Windows program is built from the same code, and its installer, its
+  configuration and its guided setup are as they were.
+
 ### Changed
 
 - **The File Agent names the files it leaves behind when it is stopped.**
@@ -146,7 +159,9 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   traceback and go on waiting, and nothing short of closing the window ended
   it: the agent now logs that it is still waiting, and a third Ctrl+C stops it
   without those uploads and names them. An error that ends an upload worker's
-  turn at a file unexpectedly is logged as well, where it used to vanish.
+  turn at a file unexpectedly is logged as well, where it used to vanish. An
+  agent run from source rather than from the installer reports the library's
+  version instead of `dev`.
 
 - **The demo dataset is now bundle v1.3.1**
   ([10.5281/zenodo.23187550](https://doi.org/10.5281/zenodo.23187550)), rebuilt
