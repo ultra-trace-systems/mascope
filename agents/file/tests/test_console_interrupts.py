@@ -18,23 +18,36 @@ them, and the test reads when each line was written. It means most where the
 program ships, which is why CI runs this suite on Windows as well.
 """
 
+import os
 import re
 import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 
 SCRIPT = Path(__file__).with_name("interrupted_console.py")
 LINE = re.compile(r"^\s*(\d+\.\d\d) (.*)$")
+# Ignores SIGINT and then becomes the program it was given, which is how a
+# shell without job control starts a command in the background.
+IGNORING_INTERRUPTS = (
+    "import os, signal, sys; "
+    "signal.signal(signal.SIGINT, signal.SIG_IGN); "
+    "os.execv(sys.executable, [sys.executable, *sys.argv[1:]])"
+)
 
 
-def _console(tmp_path, hold, *interrupts):
+def _console(tmp_path, hold, *interrupts, ignoring_interrupts=False, timeout=180):
     """Run the console agent; ``(seconds since the upload began, line)`` pairs."""
+    command = [str(SCRIPT), str(tmp_path), str(hold), *map(str, interrupts)]
+    if ignoring_interrupts:
+        command = ["-c", IGNORING_INTERRUPTS, *command]
     result = subprocess.run(
-        [sys.executable, str(SCRIPT), str(tmp_path), str(hold), *map(str, interrupts)],
+        [sys.executable, *command],
         capture_output=True,
         text=True,
-        timeout=180,
+        timeout=timeout,
     )
     assert result.returncode == 0, result.stdout + result.stderr
     return [
@@ -78,3 +91,20 @@ def test_a_second_interrupt_keeps_waiting_and_a_third_stops_without_the_upload(
     assert 6.5 <= third <= returned < 12
     # The upload was held for 15 s: the process left it behind.
     assert _when(lines, "upload ended") is None
+
+
+@pytest.mark.skipif(
+    os.name == "nt",
+    reason="a Windows process does not start with what its parent ignores",
+)
+def test_the_interrupts_arrive_in_a_run_started_with_them_ignored(tmp_path):
+    """The helper takes its interrupts however the suite was started.
+
+    `nohup uv run pytest tests/ &` in a script starts every process with
+    SIGINT ignored. A helper that kept it ignored would never return, and
+    each test above would wait out its timeout.
+    """
+    lines = _console(tmp_path, 2, 1, ignoring_interrupts=True, timeout=60)
+
+    assert _when(lines, "Shutdown requested by user.") is not None
+    assert _when(lines, "returned") is not None

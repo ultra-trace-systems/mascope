@@ -71,6 +71,11 @@ uploader.POLL_INTERVAL = 0.05
 credentials.check_credential = lambda host, token, verify: (CREDENTIAL_OK, "")
 status.StatusFollower.poll_due = lambda self: None
 
+# A process started with SIGINT ignored keeps it ignored, and Python then
+# installs no handler of its own, so the interrupts would do nothing. A shell
+# without job control starts its background commands that way.
+signal.signal(signal.SIGINT, signal.default_int_handler)
+
 identity()
 agent = Agent(
     AgentSettings(
