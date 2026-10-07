@@ -33,6 +33,7 @@ from sqlalchemy import (
     Text,
     TypeDecorator,
     UniqueConstraint,
+    Uuid,
     event,
     func,
     or_,
@@ -40,6 +41,7 @@ from sqlalchemy import (
     text,
     update,
 )
+from sqlalchemy import inspect as sa_inspect
 from sqlalchemy.orm import Mapped, declarative_base, mapped_column, relationship
 from sqlalchemy.sql.schema import CheckConstraint
 
@@ -868,6 +870,36 @@ class SampleFile(Base):
     # The file's name on the uploading machine, before the server filed it
     # under the instrument the agent reported. NULL when nothing renamed it.
     source_filename: Mapped[Optional[str]] = mapped_column(String(256), nullable=True)
+    # What the program that ran the acquisition said of it, as the uploading
+    # agent sent it: which step of which run acquired the file, in which mode,
+    # under which chemistry (schema mascope-acquisition/1,
+    # docs/dev/acquisition_sidecar.md). NULL for a file that came with none.
+    # Kept as it was sent, fields a later schema added included. Deferred:
+    # it is up to 16 KB, and every listing and every event of a file carries
+    # the row, so it is loaded only where it is asked for.
+    acquisition: Mapped[Optional[dict]] = mapped_column(
+        JSON, nullable=True, deferred=True
+    )
+    # The record's four identifiers, as columns of their own so that "every
+    # file of this run" is one indexed query. UUIDs, minted by the control
+    # program. An acquisition is one file, so its id is unique: a record
+    # naming one another file already is is not stored.
+    acquisition_id: Mapped[Optional[str]] = mapped_column(
+        Uuid(as_uuid=False), nullable=True, unique=True
+    )
+    step_id: Mapped[Optional[str]] = mapped_column(
+        Uuid(as_uuid=False), nullable=True, index=True
+    )
+    sequence_run_id: Mapped[Optional[str]] = mapped_column(
+        Uuid(as_uuid=False), nullable=True, index=True
+    )
+    agent_id: Mapped[Optional[str]] = mapped_column(
+        Uuid(as_uuid=False), nullable=True, index=True
+    )
+    # SHA-256 of the file as it was uploaded, lowercase hex. Recorded only
+    # where the uploader reported a hash and the bytes received had it, so a
+    # value here says the file the server holds is the file that was sent.
+    sha256: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     # When the converter registered the file, set by the database on insert.
     # NULL on rows registered before the column existed: their time is not
     # known, and nothing stands in for it - a file's samples are recreated
@@ -886,6 +918,17 @@ class SampleFile(Base):
     processing_updated_utc: Mapped[Optional[dt]] = mapped_column(
         TIMESTAMP(timezone=True), nullable=True
     )
+
+    def to_dict(self):
+        """The row's columns, without the acquisition record unless it was
+        loaded: asking for a deferred column here would fetch it for every
+        row of a listing, which is what deferring it is there to avoid."""
+        unloaded = sa_inspect(self).unloaded
+        return {
+            c.name: getattr(self, c.name)
+            for c in self.__table__.columns
+            if not (c.name == "acquisition" and "acquisition" in unloaded)
+        }
 
     # Relationships
     instrument_function = relationship(

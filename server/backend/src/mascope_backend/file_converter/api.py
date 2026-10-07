@@ -152,6 +152,8 @@ def create_sample_file_db_record(
     access_token: str,
     device_id: int | None = None,
     source_filename: str | None = None,
+    acquisition: dict | None = None,
+    sha256: str | None = None,
 ) -> None:
     """Create a sample file database record via HTTP request.
 
@@ -166,6 +168,11 @@ def create_sample_file_db_record(
     :param source_filename: The file's name on the uploading machine, before
         the server filed it under an instrument; None when not reported
     :type source_filename: str | None, optional
+    :param acquisition: The acquisition record the upload carried, if any
+    :type acquisition: dict | None, optional
+    :param sha256: The file's SHA-256 as the server verified it at upload;
+        None when its uploader reported none
+    :type sha256: str | None, optional
     :raises Exception: HTTP request failed
     """
     runtime.logger.info(
@@ -196,6 +203,8 @@ def create_sample_file_db_record(
         "utc_offset_source": data.utc_offset_source,
         "instrument_type": data.instrument_type,
         "source_filename": source_filename,
+        "acquisition": acquisition,
+        "sha256": sha256,
     }
 
     headers = {

@@ -13,6 +13,7 @@ well. The export reads its samples through ``sample_view``, which the test
 schema does not create, so it is created here.
 """
 
+import uuid
 from datetime import datetime, timezone
 from types import SimpleNamespace
 
@@ -113,6 +114,14 @@ def configured_deployment(monkeypatch):
     monkeypatch.setattr(runtime.config, "deployment_id", "export-test")
 
 
+def _acquisition_of(sample_file_id: str) -> dict:
+    """The identifiers of a file's acquisition record, its own for each file."""
+    return {
+        name: str(uuid.uuid5(uuid.NAMESPACE_OID, f"{name}:{sample_file_id}"))
+        for name in ("acquisition_id", "step_id", "sequence_run_id", "agent_id")
+    }
+
+
 @pytest_asyncio.fixture
 async def batch(async_session_factory):
     """
@@ -181,6 +190,10 @@ async def batch(async_session_factory):
                     "seal": "not for export",
                 },
                 polarity="neg",
+                # This file came with an acquisition record and a verified
+                # hash; the other one below came with neither.
+                **_acquisition_of(ids.calibrated_file),
+                sha256="ab" * 32,
             )
         )
         session.add(
@@ -385,6 +398,32 @@ async def test_every_sample_row_carries_its_ids_and_acquisition_context(
     assert matched["m/z calibration"] == "ok"
     assert bool(matched["m/z calibration verified"]) is True
     assert matched["m/z calibration error (ppm)"] == pytest.approx(0.42)
+
+
+@pytest.mark.asyncio
+async def test_a_sample_row_names_its_acquisition_and_its_files_hash(workbook, batch):
+    """What the instrument's control program said of the file, by identifier:
+    the way from an exported row back to the run and the step behind it."""
+    rows = workbook.samples.set_index("Sample item ID")
+    matched = rows.loc[batch.matched_item]
+    said = _acquisition_of(batch.calibrated_file)
+
+    assert matched["Acquisition ID"] == said["acquisition_id"]
+    assert matched["Step ID"] == said["step_id"]
+    assert matched["Sequence run ID"] == said["sequence_run_id"]
+    assert matched["Agent ID"] == said["agent_id"]
+    assert matched["File SHA-256"] == "ab" * 32
+
+    # A file that came with no record leaves them empty.
+    bare = rows.loc[batch.bare_item]
+    for column in (
+        "Acquisition ID",
+        "Step ID",
+        "Sequence run ID",
+        "Agent ID",
+        "File SHA-256",
+    ):
+        assert pd.isna(bare[column]), column
 
 
 @pytest.mark.asyncio
