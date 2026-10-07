@@ -12,10 +12,11 @@ never when the server simply could not be reached.
 """
 
 import sys
+from types import SimpleNamespace
 
 import pytest
 
-from mascope_file_agent import Agent, ConsoleRepair, credentials
+from mascope_file_agent import Agent, ConsoleRepair, Repair, credentials
 from mascope_file_agent.wizard import (
     CREDENTIAL_OK,
     CREDENTIAL_REJECTED,
@@ -199,3 +200,98 @@ def test_startup_is_silent_when_the_credential_is_good(monkeypatch, agent):
     agent.credentials.check_at_start()
 
     assert agent.credentials.current_access_token() == "dead-token"
+
+
+# ---------------------------------------------------------------------------
+# A new credential that cannot be saved
+# ---------------------------------------------------------------------------
+#
+# `persist_token` is the embedding program's function. Whatever it raises, the
+# token it was handed is already in use, and losing it at the next restart is
+# the whole of the damage.
+
+
+class RecordingLogger(StubLogger):
+    def __init__(self):
+        self.warnings = []
+
+    def warning(self, message):
+        self.warnings.append(message)
+
+
+class Paired(Repair):
+    """Pairs again without asking anybody."""
+
+    def offer(self, reason, pair):
+        return "fresh-token"
+
+
+@pytest.fixture
+def unsaveable(make_settings):
+    """An agent whose new credentials cannot be saved, for a reason of its own."""
+
+    def refuse(token):
+        raise ValueError("the store is read-only")
+
+    return Agent(
+        make_settings(access_token="dead-token"),
+        logger=RecordingLogger(),
+        repair=Paired(),
+        persist_token=refuse,
+    )
+
+
+def test_a_token_that_cannot_be_saved_is_still_used_from_the_start(
+    monkeypatch, unsaveable
+):
+    """The pairing succeeded; the agent must not be gone for want of a file."""
+    monkeypatch.setattr(
+        credentials,
+        "check_credential",
+        lambda host, token, verify: (CREDENTIAL_REJECTED, "refused"),
+    )
+
+    unsaveable.credentials.check_at_start()
+
+    assert unsaveable.credentials.current_access_token() == "fresh-token"
+    assert unsaveable.logger.warnings == [
+        "Could not persist the renewed token: the store is read-only"
+    ]
+
+
+def test_a_token_that_cannot_be_saved_still_gets_the_file_its_retry(
+    monkeypatch, unsaveable, sample
+):
+    attempts = []
+
+    def refused_once(path):
+        attempts.append(unsaveable.credentials.current_access_token())
+        if len(attempts) == 1:
+            raise AuthenticationError("Credential refused", status_code=401)
+
+    monkeypatch.setattr(unsaveable.uploader, "upload_sample_file", refused_once)
+
+    unsaveable.uploader.process_file_upload(sample, max_retries=3)
+
+    assert attempts == ["dead-token", "fresh-token"]
+    assert len(unsaveable.logger.warnings) == 1
+
+
+def test_a_renewed_token_that_cannot_be_saved_is_not_renewed_again_at_once(
+    monkeypatch, unsaveable
+):
+    """Renewing rotates the token on the server: once is enough per period."""
+    monkeypatch.setattr(
+        credentials, "api_renew_agent_token", lambda url, token: ("renewed", 2592000)
+    )
+    waits = []
+
+    def one_renewal(delay):
+        waits.append(delay)
+        return len(waits) > 1
+
+    unsaveable.credentials.renewal_loop(SimpleNamespace(wait=one_renewal))
+
+    assert unsaveable.credentials.current_access_token() == "renewed"
+    # Scheduled at half the lifetime, not at the retry delay of a failure.
+    assert waits == [credentials.RENEW_INITIAL_DELAY, 2592000 // 2]
