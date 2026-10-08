@@ -131,7 +131,8 @@ schema. So the document also has to be JSON and nothing more:
   or outside it. They are not numbers JSON has, and a database that stores
   JSON refuses them. Python's `json.dumps` writes them unasked, so a failed
   reading passed straight to it makes one: write `null`, or leave the
-  setting out.
+  setting out. A number too large to be read as anything but infinity,
+  `1e999`, is refused with them.
 - **No key twice** in one object. Two readers need not pick the same one.
 - **32 levels of nesting at most**, the record itself being the first.
 

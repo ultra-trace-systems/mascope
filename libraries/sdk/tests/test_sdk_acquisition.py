@@ -280,6 +280,30 @@ def test_a_number_json_does_not_have_is_refused_wherever_it_stands(constant, mem
         acquisition.parse(_with(member % constant))
 
 
+@pytest.mark.parametrize("written", ["1e999", "-1e999", "1e400"])
+@pytest.mark.parametrize(
+    "member",
+    [
+        '"setpoints": {"a.b": %s}',
+        '"mode": {"definition": {"voltages": [1.5, %s]}}',
+        '"settle_time": %s',
+        '"later": {"reading": %s}',
+    ],
+)
+def test_a_number_too_large_to_be_one_is_refused(member, written):
+    """It is JSON, and it is read as infinity, which nothing after this can
+    write down again: not the next program to encode the record, and not a
+    database that stores JSON."""
+    with pytest.raises(AcquisitionError, match="too large to be read as anything"):
+        acquisition.parse(_with(member % written))
+
+
+def test_a_large_number_that_is_one_is_read():
+    record = acquisition.parse(_with('"setpoints": {"a.b": 1e308, "c.d": -1e308}'))
+
+    assert record.setpoints == {"a.b": 1e308, "c.d": -1e308}
+
+
 def test_python_writes_such_a_number_without_being_asked():
     """Which is how one gets into a sidecar: a failed reading, and json.dumps."""
     written = json.dumps(minimal(setpoints={"a.b": float("nan")}))
