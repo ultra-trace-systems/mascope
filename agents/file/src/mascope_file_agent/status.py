@@ -113,7 +113,7 @@ class StatusFollower:
         self._verify = verify
         self._clock = clock
         self._server = server or ServerCapabilities(
-            url, access_token, logger, verify=verify
+            url, access_token, logger, verify=verify, clock=clock
         )
         self._lock = threading.Lock()
         self._followed: dict[str, _Followed] = {}
@@ -218,13 +218,20 @@ class StatusFollower:
         and it is what lets a follower that found the server too old find it
         updated an hour later.
 
+        A refusal of the question is read by what the follower knew before
+        it. To a follower that is not on, it is a server that predates the
+        question: one that cannot be asked with a device token cannot answer
+        the questions about files either, and the follower is off. To one
+        that is on, it is no answer. The server announced this, so what it
+        has refused is this machine's credential, and the files stay followed
+        until the machine is paired again.
+
         :return: Whether it answered; :attr:`enabled` then says what.
         """
-        # A server that refuses the question predates it, and is answered for
-        # with no capabilities: it cannot be asked with a device token, and
-        # cannot answer the questions either.
         can = self._server.has(CAPABILITY)
         if can is None:
+            return False
+        if self.enabled and self._server.refused:
             return False
         was, self.enabled = self.enabled, can
         if can and was is False:

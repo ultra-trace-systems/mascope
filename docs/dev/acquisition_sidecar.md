@@ -198,7 +198,10 @@ The agent asks what the server can do once and keeps the answer for an hour
 (`mascope_file_agent/capabilities.py`), so a server updated under a running
 agent starts receiving records without the agent being restarted. The
 following of what became of each upload reads the same answer on every pass,
-and starts with the same update.
+and starts with the same update. A refusal to say does not end a following
+that is under way: the server had announced it, so what it refused is this
+machine's credential, and the files uploaded before that stay followed until
+the machine is paired again.
 
 ## The server
 
