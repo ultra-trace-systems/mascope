@@ -66,8 +66,9 @@ class SampleFileCreate(SampleFileBase):
         None,
         pattern=r"^[0-9a-f]{64}$",
         description=(
-            "SHA-256 of the uploaded file, where its uploader reported one "
-            "and the bytes received had it."
+            "SHA-256 of the uploaded file. The converter passes on what "
+            "the upload route verified against the bytes it received; the "
+            "value is stored as given."
         ),
     )
     uploaded_by_device_id: int | None = Field(

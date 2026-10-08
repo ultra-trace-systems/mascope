@@ -877,8 +877,13 @@ class SampleFile(Base):
     # Kept as it was sent, fields a later schema added included. Deferred:
     # it is up to 16 KB, and every listing and every event of a file carries
     # the row, so it is loaded only where it is asked for.
+    #
+    # none_as_null: a file registered with no record is given None by name,
+    # which a plain JSON column stores as the JSON value null - so the row
+    # would have a record that says nothing, and "IS NOT NULL" would count
+    # every file as having one.
     acquisition: Mapped[Optional[dict]] = mapped_column(
-        JSON, nullable=True, deferred=True
+        JSON(none_as_null=True), nullable=True, deferred=True
     )
     # The record's four identifiers, as columns of their own so that "every
     # file of this run" is one indexed query. UUIDs, minted by the control
@@ -896,9 +901,12 @@ class SampleFile(Base):
     agent_id: Mapped[Optional[str]] = mapped_column(
         Uuid(as_uuid=False), nullable=True, index=True
     )
-    # SHA-256 of the file as it was uploaded, lowercase hex. Recorded only
-    # where the uploader reported a hash and the bytes received had it, so a
-    # value here says the file the server holds is the file that was sent.
+    # SHA-256 of the file as it was uploaded, lowercase hex, as the file's
+    # registration gave it. The upload route gives the converter a hash only
+    # where the uploader reported one and the bytes received had it, so on a
+    # file that came through an upload a value here says the file the server
+    # holds is the file that was sent. The registration itself is taken at
+    # its word, as it is for the file's name and length.
     sha256: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     # When the converter registered the file, set by the database on insert.
     # NULL on rows registered before the column existed: their time is not
