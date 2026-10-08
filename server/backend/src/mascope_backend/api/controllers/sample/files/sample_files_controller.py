@@ -522,6 +522,23 @@ async def _record_to_keep(
     return document, ids
 
 
+def _refuses_the_row(refused: DBAPIError) -> bool:
+    """Whether the database refused a row for what the row holds.
+
+    Read off the SQLSTATE, which the driver hands on from the database. Class
+    23 is a constraint the row breaks, and class 22 a value the database
+    cannot hold. Every other failure is the database's own, or the way to
+    it: a connection lost at the commit has no SQLSTATE at all, says nothing
+    of the row, and the same row is as good the next time it is sent.
+
+    :param refused: What the driver raised.
+    :type refused: DBAPIError
+    :rtype: bool
+    """
+    sqlstate = getattr(refused.orig, "sqlstate", None)
+    return isinstance(sqlstate, str) and sqlstate[:2] in ("22", "23")
+
+
 @api_controller()
 async def create_sample_file(
     sample_file_create: SampleFileCreate,
@@ -641,7 +658,10 @@ async def create_sample_file(
         try:
             await session.commit()
         except DBAPIError as refused:
-            if acquisition is None:
+            if acquisition is None or not _refuses_the_row(refused):
+                # Not the record's doing, or not the row's at all. Raised as
+                # it is: the converter sends the registration again, with
+                # the record on it.
                 raise
             # The database would not have the row with its record on it: two
             # registrations of one acquisition that both got past the check

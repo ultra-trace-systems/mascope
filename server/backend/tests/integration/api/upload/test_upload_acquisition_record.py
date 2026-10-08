@@ -25,6 +25,8 @@ import pytest
 import pytest_asyncio
 from fastapi import HTTPException
 from sqlalchemy import delete, func, select
+from sqlalchemy.exc import DBAPIError
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import undefer
 from test_utils import captured_logs
 
@@ -40,7 +42,7 @@ from mascope_backend.db import SampleFile
 from mascope_sdk import acquisition
 
 
-INSTRUMENTS = tuple(f"acqrec-orbi-{letter}" for letter in "abcdefg")
+INSTRUMENTS = tuple(f"acqrec-orbi-{letter}" for letter in "abcdefgh")
 
 RECORD = {
     "schema": "mascope-acquisition/1",
@@ -599,6 +601,70 @@ async def test_a_row_the_database_refuses_with_its_record_is_stored_without_it(
     assert await _without_a_record(async_session_factory, second["filename"])
     assert resp.json()["data"]["acquisition_id"] is None
     assert any("was refused by the database" in line for line in _said(lines))
+
+
+@pytest.mark.asyncio
+async def test_a_failure_that_is_not_the_rows_costs_the_file_no_record(
+    async_session_factory, editor_client, monkeypatch
+):
+    """A connection lost at the commit says nothing of the row. The
+    registration fails as it would with no record on it, and the converter's
+    next try, the same body again, stores the file with its record."""
+    record = _record(11)
+    body = _registration(INSTRUMENTS[7], acquisition=record)
+    commit = AsyncSession.commit
+    lost = []
+
+    async def lost_once(session):
+        if not lost and any(isinstance(row, SampleFile) for row in session.new):
+            lost.append(session)
+            raise DBAPIError("COMMIT", {}, ConnectionResetError("connection lost"))
+        return await commit(session)
+
+    monkeypatch.setattr(AsyncSession, "commit", lost_once)
+
+    with captured_logs("WARNING") as lines:
+        failed = await editor_client.post("/api/sample/files", json=body)
+    assert lost, "the registration's commit was never reached"
+    assert failed.status_code >= 500, failed.text
+    assert not any("was refused by the database" in line for line in _said(lines))
+
+    again = await editor_client.post("/api/sample/files", json=body)
+
+    assert again.status_code == 201, again.text
+    stored = await _stored(async_session_factory, body["filename"])
+    assert stored.acquisition_id == record["acquisition_id"]
+    assert stored.acquisition == record
+
+
+class _Raised(Exception):
+    """What a driver raises, with the SQLSTATE it hands on, if any."""
+
+    def __init__(self, sqlstate=None):
+        super().__init__("raised by the driver")
+        if sqlstate is not None:
+            self.sqlstate = sqlstate
+
+
+@pytest.mark.parametrize(
+    "sqlstate, the_rows",
+    [
+        ("23505", True),  # the unique column
+        ("23502", True),
+        ("22P02", True),  # a value the database cannot read
+        ("22001", True),
+        ("08006", False),  # the connection failed
+        ("40001", False),  # a transaction to run again
+        ("57P01", False),  # the database is shutting down
+        ("53300", False),  # too many connections
+        ("2", False),
+        (None, False),  # nothing from the database at all
+    ],
+)
+def test_a_refusal_is_the_rows_when_it_is_about_what_the_row_holds(sqlstate, the_rows):
+    refused = DBAPIError("INSERT", {}, _Raised(sqlstate))
+
+    assert sample_files_controller._refuses_the_row(refused) is the_rows
 
 
 @pytest.mark.asyncio
