@@ -277,12 +277,7 @@ class BaseCalibrationHandler:
         # Fill np.nan with serializable defaults for unmatched isotopes
         default_unmatched_params = UnmatchedIsotopeParams().model_dump()
         match_df = match_df.fillna(default_unmatched_params)
-        # Matches contain duplicates for every ionization mechanism, we drop them
-        match_df = (
-            match_df.sort_values(by=["sample_peak_mz", "target_ion_id"])
-            .drop_duplicates(subset="sample_peak_mz", keep="first")
-            .reset_index(drop=True)
-        )
+        match_df = self._one_reading_per_peak(match_df)
 
         good_matches_df = match_df[
             (match_df.relative_abundance >= self.params.isotope_abundance_min)
@@ -292,6 +287,47 @@ class BaseCalibrationHandler:
         ]
 
         return match_df, good_matches_df
+
+    @staticmethod
+    def _one_reading_per_peak(match_df: pd.DataFrame) -> pd.DataFrame:
+        """Keep one reading of each sample peak: the one that makes it a main line.
+
+        Several ions of a calibration collection can match the same peak. An
+        ion reached through two mechanisms does, and so does the main line of
+        one calibrant that is also a minor isotope line of another - a labelled
+        reagent beside its unlabelled compound, a cluster that is also an
+        adduct. A peak gives the fit one point, and the abundance floor that
+        follows judges it by the reading kept here, so the reading kept is the
+        one with the highest relative abundance: the peak is then dropped only
+        if no ion of the collection reads it as a line worth calibrating on.
+
+        Readings of equal abundance are told apart by the m/z error and then
+        the isotope formula, which are the same wherever the collection is
+        loaded. The ion id comes last, and only between readings that give the
+        fit the same point: it is generated per database, so anything it
+        decided would differ from one server to the next.
+
+        :param match_df: Matched isotopes, one row per reading of a peak.
+        :type match_df: pd.DataFrame
+        :return: One row per sample peak, ordered by peak m/z.
+        :rtype: pd.DataFrame
+        """
+        return (
+            match_df.assign(_abs_mz_error=match_df["match_mz_error"].abs())
+            .sort_values(
+                by=[
+                    "sample_peak_mz",
+                    "relative_abundance",
+                    "_abs_mz_error",
+                    "target_isotope_formula",
+                    "target_ion_id",
+                ],
+                ascending=[True, False, True, True, True],
+            )
+            .drop_duplicates(subset="sample_peak_mz", keep="first")
+            .drop(columns="_abs_mz_error")
+            .reset_index(drop=True)
+        )
 
     async def _load_and_filter_peaks(
         self,

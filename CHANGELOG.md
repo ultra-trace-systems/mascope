@@ -300,6 +300,24 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 ### Fixed
 
+- **A file's m/z calibration no longer depends on the server that calibrates
+  it.** Where two ions of a calibration collection match the same peak - the
+  main line of one calibrant that is also a minor isotope line of another, as
+  with a labelled reagent beside its unlabelled compound - the calibration
+  kept the reading of whichever ion had the lower id, and dropped the peak if
+  that was the minor reading. The ids are generated at random by each
+  database, so the same file was calibrated on different peaks from one
+  server to the next, or after its collection was imported again: with a
+  15N-nitrate collection either on the reagent base peak alone or on two
+  weaker ions, which put every peak of the file 0.14 to 0.55 ppm apart. A
+  peak is now read as the line with the highest relative abundance among its
+  matches, so every main line found is a calibrant, on every server. Where
+  the calibrants of a collection share no lines nothing changes: of 148
+  samples from seven sites that have a calibration collection, the eight on a
+  15N-nitrate collection moved, by up to 0.5 ppm, and two databases that used
+  to disagree on those eight now agree on all 148. A sample already
+  calibrated keeps its calibration until it is calibrated again. (#2144)
+
 - **A Ctrl+C that reaches the File Agent between two looks at its upload
   queue is handled like any other.** On the Python the agent runs on, an
   interrupt that arrived in that instant went past the handling written
