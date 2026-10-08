@@ -41,8 +41,9 @@ clock ``clock`` describes. A time without an offset is refused, since nothing
 downstream could place it, and so is one written as a count of seconds.
 
 **The document is JSON and nothing more.** ``NaN`` and ``Infinity`` are not
-numbers JSON has, though Python writes them unasked; a key is there once; and
-a record nests :data:`MAX_DEPTH` levels at most. A document that is not all
+numbers JSON has, though Python writes them unasked, and a number too large
+to be read as anything but infinity is no better; a key is there once; and a
+record nests :data:`MAX_DEPTH` levels at most. A document that is not all
 of that is refused whole, where the fault is still the writing program's to
 see, because the readers after this one are not this forgiving: a database
 that stores JSON takes none of the three for granted.
@@ -476,6 +477,12 @@ def parse(document: bytes | str) -> AcquisitionRecord:
         raise AcquisitionError("it is not a JSON object")
     if _depth(content) > MAX_DEPTH:
         raise AcquisitionError(f"it nests more than {MAX_DEPTH} levels deep")
+    if _not_finite(content):
+        # 1e999 is JSON, and no number a reader can hold: it is read as
+        # infinity, which the next thing to write the record cannot write.
+        raise AcquisitionError(
+            "it holds a number too large to be read as anything but infinity"
+        )
     if content.get("schema") != SCHEMA:
         # Said on its own: a record of a later schema is the one fault a
         # reader will meet without anybody having made a mistake.
