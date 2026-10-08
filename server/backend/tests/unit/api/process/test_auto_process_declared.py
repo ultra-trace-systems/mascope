@@ -16,6 +16,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from mascope_backend.api.controllers.sample.files.process import service
+from mascope_backend.api.controllers.sample.files.process.bindings import Declined
 from mascope_backend.api.controllers.sample.files.process.service import ItemProvenance
 from mascope_backend.api.controllers.sample.files.process.streams import (
     StoreStreams,
@@ -68,7 +69,10 @@ def pipeline():
         patch(
             f"{_SVC}.resolve_ionization_modes_by_tokens", new_callable=AsyncMock
         ) as tokens,
-        patch(f"{_SVC}.routes_on_method_binding", return_value=False),
+        patch(f"{_SVC}.routes_on_method_binding", return_value=False) as by_method,
+        patch(
+            f"{_SVC}.resolve_modes_by_method_binding", new_callable=AsyncMock
+        ) as method,
         patch(f"{_SVC}.learn_method_bindings", new_callable=AsyncMock) as learn,
         patch(
             f"{_SVC}.create_acquisition_batches_and_items", new_callable=AsyncMock
@@ -80,7 +84,13 @@ def pipeline():
         dataset.return_value = {"data": {"dataset_id": "ds-001"}}
         create.return_value = ([], [], StreamRows(), StoreStreams())
         yield MagicMock(
-            declares=declares, tokens=tokens, learn=learn, create=create, status=status
+            declares=declares,
+            tokens=tokens,
+            by_method=by_method,
+            method=method,
+            learn=learn,
+            create=create,
+            status=status,
         )
 
 
@@ -286,3 +296,65 @@ async def test_a_declaration_that_binds_nothing_says_what_it_named():
         declared = await service._modes_its_record_declares(_sample_file())
 
     assert declared == ([], UNANSWERED)
+
+
+# ---------------------------------------------------------------------------
+# A declaration that binds nothing is not passed over in silence
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_a_file_bound_by_its_name_says_what_its_record_named(pipeline):
+    """The case a declaration is there for: the record says one chemistry and
+    the name, from a template nobody changed, says another. The name binds
+    the file, and whoever opens it reads that its record disagreed."""
+    bromide = _mode("im-bromide", "Bromide")
+    pipeline.declares.return_value = ([], UNANSWERED)
+    pipeline.tokens.return_value = [bromide]
+    pipeline.status.side_effect = _SeenEnough
+
+    with pytest.raises(_SeenEnough):
+        await _run()
+
+    assert pipeline.status.call_args.args[1].value == "bound"
+    assert pipeline.status.call_args.args[2] == (
+        f"Bound by file-name token to 'Bromide' (-). {UNANSWERED}."
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_file_its_method_could_not_place_parks_beside_the_declaration(
+    pipeline,
+):
+    """The third way to park, after the name and the method both declined."""
+    pipeline.declares.return_value = ([], UNANSWERED)
+    pipeline.tokens.side_effect = NoTokenMatchError("No token names file x")
+    pipeline.by_method.return_value = True
+    pipeline.method.return_value = (
+        [],
+        Declined("its method has not been seen", "Choose a chemistry for one file."),
+    )
+
+    result = await _run()
+
+    assert result["status"] == "parked"
+    assert pipeline.status.call_args.args[2] == (
+        f"{UNANSWERED}. No token names file x. Its acquisition method does "
+        "not say either: its method has not been seen. Choose a chemistry "
+        "for one file."
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_file_with_no_record_is_not_asked_for_one():
+    """The identifier is written with the record and is on the row the
+    pipeline holds, so most files are spared the query."""
+    sample_file = _sample_file()
+    sample_file.acquisition_id = None
+    session = _session_holding(RECORD)
+
+    with patch(f"{_SVC}.async_session", session):
+        declared = await service._modes_its_record_declares(sample_file)
+
+    assert declared == ([], None)
+    session.assert_not_called()

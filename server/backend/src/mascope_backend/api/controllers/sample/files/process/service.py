@@ -476,9 +476,12 @@ async def _modes_its_record_declares(
     A declaration that names no mode here does not park the file. It is one
     rung that did not answer, and the rungs below get their turn: a control
     program configured with a token this server does not use is a
-    configuration to fix, and until it is, the file routes as it would have
-    with no record at all. What the declaration said goes into the reason if
-    the file parks after all.
+    configuration to fix, and until it is, the file is bound as it would
+    have been with no record at all. It is not bound in silence, though. What
+    the declaration said goes into the file's status whichever way the run
+    ends - beside the rung that bound it, or beside the reason it parked -
+    because the case that matters is the one where the two disagree: a record
+    that says bromide on a file whose name still says nitrate.
 
     :param sample_file: The file to bind.
     :return: One mode per polarity and None when the record binds it; no
@@ -487,6 +490,11 @@ async def _modes_its_record_declares(
         nothing here.
     :rtype: tuple[list[IonizationMode], str | None]
     """
+    if getattr(sample_file, "acquisition_id", None) is None:
+        # No record: the identifier is written with it, and is on the row
+        # the pipeline already holds. Most files have none, and are spared
+        # the query.
+        return [], None
     async with async_session() as session:
         record = await session.scalar(
             select(SampleFile.acquisition).where(
@@ -1249,7 +1257,12 @@ async def _auto_process_sample_file(
     await record_processing_status(
         sample_file_id,
         ProcessingStatus.BOUND,
-        compose_detail(_bound_detail(bound_modes, rung), streams_note),
+        compose_detail(
+            _bound_detail(bound_modes, rung),
+            # What its record named and could not bind, beside what did.
+            None if undeclared is None else f"{undeclared.rstrip('.')}.",
+            streams_note,
+        ),
     )
 
     # Extract batch and sample IDs for notifications
