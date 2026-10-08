@@ -127,9 +127,12 @@ class AcquisitionError(ValueError):
     reads after "the record is not used, as"."""
 
 
-_UUID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
+# Matched whole, and digit by ASCII digit: `$` lets a line end follow what it
+# matched, and `\d` is a digit of any script.
+_UUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
 _DATE_TIME = re.compile(
-    r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})$"
+    r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]+)?"
+    r"(Z|[+-][0-9]{2}:[0-9]{2})"
 )
 
 #: The record's identifiers and its times, by field. :func:`parse` holds
@@ -383,7 +386,7 @@ def _misspelled(content: dict) -> dict[str, str]:
             "0199b6a0-7c00-7000-8000-000000000001"
         )
         for name in ID_FIELDS
-        if isinstance(content.get(name), str) and not _UUID.match(content[name])
+        if isinstance(content.get(name), str) and not _UUID.fullmatch(content[name])
     }
     times = [(name, content.get(name)) for name in TIME_FIELDS]
     events = content.get("events")
@@ -394,7 +397,7 @@ def _misspelled(content: dict) -> dict[str, str]:
             if isinstance(event, dict)
         ]
     for name, value in times:
-        if isinstance(value, str) and not _DATE_TIME.match(value):
+        if isinstance(value, str) and not _DATE_TIME.fullmatch(value):
             faults[name] = (
                 "a time is written as 2026-10-07T12:00:00.000Z: date, T, time, "
                 "and Z or an offset"
@@ -498,8 +501,6 @@ def parse(document: bytes | str) -> AcquisitionRecord:
         # One list of what is wrong. Where the model faults a field too, its
         # word stands: such a field is no identifier or time at all.
         raise AcquisitionError(_reasons({**misspelled, **_the_models(e)})) from e
-    except RecursionError as e:
-        raise AcquisitionError(f"it nests more than {MAX_DEPTH} levels deep") from e
     if misspelled:
         raise AcquisitionError(_reasons(misspelled))
     return record
