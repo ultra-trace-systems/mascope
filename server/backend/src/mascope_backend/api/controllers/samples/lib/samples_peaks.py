@@ -90,8 +90,10 @@ def _aggregate_full_sample(
 ) -> PeakData:
     """Aggregate peak data over the full sample (pre-computed sums)."""
     if average:
+        # Per peak: a stored sum is over the scans the store's axis holds
+        # for the peak - a stream's peak over its own stream's scans
         timestamps = m_compute.get_scan_timestamps(filename, polarity=polarity)
-        average_factor = len(timestamps) if len(timestamps) > 0 else 1
+        average_factor = m_compute.stored_scans_per_peak(data, timestamps)
     else:
         average_factor = 1
 
@@ -164,7 +166,8 @@ def _aggregate_time_range(
 
     # Select the time slice and sum
     time_slice = data.sel(time=timestamps, method="nearest")
-    average_factor = len(timestamps) if average else 1
+    # Per peak: a stream's peak holds values on its own scans of the range only
+    average_factor = m_compute.scans_per_peak(data, timestamps) if average else 1
 
     return PeakData(
         peak_ids=data.peak_id.values.tolist(),

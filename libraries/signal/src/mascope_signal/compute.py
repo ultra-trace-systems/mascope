@@ -148,6 +148,78 @@ def peak_store_streams(peak_data: xr.Dataset) -> list[str]:
     )
 
 
+def scans_per_peak(peak_data: xr.Dataset, timestamps: np.ndarray) -> np.ndarray:
+    """How many of the given scans each peak holds values on, one per peak.
+
+    A pooled store's peak holds a value on every scan of its polarity, a
+    per-stream store's on its own stream's scans only
+    (:func:`peak_store_streams`). A sum over a time range's scans is averaged
+    by this count and not by the range's scans of every stream of the
+    polarity, which would read an ion a short stream measured at a fraction
+    of its height - the dilution the stitch exists to remove. The stored
+    whole-sample sums are counted by :func:`stored_scans_per_peak`.
+
+    :param peak_data: A peak store, or a selection of its peaks; with
+        ``scan_stream`` along ``time`` for a per-stream store
+    :type peak_data: xr.Dataset
+    :param timestamps: The scans of the range, those the sum is taken over
+    :type timestamps: np.ndarray
+    :return: One count per peak, never below one
+    :rtype: np.ndarray
+    """
+    streams = peak_store_streams(peak_data)
+    if not streams:
+        return np.full(peak_data.mz.size, max(len(timestamps), 1), dtype=int)
+    scan_streams = np.asarray(
+        peak_data.scan_stream.sel(time=timestamps, method="nearest").values, dtype=int
+    )
+    return _counts_per_peak(peak_data, scan_streams, len(streams))
+
+
+def stored_scans_per_peak(
+    peak_data: xr.Dataset, polarity_scans: np.ndarray
+) -> np.ndarray:
+    """How many scans each peak's stored sum is over, one per peak.
+
+    ``sum_peak_heights`` and ``sum_peak_areas`` are summed over the scans
+    the store's own axis holds for the peak. For a per-stream store that is
+    its stream's scans, which the store counts for itself: a file-wide read
+    of the polarity's scans can be one short of the axis - the file's first
+    scan is left out where its TIC is an outlier among the file's scans and
+    not among its own stream's, as a composite method's reagent scan is -
+    and counted by that read, the stream's ions would average a quarter
+    high. A pooled store's axis holds every scan of the file with no
+    polarity on it, so its count is the polarity's scans as the caller read
+    them, the same read the store was summed over.
+
+    :param peak_data: A peak store, or a selection of its peaks; with
+        ``scan_stream`` along ``time`` for a per-stream store
+    :type peak_data: xr.Dataset
+    :param polarity_scans: The polarity's scans as read file-wide, the count
+        of a pooled store
+    :type polarity_scans: np.ndarray
+    :return: One count per peak, never below one
+    :rtype: np.ndarray
+    """
+    streams = peak_store_streams(peak_data)
+    if not streams:
+        return np.full(peak_data.mz.size, max(len(polarity_scans), 1), dtype=int)
+    scan_streams = np.asarray(peak_data.scan_stream.values, dtype=int)
+    return _counts_per_peak(peak_data, scan_streams, len(streams))
+
+
+def _counts_per_peak(
+    peak_data: xr.Dataset, scan_streams: np.ndarray, n_streams: int
+) -> np.ndarray:
+    """The scans of each peak's stream among ``scan_streams``, a floor of one."""
+    stream = np.asarray(peak_data.stream.values, dtype=int)
+    counts = np.bincount(
+        scan_streams, minlength=max(n_streams, int(stream.max(initial=-1)) + 1)
+    )
+    per_peak = counts[stream]
+    return np.where(per_peak > 0, per_peak, 1)
+
+
 def peak_store_stitch_map(peak_data: xr.Dataset) -> dict | None:
     """The stitch map a peak store's composites are read by, or None.
 
@@ -1416,7 +1488,10 @@ def _load_deduplicated_peak_data(base_filename: str, mzs_arr: np.ndarray) -> xr.
     :param mzs_arr: Sorted unique target m/z values
     :return: Peak dataset selected to the nearest m/z, duplicates dropped
     """
-    peak_timeseries = m_io.load_peak_data(base_filename).sel(
+    # The whole store: a fill answers any stored row by its m/z, and what
+    # asks for one holds its m/z already - a reading the composite leaves out
+    # included, where the overlap is read
+    peak_timeseries = m_io.load_peak_data(base_filename, composite=False).sel(
         mz=mzs_arr, method="nearest"
     )
     _, unique_idx = np.unique(peak_timeseries.mz.values, return_index=True)
@@ -1568,7 +1643,11 @@ async def check_peak_store(base_filename: str) -> None:
         or the file holds no stream under a key the store lists
     :return: None
     """
-    stored = await asyncio.to_thread(m_io.load_peak_data, base_filename)
+    # The whole store: every stream it holds is read back, the ones the
+    # composite leaves out included, so a stale key is named whichever it is
+    stored = await asyncio.to_thread(
+        m_io.load_peak_data, base_filename, composite=False
+    )
     if not stored.mz.size:
         # A blank measurement's store holds no peak to read the file back for
         return
@@ -1711,7 +1790,9 @@ def _mzs_of_the_same_peaks(
     :return: The m/z values to ask for instead, sorted and unique
     :rtype: np.ndarray
     """
-    stored = m_io.load_peak_data(base_filename)
+    # The whole axis: a refused fill may have loaded a reading the composite
+    # leaves out
+    stored = m_io.load_peak_data(base_filename, composite=False)
     mz_by_id = dict(zip(stored.peak_id.values.tolist(), stored.mz.values.tolist()))
     peak_ids = peak_ids.tolist()
     if not all(peak_id in mz_by_id for peak_id in peak_ids):

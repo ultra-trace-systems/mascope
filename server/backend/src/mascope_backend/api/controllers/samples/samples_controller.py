@@ -21,8 +21,30 @@ from mascope_backend.db import (
 )
 from mascope_backend.db.views import Sample
 from mascope_backend.runtime import runtime
-from mascope_file.io import load_coord
+from mascope_file.io import load_coord, load_peak_data
 from mascope_signal.peak import get_peaks
+
+
+def _nearest_listed_mz(filename: str, peak_mz: float) -> float:
+    """The m/z, among the peaks the file lists, nearest to an asked one.
+
+    What a client asks by m/z is answered from the peaks the sample lists -
+    the composite's, for a file detected per stream - and not from every
+    row the store holds, where a reading the composite leaves out can be the
+    nearer. The timeseries loader answers any stored row by its label, so
+    the label is what it is handed.
+
+    :param filename: Sample file filename
+    :type filename: str
+    :param peak_mz: The m/z asked for
+    :type peak_mz: float
+    :return: The nearest listed m/z, or the asked one where nothing is listed
+    :rtype: float
+    """
+    listed = load_peak_data(filename).mz.values
+    if listed.size == 0:
+        return peak_mz
+    return float(listed[np.abs(listed - peak_mz).argmin()])
 
 
 @api_controller()
@@ -499,7 +521,18 @@ async def get_sample_peak_timeseries(
 
     # Step 4: Load sample file data
     try:
-        sample_file = await m_compute.load_peak_timeseries(sample.filename, [peak_mz])
+        label = peak_mz
+        if resolved_peak_id is None:
+            # A client's m/z, not a row's label: the row it is answered from
+            # is the listed peak nearest to it, resolved before asking for
+            # the timeseries, which answers any stored row by its label - a
+            # reading the composite leaves out included, where that one is
+            # the nearer of two. The m/z asked stays what the tolerance below
+            # is measured from, so an ask nothing listed is near is refused.
+            label = await asyncio.to_thread(
+                _nearest_listed_mz, sample.filename, peak_mz
+            )
+        sample_file = await m_compute.load_peak_timeseries(sample.filename, [label])
         peaks = await asyncio.to_thread(get_peaks, sample_file, "height")
     except FileNotFoundError:
         raise NotFoundException(f"Sample file '{sample.filename}' not found")
