@@ -329,6 +329,15 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   mass before the fit - the smallest correction, since a match that needs a
   large one is more likely a neighbouring peak than the calibrant.
 
+- **A calibration point's match score is its own.** The match score,
+  abundance error and relative intensity reported for a calibration point
+  were computed against another point's reference isotope whenever an
+  isotope of the collection listed before it had found no peak, and came out
+  as zero for the last ones: about seven in ten of the points in the same
+  148 samples. By default the score does not decide which calibrants are
+  used, so no calibration changes; a minimum match score set in the
+  calibration dialog now filters on the real value.
+
 - **A Ctrl+C that reaches the File Agent between two looks at its upload
   queue is handled like any other.** On the Python the agent runs on, an
   interrupt that arrived in that instant went past the handling written

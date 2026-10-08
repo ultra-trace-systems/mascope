@@ -1,4 +1,4 @@
-"""Which reading of a sample peak the calibration keeps.
+"""Which reading of a sample peak the calibration keeps, and how it is scored.
 
 Several ions of a calibration collection can match one peak: the main line of
 one calibrant is often a minor isotope line of another. The peak gives the fit
@@ -220,3 +220,39 @@ class TestMatchCalibrationCompounds:
         _, good_matches_df = await handler._match_calibration_compounds(isotopes)
 
         assert good_matches_df["target_isotope_formula"].tolist() == ["[15N]O3-"]
+
+    @pytest.mark.asyncio
+    async def test_isotopes_are_scored_against_their_own_ion_past_an_unmatched_one(
+        self,
+    ):
+        """An isotope that found no peak does not shift the rows after it.
+
+        Every peak sits on its target and holds its expected share of its
+        ion's main line, so every matched isotope scores 1.
+        """
+        isotopes = pd.DataFrame(
+            [
+                ("ion-a", "C6H13O6+", 100.0, 0.9),
+                ("ion-a", "[13C]C5H13O6+", 101.0, 0.1),
+                ("ion-b", "C12H25O12+", 200.0, 0.8),
+                ("ion-b", "[13C]C11H25O12+", 201.0, 0.2),
+            ],
+            columns=[
+                "target_ion_id",
+                "target_isotope_formula",
+                "mz",
+                "relative_abundance",
+            ],
+        )
+        # No peak for the second isotope of the first ion.
+        handler = _handler(_peaks([(100.0, 900.0), (200.0, 800.0), (201.0, 200.0)]))
+
+        match_df, _ = await handler._match_calibration_compounds(isotopes)
+
+        assert match_df["mz"].tolist() == [100.0, 200.0, 201.0]
+        assert match_df["match_abundance_error"].tolist() == pytest.approx(
+            [0.0, 0.0, 0.0], abs=1e-12
+        )
+        assert match_df["match_score"].tolist() == pytest.approx(
+            [1.0, 1.0, 1.0], abs=1e-12
+        )

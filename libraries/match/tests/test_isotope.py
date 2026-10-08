@@ -143,6 +143,57 @@ class TestCalculateMatchStats:
         np.testing.assert_allclose(result["match_mz_error"], [200.0])
         np.testing.assert_allclose(result["match_score"], [0.0])
 
+    def test_rows_meet_their_own_ion_on_a_filtered_frame(self):
+        # The matched rows of a longer frame, still carrying its labels: the
+        # second isotope of the first ion found no peak and was filtered out.
+        # Every peak holds its expected share of its own ion's main isotope.
+        match_isotope_df = pd.DataFrame(
+            {
+                "target_ion_id": ["ion_1", "ion_2", "ion_2"],
+                "relative_abundance": [0.9, 0.8, 0.2],
+                "sample_peak_intensity": [900.0, 800.0, 200.0],
+                "mz": [100.0, 200.0, 201.0],
+                "sample_peak_mz": [100.0, 200.0, 201.0],
+            },
+            index=[0, 2, 3],
+        )
+
+        result = calculate_match_stats(match_isotope_df)
+
+        assert result.index.tolist() == [0, 2, 3]
+        np.testing.assert_allclose(
+            result["sample_peak_intensity_relative"], [1.0, 1.0, 0.25]
+        )
+        np.testing.assert_allclose(
+            result["match_abundance_error"], [0.0, 0.0, 0.0], atol=1e-12
+        )
+        np.testing.assert_allclose(result["match_score"], [1.0, 1.0, 1.0])
+
+    def test_an_ion_with_two_references_takes_the_first_and_shifts_no_row(self):
+        match_isotope_df = pd.DataFrame(
+            {
+                "target_ion_id": ["ion_1", "ion_1", "ion_2", "ion_2"],
+                "relative_abundance": [1.0, 0.5, 1.0, 0.5],
+                "sample_peak_intensity": [100.0, 50.0, 20.0, 10.0],
+                "mz": [100.0, 101.0, 200.0, 201.0],
+                "sample_peak_mz": [100.0, 101.0, 200.0, 201.0],
+            }
+        )
+        existing_reference_df = pd.DataFrame(
+            {
+                "target_ion_id": ["ion_1", "ion_1"],
+                "sample_peak_intensity": [200.0, 50.0],
+                "relative_abundance": [1.0, 1.0],
+            }
+        )
+
+        result = calculate_match_stats(match_isotope_df, existing_reference_df)
+
+        assert len(result) == 4
+        np.testing.assert_allclose(
+            result["sample_peak_intensity_relative"], [0.5, 0.25, 1.0, 0.5]
+        )
+
 
 class TestAssignDefaultsToUnmatched:
     def test_unmatched_rows_get_defaults_matched_rows_untouched(self):

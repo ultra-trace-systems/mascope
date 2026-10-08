@@ -444,10 +444,15 @@ def calculate_match_stats(
             f"for abundance error calculation"
         )
 
-    # Join the main isotopes with the full match_isotope_df to get the reference values
+    # Join the main isotopes with the full match_isotope_df to get the reference values.
+    # One reference per ion, so the join returns the rows it was given, in their
+    # order; and it numbers them afresh, so they are given their labels back. The
+    # divisions below pair the two frames by label: without this, on a frame that
+    # is not numbered 0..n-1 - a filtered one - a row would meet another row's
+    # reference, or none.
     abundance_reference_df = pd.merge(
         match_isotope_df,
-        main_isotope_df.rename(
+        main_isotope_df.drop_duplicates(subset="target_ion_id").rename(
             columns={
                 "sample_peak_intensity": "sample_peak_intensity_reference",
                 "relative_abundance": "relative_abundance_reference",
@@ -456,6 +461,7 @@ def calculate_match_stats(
         on="target_ion_id",
         how="left",
     )
+    abundance_reference_df.index = match_isotope_df.index
     # --- Compute match abundance error ---
     # Compute relative peak intensities -> [0, 1]
     sample_peak_intensity_relative = match_isotope_df["sample_peak_intensity"].div(
