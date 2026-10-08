@@ -33,8 +33,11 @@ from mascope_signal.compute import StalePeakStoreError
 
 
 def _store():
-    """The whole peak store, weak and satellite peaks included."""
-    return m_io.load_peak_data(SAMPLE_FILENAME, drop_bad_peaks=False).compute()
+    """The whole peak store: weak and satellite peaks, and the readings the
+    composite leaves out, included."""
+    return m_io.load_peak_data(
+        SAMPLE_FILENAME, drop_bad_peaks=False, composite=False
+    ).compute()
 
 
 def _in_composite(store):

@@ -280,7 +280,9 @@ def _bad_peaks(is_weak, is_satellite):
     peaks (:func:`load_peak_data`), and a fill tells the rows sharing an m/z
     apart by them (:func:`_rows_of_kept_peaks`). A rule the load alone changed
     would leave the fill settling such a pair by the old one, and nothing
-    would fail.
+    would fail. A default load of a per-stream store leaves out more - the
+    readings its composites do not take - but the fill's own load is the
+    whole store's (``composite=False``), so this rule is the one it shares.
 
     :param is_weak: The store's ``is_weak`` flags
     :param is_satellite: Its ``is_satellite`` flags, as the same kind of array
@@ -289,7 +291,9 @@ def _bad_peaks(is_weak, is_satellite):
     return is_weak | is_satellite
 
 
-def load_peak_data(base_filename: str, drop_bad_peaks: bool = True) -> xr.Dataset:
+def load_peak_data(
+    base_filename: str, drop_bad_peaks: bool = True, composite: bool = True
+) -> xr.Dataset:
     """Load peak data from sample file.
     The function DOES NOT guarantee that the timeseries data is complete.
 
@@ -331,10 +335,23 @@ def load_peak_data(base_filename: str, drop_bad_peaks: bool = True) -> xr.Datase
     (``mascope_signal.stitch``). ``mascope_signal.compute.peak_store_stitch_map``
     reads the map, and answers None for a pooled store.
 
+    Such a store answers its composites by default: the peaks each
+    polarity's stitched spectrum is made of, one reading of every m/z. The
+    other streams' readings of the same ions, and a peak detected only by a
+    stream that does not own its m/z, stay in the store and are answered
+    with ``composite=False``; nothing that reads "the file's peaks" wants
+    them beside the composite's, where two readings of one ion a fraction
+    of a ppm apart look like two peaks too close to tell apart. A pooled
+    store, and a polarity the map does not stitch, answer the same either
+    way.
+
     :param base_filename: Sample file filename
     :type base_filename: str
     :param drop_bad_peaks: Flag to drop weak and satellite peaks, defaults to True
     :type drop_bad_peaks: bool, optional
+    :param composite: Whether a per-stream store answers only the peaks of
+        its composites, defaults to True
+    :type composite: bool, optional
     :return: Loaded peak data with sample file properties attached
     :rtype: xr.Dataset
     """
@@ -352,6 +369,9 @@ def load_peak_data(base_filename: str, drop_bad_peaks: bool = True) -> xr.Datase
         # unique, the ones being dropped included, and two peaks of a file can
         # share one
         peak_data = peak_data.isel(mz=np.flatnonzero(~bad_peak_mask.values))
+    if composite and "composite" in peak_data.variables:
+        # By position too, for the same reason
+        peak_data = peak_data.isel(mz=np.flatnonzero(peak_data.composite.values))
     # Add zarr file properties to attributes for reverse compatibility
     props = read_props(base_filename)
     peak_data.attrs["props"] = props
@@ -837,7 +857,9 @@ def _rows_of_kept_peaks(
     weak and satellite peaks (:func:`load_peak_data`), so among the rows
     sharing an m/z the update is for the one that is neither
     (:func:`_bad_peaks`). A peak a load drops can therefore not be filled by
-    its m/z while a kept one shares it.
+    its m/z while a kept one shares it. That load is the whole store's
+    (``composite=False``): the readings a per-stream store's composites
+    leave out are filled like any other row, and play no part in the rule.
 
     :param z: The peak store
     :param existing_mz: The store's m/z axis, ascending

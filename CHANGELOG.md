@@ -172,16 +172,22 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   own scans.
 
   It is built in steps, which is why it is off and should stay off on a
-  production server: so far only peak detection follows it. Detection also
-  stitches the experiments' ranges. From their scan ranges and microscans
-  alone it decides which experiment owns each m/z of the one spectrum they
-  make, marks every peak with whether it belongs to that spectrum, and
-  records the map and what two experiments read of the ions both measure
-  beside the peaks. Nothing reads any of that yet. Such a file still gets
-  one sample per polarity, and that sample reads the peak lists of every
-  experiment of the polarity together. The steps that make the sample read
-  the stitched spectrum, and calibrate each range on its own, follow, and
-  the setting will be announced again when they are in.
+  production server. Detection stitches the experiments' ranges: from their
+  scan ranges and microscans alone it decides which experiment owns each
+  m/z of the one spectrum they make, marks every peak with whether it
+  belongs to that spectrum, and records the map and what two experiments
+  read of the ions both measure beside the peaks. Such a file gets one
+  sample per polarity, and whatever reads that sample's peaks - the m/z
+  calibration, the matching, the peak listing, the batch exports, a peak
+  asked for by m/z - reads the stitched spectrum: one reading of each m/z,
+  from the experiment that owns it, averaged over that experiment's own
+  scans and not over the scans of every experiment. The readings the other
+  experiments made of the same ions, and a peak detected only by an
+  experiment that does not own its m/z, stay in the store for what reads
+  the overlap. What follows before the setting is for production: the m/z
+  calibration and the instrument functions per experiment, assignment and
+  the spectrum views by experiment, and a hand-made sample's experiment.
+  The setting will be announced again when they are in.
 
   A file with one experiment in each polarity, which is nearly every file, is
   processed exactly as before whichever way this is set. So is a file whose
@@ -225,9 +231,9 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   sample moved to another file or polarity by hand points at nothing again.
   A file's processing detail says which polarities are stitched, where it
   said they were pooled, and names a stream the file no longer holds but a
-  sample still reads, which is kept for it. Nothing reads a sample's stream
-  yet: a sample of a stitched polarity still reads the peak lists of every
-  experiment of its polarity together.
+  sample still reads, which is kept for it. A sample of a stitched polarity
+  reads the stitched spectrum's peaks, the composite its stream names;
+  reading by a single stream is still to come.
 
 ### Changed
 

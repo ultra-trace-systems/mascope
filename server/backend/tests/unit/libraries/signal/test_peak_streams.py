@@ -68,7 +68,9 @@ def acquire(acquire):
 
 def _store():
     """The whole peak store, weak and satellite peaks included."""
-    return m_io.load_peak_data(SAMPLE_FILENAME, drop_bad_peaks=False).compute()
+    return m_io.load_peak_data(
+        SAMPLE_FILENAME, drop_bad_peaks=False, composite=False
+    ).compute()
 
 
 def _props(sample_file_path):
@@ -330,7 +332,7 @@ def test_two_streams_peaks_at_one_mz_are_two_rows(acquire, instrument_functions)
     assert sorted(store.sum_peak_heights.values[:2].tolist()) == [200.0, 4000.0]
     assert sorted(store.stream.values[:2].tolist()) == [0, 1]
     # And the store reads back whole: a shared m/z would not select at all
-    assert m_io.load_peak_data(SAMPLE_FILENAME).mz.size == 4
+    assert m_io.load_peak_data(SAMPLE_FILENAME, composite=False).mz.size == 4
 
 
 APART = 1 + m_peak.MZ_ROW_SEPARATION
@@ -454,7 +456,7 @@ def test_two_kept_peaks_at_one_mz_are_read_and_filled_each_on_its_own_row(
     not these two peaks, and not any other peak of the file."""
     acquire(SHARED_ACROSS_POLARITIES)
     m_peak.compute_peaks(SAMPLE_FILENAME, instrument_functions)
-    assert m_io.load_peak_data(SAMPLE_FILENAME).mz.size == 4
+    assert m_io.load_peak_data(SAMPLE_FILENAME, composite=False).mz.size == 4
     positive, negative = _store().mz.values[[1, 2]]
 
     assert _fill([125.0]).polarity.values.tolist() == ["-"]
@@ -1026,7 +1028,7 @@ def test_a_stream_that_kept_no_peak_is_not_read_back(
 
     monkeypatch.setattr(m_peak, "flag_satellite_peaks", flag)
     m_peak.compute_peaks(SAMPLE_FILENAME, instrument_functions, per_stream=True)
-    kept = m_io.load_peak_data(SAMPLE_FILENAME).compute()
+    kept = m_io.load_peak_data(SAMPLE_FILENAME, composite=False).compute()
     assert set(kept.stream.values.tolist()) == {1}
     assert m_compute.peak_store_streams(kept) == [SETTLING, MEASURING]
 

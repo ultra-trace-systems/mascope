@@ -1490,3 +1490,90 @@ class TestUpdateProps:
 
         assert self._read(sample_file_path) == {"range": [3, 4]}
         assert self._temporaries(sample_file_path) == []
+
+
+class TestLoadPeakDataOfAPerStreamStore:
+    """A store that holds a peak list per scan stream answers its composite.
+
+    Such a store labels each peak with its stream and says which peaks its
+    polarity's composite takes - one reading of each m/z, from the stream
+    that owns it - and keeps the other streams' readings of the same ions.
+    Read as "the file's peaks" it answers the composite's; the whole store
+    is answered on request. A pooled store has nothing to leave out.
+    """
+
+    STREAMS = [
+        "FTMS - p NSI Full ms [40.0000-600.0000] R=120000 event=1",
+        "FTMS - p NSI Full ms [40.0000-600.0000] R=120000 event=2",
+    ]
+    STITCH_MAP = {
+        "rule": 1,
+        "runs": {"-": [[40, 600, 1]]},
+        "sources": {"-": "default"},
+        "notes": [],
+    }
+
+    @staticmethod
+    def _per_stream(ds: xr.Dataset) -> xr.Dataset:
+        """Label a pooled dataset's peaks with two streams of one range: the
+        second stream owns everything, and each ion was read by both."""
+        n = ds.mz.size
+        stream = np.arange(n) % 2
+        ds = ds.assign(
+            stream=("mz", stream),
+            composite=("mz", stream == 1),
+            scan_stream=("time", np.arange(ds.time.size) % 2),
+        )
+        ds.attrs["streams"] = list(TestLoadPeakDataOfAPerStreamStore.STREAMS)
+        ds.attrs["stitch_map"] = dict(TestLoadPeakDataOfAPerStreamStore.STITCH_MAP)
+        return ds
+
+    @pytest.mark.asyncio
+    async def test_a_per_stream_store_answers_its_composite(
+        self, create_peak_timeseries_dataset, peak_timeseries_zarr_path
+    ):
+        ds = self._per_stream(create_peak_timeseries_dataset(fill_with_nan=False))
+        await write_peaks(ds, TEST_FILENAME, overwrite=True)
+
+        loaded = m_io.load_peak_data(TEST_FILENAME, drop_bad_peaks=False)
+        whole = m_io.load_peak_data(
+            TEST_FILENAME, drop_bad_peaks=False, composite=False
+        )
+
+        assert whole.mz.size == TEST_MZ_SIZE
+        assert loaded.mz.size == TEST_MZ_SIZE // 2
+        assert loaded.composite.values.all()
+        assert loaded.stream.values.tolist() == [1] * loaded.mz.size
+        assert loaded.attrs["streams"] == self.STREAMS
+        assert loaded.attrs["stitch_map"] == self.STITCH_MAP
+        assert loaded.scan_stream.size == whole.scan_stream.size
+        xr.testing.assert_identical(
+            loaded, whole.isel(mz=np.flatnonzero(whole.composite.values))
+        )
+
+    @pytest.mark.asyncio
+    async def test_bad_peaks_and_the_other_readings_are_dropped_together(
+        self, create_peak_timeseries_dataset, peak_timeseries_zarr_path
+    ):
+        ds = self._per_stream(create_peak_timeseries_dataset(fill_with_nan=False))
+        ds["is_weak"].values[1] = True  # a composite peak, weak
+        ds["is_weak"].values[2] = True  # a reading the composite leaves out
+        await write_peaks(ds, TEST_FILENAME, overwrite=True)
+
+        loaded = m_io.load_peak_data(TEST_FILENAME)
+
+        assert loaded.mz.size == TEST_MZ_SIZE // 2 - 1
+        assert not loaded.is_weak.values.any()
+        assert loaded.composite.values.all()
+
+    @pytest.mark.asyncio
+    async def test_a_pooled_store_answers_the_same_either_way(
+        self, create_peak_timeseries_dataset, peak_timeseries_zarr_path
+    ):
+        ds = create_peak_timeseries_dataset(fill_with_nan=False)
+        await write_peaks(ds, TEST_FILENAME, overwrite=True)
+
+        xr.testing.assert_identical(
+            m_io.load_peak_data(TEST_FILENAME),
+            m_io.load_peak_data(TEST_FILENAME, composite=False),
+        )

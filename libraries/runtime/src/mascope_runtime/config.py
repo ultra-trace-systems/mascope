@@ -477,14 +477,15 @@ class BackendConfig(ModuleConfig):
     # one by one and stitches their ranges into one spectrum per polarity.
     #
     # LEAVE IT OFF ON A PRODUCTION SERVER. What it switches on is built in
-    # steps (docs/dev/ingest_routing_and_splitting.md, section 4.5), and so
-    # far only peak detection follows it: the peaks of each experiment are
-    # detected over its own scans, and marked with whether they belong to the
-    # stitched spectrum of their polarity. Such a file gets one sample per
-    # polarity, which points at that spectrum's row but still reads the peak
-    # lists of every experiment of its polarity together: nothing reads the
-    # mark yet. The flag exists so that each step ships inert and can be
-    # exercised on a development server.
+    # steps (docs/dev/ingest_routing_and_splitting.md, section 4.5). The
+    # peaks of each experiment are detected over its own scans and marked
+    # with whether they belong to the stitched spectrum of their polarity;
+    # such a file gets one sample per polarity, which points at that
+    # spectrum's row and reads its peaks - one reading of each m/z, averaged
+    # over the scans of the experiment that measured it. Still to come: the
+    # m/z calibration and the instrument functions per experiment,
+    # assignment and the spectrum views by experiment. The flag exists so
+    # that each step ships inert and can be exercised on a development server.
     #
     # A file with one experiment in each polarity - nearly every file - is
     # processed exactly as before whichever way this is set, and so is one

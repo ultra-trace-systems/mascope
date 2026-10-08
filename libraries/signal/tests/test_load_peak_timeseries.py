@@ -541,7 +541,7 @@ class TestCheckPeakStore:
     async def test_a_store_without_peaks_does_not_read_the_file(self, monkeypatch):
         """A blank measurement's store has no peak to read the file back for."""
         empty = xr.Dataset(coords={"mz": np.array([]), "time": SCAN_TIMES})
-        monkeypatch.setattr(m_io, "load_peak_data", lambda _filename: empty)
+        monkeypatch.setattr(m_io, "load_peak_data", lambda _filename, **_kwargs: empty)
 
         async def refuse(*args, **kwargs):
             raise AssertionError("the file was read for a store without peaks")

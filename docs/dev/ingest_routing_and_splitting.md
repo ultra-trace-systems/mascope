@@ -84,7 +84,7 @@ request for this work updates the table below and ticks its item on #2098.
 | 1 | Per-file processing state, persistent notifications, "needs a chemistry" | shipped (#2164, #2166-#2169) |
 | 2 | Method bindings: routing without tokens | learned in shadow on every server (#2193, #2196, #2206, #2226), measured (5.7), item provenance (#2254), the row-following learner (#2255), the rung (#2264) and the disagreement report (#2267) shipped; the backfill re-run and the per-site switch remain, section 10 lists them |
 | 8 | Chemistry profiles as the unit: complete the seeded profiles, ship the standard methods and their catalogue, list the profiles, a profile-first surface, batches named after the profile | open; follows the stream first cut, or runs beside it when there are hands for both (decided 2026-10-05) |
-| 3 | The part contract: stream and window honoured by every consumer | **in progress**: the composite cut, for files whose method measures more than one thing in a polarity (4.5), leads the work after phase 2 (decided 2026-10-05; a stitch, not a split, since 2026-10-06). The census keys streams on the method's experiments (#2273), the reader selects one stream's scans (#2278), and peak detection and the peak store follow a stream behind `composite_scan_streams` (#2279), and the store is stitched - the map, the per-peak mask, the overlap readings and the stitched sum signal (#2297); the stream table is in the schema with its composite column (#2282) and written for every file, each polarity's item pointing at its composite or its one stream (#2283); the consumers and the per-segment fits follow, and section 10 lists them |
+| 3 | The part contract: stream and window honoured by every consumer | **in progress**: the composite cut, for files whose method measures more than one thing in a polarity (4.5), leads the work after phase 2 (decided 2026-10-05; a stitch, not a split, since 2026-10-06). The census keys streams on the method's experiments (#2273), the reader selects one stream's scans (#2278), and peak detection and the peak store follow a stream behind `composite_scan_streams` (#2279), and the store is stitched - the map, the per-peak mask, the overlap readings and the stitched sum signal (#2297); the stream table is in the schema with its composite column (#2282) and written for every file, each polarity's item pointing at its composite or its one stream (#2283), and the readers of the peak list take the composite's rows, each averaged over its own stream's scans (#2307); the rest of the consumers and the per-segment fits follow, and section 10 lists them |
 | 4 | Per-stream state: calibration and instrument function per segment, MS2 | open; its per-segment calibration is part of the composite cut; follows 3 on the same track; no rebuild script (4.5, 9.1) |
 | 5 | Chemistry detection: audit first, then provisional binding | deferred behind phases 3, 4 and 8 (decision 3); its reagent libraries are on `develop` |
 | 6 | Recipes: time and trace windows, preview and apply | open |
@@ -901,7 +901,9 @@ throughout, because nothing here cuts a file into items, and it writes no
     to the nearest kept peak, of whichever stream. Where two streams hold a
     peak at one m/z, the row that kept the m/z answers and the other, set
     just above it, is not found by that m/z. Consumers pass the m/z of rows
-    they hold, and step 6 is where they start asking by stream.
+    they hold - the one route that passes a client's m/z resolves it on the
+    listed peaks first (#2307) - and step 6 is where they start asking by
+    stream.
 - **What stays per file for now:** the instrument function and the m/z
   calibration, which step 7 moves to the segment, and the `tof` coordinate,
   which only orders peaks along the axis.
@@ -1226,9 +1228,15 @@ apart and a window loses signal within a couple of m/z of its edges.
 
 **As built** (#2297), for the stitch: the map, the mask, the overlap
 reading and the stitched sum signal, behind `composite_scan_streams` and
-written only for a file detected per stream. Nothing reads them yet: a
-composite file still gets one item per polarity that reads the peaks of
-every stream together (step 6).
+written only for a file detected per stream. Read since #2307 by whatever
+loads a file's peak list: a per-stream store answers its composites by
+default (`load_peak_data(..., composite=True)`), so the calibration, the
+matching, the peak listing and the batch exports take the composite's
+rows, and the listing and the alignment average each row over the scans
+of its own stream, counted on the store's own axis (`stored_scans_per_peak`;
+a time range's scans by `scans_per_peak`); the store's own machinery - the
+time-series fill, the refused-fill helper, the stale-store check - asks for
+the whole store. What step 6 still holds is listed in section 10.
 
 - **The rule is a module of its own,** `mascope_signal.stitch`. It reads no
   file and no store: the census in, plain values out. A stream's microscan
@@ -2564,14 +2572,16 @@ unchanged.
      per stitched polarity with the map on it, and each polarity's item
      pointing at its composite, else its one stream, else nothing (4.4).
      Nothing reads the pointer yet;
-  6. **Step 6, the consumers** read the composite: peak listing, matching,
-     the item TIC, the exports and assignment loading take the masked rows
-     of the item's stream, and the spectrum and peak-listing routes return
-     each sample's and each peak's segment for the views; the bulk create
-     gives a hand-made item the stream of its file and polarity as the
-     pipeline does (4.4), and a per-stream store a match meets stale is
-     rebuilt and its rows written with the composite on the next
-     processing (4.4);
+  6. **Step 6, the consumers** read the composite - built in #2307 for the
+     peak list: the loader answers the composite's rows by default, so the
+     peak listing, matching, the calibration, the exports and the by-m/z
+     route take them, and the listing and the alignment average each row by
+     its own stream's scans; still open: the item TIC, assignment loading,
+     the spectrum and peak-listing routes returning each sample's and each
+     peak's segment for the views, the bulk create giving a hand-made item
+     the stream of its file and polarity as the pipeline does (4.4), and a
+     per-stream store a match meets stale being rebuilt and its rows
+     written with the composite on the next processing (4.4);
   7. **Step 7, the fits per segment:** calibration and the instrument
      function per segment, each segment on its own anchors where it holds
      enough, the overlap shift and the unshifted borrow as fallbacks, the
