@@ -8,8 +8,12 @@ run the file belongs to and under which chemistry
 (:mod:`mascope_sdk.acquisition`).
 
 **Neither may cost a file its upload.** A record that cannot be used is left
-behind with a line in the log and the file goes without it; a server that
-keeps neither is sent neither.
+behind with a line in the log and the file goes without it, whatever it was
+that reading it raised; a server that keeps neither is sent neither.
+
+**A file is hashed once for an upload**, however many attempts the upload
+takes: an outage is ten attempts, and a file of a few GB read whole for each
+would be the instrument computer's disk kept busy for nothing.
 """
 
 import hashlib
@@ -46,8 +50,12 @@ class UploadProvenance:
         # Sidecars already said to be unusable, so that the retries of one
         # upload say it once.
         self._unusable: set[str] = set()
-        # Whether the log has said that the server keeps no records.
-        self._said_not_kept = False
+        # The hash of each file being uploaded, with the size and the time of
+        # last change it was taken at, so that the retries of one upload hash
+        # it once. Both are dropped when the upload is over (forget).
+        self._hashed: dict[str, tuple[tuple[int, int], str]] = {}
+        # What the log has said, once each, of a server that keeps no records.
+        self._said: set[str] = set()
 
     def for_upload(self, filepath: str) -> tuple[bytes | None, str | None]:
         """The acquisition record and the hash to send with a file.
@@ -74,34 +82,85 @@ class UploadProvenance:
             return None, None
         if not kept:
             if record is not None:
-                self._say_not_kept(name)
+                self._say_not_kept(name, refused=self._server.refused)
             return None, None
-        return record, file_sha256(filepath)
+        return record, self._sha256(filepath)
+
+    def forget(self, filepath: str) -> None:
+        """Drop what was kept for a file's upload, now that it is over.
+
+        :param filepath: Full path of the file
+        :type filepath: str
+        """
+        with self._lock:
+            self._hashed.pop(filepath, None)
+            self._unusable.discard(filepath)
+
+    def _sha256(self, filepath: str) -> str:
+        """The file's hash, taken once for as long as the file stays as it is."""
+        stat = os.stat(filepath)
+        state = (stat.st_size, stat.st_mtime_ns)
+        with self._lock:
+            hashed = self._hashed.get(filepath)
+        if hashed is not None and hashed[0] == state:
+            return hashed[1]
+        digest = file_sha256(filepath)
+        with self._lock:
+            self._hashed[filepath] = (state, digest)
+        return digest
 
     def _record(self, filepath: str) -> bytes | None:
         """The document of the file's sidecar, when it has one that can be used."""
         try:
             sidecar = acquisition.read_sidecar(filepath)
-        except acquisition.AcquisitionError as unusable:
+        except Exception as raised:
+            # Whatever it is. The faults a record can have are an
+            # AcquisitionError, and anything else is a fault in reading one:
+            # let out of here, it would be taken for an upload that failed,
+            # and the file set aside without one upload having been made.
+            why = (
+                f"as {raised}"
+                if isinstance(raised, acquisition.AcquisitionError)
+                else f"as reading it failed ({type(raised).__name__}: {raised})"
+            )
             with self._lock:
                 said = filepath in self._unusable
                 self._unusable.add(filepath)
             if not said:
                 self._logger.warning(
                     f"{os.path.basename(filepath)}: the acquisition record "
-                    f"beside it is not sent, as {unusable}. The file is "
-                    "uploaded without it."
+                    f"beside it is not sent, {why}. The file is uploaded "
+                    "without it."
                 )
             return None
         return None if sidecar is None else sidecar.document
 
-    def _say_not_kept(self, name: str) -> None:
-        """Say, once, that this server keeps no acquisition records."""
+    def _say_not_kept(self, name: str, refused: bool) -> None:
+        """Say, once, why a file's record is not sent to this server.
+
+        :param name: The file's name
+        :param refused: Whether the server refused to say what it keeps, as
+            against saying and not keeping records
+        """
+        said = "refused" if refused else "not kept"
         with self._lock:
-            said, self._said_not_kept = self._said_not_kept, True
-        if not said:
+            before = said in self._said
+            self._said.add(said)
+        if before:
+            return
+        if refused:
+            # A server that predates the question, or one that refused this
+            # machine's credential. The second is not a server to update, and
+            # the upload's own refusal is what gets the machine paired again.
             self._logger.warning(
                 f"{name} has an acquisition record beside it, and the server "
-                "does not keep them: this file is uploaded without its record, "
-                "and so are the ones after it until the server is updated."
+                "refused to say whether it keeps them: it is too old to be "
+                "asked, or it refused this machine's credential. This attempt "
+                "to upload the file goes without its record."
             )
+            return
+        self._logger.warning(
+            f"{name} has an acquisition record beside it, and the server "
+            "does not keep them: this file is uploaded without its record, "
+            "and so are the ones after it until the server is updated."
+        )

@@ -118,7 +118,8 @@ class StatusFollower:
         self._lock = threading.Lock()
         self._followed: dict[str, _Followed] = {}
         #: None until the server says whether it can be asked; then whether
-        #: it can.
+        #: it can, as of the latest pass: a server updated under a running
+        #: agent starts being asked, without a restart.
         self.enabled: bool | None = None
         #: Set once :meth:`run` has returned: nothing asks about files then.
         self._stopped = False
@@ -167,9 +168,7 @@ class StatusFollower:
         Stops at the first question the server does not answer: the rest wait
         for the next pass rather than time out one after another.
         """
-        if self.enabled is None and not self._ask_server():
-            return
-        if not self.enabled:
+        if not self._ask_server() or not self.enabled:
             return
         with self._lock:
             now = self._clock()
@@ -214,16 +213,26 @@ class StatusFollower:
     def _ask_server(self) -> bool:
         """Ask the server whether it can say what became of an upload.
 
+        On every pass. The asking is shared and keeps its answer for a while
+        (:class:`ServerCapabilities`), so this is a lookup nearly every time,
+        and it is what lets a follower that found the server too old find it
+        updated an hour later.
+
         :return: Whether it answered; :attr:`enabled` then says what.
         """
-        capabilities = self._server.ask()
-        if capabilities is None:
-            return False
         # A server that refuses the question predates it, and is answered for
         # with no capabilities: it cannot be asked with a device token, and
         # cannot answer the questions either.
-        self.enabled = capabilities.get(CAPABILITY) is True
-        if not self.enabled:
+        can = self._server.has(CAPABILITY)
+        if can is None:
+            return False
+        was, self.enabled = self.enabled, can
+        if can and was is False:
+            self._logger.info(
+                "The server now reports what becomes of uploaded files; the "
+                "agent follows the files it uploads from here on."
+            )
+        elif not can and was is not False:
             self._logger.info(
                 "The server does not report what becomes of uploaded files, so the "
                 "agent will not follow them."

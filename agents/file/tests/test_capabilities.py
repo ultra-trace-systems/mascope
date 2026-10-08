@@ -12,7 +12,7 @@ import requests
 from mascope_file_agent import Agent, capabilities, credentials, uploader
 from mascope_file_agent.capabilities import ASK_AGAIN_AFTER, ServerCapabilities
 from mascope_file_agent.wizard import CREDENTIAL_OK
-from mascope_sdk import acquisition
+from mascope_sdk import _http, acquisition
 
 
 URL = "https://mascope.example.com"
@@ -223,3 +223,49 @@ def test_one_asking_serves_the_whole_agent(serve, monkeypatch, make_settings, tm
     assert "sha256" in uploads[0]
     assert agent.status_follower.enabled is True
     assert len(server.questions) == 1
+
+
+@pytest.mark.parametrize("status_code", [408, 425, 429])
+def test_a_server_that_asks_for_another_try_has_not_answered(serve, clock, status_code):
+    """A rate limit is not a server too old to keep records. Taken for one, it
+    would stand for an hour, and the records of that hour would never be
+    sent."""
+    server = serve(Response(status_code=status_code), announcing(a=True))
+    asked = asking(clock)
+
+    assert asked.has("a") is None
+    assert asked.refused is False
+    assert asked.has("a") is True
+
+    assert len(server.questions) == 2
+
+
+def test_the_statuses_that_are_no_answer_are_the_ones_an_upload_is_sent_again_for():
+    assert capabilities.ASK_AGAIN_FOR == _http._RETRYABLE_CLIENT_STATUS_CODES
+
+
+def test_a_refusal_is_known_as_one(serve, clock):
+    """To whoever has to say why: a refused credential is not an old server."""
+    serve(Response(status_code=401), announcing())
+    token = ["revoked"]
+    asked = asking(clock, token=lambda: token[0])
+    assert asked.refused is False  # nothing is known yet
+
+    assert asked.has("a") is False
+    assert asked.refused is True
+
+    token[0] = "paired-again"
+    assert asked.has("a") is False
+    assert asked.refused is False  # it answered, and announces nothing
+
+
+def test_an_agent_asks_as_its_settings_say_to_verify(serve, make_settings):
+    """A deployment with a certificate of its own: asked with verification
+    on, the server would never be heard to answer, and every file with a
+    record would wait for it."""
+    server = serve(announcing())
+    agent = Agent(make_settings(verify_tls=False), logger=Logger())
+
+    agent.server.ask()
+
+    assert server.questions[0]["verify"] is False

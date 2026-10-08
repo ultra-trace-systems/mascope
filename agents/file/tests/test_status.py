@@ -13,6 +13,10 @@ import pytest
 import requests
 
 from mascope_file_agent import status, uploader
+from mascope_file_agent.capabilities import (
+    ASK_AGAIN_AFTER,
+    ServerCapabilities,
+)
 from mascope_file_agent.credentials import Credentials
 from mascope_file_agent.uploader import FileUploader
 
@@ -558,3 +562,90 @@ def test_an_uploaded_file_is_followed_by_its_name_here(
     file_uploader.upload_sample_file(str(sample))
 
     assert followed == [("x.raw",)]
+
+
+# ---------------------------------------------------------------------------
+# A server that changes its answer while the agent runs
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def long_running():
+    """A follower whose asking of the server grows old with its own clock, as
+    an agent's does over the months it runs."""
+    logger, clock = RecordingLogger(), Clock()
+    url = "https://mascope.example.com"
+    follower = status.StatusFollower(
+        url,
+        lambda: "live-token",
+        logger,
+        clock=clock,
+        server=ServerCapabilities(url, lambda: "live-token", logger, clock=clock),
+    )
+    follower.logger, follower.clock = logger, clock
+    return follower
+
+
+def test_a_server_updated_under_a_running_agent_is_followed_from_then_on(
+    monkeypatch, long_running
+):
+    follower = long_running
+    server = serve(monkeypatch, [version(), CAN_FOLLOW], rows(row("done")))
+    follower.follow("x.raw")
+    tick(follower, status.POLL_DELAYS[0])
+    assert follower.enabled is False
+    follower.follow("y.raw")  # uploaded while the server could not say
+    assert follower.following() == []
+
+    tick(follower, ASK_AGAIN_AFTER)
+    assert follower.enabled is True
+    follower.follow("z.raw")
+    tick(follower, status.POLL_DELAYS[0])
+
+    assert server.version_questions == 2
+    assert said(follower, "info") == [
+        (
+            "info",
+            "The server does not report what becomes of uploaded files, so the "
+            "agent will not follow them.",
+        ),
+        (
+            "info",
+            "The server now reports what becomes of uploaded files; the agent "
+            "follows the files it uploads from here on.",
+        ),
+        ("info", "z.raw: processed"),
+    ]
+
+
+def test_a_server_that_goes_on_not_saying_is_said_so_once(monkeypatch, long_running):
+    follower = long_running
+    server = serve(monkeypatch, version(), rows())
+
+    for _ in range(3):
+        tick(follower, ASK_AGAIN_AFTER)
+
+    assert server.version_questions == 3
+    assert len(said(follower, "info")) == 1
+
+
+@pytest.mark.parametrize("status_code", [408, 425, 429])
+def test_a_server_that_asks_for_another_try_does_not_turn_the_follower_off(
+    monkeypatch, follower, status_code
+):
+    """It used to: one rate-limited answer, and no file was followed until
+    the agent was started again."""
+    server = serve(
+        monkeypatch,
+        [Response(status_code=status_code), CAN_FOLLOW],
+        rows(row("done")),
+    )
+    follower.follow("x.raw")
+
+    tick(follower, status.POLL_DELAYS[0])
+    assert follower.enabled is None
+    assert follower.following() == ["x.raw"]
+    tick(follower, status.POLL_DELAYS[0])
+
+    assert server.version_questions == 2
+    assert said(follower, "info") == [("info", "x.raw: processed")]
