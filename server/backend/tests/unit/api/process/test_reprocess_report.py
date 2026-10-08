@@ -95,6 +95,7 @@ async def _re_process(
     run = service.re_process_sample_files
     with (
         patch(f"{_SVC}.async_session", lambda: _Session(sample_files)),
+        patch(f"{_SVC}._modes_its_record_declares", AsyncMock(return_value=([], None))),
         patch(f"{_SVC}.resolve_ionization_modes_by_tokens", AsyncMock()),
         patch(f"{_SVC}.claim_for_processing", AsyncMock(side_effect=claim)),
         patch(f"{_SVC}.reset_mz_calibration", AsyncMock()),

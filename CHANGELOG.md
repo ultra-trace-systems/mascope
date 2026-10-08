@@ -31,7 +31,10 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   name is read: rung 0, "declared", of the binding ladder. A file bound
   this way reads "Bound to ... by its acquisition record." in Raw files; a
   record naming a token no mode has leaves the file to be bound by its name
-  as before, with a status that says what the record named. The file's
+  as before, with a status that says what the record named. Re-processing
+  asks the record again before the name, and before anything of the file is
+  cleared, so the files that waited for a token are bound by their records
+  once a mode has it. The file's
   SHA-256, sent the same way, is checked against the
   bytes received and recorded when they have it. The identifiers and the
   hash are in the spreadsheet export's samples sheet. A record that cannot

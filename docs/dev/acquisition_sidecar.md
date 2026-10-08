@@ -298,7 +298,32 @@ is read:
 - Items bound this way record `bound_by = "declared"`, the file's status
   reads "Bound to ... by its acquisition record.", and the declaration teaches
   the file's method binding, as a token does.
-- A person's choice of modes for a file is not second-guessed by its record.
+- **Re-processing asks the record again, first, and before anything of the
+  file is cleared.** Re-process in Raw files, and processing one file on
+  request, decide what a run starts with, and ask in the pipeline's order.
+  A file its record binds goes to the pipeline with no modes of its own,
+  whatever its name says and whatever its record or a token bound it to
+  before. That is how the files that waited for a token are picked up once
+  a mode has it, and how files bound under a token that sat on the wrong
+  mode are bound again under the right one. Such a file teaches its method
+  binding again on each re-process, as a file a token binds always has;
+  that counts only where the method rung is on.
+- A record that binds nothing leaves the file to its name and its samples,
+  as a file with no record: a token in the name binds it; with none, it is
+  rebuilt under the modes its samples have; with neither, Re-process
+  refuses it, says what its record named, and touches nothing. It is not
+  sent to the pipeline to find out, because a run clears a file's samples
+  and resets its calibration before it asks. A record that cannot be read
+  is not taken for one that binds nothing either: Re-process refuses the
+  file untouched and says so, and processing on request fails.
+- **A chemistry a person chose stands ahead of the record.** A record is
+  stored as it was sent and cannot be corrected, so choosing by hand is the
+  one way to overrule a record that names the wrong chemistry. The record
+  is not consulted when a person chooses, and re-processing does not ask it
+  of a file whose samples all carry a person's choice: with no token in its
+  name, the file is rebuilt under what they chose. Where its name does
+  carry a token, the file goes back through the pipeline's ladder, as a
+  file with a token always did.
 
 Not built:
 
