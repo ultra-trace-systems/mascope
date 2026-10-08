@@ -384,6 +384,70 @@ def test_an_identifier_has_one_spelling(field, spelling):
     )
 
 
+#: The digits of another script, which a pattern's ``\d`` takes for digits.
+ARABIC_INDIC = str.maketrans(
+    "0123456789", "".join(chr(0x0660 + digit) for digit in range(10))
+)
+
+
+def _misspelled_and_refused(field: str, written: str) -> None:
+    """The model refuses these as well. What is held is that the rule says so
+    itself, and does not lean on what the parser underneath happens to refuse."""
+    assert field in acquisition._misspelled(minimal(**{field: written}))
+
+    with pytest.raises(AcquisitionError, match=f"{field}: "):
+        acquisition.parse(document(**{field: written}))
+
+
+@pytest.mark.parametrize(
+    "field, written",
+    [("agent_id", IDS["agent_id"]), ("triggered_at", "2026-10-07T12:00:00Z")],
+)
+def test_a_spelling_is_the_whole_value(field, written):
+    assert field not in acquisition._misspelled(minimal(**{field: written}))
+
+    _misspelled_and_refused(field, written + "\n")
+
+
+#: A time with every part a time may have: nine runs of digits.
+EVERY_PART = "2026-10-07T12:00:00.5+03:00"
+
+
+@pytest.mark.parametrize("run", range(9))
+def test_a_time_is_written_in_ascii_digits(run):
+    """Each run of digits in turn, alone in the digits of another script."""
+    digits = list(re.finditer("[0-9]+", EVERY_PART))[run]
+    written = (
+        EVERY_PART[: digits.start()]
+        + digits.group().translate(ARABIC_INDIC)
+        + EVERY_PART[digits.end() :]
+    )
+
+    _misspelled_and_refused("triggered_at", written)
+
+
+def test_a_misspelling_is_named_beside_what_the_model_faults():
+    """An identifier in uppercase is a UUID to the model, and a count of
+    cycles below zero is well spelled. Each reading names its own."""
+    with pytest.raises(AcquisitionError) as refused:
+        acquisition.parse(
+            document(agent_id=IDS["agent_id"].upper(), sequence={"cycle": -1})
+        )
+
+    assert "agent_id: a UUID is written in lowercase" in str(refused.value)
+    assert "sequence.cycle: " in str(refused.value)
+
+
+def test_where_both_readings_fault_a_field_the_models_word_stands():
+    """Such a field is no identifier at all, which says more of it than how
+    one is spelled."""
+    with pytest.raises(AcquisitionError) as refused:
+        acquisition.parse(document(step_id="x"))
+
+    assert "step_id: " in str(refused.value)
+    assert "written in lowercase" not in str(refused.value)
+
+
 def _of_format(schema: dict, wanted: str) -> set[str]:
     """The properties of a JSON schema object that are of one string format."""
     return {
