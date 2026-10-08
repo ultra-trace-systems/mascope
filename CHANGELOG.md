@@ -372,6 +372,23 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   lapsing once a year. A guest's upload is refused as before; a mint
   removes only tokens past their lifetime, so two uploads minting at once
   leave each other's token standing.
+- **A file the converter fails on leaves no sample directory behind.** The
+  converter makes a file's sample directory first and its database record
+  last, with the instrument functions and the peak detection between them,
+  and only a failure of the record itself removed the directory. A failure
+  earlier - the instrument functions refused for a credential the server no
+  longer accepted, on a thousand queued files at once - left every directory
+  in the filestore with no record pointing at it. Uploading the file again
+  then met the directory, and the removal of it through the server that
+  follows was refused in turn, so the upload ended in a failed delete (and
+  that removal needs the instrument workspace's admin where the upload needs
+  its editor). The directory now goes with every failure before the record,
+  and stays with the record that points at it whatever fails after. A
+  record the server already holds when the converter posts it - its answer
+  lost on the way, or a record an earlier run left without a directory - is
+  read as the record made, and the directory kept for it; the second case,
+  a record that was sitting there without its directory, is logged as a
+  warning.
 
 - **A file's m/z calibration no longer depends on the server that calibrates
   it.** Where two ions of a calibration collection match the same peak - the
