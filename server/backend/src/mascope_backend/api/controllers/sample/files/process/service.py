@@ -510,15 +510,50 @@ async def _modes_its_record_declares(
     )
     if unanswered is None:
         return modes, None
-    # INFO: a configuration condition somebody resolves, fires per file
-    runtime.logger.info(
-        f"The acquisition record of '{sample_file.filename}' names the "
-        f"chemistry '{declared}', but {unanswered}; binding it by the rungs "
-        "below"
-    )
     return [], (
         f"Its acquisition record names the chemistry '{declared}', but {unanswered}"
     )
+
+
+async def _declared_before_a_run(
+    sample_file: SampleFile,
+) -> tuple[list[IonizationMode], str | None]:
+    """What a file's record declares, for the checks that come before a run.
+
+    Re-processing, and processing on request, decide what a run is started
+    with before anything of the file is cleared, and the pipeline asks the
+    record before it reads the name. So they ask it first too, or they would
+    judge a file by a name the pipeline never reads, and by samples it is
+    about to replace.
+
+    **Not where a person chose the file's chemistry.** A record is stored as
+    it was sent and cannot be corrected, so choosing by hand is the one way
+    to overrule a record that names the wrong chemistry, and the choice has
+    to outlast the next re-process. A file whose samples all carry a
+    person's choice is not asked for its record: it is left to its name,
+    and with no token there, to the modes its samples have. Samples the
+    record itself bound, or a token since renamed, are nobody's choice, and
+    the record is asked again.
+
+    **A reading that fails is raised, not taken for a record that binds
+    nothing.** Acted on, that guess rebuilds a file under the modes it has
+    while its record names others, or refuses one that waited for its record
+    as if it had none. The caller refuses the file, or fails the request,
+    with nothing of the file touched.
+
+    :param sample_file: The file.
+    :return: As :func:`_modes_its_record_declares`; no modes and None for a
+        file a person chose the chemistry of.
+    :rtype: tuple[list[IonizationMode], str | None]
+    """
+    if getattr(sample_file, "acquisition_id", None) is None:
+        return [], None
+    kept = await _kept_modes(sample_file)
+    if kept is not None and all(
+        held.bound_by == "explicit" for held in kept.provenance.values()
+    ):
+        return [], None
+    return await _modes_its_record_declares(sample_file)
 
 
 def _beside_the_declaration(undeclared: str | None, reason: str) -> str:
@@ -1111,6 +1146,14 @@ async def _auto_process_sample_file(
     undeclared: str | None = None
     if by_token:
         declared_modes, undeclared = await _modes_its_record_declares(sample_file)
+        if undeclared is not None:
+            # INFO: a configuration condition somebody resolves, fires per
+            # file. Said here and not where the record is read: the checks
+            # before a run read it too, and a file they refuse is bound by
+            # no rung at all.
+            runtime.logger.info(
+                f"{sample_file.filename}: {undeclared}; binding it by the rungs below"
+            )
     if declared_modes:
         bound_modes = declared_modes
     elif by_token:
@@ -1561,8 +1604,10 @@ async def bind_sample_files(
     the same ingest gate as every upload. A file that has samples already is
     rebuilt under the chosen modes, as re-processing rebuilds one: its m/z
     calibration is reset, and the pipeline replaces its samples.
-    Re-processing keeps the modes a file bound here has, since no token binds
-    it again.
+    Re-processing keeps the modes a file bound here has where no token in
+    its name binds it again. Its acquisition record is not asked then:
+    choosing here is how a record that names the wrong chemistry is
+    overruled, and the choice outlasts a re-process.
 
     A sample a person made from the file is never touched: the pipeline
     replaces only its own. Such a file - one processed by hand into someone's
@@ -1827,6 +1872,43 @@ async def re_process_sample_files(
             )
             continue
 
+        # Rung 0 first, as the pipeline has it. A record that binds the file
+        # is read there ahead of the name, so nothing below is asked: the
+        # file goes through with no modes of its own, whatever its name says
+        # and whatever its record or a token bound it to before. A file a
+        # person chose the chemistry of is not asked for its record at all.
+        #
+        # Asked here and not left to the pipeline, because by the time the
+        # pipeline asks, the file's samples are cleared and its calibration
+        # reset. A record that binds nothing must cost a file neither, so
+        # such a file is judged below as one with no record is, and what its
+        # record named goes into the reason if it is refused.
+        try:
+            declared, undeclared = await _declared_before_a_run(sample_file)
+        except Exception as e:
+            # Not judged by its name and its samples instead: that would be
+            # acting on a guess about what its record says. Refused with
+            # nothing touched, and asked again when Re-process is.
+            failed_files.append(
+                {
+                    "sample_file_id": sample_file.sample_file_id,
+                    "filename": sample_file.filename,
+                    # Either read: the modes its samples have come first.
+                    "message": (
+                        "Failed to read its acquisition record, or the modes "
+                        f"its samples have: {str(e)}"
+                    ),
+                }
+            )
+            runtime.logger.exception(
+                "Unexpected error reading the acquisition record, or the modes "
+                f"of the samples, of sample file {sample_file.filename}"
+            )
+            continue
+        if declared:
+            valid_sample_files.append(sample_file)
+            continue
+
         # Verify ionization modes are defined properly
         no_token: NoTokenMatchError | None = None
         try:
@@ -1840,7 +1922,7 @@ async def re_process_sample_files(
                 {
                     "sample_file_id": sample_file.sample_file_id,
                     "filename": sample_file.filename,
-                    "message": str(ve),
+                    "message": _beside_the_declaration(undeclared, str(ve)),
                 }
             )
             continue
@@ -1878,7 +1960,7 @@ async def re_process_sample_files(
                     {
                         "sample_file_id": sample_file.sample_file_id,
                         "filename": sample_file.filename,
-                        "message": str(no_token),
+                        "message": _beside_the_declaration(undeclared, str(no_token)),
                     }
                 )
                 continue
@@ -1971,11 +2053,13 @@ async def re_process_sample_files(
                 kept_provenance=kept.provenance if kept else None,
             )
             if result.get("status") == "parked":
-                # Two ways here. Its token was removed while the batch waited,
-                # or it never had one and this deployment routes on method
-                # bindings, which is the file the validation above lets through
-                # on purpose. Either way it needs a chemistry and was not
-                # re-processed, and the pipeline's own message says which.
+                # Two ways here. What bound it at the validation above - a
+                # token in its name, or the one its record names - was removed
+                # while the batch waited; or neither bound it and this
+                # deployment routes on method bindings, which is the file the
+                # validation lets through on purpose. Either way it needs a
+                # chemistry and was not re-processed, and the pipeline's own
+                # message says which.
                 failed_files.append(
                     {
                         "sample_file_id": sample_file.sample_file_id,
@@ -2054,12 +2138,16 @@ async def re_process_sample_files(
 
 
 async def modes_to_rebind(sample_file_id: str) -> KeptModes | None:
-    """The modes to process a file under again, when its tokens do not bind it.
+    """The modes to process a file under again, when nothing binds it now.
 
-    A file no token binds has nothing to bind it again, so it keeps the modes
-    its samples were made under, as re-processing keeps them. None leaves the
-    binding to the tokens: they bind the file, or the run finds that they do
-    not and parks it.
+    A file that neither its acquisition record nor a token binds has nothing
+    to bind it again, so it keeps the modes its samples were made under, as
+    re-processing keeps them. None leaves the binding to the run: the record
+    or a token binds the file, or the run finds that neither does and parks
+    it. The record is asked first, as the run asks it, so a file its record
+    binds is not rebuilt under whatever it or a token bound it to before;
+    what a person chose is kept (:func:`_declared_before_a_run`). A record
+    that cannot be read fails the request, which has claimed nothing yet.
 
     Not only a file somebody chose a chemistry for. A file a token bound
     months ago reaches this too, once that token has been renamed or
@@ -2070,6 +2158,9 @@ async def modes_to_rebind(sample_file_id: str) -> KeptModes | None:
     :return: The modes its samples have with how each was bound, or None.
     """
     sample_file = await fetch_sample_file(sample_file_id=sample_file_id)
+    declared, _undeclared = await _declared_before_a_run(sample_file)
+    if declared:
+        return None
     try:
         await resolve_ionization_modes_by_tokens(sample_file)
     except NoTokenMatchError:

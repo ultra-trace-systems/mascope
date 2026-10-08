@@ -218,7 +218,15 @@ so: "Bound to 'Nitrate' (-) by its acquisition record." A record that names a
 token no mode has does not hold the file up: it is bound by its name as
 before, or waits for a chemistry. Either way its status in Raw files says
 what the record named, and goes on saying it once the file is processed, so
-a record and a file name that disagree do not go unnoticed.
+a record and a file name that disagree do not go unnoticed. Once an
+ionization mode has the token, select the files that waited in Raw files and
+re-process them: they are bound by their records then. A chemistry somebody
+chose for a file by hand is kept, unless the file's name carries an
+ionization mode token: such a file is bound again by its record, or by that
+token. For a file whose name carries none, choosing by hand is also how a
+record that names the wrong chemistry is overruled. Re-processing takes the
+*admin* role on the instrument. With the *editor* role, right-click a file
+and choose its chemistry instead.
 
 A record never keeps a file from being uploaded:
 
