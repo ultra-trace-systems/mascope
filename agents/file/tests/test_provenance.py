@@ -8,17 +8,19 @@ ever costs a file its upload.
 
 import hashlib
 import json
+import os
 
 import pytest
 from watchdog.events import FileCreatedEvent, FileMovedEvent
 
-from mascope_file_agent import uploader
+from mascope_file_agent import provenance, uploader
 from mascope_file_agent.credentials import Credentials
 from mascope_file_agent.provenance import UploadProvenance, file_sha256
 from mascope_file_agent.uploader import FAILED_UPLOADS_DIR, FileUploader
 from mascope_file_agent.watcher import FileSystemWatcher
 from mascope_sdk import acquisition
 from mascope_sdk.exceptions import (
+    MascopeAPIError,
     MascopeConnectionError,
     NotFoundError,
     ValidationError,
@@ -55,6 +57,8 @@ class Server:
     def __init__(self, keeps: bool | None = True):
         self.keeps = keeps
         self.asked = 0
+        #: Whether "keeps nothing" stands for a refusal of the question.
+        self.refused = False
 
     def has(self, capability):
         assert capability == "files_accept_acquisition_metadata"
@@ -410,3 +414,268 @@ def test_an_uploader_built_without_it_sends_neither(
 
 def test_the_capability_asked_for_is_the_one_the_schema_names():
     assert acquisition.CAPABILITY == "files_accept_acquisition_metadata"
+
+
+# ---------------------------------------------------------------------------
+# A server that would not say
+# ---------------------------------------------------------------------------
+
+
+def test_a_refusal_to_say_is_not_called_a_server_to_update(build, sample, sidecar):
+    """A refused credential answers like a server too old to be asked, and
+    "update the server" is the wrong thing to tell its operator."""
+    file_uploader, uploads, server = build(False)
+    server.refused = True
+
+    file_uploader.upload_sample_file(str(sample))
+    file_uploader.upload_sample_file(str(sample))
+
+    assert all("acquisition" not in call for call in uploads.calls)
+    (line,) = file_uploader.logger.said("warning")
+    assert line == (
+        "x.raw has an acquisition record beside it, and the server refused to "
+        "say whether it keeps them: it is too old to be asked, or it refused "
+        "this machine's credential. This attempt to upload the file goes "
+        "without its record."
+    )
+
+
+def test_a_server_that_then_answers_and_keeps_none_is_said_to_keep_none(
+    build, sample, sidecar
+):
+    file_uploader, _, server = build(False)
+    server.refused = True
+    file_uploader.upload_sample_file(str(sample))
+
+    server.refused = False
+    file_uploader.upload_sample_file(str(sample))
+
+    refused, not_kept = file_uploader.logger.said("warning")
+    assert "refused to say" in refused
+    assert not_kept.endswith("until the server is updated.")
+
+
+# ---------------------------------------------------------------------------
+# Whatever reading a record raises
+# ---------------------------------------------------------------------------
+
+
+def test_a_file_goes_without_its_record_whatever_reading_it_raised(
+    build, sample, sidecar, monkeypatch
+):
+    """Not only the faults a record is known to have. An error let out of
+    here would be taken for an upload that failed, and after ten of them the
+    file would be set aside without one upload having been made."""
+
+    def fails(path):
+        raise RuntimeError("out of the blue")
+
+    monkeypatch.setattr(provenance.acquisition, "read_sidecar", fails)
+    file_uploader, uploads, _ = build()
+
+    file_uploader.process_file_upload(str(sample))
+
+    (call,) = uploads.calls
+    assert "acquisition" not in call
+    assert not (sample.parent / FAILED_UPLOADS_DIR).exists()
+    (line,) = file_uploader.logger.said("warning")
+    assert line == (
+        "x.raw: the acquisition record beside it is not sent, as reading it "
+        "failed (RuntimeError: out of the blue). The file is uploaded without it."
+    )
+
+
+def test_a_sidecar_of_little_but_brackets_costs_its_file_nothing(build, sample):
+    """On some Pythons 2 KB of them exhaust the JSON reader, with an error
+    that is no ValueError; on the others they are read, and are a document
+    nobody should have to walk. Either way the file is uploaded."""
+    (sample.parent / "x.raw.mascope.json").write_bytes(
+        b'{"later": ' + b"[" * 2000 + b"]" * 2000 + b"}"
+    )
+    file_uploader, uploads, _ = build()
+
+    file_uploader.process_file_upload(str(sample))
+
+    assert len(uploads.calls) == 1
+    (line,) = file_uploader.logger.said("warning")
+    assert "nests more than 32 levels deep" in line
+
+
+@pytest.mark.skipif(os.name != "nt", reason="names differ by case elsewhere")
+def test_a_record_names_its_file_as_windows_tells_names_apart(build, sample):
+    (sample.parent / "x.raw.mascope.json").write_text(
+        json.dumps({**RECORD, "source_filename": "X.RAW"}), encoding="utf-8"
+    )
+    file_uploader, uploads, _ = build()
+
+    file_uploader.upload_sample_file(str(sample))
+
+    assert "acquisition" in uploads.calls[0]
+
+
+@pytest.mark.skipif(os.name == "nt", reason="names do not differ by case on Windows")
+def test_a_record_naming_a_file_of_another_case_is_not_this_files(build, sample):
+    (sample.parent / "x.raw.mascope.json").write_text(
+        json.dumps({**RECORD, "source_filename": "X.RAW"}), encoding="utf-8"
+    )
+    file_uploader, uploads, _ = build()
+
+    file_uploader.upload_sample_file(str(sample))
+
+    assert "acquisition" not in uploads.calls[0]
+
+
+# ---------------------------------------------------------------------------
+# One hash for an upload
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def hashes(monkeypatch):
+    """The files hashed, in order: each is a whole read of a file."""
+    hashed = []
+    real = provenance.file_sha256
+
+    def counted(path):
+        hashed.append(os.path.basename(path))
+        return real(path)
+
+    monkeypatch.setattr(provenance, "file_sha256", counted)
+    return hashed
+
+
+def test_a_file_is_hashed_once_however_many_attempts_its_upload_takes(
+    build, sample, sidecar, hashes
+):
+    """An outage is ten attempts, and a file of a few GB read whole for each
+    is the instrument computer's disk kept busy for nothing."""
+    down = MascopeConnectionError("down")
+    file_uploader, uploads, _ = build(True, down, down, down, None)
+
+    file_uploader.process_file_upload(str(sample))
+
+    assert len(uploads.calls) == 4
+    assert hashes == ["x.raw"]
+    assert {call["sha256"] for call in uploads.calls} == {
+        hashlib.sha256(b"raw-bytes").hexdigest()
+    }
+
+
+def test_a_file_that_changed_between_two_attempts_is_hashed_again(
+    build, sample, hashes, monkeypatch
+):
+    file_uploader, uploads, _ = build(True)
+
+    def change_then_fail(**kwargs):
+        uploads.calls.append(kwargs)
+        if len(uploads.calls) == 1:
+            sample.write_bytes(b"raw-bytes, and more")
+            raise MascopeConnectionError("down")
+
+    monkeypatch.setattr(uploader, "api_post_file_tus", change_then_fail)
+    file_uploader.process_file_upload(str(sample))
+
+    first, second = uploads.calls
+    assert hashes == ["x.raw", "x.raw"]
+    assert first["sha256"] == hashlib.sha256(b"raw-bytes").hexdigest()
+    assert second["sha256"] == hashlib.sha256(b"raw-bytes, and more").hexdigest()
+
+
+def test_what_was_kept_for_an_upload_is_dropped_when_it_is_over(build, sample, hashes):
+    """The same file uploaded again is hashed again, and is told again of a
+    record that cannot be used: nothing is kept past the upload it was for."""
+    (sample.parent / "x.raw.mascope.json").write_bytes(b"[]")
+    file_uploader, _, _ = build()
+
+    file_uploader.process_file_upload(str(sample))
+    file_uploader.process_file_upload(str(sample))
+
+    assert hashes == ["x.raw", "x.raw"]
+    assert len(file_uploader.logger.said("warning")) == 2
+
+
+def test_it_is_dropped_for_a_file_that_was_set_aside_too(build, sample, hashes):
+    gone = NotFoundError("gone", status_code=404, url=URL)
+    file_uploader, _, _ = build(True, gone, gone)
+
+    file_uploader.process_file_upload(str(sample))
+    file_uploader.process_file_upload(str(sample))
+
+    assert hashes == ["x.raw", "x.raw"]
+
+
+def test_it_is_dropped_however_the_upload_ended(build, sample, monkeypatch):
+    """An error nobody foresaw must not leave a file's hash kept for good."""
+    file_uploader, _, _ = build()
+    dropped = []
+    monkeypatch.setattr(file_uploader.provenance, "forget", dropped.append)
+
+    def fails(filepath, max_retries):
+        raise RuntimeError("unforeseen")
+
+    monkeypatch.setattr(file_uploader, "_upload_or_set_aside", fails)
+
+    with pytest.raises(RuntimeError):
+        file_uploader.process_file_upload(str(sample))
+
+    assert dropped == [str(sample)]
+
+
+# ---------------------------------------------------------------------------
+# A refusal that is not the record's
+# ---------------------------------------------------------------------------
+
+
+def test_a_conflict_is_not_answered_by_sending_the_file_without_its_record(
+    build, sample, sidecar
+):
+    """A server that will not have an upload at all can say so with a 409,
+    and is not sent the file anyway, recordless."""
+    conflict = MascopeAPIError("already here", status_code=409, url=URL)
+    file_uploader, uploads, _ = build(True, conflict)
+
+    with pytest.raises(MascopeAPIError):
+        file_uploader.upload_sample_file(str(sample))
+
+    (call,) = uploads.calls
+    assert call["acquisition"] == sidecar.read_bytes()
+
+
+# ---------------------------------------------------------------------------
+# Setting a record aside
+# ---------------------------------------------------------------------------
+
+
+def test_setting_aside_a_file_with_no_record_says_nothing_of_records(build, sample):
+    file_uploader, _, _ = build(True, NotFoundError("gone", status_code=404, url=URL))
+
+    file_uploader.process_file_upload(str(sample))
+
+    assert file_uploader.logger.said("warning") == []
+
+
+def test_a_record_that_cannot_be_copied_does_not_keep_its_file_from_being_set_aside(
+    build, sample, sidecar, monkeypatch
+):
+    real = uploader.shutil.copyfile
+
+    def copy(source, target):
+        if source.endswith(".mascope.json"):
+            raise PermissionError("held open")
+        return real(source, target)
+
+    monkeypatch.setattr(uploader.shutil, "copyfile", copy)
+    file_uploader, _, _ = build(True, NotFoundError("gone", status_code=404, url=URL))
+
+    file_uploader.process_file_upload(str(sample))
+
+    failed = sample.parent / FAILED_UPLOADS_DIR
+    assert (failed / "x.raw").read_bytes() == b"raw-bytes"
+    assert file_uploader.logger.said("warning") == [
+        "Could not keep the acquisition record of x.raw with its copy: held open"
+    ]
+    # The file's own copy was kept, and the log does not say otherwise.
+    (gave_up,) = [
+        line for line in file_uploader.logger.said("error") if "Gave up" in line
+    ]
+    assert "A copy is in" in gave_up

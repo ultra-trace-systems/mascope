@@ -432,6 +432,23 @@ class FileUploader:
         :param filepath: Full path to the file to be uploaded
         :type filepath: str
         """
+        try:
+            self._upload_or_set_aside(filepath, max_retries)
+        finally:
+            # What was kept for the attempts - the file's hash above all -
+            # was kept for this upload and no longer.
+            if self.provenance is not None:
+                self.provenance.forget(filepath)
+
+    def _upload_or_set_aside(self, filepath: str, max_retries: int) -> None:
+        """Upload a file, trying again while that can help; set it aside when
+        it cannot be uploaded.
+
+        :param filepath: Full path to the file to be uploaded
+        :type filepath: str
+        :param max_retries: How many attempts to make
+        :type max_retries: int
+        """
         for attempt in range(1, max_retries + 1):
             token_used = self.credentials.current_access_token()
             try:
@@ -553,6 +570,10 @@ class FileUploader:
             # The record must not cost the file its upload, and it is large
             # for a request header: a proxy in front of the server can refuse
             # the request for it. Whatever else was refused is refused again.
+            #
+            # Not every refusal comes here. A 409 is no ValidationError to the
+            # SDK, so a server that will not have an upload at all, record or
+            # no record, can say so with one and is not sent the file anyway.
             self.logger.warning(
                 f"{os.path.basename(filepath)}: refused with its acquisition "
                 f"record ({refused}). Uploading it without the record."

@@ -18,6 +18,13 @@ from mascope_sdk import agent_headers
 #: Seconds to wait for the answer.
 REQUEST_TIMEOUT = 30
 
+#: Statuses that are no answer to the question, because they clear on their
+#: own: the server, or a proxy in front of it, is asking for another try. The
+#: SDK counts the same three as worth sending an upload request again for.
+#: ``/api/version`` is rate-limited by the address the request comes from, and
+#: an instrument computer shares its address with every browser beside it.
+ASK_AGAIN_FOR = frozenset({408, 425, 429})
+
 #: Seconds an answer is kept before the server is asked again. An agent runs
 #: for months and its server is updated under it, so what the server could
 #: not do when the agent started is not what it cannot do.
@@ -53,12 +60,23 @@ class ServerCapabilities:
         # The token a refusal was given to; None when the server answered.
         self._refused: str | None = None
 
+    @property
+    def refused(self) -> bool:
+        """Whether what is known of the server is a refusal of the question.
+
+        A server that refused is taken to announce nothing, and that is all
+        :meth:`has` says of it. Whoever tells a person why something was not
+        done reads this too: "the server is too old" is not what a refused
+        credential means.
+        """
+        return self._refused is not None
+
     def ask(self) -> dict | None:
         """What the server announces, or None while it has not answered.
 
-        A server that could not be reached, or that failed, is asked again the
-        next time. One that answered is asked again after
-        :data:`ASK_AGAIN_AFTER`.
+        A server that could not be reached, that failed, or that asked for
+        another try (:data:`ASK_AGAIN_FOR`) is asked again the next time. One
+        that answered is asked again after :data:`ASK_AGAIN_AFTER`.
 
         A server that refuses the question predates it, and announces nothing
         - or it refused this machine's credential. The two cannot be told
@@ -110,7 +128,7 @@ class ServerCapabilities:
         except requests.exceptions.RequestException as e:
             self._logger.debug(f"Could not ask the server what it can do: {e}")
             return None
-        if resp.status_code >= 500:
+        if resp.status_code >= 500 or resp.status_code in ASK_AGAIN_FOR:
             self._logger.debug(
                 f"Could not ask the server what it can do: HTTP {resp.status_code}"
             )
