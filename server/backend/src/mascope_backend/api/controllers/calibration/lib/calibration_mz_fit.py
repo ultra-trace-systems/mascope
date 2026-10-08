@@ -72,6 +72,13 @@ TOF_MINIMUM_CALIBRATION_POINTS = 3
 ORBI_MINIMUM_CALIBRATION_POINTS = 1
 LARGE_SAMPLE_SIZE_THRESHOLD = 5
 
+#: Mean retained residuals closer than this rank two subsets of calibrants as
+#: equally consistent. A subset the fit can absorb whole is fitted exactly - an
+#: Orbitrap subset of one always is - and what is left of its residual is
+#: rounding, around 1e-10 ppm. The step is far above that and far below any
+#: residual that says something about the calibrants.
+SUBSET_RESIDUAL_RESOLUTION_PPM = 1e-6
+
 #: Local-dominance guard for Orbitrap candidate peaks. FTMS centroiding of
 #: short transients leaves weak sidelobe ("satellite") peaks around every
 #: intense centroid; they can carry SNR far above the calibration threshold
@@ -598,12 +605,19 @@ class BaseCalibrationHandler:
 
         The number of combinations for <=5 matches is manageable for a brute force search,
         thus we do not implement a random sampling approach as in traditional RANSAC.
+
+        Among consistent subsets of one size, the one that agrees with itself
+        best wins. A subset the fit absorbs whole leaves nothing to tell it by:
+        every calibrant fits itself, so an Orbitrap file whose calibrants
+        disagree pairwise offers as many perfect one-point fits as it has
+        calibrants. Those are ranked by the correction they ask for, the
+        smallest first - an axis is far likelier nearly right than far off,
+        and a match that needs a large correction is likelier a neighbouring
+        peak than the calibrant.
         """
         fit_result, _ = self._fit_matches(matches_df)
-        unfiltered_calibration_df = self._build_calibration_df(
-            matches_df,
-            self._evaluate_fit(matches_df, fit_result),
-        )
+        fit_stats = self._evaluate_fit(matches_df, fit_result)
+        unfiltered_calibration_df = self._build_calibration_df(matches_df, fit_stats)
 
         all_peaks_within_tolerance = self._mz_error_mask(
             unfiltered_calibration_df
@@ -613,6 +627,7 @@ class BaseCalibrationHandler:
 
         # Reset index to ensure correct indexing when evaluating subsets
         matches_df = matches_df.reset_index(drop=True)
+        pre_fit_errors = np.abs(np.asarray(fit_stats["pre_dmz"], dtype=float))
         best_candidate = None
         all_indices = tuple(range(len(matches_df)))
         for subset_size in self._candidate_subset_sizes(len(matches_df)):
@@ -642,15 +657,20 @@ class BaseCalibrationHandler:
 
                 # Score candidates based on:
                 # - first by number of retained matches (higher is better)
-                # - then by lower mean retained error
-                # - then by higher mean excluded error
-                excluded_mean_error = (
-                    float(excluded_errors.mean()) if not excluded_errors.empty else 0.0
+                # - then by lower mean retained error, counted in steps of
+                #   SUBSET_RESIDUAL_RESOLUTION_PPM so that rounding left by an
+                #   exact fit does not rank one subset above another
+                # - then by lower mean error of the retained matches before
+                #   the fit, the smaller correction
+                # Subsets still level are told apart by nothing measured; the
+                # first one met is kept, in the order of the matches.
+                retained_error_steps = round(
+                    float(retained_errors.mean()) / SUBSET_RESIDUAL_RESOLUTION_PPM
                 )
                 candidate_score = (
                     len(subset_indices),
-                    -float(retained_errors.mean()),
-                    excluded_mean_error,
+                    -retained_error_steps,
+                    -float(pre_fit_errors[retained_mask].mean()),
                 )
                 if best_candidate is None or candidate_score > best_candidate[0]:
                     best_candidate = (

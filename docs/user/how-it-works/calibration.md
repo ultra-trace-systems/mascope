@@ -65,9 +65,14 @@ Elements whose resulting post-calibration residual errors exceed the set mass er
 ### Small Match Pool (5 or Fewer Points)
 
 An exact Random Sample Consensus (RANSAC) routine brute-forces every mathematically viable subset down to the instrument's minimum required calibration points.
-Each subset is evaluated by fitting the model and scoring the results according to the number of retained points, minimized mean internal residuals, and maximized external errors.
+Each subset is evaluated by fitting the model and scoring the results according to the number of retained points and then minimized mean internal residuals.
 The highest-scoring consistent subset is chosen.
 If no sub-group cleanly decouples in-tolerance points from outliers, the calibration is aborted.
+
+A subset no larger than the model can absorb is fitted exactly and has no internal residual to be scored by.
+This is the case for an Orbitrap file whose calibrants all disagree with one another by more than the tolerance: each one alone is a perfect one-point fit.
+Between such subsets the one that asks for the smallest correction is kept, the calibrant closest to its theoretical mass before the fit, because a mass axis is far more likely to be nearly right than far off and a match that needs a large correction is more likely a neighbouring peak than the calibrant.
+The verification below still judges the result: a one-point fit is trusted only while its correction is small.
 
 ## Calibration Models
 
