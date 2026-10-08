@@ -109,7 +109,9 @@ async def test_the_instruments_own_mode_wins_over_a_shared_one_of_the_same_token
 
 @pytest.mark.asyncio
 async def test_a_file_of_two_polarities_is_not_half_bound():
-    """One token names one mode. The file falls to the next rung whole."""
+    """A token nearly always names one mode, and a file bound for one of its
+    polarities and not the other would lose the other. It falls to the next
+    rung whole."""
     bound, unanswered = await resolve_ionization_modes_by_declaration(
         _file("+-"), "NO3", MODES
     )
@@ -126,3 +128,20 @@ async def test_a_file_that_records_no_polarity_is_not_bound():
 
     assert bound == []
     assert unanswered is not None
+
+
+@pytest.mark.asyncio
+async def test_one_declaration_can_name_a_mode_for_each_polarity():
+    """The one pair the token check allows: an instrument's own mode in one
+    polarity beside a shared mode of the same token in the other. A file of
+    both polarities on that instrument is bound to the two, which is what
+    its name would do."""
+    ours = _mode("Our nitrate", "NO3", "-", instrument="ORBI-1")
+    shared = _mode("Shared nitrate", "NO3", "+")
+
+    bound, unanswered = await resolve_ionization_modes_by_declaration(
+        _file("+-", instrument="ORBI-1"), "NO3", [ours, shared, AMMONIUM]
+    )
+
+    assert bound == [shared, ours]
+    assert unanswered is None

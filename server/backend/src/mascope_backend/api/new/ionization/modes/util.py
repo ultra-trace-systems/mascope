@@ -440,10 +440,13 @@ async def resolve_ionization_modes_by_declaration(
     equality is a different word.
 
     **Every polarity of the file must be answered, as under every rung.** A
-    token names modes of one scope and tokens do not repeat within one, so a
-    declaration names one mode, and a file holding two polarities is not
-    bound by it. It falls to the next rung whole, rather than half bound here
-    and half there.
+    token does not repeat within one scope, so a declaration nearly always
+    names one mode, and a file holding two polarities is then not bound by
+    it: it falls to the next rung whole, rather than half bound here and half
+    there. The one pair a declaration can name is an instrument's own mode in
+    one polarity beside a shared mode of the same token in the other, which
+    the token check allows; a file of both polarities on that instrument is
+    bound to the two, as its name would bind it.
 
     :param sample_file: The file to bind.
     :type sample_file: SampleFile
