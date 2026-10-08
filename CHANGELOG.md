@@ -318,6 +318,17 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   to disagree on those eight now agree on all 148. A sample already
   calibrated keeps its calibration until it is calibrated again. (#2144)
 
+- **Calibrants that disagree are no longer chosen between by rounding.** An
+  Orbitrap fit needs one calibrant, and one calibrant fits itself exactly. So
+  when the calibrants of a file disagreed by more than the tolerance, each of
+  them was a perfect fit, and the one kept was decided by what rounding left
+  of its residual: on the same peaks a fraction of a ppm apart it could be
+  the other one, 14 ppm away in the file this was found on. Where rounding
+  left nothing to choose by, three such calibrants gave the one furthest
+  from the other two. The one kept is now the one closest to its theoretical
+  mass before the fit - the smallest correction, since a match that needs a
+  large one is more likely a neighbouring peak than the calibrant.
+
 - **A Ctrl+C that reaches the File Agent between two looks at its upload
   queue is handled like any other.** On the Python the agent runs on, an
   interrupt that arrived in that instant went past the handling written
