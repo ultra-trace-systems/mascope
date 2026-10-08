@@ -148,6 +148,20 @@ def test_a_record_at_the_size_limit_passes_the_second_door_as_it_did_the_first()
     assert record_ids(full)["acquisition_id"] == RECORD["acquisition_id"]
 
 
+def test_the_size_limit_at_the_second_door_is_counted_in_utf8_as_at_the_first():
+    """A record of letters outside ASCII, at the limit. Written out as
+    escapes to be read again, each letter would be six bytes where the
+    document that passed the first door had it as two."""
+    letter = "\N{LATIN SMALL LETTER A WITH DIAERESIS}"
+    empty = json.dumps({**RECORD, "later": ""}, separators=(",", ":"))
+    full = {**RECORD, "later": letter * ((acquisition.MAX_BYTES - len(empty)) // 2)}
+    as_sent = json.dumps(full, separators=(",", ":"), ensure_ascii=False)
+    assert len(as_sent.encode("utf-8")) <= acquisition.MAX_BYTES
+    assert len(json.dumps(full, separators=(",", ":"))) > acquisition.MAX_BYTES
+
+    assert record_ids(full)["acquisition_id"] == RECORD["acquisition_id"]
+
+
 def test_a_document_that_is_no_record_has_no_identifiers():
     with pytest.raises(ValueError):
         record_ids({**RECORD, "step_id": None})
