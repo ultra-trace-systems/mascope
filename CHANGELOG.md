@@ -18,16 +18,21 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   file set aside in `failed_uploads` has its record copied with it. The
   agent now asks the server what it can do once for all its parts and
   again after an hour, so a server updated under a running agent is
-  noticed without a restart
-  (`docs/dev/acquisition_sidecar.md`).
+  noticed without a restart, by the uploads and by the following of what
+  became of each file alike; and an answer that asks for another try, a
+  rate limit above all, is no longer taken for a server that can do
+  nothing new (`docs/dev/acquisition_sidecar.md`).
 
 - **`mascope_sdk.acquisition` defines the acquisition record,
   `mascope-acquisition/1`.** `AcquisitionRecord` is the model, `parse()`
   and `dump()` read and write the document, and `read_sidecar()` finds a
   data file's. Four UUIDs are the record - the installation, the sequence
   run, the step and the acquisition - and everything else is optional;
-  fields the schema does not name are kept. The SDK depends on pydantic
-  from this version on.
+  fields the schema does not name are kept. A record is read as strictly
+  as it ever will be, since a document read today is a record for good: an
+  identifier in the UUID's own spelling, a time as an RFC 3339 date-time
+  with its offset, no `NaN` or `Infinity`, no key twice, 32 levels of
+  nesting at most. The SDK depends on pydantic from this version on.
 
 - **A file whose name carries no ionization mode token can now be bound by its
   acquisition method**, instead of parking for somebody to pick a chemistry.
