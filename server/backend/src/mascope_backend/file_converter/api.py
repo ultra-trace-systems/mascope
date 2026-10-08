@@ -67,11 +67,18 @@ def _request_with_retry(method: str, url: str, **kwargs) -> requests.Response:
     response or re-raises the last transport error. 2xx-4xx responses return
     immediately: client-class statuses are not transient, retrying them only
     hides real bugs.
+
+    The response returned carries how many attempts it took as
+    ``attempts``, for a caller that reads an answer differently after a
+    retry: a 409 to a POST the server may have committed on an attempt
+    whose answer was lost.
     """
     kwargs.setdefault("timeout", _REQUEST_TIMEOUT_S)
     last_exc: requests.exceptions.RequestException | None = None
     response: requests.Response | None = None
+    attempts = 0
     for delay in (*_RETRY_BACKOFF_S, None):
+        attempts += 1
         try:
             response = requests.request(method, url, **kwargs)
         except requests.exceptions.RequestException as e:
@@ -80,6 +87,7 @@ def _request_with_retry(method: str, url: str, **kwargs) -> requests.Response:
             failure = f"{type(e).__name__}: {e}"
         else:
             if response.status_code < 500:
+                response.attempts = attempts
                 return response
             failure = f"HTTP {response.status_code}"
         if delay is None:
@@ -95,6 +103,7 @@ def _request_with_retry(method: str, url: str, **kwargs) -> requests.Response:
             # turn into `raise None` (TypeError).
             raise RuntimeError(f"{method} {url}: retry loop exited without result")
         raise last_exc
+    response.attempts = attempts
     return response
 
 
@@ -221,6 +230,36 @@ def create_sample_file_db_record(
             json=sample_file_db_record,
         )
 
+        if response.status_code == 409:
+            # The record is there, and the directory made for this file now
+            # backs it either way; what the 409 says differs. After a retried
+            # POST it is most likely the row this call made from this body -
+            # the first attempt answered after the server committed and the
+            # answer lost on the way (the retry's WARNING is just above) -
+            # though not certainly: with every earlier attempt refused before
+            # it reached the server, or a 503 given before the commit, the
+            # row was there already. The converter cannot tell these apart,
+            # so the line says what it knows. On the first answer it is an
+            # earlier upload's row, with that upload's fields - a record that
+            # was sitting there without its directory: a run that lost such
+            # an answer and removed its own, a directory removed by hand, a
+            # filestore restored to an older state than the database.
+            # Nothing compares that row with the file now behind it and
+            # nothing is scheduled for it, so an operator hears of it. (A
+            # response that does not say how many attempts it took, a
+            # stub's, reads as a first answer.)
+            if getattr(response, "attempts", 1) > 1:
+                runtime.logger.info(
+                    f"Sample file record of {data.filename} is there after a "
+                    "retried POST; keeping the directory made for it"
+                )
+            else:
+                runtime.logger.warning(
+                    f"Sample file record of {data.filename} was there "
+                    "without its directory; the directory made for it now "
+                    "backs it"
+                )
+            return
         if response.status_code != 201:
             raise Exception(
                 f"Failed to create database record! Status code: {response.status_code}"
