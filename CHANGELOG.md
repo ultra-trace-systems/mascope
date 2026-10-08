@@ -356,6 +356,23 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 ### Fixed
 
+- **Signing in no longer fails the uploads you still have queued.** Every
+  sign-in of an editor or higher replaced the user's file-converter token,
+  while each upload of theirs waiting for the converter carried the token it
+  was uploaded with: a second tab, another device or a session that expired
+  mid-upload made the converter fail every queued file with "Token validation
+  failed" and quarantine it. A sign-in now keeps a token that is still valid,
+  mints one only where the user holds none that is valid, and within 30 days
+  of a token's end mints a new one beside it so that nothing queued lapses
+  with it. An upload does the same for the token it is handed, so a script
+  or an agent uploading on a person's token is not refused when that token
+  nears its end between the owner's sign-ins, and a machine account's own
+  token - instrument agents were never affected by the sign-in, since their
+  machine accounts do not sign in - is renewed the same way instead of
+  lapsing once a year. A guest's upload is refused as before; a mint
+  removes only tokens past their lifetime, so two uploads minting at once
+  leave each other's token standing.
+
 - **A file's m/z calibration no longer depends on the server that calibrates
   it.** Where two ions of a calibration collection match the same peak - the
   main line of one calibrant that is also a minor isotope line of another, as

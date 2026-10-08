@@ -217,6 +217,50 @@ async def test_machine_account_converter_token_minted_on_demand(
     assert count == 1
 
 
+@pytest.mark.asyncio
+async def test_machine_account_converter_token_renewed_near_its_end(
+    async_session_factory, test_users, provision_device
+):
+    """Within the renewal window an upload mints a new converter token beside
+    the old one, as a sign-in does for a person. Nothing signs in for a
+    machine account, so this is where its token stops lapsing once a year:
+    the uploads queued under the old one keep validating, new ones take the
+    newest."""
+    _device_id, machine, _token = await provision_device(test_users["editor"].id)
+    settings = auth_settings.access_token
+    held = await get_access_token(user=machine, service_name="file-converter")
+    async with async_session_factory() as session:
+        await session.execute(
+            update(AccessToken)
+            .where(AccessToken.token == held)
+            .values(
+                created_at=dt.now(timezone.utc)
+                - timedelta(
+                    seconds=settings.ACCESS_TOKEN_EXPIRATION_SECONDS
+                    - settings.FILE_CONVERTER_TOKEN_RENEWAL_SECONDS
+                    + 60
+                )
+            )
+        )
+        await session.commit()
+    token_cache.clear()
+
+    renewed = await get_access_token(user=machine, service_name="file-converter")
+    assert renewed != held
+    async with async_session_factory() as session:
+        tokens = set(
+            (
+                await session.execute(
+                    select(AccessToken.token).where(
+                        AccessToken.user_id == machine.id,
+                        AccessToken.service_name == "file-converter",
+                    )
+                )
+            ).scalars()
+        )
+    assert tokens == {held, renewed}
+
+
 # ---------------------------------------------------------------------------
 # Strict mode (require_device_tokens) over HTTP
 #
