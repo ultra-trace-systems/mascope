@@ -217,8 +217,8 @@ before the server looks for a token in the file's name, and Raw files says
 so: "Bound to 'Nitrate' (-) by its acquisition record." A record that names a
 token no mode has does not hold the file up: it is bound by its name as
 before, or waits for a chemistry. Either way its status in Raw files says
-what the record named, so a record and a file name that disagree do not go
-unnoticed.
+what the record named, and goes on saying it once the file is processed, so
+a record and a file name that disagree do not go unnoticed.
 
 A record never keeps a file from being uploaded:
 

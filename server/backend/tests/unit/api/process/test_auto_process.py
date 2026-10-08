@@ -184,9 +184,10 @@ def status():
     Also stubs the scan stream census, which would read the file's props
     from the filestore, the method-binding learner, which would write to
     the database, and the reading of the file's acquisition record, which
-    would query it: these files have none, and the rung that reads it is
-    covered in test_auto_process_declared.py. Request the fixture by name to
-    read what was recorded:
+    would query it: these files have none unless a test says so through
+    ``status.declares``, and the rung that reads it is covered in
+    test_auto_process_declared.py. Request the fixture by name to read what
+    was recorded:
     ``[(status, detail), ...]`` in order via :func:`_recorded`.
     """
     with (
@@ -199,12 +200,13 @@ def status():
             f"{_SVC}._modes_its_record_declares",
             new_callable=AsyncMock,
             return_value=([], None),
-        ),
+        ) as declares,
     ):
         census.return_value = []
         stitched.return_value = []
         note.return_value = None
         record.note = note
+        record.declares = declares
         record.census = census
         record.stitched = stitched
         record.learn = learn
@@ -1877,6 +1879,78 @@ async def test_a_stale_peak_store_is_named_in_every_later_status(status):
         "now: A event=2. Its peaks are detected again when a match meets it; "
         "until then its streams are recorded as pooled." in detail
         for detail in details[first:]
+    )
+
+
+#: What a record that named a chemistry nothing here answers to leaves in
+#: the file's status (``_modes_its_record_declares``).
+UNANSWERED = (
+    "Its acquisition record names the chemistry 'Br', but no ionization mode "
+    "of this instrument has that token in a polarity the file holds"
+)
+
+
+@pytest.mark.asyncio
+async def test_a_file_its_name_bound_still_says_what_its_record_named_when_done(
+    status,
+):
+    """The record names one chemistry and the name bound the file to another.
+    Whoever opens the file reads the status its run ended on, so the sentence
+    is in every status from the binding on, and not in the first alone."""
+    status.declares.return_value = ([], UNANSWERED)
+    _start_single()
+
+    await _run_pipeline()
+
+    assert _recorded(status) == [
+        ("bound", f"Bound by file-name token to 'Bromide RI' (-). {UNANSWERED}."),
+        ("calibrated", f"{UNANSWERED}."),
+        ("done", f"Matched 1 sample. {UNANSWERED}."),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_a_failed_calibration_says_what_the_record_named_as_well(status):
+    status.declares.return_value = ([], UNANSWERED)
+    mocks, _ = _start_single()
+    mocks["calibrate"].return_value = _outcome(
+        False, "The m/z calibration failed: No calibration peaks found."
+    )
+
+    await _run_pipeline()
+
+    assert _recorded(status)[-1] == (
+        "calibration_failed",
+        "The m/z calibration failed: No calibration peaks found. Matching and "
+        f"peak assignment were skipped. {UNANSWERED}.",
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_blank_file_says_what_its_record_named_as_well(status):
+    status.declares.return_value = ([], UNANSWERED)
+    _start_single(instrument_function_id=None)
+
+    await _run_pipeline()
+
+    assert _recorded(status)[-1] == (
+        "done",
+        f"Blank measurement: no peaks to calibrate, match or assign. {UNANSWERED}.",
+    )
+
+
+@pytest.mark.asyncio
+async def test_what_the_record_named_comes_before_what_the_streams_say(status):
+    note = "Polarity - pools 2 MS1 scan streams into one peak list: A; B."
+    status.note.return_value = note
+    status.declares.return_value = ([], UNANSWERED)
+    _start_single()
+
+    await _run_pipeline()
+
+    assert _recorded(status)[-1] == (
+        "done",
+        f"Matched 1 sample. {UNANSWERED}. {note}",
     )
 
 

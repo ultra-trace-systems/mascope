@@ -478,10 +478,11 @@ async def _modes_its_record_declares(
     program configured with a token this server does not use is a
     configuration to fix, and until it is, the file is bound as it would
     have been with no record at all. It is not bound in silence, though. What
-    the declaration said goes into the file's status whichever way the run
-    ends - beside the rung that bound it, or beside the reason it parked -
-    because the case that matters is the one where the two disagree: a record
-    that says bromide on a file whose name still says nitrate.
+    the declaration said goes into the file's status and stays there: beside
+    the reason it parked, or in every status the run records from the one
+    that says what bound it. The case that matters is the one where the two
+    disagree, a record that says bromide on a file whose name still says
+    nitrate, and whoever opens that file reads the status its run ended on.
 
     :param sample_file: The file to bind.
     :return: One mode per polarity and None when the record binds it; no
@@ -1250,19 +1251,20 @@ async def _auto_process_sample_file(
     )
     # A stale peak store, and a stream row the file no longer describes but
     # a sample still reads, are as much facts about the file as its streams
-    # are: every status from here on says so.
-    streams_note = compose_detail(
-        streams_note, stale_store_note(found_streams), kept_rows_note(stream_rows)
+    # are: every status from here on says so. So is what its acquisition
+    # record named and nothing here answers to. A rung below bound the file,
+    # and whoever opens it reads the status its run ended on, not the one
+    # that said what bound it.
+    file_note = compose_detail(
+        None if undeclared is None else f"{undeclared.rstrip('.')}.",
+        streams_note,
+        stale_store_note(found_streams),
+        kept_rows_note(stream_rows),
     )
     await record_processing_status(
         sample_file_id,
         ProcessingStatus.BOUND,
-        compose_detail(
-            _bound_detail(bound_modes, rung),
-            # What its record named and could not bind, beside what did.
-            None if undeclared is None else f"{undeclared.rstrip('.')}.",
-            streams_note,
-        ),
+        compose_detail(_bound_detail(bound_modes, rung), file_note),
     )
 
     # Extract batch and sample IDs for notifications
@@ -1363,7 +1365,7 @@ async def _auto_process_sample_file(
             await record_processing_status(
                 sample_file_id,
                 ProcessingStatus.CALIBRATED,
-                compose_detail(streams_note),
+                compose_detail(file_note),
             )
         elif is_blank_sample_file:
             # A blank has no peaks, so there is nothing to match or assign
@@ -1503,7 +1505,7 @@ async def _auto_process_sample_file(
         await record_processing_status(
             sample_file_id,
             ProcessingStatus.DONE,
-            compose_detail(calibration_note, streams_note),
+            compose_detail(calibration_note, file_note),
         )
     elif not unmatched:
         await record_processing_status(
@@ -1512,7 +1514,7 @@ async def _auto_process_sample_file(
             compose_detail(
                 f"Matched {matched} sample{'s' if matched != 1 else ''}.",
                 calibration_note,
-                streams_note,
+                file_note,
             ),
         )
     else:
@@ -1525,7 +1527,7 @@ async def _auto_process_sample_file(
         await record_processing_status(
             sample_file_id,
             ProcessingStatus.CALIBRATION_FAILED,
-            compose_detail(unmatched_reason, skipped, streams_note),
+            compose_detail(unmatched_reason, skipped, file_note),
         )
 
     return {
