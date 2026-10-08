@@ -285,11 +285,16 @@ is read:
   on that instrument is bound to the two, as its name would bind it.
 - A declaration that binds nothing does not park the file, and is not passed
   over in silence either. The rungs below get their turn, and the file's
-  status says what the record named whichever way the run ends: "Bound by
-  file-name token to 'Nitrate' (-). Its acquisition record names the
-  chemistry 'Br', but no ionization mode of this instrument has that token
-  in a polarity the file holds." The case that matters is that one, where
-  the record and the name disagree.
+  status says what the record named: "Bound by file-name token to 'Nitrate'
+  (-). Its acquisition record names the chemistry 'Br', but no ionization
+  mode of this instrument has that token in a polarity the file holds." The
+  case that matters is that one, where the record and the name disagree.
+  The sentence describes the file and not a stage of its run, so it is
+  carried as the note about a file's scan streams is: beside the reason a
+  file parked, and in every status a run records once the file is bound,
+  the one it ends on included ("Matched 1 sample. Its acquisition record
+  names ..."). A run that fails records how it failed and neither note; the
+  run that processes the file again says both again.
 - Items bound this way record `bound_by = "declared"`, the file's status
   reads "Bound to ... by its acquisition record.", and the declaration teaches
   the file's method binding, as a token does.
