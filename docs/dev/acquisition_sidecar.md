@@ -226,6 +226,17 @@ recorded. Different, the file is kept and processed all the same, since a
 finished upload cannot be un-accepted; no hash is recorded, and a warning
 names the file and both hashes. An upload that reports no hash is not hashed.
 
+**When the file is registered**, which the converter does once it has
+converted it, the record is read a second time, by the same rule: it arrives
+as whatever a request body holds, and a registration can be posted by
+anything that may register a file. A record this door would not have let in
+at the upload - an identifier in another spelling, a number JSON cannot
+write, the record of another file - is left out with a warning and the file
+is registered. So is a record the database refuses the row for: the insert
+is made once more without it. That covers two registrations of one
+acquisition arriving together, and whatever else only storing a record
+finds.
+
 **On the sample file** (`sample_file`, migration `8b3f5d2a6c47`):
 
 | Column | Content |
@@ -233,10 +244,18 @@ names the file and both hashes. An upload that reports no hash is not hashed.
 | `acquisition` | The record as it was sent, fields this version does not know included |
 | `acquisition_id` | Unique. An acquisition is one file: a second file naming the same one is stored without its record, with a warning |
 | `step_id`, `sequence_run_id`, `agent_id` | Indexed, so that every file of a run is one query |
-| `sha256` | The file's hash, where one was reported and the bytes received had it |
+| `sha256` | The file's hash, as its registration gave it |
 
 All are NULL for a file that came with neither, and for every file registered
-before the columns existed. The record reaches the registration the way the
+before the columns existed.
+
+The hash is what the upload route verified: it hands the converter a hash
+only where the uploader reported one and the bytes received had it, so on a
+file that came through an upload the value says the file the server holds is
+the file that was sent. The registration itself is taken at its word, as it
+is for the file's name and length, so a registration posted by hand can
+carry any well-formed hash. The server does not hash the stored file a
+second time to check. The record reaches the registration the way the
 uploading device and the file's own name do: through the converter's context
 for the file. Nothing after the upload's creation raises for a record's sake;
 one that turns out unusable later is left out with a line in the log.
@@ -259,11 +278,18 @@ is read:
 - It is read within the file's instrument, and the instrument's own mode wins
   over a shared one of the same token, as for a name.
 - Every polarity of the file must be answered, as under every rung. A token
-  names one mode, so a file holding two polarities is not bound by a
-  declaration: it falls to the next rung whole.
-- A declaration that binds nothing does not park the file. The rungs below
-  get their turn, and if the file parks after all, its status says what the
-  record named.
+  nearly always names one mode, and a file holding two polarities is then
+  not bound by a declaration: it falls to the next rung whole. The one pair
+  a declaration can name is an instrument's own mode in one polarity beside
+  a shared mode of the same token in the other; a file of both polarities
+  on that instrument is bound to the two, as its name would bind it.
+- A declaration that binds nothing does not park the file, and is not passed
+  over in silence either. The rungs below get their turn, and the file's
+  status says what the record named whichever way the run ends: "Bound by
+  file-name token to 'Nitrate' (-). Its acquisition record names the
+  chemistry 'Br', but no ionization mode of this instrument has that token
+  in a polarity the file holds." The case that matters is that one, where
+  the record and the name disagree.
 - Items bound this way record `bound_by = "declared"`, the file's status
   reads "Bound to ... by its acquisition record.", and the declaration teaches
   the file's method binding, as a token does.
