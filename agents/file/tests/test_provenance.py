@@ -561,15 +561,24 @@ def test_a_file_is_hashed_once_however_many_attempts_its_upload_takes(
     }
 
 
+@pytest.mark.parametrize(
+    "rewritten, seconds_on",
+    [(b"raw-bytes, and more", 0), (b"RAW-BYTES", 2)],
+    ids=["another size at the same time", "the same size at another time"],
+)
 def test_a_file_that_changed_between_two_attempts_is_hashed_again(
-    build, sample, hashes, monkeypatch
+    build, sample, hashes, monkeypatch, rewritten, seconds_on
 ):
+    """Told by its size and by its time of last change, and by either alone:
+    a file rewritten at the length it had is as much another file."""
     file_uploader, uploads, _ = build(True)
+    was = os.stat(sample)
 
     def change_then_fail(**kwargs):
         uploads.calls.append(kwargs)
         if len(uploads.calls) == 1:
-            sample.write_bytes(b"raw-bytes, and more")
+            sample.write_bytes(rewritten)
+            os.utime(sample, ns=(was.st_atime_ns, was.st_mtime_ns + seconds_on * 10**9))
             raise MascopeConnectionError("down")
 
     monkeypatch.setattr(uploader, "api_post_file_tus", change_then_fail)
@@ -578,7 +587,7 @@ def test_a_file_that_changed_between_two_attempts_is_hashed_again(
     first, second = uploads.calls
     assert hashes == ["x.raw", "x.raw"]
     assert first["sha256"] == hashlib.sha256(b"raw-bytes").hexdigest()
-    assert second["sha256"] == hashlib.sha256(b"raw-bytes, and more").hexdigest()
+    assert second["sha256"] == hashlib.sha256(rewritten).hexdigest()
 
 
 def test_what_was_kept_for_an_upload_is_dropped_when_it_is_over(build, sample, hashes):
