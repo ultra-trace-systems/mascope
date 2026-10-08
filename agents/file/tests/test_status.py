@@ -13,10 +13,7 @@ import pytest
 import requests
 
 from mascope_file_agent import status, uploader
-from mascope_file_agent.capabilities import (
-    ASK_AGAIN_AFTER,
-    ServerCapabilities,
-)
+from mascope_file_agent.capabilities import ASK_AGAIN_AFTER
 from mascope_file_agent.credentials import Credentials
 from mascope_file_agent.uploader import FileUploader
 
@@ -421,7 +418,7 @@ def test_a_server_that_cannot_say_is_not_asked(monkeypatch, follower, answer):
     assert follower.enabled is False
     assert follower.following() == []
     assert server.questions == []
-    assert server.version_questions == 1
+    assert server.version_questions == 2
     assert follower.logger.lines == [
         (
             "info",
@@ -569,27 +566,9 @@ def test_an_uploaded_file_is_followed_by_its_name_here(
 # ---------------------------------------------------------------------------
 
 
-@pytest.fixture
-def long_running():
-    """A follower whose asking of the server grows old with its own clock, as
-    an agent's does over the months it runs."""
-    logger, clock = RecordingLogger(), Clock()
-    url = "https://mascope.example.com"
-    follower = status.StatusFollower(
-        url,
-        lambda: "live-token",
-        logger,
-        clock=clock,
-        server=ServerCapabilities(url, lambda: "live-token", logger, clock=clock),
-    )
-    follower.logger, follower.clock = logger, clock
-    return follower
-
-
 def test_a_server_updated_under_a_running_agent_is_followed_from_then_on(
-    monkeypatch, long_running
+    monkeypatch, follower
 ):
-    follower = long_running
     server = serve(monkeypatch, [version(), CAN_FOLLOW], rows(row("done")))
     follower.follow("x.raw")
     tick(follower, status.POLL_DELAYS[0])
@@ -618,8 +597,7 @@ def test_a_server_updated_under_a_running_agent_is_followed_from_then_on(
     ]
 
 
-def test_a_server_that_goes_on_not_saying_is_said_so_once(monkeypatch, long_running):
-    follower = long_running
+def test_a_server_that_goes_on_not_saying_is_said_so_once(monkeypatch, follower):
     server = serve(monkeypatch, version(), rows())
 
     for _ in range(3):
@@ -627,6 +605,68 @@ def test_a_server_that_goes_on_not_saying_is_said_so_once(monkeypatch, long_runn
 
     assert server.version_questions == 3
     assert len(said(follower, "info")) == 1
+
+
+def test_a_server_that_stops_saying_is_no_longer_asked(monkeypatch, follower):
+    """It answered, and what it announces is not this any more: the one way
+    a follower that is on is turned off."""
+    server = serve(monkeypatch, [CAN_FOLLOW, version()], rows(row("queued")))
+    follower.follow("x.raw")
+    tick(follower, status.POLL_DELAYS[0])
+    assert follower.enabled is True
+
+    tick(follower, ASK_AGAIN_AFTER)
+    follower.follow("y.raw")
+
+    assert follower.enabled is False
+    assert follower.following() == []
+    assert len(server.questions) == 1
+    assert said(follower, "info") == [
+        ("info", "x.raw: queued for processing"),
+        (
+            "info",
+            "The server does not report what becomes of uploaded files, so the "
+            "agent will not follow them.",
+        ),
+    ]
+
+
+@pytest.mark.parametrize("status_code", [401, 403])
+def test_a_credential_refused_when_the_server_is_asked_again_keeps_the_files(
+    monkeypatch, follower, status_code
+):
+    """A refusal is not a server that lost what it could do. The device is
+    revoked, or its token has run out, when the hour is up; what became of
+    the files uploaded before that is still to be said once the machine is
+    paired again."""
+    server = serve(
+        monkeypatch,
+        [CAN_FOLLOW, Response(status_code=status_code), CAN_FOLLOW],
+        rows(row("queued")),
+        rows(row("queued")),
+        rows(row("done")),
+    )
+    follower.follow("x.raw")
+    follower.follow("y.raw")
+    tick(follower, status.POLL_DELAYS[0])
+
+    tick(follower, ASK_AGAIN_AFTER)
+    assert follower.enabled is True
+    assert follower.following() == ["x.raw", "y.raw"]
+    # Not asked about while its credential is refused: the answer would be
+    # the same refusal.
+    assert len(server.questions) == 2
+
+    tick(follower, ASK_AGAIN_AFTER)
+
+    assert server.version_questions == 3
+    assert follower.following() == []
+    assert follower.logger.lines == [
+        ("info", "x.raw: queued for processing"),
+        ("info", "y.raw: queued for processing"),
+        ("info", "x.raw: processed"),
+        ("info", "y.raw: processed"),
+    ]
 
 
 @pytest.mark.parametrize("status_code", [408, 425, 429])
