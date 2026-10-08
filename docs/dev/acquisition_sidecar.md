@@ -95,13 +95,19 @@ Three rules hold for every field:
 - **Identifiers are UUIDs** (RFC 9562), so they are unique without a registry
   and read the same on every server. A version 7 UUID sorts by when it was
   made, which suits runs, steps and acquisitions. The schema does not ask for
-  a version.
+  a version. It does ask for the UUID's own spelling, lowercase with its
+  hyphens (`0199b6a0-7c00-7000-8000-000000000001`): uppercase, braces,
+  `urn:uuid:` and bare digits are refused, so that the id in the document is
+  spelled as the column made from it.
 - **Content is identified by its SHA-256**, as 64 lowercase hex digits: a
   configuration file, a mode's definition, a sequence's definition, the
   channel file. The raw file's own hash is not in the record. The agent
   computes it and sends it beside the record ([How it travels](#how-it-travels)).
-- **A time is an instant**: ISO 8601 with an offset, UTC by convention
-  (`2026-10-07T12:00:00.000Z`). A time without an offset is refused.
+- **A time is an instant, written one way**: an RFC 3339 date-time with its
+  offset, UTC by convention (`2026-10-07T12:00:00.000Z`). That is the date,
+  `T`, the time to the second or finer, and `Z` or `+03:00`. A time without
+  an offset is refused, and so is one written any other way, a count of
+  seconds among them.
 
 ### Compatibility
 
@@ -117,6 +123,24 @@ says is not a record. That is deliberate: the control program's tests validate
 what it writes against the same model, so a fault shows there and not as a
 record that half arrived.
 
+It is as strict as it will ever be. A document this version reads is a record
+for good, since refusing it later would be the change that needs a new
+schema. So the document also has to be JSON and nothing more:
+
+- **No `NaN`, `Infinity` or `-Infinity`**, anywhere, in a field of the schema
+  or outside it. They are not numbers JSON has, and a database that stores
+  JSON refuses them. Python's `json.dumps` writes them unasked, so a failed
+  reading passed straight to it makes one: write `null`, or leave the
+  setting out.
+- **No key twice** in one object. Two readers need not pick the same one.
+- **32 levels of nesting at most**, the record itself being the first.
+
+`parse()` is where all of this is held, the spellings of an identifier and a
+time included, so a document is a record when `parse()` says so; the model
+alone reads more. `dump()` writes nothing `parse()` would not read back, and
+refuses a record that holds a number that is not finite. A field that was
+read as `null` is written as `null`.
+
 ## How it travels
 
 With the upload's creation request, as two keys of TUS `Upload-Metadata`:
@@ -128,7 +152,9 @@ With the upload's creation request, as two keys of TUS `Upload-Metadata`:
 
 The hash is computed by the agent from the file on disk, before the upload is
 created, because the metadata goes with the request that creates it. A file
-is therefore read twice.
+is therefore read twice: once to hash and once to send. It is hashed once
+for an upload however many attempts the upload takes, and again only if its
+size or its time of last change has moved in between.
 
 Both are sent only to a server that announces
 `files_accept_acquisition_metadata` in `GET /api/version`. The record is large
@@ -141,20 +167,37 @@ decides, per upload:
 | keeps them | yes | the record and the hash |
 | keeps them | no | the hash |
 | does not keep them | either | neither; the log says so once for the first file that had a sidecar |
+| refuses to say | either | neither; the log says once that the server is too old to be asked or refused this machine's credential |
 | has not answered | yes | nothing: the attempt fails as an unreachable server's does, and is retried |
 | has not answered | no | the file, with neither |
 
+A server "has not answered" when it could not be reached, when it failed
+(5xx), and when it asked for another try (408, 425, 429): `/api/version` is
+rate-limited by the address a request comes from, and one such answer taken
+for "keeps nothing" would leave an hour of records behind. Any other status
+but 200 is a refusal to say. It stands only for the token it was given to,
+since a server that predates the question and one that refused this
+machine's credential answer alike.
+
 **Neither may cost a file its upload.** A sidecar that cannot be used - not
 JSON, another schema, too large, the record of another file - is left behind
-with a warning, and the file goes without it. An upload refused together with
-its record is made once more without the record: a proxy in front of the
-server can refuse the request for the size of its headers, and that must not
-set an acquisition aside. A file set aside in `failed_uploads` has its sidecar
-copied with it.
+with a warning, and the file goes without it; so is one whose reading failed
+in any other way. An upload refused together with its record is made once
+more without the record: a proxy in front of the server can refuse the
+request for the size of its headers, and that must not set an acquisition
+aside. A file set aside in `failed_uploads` has its sidecar copied with it.
+
+One refusal is not answered that way. A 409 is, to the agent, a conflict to
+try again and not a request that was rejected for what it is, so the file is
+not sent again without its record: it is tried again as it was, and set aside
+after the tenth attempt. That leaves a server one way to refuse an upload
+outright, record or no record, without being sent the file anyway.
 
 The agent asks what the server can do once and keeps the answer for an hour
 (`mascope_file_agent/capabilities.py`), so a server updated under a running
-agent starts receiving records without the agent being restarted.
+agent starts receiving records without the agent being restarted. The
+following of what became of each upload reads the same answer on every pass,
+and starts with the same update.
 
 ## The server
 
