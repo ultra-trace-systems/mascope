@@ -20,7 +20,9 @@ Each peak is given an expected width envelope, and any overlapping pairs are dis
 ## Quality Assessment and Scoring
 
 Each target isotope is matched to the highest-intensity sample peak located within the chosen mass tolerance range.
-Duplicate assignments across overlapping ionization pathways are eliminated by keeping only the first unique occurrence.
+A peak can be matched by several target ions of the collection: an ion reached through two ionization pathways, or the main line of one calibrant that is also a minor isotope line of another, such as a labelled reagent beside its unlabelled compound.
+Such a peak contributes one point, read as the line with the highest relative abundance among its matches, so a calibrant's main line is not discarded for also being another ion's minor line.
+Matches of equal abundance are separated by their mass error and isotope formula, never by anything that differs between servers, so the same file and collection give the same calibrants everywhere.
 
 To evaluate the quality of candidate calibration assignments, a multi-parametric statistical assessment is performed on each matched target isotope.
 For each distinct target ion, a principal reference point is defined by isolating the "main isotope" - the configuration with the maximum theoretical relative abundance.
