@@ -18,7 +18,10 @@ from sqlalchemy import select
 
 from mascope_backend.api.lib.exceptions.api_exceptions import NotFoundException
 from mascope_backend.api.lib.rate_limit import clear_login_rate_limit
-from mascope_backend.api.new.auth.access_token.service import regenerate_access_token
+from mascope_backend.api.new.auth.access_token.service import (
+    ensure_access_token,
+    regenerate_access_token,
+)
 from mascope_backend.api.new.auth.config import auth_settings
 from mascope_backend.api.new.auth.transports.cookie import session_token_from_response
 from mascope_backend.api.new.users import exceptions
@@ -361,7 +364,8 @@ class UserManager(IntegerIDMixin, BaseUserManager[User, int]):
     ) -> None:
         """
         After user login:
-        1. Refresh the file-converter access token (editor+ roles)
+        1. Make sure of the file-converter access token (editor+ roles): a
+           valid one is kept, a missing one minted
         2. Authenticate the socket connection
 
         :param user: The user that is logging in
@@ -388,10 +392,12 @@ class UserManager(IntegerIDMixin, BaseUserManager[User, int]):
         # Step 1: the file-converter token. Uploads 401 without it, and it
         # must exist however the user signs in - kept ahead of the socket
         # step, whose sid check returns early for API logins (SDK, scripts,
-        # agent pairing).
+        # agent pairing). A token still valid is kept, not replaced: the
+        # user's uploads the converter has not reached yet carry it. Near its
+        # end a new one is minted beside it, and the old one lapses on its own.
         try:
             if user.role_id >= auth_settings.ROLE_ACCESS_LEVELS.get("editor"):
-                await regenerate_access_token(user=user, service_name="file-converter")
+                await ensure_access_token(user=user, service_name="file-converter")
         except Exception:
             runtime.logger.exception(
                 f"Failed to refresh the file-converter token after login [Worker {worker_pid}]"

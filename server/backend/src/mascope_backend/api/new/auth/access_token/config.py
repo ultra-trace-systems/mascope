@@ -60,3 +60,11 @@ class AccessTokenConfig(BaseModel):
     # usable only until its own lifetime elapses, so this widens no token's
     # life. Older tokens are reaped on renewal.
     DEVICE_TOKENS_KEPT_PER_DEVICE: int = 2
+    # A person's file-converter token is kept across sign-ins, since the
+    # uploads of theirs the converter has not reached yet carry it. So that it
+    # does not run to the end of its 360 days and lapse under a queue, a
+    # sign-in this close to its end mints a new one beside it: new uploads
+    # take the newest, the queued ones keep validating on the one they carry
+    # until it lapses on its own, as a device's renewal overlaps. Comfortably
+    # longer than any queue.
+    FILE_CONVERTER_TOKEN_RENEWAL_SECONDS: int = 30 * 24 * 60 * 60  # 30 days

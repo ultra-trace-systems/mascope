@@ -3,12 +3,13 @@
 The other integration tests mint JWTs directly, so nothing else exercises the
 fastapi-users login flow - including the ``on_after_login`` hook, which
 re-reads the cached login form to clear the per-account rate-limit counter on
-a successful sign-in and refreshes the file-converter access token for
+a successful sign-in and makes sure of the file-converter access token for
 editor+ accounts. These tests pin that a real password login works with the
 limiter dependencies and the clearing hook wired in (both fail open when
-Redis is not connected, as in this ASGI test setup), and that the converter
-token is minted for every editor+ sign-in - API logins without a socket sid
-included, since uploads fail without it.
+Redis is not connected, as in this ASGI test setup), that the converter
+token is minted for every editor+ sign-in that finds none - API logins
+without a socket sid included, since uploads fail without it - and that a
+sign-in keeps a token still valid, since the user's queued uploads carry it.
 
 The second-factor tests below stub the shared Redis client instead: the
 pending token's single use and its miss budget are Redis-backed, so under the
@@ -16,14 +17,18 @@ fail-open default they would silently not exist.
 """
 
 from dataclasses import dataclass
+from datetime import datetime as dt
+from datetime import timedelta, timezone
 from http.cookies import SimpleCookie
 
 import pytest
 import pytest_asyncio
 from fastapi_users.password import PasswordHelper
 from httpx import ASGITransport, AsyncClient
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, update
 
+from mascope_backend.api.new.auth.access_token import cache as token_cache
+from mascope_backend.api.new.auth.access_token import service as token_service
 from mascope_backend.api.new.auth.config import auth_settings
 from mascope_backend.api.new.auth.mfa import crypto, service
 from mascope_backend.app.fast import fast
@@ -132,6 +137,155 @@ async def test_api_login_mints_file_converter_token(
     assert resp.status_code in (200, 204)
     tokens = await _converter_tokens(async_session_factory, editor_login_user.id)
     assert len(tokens) == 1
+
+
+async def _login(client, user):
+    resp = await client.post(
+        "/api/auth/login", data={"username": user.email, "password": LOGIN_PASSWORD}
+    )
+    assert resp.status_code in (200, 204)
+
+
+@pytest.mark.asyncio
+async def test_a_second_login_keeps_the_file_converter_token(
+    editor_login_user, async_session_factory
+):
+    """A sign-in keeps a converter token that is still valid.
+
+    Every upload of the user's that the converter has not reached yet
+    carries the token it was uploaded with. A sign-in that replaced it -
+    another tab, another device, a session that expired - failed each of
+    those uploads when the converter handed its result back.
+    """
+    async with AsyncClient(
+        transport=ASGITransport(app=fast), base_url="http://test"
+    ) as client:
+        await _login(client, editor_login_user)
+        (first,) = await _converter_tokens(async_session_factory, editor_login_user.id)
+        await _login(client, editor_login_user)
+        await _login(client, editor_login_user)
+
+    tokens = await _converter_tokens(async_session_factory, editor_login_user.id)
+    assert [t.token for t in tokens] == [first.token]
+
+
+@pytest.mark.asyncio
+async def test_a_login_mints_the_file_converter_token_again_once_it_is_gone(
+    editor_login_user, async_session_factory
+):
+    """An administrator clearing the user's tokens, or an account made an
+    editor signing in for the first time: the next sign-in mints the converter
+    token, so uploads work after it. (A password change is not this case: it
+    wipes and reissues the token in the same call.)"""
+    async with AsyncClient(
+        transport=ASGITransport(app=fast), base_url="http://test"
+    ) as client:
+        await _login(client, editor_login_user)
+        (first,) = await _converter_tokens(async_session_factory, editor_login_user.id)
+        async with async_session_factory() as session:
+            await session.execute(
+                delete(AccessToken).where(AccessToken.token == first.token)
+            )
+            await session.commit()
+        await _login(client, editor_login_user)
+
+    tokens = await _converter_tokens(async_session_factory, editor_login_user.id)
+    assert len(tokens) == 1
+    assert tokens[0].token != first.token
+
+
+async def _age_token(async_session_factory, token: str, seconds: float) -> None:
+    """Move a token's minting back by ``seconds`` and forget the validation
+    cache, which would otherwise answer for the row."""
+    async with async_session_factory() as session:
+        await session.execute(
+            update(AccessToken)
+            .where(AccessToken.token == token)
+            .values(created_at=dt.now(timezone.utc) - timedelta(seconds=seconds))
+        )
+        await session.commit()
+    token_cache.clear()
+
+
+@pytest.mark.asyncio
+async def test_a_login_replaces_a_file_converter_token_past_its_lifetime(
+    editor_login_user, async_session_factory
+):
+    """A token still in the table but past its lifetime no longer validates;
+    the sign-in removes it and mints one, rather than keeping it or leaving
+    it beside the new one."""
+    lifetime = auth_settings.access_token.ACCESS_TOKEN_EXPIRATION_SECONDS
+    async with AsyncClient(
+        transport=ASGITransport(app=fast), base_url="http://test"
+    ) as client:
+        await _login(client, editor_login_user)
+        (first,) = await _converter_tokens(async_session_factory, editor_login_user.id)
+        await _age_token(async_session_factory, first.token, lifetime + 60)
+        await _login(client, editor_login_user)
+
+    tokens = await _converter_tokens(async_session_factory, editor_login_user.id)
+    assert len(tokens) == 1
+    assert tokens[0].token != first.token
+
+
+@pytest.mark.asyncio
+async def test_a_login_near_the_tokens_end_renews_it_beside_the_old_one(
+    editor_login_user, async_session_factory
+):
+    """Within the renewal window the sign-in mints a new token and leaves the
+    old one, so an upload queued under the old one keeps validating while new
+    uploads take the newest."""
+    settings = auth_settings.access_token
+    lifetime = settings.ACCESS_TOKEN_EXPIRATION_SECONDS
+    window = settings.FILE_CONVERTER_TOKEN_RENEWAL_SECONDS
+    async with AsyncClient(
+        transport=ASGITransport(app=fast), base_url="http://test"
+    ) as client:
+        await _login(client, editor_login_user)
+        (first,) = await _converter_tokens(async_session_factory, editor_login_user.id)
+        await _age_token(async_session_factory, first.token, lifetime - window + 60)
+        await _login(client, editor_login_user)
+        tokens = await _converter_tokens(async_session_factory, editor_login_user.id)
+        assert {t.token for t in tokens} > {first.token}
+        assert len(tokens) == 2
+        # The newest is what an upload is handed, and a further sign-in keeps it
+        newest = await token_service.get_access_token(
+            user=editor_login_user, service_name="file-converter"
+        )
+        assert newest != first.token
+        await _login(client, editor_login_user)
+
+    assert {
+        t.token
+        for t in await _converter_tokens(async_session_factory, editor_login_user.id)
+    } == {
+        first.token,
+        newest,
+    }
+
+
+@pytest.mark.asyncio
+async def test_a_login_that_cannot_check_the_token_leaves_it(
+    editor_login_user, async_session_factory, monkeypatch
+):
+    """A read that fails at sign-in is not "no token": the sign-in succeeds
+    and the token the user holds stays, queued uploads included."""
+    async with AsyncClient(
+        transport=ASGITransport(app=fast), base_url="http://test"
+    ) as client:
+        await _login(client, editor_login_user)
+        (first,) = await _converter_tokens(async_session_factory, editor_login_user.id)
+
+        async def _cannot_read(user, service_name):
+            raise ConnectionError("the pool is exhausted")
+
+        monkeypatch.setattr(token_service, "_newest_access_token", _cannot_read)
+        await _login(client, editor_login_user)
+
+    assert [
+        t.token
+        for t in await _converter_tokens(async_session_factory, editor_login_user.id)
+    ] == [first.token]
 
 
 @pytest.mark.asyncio
