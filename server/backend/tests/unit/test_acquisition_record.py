@@ -93,15 +93,59 @@ def test_a_document_that_is_not_a_record_is_refused(document):
         record_from_upload(_upload(record=None, acquisition=document))
 
 
-def test_the_identifiers_are_spelled_one_way_for_the_columns():
-    """A column compares what it stores, and a UUID has several spellings."""
-    document = {**RECORD, "acquisition_id": "0199B6A07C0070008000000000000003"}
+def test_the_columns_are_the_identifiers_the_schema_has():
+    assert ID_COLUMNS == acquisition.ID_FIELDS
 
-    ids = record_ids(document)
+    ids = record_ids(RECORD)
 
-    assert tuple(ids) == ID_COLUMNS
-    assert ids["acquisition_id"] == "0199b6a0-7c00-7000-8000-000000000003"
-    assert ids["agent_id"] == RECORD["agent_id"]
+    assert ids == {name: RECORD[name] for name in ID_COLUMNS}
+
+
+@pytest.mark.parametrize(
+    "spelling",
+    [
+        "0199B6A0-7C00-7000-8000-000000000003",
+        "0199b6a07c0070008000000000000003",
+        "urn:uuid:0199b6a0-7c00-7000-8000-000000000003",
+    ],
+)
+def test_the_registration_reads_an_identifier_as_the_upload_does(spelling):
+    """One spelling, at both doors. Read by the model alone, this would be
+    kept: the document in one spelling and the column made from it in
+    another."""
+    with pytest.raises(ValueError, match="a UUID is written in lowercase"):
+        record_ids({**RECORD, "acquisition_id": spelling})
+
+
+@pytest.mark.parametrize("number", [float("inf"), -float("inf"), float("nan")])
+def test_the_registration_refuses_a_number_json_cannot_write(number):
+    """A request body can hold one, and the next thing to write the record
+    down could not."""
+    with pytest.raises(ValueError):
+        record_ids({**RECORD, "setpoints": {"a.b": number}})
+
+
+def test_the_registration_checks_the_record_is_its_files():
+    assert record_ids(RECORD, "run_0042.raw")
+    assert record_ids(RECORD, "RUN_0042.RAW")
+    # A registration that does not say what the file was called is not asked.
+    assert record_ids(RECORD, None)
+
+    with pytest.raises(ValueError, match="'run_0041.raw'"):
+        record_ids(RECORD, "run_0041.raw")
+
+
+def test_a_record_at_the_size_limit_passes_the_second_door_as_it_did_the_first():
+    """It arrives as a dict and is written out again to be read. Written with
+    the spaces a default encoder adds, a record that was within the limit
+    would be over it."""
+    spare = acquisition.MAX_BYTES - len(
+        json.dumps({**RECORD, "later": ""}, separators=(",", ":"))
+    )
+    full = {**RECORD, "later": "p" * spare}
+    assert len(json.dumps(full)) > acquisition.MAX_BYTES
+
+    assert record_ids(full)["acquisition_id"] == RECORD["acquisition_id"]
 
 
 def test_a_document_that_is_no_record_has_no_identifiers():
@@ -148,3 +192,18 @@ def test_the_hash_is_of_the_files_content(tmp_path):
     path.write_bytes(content)
 
     assert file_sha256(str(path)) == hashlib.sha256(content).hexdigest()
+
+
+def test_the_upload_is_known_by_its_name_without_a_folder():
+    assert record_from_upload(_upload(source_filename="some/folder/run_0042.raw"))
+
+
+@pytest.mark.parametrize("written", ["1e999", "-1e999", "NaN", "Infinity"])
+def test_a_number_json_cannot_hold_is_refused_at_the_door(written):
+    """While the uploader can still be told. Past the door, the converter's
+    registration request could not carry it and the database would not store
+    it, and the file would be the one to pay."""
+    document = json.dumps(RECORD)[:-1] + ', "setpoints": {"a.b": %s}}' % written
+
+    with pytest.raises(ValueError):
+        record_from_upload(_upload(record=None, acquisition=document))

@@ -24,7 +24,7 @@ from unittest.mock import AsyncMock
 import pytest
 import pytest_asyncio
 from fastapi import HTTPException
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.orm import undefer
 from test_utils import captured_logs
 
@@ -108,6 +108,21 @@ def _said(records: list[dict]) -> list[str]:
     return [record["message"] for record in records]
 
 
+async def _without_a_record(async_session_factory, filename: str) -> bool:
+    """Whether the database holds the file with no record: ``IS NULL``."""
+    async with async_session_factory() as session:
+        return bool(
+            await session.scalar(
+                select(func.count())
+                .select_from(SampleFile)
+                .where(
+                    SampleFile.filename == filename,
+                    SampleFile.acquisition.is_(None),
+                )
+            )
+        )
+
+
 async def _stored(async_session_factory, filename: str) -> SampleFile:
     async with async_session_factory() as session:
         return (
@@ -145,7 +160,12 @@ async def test_a_registration_keeps_the_record_its_identifiers_and_the_hash(
     async_session_factory, editor_client
 ):
     record = _record(1)
-    body = _registration(INSTRUMENTS[0], acquisition=record, sha256=SHA256)
+    body = _registration(
+        INSTRUMENTS[0],
+        acquisition=record,
+        sha256=SHA256,
+        source_filename=record["source_filename"],
+    )
 
     resp = await editor_client.post("/api/sample/files", json=body)
     assert resp.status_code == 201, resp.text
@@ -229,6 +249,9 @@ async def test_a_file_registered_with_neither_has_neither(
     assert stored.acquisition is None
     assert stored.acquisition_id is None
     assert stored.sha256 is None
+    # Asked of the database and not of the row: a column that holds the JSON
+    # value null reads as None too, and is a record that says nothing.
+    assert await _without_a_record(async_session_factory, body["filename"])
 
 
 @pytest.mark.asyncio
@@ -251,6 +274,8 @@ async def test_an_acquisition_is_one_file(async_session_factory, editor_client):
     assert newcomer.acquisition is None
     assert newcomer.acquisition_id is None
     assert newcomer.step_id is None
+    assert await _without_a_record(async_session_factory, second["filename"])
+    assert not await _without_a_record(async_session_factory, first["filename"])
     # What was checked about the file itself is still recorded.
     assert newcomer.sha256 == SHA256
     assert any(
@@ -473,3 +498,137 @@ async def test_storing_an_upload_tells_the_converter_what_it_carried(
 
     assert told.await_args.kwargs["acquisition"] == RECORD
     assert told.await_args.kwargs["sha256"] == SHA256
+
+
+# ---------------------------------------------------------------------------
+# The registration's own door
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "changes, reason",
+    [
+        (
+            {"acquisition_id": "0199B6A0-7C00-7000-8000-000000000190"},
+            "a UUID is written in lowercase",
+        ),
+        ({"triggered_at": "1791374400"}, "a time is written as"),
+        ({"later": "p" * 20_000}, "16384 at most"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_the_registration_reads_a_record_by_the_uploads_rule(
+    async_session_factory, editor_client, changes, reason
+):
+    """What the upload's door refuses, this one leaves out: the file is
+    registered, and its record is not kept in a spelling the other door
+    would not have let in."""
+    body = _registration(INSTRUMENTS[0], acquisition={**_record(7), **changes})
+
+    with captured_logs("WARNING") as lines:
+        resp = await editor_client.post("/api/sample/files", json=body)
+    assert resp.status_code == 201, resp.text
+
+    assert await _without_a_record(async_session_factory, body["filename"])
+    stored = await _stored(async_session_factory, body["filename"])
+    assert stored.acquisition_id is None
+    assert any("is not kept, as" in line and reason in line for line in _said(lines))
+
+
+@pytest.mark.asyncio
+async def test_the_record_of_another_file_is_not_registered_with_this_one(
+    async_session_factory, editor_client
+):
+    body = _registration(
+        INSTRUMENTS[1], acquisition=_record(8), source_filename="run_0041.raw"
+    )
+
+    resp = await editor_client.post("/api/sample/files", json=body)
+    assert resp.status_code == 201, resp.text
+
+    assert await _without_a_record(async_session_factory, body["filename"])
+
+
+@pytest.mark.parametrize("written", ["1e999", "NaN"])
+@pytest.mark.asyncio
+async def test_a_registration_holding_a_number_json_cannot_write_keeps_the_file(
+    async_session_factory, editor_client, written
+):
+    """A request body can hold one. The database would refuse the row for
+    it, and the file would be the one to pay."""
+    body = _registration(INSTRUMENTS[2], acquisition=_record(9))
+    raw = json.dumps(body).replace(
+        '"ionization": "NO3"', '"ionization": "NO3", "setpoints": {"a.b": %s}' % written
+    )
+    assert written in raw
+
+    resp = await editor_client.post(
+        "/api/sample/files", content=raw, headers={"Content-Type": "application/json"}
+    )
+    assert resp.status_code == 201, resp.text
+
+    assert await _without_a_record(async_session_factory, body["filename"])
+
+
+@pytest.mark.asyncio
+async def test_a_row_the_database_refuses_with_its_record_is_stored_without_it(
+    async_session_factory, editor_client, monkeypatch
+):
+    """Two registrations of one acquisition, the second past the check before
+    the first has committed: the unique column refuses the row. The file is
+    what must not be lost."""
+    record = _record(10)
+    first = _registration(INSTRUMENTS[3], acquisition=record)
+    second = _registration(INSTRUMENTS[4], acquisition=record, sha256=SHA256)
+    assert (
+        await editor_client.post("/api/sample/files", json=first)
+    ).status_code == 201
+
+    async def past_the_check(session, filename, document, source_filename):
+        return document, sample_files_controller.record_ids(document)
+
+    monkeypatch.setattr(sample_files_controller, "_record_to_keep", past_the_check)
+
+    with captured_logs("WARNING") as lines:
+        resp = await editor_client.post("/api/sample/files", json=second)
+    assert resp.status_code == 201, resp.text
+
+    newcomer = await _stored(async_session_factory, second["filename"])
+    assert newcomer.acquisition_id is None
+    assert newcomer.sha256 == SHA256
+    assert await _without_a_record(async_session_factory, second["filename"])
+    assert resp.json()["data"]["acquisition_id"] is None
+    assert any("was refused by the database" in line for line in _said(lines))
+
+
+@pytest.mark.asyncio
+async def test_a_row_refused_for_another_reason_is_refused(editor_client, monkeypatch):
+    """Only a row with a record gets a second try without it."""
+    body = _registration(INSTRUMENTS[5])
+    assert (await editor_client.post("/api/sample/files", json=body)).status_code == 201
+    # The same file name again, past the check for one already registered.
+    monkeypatch.setattr(
+        sample_files_controller,
+        "get_sample_files",
+        AsyncMock(return_value={"results": 0}),
+    )
+
+    with captured_logs("WARNING") as lines:
+        resp = await editor_client.post("/api/sample/files", json=body)
+
+    assert resp.status_code >= 400
+    assert not any("was refused by the database" in line for line in _said(lines))
+
+
+@pytest.mark.parametrize("sha256", ["AB" * 32, "ab" * 31, "not-a-hash"])
+@pytest.mark.asyncio
+async def test_a_registration_with_a_hash_that_is_none_is_refused(
+    editor_client, sha256
+):
+    """The upload route hands the converter a hash it has checked, or none.
+    Anything else in the field is a registration made up by hand."""
+    resp = await editor_client.post(
+        "/api/sample/files", json=_registration(INSTRUMENTS[6], sha256=sha256)
+    )
+
+    assert resp.status_code == 422, resp.text

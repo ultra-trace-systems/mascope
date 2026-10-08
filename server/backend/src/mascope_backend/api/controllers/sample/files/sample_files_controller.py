@@ -12,6 +12,7 @@ from sqlalchemy import (
     or_,
     select,
 )
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.orm import undefer
 
 import mascope_signal.compute as m_compute
@@ -471,7 +472,7 @@ async def get_sample_file(sample_file_id: str) -> dict:
 
 
 async def _record_to_keep(
-    session, filename: str, document: dict | None
+    session, filename: str, document: dict | None, source_filename: str | None
 ) -> tuple[dict | None, dict[str, str]]:
     """The acquisition record to store with a file, and its identifier columns.
 
@@ -489,6 +490,9 @@ async def _record_to_keep(
     :type filename: str
     :param document: The record the registration carries, if any.
     :type document: dict | None
+    :param source_filename: The name the file had where it was written, when
+        the registration says.
+    :type source_filename: str | None
     :return: The record to store and the value of each identifier column;
         None and no columns when nothing is kept.
     :rtype: tuple[dict | None, dict[str, str]]
@@ -496,11 +500,11 @@ async def _record_to_keep(
     if document is None:
         return None, {}
     try:
-        ids = record_ids(document)
+        ids = record_ids(document, source_filename)
     except ValueError as unusable:
         runtime.logger.warning(
-            f"The acquisition record of '{filename}' is not kept, as it is "
-            f"not a record ({unusable}); storing the file without it"
+            f"The acquisition record of '{filename}' is not kept, as "
+            f"{unusable}; storing the file without it"
         )
         return None, {}
     other = await session.scalar(
@@ -607,28 +611,54 @@ async def create_sample_file(
         # the authenticated request (user_id), not from the request body.
         # Registered means converted: auto-processing takes it from here.
         acquisition, acquisition_ids = await _record_to_keep(
-            session, sample_file_create.filename, sample_file_create.acquisition
+            session,
+            sample_file_create.filename,
+            sample_file_create.acquisition,
+            sample_file_create.source_filename,
         )
-        new_sample_file = SampleFile(
-            sample_file_id=gen_id(16),
-            **sample_file_create.model_dump(
-                exclude={"uploaded_by_device_id", "mz_calibration", "acquisition"}
-            ),
-            mz_calibration=mz_calibration,
-            acquisition=acquisition,
-            **acquisition_ids,
-            uploaded_by_device_id=device_id,
-            uploaded_by_user_id=user_id,
-            processing_status=ProcessingStatus.CONVERTED.value,
-            processing_detail=await read_pooled_streams_note(
-                sample_file_create.filename
-            ),
-            processing_updated_utc=datetime.now(timezone.utc),
-        )
+        streams_note = await read_pooled_streams_note(sample_file_create.filename)
+
+        def row(record: dict | None, record_ids: dict[str, str]) -> SampleFile:
+            return SampleFile(
+                sample_file_id=gen_id(16),
+                **sample_file_create.model_dump(
+                    exclude={"uploaded_by_device_id", "mz_calibration", "acquisition"}
+                ),
+                mz_calibration=mz_calibration,
+                acquisition=record,
+                **record_ids,
+                uploaded_by_device_id=device_id,
+                uploaded_by_user_id=user_id,
+                processing_status=ProcessingStatus.CONVERTED.value,
+                processing_detail=streams_note,
+                processing_updated_utc=datetime.now(timezone.utc),
+            )
+
+        new_sample_file = row(acquisition, acquisition_ids)
         session.add(new_sample_file)
 
         # Step 3: Commit transaction
-        await session.commit()
+        try:
+            await session.commit()
+        except DBAPIError as refused:
+            if acquisition is None:
+                raise
+            # The database would not have the row with its record on it: two
+            # registrations of one acquisition that both got past the check
+            # above, or something about a record that only storing it finds.
+            # The file is what must not be lost, so it is registered without
+            # the record. Whatever else was wrong with the row is wrong again
+            # and is raised then.
+            await session.rollback()
+            runtime.logger.warning(
+                f"Registering '{sample_file_create.filename}' with its "
+                f"acquisition record was refused by the database "
+                f"({type(refused.orig).__name__}); storing the file without "
+                "the record"
+            )
+            new_sample_file = row(None, {})
+            session.add(new_sample_file)
+            await session.commit()
 
         # Step 4: Refresh instance
         await session.refresh(new_sample_file)
