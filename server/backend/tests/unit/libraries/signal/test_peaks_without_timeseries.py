@@ -55,6 +55,7 @@ def _answer(monkeypatch, *, ranged: bool = True, name: str = "Scripted") -> dict
     sample = SimpleNamespace(
         sample_item_id="sample-1",
         sample_item_name=name,
+        sample_file_id="file-1",
         filename=SAMPLE_FILENAME,
         polarity="-",
         t0=t0,
@@ -66,7 +67,13 @@ def _answer(monkeypatch, *, ranged: bool = True, name: str = "Scripted") -> dict
     async def _fetch_sample(_sample_item_id):
         return sample
 
+    async def _no_stream_rows(_sample_file_id, segments):
+        # The listing names the sample's segments, and reads what the file's
+        # stream rows say of them: none here
+        return segments
+
     monkeypatch.setattr(samples_controller, "fetch_sample", _fetch_sample)
+    monkeypatch.setattr(samples_controller, "with_stream_rows", _no_stream_rows)
     time_range = {"t_min": t0, "t_max": t1} if ranged else {}
     return asyncio.run(
         samples_controller.get_sample_peaks("sample-1", matches=False, **time_range)
