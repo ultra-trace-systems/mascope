@@ -229,10 +229,14 @@ def test_the_wait_is_one_of_the_uploads_attempts(build, sample, sidecar):
     assert [
         line for line in file_uploader.logger.said("info") if "attempt" in line
     ] == [
-        "Upload attempt 1/10 for file x.raw failed: The server could not be "
-        "asked whether it keeps the acquisition record of x.raw.",
-        "Upload attempt 2/10 for file x.raw failed: The server could not be "
-        "asked whether it keeps the acquisition record of x.raw.",
+        (
+            "Upload attempt 1/10 for file x.raw failed: The server could not be "
+            "asked whether it keeps the acquisition record of x.raw."
+        ),
+        (
+            "Upload attempt 2/10 for file x.raw failed: The server could not be "
+            "asked whether it keeps the acquisition record of x.raw."
+        ),
     ]
 
 

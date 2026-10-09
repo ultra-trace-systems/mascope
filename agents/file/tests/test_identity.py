@@ -12,7 +12,6 @@ import pytest
 
 import mascope_sdk
 from mascope_file_agent import Agent, __version__, agent, identity
-from mascope_sdk import _agents, agent_headers
 
 
 class StubLogger:
@@ -32,7 +31,7 @@ class StubLogger:
 def test_identity_is_what_every_request_reports():
     identity("instrument-agent", version="6.0.0", verify_tls=False)
 
-    headers = agent_headers("tok")
+    headers = mascope_sdk.agent_headers("tok")
     assert headers["X-Service-Name"] == "instrument-agent"
     assert headers["X-Agent-Version"] == "6.0.0"
     assert mascope_sdk.VERIFY_TLS is False
@@ -43,7 +42,7 @@ def test_identity_defaults_to_the_file_agent_at_this_version():
 
     identity()
 
-    headers = agent_headers("tok")
+    headers = mascope_sdk.agent_headers("tok")
     assert headers["X-Service-Name"] == "file-agent"
     assert headers["X-Agent-Version"] == __version__
     assert mascope_sdk.VERIFY_TLS is True
@@ -55,9 +54,11 @@ def test_importing_the_agent_sets_no_identity():
         [
             sys.executable,
             "-c",
-            "import mascope_sdk, mascope_file_agent, mascope_file_agent.main;"
-            "print(mascope_sdk.SERVICE_NAME, mascope_sdk.AGENT_VERSION,"
-            " mascope_sdk.VERIFY_TLS)",
+            (
+                "import mascope_sdk, mascope_file_agent, mascope_file_agent.main;"
+                "print(mascope_sdk.SERVICE_NAME, mascope_sdk.AGENT_VERSION,"
+                " mascope_sdk.VERIFY_TLS)"
+            ),
         ],
         capture_output=True,
         text=True,
@@ -69,7 +70,7 @@ def test_importing_the_agent_sets_no_identity():
 
 def test_the_agent_knows_the_name_the_sdk_starts_with():
     """The check below compares against it, so it has to be the SDK's own."""
-    assert agent.SDK_SERVICE_NAME == _agents.SERVICE_NAME
+    assert agent.SDK_SERVICE_NAME == mascope_sdk._agents.SERVICE_NAME
 
 
 def test_an_agent_does_not_start_before_the_process_says_who_it_is(
