@@ -1304,11 +1304,22 @@ async def _auto_process_sample_file(
         stale_store_note(found_streams),
         kept_rows_note(stream_rows),
     )
+    bound_detail = _bound_detail(bound_modes, rung)
     await record_processing_status(
         sample_file_id,
         ProcessingStatus.BOUND,
-        compose_detail(_bound_detail(bound_modes, rung), file_note),
+        compose_detail(bound_detail, file_note),
     )
+    # What bound the file is the news of this one stage, for every rung but
+    # the record's. A token is in the file's name, which Raw files shows
+    # beside the status, and nearly every file is bound by one: said again
+    # at the end it would lengthen every status with what the row already
+    # shows. A record is shown nowhere else, so a file its record bound goes
+    # on saying so in every status this run records, as a record that bound
+    # nothing does through the note above. The two never meet: a record
+    # either bound the file or it did not.
+    if rung == "declared":
+        file_note = compose_detail(bound_detail, file_note)
 
     # Extract batch and sample IDs for notifications
     affected_sample_batch_ids = [

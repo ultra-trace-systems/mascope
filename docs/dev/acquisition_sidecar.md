@@ -267,6 +267,22 @@ ID", "Step ID", "Sequence run ID", "Agent ID" and "File SHA-256" of its
 samples sheet). The record itself is up to 16 KB, so it is loaded only by
 `GET /api/sample/files/{id}`.
 
+What bound a file is on its samples, and is returned with them. A sample
+item carries `bound_by` (`declared`, `explicit`, `token`, `method`, or null
+for an item auto-processing did not route) and `method_binding_id`
+([ingest_routing_and_splitting.md](ingest_routing_and_splitting.md), section
+5.2). Both are in every serialised item: from `GET /api/sample/items` and
+`GET /api/sample/items/{id}`, which read the item's own row, and in the
+sample view, which is what `GET /api/samples`, a sample's socket events and
+the answer to creating an item are read from. A sample of a file its record
+bound reads `"bound_by": "declared"`.
+
+They are read and never taken. No model a route reads a request into has
+either field, so one sent with a request - by a client returning a row it
+was given, say - is dropped while the request is read: an item made through
+the API records no rung, and an update neither sets one nor clears the one
+an item has. Changing an item's ionization mode clears it, as it always has.
+
 **In routing** the record is rung 0, "declared"
 ([ingest_routing_and_splitting.md](ingest_routing_and_splitting.md), section
 5.2). A file nobody chose modes for is bound by `ionization` before its name
@@ -295,9 +311,18 @@ is read:
   the one it ends on included ("Matched 1 sample. Its acquisition record
   names ..."). A run that fails records how it failed and neither note; the
   run that processes the file again says both again.
-- Items bound this way record `bound_by = "declared"`, the file's status
-  reads "Bound to ... by its acquisition record.", and the declaration teaches
-  the file's method binding, as a token does.
+- Items bound this way record `bound_by = "declared"`, which the API
+  returns with each of them ([In the API](#the-server)), and the declaration
+  teaches the file's method binding, as a token does.
+- The file's status says so, and goes on saying so: "Bound to 'Nitrate' (-)
+  by its acquisition record." is in every status the run records from the
+  binding on, the one it ends on included ("Matched 1 sample. Bound to
+  'Nitrate' (-) by its acquisition record."), as the sentence of a record
+  that bound nothing is. The other rungs say what bound a file in its
+  `bound` status alone. A token is in the file's name, which Raw files shows
+  beside the status, and nearly every file is bound by one, so repeating it
+  would lengthen every status with what the row already shows; a record is
+  shown nowhere else.
 - **Re-processing asks the record again, first, and before anything of the
   file is cleared.** Re-process in Raw files, and processing one file on
   request, decide what a run starts with, and ask in the pipeline's order.
@@ -333,7 +358,9 @@ Not built:
   site adopts it, so binding to one today would leave a file unprocessed.
 - **The FAIR roadmap's phase 1 exports** do not exist yet. When they do, the
   identifiers go into them as `urn:uuid:<id>`.
-- **The web app** shows none of this beyond the status sentence.
+- **The web app** shows none of this beyond the status sentence. Each
+  sample it lists carries `bound_by`, and no column, filter or mark of it
+  reads the field.
 
 ## Reading the record as provenance
 

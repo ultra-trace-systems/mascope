@@ -4,6 +4,32 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 ## [Unreleased]
 
+### Added
+
+- **What bound a sample's chemistry is readable through the API.** A sample
+  item records which rung of the binding ladder auto-processing bound it by
+  (`bound_by`: `declared`, `explicit`, `token` or `method`) and, for a method
+  binding, which one (`method_binding_id`), and until now only SQL could read
+  either. Both are returned with every sample item: by
+  `GET /api/sample/items` and `GET /api/sample/items/{id}`, and through the
+  sample view, so by `GET /api/samples`, which the web app and the SDK list
+  samples with. A sample of a file its acquisition record bound reads
+  `"bound_by": "declared"`; an item nothing routed reads null. The fields are
+  output only: a request that sends them is read as if it had not, so none
+  can claim a rung for an item nobody routed. Changing an item's ionization
+  mode clears them, as before (`docs/dev/acquisition_sidecar.md`).
+
+### Changed
+
+- **A file bound by its acquisition record goes on saying so once it is
+  processed.** Its status in Raw files read "Bound to ... by its acquisition
+  record." only until the next stage replaced it, so a processed file said
+  "Matched 1 sample." like any other and nothing showed that its record had
+  bound it. The sentence is now kept in every status from the binding on,
+  the last included: "Matched 1 sample. Bound to 'Nitrate' (-) by its
+  acquisition record." Files bound by a token, a method or a person's choice
+  end on the status they did before.
+
 ## [1.11.0] - 2026.10.09
 
 ### Added

@@ -6,6 +6,9 @@ silently: the pipeline builds each item with its rung, and the bulk create
 writes the column for every row it inserts
 (``docs/dev/ingest_routing_and_splitting.md``, section 5.2).
 
+And the way out: an item is read back with its rung, while the models a
+request is read into still have nowhere to put one.
+
 The second one is worth its own test rather than being taken on trust. One
 multi-row ``INSERT`` takes its column list from the first dictionary alone, so
 a list mixing an item that carries provenance with one that does not would
@@ -28,6 +31,8 @@ from mascope_backend.api.controllers.sample.files.process.streams import (
 from mascope_backend.api.models.sample.items.sample_item_pydantic_model import (
     AcquisitionItemCreate,
     SampleItemCreate,
+    SampleItemRead,
+    SampleItemUpdate,
 )
 
 
@@ -324,38 +329,25 @@ async def test_an_update_that_leaves_the_mode_alone_keeps_the_rung():
     )
 
 
-@pytest.mark.asyncio
-async def test_the_insert_names_the_provenance_for_every_row():
-    """A row with no rung is written as having none, not left out."""
+#: An item's fields as a request sends them, with nothing left to compute.
+_ITEM = {
+    "sample_batch_id": "sb-001",
+    "sample_file_id": "sf-001",
+    "sample_item_attributes": {},
+    "polarity": "-",
+    "ionization_mode_id": "im-001",
+    # Supplied, so that nothing reads the file to compute them.
+    "tic": 1.0,
+    "t0": 0.0,
+    "t1": 1.0,
+}
+
+
+async def _inserted(items) -> dict:
+    """The parameters of the one INSERT the bulk create makes for ``items``."""
     from mascope_backend.api.controllers.sample.items.sample_items_controller import (
         create_sample_items,
     )
-
-    common = {
-        "sample_batch_id": "sb-001",
-        "sample_file_id": "sf-001",
-        "sample_item_attributes": {},
-        "polarity": "-",
-        "ionization_mode_id": "im-001",
-        # Supplied, so that nothing reads the file to compute them.
-        "tic": 1.0,
-        "t0": 0.0,
-        "t1": 1.0,
-    }
-    items = [
-        AcquisitionItemCreate(
-            sample_item_name="routed by its method",
-            sample_item_type="ACQUISITION",
-            bound_by="method",
-            method_binding_id="mb-000000000001",
-            **common,
-        ),
-        SampleItemCreate(
-            sample_item_name="made by a person",
-            sample_item_type="UNKNOWN",
-            **common,
-        ),
-    ]
 
     sample_file = MagicMock()
     sample_file.sample_file_id = "sf-001"
@@ -369,10 +361,11 @@ async def test_the_insert_names_the_provenance_for_every_row():
     context.__aenter__ = AsyncMock(return_value=session)
     context.__aexit__ = AsyncMock(return_value=False)
 
-    created = [MagicMock(sample_item_id="si-0001"), MagicMock(sample_item_id="si-0002")]
+    ids = [f"si-{number:04d}" for number in range(1, len(items) + 1)]
+    created = [MagicMock(sample_item_id=item_id) for item_id in ids]
     with (
         patch(f"{_ITEMS}.async_session", return_value=context),
-        patch(f"{_ITEMS}.gen_id", side_effect=["si-0001", "si-0002"]),
+        patch(f"{_ITEMS}.gen_id", side_effect=ids),
         patch(
             f"{_ITEMS}.fetch_affected_sample_data", new_callable=AsyncMock
         ) as affected,
@@ -387,8 +380,115 @@ async def test_the_insert_names_the_provenance_for_every_row():
         await create_sample_items(sample_items=items)
 
     insert_statement = session.execute.await_args_list[-1].args[0]
-    bound = insert_statement.compile(dialect=postgresql.dialect()).params
+    return insert_statement.compile(dialect=postgresql.dialect()).params
+
+
+@pytest.mark.asyncio
+async def test_the_insert_names_the_provenance_for_every_row():
+    """A row with no rung is written as having none, not left out."""
+    bound = await _inserted(
+        [
+            AcquisitionItemCreate(
+                sample_item_name="routed by its method",
+                sample_item_type="ACQUISITION",
+                bound_by="method",
+                method_binding_id="mb-000000000001",
+                **_ITEM,
+            ),
+            SampleItemCreate(
+                sample_item_name="made by a person",
+                sample_item_type="UNKNOWN",
+                **_ITEM,
+            ),
+        ]
+    )
+
     assert bound["bound_by_m0"] == "method"
     assert bound["method_binding_id_m0"] == "mb-000000000001"
     assert bound["bound_by_m1"] is None
     assert bound["method_binding_id_m1"] is None
+
+
+# ---------------------------------------------------------------------------
+# Read back, and still not taken in
+# ---------------------------------------------------------------------------
+
+#: What a request would send to claim a rung for an item nobody routed.
+_CLAIM = {"bound_by": "declared", "method_binding_id": "mb-000000000009"}
+
+#: A whole item as a request sends one, claiming a rung.
+_CLAIMING_ITEM = (
+    _ITEM
+    | {"sample_item_name": "claims a rung", "sample_item_type": "UNKNOWN"}
+    | _CLAIM
+)
+
+
+@pytest.mark.asyncio
+async def test_an_item_is_read_back_with_the_rung_that_bound_it():
+    from mascope_backend.api.controllers.sample.items.sample_items_controller import (
+        get_sample_item,
+    )
+
+    session = AsyncMock()
+    session.get.return_value = _stored_item(bound_by="method")
+    context = AsyncMock()
+    context.__aenter__ = AsyncMock(return_value=session)
+    context.__aexit__ = AsyncMock(return_value=False)
+
+    with patch(f"{_ITEMS}.async_session", return_value=context):
+        read = (await get_sample_item("si-0001"))["data"]
+
+    assert (read["bound_by"], read["method_binding_id"]) == (
+        "method",
+        "mb-000000000001",
+    )
+
+
+def test_an_item_nothing_routed_is_read_back_with_no_rung():
+    """None is an answer, and is sent as one: the keys are there either way,
+    so a reader need not tell an old server from an item nobody routed."""
+    read = SampleItemRead.model_validate(
+        _stored_item(bound_by=None, method_binding_id=None)
+    ).model_dump()
+
+    assert (read["bound_by"], read["method_binding_id"]) == (None, None)
+
+
+@pytest.mark.parametrize("model", [SampleItemCreate, SampleItemUpdate])
+def test_a_request_model_has_nowhere_to_put_a_rung(model):
+    """The read model shows the fields, and the two a route reads a request
+    into must not have gained them with it. A rung in the request is dropped
+    while the request is read, before any controller sees it."""
+    assert not {"bound_by", "method_binding_id"} & set(model.model_fields)
+
+    item = model.model_validate(_CLAIMING_ITEM)
+
+    assert not {"bound_by", "method_binding_id"} & set(item.model_dump())
+
+
+@pytest.mark.asyncio
+async def test_an_item_created_from_a_request_that_claims_a_rung_records_none():
+    """The create route reads its body as ``SampleItemCreate``."""
+    bound = await _inserted([SampleItemCreate.model_validate(_CLAIMING_ITEM)])
+
+    assert bound["bound_by_m0"] is None
+    assert bound["method_binding_id_m0"] is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "claim",
+    [_CLAIM, {"bound_by": None, "method_binding_id": None}],
+    ids=["another-rung", "no-rung"],
+)
+async def test_an_update_that_names_a_rung_neither_sets_nor_clears_it(claim):
+    """A client that sends back the row it was given sends the rung with it.
+    Only a changed mode clears the rung, and nothing sets one."""
+    stored = await _updated(_stored_item(), sample_item_name="renamed", **claim)
+
+    assert stored.sample_item_name == "renamed"
+    assert (stored.bound_by, stored.method_binding_id) == (
+        "token",
+        "mb-000000000001",
+    )
