@@ -1,6 +1,6 @@
 [project]
 name = "mascope_file_agent"
-version = "2026.10.7"
+version = "2026.10.9"
 description = "Mascope's File Agent: watches a folder on an instrument machine and uploads new data files to a Mascope server."
 classifiers = [
     "Topic :: Scientific/Engineering :: Atmospheric Science",
@@ -17,7 +17,7 @@ dependencies = [
     "mascope_runtime",
     # The first release with everything the agent calls: the acquisition
     # record's schema, and the record and the hash sent with an upload.
-    "mascope_sdk>=2026.10.7",
+    "mascope_sdk>=2026.10.9",
     "requests>=2.34.2,<3",
     "tzlocal>=5.4.4",
     "watchdog~=4.0",

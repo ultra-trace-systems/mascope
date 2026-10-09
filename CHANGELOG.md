@@ -4,6 +4,8 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 ## [Unreleased]
 
+## [1.11.0] - 2026.10.09
+
 ### Added
 
 - **The File Agent sends a file's acquisition record with its upload.** A

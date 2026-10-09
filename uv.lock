@@ -1633,7 +1633,7 @@ requires-dist = [
 
 [[package]]
 name = "mascope-cli"
-version = "2026.10.1"
+version = "2026.10.9"
 source = { editable = "tooling/cli" }
 dependencies = [
     { name = "mascope-runtime", extra = ["logs"] },
@@ -1756,7 +1756,7 @@ dev = [
 
 [[package]]
 name = "mascope-runtime"
-version = "2026.10.1"
+version = "2026.10.9"
 source = { editable = "libraries/runtime" }
 dependencies = [
     { name = "loguru" },
@@ -1786,7 +1786,7 @@ provides-extras = ["logs", "sentry"]
 
 [[package]]
 name = "mascope-sdk"
-version = "2026.10.7"
+version = "2026.10.9"
 source = { editable = "libraries/sdk" }
 dependencies = [
     { name = "loguru" },
