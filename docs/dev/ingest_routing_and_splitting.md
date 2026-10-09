@@ -84,7 +84,7 @@ request for this work updates the table below and ticks its item on #2098.
 | 1 | Per-file processing state, persistent notifications, "needs a chemistry" | shipped (#2164, #2166-#2169) |
 | 2 | Method bindings: routing without tokens | learned in shadow on every server (#2193, #2196, #2206, #2226), measured (5.7), item provenance (#2254), the row-following learner (#2255), the rung (#2264) and the disagreement report (#2267) shipped; the backfill re-run and the per-site switch remain, section 10 lists them |
 | 8 | Chemistry profiles as the unit: complete the seeded profiles, ship the standard methods and their catalogue, list the profiles, a profile-first surface, batches named after the profile | open; follows the stream first cut, or runs beside it when there are hands for both (decided 2026-10-05) |
-| 3 | The part contract: stream and window honoured by every consumer | **in progress**: the composite cut, for files whose method measures more than one thing in a polarity (4.5), leads the work after phase 2 (decided 2026-10-05; a stitch, not a split, since 2026-10-06). The census keys streams on the method's experiments (#2273), the reader selects one stream's scans (#2278), and peak detection and the peak store follow a stream behind `composite_scan_streams` (#2279), and the store is stitched - the map, the per-peak mask, the overlap readings and the stitched sum signal (#2297); the stream table is in the schema with its composite column (#2282) and written for every file, each polarity's item pointing at its composite or its one stream (#2283), and the readers of the peak list take the composite's rows, each averaged over its own stream's scans (#2307); a re-processing detects a file's peaks again under the setting as it is then, so files converted before it was switched can be stitched (#2328); the item TIC and the per-scan export read the scans the store holds, an item made by hand reads the row the pipeline's item reads, and a spectrum that meets a stale store asks for its rebuild (#2329); the views by segment and the per-segment fits follow, and section 10 lists them |
+| 3 | The part contract: stream and window honoured by every consumer | **in progress**: the composite cut, for files whose method measures more than one thing in a polarity (4.5), leads the work after phase 2 (decided 2026-10-05; a stitch, not a split, since 2026-10-06). The census keys streams on the method's experiments (#2273), the reader selects one stream's scans (#2278), and peak detection and the peak store follow a stream behind `composite_scan_streams` (#2279), and the store is stitched - the map, the per-peak mask, the overlap readings and the stitched sum signal (#2297); the stream table is in the schema with its composite column (#2282) and written for every file, each polarity's item pointing at its composite or its one stream (#2283), and the readers of the peak list take the composite's rows, each averaged over its own stream's scans (#2307); a re-processing detects a file's peaks again under the setting as it is then, so files converted before it was switched can be stitched (#2328); the item TIC and the per-scan export read the scans the store holds, an item made by hand reads the row the pipeline's item reads, and a spectrum that meets a stale store asks for its rebuild (#2329); the spectrum and the peak listing name each segment, and the sample's views draw the scan ranges apart (#2330); the per-segment fits follow, and section 10 lists them |
 | 4 | Per-stream state: calibration and instrument function per segment, MS2 | open; its per-segment calibration is part of the composite cut; follows 3 on the same track; no rebuild script (4.5, 9.1) |
 | 5 | Chemistry detection: audit first, then provisional binding | deferred behind phases 3, 4 and 8 (decision 3); its reagent libraries are on `develop` |
 | 6 | Recipes: time and trace windows, preview and apply | open |
@@ -2636,9 +2636,20 @@ unchanged.
      the request still fails for that sample, and says the detection is
      queued; and the route for several samples' spectra answering the
      samples it can, the stale ones empty in their place and listed under
-     `stale` (both from the review of #2311). Still open: the spectrum and
-     peak-listing routes returning each sample's and each peak's segment
-     for the views, and a per-stream store a match meets stale being
+     `stale` (both from the review of #2311). Built in #2330, the
+     views: the sample spectrum returns its `segments` - the streams that
+     own some m/z of the composite, each with a label read off its key
+     and, where the file's stream row says, its scans and microscans - and
+     the map's `runs` in m/z order on the file's own axis, each with the
+     positions its samples take in the answered arrays; the peak listing
+     returns each peak's `segment` and the same `segments`. Both are null
+     for a sample whose store stitches nothing of its polarity, and the
+     store decides it, as for every reader
+     (`samples.lib.samples_segments`). The sum spectrum view draws one
+     trace per run, so that no line joins two ranges across the step at a
+     boundary, each segment in its own shade, with a dotted line where two
+     runs meet; a peak's hover and a column of the peak table name its
+     segment. Still open: a per-stream store a match meets stale being
      rebuilt and its rows written with the composite on the next
      processing (4.4);
   7. **Step 7, the fits per segment:** calibration and the instrument

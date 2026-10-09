@@ -100,6 +100,52 @@ const load = async () => {
 const counterpartCalls = () =>
   get.mock.calls.filter(([url]) => url === '/batch-peaks/records/counterpart')
 
+describe('peak store: the segments of a stitched sample', () => {
+  const segments = [
+    { index: 0, key: 'reagent', label: 'm/z 40-138' },
+    { index: 2, key: 'mid', label: 'm/z 132-460' }
+  ]
+
+  it('gives each peak its segment and keeps the segments of the sample beside them', async () => {
+    await load()
+    get.mockResolvedValue({ ...peaksOf('p-a', 'p-b'), segment: [0, 2], segments })
+    sample.focusedId = 's-1'
+    await vi.waitFor(() => expect(store.list).toHaveLength(2), WAIT)
+
+    expect(store.list.map((peak) => peak.segment)).toEqual([0, 2])
+    expect(store.segments).toEqual(segments)
+  })
+
+  it('names none for a sample whose spectrum is not stitched', async () => {
+    await load()
+    get.mockResolvedValue({ ...peaksOf('p-a'), segment: null, segments: null })
+    sample.focusedId = 's-1'
+    await vi.waitFor(() => expect(store.list).toHaveLength(1), WAIT)
+
+    expect(store.list[0].segment).toBeNull()
+    expect(store.segments).toBeNull()
+  })
+
+  it('reads a server that names no segments as one that has none', async () => {
+    await load()
+    await switchTo('s-1', ['p-a'])
+
+    expect(store.list[0].segment).toBeNull()
+    expect(store.segments).toBeNull()
+  })
+
+  it('forgets the segments of the last sample with its peaks', async () => {
+    await load()
+    get.mockResolvedValue({ ...peaksOf('p-a'), segment: [0], segments })
+    sample.focusedId = 's-1'
+    await vi.waitFor(() => expect(store.segments).toEqual(segments), WAIT)
+
+    await switchTo('s-2', ['p-b'])
+
+    expect(store.segments).toBeNull()
+  })
+})
+
 describe('peak store: focus follows the sample switch', () => {
   it('asks for the counterpart of the focused peak and focuses it', async () => {
     await load()

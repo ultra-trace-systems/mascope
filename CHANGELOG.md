@@ -40,6 +40,17 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   row as the sample the pipeline made. Files with one experiment in each
   polarity are read as before.
 
+- **A sample stitched from several scan ranges shows where they meet.**
+  With `composite_scan_streams` on, the spectrum of such a sample is one
+  range after another with nothing rescaled between them, so the signal can
+  step at a boundary and a peak's intensity is what its own range measured.
+  The sum spectrum now draws each range in its own shade with a dotted line
+  where two meet, and the peak table has a segment column naming the range
+  each peak came from; hovering the signal or a peak names it too, with its
+  scan and microscan counts. The spectrum and peak-listing routes return
+  the segments (`segments`, `runs`, and a `segment` per peak), null for
+  every sample of one range.
+
 ### Fixed
 
 - **Exporting a sample's peaks per scan no longer refuses a stitched
