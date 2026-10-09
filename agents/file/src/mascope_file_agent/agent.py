@@ -21,7 +21,7 @@ from typing import Callable
 import mascope_sdk
 from mascope_file_agent import __version__
 from mascope_file_agent import config as agent_config
-from mascope_file_agent._threads import Task
+from mascope_file_agent._threads import Task, interrupts
 from mascope_file_agent.capabilities import ServerCapabilities
 from mascope_file_agent.config import ConfigError
 from mascope_file_agent.credentials import Credentials, Repair
@@ -294,18 +294,36 @@ class Agent:
         answered with a line in the log and more waiting; a third stops
         without them.
 
+        Called on the main thread, this takes the process's interrupts for
+        as long as it runs. Python's handler for SIGINT is replaced by one
+        that only counts them, and is put back before this returns; the
+        agent acts on each within a second or so, between two of its waits.
+        Python's own handler raises ``KeyboardInterrupt`` wherever the
+        thread happens to be, which can be just past the taking of a lock
+        that is then never released. A handler the program has set itself
+        is left in place, and so is a process that ignores interrupts. On
+        any other thread nothing is replaced: an interrupt goes to the
+        program's main thread as it always did, and :meth:`stop` is what
+        ends the run.
+
         :raises RuntimeError: If this agent was started before, or the process
             has not said who it is with :func:`identity`
         """
-        with self._lock:
-            self._begin()
-        try:
-            self._run()
-        finally:
-            self._stop_patiently()
+        with interrupts.recorded():
+            with self._lock:
+                self._begin()
+            try:
+                self._run()
+            finally:
+                self._stop_patiently()
 
     def _stop_patiently(self) -> None:
-        """Stop without a deadline, as the console program does when interrupted."""
+        """Stop without a deadline, as the console program does when interrupted.
+
+        An interrupt during the stop comes out of one of its waits: counted
+        while the wait lasted, and raised between two of its slices
+        (``_threads.wait_for``).
+        """
         try:
             self.stop()
         except KeyboardInterrupt:

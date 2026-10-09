@@ -21,6 +21,7 @@ from mascope_file_agent import (
     Agent,
     ConfigError,
     Repair,
+    _threads,
     capabilities,
     credentials,
     status,
@@ -339,6 +340,270 @@ def test_an_interrupt_taken_on_the_upload_loops_own_jump_is_handled(
     assert len(looks) == 1
     assert agent.logger.said("info", "Shutdown requested by user.")
     assert agent.shutdown_event.is_set()
+
+
+# ---------------------------------------------------------------------------
+# Interrupted with a lock in hand
+# ---------------------------------------------------------------------------
+
+
+class Presses:
+    """Ctrl+C for the main thread, at as many of its calls as are ``due``."""
+
+    def __init__(self, ctrl_c, due=0):
+        self._ctrl_c = ctrl_c
+        self.due = due
+
+    def __call__(self):
+        if self.due and threading.current_thread() is threading.main_thread():
+            self.due -= 1
+            self._ctrl_c()
+
+
+class InterruptedLock:
+    """Stands in for the lock inside an event or a queue, and interrupts its taker.
+
+    ``Event`` and ``Queue`` are written in Python around a lock, which they
+    take through ``Condition.__enter__``: a call that takes the lock and only
+    then returns to the ``with`` statement that will release it. What an
+    interrupt raises in between leaves the lock held, with nothing left to
+    release it. This takes the real lock and then has the main thread sent a
+    real SIGINT, which Python acts on with the lock in hand and the ``with``
+    block not yet entered.
+
+    It also tells a lock that was left so. The thread that left it would wait
+    for ever on coming for it again; here that is counted in ``left_held``
+    and let through, so that a test fails where the agent would hang.
+
+    :param lock: The lock to stand in for.
+    :param presses: Called with the lock taken, to interrupt the taker.
+    """
+
+    def __init__(self, lock, presses):
+        self._lock = lock
+        self._presses = presses
+        self._owner = None
+        self.left_held = 0
+
+    def acquire(self, blocking=True, timeout=-1):
+        if blocking and self._owner == threading.get_ident():
+            self.left_held += 1
+            return True
+        taken = self._lock.acquire(blocking, timeout)
+        if taken:
+            self._owner = threading.get_ident()
+        return taken
+
+    def release(self):
+        self._owner = None
+        self._lock.release()
+
+    def locked(self):
+        return self._lock.locked()
+
+    def __enter__(self):
+        self.acquire()
+        self._presses()
+        return True
+
+    def __exit__(self, *exc):
+        self.release()
+
+
+def interrupted_event(presses, event=None):
+    """An event whose lock has its taker interrupted; the lock is its ``lock``."""
+    event = event or threading.Event()
+    event.lock = event._cond._lock = InterruptedLock(event._cond._lock, presses)
+    return event
+
+
+def interrupted_queue(waiting, presses):
+    """Have the lock of ``waiting`` interrupt its taker; that lock."""
+    lock = InterruptedLock(waiting.mutex, presses)
+    waiting.mutex = lock
+    for condition in (waiting.not_empty, waiting.not_full, waiting.all_tasks_done):
+        condition._lock = lock
+    return lock
+
+
+@pytest.mark.parametrize("held", ["the event the loop waits on", "the queue it reads"])
+def test_an_interrupt_taken_with_a_lock_in_hand_does_not_leave_it_held(
+    make_agent, ctrl_c, held
+):
+    """A Ctrl+C that arrives just as the upload loop has taken a lock.
+
+    The loop takes two every time round: the lock of the event that stops
+    it, and the lock of the queue of waiting files. An interrupt raised then
+    and there left the lock held, and the agent waiting for it for ever at
+    its next use - the event's when the loop sets it on its way out, the
+    queue's when the stop empties it.
+    """
+    agent = make_agent()
+    presses = Presses(ctrl_c, due=1)
+    if held == "the event the loop waits on":
+        lock = interrupted_event(presses, agent.shutdown_event).lock
+    else:
+        lock = interrupted_queue(agent.uploader.jobs, presses)
+
+    try:
+        agent.run_until_complete()
+    except KeyboardInterrupt:
+        pytest.fail("the interrupt went past the agent")
+
+    assert presses.due == 0  # it was sent
+    assert not lock.left_held
+    assert not lock.locked()
+    assert agent.logger.said("info", "Shutdown requested by user.")
+    assert agent.logger.said("info", "File system watcher stopped")
+    assert not agent.running
+    # Interrupts are Python's to raise again.
+    assert signal.getsignal(signal.SIGINT) is signal.default_int_handler
+
+
+def test_three_interrupts_each_taken_with_a_lock_in_hand_are_answered_in_turn(
+    make_agent, monkeypatch, uploads, sample, ctrl_c
+):
+    """Ctrl+C three times with an upload under way, each as a lock is taken.
+
+    The first in the upload loop and the other two in the waits of the stop,
+    each of which waits for the event a thread sets as it ends. No lock is
+    left held, and the three are answered as ``run_until_complete`` says:
+    stop, keep waiting, stop without the upload.
+    """
+    monkeypatch.setattr(_threads, "WAIT_SLICE", 0.05)
+    in_the_loop, in_the_stop = Presses(ctrl_c), Presses(ctrl_c)
+    ended = []
+
+    def ends_interrupted():
+        ended.append(interrupted_event(in_the_stop))
+        return ended[-1]
+
+    monkeypatch.setattr(_threads, "Event", ends_interrupted)
+    agent = make_agent()
+    stopping = interrupted_event(in_the_loop, agent.shutdown_event)
+
+    def begun(**kwargs):
+        # Only once a worker has the file, which is then one to wait for.
+        in_the_loop.due, in_the_stop.due = 1, 2
+        uploads(**kwargs)
+
+    monkeypatch.setattr(uploader, "api_post_file_tus", begun)
+    uploads.hold()
+    agent.uploader.enqueue(sample)
+
+    try:
+        agent.run_until_complete()
+    except KeyboardInterrupt:
+        pytest.fail("an interrupt went past the agent")
+
+    assert in_the_loop.due == in_the_stop.due == 0  # all three were sent
+    said = [message for _, message in agent.logger.lines]
+    first = said.index("Shutdown requested by user.")
+    second = next(i for i, line in enumerate(said) if "Still waiting" in line)
+    third = next(i for i, line in enumerate(said) if "x.raw: its upload had" in line)
+    assert first < second < third
+    assert len(ended) > 3, "the threads the agent waits for end with an event"
+    locks = [event.lock for event in (stopping, *ended)]
+    assert not any(lock.left_held for lock in locks)
+    assert not any(lock.locked() for lock in locks)
+
+
+def test_an_interrupt_during_the_check_at_start_stops_the_agent(
+    make_agent, monkeypatch, ctrl_c
+):
+    """Ctrl+C while the server is being asked about the credential.
+
+    Nothing around that question handles an interrupt, so one raised there
+    ended ``run_until_complete`` with the ``KeyboardInterrupt`` itself, and
+    the console program with a traceback. Counted, it is answered by the
+    upload loop, as an interrupt at any other time is.
+    """
+
+    def asked(host, token, verify):
+        ctrl_c()
+        return CREDENTIAL_OK, ""
+
+    monkeypatch.setattr(credentials, "check_credential", asked)
+    agent = make_agent()
+
+    try:
+        agent.run_until_complete()
+    except KeyboardInterrupt:
+        pytest.fail("the interrupt went past the agent")
+
+    assert agent.logger.said("info", "Shutdown requested by user.")
+    assert agent.logger.said("info", "File system watcher stopped")
+    assert not agent.running
+
+
+def test_a_repair_offered_at_the_start_is_interrupted_as_any_prompt_is(
+    make_agent, monkeypatch, ctrl_c
+):
+    """Ctrl+C at "Pair this machine again now?" gets out of the question.
+
+    The check at start runs on the thread that runs the agent, and a refused
+    credential is offered a repair there, at the console. Whoever is asked
+    answers with Ctrl+C as at any prompt: it is raised in the offer, and it
+    is not a request to stop the agent as well.
+    """
+    monkeypatch.setattr(
+        credentials,
+        "check_credential",
+        lambda host, token, verify: (credentials.CREDENTIAL_REJECTED, "Revoked."),
+    )
+    agent = make_agent()
+    heard = []
+
+    class AsksAtTheConsole(Repair):
+        def offer(self, reason, pair):
+            try:
+                ctrl_c()
+                heard.append("nothing")
+            except KeyboardInterrupt:
+                heard.append("KeyboardInterrupt")
+            # Nothing else ends the run: the agent goes on without a repair.
+            threading.Timer(0.2, agent.shutdown_event.set).start()
+            return None
+
+    agent.credentials.repair = AsksAtTheConsole()
+
+    try:
+        agent.run_until_complete()
+    except KeyboardInterrupt:
+        pytest.fail("the interrupt went past the offer")
+
+    assert heard == ["KeyboardInterrupt"]
+    assert agent.logger.said("error", "This machine's Mascope credential was refused")
+    assert not agent.logger.said("info", "Shutdown requested by user.")
+
+
+def test_run_until_complete_off_the_main_thread_leaves_interrupts_alone(make_agent):
+    """A program that runs the agent on a thread of its own keeps its Ctrl+C.
+
+    Only the main thread is handed an interrupt, and only it can say what
+    one does. Run anywhere else the agent replaces nothing, and is ended
+    with ``stop()`` as it always was.
+    """
+    agent = make_agent()
+    handler = signal.getsignal(signal.SIGINT)
+    handlers = []
+
+    def run():
+        handlers.append(signal.getsignal(signal.SIGINT))
+        agent.run_until_complete()
+
+    running = threading.Thread(target=run)
+    running.start()
+    assert wait_for(lambda: len(agent._helpers) == 2)
+    handlers.append(signal.getsignal(signal.SIGINT))
+
+    assert agent.stop(timeout=10) is True
+    running.join(10)
+
+    assert not running.is_alive()
+    assert handlers == [handler, handler]
+    assert signal.getsignal(signal.SIGINT) is handler
+    assert agent.logger.said("info", "File system watcher stopped")
 
 
 # ---------------------------------------------------------------------------
