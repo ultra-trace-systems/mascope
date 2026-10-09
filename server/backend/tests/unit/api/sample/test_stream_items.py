@@ -394,7 +394,8 @@ class _CopySession:
 
 
 def _source(item_id, **overrides):
-    """A sample as the view gives it, which carries no stream."""
+    """A sample as the view gives it, which carries no stream. It does carry
+    the rung that bound it, which a copy must not take with it."""
     fields = {
         "sample_item_id": item_id,
         "sample_batch_id": "sb-source",
@@ -406,6 +407,8 @@ def _source(item_id, **overrides):
         "tic": 3.0,
         "polarity": "-",
         "ionization_mode_id": "im-001",
+        "bound_by": "method",
+        "method_binding_id": "mb-000000000001",
         "t0": 91.4,
         "t1": 120.0,
         "filename": FILENAME,
@@ -448,5 +451,7 @@ async def test_a_copy_reads_the_stream_its_source_read():
     copies = create.await_args.kwargs["sample_items"]
     assert [copy.stream_id for copy in copies] == ["st-0", None]
     assert [(copy.tic, copy.t0, copy.t1) for copy in copies] == [(3.0, 91.4, 120.0)] * 2
-    # Still not an item the pipeline routed: a copy records no rung
+    # Still not an item the pipeline routed: a copy records no rung, though
+    # the row it is built from shows its source's
     assert all(not hasattr(copy, "bound_by") for copy in copies)
+    assert all(not hasattr(copy, "method_binding_id") for copy in copies)

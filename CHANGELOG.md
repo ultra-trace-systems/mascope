@@ -4,6 +4,21 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 ## [Unreleased]
 
+### Added
+
+- **What bound a sample's chemistry is readable through the API.** A sample
+  item records which rung of the binding ladder auto-processing bound it by
+  (`bound_by`: `declared`, `explicit`, `token` or `method`) and, for a method
+  binding, which one (`method_binding_id`), and until now only SQL could read
+  either. Both are returned with every sample item: by
+  `GET /api/sample/items` and `GET /api/sample/items/{id}`, and through the
+  sample view, so by `GET /api/samples`, which the web app and the SDK list
+  samples with. A sample of a file its acquisition record bound reads
+  `"bound_by": "declared"`; an item nothing routed reads null. The fields are
+  output only: a request that sends them is read as if it had not, so none
+  can claim a rung for an item nobody routed. Changing an item's ionization
+  mode clears them, as before (`docs/dev/acquisition_sidecar.md`).
+
 ## [1.11.0] - 2026.10.09
 
 ### Added
