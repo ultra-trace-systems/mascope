@@ -4,6 +4,19 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 ## [Unreleased]
 
+### Added
+
+- **A report of what a stitched file's scan ranges read where two of them
+  overlap**: `db script run report_stitch_overlaps`. For servers that run
+  `composite_scan_streams`. It reads the newest raw Orbitrap files, newest
+  first (`STITCH_REPORT_FILES`, 5,000 by default), and says for each
+  layout and each pair of ranges that overlap: which range owns the
+  overlap, how many ions both hold and how the second reads them against
+  the first, how many peaks each holds there that the other does not, and
+  which ions most of the files read very differently in the two. It
+  writes nothing, so no backup is taken before it. It is what the choice
+  of which range should own an overlap is to be made on.
+
 ### Changed
 
 - **Re-processing a file detects its peaks again under the server's

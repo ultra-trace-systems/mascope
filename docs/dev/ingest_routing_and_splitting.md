@@ -3093,6 +3093,23 @@ through a short-lived stacked branch, merged as one unit.
     claimed nothing and lost its region to whatever wider window lay over
     it. The tie-breaks stay: the narrower window winning outright would
     move the boundary the site drew between its mid and its high window.
+    **Still open, and to be read off a site's files: which window owns an
+    overlap.** More microscans is a rule of thumb, and it gives an overlap
+    to a window that runs one scan. `db script run report_stitch_overlaps`
+    (#2331) reads what the stitched stores of a site's newest files
+    record, layout by layout: who owns each overlap today, how the second
+    range reads the ions both hold against the first - the ratio and the
+    m/z offset, as the middle of the files' medians with their spread -
+    how many peaks each holds there that the other does not, which is what
+    a change of owner would gain and lose, and the ions most of the files
+    list as far off the layout's ratio. It writes nothing and decides
+    nothing: a ratio far from one can be the layout's factor or chemistry
+    inside the instrument, and the report names the ions. Run on the two
+    composite specimens of the regression corpus, it gives the low window
+    104 and 128 peaks in its overlap with the reagent scan that the
+    reagent scan does not hold, against 2 and 0 the other way, the shared
+    ions at 1.3 and 2.8 times the reagent scan's reading, and in the
+    uronium file m/z 78.065 at 0.06 of it.
     No map of the test set moves, so "every layout of the test set maps
     with nothing configured" holds as it did (4.5).
 
