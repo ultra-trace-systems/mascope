@@ -63,6 +63,21 @@ def _stack(frames: list[pd.DataFrame], warned: list[str]) -> pd.DataFrame | None
     return None
 
 
+def _same(a: Any, b: Any) -> bool:
+    """Whether two ``attrs`` values are the same, without leaving it to ``==``.
+
+    A frame compared with ``==`` answers cell by cell, and asking that answer
+    for its truth raises. It is how ``pd.concat`` itself fails on frames whose
+    ``attrs`` hold one - the batch ledger's species table.
+    """
+    if isinstance(a, (pd.DataFrame, pd.Series)):
+        return type(a) is type(b) and a.equals(b)
+    try:
+        return bool(a == b)
+    except (TypeError, ValueError):
+        return False
+
+
 def concat_frames(
     frames: Iterable[pd.DataFrame | None], *, ignore_index: bool = True
 ) -> pd.DataFrame | None:
@@ -74,10 +89,14 @@ def concat_frames(
     and the provenance with them - and that is the common case for a loop
     over samples.
 
-    Here the warnings of every frame are kept, each once, and the provenance
-    is kept when every frame carries the same block, as ``pd.concat`` itself
-    would keep it. Anything else in ``attrs`` is left as ``pd.concat`` leaves
-    it.
+    Here each entry of ``attrs`` is decided on its own. The warnings of every
+    frame are kept, each once. Any other entry is kept when every frame
+    carries it with the same value - the provenance of loads from one build -
+    and dropped otherwise.
+
+    The rows are stacked without their ``attrs``, so nothing depends on how
+    pandas compares them: it compares with ``==``, which raises on frames
+    whose ``attrs`` hold a frame, as a batch ledger's do.
 
     :param frames: The frames to stack. None entries - a load that found
         nothing - are skipped.
@@ -87,15 +106,27 @@ def concat_frames(
     kept = [frame for frame in frames if frame is not None]
     if not kept:
         return None
-    result = pd.concat(kept, ignore_index=ignore_index)
 
+    bare = []
+    for frame in kept:
+        view = frame.copy(deep=False)
+        view.attrs = {}
+        bare.append(view)
+    result = pd.concat(bare, ignore_index=ignore_index)
+
+    attrs = {
+        key: copy.deepcopy(value)
+        for key, value in kept[0].attrs.items()
+        if key != "warnings"
+        and all(
+            key in frame.attrs and _same(frame.attrs[key], value) for frame in kept[1:]
+        )
+    }
     if any("warnings" in frame.attrs for frame in kept):
-        result.attrs["warnings"] = _distinct(
+        attrs["warnings"] = _distinct(
             [warning for frame in kept for warning in frame.attrs.get("warnings", ())]
         )
-    blocks = [frame.attrs.get("provenance") for frame in kept]
-    if blocks[0] is not None and all(block == blocks[0] for block in blocks):
-        result.attrs["provenance"] = copy.deepcopy(blocks[0])
+    result.attrs = attrs
     return result
 
 

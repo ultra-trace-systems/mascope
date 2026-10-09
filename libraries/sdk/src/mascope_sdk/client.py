@@ -1048,10 +1048,11 @@ class MascopeClient:
         ``attrs["warnings"]``: it then drops the warnings and
         ``attrs["provenance"]`` with them.
 
-        Here every frame's warnings are kept, each once, and the provenance is
-        kept when every frame carries the same block, as ``pd.concat`` itself
-        would keep it. Anything else in ``attrs`` is left as ``pd.concat``
-        leaves it.
+        Here every frame's warnings are kept, each once. Any other entry of
+        ``attrs`` is kept when every frame carries it with the same value -
+        the provenance of loads from one build - and dropped otherwise. It
+        also stacks frames ``pd.concat`` raises on: those whose ``attrs``
+        hold a frame, as a batch ledger's ``attrs["batch_peaks"]`` is.
 
         :param frames: The frames to stack. None entries - a load that found
                        nothing - are skipped.
