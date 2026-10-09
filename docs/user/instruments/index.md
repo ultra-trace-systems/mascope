@@ -163,6 +163,15 @@ place and your settings are kept. Installs made with older agent versions
 The agent prints its version when it starts, and uninstalling (Windows
 **Settings → Apps**) never removes your configuration.
 
+### Licences
+
+The agent is open-source software under the Apache License 2.0, and is built
+from other open-source packages. The installer puts their licences beside the
+program, in `%LocalAppData%\Programs\Mascope File Agent`: `LICENSE.txt` and
+`NOTICE.txt` are Mascope's own, and `THIRD_PARTY_NOTICES.txt` holds the licence
+of each package inside the program, and of the Python interpreter it runs on
+with the libraries built into that.
+
 ### What became of each file
 
 After each upload the agent asks the server, at a widening interval, how far
@@ -186,6 +195,53 @@ own uploads, so another agent's file of the same name is not taken for one
 of them. A server too old to report processing is not asked. Stopping the
 agent says how many files it was still following, and names a file whose
 upload finished as it stopped; their outcome shows in Raw files.
+
+### Acquisition records
+
+A program that controls the instrument can leave a record beside each
+file it acquires, saying which step of which run the file belongs to
+and under which chemistry it was measured. The record is a small file
+named after the data file, `run_0042.raw.mascope.json` beside
+`run_0042.raw`. The agent sends it with the file's upload, and never
+uploads, changes or deletes the record itself. Nothing has to be
+configured: an agent that finds a record sends it, and one that finds
+none uploads the file as before.
+
+```
+run_0042.raw: its acquisition record went with it.
+```
+
+The server keeps the record with the file. Where the record names the file's
+chemistry, the file is bound to the ionization mode that has that token,
+before the server looks for a token in the file's name, and Raw files says
+so: "Bound to 'Nitrate' (-) by its acquisition record." A record that names a
+token no mode has does not hold the file up: it is bound by its name as
+before, or waits for a chemistry. Either way its status in Raw files says
+what the record named, and goes on saying it once the file is processed, so
+a record and a file name that disagree do not go unnoticed. Once an
+ionization mode has the token, select the files that waited in Raw files and
+re-process them: they are bound by their records then. A chemistry somebody
+chose for a file by hand is kept, unless the file's name carries an
+ionization mode token: such a file is bound again by its record, or by that
+token. For a file whose name carries none, choosing by hand is also how a
+record that names the wrong chemistry is overruled. Re-processing takes the
+*admin* role on the instrument. With the *editor* role, right-click a file
+and choose its chemistry instead.
+
+A record never keeps a file from being uploaded:
+
+- A record the agent cannot use - damaged, too large, or written for
+  another file - is left where it is, a warning line says why, and the
+  file is uploaded without it.
+- A server too old to keep records is sent none. The agent says so
+  once, for the first file that had one, and starts sending them
+  within the hour once the server has been updated.
+- A file set aside in `failed_uploads` has its record copied with it.
+  Put both back in the watched folder to upload them together.
+
+To a server that keeps records the agent also sends each file's
+SHA-256, so that the copy on the server can be told to be the file the
+instrument wrote.
 
 ### Troubleshooting uploads
 

@@ -21,8 +21,30 @@ from mascope_backend.db import (
 )
 from mascope_backend.db.views import Sample
 from mascope_backend.runtime import runtime
-from mascope_file.io import load_coord
+from mascope_file.io import load_coord, load_peak_data
 from mascope_signal.peak import get_peaks
+
+
+def _nearest_listed_mz(filename: str, peak_mz: float) -> float:
+    """The m/z, among the peaks the file lists, nearest to an asked one.
+
+    What a client asks by m/z is answered from the peaks the sample lists -
+    the composite's, for a file detected per stream - and not from every
+    row the store holds, where a reading the composite leaves out can be the
+    nearer. The timeseries loader answers any stored row by its label, so
+    the label is what it is handed.
+
+    :param filename: Sample file filename
+    :type filename: str
+    :param peak_mz: The m/z asked for
+    :type peak_mz: float
+    :return: The nearest listed m/z, or the asked one where nothing is listed
+    :rtype: float
+    """
+    listed = load_peak_data(filename).mz.values
+    if listed.size == 0:
+        return peak_mz
+    return float(listed[np.abs(listed - peak_mz).argmin()])
 
 
 @api_controller()
@@ -294,8 +316,9 @@ async def get_sample_peaks(
 
     When ``t_min`` or ``t_max`` is provided, peak intensities are aggregated
     from the per-scan timeseries data instead of pre-computed sums.  Peaks
-    whose timeseries have not been computed are excluded, and a warning is
-    included in the response message.
+    whose timeseries have not been computed are excluded, and a warning says
+    so: in the response's ``warnings`` list, and folded into its message for
+    a client that reads only that.
 
     :param sample_item_id: Unique identifier for the sample
     :type sample_item_id: str
@@ -344,10 +367,26 @@ async def get_sample_peaks(
         mz_max=mz_max,
     )
 
+    # Carried by either answer. With every peak left out of a time-ranged read
+    # the answer is empty, and "no peaks found" on its own reads as a sample
+    # that has none.
+    #
+    # Twice over: as a list beside the data, which a client reads as it is,
+    # and folded into the message, which is all an older client reads. The
+    # message quotes the sample's name, so a client that has to find the
+    # warnings in it can be misled by a sample named for the marker; the list
+    # is there so that none has to.
+    warnings = list(peak_data.warnings)
+    warning_text = "".join(f" Warning: {warning}" for warning in warnings)
+
     if peak_data.count == 0:
         return {
-            "message": f"No peaks found in sample '{sample.sample_item_name}' with polarity '{sample.polarity}'.",
+            "message": (
+                f"No peaks found in sample '{sample.sample_item_name}' "
+                f"with polarity '{sample.polarity}'.{warning_text}"
+            ),
             "results": 0,
+            "warnings": warnings,
             "data": {
                 "peak_id": [],
                 "mz": [],
@@ -389,13 +428,13 @@ async def get_sample_peaks(
     message = (
         f"Successfully loaded {peak_data.count} peaks from sample "
         f"'{sample.sample_item_name}' with polarity '{sample.polarity}'"
+        f"{warning_text}"
     )
-    for warning in peak_data.warnings:
-        message += f" Warning: {warning}"
 
     return {
         "message": message,
         "results": peak_data.count,
+        "warnings": warnings,
         "data": response_data,
     }
 
@@ -499,7 +538,18 @@ async def get_sample_peak_timeseries(
 
     # Step 4: Load sample file data
     try:
-        sample_file = await m_compute.load_peak_timeseries(sample.filename, [peak_mz])
+        label = peak_mz
+        if resolved_peak_id is None:
+            # A client's m/z, not a row's label: the row it is answered from
+            # is the listed peak nearest to it, resolved before asking for
+            # the timeseries, which answers any stored row by its label - a
+            # reading the composite leaves out included, where that one is
+            # the nearer of two. The m/z asked stays what the tolerance below
+            # is measured from, so an ask nothing listed is near is refused.
+            label = await asyncio.to_thread(
+                _nearest_listed_mz, sample.filename, peak_mz
+            )
+        sample_file = await m_compute.load_peak_timeseries(sample.filename, [label])
         peaks = await asyncio.to_thread(get_peaks, sample_file, "height")
     except FileNotFoundError:
         raise NotFoundException(f"Sample file '{sample.filename}' not found")
@@ -620,8 +670,7 @@ async def get_sample_spectrum(
     # - Compute averaged spectrum in the time range with polarity filtering
     intensity_unit = "counts/s"
 
-    # Use specific time range with polarity filtering (reconstructed for display
-    # so it overlays the centroids).
+    # Use specific time range with polarity filtering.
     # One thread hop spans the call and the .tolist() materialization: the
     # spectrum is a lazy dask array, so offloading only the call would leave
     # every chunk read on the event loop.
@@ -629,13 +678,14 @@ async def get_sample_spectrum(
     polarity = sample.polarity
 
     def _spectrum_arrays():
-        spectrum = m_compute.get_sum_signal(
-            filename,
-            t_min_eff,
-            t_max_eff,
-            polarity=polarity,
-            average=True,
-            reconstruct=True,
+        # The polarity's signal as the sample reads it: stitched, each
+        # stream over its own scans inside the sample's window, where the
+        # store stitches the polarity; pooled otherwise. A listed peak is a
+        # mean of the same stream, over the store's own scans - which can
+        # hold a first scan the window leaves out - so it sits on the
+        # profile it was detected in.
+        spectrum = m_compute.get_sample_sum_signal(
+            filename, polarity, t_min_eff, t_max_eff, average=True
         )
         if spectrum is None:
             return None

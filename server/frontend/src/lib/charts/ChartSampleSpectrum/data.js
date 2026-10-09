@@ -117,6 +117,8 @@ export const useChartData = defineStore('chart.sample.spectrum', () => {
           color: 'green'
         },
         mode: 'lines',
+        // the measured profile: dotted at its samples once zoomed in on them
+        markSamples: true,
         type: 'scatter' + gl,
         x: new Float32Array(spectrumData.value.mz),
         y: new Float32Array(spectrumData.value.intensity),

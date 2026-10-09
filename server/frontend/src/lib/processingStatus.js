@@ -57,7 +57,7 @@ export const PROCESSING_STATUSES = {
     // Shown under the file's own reason too, which the detail carries.
     action:
       'Right-click it and choose its chemistry, or fix the ionization mode tokens ' +
-      'its name should match and re-process it.'
+      'its name or its acquisition record should match and re-process it.'
   },
   calibration_failed: {
     label: 'Calibration failed',

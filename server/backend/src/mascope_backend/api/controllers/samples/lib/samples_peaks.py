@@ -90,8 +90,10 @@ def _aggregate_full_sample(
 ) -> PeakData:
     """Aggregate peak data over the full sample (pre-computed sums)."""
     if average:
+        # Per peak: a stored sum is over the scans the store's axis holds
+        # for the peak - a stream's peak over its own stream's scans
         timestamps = m_compute.get_scan_timestamps(filename, polarity=polarity)
-        average_factor = len(timestamps) if len(timestamps) > 0 else 1
+        average_factor = m_compute.stored_scans_per_peak(data, timestamps)
     else:
         average_factor = 1
 
@@ -131,9 +133,18 @@ def _aggregate_time_range(
     has_ts = data.is_timeseries_computed.values
     if not np.all(has_ts):
         n_missing = int(np.sum(~has_ts))
+        # The remedy named is the one that works. Peak detection allocates
+        # every peak with no timeseries, so running it again leaves them all
+        # out; a timeseries is computed when it is first asked for (matching
+        # asks for the peaks it matches, the timeseries route for any peak).
+        # Named in the API's own terms: the server cannot know which client
+        # reads this, or what that client's version calls its wrapper.
         warnings.append(
             f"{n_missing} peak(s) were excluded because their timeseries "
-            f"have not been computed yet. Re-run peak detection to include them."
+            f"have not been computed yet. A peak's timeseries is computed when "
+            f"it is first requested (POST /api/samples/{{sample_item_id}}"
+            f"/peaks/timeseries); repeat this request afterwards to include "
+            f"them."
         )
         data = data.isel(mz=np.where(has_ts)[0])
 
@@ -164,7 +175,8 @@ def _aggregate_time_range(
 
     # Select the time slice and sum
     time_slice = data.sel(time=timestamps, method="nearest")
-    average_factor = len(timestamps) if average else 1
+    # Per peak: a stream's peak holds values on its own scans of the range only
+    average_factor = m_compute.scans_per_peak(data, timestamps) if average else 1
 
     return PeakData(
         peak_ids=data.peak_id.values.tolist(),

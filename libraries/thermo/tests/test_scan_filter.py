@@ -136,6 +136,29 @@ def test_resolution_separates_otherwise_identical_filters():
     assert parsed.stream_key(120000) != parsed.stream_key(240000)
 
 
+def test_a_named_scan_event_closes_the_key():
+    """Two experiments one filter cannot tell apart are told apart by the
+    event the caller names; a key given none is the signature alone."""
+    parsed = parse_scan_filter("FTMS - p NSI Full ms [40.0000-600.0000]")
+    assert parsed.stream_key(120000, event=2) == (
+        "FTMS - p NSI Full ms [40.0000-600.0000] R=120000 event=2"
+    )
+    assert parsed.stream_key(event=2) == (
+        "FTMS - p NSI Full ms [40.0000-600.0000] event=2"
+    )
+    assert parsed.stream_key(120000, event=None) == parsed.stream_key(120000)
+
+
+def test_a_named_segment_comes_before_the_event():
+    parsed = parse_scan_filter("FTMS - p NSI Full ms [40.0000-600.0000]")
+    assert parsed.stream_key(120000, event=1, segment=2) == (
+        "FTMS - p NSI Full ms [40.0000-600.0000] R=120000 segment=2 event=1"
+    )
+    assert parsed.stream_key(120000, event=1, segment=None) == (
+        "FTMS - p NSI Full ms [40.0000-600.0000] R=120000 event=1"
+    )
+
+
 @pytest.mark.parametrize(
     ("first", "second"),
     [

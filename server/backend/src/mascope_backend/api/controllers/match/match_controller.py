@@ -1901,8 +1901,8 @@ async def match_compute_batch(
     # Every failure is a store an older Mascope built, and every such file is
     # queued for the detection that rebuilds it and rematches its samples: the
     # batch repairs itself and nobody has anything to do. After an upgrade
-    # that is most batches on the server, and the message names the batch, so
-    # at WARNING each would open an error-monitoring issue of its own.
+    # that is most batches on the server, so at WARNING each would send an
+    # error-monitoring event about a problem that is already being fixed.
     repairing_itself = (
         not aggregation_failed
         and set(failure_reason_counts) == {STALE_PEAK_STORE_REASON}

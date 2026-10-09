@@ -13,9 +13,13 @@ import zarr
 
 import mascope_file.io as m_io
 import mascope_file.name as m_name
+import mascope_signal.stitch as m_stitch
+import mascope_thermo.streams as m_streams
 import mascope_thermo.thermo as m_thermo
 import mascope_tofwerk.tofwerk as m_tofwerk
+from mascope_runtime.logging import SENTRY_FINGERPRINT
 from mascope_signal.runtime import runtime
+from mascope_thermo.backend import averaged_profile_signature
 from mascope_tools.alignment.calibration import CentroidedSpectrum, MassAligner, Spectra
 
 
@@ -28,11 +32,293 @@ ALIGNMENT_MIN_FRACTION = 1.0  # Minimum fraction of scans for mass alignment
 AGGREGATION_WINDOW_FACTOR = 1  # Peak aggregation window factor (times FWHM)
 
 
+def _refuse_stream_unless_raw_orbitrap(sample_type: str, stream: str | None) -> None:
+    """Refuse to read one scan stream from a sample type that has none.
+
+    A scan stream is the scans of one experiment of an acquisition method
+    (``mascope_thermo.streams``), and only a raw Orbitrap file is read scan by
+    scan under one. Asked of any other type the stream could only be ignored,
+    and the caller would be handed every scan as if they were the stream's.
+
+    :param sample_type: The sample file type, e.g. ``"orbi_raw"``
+    :type sample_type: str
+    :param stream: The stream key asked for, or None
+    :type stream: str | None
+    :raises ValueError: If a stream is asked of a type that is not a raw
+        Orbitrap file
+    """
+    if stream is not None and sample_type != "orbi_raw":
+        raise ValueError(
+            f"A '{sample_type}' sample file has no scan streams to read apart; "
+            f"stream '{stream}' was asked for."
+        )
+
+
+def get_peak_streams(base_filename: str) -> list[dict]:
+    """The scan streams a sample file's peaks are detected per, or ``[]``.
+
+    Only a raw Orbitrap file can hold more than one: its scans are read under
+    the experiments of its acquisition method, and the peaks of a file whose
+    method runs more than one in a polarity can be detected per experiment
+    (:func:`mascope_thermo.streams.peak_streams`). Every other sample type is
+    one stream. The census is taken from the file as it reads now, not from
+    its ``.props``, because the keys that select a stream's scans are the
+    reader's own.
+
+    :param base_filename: Sample file filename
+    :type base_filename: str
+    :return: The MS1 streams to detect apart, or ``[]`` for a file that is
+        detected whole
+    :rtype: list[dict]
+    """
+    if m_name.get_sample_file_type(base_filename) != "orbi_raw":
+        return []
+    datafile_path = m_name.filename_to_datafile_path(base_filename)
+    return m_streams.peak_streams(m_streams.file_scan_streams(datafile_path))
+
+
+def has_scan_streams(base_filename: str) -> bool:
+    """Whether a sample file is read for its scan streams: a raw Orbitrap
+    file is, every other type has only what its conversion stored.
+
+    :param base_filename: Sample file filename
+    :type base_filename: str
+    :return: True for a raw Orbitrap file
+    :rtype: bool
+    """
+    return m_name.get_sample_file_type(base_filename) == "orbi_raw"
+
+
+def get_scan_streams(base_filename: str) -> list[dict]:
+    """The scan streams of a raw Orbitrap file, as it reads now.
+
+    The whole census (:func:`mascope_thermo.streams.scan_streams`), taken from
+    the file with the reader of the day, as :func:`get_peak_streams` takes
+    the streams peaks are detected per: whatever is built on the two then
+    rests on one reading. The census stored at conversion keeps serving the
+    readers that take it from ``.props``.
+
+    :param base_filename: Sample file filename
+    :type base_filename: str
+    :return: The census, or ``[]`` for a sample type that has none
+    :rtype: list[dict]
+    """
+    if not has_scan_streams(base_filename):
+        return []
+    return m_streams.file_scan_streams(m_name.filename_to_datafile_path(base_filename))
+
+
+def peak_store_streams(peak_data: xr.Dataset) -> list[str]:
+    """The stream keys a peak store's peaks were detected per, or ``[]``.
+
+    A per-stream store labels each peak and each scan with its stream:
+    ``stream`` along ``mz`` and ``scan_stream`` along ``time``, both an index
+    into the keys the store's ``streams`` attribute lists. A store with
+    neither is pooled - one peak list per polarity, as every store was before
+    streams could be read apart - and reads the way it always has.
+
+    The keys and the two labels only mean something together, so a dataset
+    that carries some of them and not the rest is refused rather than read
+    as pooled: filled as one, a per-stream store's peak would be handed the
+    scans of every stream.
+
+    :param peak_data: A peak store, or a selection of its peaks or scans
+    :type peak_data: xr.Dataset
+    :raises ValueError: If the dataset carries only part of what a
+        per-stream store does
+    :return: The stream keys, in the order the labels index them
+    :rtype: list[str]
+    """
+    return _stream_keys_of(
+        peak_data.attrs.get("streams"),
+        "stream" in peak_data.variables,
+        "scan_stream" in peak_data.variables,
+    )
+
+
+def _stream_keys_of(keys, has_stream: bool, has_scan_stream: bool) -> list[str]:
+    """The decision of :func:`peak_store_streams`, from what a store carries:
+    its ``streams`` attribute and whether it holds a ``stream`` and a
+    ``scan_stream`` array. Shared with :func:`peak_store_stitches`, which
+    reads them off the store's metadata, so the two cannot disagree."""
+    keys = list(keys or [])
+    carried = {
+        "the stream keys": bool(keys),
+        "the stream of each peak": has_stream,
+        "the stream of each scan": has_scan_stream,
+    }
+    if all(carried.values()):
+        return keys
+    if not any(carried.values()):
+        return []
+    raise ValueError(
+        "A peak store that holds a peak list per scan stream carries its "
+        "stream keys and the stream of each peak and each scan together; "
+        "this one is missing "
+        + " and ".join(name for name, there in carried.items() if not there)
+        + "."
+    )
+
+
+def scans_per_peak(peak_data: xr.Dataset, timestamps: np.ndarray) -> np.ndarray:
+    """How many of the given scans each peak holds values on, one per peak.
+
+    A pooled store's peak holds a value on every scan of its polarity, a
+    per-stream store's on its own stream's scans only
+    (:func:`peak_store_streams`). A sum over a time range's scans is averaged
+    by this count and not by the range's scans of every stream of the
+    polarity, which would read an ion a short stream measured at a fraction
+    of its height - the dilution the stitch exists to remove. The stored
+    whole-sample sums are counted by :func:`stored_scans_per_peak`.
+
+    :param peak_data: A peak store, or a selection of its peaks; with
+        ``scan_stream`` along ``time`` for a per-stream store
+    :type peak_data: xr.Dataset
+    :param timestamps: The scans of the range, those the sum is taken over
+    :type timestamps: np.ndarray
+    :return: One count per peak, never below one
+    :rtype: np.ndarray
+    """
+    streams = peak_store_streams(peak_data)
+    if not streams:
+        return np.full(peak_data.mz.size, max(len(timestamps), 1), dtype=int)
+    scan_streams = np.asarray(
+        peak_data.scan_stream.sel(time=timestamps, method="nearest").values, dtype=int
+    )
+    return _counts_per_peak(peak_data, scan_streams, len(streams))
+
+
+def stored_scans_per_peak(
+    peak_data: xr.Dataset, polarity_scans: np.ndarray
+) -> np.ndarray:
+    """How many scans each peak's stored sum is over, one per peak.
+
+    ``sum_peak_heights`` and ``sum_peak_areas`` are summed over the scans
+    the store's own axis holds for the peak. For a per-stream store that is
+    its stream's scans, which the store counts for itself: a file-wide read
+    of the polarity's scans can be one short of the axis - the file's first
+    scan is left out where its TIC is an outlier among the file's scans and
+    not among its own stream's, as a composite method's reagent scan is -
+    and counted by that read, the stream's ions would average a quarter
+    high. A pooled store's axis holds every scan of the file with no
+    polarity on it, so its count is the polarity's scans as the caller read
+    them, the same read the store was summed over.
+
+    :param peak_data: A peak store, or a selection of its peaks; with
+        ``scan_stream`` along ``time`` for a per-stream store
+    :type peak_data: xr.Dataset
+    :param polarity_scans: The polarity's scans as read file-wide, the count
+        of a pooled store
+    :type polarity_scans: np.ndarray
+    :return: One count per peak, never below one
+    :rtype: np.ndarray
+    """
+    streams = peak_store_streams(peak_data)
+    if not streams:
+        return np.full(peak_data.mz.size, max(len(polarity_scans), 1), dtype=int)
+    scan_streams = np.asarray(peak_data.scan_stream.values, dtype=int)
+    return _counts_per_peak(peak_data, scan_streams, len(streams))
+
+
+def _counts_per_peak(
+    peak_data: xr.Dataset, scan_streams: np.ndarray, n_streams: int
+) -> np.ndarray:
+    """The scans of each peak's stream among ``scan_streams``, a floor of one."""
+    stream = np.asarray(peak_data.stream.values, dtype=int)
+    counts = np.bincount(
+        scan_streams, minlength=max(n_streams, int(stream.max(initial=-1)) + 1)
+    )
+    per_peak = counts[stream]
+    return np.where(per_peak > 0, per_peak, 1)
+
+
+def peak_store_stitch_map(peak_data: xr.Dataset) -> dict | None:
+    """The stitch map a peak store's composites are read by, or None.
+
+    A per-stream store says which of its peaks make up each polarity's
+    composite: ``composite`` along ``mz``, and the map that decided it in its
+    ``stitch_map`` attribute (:func:`mascope_signal.stitch.stitch_map`). A
+    pooled store has no streams to stitch, and answers None.
+
+    The detection that labels a store's streams draws its map, so a
+    per-stream store without one was not written by it, and one that lost
+    its mask or its map on the way cannot say what its composites hold. Both
+    are refused as stale: detecting the file's peaks again writes all of it.
+
+    :param peak_data: A peak store, or a selection of its peaks or scans
+    :type peak_data: xr.Dataset
+    :raises ValueError: If the dataset carries only part of what a
+        per-stream store does (:func:`peak_store_streams`)
+    :raises StalePeakStoreError: If it is a per-stream store with no map or
+        no mask
+    :return: The map, or None for a pooled store
+    :rtype: dict | None
+    """
+    if not peak_store_streams(peak_data):
+        return None
+    return _stitch_map_of(peak_data.attrs, "composite" in peak_data.variables)
+
+
+def _stitch_map_of(attrs, has_composite: bool) -> dict:
+    """The map of a per-stream store, from its attributes and whether it
+    holds the ``composite`` mask; stale without either. Shared by
+    :func:`peak_store_stitch_map` and :func:`peak_store_stitches`."""
+    stitch = attrs.get(m_stitch.STITCH_MAP_ATTR)
+    if not stitch or not has_composite:
+        raise StalePeakStoreError(
+            "The peak store holds a peak list per scan stream and no stitch "
+            "map of them. Re-run peak detection for this sample file to "
+            "rebuild the store."
+        )
+    return stitch
+
+
+def peak_store_stitches(base_filename: str, polarity: Literal["+", "-"]) -> bool:
+    """Whether a file's peak store stitches the polarity's scan streams.
+
+    Read off the store's metadata alone - its attributes, and whether it
+    holds the arrays a per-stream store does, each asked for by name, since
+    listing the store's arrays reads the metadata of every array it holds -
+    and not the dataset: what asks is deciding whether to open the dataset
+    for a stitched read, and a file detected whole, which is nearly every
+    file, must not pay for one it has nothing to stitch. The decision is the
+    one :func:`peak_store_streams` and :func:`peak_store_stitch_map` make on
+    the dataset, through the same code, and refuses what they refuse: a
+    store carrying only part of what a per-stream store does, and a
+    per-stream store with no map or no mask.
+
+    :param base_filename: Sample file filename
+    :type base_filename: str
+    :param polarity: The polarity asked about
+    :type polarity: str
+    :raises FileNotFoundError: If the file has no peak store
+    :raises ValueError: If the store carries only part of what a per-stream
+        store does
+    :raises StalePeakStoreError: If it is a per-stream store with no map or
+        no mask
+    :return: True where the store's map stitches the polarity
+    :rtype: bool
+    """
+    path = m_name.filename_to_zarr_path(base_filename, "peak_timeseries")
+    if not os.path.exists(path):
+        raise FileNotFoundError(path)
+    # A membership test on the group opened here reads the live store, as a
+    # listing does, and not consolidated metadata that may be stale
+    group = m_io.open_zarr_store(path)
+    attrs = dict(group.attrs)
+    if not _stream_keys_of(
+        attrs.get("streams"), "stream" in group, "scan_stream" in group
+    ):
+        return False
+    return bool(_stitch_map_of(attrs, "composite" in group)["runs"].get(polarity))
+
+
 def get_scan_timestamps(
     base_filename: str,
     t_min: float | None = None,
     t_max: float | None = None,
     polarity: Literal["+", "-"] | None = None,
+    stream: str | None = None,
 ) -> np.ndarray:
     """
     Retrieve scan timestamps from a given file based on its type.
@@ -43,15 +329,21 @@ def get_scan_timestamps(
     :type t_min: float
     :param t_max: Maximum time [s], optional, defaults to None
     :type t_max: float
+    :param stream: Key of the scan stream to read, for a raw Orbitrap file,
+        defaults to None (every stream)
+    :type stream: str, optional
     :return: An array of scan timestamps extracted from the sample file.
     """
     sample_type = m_name.get_sample_file_type(base_filename)
+    _refuse_stream_unless_raw_orbitrap(sample_type, stream)
     match sample_type:
         case "orbi_raw":
             datafile_path = os.path.join(
                 m_name.parse_path_from_item_filename(base_filename), "data.raw"
             )
-            return m_thermo.get_scan_timestamps(datafile_path, t_min, t_max, polarity)
+            return m_thermo.get_scan_timestamps(
+                datafile_path, t_min, t_max, polarity, stream=stream
+            )
         case "tof_h5":
             datafile_path = os.path.join(
                 m_name.parse_path_from_item_filename(base_filename), "data.h5"
@@ -89,6 +381,7 @@ def _get_averaging_factor(
     t_min: float | None,
     t_max: float | None,
     polarity: Literal["+", "-"] | None,
+    stream: str | None = None,
 ) -> int:
     """Get deterministic averaging factor for average=True paths."""
     if sample_type in ("tof_zarr", "orbi_zarr"):
@@ -106,7 +399,9 @@ def _get_averaging_factor(
         signal_slice = signal.sel(time=slice(closest_t_min, closest_t_max))
         return signal_slice.sizes["time"]
 
-    time_coord = get_scan_timestamps(base_filename, t_min, t_max, polarity)
+    time_coord = get_scan_timestamps(
+        base_filename, t_min, t_max, polarity, stream=stream
+    )
     return time_coord.size
 
 
@@ -116,9 +411,23 @@ def get_sum_signal(
     t_max: float | None = None,
     polarity: Literal["+", "-"] | None = None,
     average: bool = False,
-    reconstruct: bool = False,
+    stream: str | None = None,
 ) -> xr.DataArray:
-    """Get sum signal from the sample file for the given time range and polarity.
+    """Get sum signal from the sample file for the given time range, polarity
+    and scan stream.
+
+    The signal is the measured one, for display as for computation: the
+    spectrum endpoints return it as it is, and the instrument-function fit
+    reads its peak shapes from it.
+
+    A cached signal is answered before the reader is asked, and a stream's
+    signal is cached under its key. So this read, alone among those that
+    take a stream, can answer under a key the file no longer holds a stream
+    under, with what that key named when the signal was cached, where the
+    others hand on the reader's ``UnknownStreamError``. Averaged it does
+    refuse, because the scans are counted first. Whoever reads by a key it
+    has stored has to ask the reader for the key before it trusts the
+    cache, as :func:`get_composite_sum_signal` does.
 
     :param base_filename: Sample file filename
     :type base_filename: str
@@ -130,23 +439,21 @@ def get_sum_signal(
     :type polarity: str, optional
     :param average: Whether to return the average signal
     :type average: bool, optional
-    :param reconstruct: When True, return the profile reconstructed as one
-        Gaussian per centroid (overlays the centroids exactly; matches Thermo,
-        whose profile is itself a reconstruction) -- for display. Honoured only
-        for live ``orbi_raw``; other paths return the real measured signal. The
-        default False is what the instrument-function fit and other quantitative
-        consumers use. Caches separately from the real signal.
-    :type reconstruct: bool, optional
+    :param stream: Key of the scan stream to sum, for a raw Orbitrap file,
+        defaults to None (every stream). A stream's signal is cached under a
+        name of its own.
+    :type stream: str, optional
     :raises RuntimeError: If the sample file is not found or inaccessible
+    :raises ValueError: If a stream is asked of a type that has none
     :return: The sum signal as an xarray DataArray
     :rtype: xr.DataArray
     """
 
     sample_type = m_name.get_sample_file_type(base_filename)
-    # reconstruct only applies to live orbi_raw computation (one Gaussian per
-    # centroid); other paths return the real signal regardless.
-    reconstruct = reconstruct and sample_type == "orbi_raw"
-    cached_name = _get_sum_signal_hash_name(t_min, t_max, polarity, reconstruct)
+    _refuse_stream_unless_raw_orbitrap(sample_type, stream)
+    cached_name = _get_sum_signal_hash_name(
+        t_min, t_max, polarity, sample_type, stream=stream
+    )
     averaging_factor = None
     if average:
         averaging_factor = _get_averaging_factor(
@@ -155,6 +462,7 @@ def get_sum_signal(
             t_min,
             t_max,
             polarity,
+            stream=stream,
         )
 
     try:
@@ -170,8 +478,8 @@ def get_sum_signal(
         # proceed if sample_file/dataset exists but is missing target sum_signal
         runtime.logger.debug(
             f"No cached sum signal found for {base_filename} with parameters: "
-            f"t_min={t_min}, t_max={t_max}, polarity={polarity}, average={average} "
-            f"Computing sum signal..."
+            f"t_min={t_min}, t_max={t_max}, polarity={polarity}, stream={stream}, "
+            f"average={average} Computing sum signal..."
         )
 
     sample_path = m_name.parse_path_from_item_filename(base_filename)
@@ -183,7 +491,7 @@ def get_sum_signal(
                 t_min=t_min,
                 t_max=t_max,
                 polarity=polarity,
-                reconstruct=reconstruct,
+                stream=stream,
             )
         case "tof_h5":
             datafile_path = os.path.join(sample_path, "data.h5")
@@ -227,32 +535,43 @@ def get_sum_signal(
                 name="sum_signal",
             )
 
-    # The full, unfiltered sum signal skips the one-point m/z calibration factor;
-    # filtered signals get it (this matches what the app displays). Keyed on the
-    # filter, not the cache-name string, so the reconstructed variant follows the
-    # same rule as the real signal of the same window.
+    # A sum signal is put on the file's calibrated m/z axis: the one its peaks
+    # are on, and its stored sum signals are moved to when a calibration is
+    # applied. How it gets there depends on what it was summed from. A TOF
+    # file's full signal is the exception, being the reference itself: apply
+    # writes the calibrated axis into its store and the filtered ones take it
+    # from there, so one summed afresh from the data file keeps that file's axis.
     is_full_sum_signal = t_min is None and t_max is None and polarity is None
-    if not is_full_sum_signal:
-        # Check if calibration factor is available in the sample file properties
-        props = m_io.read_props(base_filename)
-        calibration = props["mz_calibration"]
-        match sample_type:
-            case "orbi_raw" | "orbi_zarr":
-                if calibration:
-                    fit_parameters = calibration["par"]
-                    factor = fit_parameters["calibration_factor"]
-                    sum_signal = sum_signal.assign_coords(
-                        mz=sum_signal.mz.values * factor
-                    )
-            case "tof_h5" | "tof_zarr":
-                if calibration:
-                    full_sum_signal = get_sum_signal(base_filename)
-                    full_sum_signal_mz = full_sum_signal.mz.values
-                    if full_sum_signal_mz.size != sum_signal.mz.size:
-                        # Reverse compatibility correction on m/z axis
-                        # Leave only sum_signal.mz.size last values in full_sum_signal_mz
-                        full_sum_signal_mz = full_sum_signal_mz[-sum_signal.mz.size :]
-                    sum_signal = sum_signal.assign_coords(mz=full_sum_signal_mz)
+    match sample_type:
+        case "orbi_raw":
+            # Averaged from the raw file, on the acquisition axis, while
+            # applying a calibration rescales the stored sum signals in place
+            # (OrbiCalibrationHandler) to the acquisition axis times the
+            # current factor. So the factor goes on - the full signal's too:
+            # one averaged after the file was calibrated, as every one is once
+            # a new reader renames the cache, has to start where they are.
+            calibration = m_io.read_props(base_filename)["mz_calibration"]
+            if calibration:
+                fit_parameters = calibration["par"]
+                factor = fit_parameters["calibration_factor"]
+                sum_signal = sum_signal.assign_coords(mz=sum_signal.mz.values * factor)
+        case "orbi_zarr":
+            # Summed from the stored signal, which a calibration rescales in
+            # place as well: on the calibrated axis already, full or filtered,
+            # so the factor must not go on a second time.
+            pass
+        case "tof_h5" | "tof_zarr" if not is_full_sum_signal:
+            # A filtered signal takes its axis from the full one, which carries
+            # the calibration.
+            calibration = m_io.read_props(base_filename)["mz_calibration"]
+            if calibration:
+                full_sum_signal = get_sum_signal(base_filename)
+                full_sum_signal_mz = full_sum_signal.mz.values
+                if full_sum_signal_mz.size != sum_signal.mz.size:
+                    # Reverse compatibility correction on m/z axis
+                    # Leave only sum_signal.mz.size last values in full_sum_signal_mz
+                    full_sum_signal_mz = full_sum_signal_mz[-sum_signal.mz.size :]
+                sum_signal = sum_signal.assign_coords(mz=full_sum_signal_mz)
 
     # Save the computed sum signal to the sample file for future use
     concurrent_sum_signal = _write_cached_sum_signal(
@@ -271,24 +590,47 @@ def get_sum_signal(
     return sum_signal
 
 
-def _get_sum_signal_hash_name(t_min, t_max, polarity, reconstruct=False):
-    """Generate a unique hash name for sum signal based on parameters.
+def _get_sum_signal_hash_name(t_min, t_max, polarity, sample_type, stream=None):
+    """Generate a unique hash name for sum signal based on parameters
 
-    The reconstructed profile (one Gaussian per centroid, for display) caches
-    separately from the real measured profile via a ``_recon`` suffix; real
-    names are unchanged for backward compatibility.
+    The stream joins the name only when one is asked for, so every signal
+    cached before a stream could be read apart keeps the name it was cached
+    under.
     """
-    is_full_sum_signal = t_min is None and t_max is None and polarity is None
+    is_full_sum_signal = (
+        t_min is None and t_max is None and polarity is None and stream is None
+    )
     if is_full_sum_signal:
         cached_name = "sum_signal"
     else:
-        key_str = json.dumps([t_min, t_max, polarity])
+        key = [t_min, t_max, polarity]
+        if stream is not None:
+            key.append(stream)
+        key_str = json.dumps(key)
         hash_addition = hashlib.sha1(key_str.encode()).hexdigest()[:12]
         cached_name = f"sum_signal_{hash_addition}"
 
-    if reconstruct:
-        cached_name += "_recon"
-    return cached_name
+    return cached_name + sum_signal_suffix(sample_type)
+
+
+def sum_signal_suffix(sample_type: str) -> str:
+    """The suffix a cached sum signal of ``sample_type`` is named with.
+
+    A raw Orbitrap file's profile is averaged from the raw file on demand, so
+    its cache names what averaged it - the reader and the averaging, e.g.
+    ``.otf2.0.0-g5`` (``averaged_profile_signature``). A profile cached by
+    another reader or averaging is then never read back, where it would be
+    served, to the spectrum views and to the instrument-function fit alike, as
+    if this one had computed it. The other sample types carry no suffix.
+
+    :param sample_type: The sample file type, e.g. ``"orbi_raw"``
+    :type sample_type: str
+    :return: The suffix, or an empty string
+    :rtype: str
+    """
+    if sample_type == "orbi_raw":
+        return f".{averaged_profile_signature()}"
+    return ""
 
 
 def _get_cached_sum_signal(base_filename, cached_name):
@@ -361,6 +703,245 @@ def _write_cached_sum_signal(
     return None
 
 
+def get_composite_sum_signal(
+    base_filename: str,
+    polarity: Literal["+", "-"],
+    t_min: float | None = None,
+    t_max: float | None = None,
+    average: bool = False,
+) -> xr.DataArray:
+    """Get the stitched sum signal of one polarity of a composite acquisition.
+
+    A composite's spectrum is its streams' sum signals, each cut to the m/z
+    the stream owns under the file's stitch map and laid end to end on one
+    axis (``mascope_signal.stitch``). Every sample is labelled with the
+    stream it came from, as ``segment``: an index into the store's stream
+    keys, as a peak's ``stream`` is. Nothing is rescaled where two streams
+    meet, so the signal can step at a boundary, and where the map has a gap
+    the signal has no samples.
+
+    The map is the peak store's, so the signal and the store's ``composite``
+    mask cut the file in the same places. It is in m/z as the instrument
+    recorded them, and a stream's signal is on the file's calibrated axis,
+    so it is cut by the factor the file carries.
+
+    Averaged, each sample is divided by the scans of its own stream inside
+    the time range, since the streams of a composite hold different numbers
+    of scans. A stream with no scan inside the range is left out, and the
+    m/z it owns is a gap of that range's signal.
+
+    The reader is asked for every stream before a cached signal is served,
+    this one or a stream's own. A store names its streams by key, a key can
+    stop naming anything, and a cached signal answers under its key without
+    the file being read (:func:`get_sum_signal`). The stitched signal is
+    cached beside the streams', under a name that carries the runs it was
+    cut by and the keys they index, so a store rebuilt to another map is
+    not handed a signal stitched for the last.
+
+    :param base_filename: Sample file filename
+    :type base_filename: str
+    :param polarity: The polarity whose composite to read
+    :type polarity: str
+    :param t_min: Min time value [s], defaults to None
+    :type t_min: float, optional
+    :param t_max: Max time value [s], defaults to None
+    :type t_max: float, optional
+    :param average: Whether to return the average signal
+    :type average: bool, optional
+    :raises FileNotFoundError: If the sample file has no peak store
+    :raises ValueError: If its store stitches no streams of that polarity:
+        a pooled store, or a polarity with a single stream, whose signal is
+        that stream's own
+    :raises StalePeakStoreError: If the file holds no stream under a key the
+        store lists, or the store carries no map
+    :raises mascope_thermo.thermo.NoScansFoundError: If no stream of the
+        composite has a scan inside the time range
+    :return: The stitched sum signal, with ``segment`` along ``mz``
+    :rtype: xr.DataArray
+    """
+    stored = m_io.load_array(base_filename, var="peak_timeseries")
+    stitch = peak_store_stitch_map(stored)
+    runs = stitch["runs"].get(polarity) if stitch else None
+    if not runs:
+        raise ValueError(
+            f"'{base_filename}' holds no composite of polarity '{polarity}': "
+            "its peak store stitches no scan streams of that polarity."
+        )
+    keys = peak_store_streams(stored)
+
+    scans = {
+        index: _scans_of_stream(base_filename, keys[index], t_min, t_max)
+        for index in sorted({index for _lower, _upper, index in runs})
+    }
+    if not any(scans.values()):
+        raise m_thermo.NoScansFoundError(
+            f"No scans found for the composite of polarity '{polarity}' of "
+            f"'{base_filename}' (t_min={t_min}, t_max={t_max})."
+        )
+
+    cached_name = _composite_sum_signal_name(
+        t_min, t_max, polarity, m_name.get_sample_file_type(base_filename), runs, keys
+    )
+    stitched = _try_get_cached_sum_signal(base_filename, cached_name)
+    if stitched is None:
+        stitched = _stitch_sum_signals(base_filename, t_min, t_max, runs, keys, scans)
+        concurrent = _write_cached_sum_signal(base_filename, cached_name, stitched)
+        if concurrent is not None:
+            stitched = concurrent
+
+    if average:
+        scans_of = np.zeros(len(keys))
+        for index, count in scans.items():
+            scans_of[index] = count
+        return stitched / scans_of[stitched.segment.values]
+    return stitched
+
+
+def get_sample_sum_signal(
+    base_filename: str,
+    polarity: Literal["+", "-"],
+    t_min: float | None = None,
+    t_max: float | None = None,
+    average: bool = False,
+) -> xr.DataArray:
+    """Get the sum signal of one polarity of a file, as its sample reads it.
+
+    A file whose peak store stitches the polarity's scan streams into a
+    composite answers the stitched signal (:func:`get_composite_sum_signal`):
+    each stream's signal within the m/z it owns and, averaged, each divided
+    by that stream's own scans - the scans the sample's peak list divides by
+    (:func:`stored_scans_per_peak`), so that a listed peak sits on the
+    profile it was detected in. Any other file answers the polarity's pooled
+    signal (:func:`get_sum_signal`), averaged over every scan of the
+    polarity, as its peaks are: a store detected whole, a polarity with a
+    single stream, a file with no peak store yet.
+
+    Which of the two is read off the store's metadata
+    (:func:`peak_store_stitches`), so a file detected whole does not open the
+    dataset, and whatever the stitched read then raises is raised: nothing
+    is answered pooled for want of a stitch the store has. A store carrying
+    only part of what a per-stream store does is refused as the peak list
+    refuses it, a per-stream store the file no longer reads back is refused
+    (:class:`StalePeakStoreError`) - the pooled profile would sit under
+    peaks that were detected elsewhere - and a time range no stream has a
+    scan in is refused as any read of it is.
+
+    :param base_filename: Sample file filename
+    :type base_filename: str
+    :param polarity: The polarity whose signal to read
+    :type polarity: str
+    :param t_min: Min time value [s], defaults to None
+    :type t_min: float, optional
+    :param t_max: Max time value [s], defaults to None
+    :type t_max: float, optional
+    :param average: Whether to return the average signal
+    :type average: bool, optional
+    :raises StalePeakStoreError: If a per-stream store no longer reads back
+    :return: The polarity's sum signal; with ``segment`` along ``mz`` where
+        it is stitched
+    :rtype: xr.DataArray
+    """
+    try:
+        stitched = peak_store_stitches(base_filename, polarity)
+    except FileNotFoundError:
+        stitched = False  # no store yet: the polarity's pooled signal
+    if stitched:
+        return get_composite_sum_signal(
+            base_filename, polarity, t_min, t_max, average=average
+        )
+    return get_sum_signal(
+        base_filename, t_min, t_max, polarity=polarity, average=average
+    )
+
+
+def _composite_sum_signal_name(
+    t_min: float | None,
+    t_max: float | None,
+    polarity: str,
+    sample_type: str,
+    runs: list,
+    keys: list[str],
+) -> str:
+    """The name a polarity's stitched sum signal is cached under.
+
+    It is a sum signal like the others of its file, named the same way and
+    with the same suffix (:func:`_get_sum_signal_hash_name`), so that
+    whatever moves or removes a file's cached sum signals takes it along. It
+    is the signal of one map of one set of streams, so the name carries the
+    runs and the keys they index.
+
+    :return: The name, with the suffix of ``sample_type``
+    :rtype: str
+    """
+    members = {index: keys[index] for index in sorted({run[2] for run in runs})}
+    key_str = json.dumps([t_min, t_max, polarity, "composite", runs, members])
+    hash_addition = hashlib.sha1(key_str.encode()).hexdigest()[:12]
+    return f"sum_signal_{hash_addition}" + sum_signal_suffix(sample_type)
+
+
+def _scans_of_stream(
+    base_filename: str, key: str, t_min: float | None, t_max: float | None
+) -> int:
+    """How many scans of one stream of a per-stream store a time range holds.
+
+    Asked of the reader, which is what makes it the place a stored key is
+    found to name nothing any more.
+
+    :raises StalePeakStoreError: If the file holds no stream under the key
+    :return: The number of scans, zero where the range holds none
+    :rtype: int
+    """
+    try:
+        return get_scan_timestamps(base_filename, t_min, t_max, stream=key).size
+    except m_thermo.UnknownStreamError as error:
+        raise _stale_stream_key(key) from error
+    except m_thermo.NoScansFoundError:
+        return 0
+
+
+def _stitch_sum_signals(
+    base_filename: str,
+    t_min: float | None,
+    t_max: float | None,
+    runs: list,
+    keys: list[str],
+    scans: dict[int, int],
+) -> xr.DataArray:
+    """The sum signals of a composite's streams, cut by its runs and joined.
+
+    :param runs: The polarity's runs ``[lower, upper, stream index]``, in
+        m/z order
+    :param keys: The store's stream keys, as the runs index them
+    :param scans: How many scans of each stream the time range holds
+    :return: The stitched signal, ``segment`` naming each sample's stream
+    :rtype: xr.DataArray
+    """
+    calibration = m_io.read_props(base_filename)["mz_calibration"]
+    factor = calibration["par"]["calibration_factor"] if calibration else 1.0
+
+    signals: dict[int, xr.DataArray] = {}
+    parts = []
+    for lower, upper, index in runs:
+        if not scans[index]:
+            continue
+        if index not in signals:
+            signals[index] = get_sum_signal(
+                base_filename, t_min, t_max, stream=keys[index]
+            )
+        signal = signals[index]
+        part = signal.isel(
+            mz=m_stitch.owned_slice(signal.mz.values, lower, upper, factor)
+        )
+        parts.append(
+            part.assign_coords(
+                segment=("mz", np.full(part.mz.size, index, dtype=np.int16))
+            )
+        )
+    # One chunk, as a stream's own signal is: the pieces come in the sizes of
+    # the runs, and a zarr array is not stored in chunks of unequal size
+    return xr.concat(parts, dim="mz").chunk({"mz": -1})
+
+
 def load_signal(
     base_filename: str,
     t_min: float | None = None,
@@ -368,6 +949,7 @@ def load_signal(
     mz_min: float | None = None,
     mz_max: float | None = None,
     polarity: Literal["+", "-"] | None = None,
+    stream: str | None = None,
 ) -> xr.Dataset:
     """Load signal from the sample file
 
@@ -385,12 +967,22 @@ def load_signal(
     :type mz_max: float, optional
     :param polarity: Polarity of the scan to extract, defaults to None (get all scans)
     :type polarity: str, optional
+    :param stream: Key of the scan stream to load, for a raw Orbitrap file,
+        defaults to None (every stream)
+    :type stream: str, optional
+    :raises ValueError: If a stream is asked of a type that has none
+    :raises mascope_thermo.thermo.UnknownStreamError: If the file holds no
+        stream under the key asked for
     :return: The signal with m/z and time coordinates
     :rtype: xr.Dataset
     """
     runtime.logger.debug(f"Loading signal from {base_filename}")
 
     sample_type = m_name.get_sample_file_type(base_filename)
+    # Before the try below, which answers a ValueError with an empty signal:
+    # a stream asked of a file that has none is the caller's mistake, not an
+    # empty range.
+    _refuse_stream_unless_raw_orbitrap(sample_type, stream)
     sample_path = m_name.parse_path_from_item_filename(base_filename)
 
     if not os.path.exists(sample_path):
@@ -401,7 +993,7 @@ def load_signal(
             case "orbi_raw":
                 datafile_path = os.path.join(sample_path, "data.raw")
                 signal = m_thermo.get_signal(
-                    datafile_path, t_min, t_max, mz_min, mz_max, polarity
+                    datafile_path, t_min, t_max, mz_min, mz_max, polarity, stream=stream
                 )
                 # Handle m/z axis calibration
                 props = m_io.read_props(base_filename)
@@ -457,6 +1049,11 @@ def load_signal(
                 return signal_ds_sliced.chunk(dict(mz=-1))
             case _:
                 raise NotImplementedError(f"Unsupported sample type: {sample_type}")
+    except m_thermo.UnknownStreamError:
+        # Not an empty range either. The file holds no stream under the key
+        # asked for, and answered with an empty signal the caller would read
+        # "no data" of a stream that is not there.
+        raise
     except Exception as e:
         # Both paths return an empty dataset (callers render "no data"), but
         # expected data conditions (empty range, unsupported type) must not
@@ -479,6 +1076,7 @@ def get_tic_per_scan(
     base_filename: str,
     timestamps: Iterable | None = None,
     polarity: Literal["+", "-"] | None = None,
+    stream: str | None = None,
 ) -> tuple:
     """Get TIC per scan from the sample file depending on the file type
 
@@ -488,15 +1086,20 @@ def get_tic_per_scan(
     :type timestamps: Iterable | None
     :param polarity: Polarity of the scan to extract, defaults to None (get all scans)
     :type polarity: str | None
+    :param stream: Key of the scan stream to read, for a raw Orbitrap file,
+        defaults to None (every stream)
+    :type stream: str | None
+    :raises ValueError: If a stream is asked of a type that has none
     :return: TIC time and TIC per scan as numpy arrays
     :rtype: tuple
     """
     sample_type = m_name.get_sample_file_type(base_filename)
+    _refuse_stream_unless_raw_orbitrap(sample_type, stream)
     match sample_type:
         case "orbi_raw":
             datafile_path = m_name.filename_to_datafile_path(base_filename)
             tic_time, tic_per_scan = m_thermo.get_tic_per_scan(
-                datafile_path, timestamps, polarity
+                datafile_path, timestamps, polarity, stream=stream
             )
         case "tof_h5":
             datafile_path = m_name.filename_to_datafile_path(base_filename)
@@ -555,6 +1158,7 @@ def get_tic_per_scan(
 def get_acquisition_window(
     base_filename: str,
     polarity: Literal["+", "-"] | None = None,
+    stream: str | None = None,
 ) -> tuple[float, float]:
     """First and last scan time [s] of an acquisition, across every scan type.
 
@@ -571,16 +1175,23 @@ def get_acquisition_window(
     :type base_filename: str
     :param polarity: Polarity of the scans to span ('+' or '-'), optional.
     :type polarity: Literal['+', '-'] | None, optional
+    :param stream: Key of the scan stream to span, for a raw Orbitrap file,
+        optional. The window is then the stream's own first and last scan:
+        a stream is the scans of one experiment, so nothing of another scan
+        type is among them to widen it.
+    :type stream: str | None, optional
     :return: (t0, t1) in seconds.
     :rtype: tuple[float, float]
-    :raises ValueError: When the file reports no scan times to span.
+    :raises ValueError: When the file reports no scan times to span, or a
+        stream is asked of a type that has none.
     """
     sample_type = m_name.get_sample_file_type(base_filename)
+    _refuse_stream_unless_raw_orbitrap(sample_type, stream)
     match sample_type:
         case "orbi_raw":
             datafile_path = m_name.filename_to_datafile_path(base_filename)
             times = m_thermo.get_scan_timestamps(
-                datafile_path, polarity=polarity, scan_type=None
+                datafile_path, polarity=polarity, scan_type=None, stream=stream
             )
         case _:
             # No other reader has an MS2 scan type to leave out, so the scan
@@ -592,7 +1203,9 @@ def get_acquisition_window(
     # numpy report a zero-size reduction.
     if not len(times):
         raise ValueError(
-            f"No scan times to span for '{base_filename}' (polarity={polarity!r})."
+            f"No scan times to span for '{base_filename}' (polarity={polarity!r}"
+            + ("" if stream is None else f", stream={stream!r}")
+            + ")."
         )
 
     return float(np.min(times)), float(np.max(times))
@@ -606,6 +1219,7 @@ async def get_orbi_centroids(
     polarity: Literal["+", "-"] | None = None,
     ppm: int = 1,
     average: bool = False,
+    stream: str | None = None,
 ) -> tuple:
     """
     Extract centroided peaks from an Orbitrap (Thermo .raw) file for specified m/z values and time range.
@@ -628,6 +1242,8 @@ async def get_orbi_centroids(
     :type ppm: int, optional
     :param average: If True, return averaged intensities across scans, defaults to False.
     :type average: bool, optional
+    :param stream: Key of the scan stream to average, defaults to None (every stream).
+    :type stream: str, optional
     :return: Tuple of (masses, intensities, resolutions, signal-to-noise) for centroid peaks
     matching the criteria.
     :rtype: tuple
@@ -645,6 +1261,7 @@ async def get_orbi_centroids(
                 polarity=polarity,
                 ppm=ppm,
                 average=average,
+                stream=stream,
             )
             props = m_io.read_props(base_filename)
             calibration = props["mz_calibration"]
@@ -674,6 +1291,7 @@ def get_orbi_centroids_per_scan(
     t_max: float | None = None,
     polarity: Literal["+", "-"] | None = None,
     scan_type: Literal["Ms", "Ms2"] | None = None,
+    stream: str | None = None,
 ) -> list:
     """
     Extract per-scan centroids from an Orbitrap raw file
@@ -688,6 +1306,8 @@ def get_orbi_centroids_per_scan(
     :type polarity: Literal['+', '-'], optional
     :param scan_type: Filter by scan type ('Ms' or 'Ms2'), optional, defaults to None (all scans).
     :type scan_type: Literal['Ms', 'Ms2'] | None, optional
+    :param stream: Key of the scan stream to read, optional, defaults to None (every stream).
+    :type stream: str | None, optional
     :return: List of dictionaries with per-scan centroid data, each containing
             centroid masses, intensities, resolutions, signal-to-noise ratios, and timestamps.
     :rtype: list
@@ -697,7 +1317,12 @@ def get_orbi_centroids_per_scan(
         case "orbi_raw":
             datafile_path = m_name.filename_to_datafile_path(base_filename)
             centroids_per_scan = m_thermo.get_centroids_per_scan(
-                datafile_path, t_min, t_max, polarity=polarity, scan_type=scan_type
+                datafile_path,
+                t_min,
+                t_max,
+                polarity=polarity,
+                scan_type=scan_type,
+                stream=stream,
             )
             props = m_io.read_props(base_filename)
             calibration = props["mz_calibration"]
@@ -979,7 +1604,10 @@ def _load_deduplicated_peak_data(base_filename: str, mzs_arr: np.ndarray) -> xr.
     :param mzs_arr: Sorted unique target m/z values
     :return: Peak dataset selected to the nearest m/z, duplicates dropped
     """
-    peak_timeseries = m_io.load_peak_data(base_filename).sel(
+    # The whole store: a fill answers any stored row by its m/z, and what
+    # asks for one holds its m/z already - a reading the composite leaves out
+    # included, where the overlap is read
+    peak_timeseries = m_io.load_peak_data(base_filename, composite=False).sel(
         mz=mzs_arr, method="nearest"
     )
     _, unique_idx = np.unique(peak_timeseries.mz.values, return_index=True)
@@ -1003,6 +1631,14 @@ class StalePeakStoreError(ValueError):
     onto them - the artifact the exclusion exists to drop would be smeared
     across the good scans instead of sitting in its own, where it can still be
     seen and skipped.
+
+    A store that holds a peak list per scan stream is read back stream by
+    stream, each under the key it was built with, and a key is a name the
+    reader computes. One the file no longer holds a stream under is the same
+    condition by another road: that stream's peaks have no scans left to be
+    read back over, and a rebuild, which keys the file's streams afresh,
+    repairs it. So is a per-stream store that carries no stitch map of its
+    streams (:func:`peak_store_stitch_map`): the rebuild draws one.
 
     A ``ValueError`` so the API layer keeps mapping it to a client-class
     failure with its own message rather than a generic 500.
@@ -1066,6 +1702,43 @@ def check_stored_scan_axis(
         raise _stale("their scan times do not line up")
 
 
+async def _read_stream_back(
+    base_filename: str, mzs: np.ndarray, key: str
+) -> xr.DataArray:
+    """One stream of a per-stream store, read back from the file by its key.
+
+    The store names its streams by the keys they had when it was built. What
+    the reader calls an experiment depends on what else its file holds, on
+    the backend that rendered its scan filter and on the version of the code
+    that keys, so a stored key can stop naming anything. The reader refuses
+    such a key, and here that is no one's mistake: the store is stale, and is
+    said to be, so that whoever meets it asks for the rebuild.
+
+    :param base_filename: Sample file filename
+    :type base_filename: str
+    :param mzs: The m/z values of the stream's peaks to read back
+    :type mzs: np.ndarray
+    :param key: The stream's key, as the store lists it
+    :type key: str
+    :raises StalePeakStoreError: If the file holds no stream under the key
+    :return: The peaks' timeseries over the scans of that stream
+    :rtype: xr.DataArray
+    """
+    try:
+        return await get_peak_timeseries(base_filename, mzs, stream=key)
+    except m_thermo.UnknownStreamError as error:
+        raise _stale_stream_key(key) from error
+
+
+def _stale_stream_key(key: str) -> StalePeakStoreError:
+    """What a stream key of a per-stream store that names nothing is raised as."""
+    return StalePeakStoreError(
+        f"The peak store holds the peaks of scan stream '{key}', and the "
+        "sample file now reads back no stream under that key. Re-run peak "
+        "detection for this sample file to rebuild the store."
+    )
+
+
 async def check_peak_store(base_filename: str) -> None:
     """Refuse a peak store the sample file does not read back, as matching would.
 
@@ -1076,16 +1749,39 @@ async def check_peak_store(base_filename: str) -> None:
     a rebuild, it is the one place that can tell the two apart.
 
     The file is read back for one m/z, the way ``load_peak_timeseries`` reads
-    it, since the scan axis does not depend on the peak.
+    it, since the scan axis does not depend on the peak. A per-stream store
+    is read back once per stream, each against its own scans of the store's
+    axis.
 
     :param base_filename: Sample file filename
     :type base_filename: str
-    :raises StalePeakStoreError: If the store's scan axis is not the file's
+    :raises StalePeakStoreError: If the store's scan axis is not the file's,
+        or the file holds no stream under a key the store lists
     :return: None
     """
-    stored = await asyncio.to_thread(m_io.load_peak_data, base_filename)
+    # The whole store: every stream it holds is read back, the ones the
+    # composite leaves out included, so a stale key is named whichever it is
+    stored = await asyncio.to_thread(
+        m_io.load_peak_data, base_filename, composite=False
+    )
     if not stored.mz.size:
         # A blank measurement's store holds no peak to read the file back for
+        return
+    streams = peak_store_streams(stored)
+    if streams:
+        peak_stream = stored.stream.values
+        scan_stream = stored.scan_stream.values
+        for index, key in enumerate(streams):
+            peaks = np.flatnonzero(peak_stream == index)
+            if not peaks.size:
+                # A stream that kept no peak has no m/z to read it back for
+                continue
+            live = await _read_stream_back(
+                base_filename, stored.mz.values[peaks[:1]], key
+            )
+            check_stored_scan_axis(
+                live.time.values, stored.time.values[scan_stream == index]
+            )
         return
     live = await get_peak_timeseries(base_filename, stored.mz.values[:1])
     check_stored_scan_axis(live.time.values, stored.time.values)
@@ -1098,15 +1794,143 @@ async def load_peak_timeseries(
     """Loads peak timeseries from the sample file.
     Computes missing peak timeseries if needed.
 
+    Computing them means reading the file back, which takes long enough for
+    the store's m/z axis to be rewritten meanwhile: an m/z calibration of the
+    file rescales it, and nothing keeps the two apart. The store then refuses
+    the fill, whose m/z values are those of the axis as it was
+    (``mascope_file.io.MzNotOnAxisError``), and the same peaks are loaded and
+    computed once more, on the store as it has become. They are found there
+    by their peak ids (:func:`_mzs_of_the_same_peaks`), so what is returned
+    is on the store's new axis. A second refusal is raised.
+
     :param base_filename: Sample file filename
     :type base_filename: str
     :param mzs: List of target m/z values
     :type mzs: list[float]
+    :raises MzNotOnAxisError: If the store's m/z axis was rewritten during
+        both attempts
     :return: The peak timeseries dataset
     :rtype: xr.Dataset
     """
-    # --- Load existing peak timeseries from the sample file ---
     mzs_arr = np.unique(np.asarray(mzs))
+    peak_timeseries, to_compute_mask = await _load_peaks_to_fill(base_filename, mzs_arr)
+    if not np.any(to_compute_mask):
+        return peak_timeseries
+
+    # What a second attempt finds these peaks by. Read before the file is,
+    # while the store is still the one they were loaded from: once it has
+    # been rewritten, this load no longer reads it back reliably.
+    peak_ids = await asyncio.to_thread(lambda: peak_timeseries.peak_id.values)
+    try:
+        await _fill_peak_timeseries(base_filename, peak_timeseries, to_compute_mask)
+    except m_io.MzNotOnAxisError:
+        # A warning although the second attempt is expected to succeed:
+        # nothing else says how often a fill meets a rewritten axis, and that
+        # is what decides whether the two want keeping apart instead. Pinned
+        # to one issue, since the refusal's message carries the m/z values
+        # and monitoring would otherwise group it close to per file.
+        runtime.logger.bind(
+            **{SENTRY_FINGERPRINT: ["peak-fill-met-a-rewritten-axis"]}
+        ).opt(exception=True).warning(
+            f"The m/z axis of the peak store of '{base_filename}' was rewritten "
+            "while peak timeseries were being computed for it. They were not "
+            "stored, and are computed again."
+        )
+        # A rewritten axis is not a finished calibration: the Orbitrap one
+        # records its factor after the axis, and the file is read back by
+        # that factor. This is the one fill known to start right behind an
+        # apply, so it alone waits for it.
+        await asyncio.to_thread(_wait_for_mz_calibration, base_filename)
+        mzs_arr = await asyncio.to_thread(
+            _mzs_of_the_same_peaks, base_filename, peak_ids, mzs_arr
+        )
+        peak_timeseries, to_compute_mask = await _load_peaks_to_fill(
+            base_filename, mzs_arr
+        )
+        if np.any(to_compute_mask):
+            await _fill_peak_timeseries(base_filename, peak_timeseries, to_compute_mask)
+
+    # --- Return a clean lazy reference ---
+    return await asyncio.to_thread(_load_deduplicated_peak_data, base_filename, mzs_arr)
+
+
+def _wait_for_mz_calibration(base_filename: str) -> None:
+    """Return once no m/z calibration of the file is being applied.
+
+    An apply holds the file's calibration lock from its first write to its
+    last (``mascope_file.io.mz_calibration_lock_path``). Taking the lock and
+    letting go of it at once is waiting for an apply in progress to finish,
+    and no wait at all where there is none.
+
+    Synchronous and blocking, so callers on the event loop must hand it to a
+    worker thread.
+
+    :param base_filename: Sample file filename
+    :type base_filename: str
+    :raises TimeoutError: If another process held the lock for longer than
+        ``mascope_file.io.ZARR_PROCESS_LOCK_TIMEOUT``
+    :return: None
+    """
+    with m_io.zarr_write_lock(m_io.mz_calibration_lock_path(base_filename)):
+        pass
+
+
+def _mzs_of_the_same_peaks(
+    base_filename: str,
+    peak_ids: np.ndarray,
+    mzs_arr: np.ndarray,
+) -> np.ndarray:
+    """Where the peaks of a refused fill are on the store's axis as it now is.
+
+    The m/z values a fill is asked for are, for most callers, read off the
+    store: labels of the axis as it was. On a rewritten axis the row nearest
+    such a label is its own peak only where the axis moved by less than half
+    the distance to the next kept peak, and two labels nearer each other than
+    that name one row, so the caller would get fewer peaks than it asked for.
+    An m/z calibration rewrites the m/z values of a store and nothing else,
+    so its peaks are found by their ids.
+
+    Where an id is gone the file's peaks were detected again, and no peak of
+    the store is one the fill was for. The m/z values asked for are then all
+    there is to go by, for every peak: a new detection replaces every id.
+
+    Synchronous and blocking (it opens the zarr store), so callers on the event
+    loop must hand it to a worker thread.
+
+    :param base_filename: Sample file filename
+    :type base_filename: str
+    :param peak_ids: The ids of the peaks the refused fill had loaded
+    :type peak_ids: np.ndarray
+    :param mzs_arr: The m/z values it was asked for, sorted and unique
+    :type mzs_arr: np.ndarray
+    :return: The m/z values to ask for instead, sorted and unique
+    :rtype: np.ndarray
+    """
+    # The whole axis: a refused fill may have loaded a reading the composite
+    # leaves out
+    stored = m_io.load_peak_data(base_filename, composite=False)
+    mz_by_id = dict(zip(stored.peak_id.values.tolist(), stored.mz.values.tolist()))
+    peak_ids = peak_ids.tolist()
+    if not all(peak_id in mz_by_id for peak_id in peak_ids):
+        return mzs_arr
+    return np.unique([mz_by_id[peak_id] for peak_id in peak_ids])
+
+
+async def _load_peaks_to_fill(
+    base_filename: str,
+    mzs_arr: np.ndarray,
+) -> tuple[xr.Dataset, np.ndarray]:
+    """Load the peaks asked for, and say which of them have no timeseries yet.
+
+    :param base_filename: Sample file filename
+    :type base_filename: str
+    :param mzs_arr: Sorted unique target m/z values
+    :type mzs_arr: np.ndarray
+    :return: The peaks nearest those m/z values, and a mask over them of the
+        ones whose timeseries is still to be computed
+    :rtype: tuple[xr.Dataset, np.ndarray]
+    """
+    # --- Load existing peak timeseries from the sample file ---
     peak_timeseries = await asyncio.to_thread(
         _load_deduplicated_peak_data, base_filename, mzs_arr
     )
@@ -1124,7 +1948,34 @@ async def load_peak_timeseries(
         runtime.logger.debug(
             f"All peak timeseries are cached in {base_filename}, loading from file."
         )
-        return peak_timeseries
+    return peak_timeseries, to_compute_mask
+
+
+async def _fill_peak_timeseries(
+    base_filename: str,
+    peak_timeseries: xr.Dataset,
+    to_compute_mask: np.ndarray,
+) -> None:
+    """Compute the timeseries the loaded peaks are missing, and store them.
+
+    :param base_filename: Sample file filename
+    :type base_filename: str
+    :param peak_timeseries: The peaks asked for, loaded from the store
+    :type peak_timeseries: xr.Dataset
+    :param to_compute_mask: Which of them have no timeseries yet
+    :type to_compute_mask: np.ndarray
+    :raises MzNotOnAxisError: If the store's m/z axis was rewritten between
+        the load of the peaks and the write
+    :return: None
+    """
+    # --- A per-stream store fills each peak over its own stream's scans ---
+    streams = peak_store_streams(peak_timeseries)
+    if streams:
+        update_dataset = await _stream_timeseries_update(
+            base_filename, peak_timeseries, to_compute_mask, streams
+        )
+        await m_io.write_peaks(update_dataset, base_filename)
+        return
 
     # --- Compute the missing peak timeseries ---
     mz_coords = peak_timeseries.mz.values
@@ -1193,8 +2044,104 @@ async def load_peak_timeseries(
     # --- Write the updates to disk ---
     await m_io.write_peaks(update_dataset, base_filename)
 
-    # --- Return a clean lazy reference ---
-    return await asyncio.to_thread(_load_deduplicated_peak_data, base_filename, mzs_arr)
+
+async def _stream_timeseries_update(
+    base_filename: str,
+    peak_timeseries: xr.Dataset,
+    to_compute_mask: np.ndarray,
+    streams: list[str],
+) -> xr.Dataset:
+    """The missing timeseries of a per-stream store, as an update to it.
+
+    Each peak is read back over the scans of its own stream, normalised over
+    them and scaled to its summed intensity, as a pooled store's peak is over
+    every scan. On the other streams' scans it holds no value at all: the
+    instrument was measuring something else then, which is not the same as
+    measuring this ion and finding none. Sparsity is likewise the share of
+    its own stream's scans the peak is absent from.
+
+    The axis is checked per stream, on the coordinates alone, before any chunk
+    is read: a store one of whose streams the file no longer reads back scan
+    for scan is refused, as a pooled one is.
+
+    :param base_filename: Sample file filename
+    :type base_filename: str
+    :param peak_timeseries: The peaks asked for, loaded from the store
+    :type peak_timeseries: xr.Dataset
+    :param to_compute_mask: Which of them have no timeseries yet
+    :type to_compute_mask: np.ndarray
+    :param streams: The store's stream keys, as its labels index them
+    :type streams: list[str]
+    :raises StalePeakStoreError: If a stream's scans are not the file's, or
+        the file holds no stream under its key
+    :return: The rows to write, on the store's whole time axis
+    :rtype: xr.Dataset
+    """
+
+    def _load_update_metadata():
+        missing = peak_timeseries.isel(mz=np.flatnonzero(to_compute_mask))
+        return (
+            missing.mz.values,
+            missing.stream.values,
+            missing.sum_peak_heights.values,
+            missing.sum_peak_areas.values,
+            peak_timeseries.time.values,
+            peak_timeseries.scan_stream.values,
+        )
+
+    (
+        mzs_to_compute,
+        peak_stream,
+        sum_peak_heights,
+        sum_peak_areas,
+        time_coords,
+        scan_stream,
+    ) = await asyncio.to_thread(_load_update_metadata)
+
+    shape = (mzs_to_compute.size, time_coords.size)
+    new_peak_areas = np.full(shape, np.nan, dtype=np.float64)
+    new_peak_heights = np.full(shape, np.nan, dtype=np.float64)
+    sparsity_values = np.zeros(mzs_to_compute.size, dtype=np.float64)
+
+    for index in np.unique(peak_stream):
+        peaks = np.flatnonzero(peak_stream == index)
+        scans = np.flatnonzero(scan_stream == index)
+        new_peak_timeseries = await _read_stream_back(
+            base_filename, mzs_to_compute[peaks], streams[int(index)]
+        )
+        check_stored_scan_axis(new_peak_timeseries.time.values, time_coords[scans])
+
+        # new_peak_timeseries is dask-backed, so .values is where the chunks
+        # are read: off the event loop, like the pooled fill.
+        def _normalised(timeseries=new_peak_timeseries):
+            values = timeseries.values
+            totals = values.sum(axis=1, keepdims=True)
+            return values / np.where(totals == 0, 1, totals)
+
+        normalised = await asyncio.to_thread(_normalised)
+        heights = normalised * sum_peak_heights[peaks][:, np.newaxis]
+        new_peak_areas[np.ix_(peaks, scans)] = (
+            normalised * sum_peak_areas[peaks][:, np.newaxis]
+        )
+        new_peak_heights[np.ix_(peaks, scans)] = heights
+        # NaN counts as missing, as in the pooled fill: NaN > 0 is False
+        sparsity_values[peaks] = np.sum(~(heights > 0), axis=1) / scans.size
+
+    return xr.Dataset(
+        data_vars={
+            "peak_areas": (["mz", "time"], new_peak_areas),
+            "peak_heights": (["mz", "time"], new_peak_heights),
+            "is_timeseries_computed": (
+                ["mz"],
+                np.ones(mzs_to_compute.size, dtype=bool),
+            ),
+            "sparsity": (["mz"], sparsity_values),
+        },
+        coords={
+            "mz": mzs_to_compute,
+            "time": time_coords,
+        },
+    )
 
 
 async def get_peak_timeseries(
@@ -1203,6 +2150,7 @@ async def get_peak_timeseries(
     t_min: float | None = None,
     t_max: float | None = None,
     polarity: Literal["+", "-"] | None = None,
+    stream: str | None = None,
 ) -> xr.DataArray:
     """Get peak timeseries for given peak m/z values in the time range [t_min, t_max]
 
@@ -1216,10 +2164,15 @@ async def get_peak_timeseries(
     :type t_max: float, optional
     :param polarity: Polarity of the scan to extract, defaults to None (get all scans)
     :type polarity: str, optional
+    :param stream: Key of the scan stream to read, for a raw Orbitrap file,
+        defaults to None (every stream)
+    :type stream: str, optional
+    :raises ValueError: If a stream is asked of a type that has none
     :return: peak timeseries for the given m/z values
     :rtype: xr.DataArray
     """
     sample_type = m_name.get_sample_file_type(base_filename)
+    _refuse_stream_unless_raw_orbitrap(sample_type, stream)
     match sample_type:
         case "orbi_raw":
             datafile_path = m_name.filename_to_datafile_path(base_filename)
@@ -1240,6 +2193,7 @@ async def get_peak_timeseries(
                 t_min,
                 t_max,
                 polarity,
+                stream=stream,
             )
             # Calibrate m/z coordinate
             return peak_timeseries.assign_coords(mz=peak_timeseries.mz.values * factor)

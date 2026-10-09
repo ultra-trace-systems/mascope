@@ -140,6 +140,29 @@ def zarr_write_lock(
             process_lock.release()
 
 
+def mz_calibration_lock_path(base_filename: str) -> str:
+    """Path naming the lock an m/z calibration of a sample file is applied under.
+
+    Not a store - only the name a lock file is derived from
+    (:func:`zarr_write_lock`). It sits beside the sample's stores and is
+    deliberately distinct from any of them, so taking it does not collide with
+    the per-array locks the writes of an apply take for themselves.
+
+    An apply holds it from its first write to its last: the m/z axes of the
+    file's stores, and the calibration recorded in its properties. Until it
+    lets go the two can disagree, so whoever needs them to agree waits for
+    it here.
+
+    :param base_filename: Sample file filename
+    :type base_filename: str
+    :return: The path the lock is named by
+    :rtype: str
+    """
+    return os.path.join(
+        m_name.parse_path_from_item_filename(base_filename), "mz_calibration"
+    )
+
+
 def remove_path(path: str) -> None:
     """Delete a store directory or a side-car file left beside one.
 
@@ -250,7 +273,27 @@ def load_coord(base_filename, var, coord_name):
     return coord_array
 
 
-def load_peak_data(base_filename: str, drop_bad_peaks: bool = True) -> xr.Dataset:
+def _bad_peaks(is_weak, is_satellite):
+    """Which peaks of a store a load leaves out: the weak and the satellites.
+
+    Stated once, because two things have to agree on it. A load drops these
+    peaks (:func:`load_peak_data`), and a fill tells the rows sharing an m/z
+    apart by them (:func:`_rows_of_kept_peaks`). A rule the load alone changed
+    would leave the fill settling such a pair by the old one, and nothing
+    would fail. A default load of a per-stream store leaves out more - the
+    readings its composites do not take - but the fill's own load is the
+    whole store's (``composite=False``), so this rule is the one it shares.
+
+    :param is_weak: The store's ``is_weak`` flags
+    :param is_satellite: Its ``is_satellite`` flags, as the same kind of array
+    :return: Their union, as that kind of array
+    """
+    return is_weak | is_satellite
+
+
+def load_peak_data(
+    base_filename: str, drop_bad_peaks: bool = True, composite: bool = True
+) -> xr.Dataset:
     """Load peak data from sample file.
     The function DOES NOT guarantee that the timeseries data is complete.
 
@@ -274,10 +317,41 @@ def load_peak_data(base_filename: str, drop_bad_peaks: bool = True) -> xr.Datase
     - sum_peak_areas (mz)
     - sum_peak_heights (mz)
 
+    A store that holds a peak list per scan stream (``mascope_signal.peak``)
+    also carries:
+    - stream (mz): the stream each peak was detected in
+    - scan_stream (time): the stream each scan belongs to
+    both as an index into the stream keys listed by its ``streams``
+    attribute. A peak of such a store holds values only on the scans of its
+    own stream. Read them through ``mascope_signal.compute.peak_store_streams``,
+    which answers ``[]`` for a pooled store.
+
+    The streams of one polarity are stitched into one spectrum, so such a
+    store carries as well:
+    - composite (mz): whether the peak is in its polarity's composite, which
+      takes each m/z from the one stream that owns it
+    and, as attributes, the ``stitch_map`` that decided it and the
+    ``stitch_overlaps`` two streams read where both measure
+    (``mascope_signal.stitch``). ``mascope_signal.compute.peak_store_stitch_map``
+    reads the map, and answers None for a pooled store.
+
+    Such a store answers its composites by default: the peaks each
+    polarity's stitched spectrum is made of, one reading of every m/z. The
+    other streams' readings of the same ions, and a peak detected only by a
+    stream that does not own its m/z, stay in the store and are answered
+    with ``composite=False``; nothing that reads "the file's peaks" wants
+    them beside the composite's, where two readings of one ion a fraction
+    of a ppm apart look like two peaks too close to tell apart. A pooled
+    store, and a polarity the map does not stitch, answer the same either
+    way.
+
     :param base_filename: Sample file filename
     :type base_filename: str
     :param drop_bad_peaks: Flag to drop weak and satellite peaks, defaults to True
     :type drop_bad_peaks: bool, optional
+    :param composite: Whether a per-stream store answers only the peaks of
+        its composites, defaults to True
+    :type composite: bool, optional
     :return: Loaded peak data with sample file properties attached
     :rtype: xr.Dataset
     """
@@ -290,8 +364,14 @@ def load_peak_data(base_filename: str, drop_bad_peaks: bool = True) -> xr.Datase
     # never physically written — xarray uses fill_value=NaN for float64 by default)
     peak_data["sparsity"] = peak_data.sparsity.fillna(0.0)
     if drop_bad_peaks:
-        bad_peak_mask = peak_data.is_weak | peak_data.is_satellite
-        peak_data = peak_data.sel(mz=peak_data.mz.values[~bad_peak_mask])
+        bad_peak_mask = _bad_peaks(peak_data.is_weak, peak_data.is_satellite)
+        # By position: selecting by m/z needs every m/z on the axis to be
+        # unique, the ones being dropped included, and two peaks of a file can
+        # share one
+        peak_data = peak_data.isel(mz=np.flatnonzero(~bad_peak_mask.values))
+    if composite and "composite" in peak_data.variables:
+        # By position too, for the same reason
+        peak_data = peak_data.isel(mz=np.flatnonzero(peak_data.composite.values))
     # Add zarr file properties to attributes for reverse compatibility
     props = read_props(base_filename)
     peak_data.attrs["props"] = props
@@ -524,6 +604,23 @@ def calculate_mz_chunk_size(
     return int(chunk_mz)
 
 
+class MzNotOnAxisError(ValueError):
+    """A partial update of a peak store naming an m/z its axis does not hold.
+
+    An update is built from m/z values read off the store, so the axis was
+    rewritten after they were read: applying an m/z calibration rescales it,
+    and detecting the file's peaks again replaces it. Nothing of the update
+    was written.
+
+    A class of its own because of what answers it. Reading the store again
+    and building the update from the axis it then holds is all it takes,
+    which a caller cannot say of any other refusal of an update.
+
+    A ``ValueError``, so the API layer keeps mapping it to a client-class
+    failure with its own message rather than a generic 500.
+    """
+
+
 async def write_peaks(
     peak_timeseries: xr.Dataset,
     filename: str,
@@ -536,7 +633,12 @@ async def write_peaks(
     2. Partial update: Updates specific m/z values in an existing zarr file
 
     The partial update uses a read-modify-write pattern on individual chunks
-    to minimize memory usage.
+    to minimize memory usage. It finds each peak's row by its m/z, which has
+    to be on the file's m/z axis exactly: an update is built from m/z values
+    read off the file, and one the axis no longer holds is for none of its
+    rows, however near it comes to one. Where several peaks of the file share
+    an m/z, the update is for the one :func:`load_peak_data` keeps: see
+    :func:`_rows_of_kept_peaks`.
 
     :param peak_timeseries: Dataset containing peak areas and peak heights
     :type peak_timeseries: xr.Dataset
@@ -544,6 +646,10 @@ async def write_peaks(
     :type filename: str
     :param overwrite: Flag to overwrite peaks if they already exist, defaults to False
     :type overwrite: bool, optional
+    :raises MzNotOnAxisError: If a partial update names an m/z that is not on
+        the file's m/z axis
+    :raises ValueError: If a partial update names an m/z that does not single
+        out a peak
     :raises Exception: If the path is too long or other I/O errors occur
     :return: None
     """
@@ -700,21 +806,31 @@ def _get_chunk_metadata(
     mz_update = peak_timeseries.coords["mz"].values
     existing_mz = z["mz"][:]
 
-    # Find indices for matching
+    # The first row at or above each m/z: one past the last row for an m/z
+    # above them all
     indexer = np.searchsorted(existing_mz, mz_update)
 
-    # Clip indices to valid range before comparison
-    clipped_indexer = np.clip(indexer, 0, len(existing_mz) - 1)
-
-    # Verify exact matches
-    exact_match_mask = np.isclose(existing_mz[clipped_indexer], mz_update)
+    # An update's m/z values are read off the store, never computed, so the
+    # row found has to hold exactly that m/z. Within a tolerance it could as
+    # well be a neighbouring peak's: an m/z the axis does not hold finds the
+    # next row up, and two peaks of a file can be a few ppm apart. A store
+    # of more than one peak list sets two rows that would share an m/z a part
+    # in a trillion apart on purpose
+    # (``mascope_signal.peak.MZ_ROW_SEPARATION``), nearer than any tolerance.
+    has_row = indexer < existing_mz.size
+    exact_match_mask = has_row.copy()
+    exact_match_mask[has_row] = existing_mz[indexer[has_row]] == mz_update[has_row]
 
     if not np.all(exact_match_mask):
         missing_mz = mz_update[np.invert(exact_match_mask)]
-        raise ValueError(
+        raise MzNotOnAxisError(
             f"Cannot update m/z values not present in existing data: {missing_mz}. "
-            "Running peak detection first should resolve this issue."
+            "The file's m/z axis has most likely been rewritten since they "
+            "were read, as an m/z calibration or a new peak detection does. "
+            "Asking again reads the axis as it is now."
         )
+
+    indexer = _rows_of_kept_peaks(z, existing_mz, indexer)
 
     chunk_indices = indexer // actual_mz_chunk_size
     unique_chunks = np.unique(chunk_indices)
@@ -726,6 +842,52 @@ def _get_chunk_metadata(
         "chunk_indices": chunk_indices,
         "unique_chunks": unique_chunks,
     }
+
+
+def _rows_of_kept_peaks(
+    z: zarr.Group,
+    existing_mz: np.ndarray,
+    indexer: np.ndarray,
+) -> np.ndarray:
+    """Point each update at its own row where several peaks share its m/z.
+
+    Two peaks of a file can share an m/z, and a search of the axis finds the
+    first row holding it, whichever of them the update is for. An update's
+    m/z values are read off a loaded store, and a store is loaded without its
+    weak and satellite peaks (:func:`load_peak_data`), so among the rows
+    sharing an m/z the update is for the one that is neither
+    (:func:`_bad_peaks`). A peak a load drops can therefore not be filled by
+    its m/z while a kept one shares it. That load is the whole store's
+    (``composite=False``): the readings a per-stream store's composites
+    leave out are filled like any other row, and play no part in the rule.
+
+    :param z: The peak store
+    :param existing_mz: The store's m/z axis, ascending
+    :param indexer: For each update, the first row holding its m/z
+    :raises ValueError: If the rows sharing an m/z hold no kept peak, or
+        several: the update then names none of them
+    :return: The row each update is for
+    """
+    last_row = np.searchsorted(existing_mz, existing_mz[indexer], side="right") - 1
+    shared = np.flatnonzero(last_row > indexer)
+    if not shared.size:
+        return indexer
+
+    # A boolean variable is int8 in the store, so its inverse is not a mask
+    # until it is cast back
+    bad_peak_mask = _bad_peaks(z["is_weak"][:], z["is_satellite"][:]).astype(bool)
+    indexer = indexer.copy()
+    for i in shared:
+        rows = np.arange(indexer[i], last_row[i] + 1)
+        kept = rows[~bad_peak_mask[rows]]
+        if kept.size != 1:
+            raise ValueError(
+                f"Cannot update m/z {existing_mz[rows[0]]}: {rows.size} peaks "
+                f"share it and {kept.size} of them are neither weak nor a "
+                "satellite, so the update names no single peak."
+            )
+        indexer[i] = kept[0]
+    return indexer
 
 
 def _prepare_chunk_tasks(

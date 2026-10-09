@@ -32,6 +32,21 @@ updates:
       python-minor-and-patch:
         update-types: ["minor", "patch"]
 
+  # The File Agent is its own uv project with its own lockfile, which the
+  # entry above never reads: it is deliberately not a workspace member, so
+  # that PyInstaller does not compile the workspace into the agent. What it
+  # locks ships in the Windows installer and is what the published library
+  # is tested against.
+  - package-ecosystem: uv
+    directory: /agents/file
+    target-branch: develop
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      python-minor-and-patch:
+        update-types: ["minor", "patch"]
+
   - package-ecosystem: npm
     directory: /server/frontend
     target-branch: develop

@@ -707,6 +707,9 @@ def test_run_pairing_polls_until_approved(monkeypatch, capsys):
     assert token == "paired-token"
     out = capsys.readouterr().out
     assert "BCD-234" in out
+    # Where the web app has the button: the Home menu's Settings tab.
+    assert "Home menu" in out
+    assert "Settings tab" in out
     assert "Pair an agent" in out
     assert calls[0]["url"].endswith("/api/auth/pairing/start")
     assert calls[0]["json"]["service_name"] == "file-agent"

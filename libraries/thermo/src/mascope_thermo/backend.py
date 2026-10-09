@@ -15,13 +15,15 @@ multi-scan averaging, XIC, trailer, run header, ...) rather than an emulation of
 the .NET RawFile object, so each backend implements it natively.
 
 For an end-to-end explanation of the reading and averaging pipeline (why
-averaging happens in the frequency domain, the real-vs-reconstructed profile
-split, the averaged-centroid approximation), see ``libraries/thermo/docs/
-reader_pipeline.md``.
+averaging happens in the frequency domain, the averaged-centroid
+approximation, why the spectrum views draw the measured profile), see
+``libraries/thermo/docs/reader_pipeline.md``.
 """
 
 from __future__ import annotations
 
+import functools
+import importlib.metadata
 import math
 import os
 import re
@@ -34,6 +36,22 @@ from mascope_thermo.scan_filter import parse_scan_filter
 
 
 ENV_BACKEND = "MASCOPE_THERMO_BACKEND"
+
+# The generation of the OpenTFRaw backend's average_profile, which
+# averaged_profile_signature names: bump it whenever average_profile returns a
+# different profile from the same samples, or a cached profile computed the old
+# way keeps being served as the new one. Generation 5 adds every scan to the
+# sum at its own first and last samples, which earlier ones left out wherever
+# the grid point there lay outside the scan's own range, and finds the clusters
+# its baseline zeros go around on the frequency grid; generation 4 found them
+# on the m/z axis it had just written.
+# From generation 4 the frequency grid is converted back to m/z peak by peak,
+# each on the intensity-weighted mean of the scans' calibrations; generation 3
+# used their plain mean throughout, and generation 2 the densest scan's,
+# fitting the axis to the centroid labels. From generation 2 each grid point
+# sits at the mean of the real frequencies in its cell; generation 1 placed it
+# at the cell's centre.
+AVERAGED_PROFILE_GENERATION = 5
 
 Polarity = Literal["+", "-"]
 MsType = Literal["Ms", "Ms2"]
@@ -78,6 +96,29 @@ class ReaderBackend(Protocol):
     Implementations are context managers: open the file in ``__enter__`` and
     release it in ``__exit__``. All methods return backend-neutral Python/NumPy
     data (never .NET objects), so callers are backend-agnostic.
+
+    **Selecting one scan stream.** The methods that select scans by polarity,
+    time and MS order also take ``stream``: a stream key, as
+    :func:`mascope_thermo.streams.scan_streams` reports it. Given one, only
+    the scans of that stream are selected, among those the other filters
+    allow - so a key of another polarity or MS order than the one asked for
+    selects nothing, and a fragmentation stream needs its ``ms_type``. The
+    keys are those of :func:`mascope_thermo.streams.scan_stream_keys`, the
+    function the census groups by, so a stream the census names is exactly
+    the scans selected for it. ``None``, the default, selects as before.
+
+    A key the file holds no stream under is not an empty selection: it raises
+    :class:`mascope_thermo.thermo.UnknownStreamError`, which lists the keys
+    the file does hold. And a key belongs to the census of this file as this
+    backend reads it - the other backend can render the same scans' filters
+    differently, and so key them differently.
+
+    **The first scan.** A file's first scan is left out of every selection
+    when its TIC is an outlier: five times the median of the others or more.
+    With no stream given the others are every other scan of the file, of any
+    polarity and MS order. With one given they are the other scans of the
+    first scan's own stream, which measure what it measured; a stream that
+    does not hold the first scan loses nothing.
     """
 
     def __enter__(self) -> ReaderBackend: ...
@@ -93,6 +134,7 @@ class ReaderBackend(Protocol):
         t_min: float | None = None,
         t_max: float | None = None,
         ms_type: MsType | None = "Ms",
+        stream: str | None = None,
     ) -> np.ndarray:
         """Scan start times [s] for the scans matching the given filters."""
         ...
@@ -103,6 +145,7 @@ class ReaderBackend(Protocol):
         t_min: float | None = None,
         t_max: float | None = None,
         ms_type: MsType | None = "Ms",
+        stream: str | None = None,
     ) -> tuple[np.ndarray, np.ndarray]:
         """``(scan_times_s, tic)`` for the scans matching the given filters."""
         ...
@@ -132,6 +175,7 @@ class ReaderBackend(Protocol):
         t_min: float | None = None,
         t_max: float | None = None,
         ms_type: MsType | None = "Ms",
+        stream: str | None = None,
     ) -> dict:
         """Per-scan trailer table ``{"header_labels": [...], "settings": {...}}``.
 
@@ -164,13 +208,24 @@ class ReaderBackend(Protocol):
         ...
 
     def scan_filters(self) -> list[dict]:
-        """Every scan's filter, in acquisition order.
+        """Every scan's filter and experiment, in acquisition order.
 
-        ``[{"scan": 1-based number, "time_s": start time [s], "filter": text}]``
-        for every scan of every polarity and MS order. No scan is left out, not
-        even an outlier first scan: this describes the file rather than
-        selecting from it. The text is as the reader renders it; see
+        ``[{"scan": 1-based number, "time_s": start time [s], "filter": text,
+        "segment": method segment, "event": scan event}]`` for every scan of
+        every polarity and MS order. No scan is left out, not even an outlier
+        first scan: this describes the file rather than selecting from it.
+        The text is as the reader renders it; see
         :mod:`mascope_thermo.scan_filter` for what it holds.
+
+        ``segment`` and ``event`` together name the experiment of the
+        acquisition method that produced the scan: a method numbers its scan
+        events within each of its segments, so the event alone does not.
+        Both are counted from 1, as the method and the trailer's
+        ``Scan Segment:`` and ``Scan Event:`` count them, and both are
+        ``None`` where the file records no event (:func:`_method_experiment`).
+        They are read from the scan index, like ``SegmentNumber`` and
+        ``ScanEventNumber`` in :meth:`scan_statistics`, which reports the
+        index's own numbers.
         """
         ...
 
@@ -189,6 +244,7 @@ class ReaderBackend(Protocol):
         t_min: float | None = None,
         t_max: float | None = None,
         ms_type: MsType | None = "Ms",
+        stream: str | None = None,
     ) -> dict:
         """Per-scan statistics keyed by 1-based scan number.
 
@@ -213,6 +269,7 @@ class ReaderBackend(Protocol):
         t_min: float | None = None,
         t_max: float | None = None,
         ms_type: MsType | None = "Ms",
+        stream: str | None = None,
     ) -> list[int]:
         """1-based scan numbers matching the given filters."""
         ...
@@ -225,6 +282,7 @@ class ReaderBackend(Protocol):
         ms_type: MsType | None = None,
         mz_min: float | None = None,
         mz_max: float | None = None,
+        stream: str | None = None,
     ) -> list[dict]:
         """Per-scan centroids: list of dicts with ``masses``, ``intensities``,
         ``resolutions``, ``signal_to_noise``, ``timestamp``."""
@@ -260,6 +318,7 @@ class ReaderBackend(Protocol):
         ms_type: MsType | None = "Ms",
         mz_min: float | None = None,
         mz_max: float | None = None,
+        stream: str | None = None,
     ) -> tuple[list[np.ndarray], list[np.ndarray], np.ndarray]:
         """Per-scan profile spectra: ``(scan_mzs, scan_intensities, scan_times)``,
         the m/z and intensity arrays already restricted to ``[mz_min, mz_max]``.
@@ -272,17 +331,13 @@ class ReaderBackend(Protocol):
         scan_indices: list[int],
         ppm: int = 1,
         average: bool = False,
-        reconstruct: bool = False,
     ) -> tuple[np.ndarray, np.ndarray, int]:
         """Multi-scan ppm-binned averaged profile spectrum:
         ``(mz, intensities, scans_combined)``. With ``average=False`` the
         intensities are scaled back up by the combined-scan count (sum signal).
 
-        ``reconstruct=True`` returns a Thermo-style profile reconstructed as one
-        Gaussian per centroid (overlays the centroids exactly; matches Thermo,
-        which also reconstructs) -- intended for display. The default
-        ``reconstruct=False`` returns the real measured profile, which the
-        instrument-function fit needs.
+        The measured signal, never a model of it: the instrument-function fit
+        needs the real peak shapes, and the spectrum views draw it as measured.
 
         Builds on the profile accessor and the NumPy ppm averaging above."""
         ...
@@ -295,6 +350,7 @@ class ReaderBackend(Protocol):
         t_min: float | None = None,
         t_max: float | None = None,
         ms_type: MsType | None = "Ms",
+        stream: str | None = None,
     ) -> tuple[np.ndarray, np.ndarray]:
         """Extracted-ion chromatograms for each target m/z within ``ppm``:
         ``(intensities[n_mz, n_scans], scan_times)``.
@@ -413,9 +469,11 @@ MS_SCAN_DETECTOR_STATS = {
 # from the right place but cannot rule out a constant offset.
 OPENTFRAW_UNAVAILABLE_SCAN_STATS = ("CycleNumber",)
 
-# The scan index writes this where a field was never set. Thermo reports those
-# as -1 for the scan event and 0 for the segment; no file here carries one, so
-# the mapping is a guard rather than something the corpus exercises.
+# The scan index writes this where a field was never set, and Thermo reports
+# those as -1 for the scan event and 0 for the segment. It is what an
+# acquisition started with no method loaded carries on every scan: 14 of the
+# 185 files of the internal regression corpus, whose trailers say
+# "Scan Event: 0". Both backends report -1 and 0 for them.
 _SCAN_INDEX_UNSET = 0xFFFF
 
 # Default number of scans sampled by acquisition_parameters(). The trailer is
@@ -448,6 +506,78 @@ def _json_safe(value):
         # NaN/Infinity are accepted by Python's json but are not valid JSON.
         return value if math.isfinite(value) else str(value)
     return str(value)
+
+
+def _method_scan_event(index_event: int) -> int | None:
+    """A scan's event as the acquisition method numbers it, or ``None``.
+
+    The scan index counts a method's scan events from 0, where the method
+    and the trailer's ``Scan Event:`` count them from 1; the two agree on
+    every scan of every file of the internal regression corpus that records
+    one. A file acquired with no method loaded records no event at all: its
+    index holds :data:`_SCAN_INDEX_UNSET`, which the Thermo library reports
+    as -1, and its trailers say 0. That is ``None`` here rather than a
+    number, so that no caller can mistake it for an experiment.
+
+    **Three conventions meet here, and this is the only bridge.** The scan
+    index, and so the ``scan_event`` of the rows OpenTFRaw's scan selection
+    filters, counts from 0 and holds :data:`_SCAN_INDEX_UNSET` where unset.
+    ``ScanEventNumber`` in :meth:`ReaderBackend.scan_statistics` is the
+    Thermo library's reading of the same word: from 0, with -1 where unset.
+    The ``event`` of :meth:`ReaderBackend.scan_filters`, and the
+    ``scan_event`` of a scan stream, count from 1 with ``None``. Anything
+    that compares a stream's event with a scan's must do it on this side of
+    the bridge.
+
+    :param index_event: The scan index's event, as either backend reports it.
+    :return: The event counted from 1, or ``None`` where none was recorded.
+    """
+    if index_event < 0 or index_event == _SCAN_INDEX_UNSET:
+        return None
+    return index_event + 1
+
+
+def _method_experiment(
+    index_segment: int, index_event: int
+) -> tuple[int | None, int | None]:
+    """A scan's ``(segment, event)`` as the acquisition method numbers them.
+
+    A method numbers its scan events within each of its segments, so the
+    pair is what names an experiment. Both are counted from 1
+    (:func:`_method_scan_event`), and both are ``None`` where the file
+    records no event.
+
+    The segment needs the event to be read at all. Where it was never set
+    the index holds :data:`_SCAN_INDEX_UNSET`, but the Thermo library reports
+    that as 0, which is also its number for a method's first segment. So a
+    scan with an event and no segment reads as segment 1 under either
+    backend, and a scan with no event has no segment: on every file of the
+    internal regression corpus the two words are set or unset together.
+
+    That an event has its number within a segment is how the Thermo library
+    addresses a method's events: ``IScanEvents``, the type of an open file's
+    ``ScanEvents``, gives a count of ``Segments``, ``GetEventCount(segment)``
+    for each, and ``GetEvent(segment, eventNumber)``. On every corpus file
+    that records events, each scan's pair is one of the pairs that table
+    holds. Every one of those files is in one segment, though, so that a
+    second segment starts again at event 1 is read off that interface and
+    not off a file.
+
+    :param index_segment: The scan index's segment, as either backend
+        reports it.
+    :param index_event: The scan index's event, as either backend reports it.
+    :return: ``(segment, event)``, each counted from 1, or ``(None, None)``.
+    """
+    event = _method_scan_event(index_event)
+    if event is None:
+        return None, None
+    unset = index_segment < 0 or index_segment == _SCAN_INDEX_UNSET
+    return (1 if unset else index_segment + 1), event
+
+
+def _stream_clause(stream: str | None) -> str:
+    """How a selection's error names the stream it asked for, if it did."""
+    return "" if stream is None else f", stream='{stream}'"
 
 
 def _sample_evenly(items: list, count: int) -> list:
@@ -538,20 +668,10 @@ def _trailer_table(trailers: dict[int, dict]) -> dict:
 # the between-scan jitter duplicates into one cell per native position.
 _AVG_PROFILE_GRID_PPM = 0.2
 
-# average_profile m/z calibration (align the profile axis to the centroid
-# labels; see _align_profile_grid_to_centroids). Sample a few scans for the
-# reference centroids, anchor on well-separated strong peaks, reject matches
-# whose offset is far from the median, and fit a low-order correction.
-_AVG_PROFILE_CALIB_SCANS = 8  # scans sampled for the reference centroids
-_AVG_PROFILE_CALIB_SEP_PPM = 60  # min spacing between anchor peaks
-_AVG_PROFILE_CALIB_TIGHT_PPM = 5  # max residual to keep a match after pass 1
-_AVG_PROFILE_CALIB_MIN_ANCHORS = 6  # below this, leave the grid uncorrected
-_AVG_PROFILE_CALIB_MAX_ANCHORS = 60  # cap anchors (a linear fit needs few)
 _AVG_PROFILE_FREQ_NEWTON = 4  # Newton iterations for the m/z -> frequency inverse
 _AVG_PROFILE_GAP_DF = 2.0  # zero a scan's interp beyond this * FFT bin from its samples
-_RECON_SIGMA = 5.0  # reconstructed-profile half-window / sample span, in sigma
-_RECON_PTS = 15  # samples per peak across +-_RECON_SIGMA sigma (~Thermo's density;
-# keep odd so the centroid is sampled exactly -> the profile apex lands on it)
+_AVG_PROFILE_END_DF = 0.5  # a scan's end samples reach grid points this * FFT bin out
+_AVG_PROFILE_PEAK_GAP_DF = 1.5  # grid points further apart than this * FFT bin: a gap
 _AVG_CENTROID_HEIGHT_PPM = 3.0  # window to source centroid height from profile apex
 _AVG_CENTROID_HEIGHT_BAND = (0.85, 1.15)  # apply the apex only as a modest refinement
 _AVG_CENTROID_MERGE_FWHM = 0.5  # merge centroids whose gap is below this * local FWHM
@@ -565,7 +685,7 @@ _AVG_CENTROID_EXCLUSIVE_MIN_ALTERNATIONS = (
 )
 # min per-scan S:N on each side; below it a real ion's label often misses a scan
 _AVG_CENTROID_EXCLUSIVE_MIN_SN = 10.0
-_ZEROFILL_GAP_FACTOR = 4.0  # profile m/z gap > this * median = a cluster boundary
+_ZEROFILL_GAP_FACTOR = 4.0  # relative step > this * the median one: a cluster boundary
 _ZEROFILL_EDGE_PPM = 2.0  # place baseline zeros this far outside each cluster edge
 
 
@@ -674,6 +794,7 @@ class ThermoBackend:
         self.datafile_path = datafile_path
         self._mgr = None
         self._raw = None
+        self._stream_keys: list[str] | None = None
 
     def __enter__(self) -> ThermoBackend:
         from mascope_thermo.thermo import RawFileManager
@@ -689,6 +810,7 @@ class ThermoBackend:
         finally:
             self._mgr = None
             self._raw = None
+            self._stream_keys = None
 
     def _selector(
         self,
@@ -696,6 +818,7 @@ class ThermoBackend:
         t_min: float | None = None,
         t_max: float | None = None,
         ms_type: MsType | None = "Ms",
+        stream: str | None = None,
     ):
         from mascope_thermo.thermo import ScanSelector
 
@@ -705,7 +828,17 @@ class ThermoBackend:
             t_min=t_min,
             t_max=t_max,
             ms_type=ms_type,
+            stream=stream,
+            stream_keys=None if stream is None else self._scan_stream_keys(),
         )
+
+    def _scan_stream_keys(self) -> list[str]:
+        """Every scan's stream key, in scan order, read once per open file."""
+        if self._stream_keys is None:
+            from mascope_thermo.streams import scan_stream_keys
+
+            self._stream_keys = scan_stream_keys(self)
+        return self._stream_keys
 
     def polarities(self) -> set[str]:
         out: set[str] = set()
@@ -723,8 +856,9 @@ class ThermoBackend:
         t_min: float | None = None,
         t_max: float | None = None,
         ms_type: MsType | None = "Ms",
+        stream: str | None = None,
     ) -> np.ndarray:
-        return self._selector(polarity, t_min, t_max, ms_type).scan_times
+        return self._selector(polarity, t_min, t_max, ms_type, stream).scan_times
 
     def tic_per_scan(
         self,
@@ -732,8 +866,9 @@ class ThermoBackend:
         t_min: float | None = None,
         t_max: float | None = None,
         ms_type: MsType | None = "Ms",
+        stream: str | None = None,
     ) -> tuple[np.ndarray, np.ndarray]:
-        selector = self._selector(polarity, t_min, t_max, ms_type)
+        selector = self._selector(polarity, t_min, t_max, ms_type, stream)
         times = selector.scan_times
         tic = np.asarray(
             [
@@ -766,11 +901,12 @@ class ThermoBackend:
         t_min: float | None = None,
         t_max: float | None = None,
         ms_type: MsType | None = "Ms",
+        stream: str | None = None,
     ) -> dict:
         # The file defines its trailer's labels once for all of its scans
         # (GetTrailerExtraHeaderInformation), so each scan's values line up
         # with the first scan's labels by position.
-        selector = self._selector(polarity, t_min, t_max, ms_type)
+        selector = self._selector(polarity, t_min, t_max, ms_type, stream)
         settings: dict[int, list] = {}
         header_labels = None
         for i in selector.scan_indices_1based:
@@ -794,18 +930,25 @@ class ThermoBackend:
 
     def scan_filters(self) -> list[dict]:
         selector = self._selector(ms_type=None)
-        return [
-            {
-                "scan": scan_number,
-                "time_s": stats.StartTime * _SECONDS_PER_MINUTE,
-                "filter": scan_filter.ToString(),
-            }
-            for scan_number, scan_filter, stats in zip(
-                selector.all_scan_indices,
-                selector.raw_scan_filters,
-                selector.raw_scan_stats,
+        rows = []
+        for scan_number, scan_filter, stats in zip(
+            selector.all_scan_indices,
+            selector.raw_scan_filters,
+            selector.raw_scan_stats,
+        ):
+            segment, event = _method_experiment(
+                int(stats.SegmentNumber), int(stats.ScanEventNumber)
             )
-        ]
+            rows.append(
+                {
+                    "scan": scan_number,
+                    "time_s": stats.StartTime * _SECONDS_PER_MINUTE,
+                    "filter": scan_filter.ToString(),
+                    "segment": segment,
+                    "event": event,
+                }
+            )
+        return rows
 
     def scan_trailer(self, scan_number: int) -> dict:
         header = self._raw.GetTrailerExtraInformation(scan_number)
@@ -817,8 +960,9 @@ class ThermoBackend:
         t_min: float | None = None,
         t_max: float | None = None,
         ms_type: MsType | None = "Ms",
+        stream: str | None = None,
     ) -> dict:
-        selector = self._selector(polarity, t_min, t_max, ms_type)
+        selector = self._selector(polarity, t_min, t_max, ms_type, stream)
         return {
             scan_index: {
                 **{
@@ -837,8 +981,11 @@ class ThermoBackend:
         t_min: float | None = None,
         t_max: float | None = None,
         ms_type: MsType | None = "Ms",
+        stream: str | None = None,
     ) -> list[int]:
-        return self._selector(polarity, t_min, t_max, ms_type).scan_indices_1based
+        return self._selector(
+            polarity, t_min, t_max, ms_type, stream
+        ).scan_indices_1based
 
     def centroids_per_scan(
         self,
@@ -848,11 +995,12 @@ class ThermoBackend:
         ms_type: MsType | None = None,
         mz_min: float | None = None,
         mz_max: float | None = None,
+        stream: str | None = None,
     ) -> list[dict]:
         from mascope_thermo.thermo import _validate_mz_range
 
         mz_min, mz_max = _validate_mz_range(self._raw, mz_min, mz_max)
-        selector = self._selector(polarity, t_min, t_max, ms_type)
+        selector = self._selector(polarity, t_min, t_max, ms_type, stream)
 
         out: list[dict] = []
         for scan, timestamp in zip(selector.scans, selector.scan_times):
@@ -932,11 +1080,12 @@ class ThermoBackend:
         ms_type: MsType | None = "Ms",
         mz_min: float | None = None,
         mz_max: float | None = None,
+        stream: str | None = None,
     ) -> tuple[list[np.ndarray], list[np.ndarray], np.ndarray]:
         from mascope_thermo.thermo import _validate_mz_range
 
         mz_min, mz_max = _validate_mz_range(self._raw, mz_min, mz_max)
-        selector = self._selector(polarity, t_min, t_max, ms_type)
+        selector = self._selector(polarity, t_min, t_max, ms_type, stream)
 
         scan_mzs: list[np.ndarray] = []
         scan_specs: list[np.ndarray] = []
@@ -953,12 +1102,7 @@ class ThermoBackend:
         scan_indices: list[int],
         ppm: int = 1,
         average: bool = False,
-        reconstruct: bool = False,
     ) -> tuple[np.ndarray, np.ndarray, int]:
-        # ``reconstruct`` is accepted for protocol parity but has no effect:
-        # Thermo's AverageScans profile is always a reconstruction (one Gaussian
-        # per centroid). The real measured averaged profile is only available
-        # from the OpenTFRaw backend (reconstruct=False there).
         from System.Collections.Generic import List
         from ThermoFisher.CommonCore.Data import Extensions, ToleranceUnits
         from ThermoFisher.CommonCore.Data.Business import MassOptions
@@ -986,6 +1130,7 @@ class ThermoBackend:
         t_min: float | None = None,
         t_max: float | None = None,
         ms_type: MsType | None = "Ms",
+        stream: str | None = None,
     ) -> tuple[np.ndarray, np.ndarray]:
         from ThermoFisher.CommonCore.Data.Business import (
             ChromatogramSignal,
@@ -995,7 +1140,7 @@ class ThermoBackend:
         )
 
         mzs = np.asarray(mzs, dtype=float)
-        selector = self._selector(polarity, t_min, t_max, ms_type)
+        selector = self._selector(polarity, t_min, t_max, ms_type, stream)
         selected_scans = selector.scan_indices_1based
 
         intensities = np.zeros((len(mzs), len(selected_scans)), dtype=np.float64)
@@ -1040,7 +1185,11 @@ class ThermoBackend:
         # centroids when there is actually a gap (the common path has none).
         if has_gaps:
             per_scan = self.centroids_per_scan(
-                polarity=polarity, t_min=t_min, t_max=t_max, ms_type=ms_type
+                polarity=polarity,
+                t_min=t_min,
+                t_max=t_max,
+                ms_type=ms_type,
+                stream=stream,
             )
             scan_centroids = [(d["masses"], d["intensities"]) for d in per_scan]
             for i, row in enumerate(rows):
@@ -1136,6 +1285,7 @@ class OpenTFRawBackend:
         self.datafile_path = datafile_path
         self._raw = None
         self._scans: list[dict] | None = None
+        self._stream_keys: list[str] | None = None
 
     def __enter__(self) -> OpenTFRawBackend:
         import opentfraw
@@ -1146,6 +1296,7 @@ class OpenTFRawBackend:
     def __exit__(self, *exc) -> None:
         self._raw = None
         self._scans = None
+        self._stream_keys = None
 
     # -- scan selection: mirrors thermo.ScanSelector over OpenTFRaw scan dicts --
 
@@ -1181,18 +1332,28 @@ class OpenTFRawBackend:
         tic = np.array([s["total_ion_current"] for s in scans], dtype=np.float64)
         return bool(tic[0] >= 5 * np.median(tic[1:]))
 
+    def _scan_stream_keys(self) -> list[str]:
+        """Every scan's stream key, in scan order, read once per open file."""
+        if self._stream_keys is None:
+            from mascope_thermo.streams import scan_stream_keys
+
+            self._stream_keys = scan_stream_keys(self)
+        return self._stream_keys
+
     def _selected(
         self,
         polarity: Polarity | None = None,
         t_min: float | None = None,
         t_max: float | None = None,
         ms_type: MsType | None = "Ms",
+        stream: str | None = None,
     ) -> list[dict]:
         from mascope_thermo.thermo import (
             InvalidRangeError,
             NoScansFoundError,
             PolarityError,
             ScanTypeError,
+            UnknownStreamError,
         )
 
         scans = self._all_scans()
@@ -1236,8 +1397,27 @@ class OpenTFRawBackend:
         # Mirror the ThermoBackend first-scan-outlier exclusion (thermo.py
         # scan_indices_1based) so both backends select the same scan set. The
         # check and mask[0] are over the full file scan list, as on the Thermo
-        # path.
-        if self._bad_first_scan(scans):
+        # path - or, when a stream is asked for, over that stream's own scans
+        # and only if the file's first scan is one of them.
+        if stream is None:
+            compared = scans
+        else:
+            keys = self._scan_stream_keys()
+            in_stream = np.array([key == stream for key in keys], dtype=bool)
+            # The key of every scan is in hand, so "no stream of this file
+            # has that key" can be told from "this stream has no scan in this
+            # selection", and is: the second is an empty selection, the first
+            # is a stale key. A file with no scans holds no key, and stays
+            # the empty selection its handling is built on.
+            if in_stream.size and not in_stream.any():
+                raise UnknownStreamError(stream, keys)
+            mask &= in_stream
+            compared = (
+                [s for s, keep in zip(scans, in_stream) if keep]
+                if in_stream.size and in_stream[0]
+                else []
+            )
+        if self._bad_first_scan(compared):
             from mascope_thermo.runtime import runtime
 
             # INFO: a data quirk of the file, re-evaluated on every scan
@@ -1253,7 +1433,7 @@ class OpenTFRawBackend:
             raise NoScansFoundError(
                 "No scans found matching the specified filters: "
                 f"polarity='{polarity}', time_range=({t_min}, {t_max}), "
-                f"ms_type='{ms_type}'"
+                f"ms_type='{ms_type}'" + _stream_clause(stream)
             )
         return selected
 
@@ -1268,11 +1448,12 @@ class OpenTFRawBackend:
         t_min: float | None = None,
         t_max: float | None = None,
         ms_type: MsType | None = "Ms",
+        stream: str | None = None,
     ) -> np.ndarray:
         return np.array(
             [
                 s["retention_time"] * _SECONDS_PER_MINUTE
-                for s in self._selected(polarity, t_min, t_max, ms_type)
+                for s in self._selected(polarity, t_min, t_max, ms_type, stream)
             ]
         )
 
@@ -1282,8 +1463,9 @@ class OpenTFRawBackend:
         t_min: float | None = None,
         t_max: float | None = None,
         ms_type: MsType | None = "Ms",
+        stream: str | None = None,
     ) -> tuple[np.ndarray, np.ndarray]:
-        selected = self._selected(polarity, t_min, t_max, ms_type)
+        selected = self._selected(polarity, t_min, t_max, ms_type, stream)
         times = np.array([s["retention_time"] * _SECONDS_PER_MINUTE for s in selected])
         tic = np.array([s["total_ion_current"] for s in selected], dtype=np.float64)
         return times, tic
@@ -1316,10 +1498,11 @@ class OpenTFRawBackend:
         t_min: float | None = None,
         t_max: float | None = None,
         ms_type: MsType | None = "Ms",
+        stream: str | None = None,
     ) -> list[int]:
         return [
             int(s["scan_number"])
-            for s in self._selected(polarity, t_min, t_max, ms_type)
+            for s in self._selected(polarity, t_min, t_max, ms_type, stream)
         ]
 
     def mass_range(self) -> tuple[float, float]:
@@ -1359,6 +1542,7 @@ class OpenTFRawBackend:
         t_min: float | None = None,
         t_max: float | None = None,
         ms_type: MsType | None = "Ms",
+        stream: str | None = None,
     ) -> dict:
         # The trailer scan_trailer() reads, so the labels and their order are
         # the ones the Thermo backend reports. Rows are aligned by label
@@ -1367,7 +1551,7 @@ class OpenTFRawBackend:
         return _trailer_table(
             {
                 int(s["scan_number"]): self.scan_trailer(int(s["scan_number"]))
-                for s in self._selected(polarity, t_min, t_max, ms_type)
+                for s in self._selected(polarity, t_min, t_max, ms_type, stream)
             }
         )
 
@@ -1384,14 +1568,21 @@ class OpenTFRawBackend:
         return _summarize_acquisition_parameters("opentfraw", per_scan)
 
     def scan_filters(self) -> list[dict]:
-        return [
-            {
-                "scan": int(s["scan_number"]),
-                "time_s": s["retention_time"] * _SECONDS_PER_MINUTE,
-                "filter": s["filter_string"] or "",
-            }
-            for s in self._all_scans()
-        ]
+        rows = []
+        for s in self._all_scans():
+            segment, event = _method_experiment(
+                int(s["scan_segment"]), int(s["scan_event"])
+            )
+            rows.append(
+                {
+                    "scan": int(s["scan_number"]),
+                    "time_s": s["retention_time"] * _SECONDS_PER_MINUTE,
+                    "filter": s["filter_string"] or "",
+                    "segment": segment,
+                    "event": event,
+                }
+            )
+        return rows
 
     def scan_trailer(self, scan_number: int) -> dict:
         # scan_parameters() is the instrument's own trailer-extra table (tens
@@ -1411,6 +1602,7 @@ class OpenTFRawBackend:
         t_min: float | None = None,
         t_max: float | None = None,
         ms_type: MsType | None = "Ms",
+        stream: str | None = None,
     ) -> dict:
         # Map the per-scan stats OpenTFRaw exposes onto Thermo's ScanStats field
         # names. StartTime is in minutes, matching Thermo's ScanStats.StartTime.
@@ -1424,7 +1616,7 @@ class OpenTFRawBackend:
         # expose are None, not faked (OPENTFRAW_UNAVAILABLE_SCAN_STATS). MsType
         # mirrors Thermo's MSOrder.ToString() ("Ms" / "Ms2").
         stats: dict[int, dict] = {}
-        for s in self._selected(polarity, t_min, t_max, ms_type):
+        for s in self._selected(polarity, t_min, t_max, ms_type, stream):
             scan_number = int(s["scan_number"])
             scan_filter = s["filter_string"] or None
             data_type = parse_scan_filter(scan_filter).data_type
@@ -1475,9 +1667,10 @@ class OpenTFRawBackend:
         ms_type: MsType | None = None,
         mz_min: float | None = None,
         mz_max: float | None = None,
+        stream: str | None = None,
     ) -> list[dict]:
         mz_min, mz_max = self._validate_mz_range(mz_min, mz_max)
-        selected = self._selected(polarity, t_min, t_max, ms_type)
+        selected = self._selected(polarity, t_min, t_max, ms_type, stream)
 
         out: list[dict] = []
         for s in selected:
@@ -1603,13 +1796,10 @@ class OpenTFRawBackend:
 
         # Source the height from the frequency-averaged profile apex (matches
         # Thermo's re-centroid-of-the-averaged-profile), falling back to the
-        # ppm-bin value where the profile has no peak. Use the real measured
-        # profile (reconstruct=False) -- a reconstruction is built *from* these
-        # heights, and average_profile defaults to it, so this must be explicit
-        # to avoid recursion.
+        # ppm-bin value where the profile has no peak.
         if masses.size:
             grid_mz, profile, _ = self.average_profile(
-                scan_indices, ppm=ppm, average=average, reconstruct=False
+                scan_indices, ppm=ppm, average=average
             )
             if grid_mz.size:
                 intensities = self._heights_from_profile_apex(
@@ -1633,8 +1823,10 @@ class OpenTFRawBackend:
         land in two bins and the jitter-split merge cannot recover them.
         Converting every scan's labels to frequency with its own B/C and back
         with one reference calibration removes the step -- the profile
-        averaging does the same, see ``_average_profile_in_frequency`` -- so the
-        bin groups a peak's centroids by physical frequency.
+        averaging keys by frequency the same way, though it writes each peak
+        back on the weighted mean of the scans' calibrations, see
+        ``_frequency_grid_to_mz`` -- so the bin groups a peak's centroids by
+        physical frequency.
 
         Returns one array per scan, aligned with ``mz_parts``, or None when a
         selected scan carries no B/C (non-FTMS data), in which case the caller
@@ -1643,8 +1835,8 @@ class OpenTFRawBackend:
         params = [self._profile_conversion_params(int(n)) for n in scan_indices]
         if not params or any(b is None for b, _ in params):
             return None
-        # The reference only fixes the key's scale, so any scan serves; the
-        # densest one, as the profile averaging picks.
+        # The reference only fixes the key's scale, so any scan serves: the
+        # densest one.
         ref = max(range(len(mz_parts)), key=lambda i: mz_parts[i].size)
         b_ref, c_ref = params[ref]
         keys = []
@@ -1889,9 +2081,10 @@ class OpenTFRawBackend:
         ms_type: MsType | None = "Ms",
         mz_min: float | None = None,
         mz_max: float | None = None,
+        stream: str | None = None,
     ) -> tuple[list[np.ndarray], list[np.ndarray], np.ndarray]:
         mz_min, mz_max = self._validate_mz_range(mz_min, mz_max)
-        selected = self._selected(polarity, t_min, t_max, ms_type)
+        selected = self._selected(polarity, t_min, t_max, ms_type, stream)
 
         scan_mzs: list[np.ndarray] = []
         scan_specs: list[np.ndarray] = []
@@ -1910,29 +2103,7 @@ class OpenTFRawBackend:
         scan_indices: list[int],
         ppm: int = 1,
         average: bool = False,
-        reconstruct: bool = False,
     ) -> tuple[np.ndarray, np.ndarray, int]:
-        # reconstruct=True returns a profile drawn as one Gaussian per centroid
-        # (center=m/z, height=intensity, FWHM=m/z/res), which overlays the
-        # centroids exactly because that is how it is built. It is Mascope's own
-        # choice for *display*, NOT an imitation of the vendor: Thermo's
-        # AverageScans profile is the measured signal resampled, not synthesised
-        # from its centroid list. Measured, a profile drawn from centroids
-        # reproduces them exactly (this path: apex/centroid 1.00000, fitted
-        # FWHM/nominal 1.00000), where AverageScans gives 1.012 and 0.970 with
-        # real spread. See reader_pipeline.md section 5.2.
-        #
-        # The default reconstruct=False returns the real measured profile, which
-        # is what the instrument-function fit needs -- the fit gets too few
-        # quality peaks off the reconstruction (its idealised shape/grid), so the
-        # real, faithful signal must drive the quantitative path.
-        if reconstruct:
-            num_combined = len(scan_indices)
-            masses, intensities, resolutions, _ = self.average_centroids(
-                scan_indices, ppm=ppm, average=average
-            )
-            grid, summed = self._reconstruct_profile(masses, intensities, resolutions)
-            return grid, summed, num_combined
         # NumPy reimplementation of Thermo's AverageScans over profile data.
         # AverageScans averages in the FREQUENCY domain: an ion's
         # physical frequency is identical across scans, and the between-scan
@@ -1949,10 +2120,9 @@ class OpenTFRawBackend:
         #   3. Linear-interpolate each scan onto the freq grid and sum. The peaks
         #      are aligned, so this reproduces Thermo's apex (= mean *
         #      ScansCombined) and FWHM; no integral rescale is needed.
-        #   4. Convert the freq grid back to m/z (reference calibration), then
-        #      calibrate the axis to the centroid labels: the freq->m/z conversion
-        #      still omits Thermo's per-scan calibration compensations (~10-20
-        #      ppm), which the exact centroid m/z carry.
+        #   4. Convert the freq grid back to m/z, each profile peak on the
+        #      intensity-weighted mean of the scans' calibrations, the one its
+        #      averaged centroid sits on.
         # Falls back to a constant-ppm m/z grid when the Conversion Parameters
         # are unavailable (non-FTMS data).
         if ppm <= 0:
@@ -1970,43 +2140,69 @@ class OpenTFRawBackend:
         if not scans:
             return np.array([]), np.array([]), num_combined
 
+        judge_on = None
         if all(b is not None for (_, _, b, _) in scans):
-            grid, summed = self._average_profile_in_frequency(scans)
+            grid, summed, judge_on = self._average_profile_in_frequency(scans)
         else:
             grid, summed = self._average_profile_in_mz(scans)
 
         if average and num_combined:
             summed = summed / num_combined
 
-        grid = self._align_profile_grid_to_centroids(scan_indices, grid, summed)
-        grid, summed = self._zerofill_baseline(grid, summed)
+        grid, summed = self._zerofill_baseline(grid, summed, judge_on)
         return grid, summed, num_combined
 
     @staticmethod
     def _zerofill_baseline(
-        grid: np.ndarray, summed: np.ndarray
+        grid: np.ndarray, summed: np.ndarray, judge_on: np.ndarray | None = None
     ) -> tuple[np.ndarray, np.ndarray]:
         """Insert baseline zeros around peak clusters. OpenTFRaw's profile()
         omits the zeros Thermo's SegmentedScan carries around each peak, so the
         averaged profile (occupied cells only) never returns to 0 between
-        clusters. Add a zero just outside each cluster edge -- at every m/z gap
-        large versus the within-cluster spacing -- so the profile drops to
-        baseline between peaks, matching Thermo and the pipeline's other paths
-        (which fillna(0))."""
+        clusters. Add a zero just outside each cluster edge, so the profile
+        drops to baseline between peaks, matching Thermo and the pipeline's
+        other paths (which fillna(0)).
+
+        A cluster ends at a step to the next sample that is large against the
+        median step, each step taken relative to where it lies. ``judge_on``
+        is the axis the steps are read off, sample for sample alongside
+        ``grid``. The frequency path passes its frequency grid: each peak of
+        its ``grid`` is written on a calibration of its own, which stretches
+        or squeezes the step between two neighbouring peaks by up to a few
+        ppm, so a threshold on ``grid`` would move with the scans'
+        calibrations, and the cells the scans occupied do not. m/z goes as
+        1/f^2, so a relative step in frequency is half the one in m/z all
+        along the grid, and on one calibration the two axes pick the same
+        gaps. Without ``judge_on`` the steps are read off ``grid`` itself,
+        which is all the m/z fallback has.
+
+        The threshold is relative, not a number of bins. A bin is a smaller
+        share of the frequency the lower the m/z, so a cluster ends at one
+        missing bin high in the mass range and only at several low in it.
+        """
         if grid.size < 2:
             return grid, summed
-        gap_ppm = np.diff(grid) / grid[:-1] * 1e6
-        med = float(np.median(gap_ppm))
+        axis = grid if judge_on is None else judge_on
+        step_ppm = np.abs(np.diff(axis)) / np.minimum(axis[:-1], axis[1:]) * 1e6
+        med = float(np.median(step_ppm))
         if not np.isfinite(med) or med <= 0:
             return grid, summed
-        boundary = np.flatnonzero(gap_ppm > _ZEROFILL_GAP_FACTOR * med)
+        boundary = np.flatnonzero(step_ppm > _ZEROFILL_GAP_FACTOR * med)
         if boundary.size == 0:
             return grid, summed
         off = _ZEROFILL_EDGE_PPM / 1e6
         left_z = grid[boundary] * (1 + off)
         right_z = grid[boundary + 1] * (1 - off)
-        new_mz = np.concatenate([grid, left_z, right_z])
-        new_v = np.concatenate([summed, np.zeros(left_z.size + right_z.size)])
+        # A gap narrower than twice the offset has no room for both: the two
+        # zeros would pass each other, and under half that width land among
+        # the neighbouring cluster's samples. Such a gap takes one zero, at
+        # its middle, which is where the two meet as a gap narrows to that
+        # width, so the baseline does not jump there.
+        narrow = right_z <= left_z
+        middle = (grid[boundary] + grid[boundary + 1]) / 2
+        zeros = np.concatenate([np.where(narrow, middle, left_z), right_z[~narrow]])
+        new_mz = np.concatenate([grid, zeros])
+        new_v = np.concatenate([summed, np.zeros(zeros.size)])
         order = np.argsort(new_mz, kind="stable")
         return new_mz[order], new_v[order]
 
@@ -2025,33 +2221,6 @@ class OpenTFRawBackend:
         return None, None
 
     @staticmethod
-    def _reconstruct_profile(
-        masses: np.ndarray,
-        intensities: np.ndarray,
-        resolutions: np.ndarray,
-    ) -> tuple[np.ndarray, np.ndarray]:
-        """Build a Thermo-style profile: one Gaussian per centroid (center =
-        m/z, height = intensity, FWHM = m/z / resolution), summed on a per-peak
-        sample grid. Matches Thermo's reconstructed AverageScans profile and
-        overlays the centroids exactly (display parity). See ``average_profile``.
-        """
-        sigma_per_fwhm = 1.0 / (2.0 * np.sqrt(2.0 * np.log(2.0)))
-        valid = (resolutions > 0) & (intensities > 0) & (masses > 0)
-        cm, ci = masses[valid], intensities[valid]
-        sigma = (cm / resolutions[valid]) * sigma_per_fwhm
-        if cm.size == 0:
-            return np.array([]), np.array([])
-        offs = np.linspace(-_RECON_SIGMA, _RECON_SIGMA, _RECON_PTS)
-        grid = np.unique((cm[:, None] + sigma[:, None] * offs).ravel())
-        summed = np.zeros_like(grid)
-        for c, h, s in zip(cm, ci, sigma):
-            lo = int(np.searchsorted(grid, c - _RECON_SIGMA * s))
-            hi = int(np.searchsorted(grid, c + _RECON_SIGMA * s))
-            if hi > lo:
-                summed[lo:hi] += h * np.exp(-0.5 * ((grid[lo:hi] - c) / s) ** 2)
-        return grid, summed
-
-    @staticmethod
     def _mz_to_freq(mz: np.ndarray, b: float, c: float) -> np.ndarray:
         """Invert the Orbitrap m/z = B/f^2 + C/f^4 conversion (Newton's method).
 
@@ -2068,8 +2237,12 @@ class OpenTFRawBackend:
 
     def _average_profile_in_frequency(
         self, scans: list[tuple[np.ndarray, np.ndarray, float, float]]
-    ) -> tuple[np.ndarray, np.ndarray]:
-        """Average profiles in the frequency domain (see average_profile)."""
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray | None]:
+        """Average profiles in the frequency domain (see average_profile).
+
+        Returns the m/z grid, the sum, and the frequency of each grid point,
+        which ``_zerofill_baseline`` reads the cluster boundaries off.
+        """
         freqs = [self._mz_to_freq(mz, b, c) for (mz, _, b, c) in scans]
         ref = max(range(len(freqs)), key=lambda i: freqs[i].size)  # densest scan
         d = np.diff(np.sort(freqs[ref]))
@@ -2078,15 +2251,15 @@ class OpenTFRawBackend:
         # large inter-cluster gaps via the lower half of the diffs).
         df = float(np.median(d[d <= np.median(d)])) if d.size else 0.0
         if df <= 0:
-            return self._average_profile_in_mz(scans)
+            return (*self._average_profile_in_mz(scans), None)
 
         # Quantize the scans' samples into native-density cells, then place each
         # grid point at the MEAN OF THE REAL FREQUENCIES in its cell rather than
         # at the cell's centre. Every scan of a file is transformed on the same
-        # FFT bin grid, so a cell holds one sample per scan and they agree to a
-        # few percent of a bin: their mean is a frequency the instrument
-        # actually sampled, and the interpolation below returns the measured
-        # value there instead of a chord across it.
+        # FFT bin grid, so a cell holds one sample per scan, and in over half
+        # the cells they agree to a few percent of a bin: their mean is a
+        # frequency the instrument actually sampled, and the interpolation
+        # below returns the measured value there instead of a chord across it.
         #
         # A synthetic cell centre does not, and the stored profile is far too
         # sparse to forgive that -- a raw file keeps about 3 points per FWHM, so
@@ -2110,12 +2283,26 @@ class OpenTFRawBackend:
         _, inverse = np.unique(cells, return_inverse=True)
         fgrid = np.bincount(inverse, weights=f_all) / np.bincount(inverse)
 
+        # Beside the sum, keep what each scan contributes to a grid point times
+        # how far its calibration is from the mean: the back-conversion below
+        # weights the scans' calibrations by it (_frequency_grid_to_mz).
+        b_mean = float(np.mean([b for (_, _, b, _) in scans]))
+        c_mean = float(np.mean([c for (_, _, _, c) in scans]))
         summed = np.zeros(fgrid.shape, dtype=np.float64)
-        for f, (_, intensity, _, _) in zip(freqs, scans):
+        b_drift = np.zeros(fgrid.shape, dtype=np.float64)
+        c_drift = np.zeros(fgrid.shape, dtype=np.float64)
+        end_reach = _AVG_PROFILE_END_DF * df
+        for f, (_, intensity, b, c) in zip(freqs, scans):
             order = np.argsort(f, kind="stable")
             f_sorted, int_sorted = f[order], intensity[order]
-            lo = int(np.searchsorted(fgrid, f_sorted[0], side="left"))
-            hi = int(np.searchsorted(fgrid, f_sorted[-1], side="right"))
+            # A grid point is the mean of what every scan sampled in its cell.
+            # Where another scan sampled the cell of this scan's first or last
+            # sample too, that grid point lies outside this scan's own range
+            # as often as inside it. Half a bin beyond either end takes it in
+            # and stops short of the next bin, and np.interp holds the end
+            # sample's value there.
+            lo = int(np.searchsorted(fgrid, f_sorted[0] - end_reach, side="left"))
+            hi = int(np.searchsorted(fgrid, f_sorted[-1] + end_reach, side="right"))
             if hi <= lo:
                 continue
             seg = fgrid[lo:hi]
@@ -2125,18 +2312,116 @@ class OpenTFRawBackend:
             # straight across a gap; summed over scans those spurious ramps inflate
             # and flat-top sparse/intermittent peaks (a peak present in one scan
             # picks up 11 ramps from the others). Keep only grid points within a
-            # couple of FFT bins of an actual sample of this scan.
+            # couple of FFT bins of an actual sample of this scan. The threshold
+            # sits on a lattice distance: the grid point two bins past one of
+            # the scan's clusters is two bins give or take the scan's sub-bin
+            # offset away, so it is kept for one sign of the offset and zeroed
+            # for the other.
             j = np.clip(np.searchsorted(f_sorted, seg), 1, f_sorted.size - 1)
             near = np.minimum(np.abs(seg - f_sorted[j - 1]), np.abs(seg - f_sorted[j]))
             vals[near > _AVG_PROFILE_GAP_DF * df] = 0.0
             summed[lo:hi] += vals
+            b_drift[lo:hi] += vals * (b - b_mean)
+            c_drift[lo:hi] += vals * (c - c_mean)
 
-        # Convert the freq grid back to m/z with the reference scan's calibration.
-        b_ref, c_ref = scans[ref][2], scans[ref][3]
-        f2 = fgrid * fgrid
-        mz_grid = b_ref / f2 + c_ref / (f2 * f2)
+        mz_grid = self._frequency_grid_to_mz(
+            fgrid, df, summed, b_mean, c_mean, b_drift, c_drift
+        )
         order = np.argsort(mz_grid)
-        return mz_grid[order], summed[order]
+        return mz_grid[order], summed[order], fgrid[order]
+
+    @staticmethod
+    def _frequency_grid_to_mz(
+        fgrid: np.ndarray,
+        df: float,
+        summed: np.ndarray,
+        b_mean: float,
+        c_mean: float,
+        b_drift: np.ndarray,
+        c_drift: np.ndarray,
+    ) -> np.ndarray:
+        """Write the averaged profile's frequency grid out in m/z, each profile
+        peak on the calibration its averaged centroid sits on.
+
+        An ion's frequency is the same in every scan; what moves its m/z from
+        scan to scan is the calibration each scan was written with, and a lock
+        mass that engages, steps or drifts part-way through a file moves that by
+        up to a few ppm. An averaged centroid reports the intensity-weighted
+        mean of its labels as written, which is the ion's frequency on the
+        intensity-weighted mean of the scans' calibrations, m/z being linear in
+        B and C. For an ion present alike in every scan that is the plain mean
+        (``b_mean``, ``c_mean``). An ion that comes and goes leans towards the
+        scans it was in, so where the calibration drifts over a long
+        acquisition, ions with different time courses sit on different
+        calibrations and no one axis fits them all. Measured on the plain mean:
+        an acquisition of 1,486 scans drifting by 2.6 ppm had its strong peaks
+        a median 0.33 ppm off their centroids, and one whose scans alternate
+        between two mass ranges 0.28, against 0.07 and 0.02 here.
+
+        So every profile peak is written on its own calibration. A peak is the
+        run of samples between two valleys of the sum, or up to a gap in the
+        grid. It takes the weighted mean calibration at its tallest sample, the
+        weights being what each scan contributes there, as in its centroid
+        (``b_drift`` and ``c_drift`` hold that contribution times the scan's
+        distance from the mean, which keeps the precision of a difference in
+        the sixth digit). The whole peak moves together, so its width stays
+        what the frequency axis gives it. Weighting each grid point by itself
+        does not keep it: a weak scan stores less of a peak's flanks than a
+        strong one, the flanks then lean towards the strong scans, and on
+        drifting acquisitions 18% of the strong peaks came out more than 5%
+        wider or narrower.
+
+        Neighbouring peaks on different calibrations move against each other,
+        and at low m/z, where a grid step is about one ppm, two that overlap
+        can cross. Peaks that would cross are written on one calibration,
+        weighted over the tallest sample of each, and so on until the grid
+        descends throughout (it ascends in frequency), so the samples stay in
+        the order they were measured in. Falling back on the plain mean there
+        is worse where a mass range is in some of the scans only, the plain
+        mean being no ion's calibration then: the strong peaks below m/z 100 of
+        the acquisition alternating between two ranges read 0.19 ppm that way,
+        against 0.04.
+        """
+        f2 = fgrid * fgrid
+        if fgrid.size < 3 or not (b_drift.any() or c_drift.any()):
+            return b_mean / f2 + c_mean / (f2 * f2)
+
+        # A peak begins after a gap and at a valley. A valley lies between
+        # samples of one run: the last sample before a gap is lower than the one
+        # before it, and is no valley for being lower than whatever begins the
+        # next run as well. Counted as one, it would be a peak of its own,
+        # written on the weights of a flank.
+        gap = np.diff(fgrid) > _AVG_PROFILE_PEAK_GAP_DF * df
+        new_peak = np.zeros(fgrid.size, dtype=bool)
+        new_peak[0] = True
+        new_peak[1:] = gap
+        new_peak[1:-1] |= (
+            (summed[1:-1] <= summed[:-2]) & (summed[1:-1] < summed[2:]) & ~gap[1:]
+        )
+        peak = np.cumsum(new_peak) - 1
+        # Sorted by peak with the tallest sample first, a peak's first entry is
+        # its tallest sample.
+        top = np.lexsort((-summed, peak))[np.flatnonzero(new_peak)]
+        weight, b_pull, c_pull = summed[top], b_drift[top], c_drift[top]
+        while True:
+            lit = weight > 0
+            b_shift = np.divide(b_pull, weight, out=np.zeros_like(weight), where=lit)
+            c_shift = np.divide(c_pull, weight, out=np.zeros_like(weight), where=lit)
+            mz_grid = (b_mean + b_shift[peak]) / f2 + (c_mean + c_shift[peak]) / (
+                f2 * f2
+            )
+            crossed = np.flatnonzero(np.diff(mz_grid) >= 0)
+            crossed = crossed[peak[crossed] != peak[crossed + 1]]
+            if crossed.size == 0:
+                return mz_grid
+            # The peak after each crossing joins the one before it.
+            apart = np.ones(weight.size, dtype=bool)
+            apart[peak[crossed + 1]] = False
+            joined = np.cumsum(apart) - 1
+            weight = np.bincount(joined, weights=weight)
+            b_pull = np.bincount(joined, weights=b_pull)
+            c_pull = np.bincount(joined, weights=c_pull)
+            peak = joined[peak]
 
     def _average_profile_in_mz(
         self,
@@ -2165,91 +2450,6 @@ class OpenTFRawBackend:
             summed *= target_integral / grid_integral
         return grid, summed
 
-    def _align_profile_grid_to_centroids(
-        self,
-        scan_indices: list[int],
-        grid: np.ndarray,
-        summed: np.ndarray,
-    ) -> np.ndarray:
-        """Correct the profile m/z axis to match the file's centroid labels.
-
-        What is left to correct is small. The reader's own per-scan profile m/z
-        is byte-for-byte Thermo's from 2.0.0 (measured: 0.000000 ppm over every
-        point of a scan, where 1.4.0 differed by up to 3.3 ppm and left the
-        profile apex ~5 ppm below its label at low m/z). What remains is this
-        module's own doing: the averaged profile is built in the frequency
-        domain and converted back with ONE scan's calibration, so the other
-        scans' compensations are dropped. Measured on the demo files, the fit
-        below then moves the axis by about half a ppm at the bottom of the range
-        and a couple of tenths at the top.
-
-        The centroids are the reference: match the strongest well-separated
-        profile peaks to their nearest centroid, reject outliers, and fit a
-        low-order m/z correction. Returns the corrected grid, or the original
-        grid unchanged when there is too little signal to fit reliably.
-        """
-        if grid.size == 0:
-            return grid
-
-        # Reference m/z from centroid labels of a sample of the selected scans
-        # (strong peaks appear in every scan, so a sample keeps this cheap on
-        # large files).
-        step = max(1, len(scan_indices) // _AVG_PROFILE_CALIB_SCANS)
-        ref_parts = []
-        for scan_number in scan_indices[::step][:_AVG_PROFILE_CALIB_SCANS]:
-            mz = np.asarray(
-                self._raw.centroid_labels(int(scan_number))["mz"], dtype=np.float64
-            )
-            if mz.size:
-                ref_parts.append(mz)
-        if not ref_parts:
-            return grid
-        ref_mz = np.unique(np.concatenate(ref_parts))
-
-        # Anchors: the strongest, well-separated profile peaks.
-        anchor_prof = []
-        for k in np.argsort(summed)[::-1]:
-            if summed[k] <= 0:
-                break
-            c = grid[k]
-            if all(
-                abs(c - p) / c * 1e6 >= _AVG_PROFILE_CALIB_SEP_PPM for p in anchor_prof
-            ):
-                anchor_prof.append(c)
-            if len(anchor_prof) >= _AVG_PROFILE_CALIB_MAX_ANCHORS:
-                break
-        anchor_prof = np.asarray(anchor_prof)
-        if anchor_prof.size < _AVG_PROFILE_CALIB_MIN_ANCHORS:
-            return grid
-
-        def nearest(vals: np.ndarray) -> np.ndarray:
-            idx = np.clip(np.searchsorted(ref_mz, vals), 1, ref_mz.size - 1)
-            left, right = ref_mz[idx - 1], ref_mz[idx]
-            return np.where(np.abs(vals - left) <= np.abs(vals - right), left, right)
-
-        # Pass 1: nearest centroid gives the gross (median) offset. Pass 2:
-        # re-match each anchor to the centroid nearest its offset-corrected
-        # position and keep only tight matches -- this locks onto the right peak
-        # and drops mismatches that a single nearest-search would let through.
-        n1 = nearest(anchor_prof)
-        med = np.median((n1 - anchor_prof) / anchor_prof * 1e6)
-        expected = anchor_prof * (1.0 + med / 1e6)
-        anchor_ref = nearest(expected)
-        resid_ppm = np.abs(anchor_ref - expected) / expected * 1e6
-        keep = resid_ppm <= _AVG_PROFILE_CALIB_TIGHT_PPM
-        anchor_prof, anchor_ref = anchor_prof[keep], anchor_ref[keep]
-        if anchor_prof.size < _AVG_PROFILE_CALIB_MIN_ANCHORS:
-            return grid
-
-        # Fit centroid_mz = a + b*profile_mz (LINEAR) and remap the grid. The Da
-        # offset is ~linear in m/z; a quadratic over-fits the (dense, mid-m/z)
-        # anchors and mis-extrapolates the low-m/z curvature -- it left a ~5 ppm
-        # systematic below m/z 120 while a line keeps low and high m/z balanced
-        # (within ~1.5 ppm). Equivalent to the physical A + B/f^2 calibration form
-        # since profile m/z is ~ B/f^2.
-        coeffs = np.polyfit(anchor_prof, anchor_ref, 1)
-        return np.polyval(coeffs, grid)
-
     def xic(
         self,
         mzs,
@@ -2258,6 +2458,7 @@ class OpenTFRawBackend:
         t_min: float | None = None,
         t_max: float | None = None,
         ms_type: MsType | None = "Ms",
+        stream: str | None = None,
     ) -> tuple[np.ndarray, np.ndarray]:
         # NumPy reimplementation of the Thermo MassRange chromatogram: for each
         # target m/z, sum the centroid intensities falling in its ppm
@@ -2268,7 +2469,7 @@ class OpenTFRawBackend:
         # so the window sum is cumsum[right] - cumsum[left] for all targets at
         # once. Scales to "all peaks as targets" on large files.
         mzs = np.asarray(mzs, dtype=float)
-        selected = self._selected(polarity, t_min, t_max, ms_type)
+        selected = self._selected(polarity, t_min, t_max, ms_type, stream)
         lows = mzs - mzs * ppm / 1e6
         highs = mzs + mzs * ppm / 1e6
 
@@ -2385,3 +2586,37 @@ def open_backend(datafile_path: str) -> ReaderBackend:
     raise ValueError(
         f"Unknown {ENV_BACKEND}={name!r}; expected 'thermo' or 'opentfraw'."
     )
+
+
+def averaged_profile_signature() -> str:
+    """What computes an averaged profile, as a short tag safe in a file name.
+
+    Names the reader ``MASCOPE_THERMO_BACKEND`` selects and, for OpenTFRaw, the
+    reader's version and :data:`AVERAGED_PROFILE_GENERATION`:
+    ``"otf2.0.0-g5"``. The Thermo library averages by itself and is named
+    alone, ``"thermo"``.
+
+    A profile one signature computed is not what another computes - reader
+    2.0.0 moved the per-scan profile axis by several ppm, and generation 2
+    the averaged heights by about 3% - so anything that caches a profile keys
+    it on this. A reader upgrade changes it by itself; a change to the
+    averaging has to bump the generation.
+
+    :return: The signature, e.g. ``"otf2.0.0-g5"``
+    :rtype: str
+    """
+    name = os.environ.get(ENV_BACKEND, "opentfraw").lower()
+    if name == "thermo":
+        return "thermo"
+    if name == "opentfraw":
+        version = _distribution_version("opentfraw")
+        return f"otf{version}-g{AVERAGED_PROFILE_GENERATION}"
+    raise ValueError(
+        f"Unknown {ENV_BACKEND}={name!r}; expected 'thermo' or 'opentfraw'."
+    )
+
+
+@functools.cache
+def _distribution_version(distribution: str) -> str:
+    """Installed version of ``distribution``, read once per process."""
+    return importlib.metadata.version(distribution)

@@ -21,6 +21,11 @@ class FileContext:
     # The file's name on the uploading machine, before the server filed it
     # under the instrument the agent reported (None when nothing renamed it).
     source_filename: Optional[str] = None
+    # What the upload carried to say where the file came from: its
+    # acquisition record, and its SHA-256 once the server had checked it
+    # against the bytes received (None for each it did not carry).
+    acquisition: Optional[dict] = None
+    sha256: Optional[str] = None
 
 
 class FileContextManager:

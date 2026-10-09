@@ -61,6 +61,8 @@ from mascope_backend.db import Base
 #: be served from the previous test's entry. The last_seen throttle is worse:
 #: a test that fakes the monotonic clock leaves a stamp from that fake clock
 #: behind, and a later real call comparing against it silently skips its write.
+#: The deployment ids read are kept by file path, and a test that rewrites the
+#: file at a path an earlier test read would be answered the earlier id.
 #:
 #: Reached through ``sys.modules`` rather than imported. Importing anything
 #: under ``mascope_backend.api.new.auth`` executes that package's ``__init__``,
@@ -71,6 +73,7 @@ from mascope_backend.db import Base
 _PROCESS_GLOBAL_STATE = (
     ("mascope_backend.api.new.auth.access_token.cache", "_entries"),
     ("mascope_backend.api.new.auth.access_token.validation", "_last_seen_written_at"),
+    ("mascope_backend.deployment", "_read_ids"),
 )
 
 

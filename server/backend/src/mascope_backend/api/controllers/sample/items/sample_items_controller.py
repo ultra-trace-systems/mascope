@@ -47,9 +47,11 @@ from mascope_backend.api.models.sample.items.sample_item_pydantic_model import (
     SampleItemRead,
     SampleItemSortColumn,
     SampleItemUpdate,
+    StreamItemCreate,
 )
 from mascope_backend.api.new.temp.storage import download_name, user_temp_path
 from mascope_backend.db import (
+    AcquisitionStream,
     Sample,
     SampleFile,
     SampleItem,
@@ -202,7 +204,9 @@ async def create_sample_items(
     - Update modified timestamps for affected batches.
     - Emit creation events
 
-    :param sample_items: List of sample item details for bulk creation
+    :param sample_items: List of sample item details for bulk creation. An
+        ``AcquisitionItemCreate`` is a ``SampleItemCreate`` that also carries
+        the rung that bound the item; pass one list or the other, not a mix.
     :type sample_items: list[SampleItemCreate]
     :param independent_transaction: Flag for independent transaction, defaults to False.
     :type independent_transaction: bool, optional
@@ -240,11 +244,47 @@ async def create_sample_items(
         if missing_ids := list(sample_file_ids - found_ids):
             raise NotFoundException(f"Sample files not found: {missing_ids}")
 
+        # --- The scan stream each item reads, for the items that name one ---
+        # Only the models the pipeline and the copy below build can name one
+        # (StreamItemCreate); a request cannot. An item's TIC and window are
+        # its polarity's whether it names a stream or not: the stream it
+        # reads is its polarity's composite, or the polarity's one stream.
+        stream_ids = {
+            stream_id
+            for si in sample_items
+            if (stream_id := getattr(si, "stream_id", None)) is not None
+        }
+        streams_map: dict[str, AcquisitionStream] = {}
+        if stream_ids:
+            streams_map = {
+                stream.stream_id: stream
+                for stream in (
+                    await session.execute(
+                        select(AcquisitionStream).where(
+                            AcquisitionStream.stream_id.in_(stream_ids)
+                        )
+                    )
+                ).scalars()
+            }
+            if missing_streams := sorted(stream_ids - set(streams_map)):
+                raise NotFoundException(f"Scan streams not found: {missing_streams}")
+
         # --- Process each sample item and conditionally compute missing TIC, t0, t1 fields ---
         sample_items_data = []
 
         for sample_item in sample_items:
             sample_file = sample_files_map[sample_item.sample_file_id]
+            stream = streams_map.get(getattr(sample_item, "stream_id", None))
+            if (
+                stream is not None
+                and stream.sample_file_id != sample_file.sample_file_id
+            ):
+                # A stream describes its own file only: read against another
+                # it would name whatever happens to share the key.
+                raise ValueError(
+                    f"Scan stream '{stream.stream_key}' is not a stream of the "
+                    f"file '{sample_file.filename}'."
+                )
 
             # Determine if TIC computation is needed
             tic_computation_needed = (
@@ -308,6 +348,18 @@ async def create_sample_items(
                 ),
                 "sample_item_utc_created": datetime.now(timezone.utc),
             }
+            # How the item got its chemistry comes from the model dumped
+            # above, and only AcquisitionItemCreate carries it: the plain
+            # create model has no such field, so a request cannot claim a
+            # rung. A row built from the plain model is padded rather than
+            # left short, because one multi-row INSERT takes its column list
+            # from the first dictionary alone - a list mixing the two models
+            # would otherwise drop the provenance or be refused, depending on
+            # which came first, and dropping it is the dangerous half.
+            sample_item_dict.setdefault("bound_by", None)
+            sample_item_dict.setdefault("method_binding_id", None)
+            # The same for the stream, which only StreamItemCreate carries.
+            sample_item_dict.setdefault("stream_id", None)
 
             sample_items_data.append(sample_item_dict)
 
@@ -406,6 +458,30 @@ async def update_sample_item(
             # Update only the changed fields
             for key, value in changed_fields.items():
                 setattr(existing_sample_item, key, value)
+
+            if "ionization_mode_id" in changed_fields:
+                # Somebody has just set this item's chemistry by hand, so
+                # whatever rung decided it before did not decide this. Left
+                # alone the row would credit a filename token - or a method
+                # binding - with a mode a person typed, and for a method item
+                # the binding would then name a different mode from the item,
+                # which is exactly the shape a re-pointed binding leaves
+                # behind: a hand edit would read as one.
+                #
+                # Cleared rather than set to "explicit". The column answers
+                # how auto-processing routed a file, which is the question the
+                # counts of it are asked about; an item somebody edits is not
+                # a routed item, and an item somebody builds by hand records
+                # nothing for the same reason.
+                existing_sample_item.bound_by = None
+                existing_sample_item.method_binding_id = None
+
+            if "sample_file_id" in changed_fields or "polarity" in changed_fields:
+                # The stream this item read was a stream of its old file and
+                # polarity: it reads none now, like an item made by hand,
+                # rather than a stream of another file - which the reference
+                # refuses - or a spectrum of the other polarity.
+                existing_sample_item.stream_id = None
 
             # --- Update modification timestamp ---
             existing_sample_item.sample_item_utc_modified = datetime.now(timezone.utc)
@@ -551,13 +627,27 @@ async def copy_sample_items(
                 f"Sample items not found: {', '.join(list(missing_ids))}"
             )
 
+        # The stream each source reads. Read off the table, because the view
+        # does not carry it - and a copy has to: its TIC and its window are
+        # copied from the source, and what it reads is what the source read.
+        source_streams = {
+            sample_item_id: stream_id
+            for sample_item_id, stream_id in (
+                await session.execute(
+                    select(SampleItem.sample_item_id, SampleItem.stream_id).where(
+                        SampleItem.sample_item_id.in_(sample_item_ids)
+                    )
+                )
+            ).all()
+        }
+
     # Validate target batch
     target_batch = await fetch_sample_batch(sample_batch_id)
 
     # Prepare sample items for creation
     sample_items_to_create = []
     for source_sample in source_samples:
-        sample_item_create = SampleItemCreate(
+        sample_item_create = StreamItemCreate(
             **SampleItemBase.model_validate(source_sample).model_dump(
                 exclude={
                     "sample_batch_id",
@@ -576,6 +666,7 @@ async def copy_sample_items(
                 if source_sample.sample_item_type == "ACQUISITION"
                 else source_sample.sample_item_type
             ),
+            stream_id=source_streams.get(source_sample.sample_item_id),
         )
 
         sample_items_to_create.append(sample_item_create)
@@ -633,8 +724,14 @@ async def copy_sample_items(
             type="copy_sample_items",
             status="pending",
             message=f"Copying match records for {len(sample_item_ids)} samples.",
+            # Nothing per sample: this packet is sent again at every step of
+            # every sample's copy (copy_sample_items_match_data), so a list of
+            # the copies in it would make each packet the size of the batch
+            # and the whole copy the square of it - every emit published to
+            # every backend process through Redis pub/sub, after a deep copy
+            # on the event loop. The browser reads a pending packet's progress
+            # and message, nothing else.
             data={
-                "sample_match_copies": [cmd._asdict() for cmd in match_copy_commands],
                 "sample_batch_id": sample_batch_id,
                 "_user_id": user_id,
             },
@@ -804,6 +901,11 @@ async def sample_item_export_peaks(
     - sample_file_id: The ID of the sample file.
     - sample_item_id: The ID of the sample item.
     - instrument: The type of the instrument used for the sample file.
+    - sample_batch_id: The ID of the sample batch.
+    - dataset_id: The ID of the dataset the sample batch belongs to.
+
+    New columns are appended, so a reader that picks columns by position keeps
+    reading what it read before.
 
     Raises StalePeakStoreError for a sample file whose peak store was
     allocated against scans it no longer reads back: every column above but
@@ -924,6 +1026,8 @@ async def sample_item_export_peaks(
         sample_file_id=sample.sample_file_id,
         sample_item_id=sample.sample_item_id,
         instrument=sample.instrument,
+        sample_batch_id=sample_batch.sample_batch_id,
+        dataset_id=sample_batch.dataset_id,
     )
 
     await send_progress_user_notification(notification, 1)

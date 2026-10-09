@@ -881,6 +881,17 @@ The CLI is written using [Typer](https://typer.tiangolo.com/), a type-hints base
 
 The best resource for learning about the Typer API is the [Typer docs Learn section](https://typer.tiangolo.com/tutorial/).
 
+#### Importing from the runtime
+
+`mascope-cli` and `mascope-runtime` are published to PyPI separately, and the CLI names the oldest runtime it works with as a floor in `tooling/cli/pyproject.toml` (`mascope_runtime[logs]>=...`). `pip install -U mascope-cli` upgrades an installed runtime only when the new CLI's floor excludes it, and the CLI imports every command group when it starts. So a CLI module that imports a runtime name newer than the floor stops every `mascope` command for anyone left on an older runtime, while everything still passes in the workspace, whose runtime has the name. A name like that is either:
+
+- defined in `tooling/cli/src/mascope_cli/runtime.py` instead of imported, with `tooling/cli/tests/test_runtime_mirror.py` keeping it equal to the runtime's (as `DEPLOYMENT_FILE` is); or
+- covered by raising the floor to a runtime that has it. When PyPI has none yet, also give `libraries/runtime/pyproject.toml` a version newer than any PyPI has (then `uv lock` and `uv lock --directory agents/file`) and raise the floor to that version: the release publishes the runtime under it. A version below one PyPI already has does not work: pip prefers the newer one, which lacks the name.
+
+The "CLI packaging smoke" CI job holds the CLI to this. `tooling/check-cli-runtime-floor.py` installs the built CLI wheel beside the oldest runtime the floor admits and imports it. That runtime comes from PyPI, or is the wheel built from the checkout when PyPI has never had its version. A version PyPI already has is always taken from PyPI, because the checkout's runtime can have gained names under the same number.
+
+The check covers the names the CLI imports when it starts. A newer runtime behaviour, keyword argument or config field the CLI relies on, or a newer name imported inside a function, passes it and still needs the floor raised by hand. It reads PyPI as well as the diff, so a runtime release can turn it red on a pull request that changed nothing in the CLI; the fix is the same. It also skips yanked runtimes, while pip keeps one that is already installed if the floor still admits it, so yanking a runtime goes with raising the floor past it.
+
 ---
 
 ## 🤖 Agents
@@ -896,9 +907,41 @@ agents/           # Agent applications
 
 The File Agent is responsible for uploading files from instrument machines unchanged to the server. This is designed for use in Orbitrap machines.
 
-Agents authenticate with a service access token, obtained either manually (web app → API Access Tokens) or via device pairing (`server/backend/src/mascope_backend/api/new/auth/pairing/`): the agent requests a short code from `/api/auth/pairing/start`, an editor approves it in the web app, and the agent polls `/api/auth/pairing/poll` for its token. Pairing creates tokens additively — one per machine — while the regenerate endpoint replaces all of a user's tokens for the service.
+The File Agent authenticates with a device token, and pairing is the only way it gets one (`server/backend/src/mascope_backend/api/new/auth/pairing/`): the agent requests a short code from `/api/auth/pairing/start`, an editor approves it in the web app, and the agent polls `/api/auth/pairing/poll` for its token. Each paired machine has a token of its own, which the agent renews before it expires (`/api/auth/devices/token`) and which regenerating a person's API tokens does not replace.
 
 To run all services needed to emulate the Orbitrap acquisition workflow in development, run `mascope dev run orbi`.
+
+### The File Agent as a library
+
+The agent is also a Python library, `mascope-file-agent` on PyPI, for a program that runs on the instrument computer already and wants the uploads in its own process. The program and the library are the same code: `mascope_file_agent.main.run()`, the console entry and the PyInstaller target, finds the settings, starts the runtime, builds an `Agent` and runs it.
+
+```py
+from mascope_file_agent import Agent, AgentSettings, identity
+
+settings = AgentSettings.from_file(config_path)
+identity("file-agent", version="1.2.3", verify_tls=settings.verify_tls)
+
+agent = Agent(settings, persist_token=settings.token_writer(config_path))
+agent.start()
+...
+agent.stop(timeout=30)
+```
+
+The two calls are `identity()` and the `Agent`'s `start()`:
+
+- `identity(service_name, version, verify_tls)` sets what every request the process makes reports to the server. The SDK keeps these for the whole process (`mascope_sdk.SERVICE_NAME`, `AGENT_VERSION`, `VERIFY_TLS`), so the process that runs an agent sets them, once, before it pairs or starts one. Importing the package sets none of them, and an `Agent` refuses to start in a process that has not made the call.
+- `Agent(settings, url=None, logger=None, repair=None, persist_token=None)` owns the folder watcher, the uploader and its workers, the token renewal, the status follower and the one event that stops them. `start()` runs it on threads of its own and returns; `run_until_complete()` runs it on the calling thread until interrupted, which is what the console entry does; `stop(timeout)` waits for the uploads under way, abandons the rest when the time runs out and returns whether everything ended. An agent runs once.
+
+The modules behind it hold no state of their own: `settings.py` (`AgentSettings`, the keys of `config.toml`'s `[file-agent]` section), `watcher.py` (`FileSystemWatcher`, which reports a file once nothing is writing it), `uploader.py` (`FileUploader`: the wait until a file has been left alone, the retry policy and `failed_uploads`), `credentials.py` (`Credentials`: the live token, the check at start, the renewal, and the `Repair` that decides what a refused credential leads to - `ConsoleRepair` asks at the console, the base class only logs), `capabilities.py` (`ServerCapabilities`: what the server announces it can do, asked once for the whole agent and again after an hour; a server that asks for another try has not answered), `provenance.py` (`UploadProvenance`: what goes with an upload to say where the file came from), `status.py` and `agent.py`. `Agent.on_ready(callback)` adds a step that is called with each complete file before the uploader has it.
+
+**The acquisition record.** A program that controls the instrument can say what each file is: which step of which run acquired it, in which mode, under which chemistry. It writes that as a JSON document beside the file, `<file>.mascope.json`, and the agent sends the document with the file's upload, together with the file's SHA-256, to a server that announces it keeps them (`files_accept_acquisition_metadata`). An embedding program writes the sidecar in an `on_ready` step; a program beside a standalone agent writes it before the file has been left alone for the agent's `timeout`. The schema is `mascope-acquisition/1`, defined by `mascope_sdk.acquisition`, and [acquisition_sidecar.md](acquisition_sidecar.md) is its reference: the fields, how the record travels, and what the agent does when a sidecar cannot be used or a server does not keep one. Neither the record nor the hash may cost a file its upload.
+
+Everything exported from `mascope_file_agent` is public API. A change that breaks it needs a changelog entry and a new version, and so does anything else that should reach a program depending on the library:
+
+1. Set `version` in `agents/file/pyproject.toml` to the commit date, as for the SDK ([Publish](#publish)), and run `uv lock --directory agents/file`.
+2. Merge to `master`. The `publish-pypi` workflow uploads the version if PyPI does not have it. The project is not a workspace member, so the workflow passes `--standalone` to `.github/scripts/publish-package.sh`, which builds it from its own directory.
+
+The version of the library is not the version of the Windows program, which is stamped with the release tag when it is built.
 
 ### Building File Agent for production
 
@@ -919,16 +962,37 @@ cd agents/file
 ./build.ps1 -Version v1.4.0 -Installer   # stamped exe + installer
 ```
 
+Beside the exe the build writes `dist/THIRD_PARTY_NOTICES.txt`: the licences of
+the open-source packages PyInstaller assembled the program from, and of the
+Python interpreter inside it. `tooling/third-party-notices.py` generates it from
+the build environment (`--for agent --interpreter`), as it does for the server
+image, and the installer puts it in the program's folder with Mascope's own
+`LICENSE` and `NOTICE`. The exe itself holds almost none of that text -
+PyInstaller packs code, not the licence files beside it - so an exe handed on
+without the installer should have the notices file handed on with it.
+
+Two things have no licence file of their own to copy, and their texts are kept
+in `tooling/licence-texts` (its README says where each came from): a package
+whose wheel ships none, by name and exact version, and the libraries built
+into the interpreter - OpenSSL, libffi, Expat and the rest - which the
+`LICENSE.txt` of a Python installation names in part or not at all, depending
+on who built it. The build refuses to write the notices when a package has no
+licence text in either place, or when there is no such file for the Python it
+runs on, so a dependency bump or a move to a new Python that needs a text
+added fails in CI's `Dependency licences (File Agent)` job before it fails a
+release.
+
 `-Installer` compiles `installer.iss` and requires Inno Setup 6 (preinstalled
 on GitHub windows runners; locally `winget install JRSoftware.InnoSetup`).
 The installer is per-user (no admin rights), offers a run-at-login startup
 task, and leaves `%AppData%\Mascope\FileAgent` untouched on uninstall. The
 build stamps the version into `src/mascope_file_agent/_version.py`
-(gitignored); unstamped source builds report `dev`.
+(gitignored, and left out of the library's wheel); without that file the agent
+reports the library's version.
 
 Then run the executable found in `agents/file/dist`.
 
-When you run this executable, the `MASCOPE_PATH` will be `%AppData%\Mascope\FileAgent`. On first start (or when started with `--setup`) the agent runs a guided setup in the console, asking for the server address, an access token and the folder to watch, and verifies the token against the server before saving. Settings are stored in a single user-facing file:
+When you run this executable, the `MASCOPE_PATH` will be `%AppData%\Mascope\FileAgent`. On first start (or when started with `--setup`) the agent runs a guided setup in the console, asking for the server address, the folder to watch and the instrument name, then pairs the machine and checks the token it received against the server before saving. Settings are stored in a single user-facing file:
 
 ```
 %AppData%\Mascope\FileAgent\config.toml
@@ -938,7 +1002,7 @@ On every start the agent merges `config.toml` over built-in defaults and regener
 
 The end-user installation guide lives in `docs/user/instruments/index.md`.
 
-Unit tests for the config handling are hermetic; run them with `uv run pytest` in `agents/file`.
+The agent's tests are hermetic - no runtime, no server, no network - and cover the configuration, the guided setup, the upload and retry policy, the credential handling and the `Agent`'s life; run them with `uv run pytest tests/` in `agents/file`.
 
 > [!IMPORTANT]
 > Windows prevents applications from writing into `Program Files` directory. Therefore, when testing the agent with TofDaq Recorder, its data directory must be outside `Program Files`.
@@ -1368,6 +1432,7 @@ Each API resource uses one of the two authorization layers. The table below docu
 | Calibration (read)                                                     | Global RBAC   | guest          | View calibration state                                |
 | Calibration (mutations)                                                | Global RBAC   | admin          | Global operation, affects all associated samples      |
 | Cheminfo (query)                                                       | Global RBAC   | guest          | Stateless formula lookup                              |
+| Cheminfo (match result)                                                | Authenticated | —              | `/mz/match/result/{id}` — own results only, expiring  |
 | Params                                                                 | Global RBAC   | guest          | Application parameters                                |
 | Temp files                                                             | Global RBAC   | guest          | Temporary file serving                                |
 | **Admin (system management)**                                          |               |                |                                                       |
@@ -1557,6 +1622,19 @@ flowchart TB
 
 In production, multiple Uvicorn workers run behind [Nginx](https://nginx.org/en/docs/http/load_balancing.html) with sticky sessions (`ip_hash`).
 Redis coordinates Socket.IO events across workers via pub/sub and stores user sessions for cross-worker authentication.
+
+Every emit - to a room, to one user, to one socket - is published to every worker through that
+pub/sub, and Redis disconnects a subscriber whose unread output passes its buffer limit
+(`client-output-buffer-limit pubsub`, by default 32 MB at once or 8 MB held for a minute), which
+takes every worker's Socket.IO subscribers off Redis and loses whatever was in flight. So a
+background task's notification says that the task moved on or finished - ids, counts, a message, a
+download name - and does not carry anything that grows with the data: rows, samples, files. A
+result the browser needs goes where it fetches it over HTTP, as the composition search keeps its
+rows (`api/new/cheminfo/match_results.py`), and a report of per-item failures names the first few
+and counts the rest. A `user_notification` heavier than `USER_NOTIFICATION_BUDGET_BYTES` (256 KiB,
+`socket/notifications/service.py`) is still sent, and logged at WARNING under its notification
+type - once an hour per type and worker, since what outgrows the budget is mostly a progress
+stream that sends the same packet at every step.
 
 ### Backend File Converter
 
@@ -2969,12 +3047,14 @@ This library exposes a public Python SDK for end-users to leverage especially in
 
 #### Publish
 
-Publishing to [PyPI](https://pypi.org/) is automated for both `mascope-sdk` and
-`mascope-tools` by the `publish-pypi` workflow
-(`.github/workflows/publish-pypi.yaml`). To release a new version:
+Publishing to [PyPI](https://pypi.org/) is automated for `mascope-sdk`,
+`mascope-tools`, `mascope-runtime`, `mascope-cli` and `mascope-file-agent` by
+the `publish-pypi` workflow (`.github/workflows/publish-pypi.yaml`). To release
+a new version:
 
 1. In a PR, set `version` in the package's `pyproject.toml`
-   (`libraries/sdk/` or `libraries/tools/`) to the commit date in unpadded
+   (under `libraries/sdk/`, `libraries/tools/`, `libraries/runtime/`,
+   `tooling/cli/` or `agents/file/`) to the commit date in unpadded
    CalVer (e.g. `2026.7.6` — no leading zeros; PEP 440 strips them anyway):
 
    ```sh
@@ -2989,12 +3069,16 @@ Authentication uses [PyPI Trusted Publishing](https://docs.pypi.org/trusted-publ
 (OIDC) — there are no tokens to manage. Each PyPI project is configured
 (pypi.org → project → Publishing) to trust this repository's
 `publish-pypi.yaml` workflow and the `pypi` GitHub environment; approval
-requirements can be set on that environment in the repository settings.
+requirements can be set on that environment in the repository settings. A
+package PyPI has never had needs a *pending* publisher there (pypi.org →
+account → Publishing) before its first version can be uploaded.
 
 To publish manually (e.g. from a fork or in an emergency), the underlying
 steps are in `.github/scripts/publish-package.sh`: `uv build --package
 mascope_sdk` from the repo root (note: `dist/` is created in the root, not in
-the package directory), then `uv publish --token <MY_TOKEN>`.
+the package directory), then `uv publish --token <MY_TOKEN>`. The File Agent is
+not a workspace member, so `--package` does not find it: build it with
+`uv build agents/file --out-dir dist` instead, also from the repo root.
 
 ### Chemical formulas and custom elements
 

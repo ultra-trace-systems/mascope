@@ -13,6 +13,7 @@ from unittest.mock import MagicMock, patch
 
 import numpy as np
 import pytest
+import xarray as xr
 
 from mascope_backend.api.controllers.calibration.lib.calibration_mz_fit import (
     OrbiCalibrationHandler,
@@ -65,8 +66,13 @@ async def test_orbi_apply_warns_when_peak_timeseries_is_absent():
     with (
         patch(f"{module}.m_io") as m_io,
         patch(f"{module}.m_name") as m_name,
+        patch(f"{module}.m_compute") as m_compute,
         patch(f"{module}.runtime") as runtime,
     ):
+        mz = np.linspace(100.0, 200.0, 8)
+        m_compute.get_sum_signal.return_value = xr.DataArray(
+            np.zeros(8), dims="mz", coords={"mz": mz}
+        )
         m_io.load_coord.side_effect = _load_coord_missing_peak_timeseries
         m_io.get_file_data_vars.return_value = ["sum_signal"]
         # No calibration on the file yet, so apply() does not short-circuit

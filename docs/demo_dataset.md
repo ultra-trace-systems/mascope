@@ -430,7 +430,7 @@ The published artifact is a zip of `<BUNDLE>`. The sign-off report lives outside
 
 ### E. Add an MS2 acquisition
 
-Every bundle so far is MS1-only (1.3.0: 161 Orbitrap acquisitions, no MS2
+Every bundle so far is MS1-only (1.3.1: 161 Orbitrap acquisitions, no MS2
 scans), so nothing that runs against a demo stack reads MS2. On it
 `/api/samples/{id}/ms2/summary` reports `ms2_scan_count: 0` and
 `/ms2/centroids` answers 400. The SDK contract suite's `TestMs2Contract`

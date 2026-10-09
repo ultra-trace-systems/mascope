@@ -26,7 +26,6 @@ General calibration workflow:
 
 import asyncio
 import math
-import os
 from abc import abstractmethod
 from itertools import combinations
 
@@ -72,6 +71,13 @@ from mascope_tofwerk.calibration import mz_calibrate, tof_to_mass
 TOF_MINIMUM_CALIBRATION_POINTS = 3
 ORBI_MINIMUM_CALIBRATION_POINTS = 1
 LARGE_SAMPLE_SIZE_THRESHOLD = 5
+
+#: Mean retained residuals closer than this rank two subsets of calibrants as
+#: equally consistent. A subset the fit can absorb whole is fitted exactly - an
+#: Orbitrap subset of one always is - and what is left of its residual is
+#: rounding, around 1e-10 ppm. The step is far above that and far below any
+#: residual that says something about the calibrants.
+SUBSET_RESIDUAL_RESOLUTION_PPM = 1e-6
 
 #: Local-dominance guard for Orbitrap candidate peaks. FTMS centroiding of
 #: short transients leaves weak sidelobe ("satellite") peaks around every
@@ -126,14 +132,12 @@ class BaseCalibrationHandler:
     def _calibration_lock_path(self) -> str:
         """Path naming the lock that guards a whole ``apply`` for this sample.
 
-        Not a store - only the name a lock file is derived from. It sits beside
-        the sample's stores and is deliberately distinct from any of them, so
-        taking it does not collide with the per-array locks the writes inside
-        ``_apply_sync`` take for themselves.
+        The file library names it (``mascope_file.io.mz_calibration_lock_path``),
+        because an apply is not alone in taking it: a fill of the file's peak
+        store that met a rewritten m/z axis waits for it before it reads the
+        file again (``mascope_signal.compute.load_peak_timeseries``).
         """
-        return os.path.join(
-            m_name.parse_path_from_item_filename(self.filename), "mz_calibration"
-        )
+        return m_io.mz_calibration_lock_path(self.filename)
 
     def _guarded_apply(self, fit: dict):
         """Run ``_apply_sync`` under a lock covering the whole recalibration.
@@ -280,12 +284,7 @@ class BaseCalibrationHandler:
         # Fill np.nan with serializable defaults for unmatched isotopes
         default_unmatched_params = UnmatchedIsotopeParams().model_dump()
         match_df = match_df.fillna(default_unmatched_params)
-        # Matches contain duplicates for every ionization mechanism, we drop them
-        match_df = (
-            match_df.sort_values(by=["sample_peak_mz", "target_ion_id"])
-            .drop_duplicates(subset="sample_peak_mz", keep="first")
-            .reset_index(drop=True)
-        )
+        match_df = self._one_reading_per_peak(match_df)
 
         good_matches_df = match_df[
             (match_df.relative_abundance >= self.params.isotope_abundance_min)
@@ -295,6 +294,47 @@ class BaseCalibrationHandler:
         ]
 
         return match_df, good_matches_df
+
+    @staticmethod
+    def _one_reading_per_peak(match_df: pd.DataFrame) -> pd.DataFrame:
+        """Keep one reading of each sample peak: the one that makes it a main line.
+
+        Several ions of a calibration collection can match the same peak. An
+        ion reached through two mechanisms does, and so does the main line of
+        one calibrant that is also a minor isotope line of another - a labelled
+        reagent beside its unlabelled compound, a cluster that is also an
+        adduct. A peak gives the fit one point, and the abundance floor that
+        follows judges it by the reading kept here, so the reading kept is the
+        one with the highest relative abundance: the peak is then dropped only
+        if no ion of the collection reads it as a line worth calibrating on.
+
+        Readings of equal abundance are told apart by the m/z error and then
+        the isotope formula, which are the same wherever the collection is
+        loaded. The ion id comes last, and only between readings that give the
+        fit the same point: it is generated per database, so anything it
+        decided would differ from one server to the next.
+
+        :param match_df: Matched isotopes, one row per reading of a peak.
+        :type match_df: pd.DataFrame
+        :return: One row per sample peak, ordered by peak m/z.
+        :rtype: pd.DataFrame
+        """
+        return (
+            match_df.assign(_abs_mz_error=match_df["match_mz_error"].abs())
+            .sort_values(
+                by=[
+                    "sample_peak_mz",
+                    "relative_abundance",
+                    "_abs_mz_error",
+                    "target_isotope_formula",
+                    "target_ion_id",
+                ],
+                ascending=[True, False, True, True, True],
+            )
+            .drop_duplicates(subset="sample_peak_mz", keep="first")
+            .drop(columns="_abs_mz_error")
+            .reset_index(drop=True)
+        )
 
     async def _load_and_filter_peaks(
         self,
@@ -565,12 +605,19 @@ class BaseCalibrationHandler:
 
         The number of combinations for <=5 matches is manageable for a brute force search,
         thus we do not implement a random sampling approach as in traditional RANSAC.
+
+        Among consistent subsets of one size, the one that agrees with itself
+        best wins. A subset the fit absorbs whole leaves nothing to tell it by:
+        every calibrant fits itself, so an Orbitrap file whose calibrants
+        disagree pairwise offers as many perfect one-point fits as it has
+        calibrants. Those are ranked by the correction they ask for, the
+        smallest first - an axis is far likelier nearly right than far off,
+        and a match that needs a large correction is likelier a neighbouring
+        peak than the calibrant.
         """
         fit_result, _ = self._fit_matches(matches_df)
-        unfiltered_calibration_df = self._build_calibration_df(
-            matches_df,
-            self._evaluate_fit(matches_df, fit_result),
-        )
+        fit_stats = self._evaluate_fit(matches_df, fit_result)
+        unfiltered_calibration_df = self._build_calibration_df(matches_df, fit_stats)
 
         all_peaks_within_tolerance = self._mz_error_mask(
             unfiltered_calibration_df
@@ -580,6 +627,7 @@ class BaseCalibrationHandler:
 
         # Reset index to ensure correct indexing when evaluating subsets
         matches_df = matches_df.reset_index(drop=True)
+        pre_fit_errors = np.abs(np.asarray(fit_stats["pre_dmz"], dtype=float))
         best_candidate = None
         all_indices = tuple(range(len(matches_df)))
         for subset_size in self._candidate_subset_sizes(len(matches_df)):
@@ -609,15 +657,20 @@ class BaseCalibrationHandler:
 
                 # Score candidates based on:
                 # - first by number of retained matches (higher is better)
-                # - then by lower mean retained error
-                # - then by higher mean excluded error
-                excluded_mean_error = (
-                    float(excluded_errors.mean()) if not excluded_errors.empty else 0.0
+                # - then by lower mean retained error, counted in steps of
+                #   SUBSET_RESIDUAL_RESOLUTION_PPM so that rounding left by an
+                #   exact fit does not rank one subset above another
+                # - then by lower mean error of the retained matches before
+                #   the fit, the smaller correction
+                # Subsets still level are told apart by nothing measured; the
+                # first one met is kept, in the order of the matches.
+                retained_error_steps = round(
+                    float(retained_errors.mean()) / SUBSET_RESIDUAL_RESOLUTION_PPM
                 )
                 candidate_score = (
                     len(subset_indices),
-                    -float(retained_errors.mean()),
-                    excluded_mean_error,
+                    -retained_error_steps,
+                    -float(pre_fit_errors[retained_mask].mean()),
                 )
                 if best_candidate is None or candidate_score > best_candidate[0]:
                     best_candidate = (
@@ -1014,9 +1067,16 @@ class OrbiCalibrationHandler(BaseCalibrationHandler):
         old_factor_scaling = fit_parameters["old_factor_scaling"]
         if self._is_calibration_already_applied(fit):
             runtime.logger.info("Same calibration already applied; skipping.")
-            return m_io.load_coord(self.filename, "sum_signal", "mz")
+            return m_compute.get_sum_signal(self.filename).mz.values
 
         runtime.logger.info(f"Calibrating file: {self.filename}")
+
+        # The full sum signal has to exist before the stores are rescaled, so it
+        # is rescaled with them. One averaged after the loop would be put on the
+        # calibration the properties still hold, the old one, and kept there. A
+        # raw Orbitrap file caches it under the name of the reader that averaged
+        # it, so a file processed before that reader has none yet.
+        m_compute.get_sum_signal(self.filename)
 
         # Update m/z axis for all existing sum signals
         sample_data_path = m_name.parse_path_from_item_filename(self.filename)
@@ -1051,8 +1111,9 @@ class OrbiCalibrationHandler(BaseCalibrationHandler):
         # Remove excessive items
         fit["par"].pop("old_factor", None)
         fit["par"].pop("old_factor_scaling", None)
-        # Update sample file properties
-        full_sum_signal_mz = m_io.load_coord(self.filename, "sum_signal", "mz")
+        # Update sample file properties. The full sum signal is asked for rather
+        # than read by name, since its name depends on the reader.
+        full_sum_signal_mz = m_compute.get_sum_signal(self.filename).mz.values
         new_mz_range = full_sum_signal_mz[0], full_sum_signal_mz[-1]
         m_io.update_props(self.filename, {"range": new_mz_range, "mz_calibration": fit})
 

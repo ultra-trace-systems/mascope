@@ -28,6 +28,7 @@ from mascope_backend.file_converter.api import (
 from mascope_backend.file_converter.errors import describe_exception
 from mascope_backend.file_converter.peak_guard import PeakDetectionGuard
 from mascope_backend.file_converter.runtime import runtime
+from mascope_runtime.logging import SENTRY_FINGERPRINT
 from mascope_signal.compute import StalePeakStoreError, check_peak_store
 from mascope_signal.peak import compute_peaks
 
@@ -110,10 +111,14 @@ class PeakRecomputeWorker(Thread):
         try:
             asyncio.run(check_peak_store(filename))
         except StalePeakStoreError:
-            # With the exception attached, error monitoring groups these by the
-            # error rather than by the text, which names the file - one issue
-            # for the fault, not one per file it reaches.
-            runtime.logger.opt(exception=True).warning(
+            # Pinned to one issue for the fault, not one per file it reaches.
+            # Monitoring would group an exception event by its type and the
+            # first line of its message, and this error's message carries the
+            # file's scan counts, which split it close to per file. The line
+            # naming the file still travels with the event.
+            runtime.logger.bind(
+                **{SENTRY_FINGERPRINT: ["peak-store-stale-after-rebuild"]}
+            ).opt(exception=True).warning(
                 f"PeakRecomputeWorker: the peak store rebuilt for '{filename}' "
                 "still disagrees with the file. Its samples will keep failing to "
                 "match, and each refresh will queue this rebuild again."

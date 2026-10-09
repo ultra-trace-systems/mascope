@@ -19,7 +19,9 @@ chemistries would read `learned` on the handful seen live.
 Running it twice changes nothing: the chemistries merge as a set, the span by
 min and max, and ``n_streams`` takes the larger of the two counts rather than
 their sum - every file live learning counted has pipeline items and so is in
-this history as well, which a sum would count twice.
+this history as well, which a sum would count twice. The mode a merged row
+points at comes from the history whenever the file that row last learned from
+still has items, which is the same answer every time it is asked.
 
 **It reads the scan-stream census from each file's ``.props``**, for the
 instruments whose reader records one, because the signature class comes from
@@ -46,6 +48,7 @@ from sqlalchemy import select, text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from mascope_backend.api.controllers.sample.files.process.bindings import (
+    follow_row,
     method_binding_mode,
 )
 from mascope_backend.api.controllers.sample.files.process.status import (
@@ -132,6 +135,33 @@ _HISTORY_SQL = """
 """
 
 
+#: Does a given file have items the history above would read? The same
+#: five-way filter, so a yes means the file is in that population rather than
+#: merely that the file exists.
+#:
+#: It is a question about NOW, not about what the walk folded, and the two can
+#: differ: a file re-processed while the walk was past its position has items
+#: at this point and was folded as it stood minutes ago, and a file that
+#: arrived after the last page has items the walk never saw at all. Both cost
+#: one observation's effect on one run, which the next files of the method
+#: make up, so the window is left open rather than paid for by holding every
+#: file id the walk read.
+_HOLDS_FILE_SQL = """
+    SELECT 1
+    FROM sample_item si
+    JOIN sample_batch sb ON sb.sample_batch_id = si.sample_batch_id
+    JOIN dataset d       ON d.dataset_id = sb.dataset_id
+    JOIN workspace w     ON w.workspace_id = d.workspace_id
+    WHERE si.sample_file_id = :sample_file_id
+      AND si.sample_item_type = 'ACQUISITION'
+      AND sb.sample_batch_type = 'ACQUISITION'
+      AND d.dataset_type = 'ACQUISITION'
+      AND w.is_system IS TRUE
+      AND si.ionization_mode_id IS NOT NULL
+    LIMIT 1
+"""
+
+
 async def _history_pages():
     """The routing history in pages, oldest first, one entry per (file, mode).
 
@@ -194,9 +224,18 @@ def _fold(
 ) -> tuple[str, str] | None:
     """Fold one page of history into the records built so far.
 
-    The rules live learning applies: the chemistry first seen is the one the
-    row points at, a second chemistry marks the key ambiguous and counts a
-    disagreement, and the row is never repointed by one.
+    The rules live learning applies: a second chemistry marks the key
+    ambiguous and counts a disagreement, the row is never repointed by one,
+    and while the chemistry holds the row follows the newest observations
+    once three of them agree (``bindings.follow_row``). Folding the history
+    oldest first therefore leaves the row where live learning would have left
+    it, which is the newest mode the method's own files have settled on.
+
+    The order is the files' ACQUISITION time, which is what the history query
+    sorts by, not the time each was bound. For a steady stream of uploads the
+    two agree; a file re-processed long after it was acquired appears at its
+    old position and can break a run that was building, which costs three
+    more observations and no correctness.
 
     :param observations: One page from :func:`_history_pages`, oldest first.
     :param census: The scan streams of that page's files, by filename.
@@ -243,6 +282,8 @@ def _fold(
                 "n_streams": 1,
                 "n_disagreements": 0,
                 "last_chemistry_key": chemistry,
+                "candidate_mode_id": None,
+                "n_candidate_streams": 0,
             }
             continue
 
@@ -254,6 +295,19 @@ def _fold(
             record["chemistry_keys"].append(chemistry)
             record["n_disagreements"] += 1
             record["state"] = "ambiguous"
+            record["candidate_mode_id"] = None
+            record["n_candidate_streams"] = 0
+        elif len(record["chemistry_keys"]) == 1:
+            (
+                record["ionization_mode_id"],
+                record["candidate_mode_id"],
+                record["n_candidate_streams"],
+            ) = follow_row(
+                current=record["ionization_mode_id"],
+                candidate=record["candidate_mode_id"],
+                n_candidate=record["n_candidate_streams"],
+                observed=row["mode_id"],
+            )
     return previous
 
 
@@ -294,20 +348,49 @@ async def _apply(records: dict[str, dict]) -> dict[str, int]:
             ).scalar_one_or_none()
             if row is None:
                 continue
-            if _merge(row, record):
+            # Read under the lock, not from an earlier pass: a live ingest can
+            # refresh last_sample_file_id while this script walks the history.
+            holds = await _holds_file(session, row.last_sample_file_id)
+            if _merge(row, record, holds):
                 counts["turned_ambiguous"] += 1
             counts["merged"] += 1
         await session.commit()
     return counts
 
 
-def _merge(row: MethodBinding, record: dict) -> bool:
+async def _holds_file(session, sample_file_id: str | None) -> bool:
+    """Does one file still have items this run's history would read?
+
+    The question :func:`_merge` turns on. A row live learning wrote names the
+    last file it folded; if that file's items are still there, this run read
+    them too - barring the narrow windows in :data:`_HOLDS_FILE_SQL` - so its
+    conclusion about the row is built on everything the row knew and more.
+
+    None is not a gap. A row the previous run of this script created has no
+    last file, and nothing has observed it since, so the history is all the
+    evidence there is - which is also why running the script twice changes
+    nothing.
+
+    :return: True when the history holds it, or there is none to hold.
+    :rtype: bool
+    """
+    if sample_file_id is None:
+        return True
+    return (
+        await session.scalar(text(_HOLDS_FILE_SQL), {"sample_file_id": sample_file_id})
+    ) is not None
+
+
+def _merge(row: MethodBinding, record: dict, holds_last_observation: bool) -> bool:
     """Fold a record into a row live learning already made.
 
-    The row keeps pointing where it does - live learning's first chemistry
-    stays the routing one - and gains the history's chemistries, counts and
-    span.
+    The row gains the history's chemistries, counts and span, and takes the
+    mode the history settled on when the history holds what the row last saw.
 
+    :param row: The row to fold into, locked.
+    :param record: What the history says about this key.
+    :param holds_last_observation: Whether the file the row last learned from
+        still has items this run would read, from :func:`_holds_file`.
     :return: True when this merge turned the key ambiguous.
     :rtype: bool
     """
@@ -319,6 +402,25 @@ def _merge(row: MethodBinding, record: dict) -> bool:
         row.n_disagreements = (row.n_disagreements or 0) + len(added)
     if len(row.chemistry_keys or []) > 1:
         row.state = "ambiguous"
+    # Where the row points comes from the history whenever the file the row
+    # last learned from still has items this run would read: the history then
+    # has everything live learning had and more, and it has applied the rule
+    # over all of it rather than over the last few weeks. It loses only to
+    # evidence it does not hold - a file whose items have since been deleted -
+    # and that is the whole of the test. Taking it is also what keeps a re-run
+    # idempotent, since the same history folds to the same row; an ambiguous
+    # key is left alone, since it routes nothing.
+    #
+    # NOT a comparison of last_seen. The two are different clocks: the
+    # record's is the newest ACQUISITION time in the history, the row's is
+    # the wall clock when live learning processed a file. A file is always
+    # processed after it was acquired, so for every key shadow learning has
+    # touched the row's time is the later one - and a comparison would drop
+    # the history's row for exactly the keys the re-run exists to move.
+    if len(row.chemistry_keys or []) == 1 and holds_last_observation:
+        row.ionization_mode_id = record["ionization_mode_id"]
+        row.candidate_mode_id = record["candidate_mode_id"]
+        row.n_candidate_streams = record["n_candidate_streams"]
     # max, not a sum: every file live learning counted has pipeline items, so
     # it is in this history too. Adding would count those files twice on the
     # first run and double every merged row on the next. The history is close

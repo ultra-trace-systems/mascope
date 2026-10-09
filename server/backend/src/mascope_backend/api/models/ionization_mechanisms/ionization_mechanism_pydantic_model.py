@@ -28,6 +28,16 @@ from mascope_tools.composition.mechanism_notation import (
 from mascope_tools.composition.utils import assert_valid_formula, parse_composition
 
 
+#: The mechanism field's description, on the model a request is read into and
+#: on the one a stored row is reported through.
+_MECHANISM_DESCRIPTION = (
+    "The ionization mechanism in the standard adduct notation: '[M+H]+', "
+    "'[M-H]-', '[M+Br]-', '[M]+.' for electron transfer. The legacy "
+    "spelling ('+H+', '-H+', '+Br-', '+') is accepted on input and "
+    "stored in the standard one."
+)
+
+
 class IonizationMechanismBaseValidator:
     """Base validation logic for ionization mechanism shared fields."""
 
@@ -41,6 +51,11 @@ class IonizationMechanismBaseValidator:
         :mod:`mascope_tools.composition.mechanism_notation`). Each term must be
         a formula of real elements: an unknown element or a stray character is
         refused rather than skipped.
+
+        The field's ``max_length`` refuses an over-long value before this runs,
+        so the parse never reads one. That bounds the text as sent; the
+        standard spelling has to fit the column too, and it can be the longer
+        of the two (``+H+`` is stored as ``[M+H]+``).
         """
         if not value.strip():
             raise ValueError("ionization_mechanism cannot be empty or just whitespace.")
@@ -48,6 +63,14 @@ class IonizationMechanismBaseValidator:
             parts = parse_mechanism(value)
         except MechanismNotationError as e:
             raise ValueError(str(e)) from e
+
+        limit = ionization_mechanism_config.IONIZATION_MECHANISM_MAX_LENGTH
+        if len(parts.standard) > limit:
+            raise ValueError(
+                f"Ionization mechanism '{value}' is {len(parts.standard)} "
+                f"characters in the standard notation it is stored in; at most "
+                f"{limit} fit."
+            )
 
         for term in parts.terms:
             try:
@@ -100,15 +123,7 @@ class IonizationMechanismBase(BaseModel):
     ionization_mechanism_polarity: str = Field(
         ..., description="Polarity of the ionization mechanism ('+' or '-')"
     )
-    ionization_mechanism: str = Field(
-        ...,
-        description=(
-            "The ionization mechanism in the standard adduct notation: '[M+H]+', "
-            "'[M-H]-', '[M+Br]-', '[M]+.' for electron transfer. The legacy "
-            "spelling ('+H+', '-H+', '+Br-', '+') is accepted on input and "
-            "stored in the standard one."
-        ),
-    )
+    ionization_mechanism: str = Field(..., description=_MECHANISM_DESCRIPTION)
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -117,6 +132,19 @@ class IonizationMechanismCreate(
     IonizationMechanismBaseValidator, IonizationMechanismBase
 ):
     """Model used for ionization mechanism creation requests."""
+
+    # Bounded here rather than on the base, which the read model shares: that
+    # reports a stored row as it is, and a legacy row reads in the standard
+    # spelling, which can be longer than the column.
+    ionization_mechanism: str = Field(
+        ...,
+        max_length=ionization_mechanism_config.IONIZATION_MECHANISM_MAX_LENGTH,
+        description=(
+            f"{_MECHANISM_DESCRIPTION} At most "
+            f"{ionization_mechanism_config.IONIZATION_MECHANISM_MAX_LENGTH} "
+            "characters, both as sent and in the standard notation."
+        ),
+    )
 
     @model_validator(mode="before")
     @classmethod
@@ -128,13 +156,21 @@ class IonizationMechanismCreate(
         object, or whose mechanism is missing or not a string, is left to the
         field validation below rather than indexed into here - indexing it
         raises TypeError, which is a 500 rather than the 422 a malformed
-        request deserves.
+        request deserves. A mechanism longer than the field allows is left to
+        it unparsed, for the field's bound to refuse: parsing takes time in
+        proportion to the text, and the parser's cache keeps each value it
+        accepts.
         """
         if not isinstance(values, dict):
             return values
         mechanism = values.get("ionization_mechanism")
         polarity = values.get("ionization_mechanism_polarity")
-        if not isinstance(mechanism, str) or not mechanism.strip():
+        limit = ionization_mechanism_config.IONIZATION_MECHANISM_MAX_LENGTH
+        if (
+            not isinstance(mechanism, str)
+            or len(mechanism) > limit
+            or not mechanism.strip()
+        ):
             return values
 
         # The polarity is the charge of the ion the mechanism makes: the

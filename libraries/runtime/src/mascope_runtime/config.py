@@ -38,6 +38,20 @@ type LogLevel = Literal[
 # for decoding the address back out of a mailto: link.
 _STRAY_PERCENT = re.compile(r"%(?![0-9A-Fa-f]{2})")
 
+#: What a deployment id may be made of (`backend.deployment_id`). The id is
+#: written into every export's provenance and compared by whatever reads those
+#: exports, so it is kept to characters no file name, URL or CSV cell needs to
+#: quote, and free of `:`, so that it can stand as the prefix of another
+#: identifier without ambiguity. The backend's generated ids satisfy it too.
+DEPLOYMENT_ID_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
+
+#: The file, at the root of an env's filestore, that keeps the id the backend
+#: generated for its deployment (`mascope_backend.deployment`). The CLI's tools
+#: that copy a filestore between deployments leave it behind under the name
+#: `mascope_cli.runtime` gives it: the published CLI also runs against runtimes
+#: that predate this name, so it keeps its own copy, which a CLI test pins equal.
+DEPLOYMENT_FILE = "deployment.json"
+
 
 def _link_problem(url: str) -> str | None:
     """
@@ -443,12 +457,46 @@ class BackendConfig(ModuleConfig):
     # once, does for the files that follow it. "shadow" (the default) learns
     # a binding from every file that routes on a stronger rung - a person's
     # choice or its filename token - and routes nothing on what it learned;
-    # "off" records nothing. Routing on the bindings is a third value, which
-    # arrives once the agreement between them and the token has been measured
-    # on real traffic, per site. Learning is inert either way: no file's
-    # processing depends on it, and nothing reads the rows back yet. See
+    # "off" records nothing; "route" also binds a file NO TOKEN NAMES to the
+    # chemistry its acquisition method has been seen running, instead of
+    # parking it for someone to choose.
+    #
+    # "route" can only ever affect a file that parks today. It sits BELOW the
+    # filename token, so a file a token names is bound exactly as before, and
+    # a method seen running two chemistries is skipped. Switched on per site:
+    # on the production fleet nearly all of what it gains is at the sites
+    # whose file names carry no token at all. See
     # docs/dev/ingest_routing_and_splitting.md section 5.3.
-    method_binding: Literal["off", "shadow"] = "shadow"
+    method_binding: Literal["off", "shadow", "route"] = "shadow"
+    # Composite scan streams: how a raw Orbitrap file is processed whose
+    # acquisition method runs more than one experiment in a polarity, most
+    # often several scan ranges of one chemistry. False (the default) pools
+    # every MS1 scan of a polarity into one peak list, as every release so
+    # far has, so each ion is divided by the scans of all the experiments,
+    # those that never measured it included. True processes the experiments
+    # one by one and stitches their ranges into one spectrum per polarity.
+    #
+    # LEAVE IT OFF ON A PRODUCTION SERVER. What it switches on is built in
+    # steps (docs/dev/ingest_routing_and_splitting.md, section 4.5). The
+    # peaks of each experiment are detected over its own scans and marked
+    # with whether they belong to the stitched spectrum of their polarity;
+    # such a file gets one sample per polarity, which points at that
+    # spectrum's row and reads its peaks - one reading of each m/z, averaged
+    # over the scans of the experiment that measured it. Still to come: the
+    # m/z calibration and the instrument functions per experiment,
+    # assignment and the views by experiment. The flag exists so
+    # that each step ships inert and can be exercised on a development server.
+    #
+    # A file with one experiment in each polarity - nearly every file - is
+    # processed exactly as before whichever way this is set, and so is one
+    # whose method only runs the same experiment again in a polarity (the
+    # same scan at the same microscans and AGC target). A file already
+    # converted keeps what was decided for it then: rebuilding a store goes by
+    # that decision and never by this setting, so this applies to files
+    # converted from then on.
+    #
+    # Read by the file converter, which is where peaks are detected.
+    composite_scan_streams: bool = False
     # Allowlist of per-record reference licences the peak-assignment database
     # stage (Stage A) may match against. The reference mirror carries a
     # licence per record from ingest through to results, and some sources
@@ -482,6 +530,40 @@ class BackendConfig(ModuleConfig):
     # request's PeakAssignmentConfig either - a client must not be able to
     # widen it.
     reference_licenses: Optional[list[str]] = None
+    # The name of this deployment in the provenance of what it exports - the
+    # batch spreadsheet's Provenance sheet, GET /api/provenance and the frames
+    # the SDK stamps from it. Unset (the default), the backend generates one on
+    # its first start and keeps it with the data, in deployment.json at the
+    # root of the env's filestore (mascope_backend.deployment), which the tools
+    # that copy a filestore between deployments leave behind. Set it to name
+    # the deployment yourself. It is part of the env's config, which `mascope
+    # env sync` copies along, so envs synced from one another leave it unset.
+    # 1-64 letters, digits, ".", "_" or "-", starting with a letter or digit.
+    #
+    # Backend-only: [meta] is published to the browser before anyone signs in,
+    # and the id is not something an anonymous visitor needs.
+    deployment_id: Optional[str] = None
+
+    @field_validator("deployment_id")
+    @classmethod
+    def _clean_deployment_id(cls, value: str | None) -> str | None:
+        """Strip the id, read a blank one as unset, and refuse a malformed one.
+
+        Refused at load rather than carried into exports: an id with a space,
+        a quote or a ``:`` in it would be written into every provenance record
+        the deployment hands out, where nothing could correct it afterwards.
+        """
+        if value is None:
+            return None
+        value = value.strip()
+        if not value:
+            return None
+        if not DEPLOYMENT_ID_PATTERN.fullmatch(value):
+            raise ValueError(
+                "backend.deployment_id must be 1-64 letters, digits, '.', '_' "
+                f"or '-', starting with a letter or digit, not {value!r}"
+            )
+        return value
 
     @field_validator("reference_licenses")
     @classmethod

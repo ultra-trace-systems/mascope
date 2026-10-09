@@ -112,6 +112,53 @@ jobs:
       - name: Check Python dependency licences against the allowlist
         run: uv run --no-sync python tooling/check-licenses.py python
 
+  agent-licences:
+    # The File Agent is its own uv project with its own lockfile, which the job
+    # above never reads. On Windows, and not as a step of that job: the agent
+    # is a Windows program, so the packages its lockfile names for Windows are
+    # the ones a build installs and ships, and only there are they installed
+    # for the check to read. On Linux five of them would be "locked but not
+    # installed" - the five that matter - and each would need a hand-verified
+    # entry that goes stale at every bump.
+    name: Dependency licences (File Agent)
+    runs-on: windows-latest
+    timeout-minutes: 10
+    env:
+      # uv and the checker print paths and names; keep captured output UTF-8.
+      PYTHONUTF8: "1"
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          version: "0.11.2"
+
+      - name: Install every dependency group of the File Agent
+        # As for the root lockfile: what is not installed cannot be read, and
+        # comes back as a finding rather than a silent pass. The dev group is
+        # where PyInstaller is.
+        working-directory: agents/file
+        run: uv sync --all-groups
+
+      - name: Check the File Agent's dependency licences against the allowlist
+        working-directory: agents/file
+        run: uv run --no-sync python ../../tooling/check-licenses.py agent
+
+      - name: Write the notices the installer carries
+        # What build.ps1 runs once the exe is built, here without the build.
+        # The release job is otherwise the first to learn that a runner's
+        # interpreter keeps its licence where the generator does not look,
+        # that a package has come in with no licence text at all, or that the
+        # Python being built on has no account of what is built into it in
+        # tooling/licence-texts - and a release is the wrong moment to learn
+        # it. This is the same environment on the same kind of runner.
+        working-directory: agents/file
+        run: uv run --no-sync python ../../tooling/third-party-notices.py --for agent --interpreter --lock uv.lock --output "$env:RUNNER_TEMP/THIRD_PARTY_NOTICES.txt"
+
   docs:
     name: Docs strict build
     runs-on: ubuntu-latest
@@ -253,9 +300,39 @@ jobs:
           version: "0.11.2"
 
       - name: Run File Agent tests
-        # Hermetic: config and wizard logic only, no runtime or network.
+        # Hermetic: no runtime, no server, no network. Not only logic, though:
+        # the agent's own threads and a real folder observer run, and two
+        # tests start the console program in a process of its own.
         # The agent is its own uv project (not a workspace member), so run
         # from its directory.
+        working-directory: agents/file
+        run: uv run pytest tests/ -v
+
+  file-agent-windows:
+    # The same suite where the program runs. It ships for Windows only, and
+    # the platforms differ in exactly what the suite exercises: whether a
+    # wait can be interrupted, how the observer reports a rename, what a
+    # file held open by its writer does. A job of its own rather than a
+    # matrix on the one above, whose name branch protection knows.
+    name: File Agent tests (Windows)
+    runs-on: windows-latest
+    timeout-minutes: 15
+    env:
+      # mascope terminal logs contain a glyph that breaks cp1252 when
+      # output is captured (see the developer guide)
+      PYTHONUTF8: "1"
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          version: "0.11.2"
+
+      - name: Run File Agent tests
         working-directory: agents/file
         run: uv run pytest tests/ -v
 
@@ -300,6 +377,7 @@ jobs:
           version: "0.11.2"
 
       - name: Build the CLI and runtime wheels
+        id: wheels
         run: |
           uv build --package mascope_cli --out-dir dist
           uv build --package mascope_runtime --out-dir dist
@@ -331,6 +409,20 @@ jobs:
           test -x "$UV_TOOL_BIN_DIR/mascope"
           test -x "$UV_TOOL_BIN_DIR/mascope-backend"
           "$UV_TOOL_BIN_DIR/mascope" --help > /dev/null
+
+      - name: Import the CLI against the oldest runtime it admits
+        # Both steps above resolve the runtime built from this checkout, which
+        # has every name the CLI could import. A published CLI meets older
+        # runtimes: `pip install -U mascope-cli` keeps an installed runtime its
+        # floor still admits, and the CLI imports every command group at
+        # startup. The script installs the oldest runtime the floor admits -
+        # from PyPI, or the wheel built here when PyPI has never had that
+        # version - and says how to fix a failure. Its own signal, so it runs
+        # whenever the wheels were built.
+        if: ${{ !cancelled() && steps.wheels.outcome == 'success' }}
+        run: |
+          uv run --no-project --python 3.12 --with packaging \
+            python tooling/check-cli-runtime-floor.py dist
 
   e2e:
     name: End-to-end tests (demo stack)

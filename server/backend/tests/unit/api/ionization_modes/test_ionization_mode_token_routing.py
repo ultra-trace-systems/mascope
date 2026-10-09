@@ -123,3 +123,20 @@ async def test_an_ambiguous_name_is_not_taken_for_one_with_no_token():
     with pytest.raises(ValueError) as excinfo:
         await _resolve(_file("inst_2026.09.18_BR_NO3", "-"), [BROMIDE, NITRATE])
     assert not isinstance(excinfo.value, NoTokenMatchError)
+
+
+@pytest.mark.asyncio
+async def test_modes_handed_over_are_used_without_fetching_any():
+    """The only reason the parameter exists.
+
+    A caller asking about many files in a row - the method binding
+    disagreement report - would otherwise fetch every mode once per file. The
+    fetch is patched to raise here, so a version that still called it fails
+    rather than quietly costing a query per file.
+    """
+    with patch(f"{_UTIL}.fetch_all_ionization_modes", AsyncMock(side_effect=OSError)):
+        resolved = await resolve_ionization_modes_by_tokens(
+            _file("inst_2026.09.18_BR_ambient", "-"), [BROMIDE, NITRATE]
+        )
+
+    assert [mode.ionization_mode_name for mode in resolved] == ["Bromide"]

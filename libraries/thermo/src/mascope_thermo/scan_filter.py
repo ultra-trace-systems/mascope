@@ -8,8 +8,10 @@ says what the instrument was told to measure in that scan::
     FTMS {1,2} + p NSI cv=-45.00 SIM msx ms [300.0000-320.0000, 400.0000-420.0000]
     ITMS + c NSI sid=35.00 d w Full ms3 500.00@cid35.00 300.00@cid35.00 [135.00-1000.00]
 
-Scans that share a signature form a scan stream
-(``docs/dev/ingest_routing_and_splitting.md``, section 4). Both reader
+The signature describes a scan stream, and where a file records no experiment
+it is also what tells one stream from the next
+(``docs/dev/ingest_routing_and_splitting.md``, section 4;
+:mod:`mascope_thermo.streams` for what a stream is). Both reader
 backends hand the filter over as text rendered from the file's scan events:
 OpenTFRaw by its own filter builder, the Thermo library from its parsed
 ``IScanFilter``. One parser serves both, and it normalises numbers, so a
@@ -152,7 +154,12 @@ class ScanFilter:
             "resolution": resolution,
         }
 
-    def stream_key(self, resolution: int | str | None = None) -> str:
+    def stream_key(
+        self,
+        resolution: int | str | None = None,
+        event: int | None = None,
+        segment: int | None = None,
+    ) -> str:
         """The signature as one stable line of text.
 
         Fields come in the filter's order and notation, so the key reads like
@@ -162,7 +169,17 @@ class ScanFilter:
         same key. A data-dependent MSn family shows ``*`` for its precursor
         m/z and no scan range.
 
+        An experiment the signature alone cannot tell from another closes the
+        key with its scan event: ``... R=120000 event=2``, or
+        ``... R=120000 segment=2 event=1`` for one the caller places in a
+        segment. The caller decides when either is named
+        (:func:`mascope_thermo.streams.scan_streams`), so a file whose
+        signatures already separate its experiments keeps the key it has
+        always had.
+
         :param resolution: The scan's FT resolution, from its trailer.
+        :param event: The scan event to name, as the method counts it from 1.
+        :param segment: The method segment to name before the event.
         :return: The stream key.
         """
         folded = self.folds_precursors
@@ -191,6 +208,10 @@ class ScanFilter:
             parts.append(f"[{ranges}]")
         if resolution is not None:
             parts.append(f"R={resolution}")
+        if segment is not None:
+            parts.append(f"segment={segment}")
+        if event is not None:
+            parts.append(f"event={event}")
         return " ".join(parts)
 
 

@@ -1,3 +1,4 @@
+import asyncio
 import os
 import shutil
 import time
@@ -16,6 +17,11 @@ from fastapi import (
 )
 from tuspyserver import create_tus_router
 
+from mascope_backend.acquisition_record import (
+    file_sha256,
+    record_from_upload,
+    reported_sha256,
+)
 from mascope_backend.api.controllers.dataset.acquisition.service import (
     instrument_type_of,
     recorded_instrument_type,
@@ -403,8 +409,10 @@ async def process_sample_item_route(
     # Get data for notifications
     process_id = gen_id(8)
 
-    # A file whose chemistry was chosen by hand keeps it: no token binds it.
-    ionization_mode_ids = await modes_to_rebind(sample_file_id)
+    # A file no token binds keeps the modes its own samples hold, and how
+    # each of them was bound - which is not necessarily anybody's choice: a
+    # token that has since been renamed bound some of them.
+    kept = await modes_to_rebind(sample_file_id)
     # The run starts by clearing what an earlier run left, and until it
     # records its own stages the row would still say how that run ended. A
     # file another run has claimed is left to it.
@@ -420,7 +428,8 @@ async def process_sample_item_route(
         user_id=user.id,
         process_id=process_id,
         instrument=sample_file.get("instrument"),
-        ionization_mode_ids=ionization_mode_ids,
+        ionization_mode_ids=kept.mode_ids if kept else None,
+        kept_provenance=kept.provenance if kept else None,
     )
 
     return {
@@ -646,6 +655,61 @@ async def upload_sample_files_route(
     )
 
 
+async def _provenance_of_upload(
+    path: str, metadata: dict, uploaded_name: str
+) -> tuple[dict | None, str | None]:
+    """What a finished upload carries to say where its file came from.
+
+    Its acquisition record, and its hash once the bytes received have been
+    found to have it. Never raises: the transfer is over and accepted, so
+    there is nobody left to refuse, and the file matters more than what was
+    said about it.
+
+    :param path: Where the uploaded file is.
+    :type path: str
+    :param metadata: The upload's metadata.
+    :type metadata: dict
+    :param uploaded_name: The name the file was uploaded under, for the log.
+    :type uploaded_name: str
+    :return: The record to keep and the verified SHA-256, None for each the
+        upload does not give.
+    :rtype: tuple[dict | None, str | None]
+    """
+    try:
+        record = record_from_upload(metadata)
+    except ValueError as unusable:
+        # Refused when the upload was created, so this is a record that was
+        # acceptable then and is not now - a worker updated in between.
+        runtime.logger.warning(
+            f"The acquisition record sent with '{uploaded_name}' is not kept, "
+            f"as {unusable}; the file is stored without it"
+        )
+        record = None
+
+    reported = reported_sha256(metadata)
+    if reported is None:
+        return record, None
+    try:
+        received = await asyncio.to_thread(file_sha256, path)
+    except OSError as error:
+        runtime.logger.warning(
+            f"Could not hash '{uploaded_name}' to check it against the hash "
+            f"it was uploaded with ({error}); its hash is not recorded"
+        )
+        return record, None
+    if received != reported:
+        # Nothing can un-accept the upload now. Saying so is what is left:
+        # the file the server holds is not the file its uploader hashed.
+        runtime.logger.warning(
+            f"'{uploaded_name}' did not arrive as it was sent: its uploader "
+            f"reported SHA-256 {reported} and the bytes received have "
+            f"{received}. The file is stored and processed, and no hash is "
+            "recorded for it."
+        )
+        return record, None
+    return record, received
+
+
 def get_upload_handler(
     request: Request,
     user=Depends(current_active_user),
@@ -689,6 +753,10 @@ def get_upload_handler(
         dest_path = os.path.join(os.path.dirname(file_path), stored_name)
         shutil.move(file_path, dest_path)
 
+        acquisition, sha256 = await _provenance_of_upload(
+            dest_path, metadata, uploaded_name
+        )
+
         # Single token validation for the entire upload process
         access_token = await get_access_token(user=user, service_name="file-converter")
         # Process the uploaded file
@@ -699,6 +767,8 @@ def get_upload_handler(
             device_id=_request_device_id(request),
             instrument_timezone=metadata.get("timezone"),
             source_filename=source_filename,
+            acquisition=acquisition,
+            sha256=sha256,
         )
         # The instrument the agent says it watches, kept on its device row so
         # Paired machines shows where its data goes. Attribution must never
@@ -863,6 +933,31 @@ def _reject_when_disk_is_low(upload_info: dict) -> None:
     )
 
 
+def _reject_unusable_acquisition_record(metadata: dict) -> None:
+    """Refuse an upload whose acquisition record cannot be kept.
+
+    Here, when the upload is created, because this is the one moment the
+    uploader can do something about it: the agent that sent the record reads
+    the reason, says it where the operator of the instrument will see it, and
+    sends the file again without the record. Accepted and dropped in silence,
+    the record would be lost with nobody the wiser.
+
+    :param metadata: The upload's metadata.
+    :type metadata: dict
+    :raises HTTPException: 422, naming what is wrong with the record.
+    """
+    try:
+        record_from_upload(metadata)
+    except ValueError as unusable:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "The acquisition record sent with this upload is not kept, as "
+                f"{unusable}. Send the file without it."
+            ),
+        ) from unusable
+
+
 async def _tus_pre_create_hook(metadata: dict, upload_info: dict) -> None:
     """Refuse a tus upload at creation, before any bytes are transferred.
 
@@ -872,11 +967,13 @@ async def _tus_pre_create_hook(metadata: dict, upload_info: dict) -> None:
     and reports success while the bytes are stranded. Every admission check
     therefore runs here, at creation - the per-upload size cap, the free-space
     floor (with a sweep of abandoned partials first, so reclaimed space counts
-    toward it), and converter availability, so an upload started while no
+    toward it), an acquisition record that cannot be kept, and converter
+    availability, so an upload started while no
     converter is connected is turned away up front instead of transferred in
     full and then dropped.
     """
     _reject_oversized_upload(metadata, upload_info)
+    _reject_unusable_acquisition_record(metadata)
     _sweep_abandoned_partials()
     _reject_when_disk_is_low(upload_info)
     await ensure_converter_available()

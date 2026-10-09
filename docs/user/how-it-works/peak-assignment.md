@@ -790,7 +790,9 @@ re-assignment and an override does not.
 
 *Find more* searches the focused peak on its own: every formula of the grid whose ion,
 under one of the chosen ionization mechanisms, puts a line within the m/z window of the
-peak, each matched against the sample and scored as a run scores it.
+peak, each matched against the sample and scored as a run scores it. A peak with very
+many candidates lists the 500 that fit it best; the count beside the peak still says
+how many compositions the search found.
 
 Which line of the ion the peak is decides what can be found. Read as the monoisotopic
 line of every candidate, a peak that is another line of a compound's ion never finds
@@ -907,12 +909,10 @@ none of the predicted isotopologues pairs with the family's main peak, the card 
 pattern's numbers and adds a *main peak* line saying which prediction came nearest, how
 far away it lies, and whether it paired with a peak elsewhere.
 
-The sample browser marks each sample's assignment status with a tag badge in a column of
-its own, after the sample name by default (the table-controls cog moves or hides it like
-any other column): green for a sample with a completed run of its own (the
-tooltip names the engine, its version and the time), the accent colour for a sample served
-from the batch ledger without a run of its own, faint for one with nothing assigned yet.
-The tooltip also says how many of the sample's peaks carry an assignment in the ledger.
+--8<-- "_help/assignment-status.md"
+
+The badge sits in a column of its own, after the sample name by default; the
+table-controls cog moves or hides it like any other column.
 
 ## Batch peaks
 

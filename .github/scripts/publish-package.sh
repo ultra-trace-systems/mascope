@@ -3,13 +3,17 @@
 # version is already published. Runs inside the publish-pypi workflow, where
 # `uv publish` authenticates via PyPI Trusted Publishing (OIDC).
 #
-# Usage: publish-package.sh <project-dir> <pypi-name> <module-name>
+# Usage: publish-package.sh <project-dir> <pypi-name> <module-name> [--standalone]
 #   e.g. publish-package.sh libraries/sdk mascope-sdk mascope_sdk
+#
+# --standalone is for a project that is not a member of the uv workspace (the
+# agents are their own uv projects, see the developer guide's "Agents").
 set -euo pipefail
 
 DIR=$1
 PYPI_NAME=$2
 MODULE=$3
+STANDALONE=${4:-}
 
 # Wheels published earlier in this workflow run accumulate here, so a package
 # whose workspace dependency was uploaded seconds ago resolves it locally
@@ -33,7 +37,15 @@ if [ "$ALREADY_PUBLISHED" = "true" ]; then
 fi
 
 rm -rf dist
-uv build --package "$MODULE"
+if [ "$STANDALONE" = "--standalone" ]; then
+  # `uv build --package` only knows workspace members, and a project built
+  # from its own directory writes into that directory's dist/. --out-dir puts
+  # the files in the root dist/ the rest of this script reads, where a
+  # member's land on their own.
+  uv build "$DIR" --out-dir dist
+else
+  uv build --package "$MODULE"
+fi
 
 # The wheel must install and import cleanly (with its dependencies) before
 # anything is uploaded. Dependencies resolve from PyPI, except workspace

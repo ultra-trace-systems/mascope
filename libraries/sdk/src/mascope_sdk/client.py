@@ -3,9 +3,12 @@
 This module provides the main client class for interacting with the Mascope API.
 """
 
+import copy
+import json
 import os
 import re
 import sys
+from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
@@ -14,11 +17,16 @@ from dotenv import dotenv_values, find_dotenv
 from loguru import logger
 from tqdm import tqdm
 
-from .exceptions import ConfigurationError
+from .exceptions import ConfigurationError, MascopeAPIError, NotFoundError
 
 
 # Track whether we've already configured the SDK's loguru handler
 _log_handler_id: int | None = None
+
+#: (connect, read) timeout of the provenance request a loader makes once it
+#: has its frame. Its failure is tolerated, so it gets this and one attempt
+#: rather than the load's own budget, and cannot hold a finished frame back.
+_STAMP_TIMEOUT = (5, 10)
 
 
 def _configure_logging(env_vars: dict[str, str | None]) -> None:
@@ -112,6 +120,10 @@ class MascopeClient:
 
         # Get spectrum data
         spectrum = mascope.samples.get_spectrum(sample_id="sample-123")
+
+        # Which deployment and build the loaders' frames came from
+        peaks = mascope.load_peaks(dataset="My Dataset")
+        peaks.attrs["provenance"]["produced_with"]["mascope_version"]
     """
 
     def __init__(
@@ -255,6 +267,12 @@ class MascopeClient:
         self._peak_assignments: Any = None
         self._batch_peaks: Any = None
 
+        # False once the server has answered that it has no provenance route
+        self._server_has_provenance = True
+        # The first block received per deployment and build, which the loaders
+        # stamp (see _stamp_for)
+        self._stamps: dict[str, dict[str, Any]] = {}
+
         # Resolve workspace (fetch list, then resolve or auto-select)
         self._workspace_id, self._workspace_name = self._resolve_workspace(workspace)
 
@@ -359,6 +377,115 @@ class MascopeClient:
 
             self._batch_peaks = BatchPeaksResource(self)
         return self._batch_peaks
+
+    def provenance(self) -> dict[str, Any] | None:
+        """The provenance block of the server this client talks to.
+
+        Names the deployment and the software it runs, as ``GET
+        /api/provenance`` reports them: ``deployment_id``, and under
+        ``produced_with`` the ``mascope_version``, ``match_score_version`` and
+        ``peak_assignment_engine_version`` - with ``generated_utc``, the moment
+        the server answered. The high-level loaders stamp it onto the frames
+        they return, as ``df.attrs["provenance"]``.
+
+        Asked afresh on every call, so ``generated_utc`` says when it was
+        asked and a server updated in the meantime is reported as it now is.
+
+        :return: The block, or None from a server that predates the route.
+        :rtype: dict | None
+        :raises MascopeAPIError: If the server answers with any other error, or
+            with something that is not a provenance block.
+
+        Example::
+
+            mascope.provenance()["produced_with"]["mascope_version"]
+        """
+        return self._fetch_provenance(self._timeout, max_attempts=None)
+
+    def _fetch_provenance(
+        self, timeout: tuple[float, float], max_attempts: int | None
+    ) -> dict[str, Any] | None:
+        """Ask ``GET /api/provenance`` within the given budget.
+
+        :param timeout: (connect, read) timeout of the request.
+        :param max_attempts: Attempts at a transient failure; None for the
+            HTTP layer's default.
+        :return: The block, or None from a server that predates the route.
+        :raises MascopeAPIError: If the request fails, or the answer is not a
+            provenance block.
+        """
+        if not self._server_has_provenance:
+            return None
+        from ._http import http_get
+
+        url = f"{self._url}/api/provenance"
+        try:
+            response = http_get(
+                url=self._url,
+                path="provenance",
+                access_token=self._access_token,
+                timeout=timeout,
+                verify_ssl=self._verify_ssl,
+                service_name=self._service_name,
+                max_attempts=max_attempts,
+            )
+        except NotFoundError:
+            # An older server: it will not grow the route while this client
+            # talks to it, so it is not asked again.
+            self._server_has_provenance = False
+            logger.debug("The server predates GET /api/provenance")
+            return None
+        # A proxy in front of the server can answer 200 with a page of its own
+        try:
+            body = response.json()
+        except ValueError as e:
+            raise MascopeAPIError(f"The answer is not JSON: {e}", url=url) from e
+        block = body.get("data") if isinstance(body, dict) else None
+        if not isinstance(block, dict):
+            raise MascopeAPIError("The answer holds no provenance block", url=url)
+        return block
+
+    def _with_provenance(self, frame: pd.DataFrame | None) -> pd.DataFrame | None:
+        """Stamp the server's provenance block onto a loader's frame.
+
+        Best effort: a frame is never withheld for want of its provenance, nor
+        held up - the request gets a short timeout and a single attempt. An
+        older server leaves the frame without ``attrs["provenance"]``, and any
+        other failure to ask is logged and does the same.
+
+        :param frame: What a loader returned.
+        :return: The same frame, stamped where the server said.
+        """
+        if frame is None:
+            return None
+        try:
+            block = self._fetch_provenance(_STAMP_TIMEOUT, max_attempts=1)
+        except Exception as e:
+            logger.warning("Returning the frame without its provenance: {}", e)
+            return frame
+        if block is not None:
+            frame.attrs["provenance"] = self._stamp_for(block)
+        return frame
+
+    def _stamp_for(self, block: dict[str, Any]) -> dict[str, Any]:
+        """The block to stamp: the first this client received from that build.
+
+        ``pd.concat`` keeps ``attrs`` only when every input's are equal, and
+        two answers from one deployment and build differ in ``generated_utc``
+        alone - so stamping each answer as received would make concatenating
+        two loads drop the block every time. Frames from one build carry the
+        same block instead, ``generated_utc`` included, and concat keeps it;
+        frames from different builds carry different ones, and concat rightly
+        drops it.
+
+        :param block: The block the server just answered.
+        :return: A copy of its own, so editing one frame's block changes no
+            other frame's.
+        """
+        build = {key: value for key, value in block.items() if key != "generated_utc"}
+        key = json.dumps(build, sort_keys=True, default=str)
+        first = self._stamps.setdefault(key, copy.deepcopy(block))
+        return copy.deepcopy(first)
 
     def _resolve_workspace(self, workspace: str | None) -> tuple[str, str]:
         """Resolve workspace argument to a workspace ID and name.
@@ -470,7 +597,12 @@ class MascopeClient:
             double-counting peaks whose matches share the same
             formula.
 
-            Returns None if no peaks are found.
+            Returns None if no peaks are found and nothing was warned
+            about.
+
+            ``df.attrs["warnings"]`` lists what the server warned about
+            the samples' reads, each warning once; empty when it warned
+            about none.
         :rtype: pd.DataFrame | None
         :raises ValueError: If the dataset or batches cannot be resolved.
         :raises KeyboardInterrupt: If the user declines the confirmation prompt.
@@ -501,18 +633,20 @@ class MascopeClient:
         """
         from ._loaders import load_peaks as _load_peaks
 
-        return _load_peaks(
-            self,
-            dataset,
-            batches,
-            samples=samples,
-            exact=exact,
-            matches=matches,
-            areas=areas,
-            heights=heights,
-            average=average,
-            confirm_above=confirm_above,
-            max_workers=max_workers,
+        return self._with_provenance(
+            _load_peaks(
+                self,
+                dataset,
+                batches,
+                samples=samples,
+                exact=exact,
+                matches=matches,
+                areas=areas,
+                heights=heights,
+                average=average,
+                confirm_above=confirm_above,
+                max_workers=max_workers,
+            )
         )
 
     def load_peak_timeseries(
@@ -606,17 +740,19 @@ class MascopeClient:
         """
         from ._loaders import load_peak_timeseries as _load_peak_timeseries
 
-        return _load_peak_timeseries(
-            self,
-            dataset,
-            batches,
-            samples=samples,
-            exact=exact,
-            compound=compound,
-            ion=ion,
-            isotope=isotope,
-            confirm_above=confirm_above,
-            max_workers=max_workers,
+        return self._with_provenance(
+            _load_peak_timeseries(
+                self,
+                dataset,
+                batches,
+                samples=samples,
+                exact=exact,
+                compound=compound,
+                ion=ion,
+                isotope=isotope,
+                confirm_above=confirm_above,
+                max_workers=max_workers,
+            )
         )
 
     def load_peaks_by_stage(
@@ -655,8 +791,31 @@ class MascopeClient:
                  - ``stage_name``: Stage label (or None)
                  - ``t_min`` / ``t_max``: Time range in seconds
 
-                 Returns None if no peaks are found.
+                 Returns None if no peaks are found and nothing was warned
+                 about.
+
+                 ``df.attrs["warnings"]`` lists what the server warned about
+                 the stages, each warning once; it is empty when no stage was
+                 warned about.
         :rtype: pd.DataFrame | None
+
+        .. note::
+
+            A stage is a time-ranged read, which leaves out every peak whose
+            time series the server has not computed yet - typically the peaks
+            no target matched. The frame is then short without its rows
+            showing it. Each such read logs a warning and the frame carries it
+            in ``df.attrs["warnings"]``; have the missing series computed with
+            ``mascope.samples.compute_peak_timeseries(sample_id)`` and load
+            again.
+
+            When *every* peak is left out - a sample that was detected and
+            never matched - the result is an empty frame carrying the
+            warnings, not None.
+
+            To combine the stages of several samples use :meth:`concat`:
+            ``pd.concat`` drops ``attrs`` that differ between frames, and two
+            samples short by different numbers of peaks differ.
 
         Example::
 
@@ -674,17 +833,27 @@ class MascopeClient:
             )
 
             peaks.groupby("stage_name")["area"].sum()
+
+            # Were peaks left out for want of a time series?
+            if peaks.attrs["warnings"]:
+                mascope.samples.compute_peak_timeseries("my-sample-id")
+                peaks = mascope.load_peaks_by_stage(
+                    sample="my-sample-id",
+                    stages=stages,
+                )
         """
         from ._loaders import load_peaks_by_stage as _load_peaks_by_stage
 
-        return _load_peaks_by_stage(
-            self,
-            sample,
-            stages,
-            matches=matches,
-            areas=areas,
-            heights=heights,
-            max_workers=max_workers,
+        return self._with_provenance(
+            _load_peaks_by_stage(
+                self,
+                sample,
+                stages,
+                matches=matches,
+                areas=areas,
+                heights=heights,
+                max_workers=max_workers,
+            )
         )
 
     def load_batch_ledger(
@@ -744,7 +913,9 @@ class MascopeClient:
         """
         from ._loaders import load_batch_ledger
 
-        return load_batch_ledger(self, dataset, batches, exact=exact, members=members)
+        return self._with_provenance(
+            load_batch_ledger(self, dataset, batches, exact=exact, members=members)
+        )
 
     def load_assignments(
         self,
@@ -850,18 +1021,59 @@ class MascopeClient:
         """
         from ._loaders import load_assignments as _load_assignments
 
-        return _load_assignments(
-            self,
-            dataset,
-            batches,
-            samples=samples,
-            exact=exact,
-            run=run,
-            tier=tier,
-            source=source,
-            confirm_above=confirm_above,
-            max_workers=max_workers,
+        return self._with_provenance(
+            _load_assignments(
+                self,
+                dataset,
+                batches,
+                samples=samples,
+                exact=exact,
+                run=run,
+                tier=tier,
+                source=source,
+                confirm_above=confirm_above,
+                max_workers=max_workers,
+            )
         )
+
+    @staticmethod
+    def concat(
+        frames: Iterable[pd.DataFrame | None], *, ignore_index: bool = True
+    ) -> pd.DataFrame | None:
+        """Stack frames the SDK returned, keeping what their ``attrs`` say.
+
+        Use it in place of ``pd.concat`` to combine loads - one per sample,
+        say. ``pd.concat`` keeps ``attrs`` only when every frame's are equal,
+        and two peak reads short by different numbers of peaks differ in
+        ``attrs["warnings"]``: it then drops the warnings and
+        ``attrs["provenance"]`` with them.
+
+        Here every frame's warnings are kept, each once. Any other entry of
+        ``attrs`` is kept when every frame carries it with the same value -
+        the provenance of loads from one build - and dropped otherwise. It
+        also stacks frames ``pd.concat`` raises on: those whose ``attrs``
+        hold a frame, as a batch ledger's ``attrs["batch_peaks"]`` is.
+
+        :param frames: The frames to stack. None entries - a load that found
+                       nothing - are skipped.
+        :type frames: Iterable[pd.DataFrame | None]
+        :param ignore_index: Number the rows afresh. Defaults to True.
+        :type ignore_index: bool
+        :return: The stacked frame, or None when there was no frame to stack.
+        :rtype: pd.DataFrame | None
+
+        Example::
+
+            peaks = mascope.concat(
+                mascope.load_peaks_by_stage(sample=name, stages=stages)
+                for name in sample_names
+            )
+            peaks.attrs["warnings"]  # what any of the loads warned
+            peaks.attrs["provenance"]
+        """
+        from ._loaders import concat_frames
+
+        return concat_frames(frames, ignore_index=ignore_index)
 
     def clear_cache(self) -> None:
         """Clear the metadata cache.

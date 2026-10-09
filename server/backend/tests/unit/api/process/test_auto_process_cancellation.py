@@ -122,9 +122,9 @@ async def test_cancellation_during_a_drain_is_logged_below_the_error_level(
 ):
     """One error for the whole drain, not one error-monitoring issue per file.
 
-    The monitoring sink groups by formatted message and takes everything from
-    WARNING up, so a message carrying the sample file id has to drop to INFO to
-    avoid opening an issue for every file an interrupted burst had queued.
+    The monitoring sink takes everything from WARNING up, so the per-file line
+    has to drop to INFO to avoid sending an event for every file an
+    interrupted burst had queued.
     """
     from mascope_backend.api.controllers.sample.files.process import service
 
@@ -312,6 +312,7 @@ async def test_spawn_forwards_every_argument(isolated_background_state):
             parent_id="p-0",
             instrument="Instr-A",
             ionization_mode_ids=["im-1"],
+            kept_provenance={"im-1": service.ItemProvenance("token")},
             reset_calibration=True,
         )
         await asyncio.gather(*isolated_background_state)
@@ -324,6 +325,7 @@ async def test_spawn_forwards_every_argument(isolated_background_state):
         "parent_id": "p-0",
         "instrument": "Instr-A",
         "ionization_mode_ids": ["im-1"],
+        "kept_provenance": {"im-1": service.ItemProvenance("token")},
         "reset_calibration": True,
     }
 

@@ -4,6 +4,774 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 ## [Unreleased]
 
+## [1.11.0] - 2026.10.09
+
+### Added
+
+- **The File Agent sends a file's acquisition record with its upload.** A
+  program that controls the instrument can leave a JSON document beside
+  each file it acquires, `<file>.mascope.json`, saying which step of which
+  run the file belongs to, in which mode, and under which chemistry. The
+  agent sends it with the upload, together with the file's SHA-256, to a
+  server that announces it keeps them. A record never costs a file
+  its upload: one the agent cannot use is left behind with a warning, an
+  upload refused together with its record is made again without it, and a
+  file set aside in `failed_uploads` has its record copied with it. The
+  agent now asks the server what it can do once for all its parts and
+  again after an hour, so a server updated under a running agent is
+  noticed without a restart, by the uploads and by the following of what
+  became of each file alike; and an answer that asks for another try, a
+  rate limit above all, is no longer taken for a server that can do
+  nothing new (`docs/dev/acquisition_sidecar.md`).
+
+- **The server keeps an upload's acquisition record, and binds the file by
+  the chemistry it names.** A record sent with an upload is stored on the
+  sample file, with its four identifiers - the acquisition, the step, the
+  sequence run and the installation - as indexed columns, so every file of
+  a run is one query. Where the record names the file's chemistry as the
+  token of an ionization mode, the file is bound to that mode before its
+  name is read: rung 0, "declared", of the binding ladder. A file bound
+  this way reads "Bound to ... by its acquisition record." in Raw files; a
+  record naming a token no mode has leaves the file to be bound by its name
+  as before, with a status that says what the record named. Re-processing
+  asks the record again before the name, and before anything of the file is
+  cleared, so the files that waited for a token are bound by their records
+  once a mode has it. The file's
+  SHA-256, sent the same way, is checked against the
+  bytes received and recorded when they have it. The identifiers and the
+  hash are in the spreadsheet export's samples sheet. A record that cannot
+  be kept is refused when the upload is created, so the agent can say why
+  and send the file without it; nothing after that costs a file its place
+  on the server. A reverse proxy of a site's own in front of Mascope has
+  to let a request header line of 32 KB through on the upload path
+  (`docs/hosting.md`); where it does not, files still arrive, without
+  their records (`docs/dev/acquisition_sidecar.md`).
+
+- **`mascope_sdk.acquisition` defines the acquisition record,
+  `mascope-acquisition/1`.** `AcquisitionRecord` is the model, `parse()`
+  and `dump()` read and write the document, and `read_sidecar()` finds a
+  data file's. Four UUIDs are the record - the installation, the sequence
+  run, the step and the acquisition - and everything else is optional;
+  fields the schema does not name are kept. A record is read as strictly
+  as it ever will be, since a document read today is a record for good: an
+  identifier in the UUID's own spelling, a time as an RFC 3339 date-time
+  with its offset, no `NaN` or `Infinity`, no key twice, 32 levels of
+  nesting at most. The SDK depends on pydantic from this version on.
+
+- **A file whose name carries no ionization mode token can now be bound by its
+  acquisition method**, instead of parking for somebody to pick a chemistry.
+  Mascope has been recording which chemistry each acquisition method has been
+  seen running since v1.10.0; this is the first thing that reads those records
+  back. Off by default - set `method_binding = "route"` in the server's
+  `[backend]` config to switch it on.
+
+  It can only ever affect a file that parks today. The rung sits **below** the
+  filename token, so a file a token names is bound exactly as it was, and six
+  guards hold it back otherwise: a method whose reported name never varies
+  recognises nothing, a file whose scans were not recorded has nothing to be
+  recognised by, a method seen running more than one chemistry does not say
+  which, and a chemistry that has been deleted, that belongs to another
+  instrument, or whose polarity has been edited since is not an answer. A file
+  the method cannot place still parks, and its status now says what the token
+  and the method each failed to tell, with what to do about it - which differs:
+  choosing a chemistry for one file is enough where the method has simply not
+  been seen before, while an instrument that reports the same method name for
+  every acquisition cannot be recognised at all and needs a filename token.
+
+  Re-processing the files already parked is how a site picks up the ones it has
+  been collecting, so that path reaches the rung too: select them in Raw files
+  and press Re-process.
+
+  Samples bound this way record it: the Raw files status reads "Bound to ... by
+  its acquisition method", and each sample names the method record that bound
+  it, so what the rung did is a query rather than a guess.
+
+- **A report of what the acquisition methods would route, and where a file name
+  says otherwise**: `db script run report_method_binding_disagreements`. For
+  every method record it reads a bounded number of the newest files of that
+  method and answers two questions about each - what its name binds it to
+  today, and what its method would bind it to - using the same code the
+  pipeline uses for both, so the report cannot drift from what would actually
+  happen. It writes nothing, and says so to the runner, which therefore takes
+  no pre-script database dump before it - a restore point for a change it
+  cannot make, on every reading, was the one cost of reading it often.
+
+  Read it before switching `method_binding` to `"route"`, and before deciding a
+  method record is right. It names the files no token names, which are the only
+  ones the rung binds; the records whose files are named for another chemistry,
+  saying whether that is a second record for one chemistry or a genuinely
+  different one; the records waiting for enough files to agree before they
+  follow a move; and the records held back by a guard, with the sentence a
+  parked file of each would carry.
+
+- **Every acquisition sample a file is split into now records how its chemistry
+  was decided**: which rung of the routing ladder bound it. Today that is a
+  filename token or a person's choice, which are the rungs that route; a
+  declaration and the acquisition method are recorded by the rungs that read
+  them, which are still being built, so their absence is not missing data.
+  Until now this could only be reconstructed afterwards, by re-running the
+  token rule over stored file names, which cannot say which acquisition method
+  a given file would have been routed by because part of that identity is read
+  from the file itself.
+
+  Samples processed before this record nothing, and are deliberately left that
+  way: the rung is a decision, not a fact a raw file holds, so it is never
+  filled in after the event. Re-processing a file under the modes its own
+  samples held carries their rung forward unchanged for the same reason -
+  copying a decision forward is nobody's decision. Editing a sample's
+  ionization mode by hand clears the rung, since what is recorded is how
+  automatic processing routed a file and an edited sample is no longer that.
+  Nothing about how a file is routed changes.
+
+  One side effect worth knowing if you compare numbers across the release:
+  re-processing a file under the modes its own samples held no longer counts
+  as an observation of what its acquisition method runs. It did before, and it
+  was counted as though a person had vouched for it. The observation was
+  already recorded when that mode was first matched or chosen, so nothing is
+  lost, but the observation counts on an acquisition method will grow more
+  slowly than they did.
+
+- **A batch's *Batch data* spreadsheet can be traced back to what produced
+  it.** Every row now carries the ids of the records behind it - the sample
+  item and sample file on *Samples*, the target compound and ion on the match
+  sheets - and *Samples* gains each sample's acquisition context: its UTC time,
+  instrument and instrument type, method file, polarity, m/z range, the
+  ionization mode it was processed under, its instrument function, and its m/z
+  calibration - the status, whether it is verified, and the post-fit error in
+  ppm. The *Batch* sheet adds the dataset, batch and target collection ids and
+  names every instrument and method file in the batch, and a new last sheet,
+  *Provenance*, names the deployment and the Mascope, match-score and
+  peak-assignment engine versions that wrote the file, and the records it was
+  built from. Everything is appended: the sheets, columns and rows of earlier
+  exports keep their names and their places. Both *Peak data* CSVs, of a batch
+  and of a sample, gain `sample_batch_id` and `dataset_id` columns, last.
+
+- **Each deployment has an id, named in the provenance of what it exports.**
+  The backend generates it on its first start and keeps it with the data, in
+  `deployment.json` at the root of the env's filestore, so updates and a
+  restore from backup keep it, while `mascope env sync` and the demo bundle
+  leave it behind, so a copy of the data keeps or generates an id of its own.
+  `[backend] deployment_id` names a deployment explicitly (`docs/maintaining.md`,
+  *Deployment identity*). Signed-in users and API tokens read the id, with the
+  versions the server runs, from `GET /api/provenance`.
+
+- **The SDK's loaders record which deployment and build served their data.**
+  The frames `load_peaks`, `load_peak_timeseries`, `load_peaks_by_stage`,
+  `load_batch_ledger` and `load_assignments` return carry the server's
+  provenance on `df.attrs["provenance"]`, and `MascopeClient.provenance()`
+  reads it directly. A server that predates it returns its frames without the
+  attribute, and the load succeeds as before.
+
+- **A setting for Orbitrap methods that measure a sample as several scan
+  ranges - off, and not yet for production.** Mascope averages every MS1
+  scan of a polarity into one spectrum and one peak list. A method that runs
+  more than one experiment in a polarity - several scan ranges of one
+  chemistry, or a short scan while the source settles and then the
+  measurement - has them pooled, and each ion is divided by the scans of all
+  of them, so an ion only one experiment measures reads too low. With
+  `composite_scan_streams = true` in the server's `[backend]` config, the
+  file converter detects such a file's peaks per experiment, each over its
+  own scans.
+
+  It is built in steps, which is why it is off and should stay off on a
+  production server. Detection stitches the experiments' ranges: from their
+  scan ranges and microscans alone it decides which experiment owns each
+  m/z of the one spectrum they make, marks every peak with whether it
+  belongs to that spectrum, and records the map and what two experiments
+  read of the ions both measure beside the peaks. Such a file gets one
+  sample per polarity, and whatever reads that sample's peaks - the m/z
+  calibration, the matching, the peak listing, the batch exports, a peak
+  asked for by m/z - reads the stitched spectrum: one reading of each m/z,
+  from the experiment that owns it, averaged over that experiment's own
+  scans and not over the scans of every experiment. The sample's spectrum
+  and the profile behind an ion's match view show that same stitched
+  spectrum, each experiment's range averaged over its own scans, so a
+  listed peak sits on the profile it was detected in. The readings the
+  other experiments made of the same ions, and a peak detected only by an
+  experiment that does not own its m/z, stay in the store for what reads
+  the overlap. What follows before the setting is for production: the m/z
+  calibration and the instrument functions per experiment, assignment and
+  the views by experiment, and a hand-made sample's experiment.
+  The setting will be announced again when they are in.
+
+  A file with one experiment in each polarity, which is nearly every file, is
+  processed exactly as before whichever way this is set. So is a file whose
+  method only runs the same experiment again in a polarity, the same scan at
+  the same microscans and AGC target: there is nothing in it to tell apart,
+  and its runs are averaged together as they always were. A file already
+  converted keeps what was decided for it then: rebuilding a store, as
+  Mascope does when it finds one out of date, goes by that decision and
+  never by this setting.
+
+- **The File Agent is also a Python library, `mascope-file-agent` on PyPI.** A
+  program that already runs on the instrument computer can have the uploads in
+  its own process instead of a second program beside it: it builds an `Agent`
+  from the settings of a File Agent `config.toml`, says who the process is
+  with `identity()`, and calls `start()`; `stop()` ends it, with a deadline if
+  one is given. `Agent.on_ready()` adds a step that is called with each
+  complete file before it is uploaded. The library is versioned by date, as
+  the SDK is, and everything exported from `mascope_file_agent` is its public
+  API (`docs/dev/developer_guide.md`, *The File Agent as a library*).
+
+  The Windows program is built from the same code, and its installer, its
+  configuration and its guided setup are as they were.
+
+- **A table for the scan streams of a file.** Migration `5a0e9de94ed9`
+  adds `acquisition_stream` - one row per experiment of a file, and one for
+  the spectrum the experiments of a polarity are stitched into, with the
+  map that stitched them - and a nullable `sample_item.stream_id`, the
+  stream a sample reads. They belong to the per-experiment processing
+  above. Every existing sample keeps an empty `stream_id`, which means what
+  a sample has always meant: it spans every MS1 scan of its polarity.
+
+- **Every file's scan streams are now rows, and a sample points at the one
+  it reads.** When a raw Orbitrap file is processed, each experiment of its
+  acquisition method gets a row in `acquisition_stream`, read from the file
+  as it is then, and where the experiments of a polarity were detected
+  apart and stitched, so does the spectrum they make, with its map. A
+  sample made from the file points at that spectrum's row, or at the one
+  experiment of its polarity; a sample of a polarity pooled from several
+  experiments, or of a file with no census, points at nothing, as every
+  sample did before. A copy points at what its source pointed at, and a
+  sample moved to another file or polarity by hand points at nothing again.
+  A file's processing detail says which polarities are stitched, where it
+  said they were pooled, and names a stream the file no longer holds but a
+  sample still reads, which is kept for it. A sample of a stitched polarity
+  reads the stitched spectrum's peaks, the composite its stream names;
+  reading by a single stream is still to come.
+
+### Changed
+
+- **The File Agent names the files it leaves behind when it is stopped.**
+  Stopped with Ctrl+C it waits, as before, for every upload it has handed to a
+  worker, retries included. A file that had appeared but had not got that far -
+  still being written, or still waiting to be left alone - has always been
+  dropped at that point without a word; the log now names each one and says
+  how to have it uploaded. A second Ctrl+C during the wait used to print a
+  traceback and go on waiting, and nothing short of closing the window ended
+  it: the agent now logs that it is still waiting, and a third Ctrl+C stops it
+  without those uploads and names them. An error that ends an upload worker's
+  turn at a file unexpectedly is logged as well, where it used to vanish. An
+  agent run from source rather than from the installer reports the library's
+  version instead of `dev`.
+
+- **The demo dataset is now bundle v1.3.1**
+  ([10.5281/zenodo.23187550](https://doi.org/10.5281/zenodo.23187550)), rebuilt
+  now that the averaged Orbitrap profile counts every scan out to the ends of
+  its range (under Fixed), so its goldens match what the pipeline produces.
+  Same 161 acquisitions and the same reference data. Of the 42,521 golden
+  peaks two change height, by 1.9% and by 0.3%, and one its match score;
+  every peak's m/z is unchanged to the last digit. `mascope demo` picks it up
+  by default, and 1.3.0 stays registered so a pinned run still resolves.
+
+- **Orbitrap spectra now show the signal the instrument measured.** The
+  sample spectrum and the Match tab's per-isotope spectra drew the profile as
+  one Gaussian per detected peak, built from the peak's position, height and
+  resolution, and the spectrum endpoints handed the same drawing to the SDK's
+  `get_spectrum` and `get_spectra`. A drawing like that can only show what it
+  was built from: a shoulder, an asymmetry, a flat top or an unresolved
+  neighbour disappeared from it, so zooming into a peak to judge whether it is
+  one ion or two showed a picture that could only ever show one. They now all
+  show the measured averaged profile, the same signal the instrument-function
+  fit and the peak heights are read from.
+
+  The drawing existed because the measured profile used to sit a few ppm off
+  its own peaks. Since the reader moved to opentfraw 2.0.0 it sits on them to
+  about a tenth of a ppm, invisible against peaks 4-8 ppm wide. Peaks now look
+  more angular, since a raw file keeps about three points across a peak's
+  width - but the drawing had no more than that either; it looked smooth
+  because every peak in it was symmetric with a point exactly on its top.
+  Wherever the points land far enough apart on screen to tell apart - in the
+  Match tab's narrow windows usually from the start, in the Sample tab once
+  zoomed in - the spectra now dot the points the instrument recorded, so how
+  few there are is shown rather than hidden. TOF spectra always showed the
+  measured signal, and get the same dots.
+
+  The drawings were cached in each sample file's directory as
+  `sum_signal*_recon.zarr`. Nothing reads them any more, and
+  `delete-stale-sum-signal` deletes them (see *Fixed*).
+
+- **A method binding now follows the mode its method's files actually use.** A
+  binding records which chemistry an acquisition method has been seen running,
+  and it was written once: while the chemistry held, nothing moved it. The
+  first fleet measurement showed the cost. A site that cannot edit a mode
+  already in use makes a second mode for the same reagent, its files bind to
+  the new one, and the binding goes on naming the retired one - with nothing
+  on it looking wrong, because the two modes are the same chemistry and
+  chemistry is what it checks. A binding now also records the mode its newest
+  files name, and moves to it once the last three agree. One re-bound file, or
+  an afternoon of them, moves nothing; a method in daily use moves within a
+  day. Still nothing routes on a binding, so no file is routed differently by
+  this, and no sample already processed is re-bound.
+
+  Operators: re-run `mascope prod db script run backfill_method_bindings`
+  after upgrading, so the bindings learned since the last release are moved by
+  the same rule over the whole history. It merges, and running it twice
+  changes nothing.
+
+- **Error monitoring groups a warning by where it was logged, not by what it
+  says.** A warning or error logged without an exception was grouped by its
+  text, and most such lines name the file, batch or id they are about, so the
+  same problem opened an issue - and an alert - for every file it reached.
+  They now group by the line of code that logged them. Some keep an issue per
+  thing on purpose: the m/z drift warning, one per instrument; the error for a
+  file auto-processing gave up on, one per status code; and a file-converter
+  worker that is dead for good, one per worker. A peak store still stale after
+  its rebuild is now one issue, where its error's scan counts had split it
+  close to one per file. An exception event now shows the line it was logged
+  with as the event's message, beside the exception, rather than under
+  additional data; how it groups is unchanged.
+
+  Operators: every issue for a warning or error logged without an exception
+  is regrouped once, the pinned ones above included, and so is the
+  still-stale peak store warning. Existing issues stop receiving events and
+  each problem opens one new issue under its new grouping, so expect a burst
+  of new issues after upgrading; the old ones can be resolved.
+  Because a warning is now grouped by the line of code that logs it, an
+  upgrade that changes the code around that line can open a new issue for the
+  same warning, and servers on different versions can report it as separate
+  issues.
+
+- **A file's scan streams now follow the experiments of its acquisition
+  method.** The census Mascope takes of every Orbitrap file - what
+  `mascope file scans` prints, what a file's `.props` holds as `scan_streams`,
+  and the sentence in a file's processing detail when one polarity holds more
+  than one stream - grouped scans by what their scan filter says: polarity,
+  scan range, scan mode, resolution. A method can define two experiments no
+  filter tells apart: a short one at one microscan while the source settles
+  and the measurement itself at ten, or the same scan defined again later in
+  the run. Those were listed as one stream. Every scan records the experiment
+  that produced it, as its scan event, and the census now groups MS1 scans by
+  it, so each experiment is listed on its own, with its own scan count, time
+  span and acquisition parameters. Where two experiments share a filter, the
+  stream's name ends with the event (`... R=120000 event=2`).
+
+  Nothing is processed differently: peak detection still pools every MS1 scan
+  of a polarity, and the census still only says so. A file with one experiment
+  per filter - nearly every file - is listed exactly as before, and so is one
+  acquired with no method loaded, which records no scan event. No file is
+  routed differently either: what a method binding knows a method by is what
+  its scans measured, which this does not change.
+
+  A stream's name is its name in its own file. The same experiment is named
+  by its filter alone in a run that stopped before that filter came round
+  again, so compare experiments between files by what they measured and their
+  scan event, which `mascope file scans --json` gives for each stream as
+  `signature_key`, `scan_segment` and `scan_event`.
+
+### Fixed
+
+- **The File Agent's setup says where "Pair an agent" is.** Its pairing
+  step said to click a profile icon to open the sidebar, and the web app
+  has neither: the button is in the Home menu (house icon, top-left), on
+  the Settings tab, under API Access Tokens, where the user guide puts it.
+- **Signing in no longer fails the uploads you still have queued.** Every
+  sign-in of an editor or higher replaced the user's file-converter token,
+  while each upload of theirs waiting for the converter carried the token it
+  was uploaded with: a second tab, another device or a session that expired
+  mid-upload made the converter fail every queued file with "Token validation
+  failed" and quarantine it. A sign-in now keeps a token that is still valid,
+  mints one only where the user holds none that is valid, and within 30 days
+  of a token's end mints a new one beside it so that nothing queued lapses
+  with it. An upload does the same for the token it is handed, so a script
+  or an agent uploading on a person's token is not refused when that token
+  nears its end between the owner's sign-ins, and a machine account's own
+  token - instrument agents were never affected by the sign-in, since their
+  machine accounts do not sign in - is renewed the same way instead of
+  lapsing once a year. A guest's upload is refused as before; a mint
+  removes only tokens past their lifetime, so two uploads minting at once
+  leave each other's token standing.
+- **A file the converter fails on leaves no sample directory behind.** The
+  converter makes a file's sample directory first and its database record
+  last, with the instrument functions and the peak detection between them,
+  and only a failure of the record itself removed the directory. A failure
+  earlier - the instrument functions refused for a credential the server no
+  longer accepted, on a thousand queued files at once - left every directory
+  in the filestore with no record pointing at it. Uploading the file again
+  then met the directory, and the removal of it through the server that
+  follows was refused in turn, so the upload ended in a failed delete (and
+  that removal needs the instrument workspace's admin where the upload needs
+  its editor). The directory now goes with every failure before the record,
+  and stays with the record that points at it whatever fails after. A
+  record the server already holds when the converter posts it - its answer
+  lost on the way, or a record an earlier run left without a directory - is
+  read as the record made, and the directory kept for it; the second case,
+  a record that was sitting there without its directory, is logged as a
+  warning.
+
+- **A file's m/z calibration no longer depends on the server that calibrates
+  it.** Where two ions of a calibration collection match the same peak - the
+  main line of one calibrant that is also a minor isotope line of another, as
+  with a labelled reagent beside its unlabelled compound - the calibration
+  kept the reading of whichever ion had the lower id, and dropped the peak if
+  that was the minor reading. The ids are generated at random by each
+  database, so the same file was calibrated on different peaks from one
+  server to the next, or after its collection was imported again: with a
+  15N-nitrate collection either on the reagent base peak alone or on two
+  weaker ions, which put every peak of the file 0.14 to 0.55 ppm apart. A
+  peak is now read as the line with the highest relative abundance among its
+  matches, so every main line found is a calibrant, on every server. Where
+  the calibrants of a collection share no lines nothing changes: of 148
+  samples from seven sites that have a calibration collection, the eight on a
+  15N-nitrate collection moved, by up to 0.5 ppm, and two databases that used
+  to disagree on those eight now agree on all 148. A sample already
+  calibrated keeps its calibration until it is calibrated again. (#2144)
+
+- **Calibrants that disagree are no longer chosen between by rounding.** An
+  Orbitrap fit needs one calibrant, and one calibrant fits itself exactly. So
+  when the calibrants of a file disagreed by more than the tolerance, each of
+  them was a perfect fit, and the one kept was decided by what rounding left
+  of its residual: on the same peaks a fraction of a ppm apart it could be
+  the other one, 14 ppm away in the file this was found on. Where rounding
+  left nothing to choose by, three such calibrants gave the one furthest
+  from the other two. The one kept is now the one closest to its theoretical
+  mass before the fit - the smallest correction, since a match that needs a
+  large one is more likely a neighbouring peak than the calibrant.
+
+- **A calibration point's match score is its own.** The match score,
+  abundance error and relative intensity reported for a calibration point
+  were computed against another point's reference isotope whenever an
+  isotope of the collection listed before it had found no peak, and came out
+  as zero for the last ones: about seven in ten of the points in the same
+  148 samples. By default the score does not decide which calibrants are
+  used, so no calibration changes; a minimum match score set in the
+  calibration dialog now filters on the real value.
+
+- **A Ctrl+C that reaches the File Agent between two looks at its upload
+  queue is handled like any other.** On the Python the agent runs on, an
+  interrupt that arrived in that instant went past the handling written
+  around the loop, so once in a great while the agent ended with a traceback
+  where "Shutdown requested by user." belongs. The uploads under way were
+  waited for all the same. The wait for a pairing to be approved had the
+  same flaw, rarer still, and is mended the same way.
+
+- **The File Agent no longer stops when a new file is gone before its
+  upload.** A file deleted or renamed in the seconds between appearing in the
+  watched folder and being uploaded ended the agent's upload loop and, with
+  it, the agent: nothing was uploaded from then on until somebody started it
+  again, and the only trace was an "Unexpected error in the upload loop" in
+  its log. It now logs a warning that names the file and carries on. A file
+  gone within the second the agent gives a new file to settle is one warning
+  line as well, where it was an "Unexpected error handling filesystem
+  event" with a traceback. A file the agent cannot look at when its turn
+  comes - a network folder that dropped out for a moment, a file something
+  holds locked - is not taken for gone: it keeps its place and is uploaded
+  once it can be read.
+
+  A file renamed to a name the agent watches for is uploaded under that
+  name. One renamed to a name it does not watch for, `x.raw` to `x.raw.bak`
+  say, is left alone. The agent used to take up the new name, refuse it for
+  its extension, log that it had given up on the file and copy it into
+  `failed_uploads`, and it did so whenever a watched file was renamed that
+  way, one it had already uploaded included.
+
+- **The File Agent's installer now carries the licences of the open-source
+  software in the program.** The program is assembled from some thirty
+  open-source Python packages and the Python interpreter, and most of their
+  licences make their text a condition of passing the software on. The
+  installer installed the exe alone, and the exe holds almost none of that
+  text. It now puts `THIRD_PARTY_NOTICES.txt` beside the program, in
+  `%LocalAppData%\Programs\Mascope File Agent`, with the licence of each
+  package, of the interpreter and of the libraries built into it, generated
+  from the build environment as the server image's notices are, and Mascope's
+  own `LICENSE.txt` and `NOTICE.txt` with it.
+
+- **The averaged Orbitrap profile sits on its peaks when the calibration moves
+  between scans.** Every scan is written out on its own calibration, and when
+  the lock mass engages part-way through a file, or its correction wanders
+  from scan to scan, those calibrations differ by up to a few ppm. The averaged
+  profile was written on one scan's calibration and then fitted to the peaks,
+  and the fit could not see the difference: on three such files the profile
+  sat 0.6, 1.2 and 2.6 ppm off its peaks, a good part of a peak's width at low
+  m/z. It is now written on the mean of the scans' calibrations, which is
+  where the peaks themselves sit, and nothing is fitted. The fit was there for
+  a reader that left the profile a few ppm off its peaks, which opentfraw 2.0.0
+  no longer does, and on files with a steady calibration it added a little
+  offset of its own. Over the demo dataset and an internal corpus of production
+  acquisitions the profile's peaks now sit a median 0.04-0.05 ppm from the
+  peak list, against 0.07-0.08 before, and on the three files above 0.03-0.08.
+
+  Peak positions are unchanged. A peak's height is read off the profile's apex
+  where that lies within 3 ppm of the peak, so on files whose calibration
+  moves some heights change by a few percent. On the demo dataset 18 of its
+  310,095 peaks change height, none above S:N 9. A profile cached by the old
+  averaging is not served again; it is averaged anew on first view.
+
+- **The averaged Orbitrap profile sits on its peaks on long acquisitions
+  too.** A peak in the peak list is the average of its ion over the scans the
+  ion was in, weighted by its intensity in each, so an ion that comes and goes
+  sits on the calibration of its own scans and not on the mean of them all.
+  Where the calibration drifts over a long acquisition, or the scans alternate
+  between mass ranges, no one calibration puts every peak of the profile under
+  its peak: on an acquisition of 1,486 scans whose calibration drifted by
+  2.6 ppm the profile sat a median 0.33 ppm off its strong peaks, and on one
+  alternating between two mass ranges 0.28 ppm. Each peak of the profile is now
+  written on the mean of the scans' calibrations weighted the way its peak is,
+  and moved as a whole, so its width does not change. Those two acquisitions
+  now read 0.07 and 0.02 ppm, and over the 22 drifting acquisitions of an
+  internal corpus the ninth decile goes from 0.25 ppm to 0.07. Weak peaks,
+  often in a few scans only, gain the most: on files whose lock mass engaged
+  part-way, the share of all peaks with a profile peak within 3 ppm rises
+  from 94.6% to over 99%. Files with a steady calibration read as before,
+  0.053 ppm over the demo dataset.
+
+  Peak positions are unchanged. Of the demo dataset's 310,095 peaks one
+  changes height, below S:N 9, and of the corpus's 466,478 peaks 1,293 do,
+  ten of them at S:N 9 or above. A profile cached by the old averaging is not
+  served again; it is averaged anew on first view.
+
+- **The averaged Orbitrap profile counts every scan out to the ends of its
+  range, and its baseline no longer moves with the calibration.** Two
+  corrections to how a file's scans are averaged into the profile the spectra
+  draw and the instrument-function fit reads.
+
+  A scan is added to the profile over the range of signal it stored, and at
+  the first and the last sample of that range it could be left out. It was
+  for 376 of the 1,288 such samples in the demo dataset, about half of those
+  another scan sampled too, and for 15% of those in an internal corpus. That
+  is two samples per scan, usually on the outer skirt of a peak, a median
+  4e-7 of an acquisition's signal. It shows where several scans begin on the
+  flank of one peak: in a 12-scan acquisition three samples of one flank read
+  16 to 39% low, and its fitted resolution coefficient moves by 3.2% with
+  them back in.
+
+  The profile drops to zero between clusters of peaks, and where a cluster
+  ends was judged on the m/z axis. With each peak of the profile written on a
+  calibration of its own, that moved the boundaries as the calibration
+  drifted: 2% of them over 22 drifting acquisitions, seven of those falling
+  between neighbouring samples with nothing missing in between. They are now
+  read off the frequency bins the scans stored signal in, which no
+  calibration moves. And where two clusters lie under 4 ppm apart, which
+  takes bins finer than 1 ppm, one zero now goes midway between them, where
+  two used to pass each other or land among the next cluster's samples.
+
+  Files with a steady calibration read as before. Over the demo dataset the
+  profile sits 0.053 ppm from its strong peaks as it did, one of 310,095
+  peaks changes height, by 1.9% at S:N 4, and the resolution coefficient
+  moves by less than a part in a billion. Of the corpus's 473,670 peaks 106 change
+  height, eight of them at S:N 9 or above, by 0.19% at most. Peak positions
+  are unchanged. A profile cached by the old averaging is not served again;
+  it is averaged anew on first view.
+
+- **A raw Orbitrap file's cached profile no longer outlives the reader that
+  averaged it.** Sum signals are cached per time window and polarity, and
+  nothing in the cache said which reader computed them, so a file processed
+  before 1.10.1 went on serving the profile reader 1.4.0 averaged on the old
+  grid - to the instrument-function fit, and to peak detection when it was
+  re-run. With the spectra now drawing that profile, it would also have shown
+  up a little off its own peaks. A raw Orbitrap file's cache is now named
+  after its reader, the reader's version and the averaging generation, as in
+  `sum_signal.otf2.0.0-g5.zarr`, and is recomputed when any of them changes;
+  the first view of each sample after the upgrade averages it again. TOF and
+  zarr files keep their caches.
+
+  A raw Orbitrap file's full sum signal, averaged after the file was
+  calibrated, is now put on the calibrated m/z axis like a filtered window.
+  It used to come out on the acquisition axis, a calibration factor off the
+  file's peaks, which a reset and recalibration then carried forward; that
+  only happened after a manual cache clear, and the new cache names would have
+  made it happen to every calibrated file at once.
+
+  Operators: the caches left behind are never read again. Reclaim the space
+  with `python -m mascope_backend.db.admin.filestore delete-stale-sum-signal`,
+  which deletes them from raw Orbitrap files only. The existing
+  `delete-sum-signal` is not a substitute: it also deletes a TOF file's full
+  sum signal, which carries its calibrated m/z axis.
+
+- **An Orbitrap file kept without its raw file no longer shows its spectra one
+  calibration off its own peaks.** Such a file - an `orbi_zarr` file, the way
+  Orbitrap acquisitions were stored before Mascope read raw files directly -
+  holds its signal as a stored array, and applying a calibration rescales that
+  array in place along with the file's peaks and cached spectra. A spectrum
+  averaged over a time window or one polarity after the file was calibrated
+  then got the calibration factor a second time, so the sample spectrum, the
+  Match tab's per-isotope spectra, a sample file's spectrum over a time range,
+  and the SDK's `get_spectrum` and `get_spectra` sat as far off the file's
+  peaks as the calibration had moved them - and stayed off through every later
+  recalibration and reset. They now keep the stored signal's axis. The peaks,
+  their timeseries and the file's full spectrum were never affected, and
+  neither were raw Orbitrap and TOF files.
+
+  Operators: none of the deployments we know of holds a calibrated `orbi_zarr`
+  file. Should yours hold one, the spectra cached since it was calibrated stay
+  off until deleted: remove that file's `sum_signal_*.zarr` stores and they
+  are averaged again on the next view.
+
+- **The sample browser's assignment status column explains itself in help mode
+  again.** Its header card had no snippet behind it, so the popover showed its
+  title and the "Learn more" link alone; the card now reads what each badge
+  colour means and what its tooltip adds. The manual's own paragraph on the
+  badge was the same text written twice, and is now the shared snippet.
+- **A large composition search no longer cuts the server's live updates, or
+  loses its own results.** The search sent everything it found inside the
+  notification that announced it - every candidate with its whole isotope
+  pattern, about 14 MB for a peak with a couple of thousand candidates. Every
+  notification is published to every backend process through Redis, which
+  disconnects a listener that far behind, so each such search knocked the
+  backend's live updates off Redis for a moment: whatever was in flight was
+  lost, the search's own results often among it, and the search pane was left
+  loading. The notification now only says the search is done, and the pane
+  fetches the results over HTTP, from
+  `GET /api/cheminfo/mz/match/result/{process_id}`, which only the user who ran
+  the search can read and which expires after five minutes. A search now lists
+  at most its 500 best candidates, by the score the pane ranks them on - the
+  count beside the peak still says how many compositions it found - and sends
+  only the fields the pane shows. The pane also shows only the search it
+  launched last: one finished in another tab, or an earlier search of the same
+  peak under other parameters, no longer replaces its results.
+- **Copying a large sample batch no longer floods the server's live updates.**
+  A batch copy reports its progress six times per sample, and every report
+  carried the list of every sample being copied, so each report was the size
+  of the batch and the whole copy the square of it. Every notification is
+  published to every backend process through Redis, so copying a batch of a
+  few thousand samples pushed gigabytes through it, and the server copied that
+  list again before every report. A report now carries the batch and the
+  progress only.
+
+  Re-processing many files and calibrating a large batch report counts and
+  their first ten failures, as a batch rematch already did, instead of a record
+  for every file or sample - and the re-processing message, which named every
+  file that failed, names ten and counts the rest. A re-processing run that
+  failed on some or all of its files now also refreshes the views of the
+  batches it changed - a file's samples are cleared before its pipeline runs -
+  which it did only when every file succeeded.
+
+  Operators: a notification heavier than 256 KiB is still sent, and now logged
+  as a warning naming its type - once an hour per type and server process - so
+  a task whose notification grows with the data shows up in error monitoring
+  before it costs the server its live updates.
+
+- **A file that switches polarity no longer loses all of its peaks to two that
+  share an m/z.** The peaks of both polarities of a raw Orbitrap file are kept
+  in one list, and a scan's peaks are recorded in single precision, so a
+  positive and a negative peak that were each seen in one scan only can sit on
+  exactly the same m/z. Reading the file's peaks left out the weak and
+  satellite ones by selecting the rest by m/z, which fails unless every m/z in
+  the list is unique, the ones left out included. One such pair anywhere, even
+  of two noise peaks that are never shown, and every read of the file's peaks
+  failed with "Reindexing only valid with uniquely valued Index objects": its
+  peak list, matching, calibration, timeseries and export. The peaks are now
+  left out by position, and a peak's timeseries is written to its own row
+  where a peak that is left out shares its m/z. Files already processed read
+  correctly as they are; nothing needs re-processing.
+
+  On a polarity-switching file of the internal regression corpus two pairs
+  among 41,639 peaks shared an m/z, all four of them noise. Nothing in error
+  monitoring shows a polarity-switching file having failed this way on a
+  deployment. One case was left by it: where both peaks of a pair are kept,
+  whatever reads the file's peaks by m/z still failed, matching, calibration
+  and timeseries among it. That case has an entry of its own.
+
+- **A file that switches polarity can be read where two peaks that are both
+  shown share an m/z.** Where a positive and a negative peak of a raw Orbitrap
+  file sit on exactly the same m/z and neither is weak or a satellite,
+  everything that reads the file's peaks by m/z failed with "Reindexing only
+  valid with uniquely valued Index objects", whichever peak was asked for:
+  matching, the calibration fit, timeseries and the file's peak list. When
+  such a file's peaks are detected, the negative peak of the pair is now
+  stored a part in a trillion above the positive one, far below anything m/z
+  values are compared on, so that every peak of the file has an m/z of its
+  own. A file of one polarity is stored exactly as before.
+
+  A file already processed that holds such a pair is not repaired by this: it
+  has to be re-processed. Nothing in error monitoring shows a deployment
+  holding one. In short acquisitions cut from a polarity-switching file of
+  the internal regression corpus, 1.7% of those of one scan per polarity and
+  0.7% of those of two held such a pair, and none of four scans or more.
+
+- **A peak's timeseries can no longer be written to the peak next to it.** A
+  timeseries is stored by the m/z of its peak, and the row found for that m/z
+  was accepted up to 10 ppm away from it, where two peaks of a file can be
+  closer together than that. The m/z values are read off the file itself, so
+  they miss a row only when the file's m/z axis was rewritten after they were
+  read, which applying an m/z calibration does. A timeseries being computed
+  while a calibration of the same file was applied could then be stored on a
+  neighbouring peak, still scaled to the summed intensity of the peak it was
+  computed for, and stay there until the file's peaks were detected again.
+  The m/z now has to be on the axis exactly. A timeseries that is not is not
+  stored at all: it is computed once more for the same peaks, found by their
+  ids on the file's m/z axis as it then is, so whatever asked for it still
+  gets it. An m/z above the file's last peak is handled the same way, where
+  it failed with an IndexError. The second attempt first waits for a
+  calibration that is being applied to the file to finish: a raw Orbitrap
+  file is read back by the calibration recorded for it, and an Orbitrap
+  apply records that last. Should the file's m/z axis be rewritten during
+  the second attempt too, the request fails with "Cannot update m/z values
+  not present in existing data", which no longer advises detecting the
+  file's peaks again: asking again is enough.
+
+  This was found by reading the code, and the overlap has not been
+  reproduced. Error monitoring shows no such IndexError on a deployment, and
+  would not show a timeseries stored on the wrong peak. A calibration and a
+  timeseries of one file can still overlap. The timeseries is then computed
+  twice, and whether the two should be kept apart instead depends on how
+  often that happens.
+
+  Operators: each time it does, a warning that a peak store's m/z axis "was
+  rewritten while peak timeseries were being computed" is logged, as one
+  issue in error monitoring whichever file it names. It is there to be
+  counted, and needs no action.
+
+- **Selecting a target ion whose main isotope has no detected peak draws its
+  isotope plots again.** The spectrum and time series of a selected ion
+  failed with "Failed to visualize ion focus. Object of type float32 is not
+  JSON serializable" when the ion's most abundant isotope had profile signal
+  near its expected m/z but no detected peak there - a target absent from
+  the sample, or matched only well off its expected mass. The red
+  expected-height markers are then scaled from the profile instead of a
+  peak, and that height was sent in a number type the plot message cannot
+  carry. This has been so since 1.8.0.
+
+- **A time-ranged peak read from the SDK says when it is short of peaks, and
+  how to complete it.** `samples.get_peaks(..., t_min=, t_max=)` and
+  `load_peaks_by_stage` are averaged from each peak's per-scan timeseries,
+  and leave out every peak whose timeseries has not been computed yet -
+  mostly the unmatched peaks, since matching computes the ones it matches.
+  On a measured single-stream file a ranged read returned one of its three
+  strongest peaks. The server has said so in a warning since 1.0.0 and the
+  SDK has logged it, but nothing on the returned frame showed it, a read
+  that left out every peak came back empty with no warning at all, and the
+  warning's advice - "Re-run peak detection" - leaves every peak out again.
+
+  The frames `get_peaks`, `load_peaks` and `load_peaks_by_stage` return now
+  list the warnings in `df.attrs["warnings"]` (empty when there are none;
+  the columns are unchanged). A load whose every peak was left out is an
+  empty frame carrying the warning, where it was `None`. The new
+  `samples.compute_peak_timeseries(sample_id)` requests the timeseries of
+  the peaks that have none - all of them, those in an m/z range, or the
+  `peak_ids` given - after which a ranged read is whole. It is one request
+  per missing peak, so it is slow on a sample that was never matched; it
+  skips what is already computed and can be run again after an
+  interruption. The `05_peaks_by_stage` example notebook uses it in place of
+  its hand-written loop. `mascope.concat` combines loads in place of
+  `pd.concat`, which drops the warnings and the provenance of any two loads
+  that warned differently - two samples short by different counts, for one.
+
+  API: the peaks response lists its warnings in a `warnings` field beside
+  `data` as well as in `message`, an answer with every peak left out carries
+  the warning too, and the warning names what works, in the API's terms: a
+  peak's timeseries is computed when it is first requested. Against a
+  server up to 1.10.1, which gives no warning with such an empty answer, the
+  SDK adds one of its own rather than report that nothing was left out. The
+  SDK also no longer logs a response as a warning merely because a sample's
+  name contains the word.
+
+### Security
+
+- **Creating an ionization mechanism refuses one too long to store while the
+  request is validated.** `POST /api/ionization_mechanisms` left the length to
+  the database column, 256 characters, so a longer mechanism was parsed whole
+  and failed only at the insert, as a 500 "Database operation failed". Parsing
+  takes time in proportion to the text, and a mechanism that parsed was kept
+  in the parser's cache, so at the bundled nginx's 1 MB body limit an editor's
+  requests could hold about 1.9 GiB of a backend process's memory. It is now a
+  422 naming the limit, and nothing parses it first. The limit holds for the
+  mechanism as sent and for the standard spelling it is stored in, which can
+  be the longer of the two (`+H+` is stored as `[M+H]+`). That makes it
+  stricter in one case: a mechanism sent with more than 256 characters is
+  refused even where its stored spelling would have fit, such as one padded
+  with whitespace.
+
 ## [1.10.1] - 2026.10.01
 
 ### Changed

@@ -7,7 +7,8 @@ migration rewrites it. Both have to behave as one mechanism: read back in the
 standard notation, found by either spelling, and refused a second time in the
 other one, which the column's unique constraint alone would let through. A
 mechanism of several terms is one mechanism whichever order they are typed in,
-and is stored with them in order.
+and is stored with them in order. It has to fit the column as it is sent and
+in the standard spelling it is stored in, which can be the longer of the two.
 """
 
 import itertools
@@ -197,3 +198,25 @@ async def test_a_mechanism_is_stored_with_its_terms_in_order_and_created_once(
         await editor_client.delete(
             f"/api/ionization_mechanisms/{created['ionization_mechanism_id']}"
         )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "mechanism",
+    [
+        pytest.param("[M+" + "H" * 252 + "]+", id="257-as-sent"),
+        pytest.param("+" + "H" * 254 + "+", id="256-as-sent-259-as-stored"),
+    ],
+)
+async def test_a_mechanism_the_column_cannot_hold_is_refused_at_validation(
+    editor_client, mechanism
+):
+    """A malformed request, refused before the controller runs, rather than a
+    database failure at the insert."""
+    response = await _create(editor_client, mechanism)
+    if response.status_code == 201:
+        await editor_client.delete(
+            "/api/ionization_mechanisms/"
+            + response.json()["data"]["ionization_mechanism_id"]
+        )
+    assert response.status_code == 422, response.text

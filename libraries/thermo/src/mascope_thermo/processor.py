@@ -142,7 +142,9 @@ class RawProcessor(BaseFileProcessor):
     @property
     @with_file_context
     def scan_streams(self) -> list[dict]:
-        """The file's scan streams: its scans grouped by scan signature.
+        """The file's scan streams: its scans grouped into the experiments
+        of its acquisition method, and by scan signature where it records
+        none.
 
         See :func:`mascope_thermo.streams.scan_streams`. A census like
         ``acquisition_params``, so it must never cost us a file either: a

@@ -26,8 +26,13 @@ CENSUS_BEARING = "orbi"
 CENSUS_LESS = "tof"
 
 
-def _stream(key, polarity, ms_order=1):
-    return {"key": key, "signature": {"polarity": polarity, "ms_order": ms_order}}
+def _stream(key, polarity, ms_order=1, signature_key=None):
+    """A census entry. ``signature_key`` is left off for a census taken before
+    streams carried one, whose ``key`` is its signature."""
+    stream = {"key": key, "signature": {"polarity": polarity, "ms_order": ms_order}}
+    if signature_key is not None:
+        stream["signature_key"] = signature_key
+    return stream
 
 
 class TestMethodKey:
@@ -103,6 +108,44 @@ class TestSignatureClass:
         at_120k = _stream("FTMS - p NSI Full ms [40.0000-600.0000] R=120000", "-")
         at_240k = _stream("FTMS - p NSI Full ms [40.0000-600.0000] R=240000", "-")
         assert signature_class([at_120k], "-") != signature_class([at_240k], "-")
+
+    def test_the_class_is_what_was_measured_not_what_each_stream_is_called(self):
+        # A stream's key names its experiment only where another of the file
+        # shares its signature, so the keys of one method depend on how far
+        # a run got. The class reads the signature instead.
+        signature = "FTMS - p NSI Full ms [40.0000-600.0000] R=120000"
+        repeated = [
+            _stream(f"{signature} event=1", "-", signature_key=signature),
+            _stream(f"{signature} event=3", "-", signature_key=signature),
+        ]
+        stopped_early = [_stream(signature, "-", signature_key=signature)]
+
+        assert signature_class(repeated, "-") == signature
+        assert signature_class(repeated, "-") == signature_class(stopped_early, "-")
+
+    def test_a_census_from_before_streams_carried_a_signature_keys_alike(self):
+        # Its streams are named by their signature, so the key is read
+        # instead. A method's files converted before and after therefore
+        # share one binding, and nothing is learned again.
+        signature = "FTMS - p NSI Full ms [40.0000-600.0000] R=120000"
+        older = [_stream(signature, "-")]
+        newer = [
+            _stream(f"{signature} event=1", "-", signature_key=signature),
+            _stream(f"{signature} event=2", "-", signature_key=signature),
+        ]
+
+        assert signature_class(older, "-") == signature_class(newer, "-") == signature
+
+    def test_two_signatures_are_still_two_in_the_class(self):
+        low = "FTMS - p NSI Full ms [40.0000-300.0000] R=120000"
+        high = "FTMS - p NSI Full ms [300.0000-600.0000] R=120000"
+        streams = [
+            _stream(low, "-", signature_key=low),
+            _stream(f"{high} event=2", "-", signature_key=high),
+            _stream(f"{high} event=3", "-", signature_key=high),
+        ]
+
+        assert signature_class(streams, "-") == f"{high} + {low}"
 
     def test_a_reader_that_takes_no_census_keys_on_polarity(self):
         # A TofDaq h5 is one acquisition on one mass axis: the polarity is

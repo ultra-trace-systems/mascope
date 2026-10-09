@@ -7,12 +7,15 @@ method: that method, measuring that way, ran that chemistry. Recording it is
 what eventually lets a file route with no token at all
 (``docs/dev/ingest_routing_and_splitting.md``, section 5.3).
 
-**Nothing here routes anything yet.** The rows are written and not read: the
-rung that consults them arrives with the flag that switches it on, once the
-agreement with the token has been measured on real traffic. Until then this
-is a recorder, and its one hard requirement is that it can never cost a file
-its processing - so :func:`learn_method_bindings` reports failures to the log
-and returns, and the caller is not asked to guard it.
+**Learning can never cost a file its processing.** It runs on every ingest
+and is nobody's dependency: :func:`learn_method_bindings` reports failures to
+the log and returns, and the caller is not asked to guard it.
+
+**Reading them back is off unless a deployment asks.** With
+``backend.method_binding = "route"``, :func:`resolve_modes_by_method_binding`
+binds a file no token names to what its method has been seen running; with
+``"shadow"``, the default, the rows are written and never read. The rung sits
+below the token either way, so it can only ever reach a file that parks.
 
 **A key routes only while its history agrees on one chemistry.** Each
 observation adds its chemistry to the row's ``chemistry_keys``; a second one
@@ -22,13 +25,24 @@ that was never unanimous must not become a routing binding in the first
 place. On the production fleet this holds back about one Orbitrap method key
 in forty, and nearly every TOF one - which is the point, since a TOF file's
 method name is a constant that separates nothing.
+
+**Agreeing on the chemistry does not settle the row.** Two mode rows can
+name one chemistry - a site that could not edit a mode in use made a second
+row for the same reagent - and its files bind to the newer one from then on.
+A binding that kept the first row it saw would route future files to a row
+the site has stopped using, while every state on it read healthy, because by
+the measure those states use it is. So the row follows the newest
+observations once :data:`REPOINT_AFTER` of them in a row agree
+(:func:`follow_row`), and a single re-bound file moves nothing.
 """
 
 from datetime import datetime, timezone
+from typing import NamedTuple
 
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
+from mascope_backend.binding_rungs import LEARNING_SOURCES
 from mascope_backend.db import IonizationMode, MethodBinding, SampleFile, async_session
 from mascope_backend.db.id import gen_id
 from mascope_backend.method_keys import (
@@ -37,15 +51,34 @@ from mascope_backend.method_keys import (
     binding_digest,
     chemistry_key,
     clipped,
+    instrument_key,
     method_key,
     signature_class,
 )
 from mascope_backend.runtime import runtime
 
 
-#: Rungs that may teach a binding, strongest first. Rung 2 is the binding
-#: itself and rungs below it are weaker than what they would teach.
-LEARNING_SOURCES = ("declared", "explicit", "token")
+#: The remedy for the two guards where a binding exists and points at a mode
+#: that does not apply here. One choice is not enough: the binding already
+#: holds a mode, so it moves only once :data:`REPOINT_AFTER` observations
+#: agree on another, which is the whole point of the threshold.
+_FOLLOWS_A_FEW = (
+    "Choose a chemistry for these files; the method follows once a few of them agree."
+)
+
+#: Consecutive observations that must name the same other mode row before a
+#: binding follows them to it.
+#:
+#: Three, because the two ways of being wrong cost different amounts (section
+#: 5.3, "Why three"). Moving too eagerly is the expensive error: one corrected
+#: file would drag a whole method's routing with it. Moving too slowly is
+#: nearly free, because this rung sits below the filename token - a file with
+#: a token is unaffected either way, and a file without one routes to another
+#: row of the same chemistry, which is where it would have parked before the
+#: rung existed. Three is the smallest count that no single re-bind, and no
+#: pair of them on one afternoon, can reach, and a method in daily use still
+#: reaches it within a day.
+REPOINT_AFTER = 3
 
 #: The counts a run that learned nothing returns. ``repeated`` is an
 #: observation a file had already made; ``no_signature`` a file whose reader
@@ -59,17 +92,236 @@ _NOTHING_LEARNED = {
 }
 
 
+def follow_row(
+    current: str | None,
+    candidate: str | None,
+    n_candidate: int,
+    observed: str,
+) -> tuple[str, str | None, int]:
+    """Where a binding points after one more observation of its chemistry.
+
+    Only for an observation that agrees on the chemistry: a new chemistry
+    makes the key ambiguous instead, and an ambiguous key routes nothing, so
+    there is no point in moving it.
+
+    **Unanimity on the chemistry does not settle the row.** A site that could
+    not edit a mode in use made a second row for the same reagent, and its
+    files bind to that one from then on. A binding that kept the first row it
+    ever saw would go on routing future files to a row the site has stopped
+    using - with `state` reading `learned` and `n_disagreements` reading zero,
+    because by the measure those use it is healthy. That is what the first
+    fleet measurement found (section 5.7), and this is the answer to it: the
+    row follows the newest observations once :data:`REPOINT_AFTER` of them in
+    a row agree.
+
+    Pure, and shared with the backfill script, which folds the whole history
+    oldest first and so must apply exactly this rule to end up where live
+    learning would have.
+
+    :param current: The mode the binding points at, or None when the mode it
+        pointed at has been deleted.
+    :param candidate: The mode the recent observations have been naming, or
+        None when they have agreed with ``current``.
+    :param n_candidate: How many in a row have named ``candidate``.
+    :param observed: The mode this observation names.
+    :return: The mode to point at, the candidate to carry, and the length of
+        its run. A run of 0 with no candidate is the settled state.
+    :rtype: tuple[str, str | None, int]
+    """
+    if current is None:
+        # The row points nowhere and therefore routes nothing, so there is
+        # nothing to drag away from: this observation supplies a mode for the
+        # chemistry the row already holds.
+        return observed, None, 0
+    if observed == current:
+        # Agreement. Any run toward another row is broken, which is what
+        # makes the threshold a count of the LAST few observations rather
+        # than of all the ones that ever disagreed.
+        return current, None, 0
+    run = n_candidate + 1 if observed == candidate else 1
+    if run >= REPOINT_AFTER:
+        return observed, None, 0
+    return current, observed, run
+
+
 def method_binding_mode() -> str:
     """What this deployment does with method bindings.
 
     Read from ``method_binding`` in the runtime ``[backend]`` config:
     ``"shadow"`` (the default) learns them and routes nothing on them,
-    ``"off"`` records nothing at all.
+    ``"off"`` records nothing at all, ``"route"`` learns them and binds a
+    file no token names to what its method has been seen running.
 
-    :return: ``"shadow"`` or ``"off"``.
+    :return: ``"shadow"``, ``"off"`` or ``"route"``.
     :rtype: str
     """
     return getattr(runtime.config, "method_binding", "shadow")
+
+
+def routes_on_method_binding() -> bool:
+    """Whether this deployment lets a binding bind a file.
+
+    A separate question from the mode, because one value answers both: under
+    ``"route"`` the learner goes on recording exactly as it did, and only the
+    rung is added. Nothing about what is learned depends on this.
+    """
+    return method_binding_mode() == "route"
+
+
+class MethodRouting(NamedTuple):
+    """One polarity's answer from the method binding rung.
+
+    The binding's id travels with the mode because the item records both:
+    which rung bound it, and the row that did, so an item bound by a binding
+    that has since moved is a query rather than a reconstruction
+    (``sample_item.method_binding_id``).
+    """
+
+    mode: IonizationMode
+    binding_id: str
+
+
+class Declined(NamedTuple):
+    """Why a binding cannot bind a file, and what would change that.
+
+    Both halves reach a person, as the file's ``needs_chemistry`` detail, so
+    the remedy has to be true of the guard that produced it. Four of the six
+    are not fixed by choosing a chemistry for one file: a key seen with two
+    chemistries is made no more unanimous by a third observation, a file with
+    no census teaches nothing at all, a binding whose mode does not apply
+    moves only once several files agree, and a method whose reported name never
+    varies cannot be recognised however many files are chosen - which covers
+    most of the fleet's token-less TOF files, so that is the version of the
+    sentence most people would read.
+    """
+
+    reason: str
+    remedy: str
+
+
+async def resolve_modes_by_method_binding(
+    sample_file: SampleFile, streams: list[dict] | None
+) -> tuple[list[MethodRouting], Declined | None]:
+    """Bind a file to the chemistry its acquisition method has been seen running.
+
+    Rung 4 of the ladder (section 5.2), and the whole of what
+    ``backend.method_binding = "route"`` switches on. Tried only for a file
+    **no token names**: a file whose tokens match ambiguously is a
+    configuration to fix, and no binding stands in for that.
+
+    One binding per polarity, because the key carries a signature class and a
+    class describes one polarity. Every polarity must answer, as under the
+    token rule - a file half of whose polarities had a chemistry would
+    otherwise be bound for one and silently lose the other.
+
+    **Six guards, each of them a way this key could be trusted too far**
+    (section 5.3):
+
+    - a method name that never varies is no name, so it recognises nothing;
+    - a file whose scans were not recorded has no signature class to key on,
+      and a stand-in would key it apart from the files that carry one;
+    - a key seen with more than one chemistry has separated nothing;
+    - a binding whose mode has been deleted points nowhere;
+    - a mode belonging to another instrument is not this instrument's answer,
+      which is what scoping a mode means (#1463);
+    - a mode whose polarity has been edited since the binding learned it is
+      not what this polarity measured. The key carries a signature class,
+      which describes one polarity, and the class does not change when
+      somebody edits the mode - so the binding still resolves and its mode is
+      the wrong answer.
+
+    :param sample_file: The file to bind.
+    :param streams: Its scan-stream census, as
+        :func:`~...process.status.read_scan_streams` returns it.
+    :return: One routing per polarity and None, or no routings and why, as
+        sentences for the file's processing detail.
+    :rtype: tuple[list[MethodRouting], Declined | None]
+    """
+    key = method_key(sample_file.method_file)
+    if not key:
+        # Nothing a person does teaches this key: the learner records it under
+        # the empty name, and the lookup below never reaches such a row.
+        return [], Declined(
+            "its acquisition method reports no name of its own, so there is "
+            "nothing to recognise it by",
+            "Files of this instrument need a filename token, or a chemistry "
+            "chosen for each.",
+        )
+
+    routings: list[MethodRouting] = []
+    async with async_session() as session:
+        for polarity in sample_file.polarity or "":
+            signature = signature_class(streams, polarity, sample_file.instrument_type)
+            if signature is None:
+                return [], Declined(
+                    "what its scans measured was not recorded, so its "
+                    "acquisition method cannot be recognised",
+                    "Choose a chemistry for this file. Files converted since "
+                    "the scan census shipped carry what the method needs.",
+                )
+            found = (
+                await session.execute(
+                    select(MethodBinding, IonizationMode)
+                    .join(
+                        IonizationMode,
+                        MethodBinding.ionization_mode_id
+                        == IonizationMode.ionization_mode_id,
+                    )
+                    .where(
+                        MethodBinding.binding_key
+                        == binding_digest(sample_file.instrument, key, signature)
+                    )
+                )
+            ).first()
+            if found is None:
+                # No row, or a row whose mode has been deleted: the join drops
+                # both, and neither can bind a file. One choice covers either -
+                # it creates the row, or supplies a mode for the chemistry a
+                # row with none already holds.
+                return [], Declined(
+                    "its acquisition method has not been seen running a "
+                    "chemistry on this instrument",
+                    "Choose a chemistry for one file of this method and the "
+                    "rest will follow it.",
+                )
+            binding, mode = found
+            # Judged on the chemistries, not on `state`. The two say the same
+            # thing today and would not once a person can confirm a binding.
+            if len(binding.chemistry_keys or []) != 1:
+                return [], Declined(
+                    "its acquisition method has been seen running more than "
+                    "one chemistry, so the method does not say which",
+                    "Tell them apart with a filename token, or choose a "
+                    "chemistry for each file.",
+                )
+            scope = instrument_key(mode.instrument)
+            if scope is not None and scope != instrument_key(sample_file.instrument):
+                return [], Declined(
+                    "the chemistry its acquisition method was seen running "
+                    "belongs to another instrument",
+                    _FOLLOWS_A_FEW,
+                )
+            if mode.ionization_mode_polarity != polarity:
+                # The mode was edited after the binding learned it. The key
+                # describes one polarity, so a mode of the other is not what
+                # this polarity measured.
+                return [], Declined(
+                    "the chemistry its acquisition method was seen running is "
+                    f"no longer recorded for polarity {polarity}",
+                    _FOLLOWS_A_FEW,
+                )
+            routings.append(
+                MethodRouting(mode=mode, binding_id=binding.method_binding_id)
+            )
+
+    if not routings:
+        # The file records no polarity at all. The token rule refuses such a
+        # file for the same reason: there is nothing to bind one mode to.
+        return [], Declined(
+            "its polarities were not recorded",
+            "Choose a chemistry for this file.",
+        )
+    return routings, None
 
 
 async def learn_method_bindings(
@@ -275,6 +527,8 @@ async def _observe(
                     n_disagreements=0,
                     last_sample_file_id=sample_file_id,
                     last_chemistry_key=chemistry,
+                    candidate_mode_id=None,
+                    n_candidate_streams=0,
                 )
                 .on_conflict_do_nothing(constraint="uq_method_binding_key")
                 .returning(MethodBinding.method_binding_id)
@@ -310,13 +564,12 @@ async def _observe(
     row.last_chemistry_key = chemistry
 
     if chemistry in known:
-        # The same chemistry as before. The row keeps pointing where it
-        # already did, so a deployment that has two identically-built modes
-        # does not see the binding wander between them - unless the mode it
-        # pointed at has been deleted, when this observation supplies a new
-        # one for the chemistry the row already holds.
-        if row.ionization_mode_id is None and len(known) == 1:
-            row.ionization_mode_id = mode.ionization_mode_id
+        # The same chemistry as before, so nothing about this key's unanimity
+        # changes - but the row naming that chemistry may have. Only for a
+        # key that is still unanimous: an ambiguous one routes nothing, and
+        # moving its pointer would be churn nobody reads.
+        if len(known) == 1:
+            _follow(row, mode, instrument=instrument, key=key)
         return "refreshed"
 
     # A chemistry this key has not been seen with. The row is never repointed
@@ -326,12 +579,56 @@ async def _observe(
     row.chemistry_keys = known + [chemistry]
     row.n_disagreements = (row.n_disagreements or 0) + 1
     row.state = "ambiguous"
+    # Whatever run was building is moot now, and leaving it would show a
+    # pending move on a row that will never route again.
+    row.candidate_mode_id = None
+    row.n_candidate_streams = 0
     runtime.logger.info(
         f"Method key {key or '(none)'} on {instrument} has now been seen with "
         f"{len(row.chemistry_keys)} chemistries, so it identifies none of "
         "them; files of this method keep routing by their filename token"
     )
     return "ambiguous"
+
+
+def _follow(
+    row: MethodBinding, mode: IonizationMode, instrument: str, key: str
+) -> None:
+    """Apply :func:`follow_row` to a row, and say so when it moves.
+
+    At INFO, because a binding changing where it sends future files is worth
+    a line in a server's log: it is the one thing in this module that alters
+    what a later file would be bound to.
+    """
+    held = row.ionization_mode_id
+    points_at, candidate, run = follow_row(
+        current=held,
+        candidate=row.candidate_mode_id,
+        n_candidate=row.n_candidate_streams or 0,
+        observed=mode.ionization_mode_id,
+    )
+    if points_at != held:
+        # Two ways to arrive here, and they are not the same event: a row
+        # that held nothing takes a mode on one file, because it was routing
+        # nothing and had nothing to be dragged away from.
+        if held is None:
+            runtime.logger.info(
+                f"Method key {key or '(none)'} on {instrument} now points at "
+                f"'{mode.ionization_mode_name}': the mode it held has been "
+                "deleted, so it takes the one this file bound to for the "
+                "chemistry it already knows"
+            )
+        else:
+            runtime.logger.info(
+                f"Method key {key or '(none)'} on {instrument} now points at "
+                f"'{mode.ionization_mode_name}': the last {REPOINT_AFTER} "
+                "files of this method bound to it, and it is the same "
+                "chemistry as the mode the binding held, so files of this "
+                "method follow them"
+            )
+    row.ionization_mode_id = points_at
+    row.candidate_mode_id = candidate
+    row.n_candidate_streams = run
 
 
 async def _locked(session, digest: str) -> MethodBinding | None:

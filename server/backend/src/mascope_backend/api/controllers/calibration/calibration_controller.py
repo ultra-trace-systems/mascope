@@ -72,6 +72,7 @@ from mascope_backend.socket.notifications import (
     UserNotification,
     send_progress_user_notification,
 )
+from mascope_runtime.logging import SENTRY_FINGERPRINT
 from mascope_signal.compute import get_sum_signal
 
 
@@ -187,11 +188,12 @@ def warn_on_acquisition_drift(
     once, for the badge and this warning alike, and the caller passes on the
     fits it declined to attribute.
 
-    The warning text names the instrument but not the observed magnitude:
-    monitoring groups events by message, and the magnitude of ongoing drift
-    wanders file-to-file, so embedding it would split one drift episode into
-    an issue per ppm value. Grouping is per instrument; the exact per-file
-    magnitude follows at INFO.
+    Monitoring groups this warning per (instrument, threshold) - the same key
+    the suppression window uses - rather than by call site, which is what it
+    does for warnings by default: each drifting instrument needs its own
+    retuning, so each gets its own issue. The text names the instrument but
+    not the observed magnitude, which wanders file-to-file; the exact
+    per-file magnitude follows at INFO.
 
     Each (instrument, threshold) pair warns at most once per
     ``ACQUISITION_DRIFT_WARNING_INTERVAL_S`` (see :func:`_drift_warning_due`).
@@ -223,7 +225,8 @@ def warn_on_acquisition_drift(
     # first drifting instrument hide every other one for a full day - the
     # opposite of what the window is for.
     if not instrument or _drift_warning_due((instrument, limit), time.monotonic()):
-        runtime.logger.warning(message)
+        fingerprint = f"acquisition-drift:{instrument or 'unknown'}:{limit:g}"
+        runtime.logger.bind(**{SENTRY_FINGERPRINT: [fingerprint]}).warning(message)
     # The per-file detail is unconditional: it never reaches monitoring, and
     # it is what the drill-down needs to see every affected file, including
     # those acquired while the warning itself is suppressed.
@@ -1193,7 +1196,10 @@ async def calibration_mz_calibrate_sample(
 # failure that reaches the user - the notification pane renders type, status
 # and message, and nothing consumes the per-sample detail carried in the
 # payload - so it has to name them, without letting a large batch turn one
-# notification into a wall of text.
+# notification into a wall of text. The payload carries the records the
+# message names and no more: a notification is published to every backend
+# process through Redis pub/sub, and a record per sample would make it the
+# size of the batch.
 MAX_LISTED_CALIBRATION_FAILURES = 10
 
 
@@ -1250,8 +1256,9 @@ async def calibration_mz_calibrate_samples(
     - Calibrate each sample, collecting affected IDs
     - On per-sample failure, log warning and continue
     - Fetch affected batch IDs from all touched sample IDs
-    - Raise a warning naming every sample that failed or was calibrated
-      below the quality bar
+    - Raise a warning naming the samples that failed or were calibrated
+      below the quality bar - the first ``MAX_LISTED_CALIBRATION_FAILURES``
+      of each - and counting the rest
     - Return calibration summary and notification data
 
     :param sample_item_ids: List of sample item IDs to be calibrated.
@@ -1283,10 +1290,9 @@ async def calibration_mz_calibrate_samples(
         type="calibration_mz_calibrate_samples",
         status="pending",
         message=f"m/z calibrating {len(sample_item_ids)} samples.",
-        data={
-            "sample_item_ids": sample_item_ids,
-            "_user_id": user_id,
-        },
+        # The count is in the message; the ids would make the packet the size
+        # of the batch.
+        data={"_user_id": user_id},
     )
     await send_progress_user_notification(notification)
 
@@ -1378,27 +1384,37 @@ async def calibration_mz_calibrate_samples(
             )
             if items
         )
+        # The records the message names, with the counts behind them; the
+        # batches are what the reloads are addressed to.
         raise_api_warning(
             warning_message,
             {
-                "samples_calibrate_failed": failed_sample_items,
-                "samples_calibrated_below_bar": below_bar_sample_items,
+                "summary": {
+                    "failed": len(failed_sample_items),
+                    "below_bar": len(below_bar_sample_items),
+                    "total": len(sample_item_ids),
+                },
+                "samples_calibrate_failed": failed_sample_items[
+                    :MAX_LISTED_CALIBRATION_FAILURES
+                ],
+                "samples_calibrated_below_bar": below_bar_sample_items[
+                    :MAX_LISTED_CALIBRATION_FAILURES
+                ],
                 "_notification_data": {
                     "affected_sample_batch_ids": affected_sample_batch_ids,
-                    "affected_sample_item_ids": list(affected_sample_item_ids),
                 },
             },
         )
 
+    # No sample ids: the batches are what the reloads are addressed to, and
+    # the count is in the message.
     return {
         "message": (
             f"M/z calibrated {len(sample_item_ids)} samples. "
             f"Number of batches affected: {len(affected_sample_batch_ids)}."
         ),
         "_notification_data": {
-            "sample_item_ids": sample_item_ids,
             "affected_sample_batch_ids": affected_sample_batch_ids,
-            "affected_sample_item_ids": list(affected_sample_item_ids),
         },
     }
 
@@ -1511,7 +1527,6 @@ async def calibration_mz_calibrate_batch(
     # --- Extract notification data from child operation and prepare response ---
     notification_data = calibration_result.get("_notification_data", {})
     affected_sample_batch_ids = notification_data.get("affected_sample_batch_ids", [])
-    affected_sample_item_ids = notification_data.get("affected_sample_item_ids", [])
 
     # --- Update batch statuses ---
     await update_sample_batch_status(
@@ -1532,6 +1547,5 @@ async def calibration_mz_calibrate_batch(
         "message": message,
         "_notification_data": {
             "affected_sample_batch_ids": affected_sample_batch_ids,
-            "affected_sample_item_ids": affected_sample_item_ids,
         },
     }

@@ -54,6 +54,23 @@ class SampleFileBase(BaseModel):
 
 
 class SampleFileCreate(SampleFileBase):
+    acquisition: dict | None = Field(
+        None,
+        description=(
+            "The acquisition record the upload carried: what the program that "
+            "ran the acquisition said of it (schema mascope-acquisition/1). "
+            "The converter carries it through from the upload."
+        ),
+    )
+    sha256: str | None = Field(
+        None,
+        pattern=r"^[0-9a-f]{64}$",
+        description=(
+            "SHA-256 of the uploaded file. The converter passes on what "
+            "the upload route verified against the bytes it received; the "
+            "value is stored as given."
+        ),
+    )
     uploaded_by_device_id: int | None = Field(
         None,
         description=(

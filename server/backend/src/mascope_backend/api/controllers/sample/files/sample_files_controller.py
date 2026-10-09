@@ -12,8 +12,11 @@ from sqlalchemy import (
     or_,
     select,
 )
+from sqlalchemy.exc import DBAPIError
+from sqlalchemy.orm import undefer
 
 import mascope_signal.compute as m_compute
+from mascope_backend.acquisition_record import record_ids
 from mascope_backend.api.controllers.dataset.acquisition.service import (
     create_acquisition_datasets,
     delete_acquisition_datasets,
@@ -158,6 +161,8 @@ async def _register_file_with_converter(
     device_id: int | None,
     instrument_timezone: str | None,
     source_filename: str | None = None,
+    acquisition: dict | None = None,
+    sha256: str | None = None,
 ) -> None:
     """Tell the converter who uploaded a file, before the file is stored.
 
@@ -188,6 +193,11 @@ async def _register_file_with_converter(
     :param source_filename: The file's name on the uploading machine, when the
         server stores it under another.
     :type source_filename: str | None
+    :param acquisition: The acquisition record sent with the upload.
+    :type acquisition: dict | None
+    :param sha256: The file's SHA-256, where its uploader reported one and
+        the bytes received have it.
+    :type sha256: str | None
     """
     await event_emitter.emit(
         "file-converter.auth",
@@ -200,6 +210,8 @@ async def _register_file_with_converter(
             "device_id": device_id,
             "instrument_timezone": instrument_timezone,
             "source_filename": source_filename,
+            "acquisition": acquisition,
+            "sha256": sha256,
         },
     )
 
@@ -442,8 +454,11 @@ async def get_sample_file(sample_file_id: str) -> dict:
     :rtype: dict
     """
     async with async_session() as session:
-        # Step 1: Fetch sample file by ID
-        sample_file = await session.get(SampleFile, sample_file_id)
+        # Step 1: Fetch sample file by ID, with its acquisition record: the
+        # one place the whole record is read, since a listing leaves it out.
+        sample_file = await session.get(
+            SampleFile, sample_file_id, options=[undefer(SampleFile.acquisition)]
+        )
 
         # Step 2: Check existence
         if not sample_file:
@@ -454,6 +469,74 @@ async def get_sample_file(sample_file_id: str) -> dict:
             "message": f"Sample file '{sample_file.filename}' retrieved successfully.",
             "data": sample_file.to_dict(),
         }
+
+
+async def _record_to_keep(
+    session, filename: str, document: dict | None, source_filename: str | None
+) -> tuple[dict | None, dict[str, str]]:
+    """The acquisition record to store with a file, and its identifier columns.
+
+    Never raises, and never keeps a file from being registered: a record that
+    cannot be kept is left out with a line in the log.
+
+    **An acquisition is one file.** ``acquisition_id`` is unique, so a record
+    naming an acquisition another file already is cannot be stored, and it is
+    the newcomer's that is left out - the file itself is kept. That is a
+    control program that gave one id to two files, or one file uploaded under
+    two names, and either is worth a line somebody reads.
+
+    :param session: The session the file is being registered in.
+    :param filename: The file's stored name, for the log.
+    :type filename: str
+    :param document: The record the registration carries, if any.
+    :type document: dict | None
+    :param source_filename: The name the file had where it was written, when
+        the registration says.
+    :type source_filename: str | None
+    :return: The record to store and the value of each identifier column;
+        None and no columns when nothing is kept.
+    :rtype: tuple[dict | None, dict[str, str]]
+    """
+    if document is None:
+        return None, {}
+    try:
+        ids = record_ids(document, source_filename)
+    except ValueError as unusable:
+        runtime.logger.warning(
+            f"The acquisition record of '{filename}' is not kept, as "
+            f"{unusable}; storing the file without it"
+        )
+        return None, {}
+    other = await session.scalar(
+        select(SampleFile.filename).where(
+            SampleFile.acquisition_id == ids["acquisition_id"]
+        )
+    )
+    if other is not None:
+        runtime.logger.warning(
+            f"The acquisition record of '{filename}' names acquisition "
+            f"{ids['acquisition_id']}, which '{other}' already is, and an "
+            "acquisition is one file; storing the file without the record"
+        )
+        return None, {}
+    return document, ids
+
+
+def _refuses_the_row(refused: DBAPIError) -> bool:
+    """Whether the database refused a row for what the row holds.
+
+    Read off the SQLSTATE, which the driver hands on from the database. Class
+    23 is a constraint the row breaks, and class 22 a value the database
+    cannot hold. Every other failure is the database's own, or the way to
+    it: a connection lost at the commit has no SQLSTATE at all, says nothing
+    of the row, and the same row is as good the next time it is sent.
+
+    :param refused: What the driver raised.
+    :type refused: DBAPIError
+    :rtype: bool
+    """
+    sqlstate = getattr(refused.orig, "sqlstate", None)
+    return isinstance(sqlstate, str) and sqlstate[:2] in ("22", "23")
 
 
 @api_controller()
@@ -544,24 +627,58 @@ async def create_sample_file(
         # Step 2: Construct new sample file. The uploading user comes from
         # the authenticated request (user_id), not from the request body.
         # Registered means converted: auto-processing takes it from here.
-        new_sample_file = SampleFile(
-            sample_file_id=gen_id(16),
-            **sample_file_create.model_dump(
-                exclude={"uploaded_by_device_id", "mz_calibration"}
-            ),
-            mz_calibration=mz_calibration,
-            uploaded_by_device_id=device_id,
-            uploaded_by_user_id=user_id,
-            processing_status=ProcessingStatus.CONVERTED.value,
-            processing_detail=await read_pooled_streams_note(
-                sample_file_create.filename
-            ),
-            processing_updated_utc=datetime.now(timezone.utc),
+        acquisition, acquisition_ids = await _record_to_keep(
+            session,
+            sample_file_create.filename,
+            sample_file_create.acquisition,
+            sample_file_create.source_filename,
         )
+        streams_note = await read_pooled_streams_note(sample_file_create.filename)
+
+        def row(record: dict | None, record_ids: dict[str, str]) -> SampleFile:
+            return SampleFile(
+                sample_file_id=gen_id(16),
+                **sample_file_create.model_dump(
+                    exclude={"uploaded_by_device_id", "mz_calibration", "acquisition"}
+                ),
+                mz_calibration=mz_calibration,
+                acquisition=record,
+                **record_ids,
+                uploaded_by_device_id=device_id,
+                uploaded_by_user_id=user_id,
+                processing_status=ProcessingStatus.CONVERTED.value,
+                processing_detail=streams_note,
+                processing_updated_utc=datetime.now(timezone.utc),
+            )
+
+        new_sample_file = row(acquisition, acquisition_ids)
         session.add(new_sample_file)
 
         # Step 3: Commit transaction
-        await session.commit()
+        try:
+            await session.commit()
+        except DBAPIError as refused:
+            if acquisition is None or not _refuses_the_row(refused):
+                # Not the record's doing, or not the row's at all. Raised as
+                # it is: the converter sends the registration again, with
+                # the record on it.
+                raise
+            # The database would not have the row with its record on it: two
+            # registrations of one acquisition that both got past the check
+            # above, or something about a record that only storing it finds.
+            # The file is what must not be lost, so it is registered without
+            # the record. Whatever else was wrong with the row is wrong again
+            # and is raised then.
+            await session.rollback()
+            runtime.logger.warning(
+                f"Registering '{sample_file_create.filename}' with its "
+                f"acquisition record was refused by the database "
+                f"({type(refused.orig).__name__}); storing the file without "
+                "the record"
+            )
+            new_sample_file = row(None, {})
+            session.add(new_sample_file)
+            await session.commit()
 
         # Step 4: Refresh instance
         await session.refresh(new_sample_file)
@@ -1197,6 +1314,8 @@ async def upload_sample_file(
     device_id: int | None = None,
     instrument_timezone: str | None = None,
     source_filename: str | None = None,
+    acquisition: dict | None = None,
+    sha256: str | None = None,
 ) -> dict:
     """
     Handles upload of a single sample file from a given file path to the `filestreams` directory.
@@ -1217,6 +1336,11 @@ async def upload_sample_file(
     :param source_filename: The file's name on the uploading machine, when
         the server stores it under another (see :func:`file_upload_name`).
     :type source_filename: str | None, optional
+    :param acquisition: The acquisition record sent with the upload.
+    :type acquisition: dict | None, optional
+    :param sha256: The file's SHA-256, where its uploader reported one and
+        the bytes received have it.
+    :type sha256: str | None, optional
     :return: Dictionary with file upload result.
     :rtype: dict
     """
@@ -1273,6 +1397,8 @@ async def upload_sample_file(
             device_id=device_id,
             instrument_timezone=instrument_timezone,
             source_filename=source_filename,
+            acquisition=acquisition,
+            sha256=sha256,
         )
 
         # A cross-filesystem move degrades to a non-atomic copy, which the
@@ -1427,9 +1553,7 @@ def _sync_get_sum_spectrum(
     :param mz_max: End of the m/z window, or None for all
     :return: (mz values, intensity values) as plain lists
     """
-    spectrum = m_compute.get_sum_signal(
-        filename, t_min, t_max, average=True, reconstruct=True
-    )
+    spectrum = m_compute.get_sum_signal(filename, t_min, t_max, average=True)
     if mz_min is not None and mz_max is not None:
         spectrum = spectrum.sel(mz=slice(mz_min, mz_max)).compute()
     return spectrum.mz.values.tolist(), spectrum.values.tolist()
@@ -1698,10 +1822,9 @@ async def get_sample_file_spectrum(
     filename = sample_file_data.get("data").get("filename")
     intensity_unit = "counts/s"
 
-    # Step 2-4: Compute the averaged spectrum (reconstructed for display so it
-    # overlays the centroids), filter it and materialize it, all in one worker
-    # thread. This is the path that takes the cross-process zarr write lock on
-    # a cache miss.
+    # Step 2-4: Compute the averaged spectrum, filter it and materialize it,
+    # all in one worker thread. This is the path that takes the cross-process
+    # zarr write lock on a cache miss.
     mz_values, intensity_values = await asyncio.to_thread(
         _sync_get_sum_spectrum, filename, t_min, t_max, mz_min, mz_max
     )

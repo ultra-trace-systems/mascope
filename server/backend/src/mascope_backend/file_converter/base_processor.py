@@ -39,6 +39,24 @@ from .schema import SampleFileProps
 mascope_sdk.SERVICE_NAME = "file-converter"
 
 
+def composites_scan_streams() -> bool:
+    """Whether this deployment processes a multi-experiment file per experiment.
+
+    ``composite_scan_streams`` in the runtime ``[backend]`` config
+    (``mascope_runtime.config.BackendConfig``). The converter reads it
+    because peak detection runs here, and it is the first conversion of a
+    file that decides whether its peak store holds a peak list per scan
+    stream; a rebuild of the store keeps what was decided then.
+
+    :return: True when a file whose method measures more than one thing in a
+        polarity is to get a peak list per stream
+        (``mascope_thermo.streams.peak_streams``).
+    :rtype: bool
+    """
+    backend = runtime.full_config.backend
+    return bool(backend is not None and backend.composite_scan_streams)
+
+
 def with_file_context(prop_getter) -> callable:
     """Abstract file context manager decorator
 
@@ -236,6 +254,9 @@ class BaseFileProcessor(Thread, ABC, metaclass=FileProcessorMeta):
         # would let one file's answer carry into the next.
         self._per_file_cache: dict = {}
         self.file_handle = None  # Abstract file reference, managed by context manager
+        # Whether the file being processed has its database record: what
+        # decides, on a failure, whether its sample directory goes
+        self._record_created = False
 
     # Additional abstract properties not in SampleFileProps
     @property
@@ -332,7 +353,9 @@ class BaseFileProcessor(Thread, ABC, metaclass=FileProcessorMeta):
             if not is_acquired:
                 raise RuntimeError(acquisition_failure_reason)
         try:
-            compute_peaks(filename, instrument_functions)
+            compute_peaks(
+                filename, instrument_functions, per_stream=composites_scan_streams()
+            )
         finally:
             # Release the guard in case of any exception to avoid deadlocks,
             # but only if it was acquired successfully
@@ -368,18 +391,49 @@ class BaseFileProcessor(Thread, ABC, metaclass=FileProcessorMeta):
                 access_token=file_context.access_token,
                 device_id=getattr(file_context, "device_id", None),
                 source_filename=getattr(file_context, "source_filename", None),
+                acquisition=getattr(file_context, "acquisition", None),
+                sha256=getattr(file_context, "sha256", None),
             )
+            self._record_created = True
 
         except Exception as e:
             # No log here: the raised RuntimeError is logged with its
-            # traceback by the processing loop's handler
-            error_msg = f"Failed to create database record: {e}"
-            # Delete filestore directory on failure
-            filename = sample_file_props.filename
-            data_path = parse_path_from_item_filename(filename)
-            if os.path.exists(data_path):
-                shutil.rmtree(data_path)
-            raise RuntimeError(error_msg) from e
+            # traceback by the processing loop's handler. The sample
+            # directory goes with every failure before the record, in
+            # _process_file.
+            raise RuntimeError(f"Failed to create database record: {e}") from e
+
+    def _remove_filestore_directory(self, filename: str) -> None:
+        """Remove the sample directory of a file whose record was never made.
+
+        The directory is made first and the record last, with the instrument
+        functions and the peak detection between them, and each of those can
+        fail. A directory left behind has no record pointing at it. The next
+        upload of the file meets it, and the orphan check - which reads any
+        answer but a 200 as "no record" - sends that upload to remove the
+        directory through the server; where what failed was the converter's
+        own credential, that removal is refused as well, and the upload ends
+        in a failed delete. The removal also needs the instrument workspace's
+        admin where the upload needed its editor, so for most uploaders that
+        path never cleared anything.
+
+        :param filename: Sample filename, whose directory the filestore holds
+        :type filename: str
+        """
+        data_path = parse_path_from_item_filename(filename)
+        if not os.path.exists(data_path):
+            return
+        try:
+            shutil.rmtree(data_path)
+            runtime.logger.info(
+                f"Removed the sample directory of {filename}: its record was not created"
+            )
+        except Exception:
+            # The failure being handled is what the loop reports; this one
+            # only says the directory is still there
+            runtime.logger.exception(
+                f"Could not remove the sample directory of {filename}"
+            )
 
     def _create_filestore_directory(
         self, sample_file_props: SampleFileProps, source_file_path: str
@@ -596,7 +650,14 @@ class BaseFileProcessor(Thread, ABC, metaclass=FileProcessorMeta):
             self._emit_progress_notification(0)
             # Create filestore directory, write properties, and copy file
             self._create_filestore_directory(sample_file_props, file_path)
+        except FileExistsError as exc:
+            self._handle_existing_filestore(
+                exc, sample_file_props, file_path, retry_count
+            )
+            return
 
+        self._record_created = False
+        try:
             self._emit_progress_notification(10)
 
             if self._is_blank_measurement:
@@ -635,34 +696,53 @@ class BaseFileProcessor(Thread, ABC, metaclass=FileProcessorMeta):
 
             self._emit_progress_notification(100)
 
-        except FileExistsError as exc:
-            # Check if filestore exists without database record (orphaned)
-            if self._check_orphan_sample_file_filestore(filename):
-                if retry_count >= 1:
-                    runtime.logger.error(
-                        f"Retry limit reached for orphaned filestore cleanup: {filename}"
-                    )
-                    raise exc
-                runtime.logger.info(
-                    f"Found orphaned filestore for {filename}, cleaning up and retrying..."
-                )
+        except Exception:
+            # Whatever failed before the record - the instrument functions,
+            # the peak detection, the record itself - leaves a directory no
+            # record points at; it goes with the failure. A record once made
+            # keeps its directory whatever fails after it.
+            if not self._record_created:
+                self._remove_filestore_directory(filename)
+            raise
 
-                self._remove_orphaned_filestore(filename)
+    def _handle_existing_filestore(
+        self,
+        exc: FileExistsError,
+        sample_file_props: SampleFileProps,
+        file_path: str,
+        retry_count: int,
+    ) -> None:
+        """A sample directory the filestore already holds: an orphan is
+        removed and the file processed again, a file with a record is
+        refused."""
+        filename = sample_file_props.filename
+        # Check if filestore exists without database record (orphaned)
+        if self._check_orphan_sample_file_filestore(filename):
+            if retry_count >= 1:
+                runtime.logger.error(
+                    f"Retry limit reached for orphaned filestore cleanup: {filename}"
+                )
+                raise exc
+            runtime.logger.info(
+                f"Found orphaned filestore for {filename}, cleaning up and retrying..."
+            )
 
-                # Retry after cleanup
-                self._process_file(
-                    sample_file_props, file_path, retry_count=retry_count + 1
-                )
-            else:
-                # Routine user mistake (re-uploading an existing file); the
-                # raised FileExistsError is what reports it upstream.
-                runtime.logger.info(
-                    f"File already exists in the filestore with valid database record: {filename}"
-                )
-                raise FileExistsError(
-                    "File already exists, please delete the old file, rename the file you want to "
-                    "upload or contact the administrator."
-                ) from exc
+            self._remove_orphaned_filestore(filename)
+
+            # Retry after cleanup
+            self._process_file(
+                sample_file_props, file_path, retry_count=retry_count + 1
+            )
+        else:
+            # Routine user mistake (re-uploading an existing file); the
+            # raised FileExistsError is what reports it upstream.
+            runtime.logger.info(
+                f"File already exists in the filestore with valid database record: {filename}"
+            )
+            raise FileExistsError(
+                "File already exists, please delete the old file, rename the file you want to "
+                "upload or contact the administrator."
+            ) from exc
 
     def _remove_orphaned_filestore(self, filename: str) -> None:
         """Remove orphaned filestore directory and any database record."""
@@ -769,10 +849,8 @@ class BaseFileProcessor(Thread, ABC, metaclass=FileProcessorMeta):
                         #
                         # INFO, not WARNING: the error-monitoring sink
                         # subscribes at WARNING (see mascope_runtime.logging),
-                        # so a warning here would still mint an event - and,
-                        # carrying no exception, it would be captured as a
-                        # message keyed on text that includes the filename,
-                        # turning one grouped issue into one issue per file.
+                        # so a warning here would still mint an event - one
+                        # per routine failure, for nothing that is wrong.
                         runtime.logger.info(
                             f"Failed to process file {Path(self.file_to_process).name}: {e}"
                         )

@@ -10,6 +10,7 @@ from test_utils import captured_logs
 
 from mascope_backend.file_converter import peak_recompute_worker
 from mascope_backend.file_converter.peak_recompute_worker import PeakRecomputeWorker
+from mascope_runtime.logging import SENTRY_FINGERPRINT
 from mascope_signal.compute import StalePeakStoreError
 
 
@@ -52,15 +53,18 @@ def test_a_store_still_stale_after_its_rebuild_is_warned_about(monkeypatch):
 
 
 def test_the_warning_carries_the_error_so_files_group_as_one_issue(monkeypatch):
-    """A message event groups by its text, which names the file - one issue
-    per file. An exception event groups by the error, and the file still
-    travels with it in the log line."""
+    """The files one fault reaches share an issue, and the file still travels
+    with the event in the log line. The error's message carries the scan
+    counts, and monitoring would group an exception event by its message's
+    first line - close to an issue per file - so the call site pins the
+    grouping."""
     _store_check(monkeypatch, STALE)
 
     (record,) = _reported()
 
     assert record["exception"] is not None
     assert isinstance(record["exception"].value, StalePeakStoreError)
+    assert record["extra"][SENTRY_FINGERPRINT] == ["peak-store-stale-after-rebuild"]
     # The error's own advice is to re-run peak detection, which has just run.
     assert "Re-run peak detection" not in record["message"]
 

@@ -578,7 +578,7 @@ def run_pairing(
         f"  Pairing code: {started['user_code']}\n"
         "\n"
         "  1. Log in to Mascope in your browser (editor role or higher)\n"
-        "  2. Click your profile icon to open the sidebar\n"
+        "  2. Open the Home menu (house icon, top-left) and its Settings tab\n"
         "  3. Under 'API Access Tokens', click 'Pair an agent'\n"
         "  4. Enter the code above and approve\n"
         "\n"
@@ -588,33 +588,49 @@ def run_pairing(
     )
     interval = max(1, int(started.get("interval", 5)))
     try:
-        while True:
-            time.sleep(interval)
-            try:
-                resp = requests.post(
-                    f"{base_url(host)}/api/auth/pairing/poll",
-                    json={"device_code": started["device_code"]},
-                    headers=agent_headers(),
-                    verify=verify,
-                    timeout=VERIFY_TIMEOUT,
-                )
-            except requests.exceptions.RequestException:
-                print("!", end="", flush=True)  # transient; keep polling
-                continue
-            if resp.status_code != 200:
-                print("!", end="", flush=True)
-                continue
-            body = resp.json()
-            if body["status"] == "approved":
-                print("\nPaired - the agent received its access token.\n")
-                return body["access_token"]
-            if body["status"] == "expired":
-                print("\nThe pairing code expired before it was approved.")
-                return None
-            print(".", end="", flush=True)
+        return _await_approval(host, verify, started["device_code"], interval)
     except KeyboardInterrupt:
         print("\nPairing cancelled.")
         return None
+
+
+def _await_approval(
+    host: str, verify: bool, device_code: str, interval: int
+) -> str | None:
+    """Poll until the pairing is approved or its code has expired.
+
+    The loop of ``run_pairing``, a function below the handler for Ctrl+C
+    there: written around the loop in the same function, that handler is
+    not given an interrupt taken on one of the loop's ``continue``s
+    (python/cpython#108214, and ``FileUploader._poll`` for the whole of it).
+
+    :return: The access token, or None when the code expired
+    :rtype: str | None
+    """
+    while True:
+        time.sleep(interval)
+        try:
+            resp = requests.post(
+                f"{base_url(host)}/api/auth/pairing/poll",
+                json={"device_code": device_code},
+                headers=agent_headers(),
+                verify=verify,
+                timeout=VERIFY_TIMEOUT,
+            )
+        except requests.exceptions.RequestException:
+            print("!", end="", flush=True)  # transient; keep polling
+            continue
+        if resp.status_code != 200:
+            print("!", end="", flush=True)
+            continue
+        body = resp.json()
+        if body["status"] == "approved":
+            print("\nPaired - the agent received its access token.\n")
+            return body["access_token"]
+        if body["status"] == "expired":
+            print("\nThe pairing code expired before it was approved.")
+            return None
+        print(".", end="", flush=True)
 
 
 def _obtain_token(host: str, verify: bool, instrument: str | None = None) -> str | None:

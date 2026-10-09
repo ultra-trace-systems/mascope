@@ -84,8 +84,9 @@ and the checkout.
      `.runtime/secrets/`): works immediately; each user clicks through a one-time
      browser warning. The generated certificate carries a fixed placeholder
      name (`mascope.app`), so the warning appears whatever address the server
-     is reached at; the File Agent is unaffected (it does not verify TLS
-     certificates). For a warning-free deployment use one of the options
+     is reached at. The File Agent verifies the certificate too, so each
+     agent's setup has to be told not to (`verify_tls = false` in its
+     configuration). For a warning-free deployment use one of the options
      below - whichever certificate you install, its file names in
      `.runtime/secrets/` stay `mascope.app.pem`/`.key`.
    - **Internal CA** (e.g. [mkcert](https://github.com/FiloSottile/mkcert) or an
@@ -128,6 +129,15 @@ and the checkout.
    same check - behind a proxy that rewrites `Host` and forwards neither
    header, every write and every realtime connection is refused. Caddy and
    Traefik do both out of the box.
+
+   A front proxy must also let one large request header through on the
+   upload path. A File Agent sends a file's acquisition record in the headers
+   of the request that creates its upload (`/api/sample/files/upload/tus`):
+   up to 22 KB in one header line, where nginx and Apache allow 8 KB by
+   default (nginx: `large_client_header_buffers 4 32k;`, Apache:
+   `LimitRequestFieldSize 32768`). A proxy that refuses the request costs no
+   file: the agent sends it again without the record, and says so in its
+   log.
 
 5. **Pull the release images and start:**
 

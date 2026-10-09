@@ -21,6 +21,10 @@ Filestore sync:
 - rsync transfers the whole env directory. A `from_date`/`to_date` window
   narrows it to the matching acquisition-date directories inside the
   filestore, via an rsync filter file built by `_filter.py`.
+- The filestore's deployment file (`deployment.json`, the id the backend
+  generated for its deployment) is never transferred: the target keeps the
+  id it has, or generates its own on its next start, instead of exporting
+  under the source's.
 - rsync carries neither modes nor ownership across on its own, so modes are
   forced to `D755,F644` and the resulting ownership is checked afterwards by
   `_ownership.py`.
@@ -62,7 +66,7 @@ from mascope_cli.pg import (
     purge_old_dumps,
 )
 from mascope_cli.pg.admin import create_database as admin_create_database
-from mascope_cli.runtime import runtime
+from mascope_cli.runtime import DEPLOYMENT_FILE, runtime
 
 
 def _scp(
@@ -262,9 +266,12 @@ def sync_filestore(
     keepalive_opts = "-o ServerAliveInterval=30 -o ServerAliveCountMax=6"
     ssh_cmd = f"{ssh_bin} {identity_opts} {keepalive_opts} {mux_opts}".strip()
 
+    # The exclusion comes before any date filter: rsync applies the first
+    # rule that matches, and it must win whatever the window includes.
     flags = (
         "--progress --recursive --copy-links --keep-dirlinks --partial "
-        "--timeout=60 --perms --chmod=D755,F644"
+        "--timeout=60 --perms --chmod=D755,F644 "
+        f"--exclude=/filestore/{DEPLOYMENT_FILE}"
     )
 
     filter_file = None

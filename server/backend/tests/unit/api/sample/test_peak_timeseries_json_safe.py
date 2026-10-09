@@ -146,6 +146,8 @@ async def test_sample_route_sends_nan_heights_as_null(peak_mz, heights):
             "load_peak_timeseries",
             AsyncMock(return_value=peak_dataset()),
         ),
+        # The listing the asked m/z is resolved on before the timeseries load.
+        patch.object(samples_controller, "load_peak_data", return_value=peak_dataset()),
         captured_logs("WARNING") as records,
     ):
         response = await get_sample_peak_timeseries_route(
@@ -164,3 +166,58 @@ async def test_sample_route_sends_nan_heights_as_null(peak_mz, heights):
         "time": TIME,
     }
     assert records == []
+
+
+@pytest.mark.parametrize(
+    ("peak_mz", "answer"),
+    [
+        # half a ppm above the listed 100: the fill is asked for the label
+        pytest.param(100.00005, 100.0, id="within-tolerance"),
+        # a ppm from nothing listed: refused, the tolerance measured from the ask
+        pytest.param(101.0, None, id="nothing-near"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_sample_route_resolves_the_ask_on_the_listing_within_the_tolerance(
+    peak_mz, answer
+):
+    """A client's m/z is answered from the listed peak nearest to it - the
+    timeseries is asked for that label - and refused where the nearest is
+    outside the tolerance, which is measured from the m/z asked."""
+    sample = SimpleNamespace(
+        filename=FILENAME,
+        t0=TIME[0],
+        t1=TIME[-1],
+        polarity="+",
+        sample_item_name="Sample 1",
+    )
+    fill = AsyncMock(return_value=peak_dataset())
+    with (
+        patch.object(
+            samples_controller, "fetch_sample", AsyncMock(return_value=sample)
+        ),
+        patch.object(
+            samples_controller.m_compute,
+            "get_scan_timestamps",
+            return_value=np.array(TIME),
+        ),
+        patch.object(samples_controller.m_compute, "load_peak_timeseries", fill),
+        patch.object(samples_controller, "load_peak_data", return_value=peak_dataset()),
+    ):
+        response = await get_sample_peak_timeseries_route(
+            sample_item_id="si_1",
+            body=GetSamplePeakTimeseriesBody(peak_mz=peak_mz, peak_mz_tolerance_ppm=1),
+            user=USER,
+            membership=None,
+        )
+
+    assert response.status_code == 200
+    body = strict_loads(response.body)
+    assert fill.await_args.args == (FILENAME, [100.0])
+    if answer is None:
+        assert body["results"] == 0
+        assert body["data"] == {"peak_id": None, "mz": None, "height": [], "time": []}
+        assert f"requested m/z {peak_mz}" in body["message"]
+    else:
+        assert body["data"]["mz"] == answer
+        assert body["data"]["height"] == HEIGHTS[answer]

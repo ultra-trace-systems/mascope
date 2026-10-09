@@ -1,32 +1,70 @@
 """Scan streams: the census of what an acquisition measured.
 
-A scan stream is the set of scans that share one scan signature: the fields
-of the scan filter that say what was measured (:mod:`mascope_thermo.scan_filter`),
-plus the FT resolution from the scan's trailer. Most files hold one stream per
-polarity. A method can also alternate scan ranges or scan modes within one
-polarity, interleave fragmentation scans, or switch settings part way through
-the run.
+A scan stream is the scans of one experiment of the acquisition method. A
+method is built of experiments, each defining its scan parameters, and every
+scan records the one that produced it: its scan event, numbered within its
+segment of the method. So the survey scans of one segment and event are one
+stream whatever sets two experiments apart: a scan range, a polarity, or a
+microscan count that no scan filter shows. A file acquired with no method
+loaded records no event, and there a stream is the scans that share one scan
+signature: the fields of the scan filter that say what was measured
+(:mod:`mascope_thermo.scan_filter`), plus the FT resolution from the scan's
+trailer.
 
-Processing does not act on streams: peak detection pools every MS1 scan of a
-polarity. The census records what each file holds, so that the pooling can be
-seen, and so that splitting by stream can be designed from evidence
-(``docs/dev/ingest_routing_and_splitting.md``, section 4).
+**What a stream is, and what it is called, are two things.** A stream's
+identity is its signature and its experiment: ``signature_key``,
+``scan_segment`` and ``scan_event``. Those say the same thing in every file
+of one method. Its ``key`` is a name, unique within its file and no further:
+it carries the experiment only where another experiment of the same file
+shares the signature, so a run stopped before a repeated experiment came
+round again names the first one by its signature alone. Never compare
+streams across files by their keys, and compare the part of the identity the
+comparison is about: the method binding's signature class reads
+``signature_key`` alone, so that it does not move with a method's layout.
+
+Most files hold one stream per polarity. A method can also alternate scan
+ranges or scan modes within one polarity, repeat an experiment later in the
+run, interleave fragmentation scans, or switch settings part way through.
+
+Fragmentation scans are grouped by signature alone. What their scan event
+counts - the experiment, or a dependent scan's place in its cycle - is not
+measured on any file in reach, and nothing reads their streams yet.
+
+Peak detection pools every MS1 scan of a polarity unless a deployment asks
+for more, and then a file whose method measures more than one thing in a
+polarity has its peaks detected per stream (:func:`peak_streams`). An
+experiment the method only runs again is not another thing measured
+(:func:`measured`), and its runs stay pooled. The census records
+what each file holds, so that the pooling can be seen, and so that what is
+built on streams rests on evidence
+(``docs/dev/ingest_routing_and_splitting.md``, section 4). The reader selects
+one stream's scans by its key (:func:`scan_stream_keys`, and the ``stream``
+argument of ``ReaderBackend``'s selecting methods).
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import sys
+from typing import NamedTuple
 
 import numpy as np
 
 from mascope_thermo.backend import ReaderBackend, _sample_evenly, open_backend
-from mascope_thermo.scan_filter import parse_scan_filter
+from mascope_thermo.scan_filter import ScanFilter, parse_scan_filter
 
 
 FT_RESOLUTION = "FT Resolution:"
+
+#: The two settings of an experiment that a method changes from one to the
+#: next without its scan filter showing it, as a scan's trailer names them:
+#: how many transients each scan averages, and how many ions it is filled
+#: to. Neither varies among the scans of one experiment.
+MICROSCANS = "Micro Scan Count:"
+AGC_TARGET = "AGC Target:"
 
 # Trailers sampled per stream for its acquisition parameters, as many as the
 # whole-file capture samples.
@@ -61,9 +99,26 @@ def scan_streams(backend: ReaderBackend) -> list[dict]:
 
     Each stream is a dict:
 
-    - ``key``: the signature as one line of text
-      (:meth:`~mascope_thermo.scan_filter.ScanFilter.stream_key`);
-    - ``signature``: the same fields, parsed;
+    - ``key``: the stream's name in this file: the signature as one line of
+      text (:meth:`~mascope_thermo.scan_filter.ScanFilter.stream_key`),
+      closed by the experiment where the signature is shared by more than
+      one in this file: ``... R=120000 event=2``, with the segment before
+      the event for an experiment outside the method's first segment. A file
+      whose signatures already separate its experiments keeps the keys it
+      would have without events, which is nearly every file. Unique within
+      the file, and **not** stable across files of one method (see the
+      module docstring);
+    - ``signature_key``: the signature and resolution as one line of text,
+      with no experiment: what was measured, the same text in every file.
+      Equal to ``key`` wherever the key names no experiment;
+    - ``signature``: the same fields, parsed. Two experiments under one
+      signature share it;
+    - ``scan_segment``, ``scan_event``: for an MS1 stream, the experiment
+      that produced its scans, as the method counts them from 1; both
+      ``None`` where the file records none. A fragmentation stream carries
+      neither key, because what its scans' events count is not measured
+      (see the module docstring). A census taken before streams followed
+      the experiment carries neither on any stream;
     - ``scans``: how many scans the stream holds;
     - ``blocks``: how many runs its scans form among the scans of the same
       polarity and MS order. A stream that runs throughout the file is one
@@ -91,20 +146,108 @@ def scan_streams(backend: ReaderBackend) -> list[dict]:
     return [stream for stream, _scan_numbers in _census(backend)]
 
 
+def scan_stream_keys(backend: ReaderBackend) -> list[str]:
+    """The stream key of every scan of the file, in acquisition order.
+
+    What scan selection compares a ``stream`` against. They are the keys
+    :func:`scan_streams` reports, from the function it groups by, so the scans
+    selected for a stream are exactly the ones the census counted into it -
+    all but an outlier first scan, which selection leaves out and the census
+    does not.
+
+    :param backend: An open reader backend.
+    :return: One key per scan, as ``ReaderBackend.scan_filters`` orders them.
+    """
+    return [scan.key for scan in _keyed_scans(backend)]
+
+
+class _KeyedScan(NamedTuple):
+    """One scan, with the stream it belongs to.
+
+    ``segment`` and ``event`` are the experiment the scan is grouped by:
+    ``None`` for a survey scan that records none, and for every
+    fragmentation scan, which is not grouped by it.
+    """
+
+    row: dict
+    parsed: ScanFilter
+    resolution: int | str | None
+    key: str
+    signature_key: str
+    segment: int | None
+    event: int | None
+
+
+def _keyed_scans(backend: ReaderBackend) -> list[_KeyedScan]:
+    """Every scan of the file with its stream key, in acquisition order.
+
+    The one place that decides which stream a scan belongs to, so that the
+    census and anything that later selects a stream's scans cannot disagree.
+
+    A survey scan belongs to its experiment: its signature together with
+    its segment and scan event. The experiment closes the key only where one
+    signature is shared by more than one, so the key of every other stream
+    is the signature alone; and it names the segment only outside the
+    method's first, so a method of one segment reads ``event=N``. Survey
+    scans that record no event are one stream per signature, also beside
+    scans of that signature that do record one. A fragmentation scan is
+    keyed by its signature whatever it records (see the module docstring).
+    """
+    scans = []
+    # signature key -> the experiments its survey scans come from
+    experiments: dict[str, set[tuple[int | None, int | None]]] = {}
+    for row in backend.scan_filters():
+        parsed = parse_scan_filter(row["filter"])
+        resolution = _resolution(backend.scan_trailer(row["scan"]))
+        experiment = (None, None)
+        if parsed.ms_order == 1 and row.get("event") is not None:
+            # An event with no segment is in the method's first, as the
+            # reader also has it (backend._method_experiment).
+            experiment = (row.get("segment") or 1, row["event"])
+        signature_key = parsed.stream_key(resolution)
+        experiments.setdefault(signature_key, set()).add(experiment)
+        scans.append((row, parsed, resolution, experiment, signature_key))
+    return [
+        _KeyedScan(
+            row,
+            parsed,
+            resolution,
+            parsed.stream_key(
+                resolution,
+                event=event,
+                segment=None if segment == 1 else segment,
+            )
+            if len(experiments[signature_key]) > 1
+            else signature_key,
+            signature_key,
+            segment,
+            event,
+        )
+        for row, parsed, resolution, (segment, event), signature_key in scans
+    ]
+
+
 def _census(backend: ReaderBackend) -> list[tuple[dict, list[int]]]:
     """:func:`scan_streams`, with each stream's scan numbers beside it."""
     streams: dict[str, dict] = {}
     # (polarity, MS order) -> key of the last scan seen in that sequence
     last_key: dict[tuple, str] = {}
-    for row in backend.scan_filters():
-        parsed = parse_scan_filter(row["filter"])
-        resolution = _resolution(backend.scan_trailer(row["scan"]))
-        key = parsed.stream_key(resolution)
+    for scan in _keyed_scans(backend):
+        row, parsed, key = scan.row, scan.parsed, scan.key
         stream = streams.get(key)
         if stream is None:
             stream = streams[key] = {
                 "key": key,
-                "signature": parsed.signature(resolution),
+                "signature_key": scan.signature_key,
+                "signature": parsed.signature(scan.resolution),
+                # The experiment, on the streams grouped by it and only on
+                # those: a key this dict lacks says "not grouped by it",
+                # where None says "the file records none".
+                **(
+                    {"scan_segment": scan.segment, "scan_event": scan.event}
+                    if parsed.ms_order == 1
+                    else {}
+                ),
                 "scans": 0,
                 "blocks": 0,
                 "t_first": row["time_s"],
@@ -154,6 +297,113 @@ def pooled_ms1_streams(streams: list[dict]) -> dict[str, list[str]]:
         if signature.get("ms_order") == 1:
             by_polarity.setdefault(signature.get("polarity"), []).append(stream["key"])
     return {polarity: keys for polarity, keys in by_polarity.items() if len(keys) > 1}
+
+
+def _setting(stream: dict, name: str) -> float | None:
+    """One setting of a stream's experiment, or ``None`` where its census
+    does not say.
+
+    The value the stream's sampled scans agree on (``acquisition_params``).
+    A reader reports it as a number or as text, by backend, and it is a
+    number here either way. A setting that varied among the scans sampled is
+    listed by name only, and reads as unknown like one no trailer carried.
+    """
+    constant = (stream.get("acquisition_params") or {}).get("constant") or {}
+    try:
+        value = float(constant.get(name))
+    except (TypeError, ValueError):
+        return None
+    return value if math.isfinite(value) else None
+
+
+def microscans(stream: dict) -> float | None:
+    """How many transients each scan of a stream averaged, or ``None`` where
+    its census does not say.
+
+    :param stream: A stream of a census from :func:`scan_streams`.
+    :return: The count, or ``None``.
+    """
+    return _setting(stream, MICROSCANS)
+
+
+def measured(stream: dict) -> tuple[str, float | None, float | None]:
+    """What a stream's experiment measured, to tell the streams of one file
+    apart by: its signature, its microscan count and its AGC target.
+
+    The signature is what the scan filter says of its scans, and the two
+    settings are what a method changes without the filter showing it. A
+    method that settles the source with a short scan and then measures
+    defines two experiments under one filter, and these settings are all
+    that says so. Where an experiment sits in the method, its segment and
+    scan event, is no part of it: two streams that agree on all three are
+    one experiment the method runs more than once
+    (``docs/dev/ingest_routing_and_splitting.md``, 4.1).
+
+    No other trailer value counts. What a scan reports of itself, its
+    injection time for one, varies within an experiment and says nothing of
+    what the method asked for.
+
+    A setting the census does not hold is ``None`` and compares as a value
+    like any other, so streams of one signature whose settings cannot be
+    read count as one experiment.
+
+    :param stream: A stream of a census from :func:`scan_streams`.
+    :return: ``(signature key, microscan count, AGC target)``.
+    """
+    return (
+        stream["signature_key"],
+        microscans(stream),
+        _setting(stream, AGC_TARGET),
+    )
+
+
+def peak_streams(streams: list[dict]) -> list[dict]:
+    """The MS1 streams a file's peaks are detected per, or ``[]``.
+
+    A file is detected per stream when some polarity holds MS1 streams that
+    measured more than one thing (:func:`measured`): two scan ranges, or one
+    range at two settings. Every MS1 stream of the file then gets a peak list
+    of its own, the only stream of another polarity included, so that each
+    peak of such a file belongs to exactly one stream.
+
+    A polarity whose streams all measured the same thing is one experiment
+    its method runs more than once, and there is nothing in it to detect
+    apart: pooled, its runs are averaged together, which is what they are.
+    Detected apart, each run would be a peak list of its own with nothing to
+    say which of them is the polarity's. So a file of such polarities is
+    detected whole, like one with a single MS1 stream in each polarity, where
+    the polarity already is the stream.
+
+    A run that repeats beside another experiment is not reached by this: its
+    file is detected per stream for the other experiment's sake, and each
+    run in it is a stream.
+
+    :param streams: A census from :func:`scan_streams`.
+    :return: The MS1 streams, in the order they first appear, or ``[]``.
+    """
+    kinds: dict[str | None, set[tuple]] = {}
+    for stream in streams:
+        signature = stream["signature"]
+        if signature.get("ms_order") == 1:
+            kinds.setdefault(signature.get("polarity"), set()).add(measured(stream))
+    if not any(len(found) > 1 for found in kinds.values()):
+        return []
+    return [stream for stream in streams if stream["signature"].get("ms_order") == 1]
+
+
+def file_scan_streams(datafile_path: str) -> list[dict]:
+    """A raw file's scan streams, taken from the file as it reads now.
+
+    What per-stream peak detection goes by. The census in a file's
+    ``.props`` was taken when the file was converted, by the reader of that
+    day, and a stream is selected by a key the reader of today computes;
+    asking the reader for both is what keeps them one answer.
+
+    :param datafile_path: Path to a Thermo ``.raw`` file.
+    :return: The census, as :func:`scan_streams` gives it.
+    """
+    with open_backend(datafile_path) as backend:
+        return scan_streams(backend)
 
 
 def stream_report(datafile_path: str, top: int = 10) -> dict:

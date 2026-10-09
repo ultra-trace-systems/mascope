@@ -24,6 +24,7 @@ from sqlalchemy import (
     Boolean,
     Float,
     ForeignKey,
+    ForeignKeyConstraint,
     Index,
     Integer,
     MetaData,
@@ -32,6 +33,7 @@ from sqlalchemy import (
     Text,
     TypeDecorator,
     UniqueConstraint,
+    Uuid,
     event,
     func,
     or_,
@@ -39,6 +41,7 @@ from sqlalchemy import (
     text,
     update,
 )
+from sqlalchemy import inspect as sa_inspect
 from sqlalchemy.orm import Mapped, declarative_base, mapped_column, relationship
 from sqlalchemy.sql.schema import CheckConstraint
 
@@ -48,6 +51,7 @@ from mascope_backend.api.models.sample.items.config import sample_item_config
 from mascope_backend.api.models.target.collections.config import (
     target_collection_config,
 )
+from mascope_backend.binding_rungs import BINDING_RUNGS
 from mascope_backend.runtime import runtime
 
 
@@ -866,6 +870,44 @@ class SampleFile(Base):
     # The file's name on the uploading machine, before the server filed it
     # under the instrument the agent reported. NULL when nothing renamed it.
     source_filename: Mapped[Optional[str]] = mapped_column(String(256), nullable=True)
+    # What the program that ran the acquisition said of it, as the uploading
+    # agent sent it: which step of which run acquired the file, in which mode,
+    # under which chemistry (schema mascope-acquisition/1,
+    # docs/dev/acquisition_sidecar.md). NULL for a file that came with none.
+    # Kept as it was sent, fields a later schema added included. Deferred:
+    # it is up to 16 KB, and every listing and every event of a file carries
+    # the row, so it is loaded only where it is asked for.
+    #
+    # none_as_null: a file registered with no record is given None by name,
+    # which a plain JSON column stores as the JSON value null - so the row
+    # would have a record that says nothing, and "IS NOT NULL" would count
+    # every file as having one.
+    acquisition: Mapped[Optional[dict]] = mapped_column(
+        JSON(none_as_null=True), nullable=True, deferred=True
+    )
+    # The record's four identifiers, as columns of their own so that "every
+    # file of this run" is one indexed query. UUIDs, minted by the control
+    # program. An acquisition is one file, so its id is unique: a record
+    # naming one another file already is is not stored.
+    acquisition_id: Mapped[Optional[str]] = mapped_column(
+        Uuid(as_uuid=False), nullable=True, unique=True
+    )
+    step_id: Mapped[Optional[str]] = mapped_column(
+        Uuid(as_uuid=False), nullable=True, index=True
+    )
+    sequence_run_id: Mapped[Optional[str]] = mapped_column(
+        Uuid(as_uuid=False), nullable=True, index=True
+    )
+    agent_id: Mapped[Optional[str]] = mapped_column(
+        Uuid(as_uuid=False), nullable=True, index=True
+    )
+    # SHA-256 of the file as it was uploaded, lowercase hex, as the file's
+    # registration gave it. The upload route gives the converter a hash only
+    # where the uploader reported one and the bytes received had it, so on a
+    # file that came through an upload a value here says the file the server
+    # holds is the file that was sent. The registration itself is taken at
+    # its word, as it is for the file's name and length.
+    sha256: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     # When the converter registered the file, set by the database on insert.
     # NULL on rows registered before the column existed: their time is not
     # known, and nothing stands in for it - a file's samples are recreated
@@ -885,6 +927,17 @@ class SampleFile(Base):
         TIMESTAMP(timezone=True), nullable=True
     )
 
+    def to_dict(self):
+        """The row's columns, without the acquisition record unless it was
+        loaded: asking for a deferred column here would fetch it for every
+        row of a listing, which is what deferring it is there to avoid."""
+        unloaded = sa_inspect(self).unloaded
+        return {
+            c.name: getattr(self, c.name)
+            for c in self.__table__.columns
+            if not (c.name == "acquisition" and "acquisition" in unloaded)
+        }
+
     # Relationships
     instrument_function = relationship(
         "InstrumentFunction", back_populates="sample_file"
@@ -898,6 +951,163 @@ class SampleFile(Base):
     )
 
 
+class AcquisitionStream(Base):
+    """One scan stream of a sample file: the scans of one experiment of its
+    acquisition method, or the composite its polarity's streams are stitched
+    into.
+
+    A raw Orbitrap file whose method runs more than one MS1 experiment in a
+    polarity is processed per experiment, each with a peak list of its own,
+    and where the experiments are m/z ranges of one chemistry they are
+    stitched into one spectrum, the polarity's composite
+    (``docs/dev/ingest_routing_and_splitting.md``, sections 4.4 and 4.5). A
+    composite is a row like any stream, with no scans of its own: its
+    segments point at it through ``composite_stream_id``, and it carries the
+    map they were stitched by in ``stitch``. ``sample_item.stream_id`` points
+    an item at the stream it reads, the composite where its polarity has one,
+    so an item points at one stream whether or not that stream is stitched.
+
+    Rows are written for every file whose census names its streams, one per
+    stream; a file with one stream in a polarity gets that one row, and its
+    item points at it, which means what the polarity has always meant. An
+    item with no ``stream_id`` spans every MS1 scan of its polarity, by
+    meaning and not by date: an item made before the table existed, one of a
+    polarity pooled from several streams, and one of a file with no census
+    all carry NULL, and a NULL is never filled in afterwards.
+
+    **A stream carries a census and no map; a composite carries the map and
+    no census.** A composite has no scans of its own, so ``signature_key``,
+    ``acquisition_params``, ``scan_count``, ``blocks``, ``t_first`` and
+    ``t_last`` are NULL on it, and its ``signature`` holds its polarity. The
+    ``census_or_map`` check pins both shapes, so a reader tells the two apart
+    by either; ``not_its_own_composite`` says what it says.
+
+    **A rebuild updates a file's rows in place**, matched on (file, key): a
+    stream keeps its id, and whatever points at it still does. A composite's
+    key is fixed by its polarity (``composite <polarity>``), so it comes out
+    the same on every run. A row the new census no longer gives is deleted -
+    unless an item still reads it, which the database refuses: such a row is
+    kept, and the file's processing detail names it and the item, until the
+    item is gone.
+
+    Two names for a stream, kept apart on purpose:
+
+    - ``stream_key`` is the stream's name in ITS file, and is what selects
+      its scans there - the reader's selection and the labels of the peak
+      store both take it. The same experiment can be keyed differently in
+      another file of its method (a run stopped before a repeated experiment
+      came round names the first one by its signature alone), so the key is
+      unique within a file and compared across files by nothing.
+    - ``signature_key``, ``scan_segment`` and ``scan_event`` are the stream's
+      identity, which reads the same in every file of one method: what it
+      measured, and the experiment's segment and event number. Which of the
+      three a comparison across files uses is the comparison's own choice.
+
+    The rest is the stream's census at the time the row was written: taken
+    from the file, never configured.
+    """
+
+    __tablename__ = "acquisition_stream"
+    __table_args__ = (
+        # Also the index that finds a file's streams and that the file's ON
+        # DELETE CASCADE walks: sample_file_id leads it, so the column needs
+        # none of its own.
+        UniqueConstraint(
+            "sample_file_id", "stream_key", name="uq_acquisition_stream_file_key"
+        ),
+        # What the two references on the pair point at: an item's and a
+        # segment's. Both carry the file, so a pointer into another file
+        # cannot be written.
+        UniqueConstraint(
+            "sample_file_id", "stream_id", name="uq_acquisition_stream_file_stream"
+        ),
+        ForeignKeyConstraint(
+            ["sample_file_id", "composite_stream_id"],
+            ["acquisition_stream.sample_file_id", "acquisition_stream.stream_id"],
+        ),
+        CheckConstraint(
+            "(stitch IS NULL"
+            " AND signature_key IS NOT NULL AND scan_count IS NOT NULL"
+            " AND blocks IS NOT NULL AND t_first IS NOT NULL AND t_last IS NOT NULL)"
+            " OR (stitch IS NOT NULL AND composite_stream_id IS NULL"
+            " AND signature_key IS NULL AND acquisition_params IS NULL"
+            " AND scan_count IS NULL AND blocks IS NULL"
+            " AND t_first IS NULL AND t_last IS NULL)",
+            name="census_or_map",
+        ),
+        CheckConstraint(
+            "composite_stream_id IS NULL OR composite_stream_id <> stream_id",
+            name="not_its_own_composite",
+        ),
+    )
+
+    stream_id: Mapped[str] = mapped_column(String(16), primary_key=True)
+    # CASCADE: a stream is a description of part of its file and has no
+    # meaning without it.
+    sample_file_id: Mapped[str] = mapped_column(
+        String(16),
+        ForeignKey("sample_file.sample_file_id", ondelete="CASCADE"),
+    )
+    # As wide as method_binding.signature_class, which holds the signature
+    # keys of a whole polarity joined together. A composite's key is
+    # "composite <polarity>": it selects no scans, and names the row in its
+    # file.
+    stream_key: Mapped[str] = mapped_column(String(512))
+    # The census of a stream, NULL on a composite (census_or_map):
+    signature_key: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
+    # Counted from 1, as the method counts them. Both NULL where the file
+    # records no experiment, which is an acquisition started with no method
+    # loaded, and on a composite.
+    scan_segment: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    scan_event: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    # The parsed fields of the signature, as the census reports them, and
+    # only those. A composite's holds its polarity and MS order, and
+    # "composite": true.
+    signature: Mapped[dict] = mapped_column(JSON)
+    # The attributes of section 4.1 as the census samples them from the
+    # stream's scans - the trailer values the sampled scans agree on, the
+    # names of those that varied, and what was sampled (``acquisition_params``
+    # of ``mascope_thermo.streams.scan_streams``). What the stitch rule and
+    # the repeat guard read. NULL on a composite - SQL NULL, which the shape
+    # check reads, and not the JSON text "null" the type would otherwise
+    # store a None as.
+    acquisition_params: Mapped[Optional[dict]] = mapped_column(
+        JSON(none_as_null=True), nullable=True
+    )
+    scan_count: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    # Contiguous runs of the stream's scans: 1 for an experiment that runs
+    # once, the number of repeats for one that alternates with another.
+    blocks: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    # First and last scan time [s] from the start of the acquisition.
+    t_first: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    t_last: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    # The composite this stream is a segment of (section 4.5). NULL on a
+    # composite row itself, and on every stream of a file that has none.
+    # The reference is on (sample_file_id, composite_stream_id), in
+    # __table_args__, so a segment points at a composite of its own file.
+    #
+    # No ON DELETE action, as for sample_item.stream_id: a composite goes
+    # only with its file or when the new census no longer gives it, its
+    # segments unpointed first, and a segment left pointing at a composite
+    # deleted on its own is a fault to refuse. Indexed for the question
+    # asked of a composite, its segments.
+    composite_stream_id: Mapped[Optional[str]] = mapped_column(
+        String(16), nullable=True, index=True
+    )
+    # On a composite row: its own polarity's part of the stitch map the peak
+    # store records (``mascope_signal.stitch``) - {"rule": the rule's
+    # version, "runs": [[lower, upper, stream_key], ...] the m/z each segment
+    # owns with the owner named by its key in this file, "source": whether
+    # the rule or a layout drew them, "notes": what was left out}. The store
+    # names an owner by its place among the store's streams, which no column
+    # here holds; the key is what the row beside it carries. NULL on every
+    # other row - SQL NULL, as for acquisition_params, since the shape check
+    # reads it.
+    stitch: Mapped[Optional[dict]] = mapped_column(
+        JSON(none_as_null=True), nullable=True
+    )
+
+
 class SampleItem(Base):
     """
     Represents a processed sample derived from a sample file.
@@ -908,6 +1118,27 @@ class SampleItem(Base):
     """
 
     __tablename__ = "sample_item"
+    # The rung has to be one of the four, because the column is only ever
+    # read by counting: a misspelling would be written and then disappear
+    # from every count, which is the one way a column like this fails
+    # silently. The item models validate it too, and this catches whatever
+    # does not go through them. Adding a rung means a migration - the
+    # schema-drift test does not compare check constraints.
+    __table_args__ = (
+        CheckConstraint(
+            "bound_by IS NULL OR bound_by IN ("
+            + ", ".join(f"'{rung}'" for rung in BINDING_RUNGS)
+            + ")",
+            name="bound_by_rung",
+        ),
+        # The stream an item reads is a stream of its own file: the
+        # reference carries the file, and a NULL stream_id leaves the pair
+        # unchecked, so an item made before streams is as it was.
+        ForeignKeyConstraint(
+            ["sample_file_id", "stream_id"],
+            ["acquisition_stream.sample_file_id", "acquisition_stream.stream_id"],
+        ),
+    )
 
     sample_item_id: Mapped[str] = mapped_column(String(16), primary_key=True)
     sample_batch_id: Mapped[str] = mapped_column(
@@ -936,6 +1167,78 @@ class SampleItem(Base):
             "ionization_mode.ionization_mode_id",
             ondelete="SET NULL",
         ),
+    )
+    # Which rung of the binding ladder auto-processing used to give this item
+    # the mode above - a ``binding_rungs.BINDING_RUNGS`` value
+    # (``docs/dev/ingest_routing_and_splitting.md``, section 5.2).
+    #
+    # "Auto-processing" is the whole of it. Three ways to be NULL, and all of
+    # them mean the same thing - this item was not routed:
+    #
+    # - auto-processing made it before the column existed;
+    # - it was made some other way - built by hand, or imported into a batch,
+    #   which resolves the mode by filename token and still records nothing,
+    #   because what this answers is how a file was ROUTED and an import is
+    #   not that;
+    # - somebody changed its mode through the item API afterwards, which
+    #   clears this (see ``update_sample_item``): whatever rung decided the
+    #   old mode did not decide the one it has now.
+    #
+    # So a count by rung is a count of ingested files, which is the only
+    # population the question is about.
+    #
+    # No NULL is ever filled in afterwards: a rung is a decision, and
+    # re-deriving one for an item already processed is what section 9.1
+    # forbids. A count therefore covers the files processed since the column
+    # shipped, which is the window any question about routing is asked over
+    # anyway.
+    #
+    # The rung outlives the mode. Deleting an ionization mode sets the column
+    # above to NULL and leaves this one as it was, which is the honest record
+    # - that rung did bind this item - so a count by rung includes items whose
+    # mode no longer exists.
+    #
+    # A file re-processed under the modes its own items held carries their
+    # rung forward rather than taking one for the re-processing, NULL
+    # included: copying a mode forward is nobody's decision, so it must not
+    # look like one.
+    bound_by: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)
+    # The binding that bound it, where ``bound_by`` is "method". Left as the
+    # binding this item took even after that binding re-points, because the
+    # pair of this and ``ionization_mode_id`` above is the audit trail: items
+    # whose binding now names another mode are exactly what a re-point leaves
+    # behind, and finding them is a query rather than a reconstruction.
+    #
+    # Indexed because that is the query - by binding, not by item - and
+    # because without it deleting one binding would scan every item to set
+    # this NULL.
+    method_binding_id: Mapped[Optional[str]] = mapped_column(
+        String(16),
+        ForeignKey("method_binding.method_binding_id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    # The scan stream this item reads (``AcquisitionStream``): its polarity's
+    # composite where the file holds one, else its polarity's one stream.
+    # NULL means the item spans every MS1 scan of its polarity: what an item
+    # meant before streams could be read apart. So a NULL is never filled in
+    # afterwards - an item made under the polarity rule says what it said
+    # (``docs/dev/ingest_routing_and_splitting.md``, sections 4.4 and 9.1).
+    #
+    # No ON DELETE action, deliberately. A stream row goes with its file, and
+    # on a rebuild only where nothing reads it: the rows are updated in place
+    # and a stream keeps its id, so an item keeps pointing at the same
+    # stream, and a row the new census no longer gives is kept while an item
+    # still reads it (AcquisitionStream). An item pointing at a stream being
+    # deleted is therefore a fault to refuse, and SET NULL would instead turn
+    # it, silently, into an item over the whole polarity.
+    #
+    # Indexed for the question asked the other way round - a stream's items -
+    # and so that deleting a stream does not scan every item for references.
+    # The reference itself is on (sample_file_id, stream_id), in
+    # __table_args__.
+    stream_id: Mapped[Optional[str]] = mapped_column(
+        String(16), nullable=True, index=True
     )
     t0: Mapped[Optional[float]] = mapped_column(Float)
     t1: Mapped[Optional[float]] = mapped_column(Float)
@@ -1437,10 +1740,35 @@ class MethodBinding(Base):
     #: Times an observation contradicted the chemistry this row holds. The
     #: row is never repointed by one: it goes ambiguous instead, and a key
     #: that keeps disagreeing is a method run with more than one reagent.
+    #: NOT incremented by the two columns below. A later observation naming
+    #: another mode row of the SAME chemistry is not a disagreement - it is
+    #: a site that could not edit a mode in use and made a second row for
+    #: it - and counting it here would make a report of unreliable keys list
+    #: every site that has ever renamed a mode.
     n_disagreements: Mapped[int] = mapped_column(Integer, default=0)
+    #: The mode row the newest observations name, while that is not the one
+    #: above, and how many of them in a row have named it. The binding
+    #: re-points once they reach ``bindings.REPOINT_AFTER``, and the run is
+    #: cleared by any observation that names the current row instead - so it
+    #: is the last N, not N spread over a year.
+    #:
+    #: Why a run rather than a straight move: a binding that followed its
+    #: newest observation outright would let one corrected file drag a whole
+    #: method's routing with it (section 5.3, "Why three"). NULL and 0 mean
+    #: every recent observation agrees with the row, which is the ordinary
+    #: state.
+    candidate_mode_id: Mapped[Optional[str]] = mapped_column(
+        String(16),
+        ForeignKey("ionization_mode.ionization_mode_id", ondelete="SET NULL"),
+        index=True,
+    )
+    n_candidate_streams: Mapped[int] = mapped_column(Integer, default=0)
 
     # Relationships
-    ionization_mode = relationship("IonizationMode")
+    # Both foreign_keys spelled out: two columns of this table point at
+    # ionization_mode now, so neither relationship can be inferred.
+    ionization_mode = relationship("IonizationMode", foreign_keys=[ionization_mode_id])
+    candidate_mode = relationship("IonizationMode", foreign_keys=[candidate_mode_id])
 
 
 class TargetIsotope(Base):
@@ -2819,6 +3147,7 @@ __all__ = [
     "Dataset",
     "SampleBatch",
     "SampleFile",
+    "AcquisitionStream",
     "SampleItem",
     "TargetCollection",
     "TargetCollectionInSampleBatch",

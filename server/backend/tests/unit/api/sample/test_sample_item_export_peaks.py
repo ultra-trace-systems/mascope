@@ -82,7 +82,9 @@ async def _run_export(tmp_path, live_scan_times, live_tics):
             f"{_MOD}.fetch_sample_batch",
             AsyncMock(
                 return_value=SimpleNamespace(
-                    sample_batch_id="batch-1", sample_batch_name="Test batch"
+                    sample_batch_id="batch-1",
+                    sample_batch_name="Test batch",
+                    dataset_id="dataset-1",
                 )
             ),
         ),
@@ -163,3 +165,33 @@ async def test_each_tic_lands_on_the_scan_it_was_measured_in(tmp_path):
     np.testing.assert_allclose(first_peak.tic.to_numpy(), TIC_VALUES)
     # The peak intensities are the store's own
     np.testing.assert_allclose(first_peak.intensity.to_numpy(), INTENSITIES[0])
+
+
+#: The columns the export wrote before the record ids were added, in order.
+LEGACY_COLUMNS = [
+    "datetime",
+    "datetime_utc",
+    "tic",
+    "mz",
+    "intensity",
+    "unit",
+    "sample_batch_name",
+    "sample_item_name",
+    "filename",
+    "filter_id",
+    "sample_item_type",
+    "sample_file_id",
+    "sample_item_id",
+    "instrument",
+]
+
+
+@pytest.mark.asyncio
+async def test_every_row_names_its_batch_and_dataset_after_the_old_columns(tmp_path):
+    """Each row traces to the records it came from; the ids are appended, so a
+    reader that picks columns by position reads what it read before."""
+    _, frame = await _run_export(tmp_path, STORED_TIME, TIC_VALUES)
+
+    assert list(frame.columns) == LEGACY_COLUMNS + ["sample_batch_id", "dataset_id"]
+    assert (frame.sample_batch_id == "batch-1").all()
+    assert (frame.dataset_id == "dataset-1").all()

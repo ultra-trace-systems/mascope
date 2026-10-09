@@ -255,18 +255,20 @@ def applies_to_instrument(mode: IonizationMode, instrument: str | None) -> bool:
     )
 
 
-async def _modes_matching_tokens(sample_file: SampleFile) -> list[IonizationMode]:
+def _modes_matching_tokens(
+    sample_file: SampleFile, all_ionization_modes: list[IonizationMode]
+) -> list[IonizationMode]:
     """The modes whose token occurs in a file's name, in a polarity it holds.
 
     Scoped to the file's instrument: a mode belonging to another instrument is
     not a candidate, however well its token reads in this file's name.
 
     :param sample_file: The file to match.
+    :param all_ionization_modes: Every configured mode.
     :return: Every matching mode, which may be none, one or several per
         polarity - the caller decides what to do about that.
     :rtype: list[IonizationMode]
     """
-    all_ionization_modes = await fetch_all_ionization_modes()
     file_polarities = set(sample_file.polarity)
     matched = []
     for ionization_mode in all_ionization_modes:
@@ -368,7 +370,7 @@ def _prefer_scoped(
 
 
 async def resolve_ionization_modes_by_tokens(
-    sample_file: SampleFile,
+    sample_file: SampleFile, modes: list[IonizationMode] | None = None
 ) -> list[IonizationMode]:
     """Resolve ionization modes based on tokens in the sample file.
 
@@ -379,6 +381,14 @@ async def resolve_ionization_modes_by_tokens(
 
     :param sample_file: The sample file to resolve ionization modes for.
     :type sample_file: SampleFile
+    :param modes: Every configured mode, for a caller asking about many files
+        in a row - the modes are the same for all of them, and fetching them
+        per file is a query per file. Every request path leaves it unset and
+        gets today's modes, which is the only answer a file being processed
+        may be bound on. The two kinds of failure below are how a caller that
+        asks in bulk tells "no token names this file" from "its name says two
+        chemistries": the first is what the method binding rung is for, the
+        second is a configuration to fix.
     :raises NoTokenMatchError: If no mode's token occurs in the name.
     :raises ValueError: If a polarity of the file matches no mode or more
         than one.
@@ -388,8 +398,10 @@ async def resolve_ionization_modes_by_tokens(
     runtime.logger.debug(
         f"Resolving ionization modes by tokens for {sample_file.filename}"
     )
+    if modes is None:
+        modes = await fetch_all_ionization_modes()
     matched_ionization_modes = _prefer_scoped(
-        await _modes_matching_tokens(sample_file), sample_file
+        _modes_matching_tokens(sample_file, modes), sample_file
     )
 
     if not matched_ionization_modes:
@@ -407,6 +419,67 @@ async def resolve_ionization_modes_by_tokens(
         )
 
     return chosen
+
+
+async def resolve_ionization_modes_by_declaration(
+    sample_file: SampleFile,
+    declared: str,
+    modes: list[IonizationMode] | None = None,
+) -> tuple[list[IonizationMode], str | None]:
+    """Resolve the modes a file's acquisition record names.
+
+    Rung 0 of the binding ladder. The record says which chemistry the file
+    was acquired under, as the token of an ionization mode: the string that
+    would otherwise have to be in the file's name. So it is read against the
+    same modes a name is, within the file's own instrument and with the
+    instrument's own mode winning over a shared one of the same token.
+
+    **The token has to be the mode's token, not contain it.** A file name is
+    searched for tokens because nothing says where in it the chemistry is. A
+    declaration is the chemistry and nothing else, so anything short of
+    equality is a different word.
+
+    **Every polarity of the file must be answered, as under every rung.** A
+    token does not repeat within one scope, so a declaration nearly always
+    names one mode, and a file holding two polarities is then not bound by
+    it: it falls to the next rung whole, rather than half bound here and half
+    there. The one pair a declaration can name is an instrument's own mode in
+    one polarity beside a shared mode of the same token in the other, which
+    the token check allows; a file of both polarities on that instrument is
+    bound to the two, as its name would bind it.
+
+    :param sample_file: The file to bind.
+    :type sample_file: SampleFile
+    :param declared: What its acquisition record gives as ``ionization``.
+    :type declared: str
+    :param modes: Every configured mode, for a caller that has them already.
+    :type modes: list[IonizationMode] | None
+    :return: One mode per polarity of the file and None; or no modes and why
+        the declaration binds nothing, as a clause that reads after "but".
+    :rtype: tuple[list[IonizationMode], str | None]
+    """
+    if modes is None:
+        modes = await fetch_all_ionization_modes()
+    file_polarities = set(sample_file.polarity or "")
+    named = _prefer_scoped(
+        [
+            mode
+            for mode in modes
+            if mode.ionization_mode_token == declared
+            and applies_to_instrument(mode, sample_file.instrument)
+            and mode.ionization_mode_polarity in file_polarities
+        ],
+        sample_file,
+    )
+    if not named:
+        return [], (
+            "no ionization mode of this instrument has that token in a "
+            "polarity the file holds"
+        )
+    chosen, problems = one_mode_per_polarity(sample_file, named)
+    if problems:
+        return [], "; ".join(problems)
+    return chosen, None
 
 
 def tokens_conflict(

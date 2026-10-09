@@ -646,6 +646,43 @@ class TestLoaderContract:
 
 
 @requires_stack
+class TestProvenanceContract:
+    """The provenance block the server reports, and the loaders stamp."""
+
+    def test_the_server_names_its_deployment_and_build(self, mascope):
+        _skip_unless_attr(mascope, "provenance")
+
+        block = mascope.provenance()
+
+        assert block is not None, "the server answered 404 for /api/provenance"
+        assert block["provenance_version"] == 1
+        # Generated on the stack's first start and kept in its filestore
+        assert isinstance(block["deployment_id"], str) and block["deployment_id"]
+        assert {
+            "mascope_version",
+            "match_score_version",
+            "peak_assignment_engine_version",
+        } <= set(block["produced_with"])
+
+    def test_a_loaders_frame_carries_the_block(self, mascope):
+        _skip_unless_attr(mascope, "provenance")
+        dataset, batches = _first_dataset_and_batches(mascope)
+        batch = batches.iloc[0]
+
+        peaks = mascope.load_peaks(
+            dataset=dataset["dataset_id"],
+            batches=batch["sample_batch_name"],
+            exact=True,
+            matches=False,
+            confirm_above=None,
+        )
+
+        assert peaks is not None and not peaks.empty
+        provenance = peaks.attrs["provenance"]
+        assert provenance["deployment_id"] == mascope.provenance()["deployment_id"]
+
+
+@requires_stack
 class TestErrorContract:
     """HTTP error statuses must surface as the documented SDK exceptions."""
 

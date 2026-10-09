@@ -54,6 +54,50 @@ class NoScansFoundError(ValueError):
     pass
 
 
+class UnknownStreamError(LookupError):
+    """A scan stream was asked for by a key the file holds no stream under.
+
+    Deliberately not a :class:`NoScansFoundError`, and not a ``ValueError``.
+    An empty selection is an ordinary answer, and the code above the reader
+    handles it as one: a polarity the file does not carry is skipped, a
+    window that holds no scan reads as nothing found. A key the file does not
+    hold is another thing, and caught with those it would be read as "no
+    scans".
+
+    A key is a stream's name, not its identity, so one that was stored and is
+    read with later can have gone stale without anything being mistyped. The
+    name of one experiment depends on what else its file holds, on which
+    reader backend rendered its scan filter, and on the version of the code
+    that keys (``mascope_thermo.streams``).
+
+    The message names the first :attr:`KEYS_IN_MESSAGE` of the file's keys
+    and counts the rest, because a message travels into logs and error
+    events and a file can hold many streams: a targeted MSn method has one
+    for each precursor. :attr:`held` keeps them all.
+
+    :param stream: The key that was asked for.
+    :param keys: The stream key of every scan of the file, or any iterable of
+        the keys the file holds.
+    """
+
+    #: How many of the file's keys the message prints. Enough for every MS1
+    #: layout seen so far, the widest of which holds eight streams.
+    KEYS_IN_MESSAGE = 8
+
+    def __init__(self, stream: str, keys: Iterable[str]):
+        self.stream = stream
+        #: The keys the file does hold, all of them, in the order its streams
+        #: first appear.
+        self.held = list(dict.fromkeys(keys))
+        shown = self.held[: self.KEYS_IN_MESSAGE]
+        more = len(self.held) - len(shown)
+        super().__init__(
+            f"The file holds no scan stream '{stream}'. Its streams: "
+            + "; ".join(shown)
+            + (f"; and {more} more" if more else "")
+        )
+
+
 def _validate_mz_range(
     RawFile, mz_min: float | None, mz_max: float | None
 ) -> tuple[float, float]:
@@ -95,7 +139,12 @@ class RawFileManager:
 
 class ScanSelector:
     """Class to select scans and their indices based on polarity,
-    time range, and scan type filters.
+    time range, scan type and scan stream filters.
+
+    A stream is selected by its key, against the key of every scan of the
+    file: the selector reads no trailers itself, so whoever asks for a stream
+    hands it ``stream_keys`` (``ThermoBackend`` does, from
+    :func:`mascope_thermo.streams.scan_stream_keys`).
     """
 
     def __init__(
@@ -105,12 +154,16 @@ class ScanSelector:
         t_min: float | None = None,
         t_max: float | None = None,
         ms_type: Literal["Ms", "Ms2"] | None = "Ms",
+        stream: str | None = None,
+        stream_keys: list[str] | None = None,
     ):
         self._RawFile = RawFile
         self._polarity = polarity
         self._t_min = t_min
         self._t_max = t_max
         self._ms_type = ms_type
+        self._stream = stream
+        self._stream_keys = stream_keys
 
         self.raw_scan_filters = [
             self._RawFile.GetFilterForScanNumber(i) for i in self.all_scan_indices
@@ -185,7 +238,15 @@ class ScanSelector:
             dtype=bool,
         )
 
-    def _bad_first_scan(self) -> bool:
+    def _stream_mask(self) -> np.ndarray:
+        """Creates a boolean mask for the scans of the specified stream."""
+        if self._stream_keys is None:
+            raise ValueError(
+                "Selecting a scan stream needs the stream key of every scan."
+            )
+        return np.array([key == self._stream for key in self._stream_keys], dtype=bool)
+
+    def _bad_first_scan(self, among: np.ndarray | None = None) -> bool:
         """Checks if the TIC in the first scan is 5 times higher than
         the median TIC of the other scans
 
@@ -193,16 +254,23 @@ class ScanSelector:
         is an outlier with an abnormally high TIC.
 
         #TODO: can be removed if Thermo releases a fix for this issue
+
+        :param among: A boolean mask of the scans to compare the first scan
+            with, itself included. None compares it with every other scan of
+            the file.
         """
+        tic_values = np.array([stats.TIC for stats in self.raw_scan_stats])
+        if among is not None:
+            tic_values = tic_values[among]
+
         # <= 1, not == 1: a file with no scans at all would otherwise index
         # off an empty TIC array below, raising IndexError from what is only
         # meant to be an outlier check - and masking the NoScansFoundError
         # that scan_indices_1based raises for exactly that case. Mirrors
         # OpenTFRawBackend._bad_first_scan.
-        if len(self.raw_scan_stats) <= 1:
+        if len(tic_values) <= 1:
             return False
 
-        tic_values = np.array([stats.TIC for stats in self.raw_scan_stats])
         first_scan_tic = tic_values[0]
         median_other_tic = np.median(tic_values[1:])
 
@@ -230,7 +298,23 @@ class ScanSelector:
         if self._ms_type:
             mask &= self._ms_type_mask()
 
-        if self._bad_first_scan():
+        # The first scan is compared with every other scan of the file - or,
+        # when a stream is asked for, with the other scans of that stream,
+        # and only if the first scan is one of them.
+        if self._stream is None:
+            bad_first_scan = self._bad_first_scan()
+        else:
+            in_stream = self._stream_mask()
+            # A file with no scans holds no key, and stays the empty
+            # selection its handling is built on.
+            if in_stream.size and not in_stream.any():
+                raise UnknownStreamError(self._stream, self._stream_keys)
+            mask &= in_stream
+            bad_first_scan = bool(
+                in_stream.size and in_stream[0] and self._bad_first_scan(in_stream)
+            )
+
+        if bad_first_scan:
             # INFO: a data quirk of the file, re-evaluated on every scan
             # selection for as long as the file is in use
             runtime.logger.info(
@@ -247,6 +331,7 @@ class ScanSelector:
                 f"polarity='{self._polarity}', "
                 f"time_range=({self._t_min}, {self._t_max}), "
                 f"ms_type='{self._ms_type}'"
+                + ("" if self._stream is None else f", stream='{self._stream}'")
             )
 
         return filtered_indices.tolist()
@@ -331,6 +416,7 @@ def get_signal(
     mz_min: float | None = None,
     mz_max: float | None = None,
     polarity: Literal["+", "-"] | None = None,
+    stream: str | None = None,
 ) -> xr.Dataset:
     """This function uses the Thermo Fisher libraries to read the raw file and extract
     the scan data. It then merges the scans to have a common m/z scale and converts
@@ -353,12 +439,21 @@ def get_signal(
     :param polarity: + or -, Polarity of the scans to be retrieved, optional,
                     defaults to None
     :type polarity: str
+    :param stream: Key of the scan stream to read (see
+                   ``mascope_thermo.streams``), optional, defaults to None
+                   (every stream)
+    :type stream: str
     :return: An xarray Dataset containing the signal data
     :rtype: xr.Dataset
     """
     with open_backend(datafile_path) as backend:
         scan_mzs, scan_specs, scan_time = backend.profile_per_scan(
-            polarity=polarity, t_min=t_min, t_max=t_max, mz_min=mz_min, mz_max=mz_max
+            polarity=polarity,
+            t_min=t_min,
+            t_max=t_max,
+            mz_min=mz_min,
+            mz_max=mz_max,
+            stream=stream,
         )
 
         if not scan_mzs:
@@ -396,10 +491,14 @@ def compute_sum_signal(
     t_max: float | None = None,
     ppm: int = 1,
     polarity: Literal["+", "-"] | None = None,
-    reconstruct: bool = False,
+    stream: str | None = None,
 ) -> tuple[xr.DataArray, int]:
     """Computes sum signal, binning counts within ``ppm`` value.
-    Polarity and time filters may be optionally provided.
+    Polarity, time and scan stream filters may be optionally provided.
+
+    The signal is the measured profile summed over the selected scans: what the
+    instrument-function fit reads its peak shapes from, and what the spectrum
+    views draw.
 
     :param datafile_path: Path to the Thermo Fisher raw file (.raw) containing the data.
     :type datafile_path: str
@@ -414,12 +513,10 @@ def compute_sum_signal(
     :param polarity: + or -, Polarity of the scans to be retrieved, optional,
                     defaults to None
     :type polarity: str, optional
-    :param reconstruct: When True, return a profile reconstructed as one Gaussian
-                    per centroid (overlays the centroids exactly; matches Thermo's
-                    profile, which is also a reconstruction) -- intended for
-                    display. The default False returns the real measured profile,
-                    which the instrument-function fit needs.
-    :type reconstruct: bool, optional
+    :param stream: Key of the scan stream to sum (see
+                   ``mascope_thermo.streams``), optional, defaults to None
+                   (every stream)
+    :type stream: str, optional
     :raises ValueError: If the specified time range is invalid, or if no data is found
                         in the specified filters, or the specified polarity is not found
                         in the raw file.
@@ -427,14 +524,16 @@ def compute_sum_signal(
     :rtype: tuple[xr.DataArray, float]
     """
     with open_backend(datafile_path) as backend:
-        indices = backend.scan_indices(polarity=polarity, t_min=t_min, t_max=t_max)
+        indices = backend.scan_indices(
+            polarity=polarity, t_min=t_min, t_max=t_max, stream=stream
+        )
         runtime.logger.debug(
             f"Selected {len(indices)} scans for sum signal computation. "
-            f"Polarity: {polarity}, binning ppm: {ppm}, reconstruct: {reconstruct}."
+            f"Polarity: {polarity}, binning ppm: {ppm}."
         )
         # average=False restores the sum signal (averaged * scans combined).
         mz, sum_signal, num_of_combined_scans = backend.average_profile(
-            indices, ppm=ppm, average=False, reconstruct=reconstruct
+            indices, ppm=ppm, average=False
         )
 
     sum_signal_dask = da.from_array(sum_signal, chunks="auto")
@@ -449,9 +548,10 @@ def get_tic_per_scan(
     datafile_path: str,
     timestamps: Iterable[float] | None = None,
     polarity: Literal["+", "-"] | None = None,
+    stream: str | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     """
-    Allows filtering by timestamps and polarity.
+    Allows filtering by timestamps, polarity and scan stream.
     If timestamps are provided, the function will return the TIC
     values for the closest scan to each timestamp.
 
@@ -463,11 +563,17 @@ def get_tic_per_scan(
     :param polarity: + or -, Polarity of the scans to be retrieved,
                      optional, defaults to None
     :type polarity: str, optional
+    :param stream: Key of the scan stream to read (see
+                   ``mascope_thermo.streams``), optional, defaults to None
+                   (every stream)
+    :type stream: str, optional
     :return: Tuple containing the scan timestamps [s] and TIC values as numpy arrays
     :rtype: tuple
     """
     with open_backend(datafile_path) as backend:
-        scan_timestamp, scan_tic = backend.tic_per_scan(polarity=polarity)
+        scan_timestamp, scan_tic = backend.tic_per_scan(
+            polarity=polarity, stream=stream
+        )
 
     if timestamps is not None:
         requested_timestamps = np.asarray(list(timestamps), dtype=np.float64)
@@ -496,9 +602,10 @@ def get_scan_timestamps(
     t_max: float | None = None,
     polarity: Literal["+", "-"] | None = None,
     scan_type: Literal["Ms", "Ms2"] | None = "Ms",
+    stream: str | None = None,
 ) -> np.ndarray:
     """Extracts the scan timestamps [s] from the raw file,
-    with optional polarity, time and scan-type filtering.
+    with optional polarity, time, scan-type and scan-stream filtering.
 
     :param datafile_path: Path to the Thermo Fisher raw file (.raw) containing the data.
     :type datafile_path: str
@@ -513,12 +620,20 @@ def get_scan_timestamps(
                       scan. Defaults to 'Ms', which is what callers reading the
                       MS1 time axis want; pass None to span a whole acquisition.
     :type scan_type: Literal['Ms', 'Ms2'] | None, optional
+    :param stream: Key of the scan stream to read (see
+                   ``mascope_thermo.streams``), optional, defaults to None
+                   (every stream)
+    :type stream: str, optional
     :return: Array of filtered scan timestamps [s]
     :rtype: np.ndarray
     """
     with open_backend(datafile_path) as backend:
         return backend.scan_times(
-            polarity=polarity, t_min=t_min, t_max=t_max, ms_type=scan_type
+            polarity=polarity,
+            t_min=t_min,
+            t_max=t_max,
+            ms_type=scan_type,
+            stream=stream,
         )
 
 
@@ -529,6 +644,7 @@ def get_peak_timeseries(
     t_max: float | None = None,
     polarity: Literal["+", "-"] | None = None,
     ppm: float = 5,
+    stream: str | None = None,
 ) -> xr.DataArray:
     """Extracts the peak timeseries for the specified m/z values
     in the time range (t_min, t_max).
@@ -546,6 +662,10 @@ def get_peak_timeseries(
     :type polarity: str
     :param ppm: Mass tolerance in parts-per-million for centroid binning, defaults to 5.
     :type ppm: float, optional
+    :param stream: Key of the scan stream to read (see
+                   ``mascope_thermo.streams``), optional, defaults to None
+                   (every stream)
+    :type stream: str, optional
     :return: An xarray DataArray containing the peak timeseries
     :rtype: xr.DataArray
     """
@@ -553,7 +673,7 @@ def get_peak_timeseries(
 
     with open_backend(datafile_path) as backend:
         intensities_for_mz_values, scan_times = backend.xic(
-            mzs, ppm=ppm, polarity=polarity, t_min=t_min, t_max=t_max
+            mzs, ppm=ppm, polarity=polarity, t_min=t_min, t_max=t_max, stream=stream
         )
 
     peak_timeseries_dask = da.from_array(intensities_for_mz_values, chunks="auto")
@@ -642,6 +762,7 @@ def get_centroids(
     average: bool = False,
     ppm: int = 1,
     polarity: Literal["+", "-"] | None = None,
+    stream: str | None = None,
 ) -> tuple:
     """
     Extract centroided peaks from a Thermo Fisher raw file
@@ -668,13 +789,19 @@ def get_centroids(
     :param polarity: Polarity of scans to use ('+' or '-'),
                      optional, defaults to None (all polarities).
     :type polarity: Literal['+', '-'], optional
+    :param stream: Key of the scan stream to average (see
+                   ``mascope_thermo.streams``), optional, defaults to None
+                   (every stream).
+    :type stream: str, optional
     :return: Tuple of (masses, intensities, resolutions,
              signal-to-noise ratios) for centroid peaks matching
              the criteria.
     :rtype: tuple of np.ndarray
     """
     with open_backend(datafile_path) as backend:
-        indices = backend.scan_indices(polarity=polarity, t_min=t_min, t_max=t_max)
+        indices = backend.scan_indices(
+            polarity=polarity, t_min=t_min, t_max=t_max, stream=stream
+        )
         return backend.average_centroids(indices, ppm=ppm, average=average)
 
 
@@ -686,6 +813,7 @@ def get_centroids_per_scan(
     mz_max: float | None = None,
     polarity: Literal["+", "-"] | None = None,
     scan_type: Literal["Ms", "Ms2"] | None = None,
+    stream: str | None = None,
 ) -> list[dict[str, np.ndarray]]:
     """Reads centroided peaks from a Thermo Fisher raw file
     within a specified time range and m/z range.
@@ -709,6 +837,10 @@ def get_centroids_per_scan(
     :param scan_type: Filter by scan type ('Ms' or 'Ms2'),
                       optional, defaults to None (all scans)
     :type scan_type: str
+    :param stream: Key of the scan stream to read (see
+                   ``mascope_thermo.streams``), optional, defaults to None
+                   (every stream)
+    :type stream: str
     :return: List of dictionaries, each containing per-scan
              centroid masses, intensities, resolutions,
              signal-to-noise ratios, and timestamps.
@@ -722,6 +854,7 @@ def get_centroids_per_scan(
             ms_type=scan_type,
             mz_min=mz_min,
             mz_max=mz_max,
+            stream=stream,
         )
 
 

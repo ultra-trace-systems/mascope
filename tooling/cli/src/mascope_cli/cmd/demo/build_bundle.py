@@ -32,7 +32,7 @@ from importlib.metadata import version as pkg_version
 from pathlib import Path
 
 from mascope_cli.cmd.demo import bundles
-from mascope_cli.cmd.demo._seed import DEMO_ENV, env_dir
+from mascope_cli.cmd.demo._seed import DEMO_ENV, copy_filestore, env_dir
 from mascope_cli.cmd.demo.verify import DEFAULT_TOLERANCES
 from mascope_cli.runtime import runtime
 
@@ -465,13 +465,14 @@ def export_snapshot(out_dir: Path) -> dict:
     """
     final_dump = _dump_demo_db(out_dir, "snapshot")
 
-    # Copy the demo env filestore into the bundle.
+    # Copy the demo env filestore into the bundle, without the builder's
+    # deployment id.
     src_filestore = env_dir() / "filestore"
     dest_filestore = out_dir / "snapshot" / "filestore"
     if src_filestore.is_dir():
         if dest_filestore.exists():
             shutil.rmtree(dest_filestore)
-        shutil.copytree(src_filestore, dest_filestore)
+        copy_filestore(src_filestore, dest_filestore)
     else:
         runtime.logger.warning(
             f"No demo filestore at {src_filestore}; snapshot has DB only"

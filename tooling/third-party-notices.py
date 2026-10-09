@@ -18,6 +18,10 @@
 # image, whose build runs this with `--for docs` (server/frontend/Dockerfile):
 # the packages that build the site copy their theme, scripts and styles into
 # it, and the assets vendored under docs/user/assets keep their licence files.
+# And the File Agent's Windows program, which PyInstaller assembles from the
+# packages of its build environment together with the interpreter itself:
+# agents/file/build.ps1 runs this with `--for agent --interpreter` in that
+# environment, and the installer puts the result beside the program.
 #
 # It reads the environment rather than uv.lock, because the question is what
 # ships, and uv.lock records no licence metadata anyway. uv.lock is read only to
@@ -25,10 +29,18 @@
 # with the interpreter whose packages should be attributed:
 #   /opt/uv/tools/mascope/bin/python tooling/third-party-notices.py -o FILE
 #   python tooling/third-party-notices.py --for docs --vendored docs/user/assets
+#   uv run python ../../tooling/third-party-notices.py --for agent --interpreter \
+#       --lock uv.lock -o dist/THIRD_PARTY_NOTICES.txt   # in agents/file
 #   uv run python tooling/third-party-notices.py \
 #       -o "$MASCOPE_PATH/THIRD_PARTY_NOTICES.txt"   # a checkout; includes dev tools
 # The backend serves the file from its runtime home, MASCOPE_PATH - in a
 # worktree that is the shared home, not the checkout.
+#
+# A distribution can carry copies of other projects inside it, with their
+# metadata, off the import path: setuptools does. Each copy gets an entry of
+# its own. And what is redistributed without a licence file of its own has
+# its text kept in tooling/licence-texts (the README there says which, and
+# where each came from).
 #
 # Each entry names the licence the way the distribution declares it. Only the
 # name normalisation and uv.lock's first-party packages come from
@@ -41,6 +53,7 @@ from __future__ import annotations
 import argparse
 import importlib.metadata
 import importlib.util
+import platform
 import re
 import sys
 from collections.abc import Iterable
@@ -92,10 +105,58 @@ declared licence, followed by the licence and notice files it ships; each
 vendored asset, the licence files kept with it. Generated at build time
 (tooling/third-party-notices.py) - do not edit.
 """,
+    "agent": """\
+Mascope File Agent - third-party notices
+
+The Mascope File Agent program is assembled by PyInstaller from the open-source
+Python packages below and the Python interpreter that runs them, and carries
+them inside its executable. Each entry gives the package, its version and
+declared licence, followed by the licence and notice files the package itself
+ships. Generated when the program is built, from the distributions installed in
+its build environment (tooling/third-party-notices.py) - do not edit.
+
+Every package installed in that environment has an entry, and so has every
+other project that one of them carries a copy of along with its metadata.
+The program is made from some of them, and a few are build tools of which it
+contains little or nothing: of PyInstaller itself, the bootloader and the
+run-time hooks, which its licence below provides for.
+""",
 }
+
+# What the notices are refused for unless every package in them has a licence
+# text: the installer hands this file on in place of the texts themselves.
+WHOLE = {"agent"}
+
+# Where an interpreter keeps the licence it ships under, relative to its base
+# prefix: the root on Windows, the standard library's directory elsewhere.
+# Which of the libraries built into its binaries that file names depends on
+# who built the interpreter - OpenSSL and libffi in one build and not in
+# another, Expat and libmpdec in none - so it is never the whole of what a
+# frozen program carries along. The rest is INCORPORATED, below.
+_INTERPRETER_LICENCES = (
+    "LICENSE.txt",
+    "LICENSE",
+    "lib/python{major}.{minor}/LICENSE.txt",
+)
+INTERPRETER_LICENCE = "Python Software Foundation License Version 2 (PSF-2.0)"
+
+# Licence texts kept in the repository for what ships none of its own; its
+# README says what each is and where it came from.
+KEPT_TEXTS = Path(__file__).with_name("licence-texts")
+# A distribution's, by its normalised name and exact version.
+KEPT_LICENCE = "{name}@{version}.txt"
+KEPT_LICENCE_LABEL = "LICENSE (from the project's repository; the package ships none)"
+# CPython's account of the software built into the interpreter and its
+# standard library, by the Python it is for.
+INCORPORATED = "cpython-{major}.{minor}.rst"
+INCORPORATED_LABEL = (
+    "Doc/license.rst (CPython {major}.{minor}: the software built into the "
+    "interpreter and its standard library)"
+)
 
 RULE = "-" * 79
 NO_FILES = "(The package ships no licence file; its declared licence is given above.)"
+CARRIED = "A copy carried inside {owner}."
 VENDORED = "(vendored)"
 VENDORED_LICENCE = "as given in the files below"
 
@@ -126,6 +187,45 @@ def _licence_files(dist) -> list[tuple[str, str]]:
         if location.is_file():
             found.append(("/".join(inside), _read_text(location)))
     return sorted(found)
+
+
+def _licence_files_in(directory: Path) -> list[tuple[str, str]]:
+    """The same, read from a metadata directory itself.
+
+    For a copy carried inside another distribution, whose own record of files
+    may not have been kept.
+    """
+    found = []
+    for path in sorted(directory.rglob("*")):
+        inside = path.relative_to(directory).parts
+        pep639 = len(inside) > 1 and inside[0] == "licenses"
+        legacy = len(inside) == 1 and _LICENCE_NAME.match(inside[0])
+        if path.is_file() and (pep639 or legacy):
+            found.append(("/".join(inside), _read_text(path)))
+    return sorted(found)
+
+
+def _kept_licence(key: str, version: str) -> list[tuple[str, str]]:
+    """The licence kept in the repository for a distribution that ships none."""
+    path = KEPT_TEXTS / KEPT_LICENCE.format(name=key, version=version)
+    return [(KEPT_LICENCE_LABEL, _read_text(path))] if path.is_file() else []
+
+
+def _carried_inside(dist) -> list[Path]:
+    """The metadata directories of the other projects ``dist`` carries copies of.
+
+    A directory further down than the distribution's own, which is at the top
+    of the import path: `setuptools/_vendor/<project>-<version>.dist-info`.
+    Nothing on the import path points at those, so no listing of the
+    installed distributions includes them.
+    """
+    found = set()
+    for file in dist.files or ():
+        parts = file.parts
+        for depth in range(1, len(parts) - 1):
+            if parts[depth].endswith(".dist-info") and parts[depth + 1] == "METADATA":
+                found.add(Path(dist.locate_file(Path(*parts[: depth + 1]))))
+    return sorted(path for path in found if path.is_dir())
 
 
 def _declared(metadata) -> str:
@@ -175,23 +275,92 @@ def collect(first_party: set[str], distributions: Iterable | None = None) -> lis
     """
     if distributions is None:
         distributions = importlib.metadata.distributions()
-    packages: dict[str, dict] = {}
+    # Keyed for the order of the file: by name, a distribution before the
+    # copies of it that others carry, and those by version.
+    packages: dict[tuple[str, str], dict] = {}
+    carried: list[tuple[dict, Path]] = []
     for dist in distributions:
         metadata = dist.metadata
         name = (metadata.get("Name") or "").strip()
         key = licences._normalize(name)
         # The first one wins, as it does on import: the same name further down
         # sys.path is shadowed and never runs.
-        if not key or key in first_party or key in packages:
+        if not key or key in first_party or (key, "") in packages:
             continue
-        packages[key] = {
+        version = (metadata.get("Version") or "?").strip()
+        packages[(key, "")] = {
             "name": name,
-            "version": (metadata.get("Version") or "?").strip(),
+            "version": version,
             "licence": _declared(metadata),
             "homepage": _homepage(metadata),
-            "files": _licence_files(dist),
+            "files": _licence_files(dist) or _kept_licence(key, version),
+        }
+        carried += [(packages[(key, "")], path) for path in _carried_inside(dist)]
+
+    for owner, directory in carried:
+        metadata = importlib.metadata.Distribution.at(directory).metadata
+        name = (metadata.get("Name") or "").strip()
+        key = licences._normalize(name)
+        version = (metadata.get("Version") or "?").strip()
+        installed = packages.get((key, ""))
+        # The same version installed in its own right says all this entry
+        # would, and one copy among several of a version is enough.
+        same = installed is not None and installed["version"] == version
+        if not key or same or (key, version) in packages:
+            continue
+        packages[(key, version)] = {
+            "name": name,
+            "version": version,
+            "licence": _declared(metadata),
+            "homepage": _homepage(metadata),
+            "files": _licence_files_in(directory) or _kept_licence(key, version),
+            "within": f"{owner['name']} {owner['version']}",
         }
     return [packages[key] for key in sorted(packages)]
+
+
+def collect_interpreter(base: Path | None = None) -> dict:
+    """An entry for the running Python interpreter, with the licence it ships.
+
+    For a program that carries its interpreter with it, as a frozen executable
+    does: no distribution's metadata describes CPython, so its entry comes from
+    the licence file in the interpreter's own installation, and from CPython's
+    account of the software built into it, kept in the repository for the
+    Python in question because no installation can be relied on to have it.
+
+    :param base: The interpreter's base prefix, by default the running one's -
+        the installation a virtual environment was made from, not the
+        environment, which holds no licence.
+    """
+    base = Path(sys.base_prefix) if base is None else base
+    major, minor = sys.version_info[:2]
+    for candidate in _INTERPRETER_LICENCES:
+        path = base / candidate.format(major=major, minor=minor)
+        if path.is_file():
+            files = [(path.name, _read_text(path))]
+            break
+    else:
+        # Asked for, so an entry without its text would be the gap this exists
+        # to close, written out as if it were closed.
+        sys.exit(f"{base}: the interpreter ships no licence file - refusing to write")
+    incorporated = KEPT_TEXTS / INCORPORATED.format(major=major, minor=minor)
+    if not incorporated.is_file():
+        # The licence file alone would leave out libraries the program
+        # carries, and say nothing of having done so.
+        sys.exit(
+            f"{incorporated}: not found - it is Doc/license.rst of CPython "
+            f"{major}.{minor}, which names the software built into the "
+            "interpreter - refusing to write"
+        )
+    label = INCORPORATED_LABEL.format(major=major, minor=minor)
+    files.append((label, _read_text(incorporated)))
+    return {
+        "name": "Python",
+        "version": platform.python_version(),
+        "licence": INTERPRETER_LICENCE,
+        "homepage": "https://www.python.org/",
+        "files": files,
+    }
 
 
 def collect_vendored(root: Path) -> list[dict]:
@@ -223,17 +392,27 @@ def render(
     packages: list[dict],
     vendored: list[dict] = (),
     header: str = HEADERS["server"],
+    interpreter: dict | None = None,
 ) -> str:
-    """The notices file for ``packages`` and ``vendored``, as the About tab shows it."""
+    """The notices file for ``packages`` and ``vendored``, as the About tab shows it.
+
+    ``interpreter`` is the entry of an interpreter shipped with them, which
+    comes first: everything else in the file runs on it.
+    """
     count = f"{len(packages)} packages"
+    if interpreter is not None:
+        count = f"The Python interpreter, {count}"
     if vendored:
         count += f", {len(vendored)} vendored assets"
     lines = [header, f"{count}.", ""]
-    for package in [*packages, *vendored]:
+    leading = [interpreter] if interpreter is not None else []
+    for package in [*leading, *packages, *vendored]:
         lines += [RULE, f"{package['name']} {package['version']}"]
         lines.append(f"License: {package['licence']}")
         if package["homepage"]:
             lines.append(package["homepage"])
+        if package.get("within"):
+            lines.append(CARRIED.format(owner=package["within"]))
         lines.append("")
         if not package["files"]:
             lines += [NO_FILES, ""]
@@ -270,6 +449,12 @@ def main(argv: list[str] | None = None) -> int:
         help="directory of vendored third-party assets whose licence files to "
         "carry as well",
     )
+    parser.add_argument(
+        "--interpreter",
+        action="store_true",
+        help="also attribute the Python interpreter running this, for a "
+        "program that carries its interpreter with it",
+    )
     args = parser.parse_args(argv)
 
     if not args.lock.is_file():
@@ -279,6 +464,12 @@ def main(argv: list[str] | None = None) -> int:
     if not packages:
         # An empty file would read as "no third-party code", which is never true.
         sys.exit("no third-party distributions installed here - refusing to write")
+    bare = [f"{p['name']} {p['version']}" for p in packages if not p["files"]]
+    if bare and args.subject in WHOLE:
+        sys.exit(
+            f"no licence text for {', '.join(bare)}: none in the package and none "
+            f"kept in {KEPT_TEXTS.name} (its README says how) - refusing to write"
+        )
     vendored = []
     if args.vendored is not None:
         if not args.vendored.is_dir():
@@ -288,7 +479,9 @@ def main(argv: list[str] | None = None) -> int:
             # Asked for, so a wrong path rather than assets that need nothing.
             sys.exit(f"{args.vendored}: no licence files found - refusing to write")
 
-    text = render(packages, vendored, HEADERS[args.subject])
+    interpreter = collect_interpreter() if args.interpreter else None
+
+    text = render(packages, vendored, HEADERS[args.subject], interpreter)
     if args.output is None:
         sys.stdout.buffer.write(text.encode("utf-8"))
     else:
@@ -297,7 +490,8 @@ def main(argv: list[str] | None = None) -> int:
         args.output.write_text(text, encoding="utf-8", newline="\n")
         print(
             f"wrote {args.output}: {len(packages)} packages, "
-            f"{len(vendored)} vendored assets",
+            f"{len(vendored)} vendored assets"
+            + (", the interpreter" if interpreter is not None else ""),
             file=sys.stderr,
         )
     return 0

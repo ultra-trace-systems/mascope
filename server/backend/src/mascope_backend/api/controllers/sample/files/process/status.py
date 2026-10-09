@@ -15,10 +15,13 @@ than one scan stream, that peak detection pools them.
 """
 
 import asyncio
+from collections.abc import Collection
 from datetime import datetime, timezone
 
 from sqlalchemy import or_, update
 
+import mascope_file.io as m_io
+import mascope_signal.compute as m_compute
 from mascope_backend.api.models.sample.files.config import (
     IN_PROGRESS,
     STALLED_AFTER,
@@ -55,19 +58,33 @@ def compose_detail(*parts: str | None) -> str | None:
     return _clip(" ".join(part.strip() for part in parts if part and part.strip()))
 
 
-def pooled_streams_note(streams: list[dict]) -> str | None:
-    """Name the polarities whose MS1 scans come from more than one stream.
+def pooled_streams_note(
+    streams: list[dict], stitched: Collection[str] = ()
+) -> str | None:
+    """Name the polarities whose MS1 scans come from more than one stream,
+    and say what peak detection did with them.
 
     Peak detection pools every MS1 scan of a polarity into one averaged
-    spectrum and one peak list, so a file whose method alternates scan ranges
-    or scan modes within a polarity has its streams mixed. The census that
-    shows it is the converter's ``scan_streams``
-    (``SampleFileProps.scan_streams``).
+    spectrum and one peak list, so a file whose method runs more than one
+    experiment in a polarity has its streams mixed: alternating scan ranges
+    or scan modes, the same scan at another microscan count, or one scan
+    definition repeated later in the method. The census that shows it is the
+    converter's ``scan_streams`` (``SampleFileProps.scan_streams``).
+
+    Unless the file's peaks were detected per stream and stitched. Its peak
+    store then holds a peak list for each and the map that makes one
+    spectrum of them, and saying they are pooled would be wrong: the
+    sentence says they are stitched instead.
 
     :param streams: The file's scan stream census, as
         :func:`read_scan_streams` returns it: every entry a dict with a dict
         ``signature``.
-    :return: One sentence per pooled polarity, or None when nothing is pooled.
+    :param stitched: The keys of the streams the file's peak store holds a
+        peak list for each of, under a stitch map, as
+        :func:`read_store_stream_keys` returns them. Empty for a file whose
+        store is pooled, which is nearly every file.
+    :return: One sentence per polarity that holds more than one MS1 stream,
+        or None when none does.
     """
     by_polarity: dict[str, list[str]] = {}
     for stream in streams:
@@ -81,8 +98,13 @@ def pooled_streams_note(streams: list[dict]) -> str | None:
                 str(stream.get("key"))
             )
     notes = [
-        f"Polarity {polarity} pools {len(keys)} MS1 scan streams into one peak "
-        f"list: {'; '.join(keys)}."
+        (
+            f"Polarity {polarity} stitches {len(keys)} MS1 scan streams into one "
+            f"spectrum: {'; '.join(keys)}."
+            if all(key in stitched for key in keys)
+            else f"Polarity {polarity} pools {len(keys)} MS1 scan streams into "
+            f"one peak list: {'; '.join(keys)}."
+        )
         for polarity, keys in by_polarity.items()
         if len(keys) > 1
     ]
@@ -124,13 +146,48 @@ async def read_scan_streams(filename: str) -> list[dict] | None:
         return None
 
 
+def _store_stream_keys(filename: str) -> list[str]:
+    """Synchronous body of :func:`read_store_stream_keys`."""
+    try:
+        store = m_io.load_array(filename, var="peak_timeseries")
+        keys = m_compute.peak_store_streams(store)
+        if keys:
+            # A per-stream store without a map is not stitched; every read
+            # of it is refused as stale, and so is this one
+            m_compute.peak_store_stitch_map(store)
+        return keys
+    except Exception:  # noqa: BLE001 - a missing store is not a processing error
+        runtime.logger.opt(exception=True).debug(
+            f"Could not read the peak store's streams of {filename}"
+        )
+        return []
+
+
+async def read_store_stream_keys(filename: str) -> list[str]:
+    """The keys of the streams a stored file's peaks were detected per and
+    stitched by, read from its peak store.
+
+    Empty for a file whose store holds one peak list per polarity, which is
+    nearly every file, and for one with no store or an unreadable one: like
+    the census, nothing that reads this may cost a file its processing.
+
+    :param filename: The sample file's stored name.
+    :return: The store's stream keys, or ``[]``.
+    """
+    return await asyncio.to_thread(_store_stream_keys, filename)
+
+
 async def read_pooled_streams_note(filename: str) -> str | None:
-    """:func:`pooled_streams_note` for a stored file, read from its ``.props``.
+    """:func:`pooled_streams_note` for a stored file, read from its ``.props``
+    and its peak store.
 
     :param filename: The sample file's stored name.
     :return: The note, or None.
     """
-    return pooled_streams_note(await read_scan_streams(filename) or [])
+    streams = await read_scan_streams(filename)
+    if not streams:
+        return None
+    return pooled_streams_note(streams, await read_store_stream_keys(filename))
 
 
 async def claim_for_processing(sample_file_ids: list[str], detail: str) -> list[str]:

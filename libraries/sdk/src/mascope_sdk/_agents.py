@@ -58,6 +58,12 @@ RENEW_TOKEN_PATH = "auth/devices/token"
 #: Path of the backend's TUS upload endpoint, relative to /api/.
 TUS_UPLOAD_PATH = "sample/files/upload/tus"
 
+#: The upload metadata keys an acquisition record and a file's SHA-256 travel
+#: under. ``mascope_sdk.acquisition``, the record's schema, takes them from
+#: here.
+ACQUISITION_METADATA_KEY = "acquisition"
+SHA256_METADATA_KEY = "sha256"
+
 #: Bytes sent per PATCH request. Each chunk is one HTTP request, so keep it
 #: safely under reverse-proxy body limits (Cloudflare caps request bodies
 #: at 100 MB) while staying large enough that overhead is negligible.
@@ -335,6 +341,8 @@ def api_post_file_tus(
     chunk_size: int = TUS_CHUNK_SIZE,
     timezone: str | None = None,
     instrument: str | None = None,
+    acquisition: bytes | None = None,
+    sha256: str | None = None,
 ) -> None:
     """Upload a file with the resumable TUS protocol.
 
@@ -364,6 +372,15 @@ def api_post_file_tus(
         to file uploads under. Sent as upload metadata next to the on-disk file
         name; a server that does not read it ignores it.
     :type instrument: str, optional
+    :param acquisition: Optional acquisition record of the file, as the JSON
+        document :func:`mascope_sdk.acquisition.read_sidecar` returns. It
+        travels in the headers of the creation request and can make them
+        larger than a server that does not expect it accepts, so send it only
+        to one that announces :data:`mascope_sdk.acquisition.CAPABILITY`.
+    :type acquisition: bytes, optional
+    :param sha256: Optional SHA-256 of the file, as lowercase hex, for the
+        server to keep with it. For a server that announces the same.
+    :type sha256: str, optional
     :raises ValueError: if ``upload_filename`` contains path components.
     :raises AuthenticationError: if the credential is rejected (401), e.g. a
         revoked device, an expired device token, or a deployment that accepts
@@ -402,6 +419,14 @@ def api_post_file_tus(
     metadata.append(f"source_filename {b64(os.path.basename(filepath))}")
     if instrument:
         metadata.append(f"instrument {b64(instrument)}")
+    # What the program that ran the acquisition wrote down about it, and the
+    # file's hash. Unlike the keys above these are not sent blind: the caller
+    # asks the server first, because the record is large for a header.
+    if acquisition:
+        encoded = base64.b64encode(acquisition).decode("ascii")
+        metadata.append(f"{ACQUISITION_METADATA_KEY} {encoded}")
+    if sha256:
+        metadata.append(f"{SHA256_METADATA_KEY} {b64(sha256)}")
     create_url = f"{url}/api/{TUS_UPLOAD_PATH}/"
     create_headers = {
         **_tus_headers(access_token),

@@ -76,6 +76,97 @@ def test_an_empty_census_pools_nothing():
     assert status.pooled_streams_note([]) is None
 
 
+def test_streams_the_store_stitched_are_not_called_pooled():
+    """A file whose peaks were detected per stream and stitched: the detail
+    says so, not the opposite."""
+    note = status.pooled_streams_note(
+        [_stream(LOW, "-"), _stream(HIGH, "-")], stitched=[LOW, HIGH]
+    )
+
+    assert note == (
+        f"Polarity - stitches 2 MS1 scan streams into one spectrum: {LOW}; {HIGH}."
+    )
+
+
+def test_a_polarity_is_only_stitched_when_every_stream_of_it_is():
+    """Where the store does not hold a list for each stream the census
+    names, the polarity is described as it is safest to read it."""
+    note = status.pooled_streams_note(
+        [_stream(LOW, "-"), _stream(HIGH, "-")], stitched=[LOW]
+    )
+
+    assert note.startswith("Polarity - pools 2 MS1 scan streams")
+
+
+def test_each_polarity_says_what_was_done_with_its_own_streams():
+    streams = [
+        _stream(LOW, "-"),
+        _stream(HIGH, "-"),
+        _stream("pos low", "+"),
+        _stream("pos high", "+"),
+    ]
+
+    note = status.pooled_streams_note(streams, stitched=[LOW, HIGH])
+
+    assert "Polarity - stitches 2 MS1 scan streams into one spectrum" in note
+    assert "Polarity + pools 2 MS1 scan streams into one peak list" in note
+
+
+def _store(keys, stitched=True):
+    """What the signal library reads off a peak store with these keys."""
+    from mascope_signal.compute import StalePeakStoreError
+
+    def _map(_store):
+        if not stitched:
+            raise StalePeakStoreError("no map")
+        return {"rule": 1}
+
+    return (
+        patch.object(status.m_io, "load_array", return_value=object()),
+        patch.object(status.m_compute, "peak_store_streams", return_value=keys),
+        patch.object(status.m_compute, "peak_store_stitch_map", side_effect=_map),
+    )
+
+
+@pytest.mark.asyncio
+async def test_the_streams_a_store_stitched_are_read_off_the_store():
+    opened, keys, stitch = _store([LOW, HIGH])
+    with opened, keys, stitch:
+        assert await status.read_store_stream_keys("x.raw") == [LOW, HIGH]
+
+
+@pytest.mark.asyncio
+async def test_a_pooled_store_names_no_stitched_streams():
+    opened, keys, stitch = _store([])
+    with opened, keys, stitch:
+        assert await status.read_store_stream_keys("x.raw") == []
+
+
+@pytest.mark.asyncio
+async def test_a_per_stream_store_without_a_map_is_not_stitched():
+    opened, keys, stitch = _store([LOW, HIGH], stitched=False)
+    with opened, keys, stitch:
+        assert await status.read_store_stream_keys("x.raw") == []
+
+
+@pytest.mark.asyncio
+async def test_a_file_with_no_store_names_no_stitched_streams():
+    """Nothing that reads this may cost a file its processing."""
+    with patch.object(status.m_io, "load_array", side_effect=FileNotFoundError("none")):
+        assert await status.read_store_stream_keys("x.raw") == []
+
+
+@pytest.mark.asyncio
+async def test_the_note_knows_a_stitched_file_from_its_store():
+    props = {"scan_streams": [_stream(LOW, "-"), _stream(HIGH, "-")]}
+    opened, keys, stitch = _store([LOW, HIGH])
+
+    with patch.object(status, "read_props", return_value=props), opened, keys, stitch:
+        note = await status.read_pooled_streams_note("Orbi_2026.09.21_x.raw")
+
+    assert note.startswith("Polarity - stitches 2 MS1 scan streams")
+
+
 @pytest.mark.asyncio
 async def test_the_note_is_read_from_the_files_props():
     props = {"scan_streams": [_stream(LOW, "-"), _stream(HIGH, "-")]}

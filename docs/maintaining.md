@@ -1135,6 +1135,45 @@ user documentation, the packages that build it and the assets vendored under
 distributions installed in the server image). A new vendored asset needs its
 licence file next to it, or the docs build has nothing to carry for it.
 
+### Deployment identity
+
+Each deployment has an id that names it in the provenance of everything it
+exports: the *Provenance* sheet of a batch's *Batch data* spreadsheet, and the
+`df.attrs["provenance"]` of the frames the SDK's loaders return
+(`GET /api/provenance`). Records are keyed by ids that are unique within one
+deployment only, so the deployment id is what tells two deployments' exports
+apart.
+
+Nothing needs setting. On its first start the backend generates an id and
+keeps it in `deployment.json` at the root of the env's filestore, and every
+later start reads it back. The filestore is where the id belongs: it is
+persistent in every deployment, and the [off-site backup](#backups) copies it
+with the database dumps, so a restored deployment keeps its name. To choose
+the name yourself, set it in the env's config toml:
+
+```toml
+[backend]
+deployment_id = "example-lab"   # 1-64 letters, digits, ".", "_" or "-"
+```
+
+A configured id wins over the generated one and is read at start. It is part
+of the env's config, which `mascope env sync` copies with the rest of the env,
+so an env synced from one with a configured id reports that same id: leave
+`deployment_id` unset on envs that are synced from one another.
+
+Copying an env's data does not copy its generated id. `mascope env sync` and
+the demo bundle leave `deployment.json` behind, so a synced env or a demo stack
+keeps the id it has, or generates its own on its next start. A restore from
+backup does bring it back - the point when the original is gone. A backup
+restored beside an original that keeps running carries the original's id as
+well: move the restored `deployment.json` aside before the copy's first start,
+and it generates its own.
+
+The file is never written over. If the backend finds it but cannot read an id
+from it, it logs a warning at start and exports name no deployment until the
+file is repaired, moved aside (the next start generates a new id), or
+`deployment_id` is set.
+
 ### Where a deployment's settings live
 
 | Path | What |
@@ -1145,6 +1184,7 @@ licence file next to it, or the docs build has nothing to carry for it.
 | `$MASCOPE_PATH/.runtime/secrets/` | `postgres_password.txt`, `jwt_secret_key.txt`, `server_owner_secret_key.txt`, `mfa_encryption_key.txt`, TLS cert/key, `backup.env` |
 | `$MASCOPE_PATH/.runtime/database/backups/prod/` | database dumps (incl. pre-migration) |
 | `$MASCOPE_PATH/.runtime/update/` | `state.json` (pending update), `status.log` |
+| the env's filestore, `deployment.json` | the generated [deployment id](#deployment-identity), unless `[backend] deployment_id` is set |
 
 ## Troubleshooting
 
@@ -1182,10 +1222,14 @@ the stack is down fails, and the next one runs the pass again.
 
 **A file was processed in an unexpected way** - samples missing, or peaks that
 look like two measurements mixed together. `mascope file scans <file.raw>` lists
-the file's scan streams: what each group of scans measured (polarity, scan
-range, scan mode, resolution), when, and its strongest peaks, which usually
-include the reagent ions of its chemistry. A polarity with more than one MS1
-stream is pooled into one peak list by processing, and the command says so. It
+the file's scan streams, one per experiment of its acquisition method: what
+each measured (polarity, scan range, scan mode, resolution), when, under which
+scan event, and its strongest peaks, which usually include the reagent ions of
+its chemistry. Two experiments that measure the same thing on paper - the same
+range at another microscan count, or one scan definition repeated later in the
+method - are listed apart, with the scan event closing each one's name. A
+polarity with more than one MS1 stream is pooled into one peak list by
+processing, and the command says so. It
 reads a copy of the file on this machine, inside the backend container, so the
 stack must be up.
 

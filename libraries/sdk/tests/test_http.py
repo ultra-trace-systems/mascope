@@ -191,3 +191,38 @@ def test_auth_and_not_found_keep_their_own_types():
         _http._raise_for_status(_response(401), "http://server/api/x")
     with pytest.raises(NotFoundError):
         _http._raise_for_status(_response(404), "http://server/api/x")
+
+
+def _always_unavailable(monkeypatch):
+    """Answer every GET 503, recording the requests and the backoff sleeps."""
+    seen = {"gets": 0, "sleeps": []}
+
+    def fake_get(url, **kwargs):
+        seen["gets"] += 1
+        return _response(503)
+
+    monkeypatch.setattr(_http.requests, "get", fake_get)
+    monkeypatch.setattr(_http.time, "sleep", seen["sleeps"].append)
+    return seen
+
+
+def test_a_transient_failure_is_retried_by_default(monkeypatch):
+    seen = _always_unavailable(monkeypatch)
+
+    with pytest.raises(ServerError):
+        _http.http_get("http://server", "x", "token")
+
+    assert seen["gets"] == _http.RETRY_MAX_ATTEMPTS
+    assert len(seen["sleeps"]) == _http.RETRY_MAX_ATTEMPTS - 1
+
+
+def test_a_request_whose_failure_is_tolerated_is_tried_once(monkeypatch):
+    """One attempt and no backoff: the caller has what it needs either way,
+    and the retries would only hold it back."""
+    seen = _always_unavailable(monkeypatch)
+
+    with pytest.raises(ServerError):
+        _http.http_get("http://server", "x", "token", max_attempts=1)
+
+    assert seen["gets"] == 1
+    assert seen["sleeps"] == []

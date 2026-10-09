@@ -5,8 +5,9 @@ The sink is entirely gated on ``MASCOPE_SENTRY_DSN`` and forwards WARNING+ logur
 records to GlitchTip via ``sentry-sdk``. These tests inject a fake ``sentry_sdk``
 into ``sys.modules`` so they run without the optional ``sentry`` extra installed,
 and cover: the default-OFF gate, init wiring/idempotency, the WARNING+ capture
-paths (message vs exception), the SDK-loop guard, never-raise behavior, and the
-CLI exclusion in ``RuntimeLogging.configure``. One test drives a real loguru
+paths (message vs exception), how each is grouped (call-site fingerprint, bound
+override, log entry beside an exception), the SDK-loop guard, never-raise
+behavior, and the CLI exclusion in ``RuntimeLogging.configure``. One test drives a real loguru
 logger end to end.
 """
 
@@ -27,6 +28,8 @@ class _FakeScope:
         self.level = None
         self.tags = {}
         self.extras = {}
+        self.fingerprint = None
+        self.event_processors = []
 
     def set_level(self, value):
         self.level = value
@@ -36,6 +39,15 @@ class _FakeScope:
 
     def set_extra(self, key, value):
         self.extras[key] = value
+
+    def add_event_processor(self, func):
+        self.event_processors.append(func)
+
+    def process(self, event):
+        """Run the scope's processors over an event, as the SDK would."""
+        for func in self.event_processors:
+            event = func(event, {})
+        return event
 
     def __enter__(self):
         return self
@@ -118,9 +130,25 @@ class _Message:
         self.record = record
 
 
-def _msg(name="app.module", level="ERROR", message="boom", exc=None):
+def _msg(
+    name="app.module",
+    level="ERROR",
+    message="boom",
+    exc=None,
+    function="work",
+    line=42,
+    extra=None,
+):
     return _Message(
-        {"name": name, "level": _Level(level), "message": message, "exception": exc}
+        {
+            "name": name,
+            "level": _Level(level),
+            "message": message,
+            "exception": exc,
+            "function": function,
+            "line": line,
+            "extra": extra or {},
+        }
     )
 
 
@@ -223,9 +251,22 @@ def test_sink_keeps_the_log_line_beside_the_exception(fake_sentry):
     )
 
     assert fake_sentry.captured == [("exc", (OSError, err, None))]
-    assert fake_sentry.last_scope.extras == {
-        "log_message": "Failed to process file run_042.raw (1048576 bytes)"
+    # As the event's log entry, which monitoring shows beside the exception
+    # without letting it change the issue's title or grouping.
+    event = fake_sentry.last_scope.process({"exception": {"values": []}})
+    assert event["logentry"] == {
+        "formatted": "Failed to process file run_042.raw (1048576 bytes)"
     }
+    assert event["exception"] == {"values": []}
+
+
+def test_sink_leaves_exception_grouping_to_the_exception(fake_sentry):
+    """Exceptions already group by their own title - type and first message
+    line - and location; a call-site fingerprint would merge every exception
+    one handler catches into one issue."""
+    err = ValueError("nope")
+    rl._sentry_sink(_msg(level="ERROR", exc=_Exc(ValueError, err, None)))
+    assert fake_sentry.last_scope.fingerprint is None
 
 
 def test_sink_captures_message_without_exception(fake_sentry):
@@ -233,6 +274,81 @@ def test_sink_captures_message_without_exception(fake_sentry):
 
     assert fake_sentry.captured == [("msg", "disk almost full", None)]
     assert fake_sentry.last_scope.level == "warning"
+
+
+def test_sink_groups_messages_by_call_site(fake_sentry):
+    """Warnings that embed a path or id group into one issue per logging call,
+    not one per entity they name."""
+    for path in ("/streams/a.raw", "/streams/b.raw"):
+        rl._sentry_sink(
+            _msg(
+                name="mascope_backend.file_converter.base_processor",
+                level="WARNING",
+                message=f"worker died holding {path}",
+                function="requeue_inflight",
+                line=118,
+            )
+        )
+        assert fake_sentry.last_scope.fingerprint == [
+            "mascope_backend.file_converter.base_processor:requeue_inflight:118"
+        ]
+
+    assert [c[1] for c in fake_sentry.captured] == [
+        "worker died holding /streams/a.raw",
+        "worker died holding /streams/b.raw",
+    ]
+
+
+def test_sink_separates_call_sites_in_one_function(fake_sentry):
+    rl._sentry_sink(_msg(level="WARNING", function="work", line=10))
+    first = fake_sentry.last_scope.fingerprint
+    rl._sentry_sink(_msg(level="WARNING", function="work", line=20))
+    assert fake_sentry.last_scope.fingerprint != first
+
+
+def test_sink_honours_a_bound_fingerprint(fake_sentry):
+    """A call site grouped per entity on purpose keeps its own key."""
+    rl._sentry_sink(
+        _msg(
+            level="WARNING",
+            message="drift on instrument X",
+            extra={rl.SENTRY_FINGERPRINT: ["drift:X"]},
+        )
+    )
+    assert fake_sentry.last_scope.fingerprint == ["drift:X"]
+
+
+def test_sink_bound_default_restores_text_grouping(fake_sentry):
+    rl._sentry_sink(
+        _msg(level="WARNING", extra={rl.SENTRY_FINGERPRINT: ["{{ default }}"]})
+    )
+    assert fake_sentry.last_scope.fingerprint == ["{{ default }}"]
+
+
+@pytest.mark.parametrize(
+    "bound, expected",
+    [
+        ("drift:X", ["drift:X"]),  # one part, not one per character
+        (("drift", 7), ["drift", "7"]),
+        (7, ["7"]),
+    ],
+)
+def test_sink_normalizes_a_bound_fingerprint(fake_sentry, bound, expected):
+    rl._sentry_sink(_msg(level="WARNING", extra={rl.SENTRY_FINGERPRINT: bound}))
+    assert fake_sentry.last_scope.fingerprint == expected
+
+
+def test_sink_bound_fingerprint_applies_to_exceptions(fake_sentry):
+    err = ValueError("nope")
+    rl._sentry_sink(
+        _msg(
+            level="ERROR",
+            exc=_Exc(ValueError, err, None),
+            extra={rl.SENTRY_FINGERPRINT: ["per-batch:7"]},
+        )
+    )
+    assert fake_sentry.captured == [("exc", (ValueError, err, None))]
+    assert fake_sentry.last_scope.fingerprint == ["per-batch:7"]
 
 
 def test_sink_maps_critical_to_fatal(fake_sentry):
@@ -371,3 +487,30 @@ def test_sink_via_real_loguru(fake_sentry):
 
     kinds = [c[0] for c in fake_sentry.captured]
     assert kinds == ["exc", "msg"]
+
+
+def test_sink_via_real_loguru_reads_call_site_and_binding(fake_sentry):
+    """The record keys the sink reads exist on real loguru records."""
+    import inspect
+
+    from loguru import logger
+
+    scopes = []
+    new_scope = fake_sentry.new_scope
+
+    def _recording_new_scope():
+        scopes.append(new_scope())
+        return scopes[-1]
+
+    fake_sentry.new_scope = _recording_new_scope
+    sink_id = logger.add(rl._sentry_sink, level="WARNING", enqueue=False, catch=False)
+    try:
+        line = inspect.currentframe().f_lineno + 1
+        logger.warning("unbound")
+        logger.bind(**{rl.SENTRY_FINGERPRINT: ["entity:1"]}).warning("bound")
+    finally:
+        logger.remove(sink_id)
+
+    function = "test_sink_via_real_loguru_reads_call_site_and_binding"
+    assert scopes[0].fingerprint == [f"{__name__}:{function}:{line}"]
+    assert scopes[1].fingerprint == ["entity:1"]

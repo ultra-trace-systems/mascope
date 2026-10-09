@@ -26,7 +26,14 @@ then outranks the token the day the reagent changes.
 polarity: analyzer, source, scan mode, scan ranges and resolution, taken from
 the scan-stream census. A method that alternates two ranges within a polarity
 has both in its class, because today's peak detection pools them into one
-peak list. Precursors are deliberately absent: the census keys a
+peak list. A method that runs one scan definition as several experiments has
+that definition in its class once: the class is built from what each stream
+measured, its signature, and not from the stream's key. A key names an
+experiment only where another of the same file shares its signature, so a
+class built from keys would change with how far a run got - a repeated
+experiment is one name in a file that stopped before the repeat and two in
+one that completed - and one method would be keyed two ways.
+Precursors are deliberately absent: the census keys a
 data-dependent MSn family as one stream, and only MS1 streams are read here
 anyway.
 
@@ -168,10 +175,14 @@ def signature_class(
 ) -> str | None:
     """What the instrument was told to measure, for one polarity.
 
-    The MS1 stream keys of that polarity, de-duplicated and sorted so that a
-    method whose streams interleave in a different order still reads as one
-    class, joined with ``" + "``. Not clipped: the caller clips for storage
-    with :func:`clipped`, and the digest is taken from the whole value.
+    The signatures of that polarity's MS1 streams, de-duplicated and sorted
+    so that a method whose streams interleave in a different order, or that
+    repeats an experiment, still reads as one class, joined with ``" + "``.
+    A stream's signature is its ``signature_key``; a census taken before
+    streams carried one names each stream by its signature, so its ``key``
+    is read instead and gives the same text. Not clipped: the caller clips
+    for storage with :func:`clipped`, and the digest is taken from the whole
+    value.
 
     With no census the answer depends on the instrument. One whose reader
     never records a census has nothing further to say, and its polarity is
@@ -192,11 +203,11 @@ def signature_class(
     """
     keys = sorted(
         {
-            str(stream["key"])
+            str(stream.get("signature_key") or stream["key"])
             for stream in streams or []
             if stream.get("signature", {}).get("ms_order") == 1
             and stream.get("signature", {}).get("polarity") == polarity
-            and stream.get("key")
+            and (stream.get("signature_key") or stream.get("key"))
         }
     )
     if keys:

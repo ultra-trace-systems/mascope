@@ -20,6 +20,7 @@ from typing import Callable
 
 import requests
 
+from mascope_file_agent.capabilities import ServerCapabilities
 from mascope_sdk import agent_headers
 
 
@@ -93,6 +94,8 @@ class StatusFollower:
     :param logger: Where the lines go.
     :param verify: Whether to verify the server's TLS certificate.
     :param clock: Monotonic seconds, replaceable in tests.
+    :param server: Asked what the server can do; None for one of the
+        follower's own.
     """
 
     def __init__(
@@ -102,16 +105,21 @@ class StatusFollower:
         logger,
         verify: bool = True,
         clock: Callable[[], float] = time.monotonic,
+        server: ServerCapabilities | None = None,
     ):
         self._url = url
         self._access_token = access_token
         self._logger = logger
         self._verify = verify
         self._clock = clock
+        self._server = server or ServerCapabilities(
+            url, access_token, logger, verify=verify, clock=clock
+        )
         self._lock = threading.Lock()
         self._followed: dict[str, _Followed] = {}
         #: None until the server says whether it can be asked; then whether
-        #: it can.
+        #: it can, as of the latest pass: a server updated under a running
+        #: agent starts being asked, without a restart.
         self.enabled: bool | None = None
         #: Set once :meth:`run` has returned: nothing asks about files then.
         self._stopped = False
@@ -160,9 +168,7 @@ class StatusFollower:
         Stops at the first question the server does not answer: the rest wait
         for the next pass rather than time out one after another.
         """
-        if self.enabled is None and not self._ask_server():
-            return
-        if not self.enabled:
+        if not self._ask_server() or not self.enabled:
             return
         with self._lock:
             now = self._clock()
@@ -207,33 +213,33 @@ class StatusFollower:
     def _ask_server(self) -> bool:
         """Ask the server whether it can say what became of an upload.
 
+        On every pass. The asking is shared and keeps its answer for a while
+        (:class:`ServerCapabilities`), so this is a lookup nearly every time,
+        and it is what lets a follower that found the server too old find it
+        updated an hour later.
+
+        A refusal of the question is read by what the follower knew before
+        it. To a follower that is not on, it is a server that predates the
+        question: one that cannot be asked with a device token cannot answer
+        the questions about files either, and the follower is off. To one
+        that is on, it is no answer. The server announced this, so what it
+        has refused is this machine's credential, and the files stay followed
+        until the machine is paired again.
+
         :return: Whether it answered; :attr:`enabled` then says what.
         """
-        try:
-            resp = requests.get(
-                f"{self._url}/api/version",
-                headers=agent_headers(self._access_token()),
-                verify=self._verify,
-                timeout=REQUEST_TIMEOUT,
-            )
-        except requests.exceptions.RequestException as e:
-            self._logger.debug(f"Could not ask the server what it can do: {e}")
+        can = self._server.has(CAPABILITY)
+        if can is None:
             return False
-        if resp.status_code >= 500:
-            self._logger.debug(
-                f"Could not ask the server what it can do: HTTP {resp.status_code}"
-            )
+        if self.enabled and self._server.refused:
             return False
-        capabilities = {}
-        if resp.status_code == 200:
-            try:
-                capabilities = (resp.json().get("data") or {}).get("capabilities") or {}
-            except (ValueError, AttributeError):
-                capabilities = {}
-        # A server that refuses the question predates it: it cannot be asked
-        # with a device token, and cannot answer the questions either.
-        self.enabled = capabilities.get(CAPABILITY) is True
-        if not self.enabled:
+        was, self.enabled = self.enabled, can
+        if can and was is False:
+            self._logger.info(
+                "The server now reports what becomes of uploaded files; the "
+                "agent follows the files it uploads from here on."
+            )
+        elif not can and was is not False:
             self._logger.info(
                 "The server does not report what becomes of uploaded files, so the "
                 "agent will not follow them."

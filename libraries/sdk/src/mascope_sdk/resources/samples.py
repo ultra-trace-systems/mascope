@@ -7,10 +7,32 @@ from typing import Any
 import pandas as pd
 from loguru import logger
 
-from .._concurrent import run_concurrent
+from .._concurrent import progress_bar, run_concurrent
 from .._resolve import _match_names, _pattern_text, resolve_id
-from ._base import BaseResource, _coerce_datetime_columns
+from ._base import (
+    BaseResource,
+    _coerce_datetime_columns,
+    _lists_warnings,
+    _log_api_message,
+)
 from .ms2 import Ms2Resource
+
+
+#: What this version of the SDK can do about a warning on a time-ranged read
+#: of peaks, said after it in the log. The server names the remedy in the
+#: API's terms, as it cannot know which client reads it.
+_COMPUTE_HINT = "SDK: samples.compute_peak_timeseries({sample_id!r}) computes them."
+
+#: The SDK's own warning for an empty time-ranged read from a server that
+#: does not list its warnings. Such a server answers a read that left out
+#: every peak with no warning at all, so its empty answer cannot be told from
+#: a range that holds no peaks - and "no warnings" must not be read as "whole".
+_EMPTY_RANGE_UNEXPLAINED = (
+    "No peaks came back for this time range, and this server does not say "
+    "whether that is because their timeseries have not been computed yet "
+    "(servers up to 1.10.1 leave the warning off an empty answer). Read the "
+    "sample without a time range to see whether it has peaks."
+)
 
 
 class SamplesResource(BaseResource):
@@ -277,6 +299,8 @@ class SamplesResource(BaseResource):
         :param matches: Include matched compounds/ions/isotopes. Defaults to True.
         :type matches: bool
         :param t_min: Minimum time in seconds. Uses sample start if not provided.
+                      Giving either bound makes this a time-ranged read, which
+                      can leave peaks out (see the note below).
         :type t_min: float, optional
         :param t_max: Maximum time in seconds. Uses sample end if not provided.
         :type t_max: float, optional
@@ -321,10 +345,35 @@ class SamplesResource(BaseResource):
                  the column is then ``None`` throughout.
 
                  Returns None if no peaks are found.
+
+                 ``df.attrs["warnings"]`` lists what the server warned about
+                 this read, and is empty when it warned about nothing. Each
+                 warning is also logged. A time-ranged read that every peak
+                 was left out of is an empty frame carrying the warning,
+                 not None.
         :rtype: pd.DataFrame | None
         :raises AuthenticationError: If authentication fails.
         :raises NotFoundError: If the sample is not found.
         :raises MascopeAPIError: If the API request fails.
+
+        .. note::
+
+            A time-ranged read (``t_min`` / ``t_max``) is aggregated from each
+            peak's per-scan time series, and **leaves out every peak whose time
+            series the server has not computed yet** - typically the peaks no
+            target matched. The frame then holds fewer peaks than the same read
+            without a time range, with nothing in its rows to show it: check
+            ``df.attrs["warnings"]``, and call :meth:`compute_peak_timeseries`
+            to have the missing series computed before reading again.
+
+            Servers up to 1.10.1 give no warning when *every* peak is left
+            out. An empty time-ranged read from such a server cannot be told
+            from a range that holds no peaks, so the SDK puts a warning of
+            its own in ``df.attrs["warnings"]`` saying it may be either.
+
+            ``pd.concat`` drops ``attrs`` that differ between its inputs, and
+            two reads short by different numbers of peaks differ. Combine
+            reads with ``MascopeClient.concat``, which keeps them.
 
         Example::
 
@@ -340,6 +389,12 @@ class SamplesResource(BaseResource):
                 mz_min=100,
                 mz_max=200,
             )
+
+            # Average over a time range, and see whether peaks were left out
+            peaks = mascope.samples.get_peaks("sample-456", t_min=30, t_max=120)
+            if peaks.attrs["warnings"]:
+                mascope.samples.compute_peak_timeseries("sample-456")
+                peaks = mascope.samples.get_peaks("sample-456", t_min=30, t_max=120)
         """
         params: dict[str, Any] = {
             "areas": str(areas).lower(),
@@ -356,9 +411,24 @@ class SamplesResource(BaseResource):
         if mz_max is not None:
             params["mz_max"] = mz_max
 
-        data = self._get(f"samples/{sample_id}/peaks", params=params)
+        ranged = t_min is not None or t_max is not None
+        hint = _COMPUTE_HINT.format(sample_id=sample_id) if ranged else None
+
+        body = self._get_envelope(f"samples/{sample_id}/peaks", params=params)
+        warnings = _log_api_message(body, hint=hint)
+        data = body.get("data")
         if not data:
             return None
+
+        if (
+            ranged
+            and not warnings
+            and not data.get("peak_id")
+            and not _lists_warnings(body)
+        ):
+            # WARNING: an empty answer that may be a whole sample left out
+            logger.warning(f"{_EMPTY_RANGE_UNEXPLAINED} {hint}")
+            warnings = [_EMPTY_RANGE_UNEXPLAINED]
 
         # Convert to DataFrame
         df = pd.DataFrame(data)
@@ -453,6 +523,10 @@ class SamplesResource(BaseResource):
                 )
                 df = df.drop(columns=["ionization_mechanism_id"])
 
+        # Set last: the merges above build new frames. A time-ranged read is
+        # short by every peak the server left out, and its rows cannot show
+        # it - the warnings are how a script finds out.
+        df.attrs["warnings"] = warnings
         return df
 
     def get_peak_timeseries(
@@ -547,6 +621,157 @@ class SamplesResource(BaseResource):
                 "mz": actual_mz,
             }
         )
+
+    def _peak_ids(
+        self,
+        sample_id: str,
+        *,
+        with_timeseries: bool,
+        mz_min: float | None = None,
+        mz_max: float | None = None,
+    ) -> Sequence[str]:
+        """The ids of a sample's peaks: all of them, or the ones with a time series.
+
+        A time-ranged read lists exactly the peaks whose time series is
+        computed, which is the only way the API says which those are. Asked
+        from the start of the sample, with nothing aggregated, it is that list
+        and nothing else.
+
+        Read off the envelope rather than through :meth:`get_peaks`: the
+        warning such a read carries is the one its caller is there to answer,
+        not news to log again.
+
+        :param sample_id: The ID of the sample.
+        :param with_timeseries: List only the peaks whose time series is
+            computed.
+        :param mz_min: Minimum m/z value for filtering.
+        :param mz_max: Maximum m/z value for filtering.
+        :return: The peak ids, in the order listed.
+        """
+        params: dict[str, Any] = {
+            "areas": "false",
+            "heights": "false",
+            "average": "false",
+            "matches": "false",
+        }
+        if with_timeseries:
+            params["t_min"] = 0
+        if mz_min is not None:
+            params["mz_min"] = mz_min
+        if mz_max is not None:
+            params["mz_max"] = mz_max
+
+        body = self._get_envelope(f"samples/{sample_id}/peaks", params=params)
+        data = body.get("data") or {}
+        return list(data.get("peak_id") or [])
+
+    def compute_peak_timeseries(
+        self,
+        sample_id: str,
+        peak_ids: Sequence[str] | None = None,
+        *,
+        mz_min: float | None = None,
+        mz_max: float | None = None,
+    ) -> int:
+        """Have the server compute the time series of a sample's peaks.
+
+        The server computes a peak's per-scan time series the first time
+        something asks for it, and stores it. Matching asks for the peaks it
+        matches, so the ones left without are mostly the unmatched peaks - and
+        a time-ranged read (:meth:`get_peaks` with ``t_min`` / ``t_max``,
+        ``load_peaks_by_stage``) leaves those out, with a warning.
+
+        This asks for the time series of each peak that has none, so that a
+        time-ranged read made afterwards includes it. Peaks that have one
+        already are not asked for, which also makes it safe to call again
+        after an interruption: it goes on where it stopped. A peak that fails
+        every time stops it at the same place each time; pass ``peak_ids``
+        without that peak to compute the rest.
+
+        **It is slow on a sample with many peaks missing.** The API computes
+        one peak per request, and for each the server reads the sample's data
+        file back. A sample that was never matched can take thousands of
+        requests. Give ``peak_ids``, or an m/z range, to compute only what
+        the analysis needs.
+
+        :param sample_id: The ID of the sample.
+        :type sample_id: str
+        :param peak_ids: The peaks to compute. Every peak of the sample (within
+                         the m/z range, if one is given) when not provided.
+        :type peak_ids: Sequence[str], optional
+        :param mz_min: Compute only peaks at or above this m/z. Not valid with
+                       ``peak_ids``.
+        :type mz_min: float, optional
+        :param mz_max: Compute only peaks at or below this m/z. Not valid with
+                       ``peak_ids``.
+        :type mz_max: float, optional
+        :return: The number of time series computed: the peaks asked for that
+                 had none. 0 when there was nothing to do.
+        :rtype: int
+        :raises ValueError: If both ``peak_ids`` and an m/z range are given.
+        :raises AuthenticationError: If authentication fails.
+        :raises NotFoundError: If the sample or one of the peaks is not found.
+        :raises MascopeAPIError: If an API request fails. How far it got is
+            logged first; calling it again goes on from there.
+
+        Example::
+
+            peaks = mascope.samples.get_peaks("sample-456", t_min=30, t_max=120)
+            if peaks.attrs["warnings"]:
+                mascope.samples.compute_peak_timeseries("sample-456")
+                peaks = mascope.samples.get_peaks("sample-456", t_min=30, t_max=120)
+
+            # Only the peaks an analysis of m/z 100-200 needs
+            mascope.samples.compute_peak_timeseries(
+                "sample-456", mz_min=100, mz_max=200
+            )
+        """
+        if isinstance(peak_ids, str):
+            peak_ids = [peak_ids]
+        if peak_ids is not None and (mz_min is not None or mz_max is not None):
+            raise ValueError("Give peak_ids or an m/z range, not both")
+
+        if peak_ids is None:
+            wanted = self._peak_ids(
+                sample_id, with_timeseries=False, mz_min=mz_min, mz_max=mz_max
+            )
+        else:
+            wanted = list(dict.fromkeys(peak_ids))
+        if not wanted:
+            return 0
+
+        have = set(self._peak_ids(sample_id, with_timeseries=True))
+        missing = [peak_id for peak_id in wanted if peak_id not in have]
+
+        computed = 0
+        with progress_bar(
+            len(missing), desc="Computing timeseries", unit="peak"
+        ) as pbar:
+            for peak_id in missing:
+                try:
+                    self.get_peak_timeseries(sample_id, peak_id=peak_id)
+                except BaseException:
+                    # WARNING: a long run that stops must say where, or the
+                    # caller cannot tell a finished sample from a tenth of one
+                    logger.warning(
+                        "Stopped at peak {!r} with {} of {} timeseries computed. "
+                        "Call it again to go on: the ones computed are not "
+                        "asked for twice. If it stops at the same peak again, "
+                        "pass peak_ids without that one to compute the rest.",
+                        peak_id,
+                        computed,
+                        len(missing),
+                    )
+                    raise
+                computed += 1
+                pbar.update(1)
+
+        logger.info(
+            "Computed the timeseries of {} peak(s); {} had one already",
+            computed,
+            len(wanted) - len(missing),
+        )
+        return computed
 
     def get_spectrum(
         self,

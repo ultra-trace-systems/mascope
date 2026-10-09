@@ -11,6 +11,7 @@ from sqlalchemy import and_, delete, select
 from sqlalchemy.exc import InterfaceError, OperationalError, SQLAlchemyError
 from sqlalchemy.exc import TimeoutError as SQLAlchemyTimeoutError
 
+from mascope_backend.acquisition_record import declared_ionization
 from mascope_backend.api.controllers.calibration.calibration_controller import (
     calibration_mz_calibrate_sample,
     is_unfitted_record,
@@ -30,14 +31,25 @@ from mascope_backend.api.controllers.sample.batches.sample_batches_controller im
     get_or_create_acquisition_batch,
 )
 from mascope_backend.api.controllers.sample.files.process.bindings import (
+    MethodRouting,
     learn_method_bindings,
+    resolve_modes_by_method_binding,
+    routes_on_method_binding,
 )
 from mascope_backend.api.controllers.sample.files.process.status import (
     claim_for_processing,
     compose_detail,
     pooled_streams_note,
     read_scan_streams,
+    read_store_stream_keys,
     record_processing_status,
+)
+from mascope_backend.api.controllers.sample.files.process.streams import (
+    StreamRows,
+    kept_rows_note,
+    read_store_streams,
+    stale_store_note,
+    sync_stream_rows,
 )
 from mascope_backend.api.controllers.sample.items.sample_items_controller import (
     create_sample_items,
@@ -63,19 +75,22 @@ from mascope_backend.api.models.sample.batches.sample_batch_pydantic_model impor
 )
 from mascope_backend.api.models.sample.files.config import ProcessingStatus
 from mascope_backend.api.models.sample.items.sample_item_pydantic_model import (
-    SampleItemCreate,
+    AcquisitionItemCreate,
 )
 from mascope_backend.api.new.ionization.modes.util import (
     NoTokenMatchError,
     one_mode_per_polarity,
+    resolve_ionization_modes_by_declaration,
     resolve_ionization_modes_by_tokens,
 )
 from mascope_backend.api.new.peak_assignments.service import (
     auto_assign_sample_peaks,
 )
+from mascope_backend.binding_rungs import BindingRung
 from mascope_backend.db import (
     Dataset,
     IonizationMode,
+    MethodBinding,
     SampleBatch,
     SampleFile,
     SampleItem,
@@ -91,6 +106,7 @@ from mascope_backend.socket.notifications import (
 from mascope_backend.socket.records.service import (
     emit_record_deleted,
 )
+from mascope_runtime.logging import SENTRY_FINGERPRINT
 
 
 # Number of calibration fitting attempts before giving up
@@ -131,11 +147,10 @@ def _report_cancelled(sample_file_id: str, when: str) -> None:
 
     Cancellation during a shutdown drain is expected and arrives in bulk - one
     per file still queued behind the ingest gate - and the error-monitoring
-    sink groups issues by the formatted message, so an ERROR carrying the
-    sample file id opens a separate issue for every file in an interrupted
-    burst. The drain reports the count itself as a single error; the per-file
-    detail stays at INFO, where the worker log still records exactly which
-    files were truncated.
+    sink turns every ERROR into an event, so an ERROR per file sends one for
+    every file in an interrupted burst. The drain reports the count itself as
+    a single error; the per-file detail stays at INFO, where the worker log
+    still records exactly which files were truncated.
 
     A cancellation outside a drain is a fault - nobody asked for it - and keeps
     the ERROR that makes it visible.
@@ -180,11 +195,10 @@ def _report_given_up(sample_file_id: str, attempts: int, error: Exception) -> No
     or a 4xx such as a file deleted mid-run - stays at INFO: the decorator
     still hands it to the user, and it is nothing an operator can act on.
 
-    A fault's ERROR names neither the file nor the error. The error-monitoring
-    sink groups issues by the formatted message, so text that carries either
-    opens an issue per file - one for every queued file when an outage hits an
-    ingest burst. The status code stays in the text, so distinct faults still
-    group apart.
+    A fault's ERROR names neither the file nor the error, which the INFO line
+    carries: the same fault on every queued file reads the same. Error
+    monitoring would group it by this call site; it is grouped by status code
+    instead, so distinct faults stay in issues of their own.
 
     :param sample_file_id: File whose pipeline gave up.
     :param attempts: Attempts spent, the last one included.
@@ -198,7 +212,9 @@ def _report_given_up(sample_file_id: str, attempts: int, error: Exception) -> No
         error, error.status_code
     ):
         return
-    runtime.logger.error(
+    runtime.logger.bind(
+        **{SENTRY_FINGERPRINT: [f"auto-process-gave-up:{error.status_code}"]}
+    ).error(
         f"Auto-processing gave up on a sample file after {attempts} attempt(s) "
         f"(status {error.status_code}); it will have no matched peaks. The file "
         "and the cause are named at INFO in this worker's log"
@@ -329,20 +345,65 @@ def _pipeline_item():
     )
 
 
-async def _acquisition_item_mode_ids(sample_file_id: str) -> list[str]:
-    """The ionization modes auto-processing made a file's samples under."""
+@dataclass(frozen=True)
+class ItemProvenance:
+    """How an ACQUISITION item's chemistry was decided.
+
+    ``bound_by`` is the rung and ``method_binding_id`` the binding row where
+    that rung is the method. Both None is a real answer, not a missing one:
+    it is what an item created before this was recorded says, and what a mode
+    kept from such an item carries forward.
+    """
+
+    bound_by: BindingRung | None = None
+    method_binding_id: str | None = None
+
+
+@dataclass(frozen=True)
+class KeptModes:
+    """The modes a file's own samples hold, to re-process it under them.
+
+    A file no token binds keeps the modes its samples were made under - and
+    with them how each was bound, because copying a mode forward is nobody's
+    decision. The rung stays the one that decided it in the first place: a
+    token, a person, or nothing at all.
+    """
+
+    mode_ids: list[str]
+    provenance: dict[str, ItemProvenance]
+
+
+async def _acquisition_item_provenance(
+    sample_file_id: str,
+) -> dict[str, ItemProvenance]:
+    """The modes auto-processing made a file's samples under, and how.
+
+    One entry per mode. Every item of one mode is created in one pass under
+    one rung, so there is nothing to choose between them - but a windowed
+    file will have several per mode once phase 6 cuts them, so the order is
+    fixed here rather than left to the planner and the first item answers for
+    its mode.
+    """
     async with async_session() as session:
-        return list(
-            await session.scalars(
-                select(SampleItem.ionization_mode_id)
+        items = (
+            await session.execute(
+                select(
+                    SampleItem.ionization_mode_id,
+                    SampleItem.bound_by,
+                    SampleItem.method_binding_id,
+                )
                 .where(
                     SampleItem.sample_file_id == sample_file_id,
                     _pipeline_item(),
                     SampleItem.ionization_mode_id.is_not(None),
                 )
-                .distinct()
+                .order_by(SampleItem.sample_item_id)
             )
-        )
+        ).all()
+    held: dict[str, ItemProvenance] = {}
+    for mode_id, bound_by, method_binding_id in items:
+        held.setdefault(mode_id, ItemProvenance(bound_by, method_binding_id))
+    return held
 
 
 def _failure_detail(exc: BaseException) -> str:
@@ -403,13 +464,132 @@ async def _record_failed(sample_file_id: str, error: Exception) -> None:
         raise
 
 
-def _bound_detail(ionization_modes: list[IonizationMode], by_token: bool) -> str:
-    """Name the modes a file was bound to, and what bound it."""
+async def _modes_its_record_declares(
+    sample_file: SampleFile,
+) -> tuple[list[IonizationMode], str | None]:
+    """Bind a file by the chemistry its acquisition record names.
+
+    Rung 0 of the ladder (section 5.2 of the ingest design): the acquisition's
+    own word, from the program that put the instrument in the mode, ahead of
+    anything read off the file's name.
+
+    A declaration that names no mode here does not park the file. It is one
+    rung that did not answer, and the rungs below get their turn: a control
+    program configured with a token this server does not use is a
+    configuration to fix, and until it is, the file is bound as it would
+    have been with no record at all. It is not bound in silence, though. What
+    the declaration said goes into the file's status and stays there: beside
+    the reason it parked, or in every status the run records from the one
+    that says what bound it. The case that matters is the one where the two
+    disagree, a record that says bromide on a file whose name still says
+    nitrate, and whoever opens that file reads the status its run ended on.
+
+    :param sample_file: The file to bind.
+    :return: One mode per polarity and None when the record binds it; no
+        modes and None when it has no record, or the record names no
+        chemistry; no modes and a sentence when it names one that binds
+        nothing here.
+    :rtype: tuple[list[IonizationMode], str | None]
+    """
+    if getattr(sample_file, "acquisition_id", None) is None:
+        # No record: the identifier is written with it, and is on the row
+        # the pipeline already holds. Most files have none, and are spared
+        # the query.
+        return [], None
+    async with async_session() as session:
+        record = await session.scalar(
+            select(SampleFile.acquisition).where(
+                SampleFile.sample_file_id == sample_file.sample_file_id
+            )
+        )
+    declared = declared_ionization(record)
+    if declared is None:
+        return [], None
+    modes, unanswered = await resolve_ionization_modes_by_declaration(
+        sample_file, declared
+    )
+    if unanswered is None:
+        return modes, None
+    return [], (
+        f"Its acquisition record names the chemistry '{declared}', but {unanswered}"
+    )
+
+
+async def _declared_before_a_run(
+    sample_file: SampleFile,
+) -> tuple[list[IonizationMode], str | None]:
+    """What a file's record declares, for the checks that come before a run.
+
+    Re-processing, and processing on request, decide what a run is started
+    with before anything of the file is cleared, and the pipeline asks the
+    record before it reads the name. So they ask it first too, or they would
+    judge a file by a name the pipeline never reads, and by samples it is
+    about to replace.
+
+    **Not where a person chose the file's chemistry.** A record is stored as
+    it was sent and cannot be corrected, so choosing by hand is the one way
+    to overrule a record that names the wrong chemistry, and the choice has
+    to outlast the next re-process. A file whose samples all carry a
+    person's choice is not asked for its record: it is left to its name,
+    and with no token there, to the modes its samples have. Samples the
+    record itself bound, or a token since renamed, are nobody's choice, and
+    the record is asked again.
+
+    **A reading that fails is raised, not taken for a record that binds
+    nothing.** Acted on, that guess rebuilds a file under the modes it has
+    while its record names others, or refuses one that waited for its record
+    as if it had none. The caller refuses the file, or fails the request,
+    with nothing of the file touched.
+
+    :param sample_file: The file.
+    :return: As :func:`_modes_its_record_declares`; no modes and None for a
+        file a person chose the chemistry of.
+    :rtype: tuple[list[IonizationMode], str | None]
+    """
+    if getattr(sample_file, "acquisition_id", None) is None:
+        return [], None
+    kept = await _kept_modes(sample_file)
+    if kept is not None and all(
+        held.bound_by == "explicit" for held in kept.provenance.values()
+    ):
+        return [], None
+    return await _modes_its_record_declares(sample_file)
+
+
+def _beside_the_declaration(undeclared: str | None, reason: str) -> str:
+    """A parking reason, after what the file's record said and could not bind.
+
+    :param undeclared: The sentence from :func:`_modes_its_record_declares`,
+        or None when the record was not in question.
+    :param reason: What the rungs below found.
+    """
+    if undeclared is None:
+        return reason
+    return f"{undeclared.rstrip('.')}. {reason}"
+
+
+def _bound_detail(ionization_modes: list[IonizationMode], rung: str) -> str:
+    """Name the modes a file was bound to, and what bound it.
+
+    Read by whoever is looking at the file in Raw files, so it says which rung
+    answered. ``"declared"``, ``"token"`` and ``"method"`` each get their
+    own sentence; a person's choice and a mode kept from the file's own
+    samples share one, because what a reader needs there is that no file name
+    chose it.
+
+    :param ionization_modes: The modes it bound to, one per polarity.
+    :param rung: What bound it this run - "declared", "token", "method",
+        "explicit" or "kept".
+    """
     names = " and ".join(
         f"'{mode.ionization_mode_name}' ({mode.ionization_mode_polarity})"
         for mode in ionization_modes
     )
-    if not by_token:
+    if rung == "declared":
+        return f"Bound to {names} by its acquisition record."
+    if rung == "method":
+        return f"Bound to {names} by its acquisition method."
+    if rung != "token":
         return f"Bound to {names} without a file-name token."
     tokens = "token" if len(ionization_modes) == 1 else "tokens"
     return f"Bound by file-name {tokens} to {names}."
@@ -616,6 +796,7 @@ async def auto_process_sample_file(
     parent_id: str | None = None,
     instrument: str | None = None,
     ionization_mode_ids: list[str] | None = None,
+    kept_provenance: dict[str, "ItemProvenance"] | None = None,
     reset_calibration: bool = False,
 ) -> dict:
     """
@@ -656,6 +837,12 @@ async def auto_process_sample_file(
         person or kept from its samples. None binds it by its file-name
         tokens, and a file they bind to nothing waits for a chemistry.
     :type ionization_mode_ids: list[str] | None, optional
+    :param kept_provenance: Present when ``ionization_mode_ids`` are the modes
+        the file's own samples held rather than a choice somebody made: how
+        each of them was bound, by mode id. The items carry those rungs
+        forward and the file's method learns nothing, because copying a
+        decision forward is not a new observation of anything.
+    :type kept_provenance: dict[str, ItemProvenance] | None, optional
     :param reset_calibration: Restore the file's acquisition m/z axis before
         the first attempt, as re-processing does, for a file rebuilt under
         other modes.
@@ -685,6 +872,7 @@ async def auto_process_sample_file(
                     process_id=process_id,
                     parent_id=parent_id,
                     ionization_mode_ids=ionization_mode_ids,
+                    kept_provenance=kept_provenance,
                     recorded_bindings=recorded_bindings,
                 )
         except asyncio.CancelledError:
@@ -703,9 +891,10 @@ async def auto_process_sample_file(
                 await _record_failed(sample_file_id, e)
                 raise
             delay = _AUTO_PROCESS_RETRY_DELAYS_S[attempt]
-            # INFO: a retry that usually succeeds, and the line names the file,
-            # so at WARNING it would open a monitoring issue per file and per
-            # attempt. A retry that does not help ends in the give-up above.
+            # INFO: a retry that usually succeeds, so at WARNING it would send
+            # a monitoring event per file and per attempt for nothing an
+            # operator has to do. A retry that does not help ends in the
+            # give-up above.
             runtime.logger.info(
                 f"Auto-processing attempt {attempt + 1} for sample file "
                 f"{sample_file_id} hit a recoverable error ({e}); retrying "
@@ -824,10 +1013,10 @@ async def drain_auto_process_tasks(
 
         for task in outstanding:
             task.cancel()
-        # One error for the whole drain, not one per file: the sink groups
-        # error-monitoring issues by message text, and an interrupted ingest
-        # burst can hold hundreds of queued pipelines. Each file is named at
-        # INFO by _report_cancelled.
+        # One error for the whole drain, not one per file: every ERROR is an
+        # error-monitoring event, and an interrupted ingest burst can hold
+        # hundreds of queued pipelines. Each file is named at INFO by
+        # _report_cancelled.
         runtime.logger.error(
             f"Shutdown cancelled {len(outstanding)} background task(s) still "
             f"running after {timeout:.0f}s; what each was working on is named "
@@ -852,6 +1041,7 @@ async def spawn_auto_process_sample_file(
     parent_id: str | None = None,
     instrument: str | None = None,
     ionization_mode_ids: list[str] | None = None,
+    kept_provenance: dict[str, "ItemProvenance"] | None = None,
     reset_calibration: bool = False,
 ) -> None:
     """Start the auto-processing pipeline detached from the request that triggered it.
@@ -880,6 +1070,7 @@ async def spawn_auto_process_sample_file(
         "parent_id": parent_id,
         "instrument": instrument,
         "ionization_mode_ids": ionization_mode_ids,
+        "kept_provenance": kept_provenance,
         "reset_calibration": reset_calibration,
     }
     # Omitted rather than forwarded as None. api_controller_background_task
@@ -905,6 +1096,7 @@ async def _auto_process_sample_file(
     process_id: str | None = None,
     parent_id: str | None = None,
     ionization_mode_ids: list[str] | None = None,
+    kept_provenance: dict[str, ItemProvenance] | None = None,
     recorded_bindings: set[str] | None = None,
 ) -> dict:
     """Gated body of ``auto_process_sample_file`` - see the public wrapper.
@@ -921,7 +1113,9 @@ async def _auto_process_sample_file(
     # Describes the file rather than a stage, so every status this run
     # records carries it.
     scan_streams = await read_scan_streams(sample_file.filename)
-    streams_note = pooled_streams_note(scan_streams or [])
+    streams_note = pooled_streams_note(
+        scan_streams or [], await read_store_stream_keys(sample_file.filename)
+    )
 
     # --- Get ACQUISITION dataset for the instrument --- #
     # The year-dataset and the daily batch inside it must be dated off the SAME
@@ -945,11 +1139,65 @@ async def _auto_process_sample_file(
     # After the dataset on purpose: a file that binds to nothing still gets
     # its instrument's workspace, which is where its modes are configured.
     by_token = ionization_mode_ids is None
+    routed_by_method: list[MethodRouting] = []
+    # Rung 0, for a file nobody chose modes for: what its acquisition record
+    # declares. A record that binds nothing leaves the rungs below their turn.
+    declared_modes: list[IonizationMode] = []
+    undeclared: str | None = None
     if by_token:
+        declared_modes, undeclared = await _modes_its_record_declares(sample_file)
+        if undeclared is not None:
+            # INFO: a configuration condition somebody resolves, fires per
+            # file. Said here and not where the record is read: the checks
+            # before a run read it too, and a file they refuse is bound by
+            # no rung at all.
+            runtime.logger.info(
+                f"{sample_file.filename}: {undeclared}; binding it by the rungs below"
+            )
+    if declared_modes:
+        bound_modes = declared_modes
+    elif by_token:
         try:
             bound_modes = await resolve_ionization_modes_by_tokens(sample_file)
+        except NoTokenMatchError as no_token:
+            # Nothing named this file, which is the one case a binding may
+            # answer. An ambiguous name is NOT: it falls to the clause below,
+            # because a configuration to fix is not something a binding
+            # stands in for (section 5.3).
+            if not routes_on_method_binding():
+                return await _park_needing_chemistry(
+                    sample_file,
+                    _beside_the_declaration(undeclared, str(no_token)),
+                    streams_note,
+                )
+            routed_by_method, declined = await resolve_modes_by_method_binding(
+                sample_file, scan_streams
+            )
+            if declined is not None:
+                # Three sentences, and only the join belongs here. The remedy
+                # comes from the guard that declined, because it differs per
+                # guard and four of the six are not fixed by choosing a
+                # chemistry for one file - a method whose reported name never
+                # varies is not fixed by choosing any number of them.
+                #
+                # rstrip: the token rule's message ends without a full stop,
+                # and _park_needing_chemistry only normalises the end of the
+                # whole detail, so the first two would run together.
+                return await _park_needing_chemistry(
+                    sample_file,
+                    _beside_the_declaration(
+                        undeclared,
+                        f"{str(no_token).rstrip('.')}. Its acquisition method "
+                        f"does not say either: {declined.reason}. "
+                        f"{declined.remedy}",
+                    ),
+                    streams_note,
+                )
+            bound_modes = [routing.mode for routing in routed_by_method]
         except ValueError as e:
-            return await _park_needing_chemistry(sample_file, str(e), streams_note)
+            return await _park_needing_chemistry(
+                sample_file, _beside_the_declaration(undeclared, str(e)), streams_note
+            )
     else:
         try:
             bound_modes = choose_ionization_modes(
@@ -960,30 +1208,106 @@ async def _auto_process_sample_file(
             # it needs a chemistry again, and can be given one.
             return await _park_needing_chemistry(sample_file, str(e), streams_note)
 
-    # What this file's method has now been seen running. Recorded, not read:
-    # nothing routes on a method binding yet, and this must never cost the
-    # file its processing - learn_method_bindings reports its own failures.
-    await learn_method_bindings(
-        sample_file,
-        bound_modes,
-        source="token" if by_token else "explicit",
-        streams=scan_streams,
-        recorded=recorded_bindings,
-    )
+    # How each item will say its chemistry was decided, and what the file's
+    # method may be taught from it. The three ways in here are not equal. A
+    # token and a person's choice are both evidence about the method, and are
+    # recorded on the items under the same name they teach the binding with,
+    # so a report counting items by rung and a table learned from those rungs
+    # cannot drift apart in their vocabulary.
+    #
+    # A mode kept from the file's own samples is neither. Copying a decision
+    # forward is nobody's decision: the rung it carries is the one that made
+    # it, NULL included, and the binding learns nothing - the observation was
+    # recorded when the mode was first chosen or matched, and repeating it
+    # would claim a strength nobody gave and let a batch of re-processed
+    # files build a run back toward the row they were bound under.
+    teaches: BindingRung | None
+    if declared_modes:
+        # The acquisition's own record, which is evidence about the method as
+        # a token is: it teaches the binding under its own name.
+        provenance = {
+            mode.ionization_mode_id: ItemProvenance("declared") for mode in bound_modes
+        }
+        teaches = "declared"
+        rung = "declared"
+    elif routed_by_method:
+        # The binding bound it, so there is nothing for the binding to learn:
+        # it would be teaching itself what it already holds, and counting the
+        # files it routed as observations of the chemistry it chose for them.
+        provenance = {
+            routing.mode.ionization_mode_id: ItemProvenance(
+                "method", routing.binding_id
+            )
+            for routing in routed_by_method
+        }
+        teaches = None
+        # What the file's status says bound it. Not read off `provenance`: a
+        # kept mode's rung is whatever bound it originally and can differ per
+        # polarity, while the status describes this run in one sentence.
+        rung = "method"
+    elif by_token:
+        provenance = {
+            mode.ionization_mode_id: ItemProvenance("token") for mode in bound_modes
+        }
+        teaches = "token"
+        rung = "token"
+    elif kept_provenance is not None:
+        provenance = {
+            mode.ionization_mode_id: kept_provenance.get(
+                mode.ionization_mode_id, ItemProvenance()
+            )
+            for mode in bound_modes
+        }
+        teaches = None
+        rung = "kept"
+    else:
+        provenance = {
+            mode.ionization_mode_id: ItemProvenance("explicit") for mode in bound_modes
+        }
+        teaches = "explicit"
+        rung = "explicit"
+
+    if teaches is not None:
+        # What this file's method has now been seen running. Read back only
+        # where a deployment sets `method_binding = "route"`, and this must
+        # never cost the file its processing - learn_method_bindings reports
+        # its own failures.
+        await learn_method_bindings(
+            sample_file,
+            bound_modes,
+            source=teaches,
+            streams=scan_streams,
+            recorded=recorded_bindings,
+        )
 
     # --- Create ACQUISITION batches and sample items for each ionization mode --- #
     (
         acquisition_samples,
         acquisition_sample_batches,
+        stream_rows,
+        found_streams,
     ) = await create_acquisition_batches_and_items(
         sample_file=sample_file,
         dataset_id=acquisition_dataset.get("dataset_id"),
         ionization_modes=bound_modes,
+        provenance=provenance,
+    )
+    # A stale peak store, and a stream row the file no longer describes but
+    # a sample still reads, are as much facts about the file as its streams
+    # are: every status from here on says so. So is what its acquisition
+    # record named and nothing here answers to. A rung below bound the file,
+    # and whoever opens it reads the status its run ended on, not the one
+    # that said what bound it.
+    file_note = compose_detail(
+        None if undeclared is None else f"{undeclared.rstrip('.')}.",
+        streams_note,
+        stale_store_note(found_streams),
+        kept_rows_note(stream_rows),
     )
     await record_processing_status(
         sample_file_id,
         ProcessingStatus.BOUND,
-        compose_detail(_bound_detail(bound_modes, by_token), streams_note),
+        compose_detail(_bound_detail(bound_modes, rung), file_note),
     )
 
     # Extract batch and sample IDs for notifications
@@ -1084,7 +1408,7 @@ async def _auto_process_sample_file(
             await record_processing_status(
                 sample_file_id,
                 ProcessingStatus.CALIBRATED,
-                compose_detail(streams_note),
+                compose_detail(file_note),
             )
         elif is_blank_sample_file:
             # A blank has no peaks, so there is nothing to match or assign
@@ -1224,7 +1548,7 @@ async def _auto_process_sample_file(
         await record_processing_status(
             sample_file_id,
             ProcessingStatus.DONE,
-            compose_detail(calibration_note, streams_note),
+            compose_detail(calibration_note, file_note),
         )
     elif not unmatched:
         await record_processing_status(
@@ -1233,7 +1557,7 @@ async def _auto_process_sample_file(
             compose_detail(
                 f"Matched {matched} sample{'s' if matched != 1 else ''}.",
                 calibration_note,
-                streams_note,
+                file_note,
             ),
         )
     else:
@@ -1246,7 +1570,7 @@ async def _auto_process_sample_file(
         await record_processing_status(
             sample_file_id,
             ProcessingStatus.CALIBRATION_FAILED,
-            compose_detail(unmatched_reason, skipped, streams_note),
+            compose_detail(unmatched_reason, skipped, file_note),
         )
 
     return {
@@ -1280,8 +1604,10 @@ async def bind_sample_files(
     the same ingest gate as every upload. A file that has samples already is
     rebuilt under the chosen modes, as re-processing rebuilds one: its m/z
     calibration is reset, and the pipeline replaces its samples.
-    Re-processing keeps the modes a file bound here has, since no token binds
-    it again.
+    Re-processing keeps the modes a file bound here has where no token in
+    its name binds it again. Its acquisition record is not asked then:
+    choosing here is how a record that names the wrong chemistry is
+    overruled, and the choice outlasts a re-process.
 
     A sample a person made from the file is never touched: the pipeline
     replaces only its own. Such a file - one processed by hand into someone's
@@ -1403,6 +1729,37 @@ async def bind_sample_files(
     return {"message": message, "data": data}
 
 
+#: How many failed files a re-processing run's report names one by one before
+#: it counts the rest - in its message, and in the notification that carries
+#: it. A run takes any number of files, up to every file of an instrument, and
+#: a notification is published to every backend process through Redis pub/sub:
+#: one that named them all would be the size of the request.
+MAX_LISTED_REPROCESS_FAILURES = 10
+
+
+def _compose_reprocess_failure_message(failed_files: list[dict], header: str) -> str:
+    """
+    Summarise a re-processing run's failures, naming the files.
+
+    The same shape as the batch calibration and rematch aggregates: the
+    header, then one line per failure giving the file and the reason,
+    truncated to ``MAX_LISTED_REPROCESS_FAILURES`` entries.
+
+    :param failed_files: Per-file failure records, in the order they failed.
+    :type failed_files: list[dict]
+    :param header: First line, with the counts.
+    :type header: str
+    :return: The message naming the files that were not re-processed.
+    :rtype: str
+    """
+    listed = failed_files[:MAX_LISTED_REPROCESS_FAILURES]
+    lines = [f"{failed['filename']}: {failed['message']}" for failed in listed]
+    remaining = len(failed_files) - len(listed)
+    if remaining:
+        lines.append(f"...and {remaining} more.")
+    return "\n".join([header] + lines)
+
+
 @api_controller_background_task(
     success_notification_rooms=["user_id"],
     success_reload=[
@@ -1442,10 +1799,9 @@ async def re_process_sample_files(
     :return: Processing results with aggregated data
     :rtype: dict
     """
-    processed_files = []
+    processed_count = 0
     failed_files = []
     affected_sample_batch_ids = set()
-    affected_sample_item_ids = set()
 
     # --- Validate all sample files exist and collect data --- #
     async with async_session() as session:
@@ -1470,7 +1826,7 @@ async def re_process_sample_files(
         message = f"None of the {len(sample_file_ids)} sample files found"
         raise ApiException(
             user_message=message,
-            tech_message={"failed_files": failed_files},
+            tech_message={"failed_files": failed_files[:MAX_LISTED_REPROCESS_FAILURES]},
             status_code=404,
         )
 
@@ -1498,7 +1854,7 @@ async def re_process_sample_files(
     # --- Validate each file --- #
     valid_sample_files = []
     # Files no token binds, re-processed under the modes their samples have.
-    kept_mode_ids: dict[str, list[str]] = {}
+    kept_modes: dict[str, KeptModes] = {}
 
     for sample_file in sample_files:
         # Check for user-created samples
@@ -1516,6 +1872,43 @@ async def re_process_sample_files(
             )
             continue
 
+        # Rung 0 first, as the pipeline has it. A record that binds the file
+        # is read there ahead of the name, so nothing below is asked: the
+        # file goes through with no modes of its own, whatever its name says
+        # and whatever its record or a token bound it to before. A file a
+        # person chose the chemistry of is not asked for its record at all.
+        #
+        # Asked here and not left to the pipeline, because by the time the
+        # pipeline asks, the file's samples are cleared and its calibration
+        # reset. A record that binds nothing must cost a file neither, so
+        # such a file is judged below as one with no record is, and what its
+        # record named goes into the reason if it is refused.
+        try:
+            declared, undeclared = await _declared_before_a_run(sample_file)
+        except Exception as e:
+            # Not judged by its name and its samples instead: that would be
+            # acting on a guess about what its record says. Refused with
+            # nothing touched, and asked again when Re-process is.
+            failed_files.append(
+                {
+                    "sample_file_id": sample_file.sample_file_id,
+                    "filename": sample_file.filename,
+                    # Either read: the modes its samples have come first.
+                    "message": (
+                        "Failed to read its acquisition record, or the modes "
+                        f"its samples have: {str(e)}"
+                    ),
+                }
+            )
+            runtime.logger.exception(
+                "Unexpected error reading the acquisition record, or the modes "
+                f"of the samples, of sample file {sample_file.filename}"
+            )
+            continue
+        if declared:
+            valid_sample_files.append(sample_file)
+            continue
+
         # Verify ionization modes are defined properly
         no_token: NoTokenMatchError | None = None
         try:
@@ -1529,7 +1922,7 @@ async def re_process_sample_files(
                 {
                     "sample_file_id": sample_file.sample_file_id,
                     "filename": sample_file.filename,
-                    "message": str(ve),
+                    "message": _beside_the_declaration(undeclared, str(ve)),
                 }
             )
             continue
@@ -1555,23 +1948,41 @@ async def re_process_sample_files(
             # outside the except clause, where an error would escape the
             # handlers that keep one file's failure its own.
             try:
-                kept = await _kept_mode_ids(sample_file)
+                kept = await _kept_modes(sample_file)
             except Exception as e:  # noqa: BLE001 - one file's failure
                 runtime.logger.info(
                     f"Could not read the modes of sample file {sample_file.filename}'s "
                     f"samples: {e}"
                 )
                 kept = None
-            if kept is None:
+            if kept is None and not routes_on_method_binding():
                 failed_files.append(
                     {
                         "sample_file_id": sample_file.sample_file_id,
                         "filename": sample_file.filename,
-                        "message": str(no_token),
+                        "message": _beside_the_declaration(undeclared, str(no_token)),
                     }
                 )
                 continue
-            kept_mode_ids[sample_file.sample_file_id] = kept
+            if kept is None:
+                # No token, and no samples to keep - but this deployment lets
+                # an acquisition method bind a file, and only the pipeline can
+                # ask it: the rung needs the file's scan-stream census, which
+                # is read there. So the file goes through with no modes of its
+                # own and the pipeline decides.
+                #
+                # It parks again if the method cannot place it, which is where
+                # it already is, with a detail naming both reasons instead of
+                # the token alone. Refusing it here is what made selecting
+                # every parked file and pressing Re-process - the first thing
+                # a site does after switching the flag on - report "no tokens"
+                # for files the pipeline would have bound.
+                runtime.logger.debug(
+                    f"{sample_file.filename} has no token and no samples to "
+                    "keep; its acquisition method may still bind it"
+                )
+            else:
+                kept_modes[sample_file.sample_file_id] = kept
 
         # Passed all validations
         valid_sample_files.append(sample_file)
@@ -1629,17 +2040,26 @@ async def re_process_sample_files(
                 raise
             affected_sample_batch_ids.update(cleared_batch_ids)
 
+            # Set only for a file no token binds: it is re-processed under
+            # the modes its own samples held, carrying their provenance.
+            kept = kept_modes.get(sample_file.sample_file_id)
             result = await auto_process_sample_file(
                 sample_file_id=sample_file.sample_file_id,
                 independent_transaction=False,
                 user_id=user_id,
                 process_id=gen_id(8),
                 parent_id=process_id,
-                ionization_mode_ids=kept_mode_ids.get(sample_file.sample_file_id),
+                ionization_mode_ids=kept.mode_ids if kept else None,
+                kept_provenance=kept.provenance if kept else None,
             )
             if result.get("status") == "parked":
-                # Its token was removed while the batch waited: it needs a
-                # chemistry now, and was not re-processed.
+                # Two ways here. What bound it at the validation above - a
+                # token in its name, or the one its record names - was removed
+                # while the batch waited; or neither bound it and this
+                # deployment routes on method bindings, which is the file the
+                # validation lets through on purpose. Either way it needs a
+                # chemistry and was not re-processed, and the pipeline's own
+                # message says which.
                 failed_files.append(
                     {
                         "sample_file_id": sample_file.sample_file_id,
@@ -1649,23 +2069,13 @@ async def re_process_sample_files(
                 )
                 continue
 
-            processed_files.append(
-                {
-                    "sample_file_id": sample_file.sample_file_id,
-                    "filename": sample_file.filename,
-                    "message": f"Successfully processed file {sample_file.filename}.",
-                }
-            )
+            processed_count += 1
 
             # Collect notification data
             file_notification_data = result.get("_notification_data", {})
             if "affected_sample_batch_ids" in file_notification_data:
                 affected_sample_batch_ids.update(
                     file_notification_data["affected_sample_batch_ids"]
-                )
-            if "affected_sample_item_ids" in file_notification_data:
-                affected_sample_item_ids.update(
-                    file_notification_data["affected_sample_item_ids"]
                 )
         except ApiException as ae:
             failed_files.append(
@@ -1686,17 +2096,18 @@ async def re_process_sample_files(
 
     # --- Prepare response --- #
     total_files = len(sample_file_ids)
-    processed_count = len(processed_files)
     failed_count = len(failed_files)
+    # Counts and the failures the message names, not a record per file. The
+    # batches are what the reloads are addressed to, and they sit under
+    # `_notification_data` on the failure paths too: that is where the
+    # background-task decorator looks for an error's reload rooms.
     notification_data = {
-        "total_files": total_files,
-        "processed_files": processed_files,
-        "failed_files": failed_files,
         "summary": {
             "processed": processed_count,
             "failed": failed_count,
             "total": total_files,
         },
+        "failed_files": failed_files[:MAX_LISTED_REPROCESS_FAILURES],
         "affected_sample_batch_ids": list(affected_sample_batch_ids),
     }
     # Determine status and message
@@ -1707,63 +2118,79 @@ async def re_process_sample_files(
             "_notification_data": notification_data,
         }
     elif processed_count == 0:
-        message = f"Failed to re-process all {total_files} sample files.\n" + "\n".join(
-            [f"{failed['filename']}: {failed['message']}" for failed in failed_files]
+        message = _compose_reprocess_failure_message(
+            failed_files, f"Failed to re-process all {total_files} sample files."
         )
         raise ApiException(
-            user_message=message, tech_message=notification_data, status_code=422
+            user_message=message,
+            tech_message={"_notification_data": notification_data},
+            status_code=422,
         )
     else:
-        message = (
+        message = _compose_reprocess_failure_message(
+            failed_files,
             f"Re-processed {processed_count} files successfully, "
-            f"{failed_count} files failed.\n"
-            + "\n".join(
-                [
-                    f"{failed['filename']}: {failed['message']}"
-                    for failed in failed_files
-                ]
-            )
+            f"{failed_count} files failed.",
         )
-        raise_api_warning(message, notification_data, status_code=207)
+        raise_api_warning(
+            message, {"_notification_data": notification_data}, status_code=207
+        )
 
 
-async def modes_to_rebind(sample_file_id: str) -> list[str] | None:
-    """The modes to process a file under again, when its tokens do not bind it.
+async def modes_to_rebind(sample_file_id: str) -> KeptModes | None:
+    """The modes to process a file under again, when nothing binds it now.
 
-    A file whose chemistry was chosen by hand has no token to bind it again,
-    so it keeps the modes its samples were made under, as re-processing
-    keeps them. None leaves the binding to the tokens: they bind the file, or
-    the run finds that they do not and parks it.
+    A file that neither its acquisition record nor a token binds has nothing
+    to bind it again, so it keeps the modes its samples were made under, as
+    re-processing keeps them. None leaves the binding to the run: the record
+    or a token binds the file, or the run finds that neither does and parks
+    it. The record is asked first, as the run asks it, so a file its record
+    binds is not rebuilt under whatever it or a token bound it to before;
+    what a person chose is kept (:func:`_declared_before_a_run`). A record
+    that cannot be read fails the request, which has claimed nothing yet.
+
+    Not only a file somebody chose a chemistry for. A file a token bound
+    months ago reaches this too, once that token has been renamed or
+    deleted - which is why what comes back carries each mode's own
+    provenance rather than being treated as a choice.
 
     :param sample_file_id: The file.
-    :return: The modes its samples have, or None.
+    :return: The modes its samples have with how each was bound, or None.
     """
     sample_file = await fetch_sample_file(sample_file_id=sample_file_id)
+    declared, _undeclared = await _declared_before_a_run(sample_file)
+    if declared:
+        return None
     try:
         await resolve_ionization_modes_by_tokens(sample_file)
     except NoTokenMatchError:
-        return await _kept_mode_ids(sample_file)
+        return await _kept_modes(sample_file)
     except ValueError:
         return None
     return None
 
 
-async def _kept_mode_ids(sample_file: SampleFile) -> list[str] | None:
+async def _kept_modes(sample_file: SampleFile) -> KeptModes | None:
     """The modes a file's samples have, when they still bind it.
 
-    :return: One mode id per polarity of the file, or None when its samples
-        do not give one - it has none, or a mode was deleted since.
+    :return: One mode per polarity of the file with the provenance its
+        samples recorded, or None when its samples do not give one - it has
+        none, or a mode was deleted since.
     """
-    mode_ids = await _acquisition_item_mode_ids(sample_file.sample_file_id)
-    if not mode_ids:
+    held = await _acquisition_item_provenance(sample_file.sample_file_id)
+    if not held:
         return None
     try:
         modes = choose_ionization_modes(
-            sample_file, await fetch_ionization_modes(mode_ids)
+            sample_file, await fetch_ionization_modes(list(held))
         )
     except ValueError:
         return None
-    return [mode.ionization_mode_id for mode in modes]
+    mode_ids = [mode.ionization_mode_id for mode in modes]
+    return KeptModes(
+        mode_ids=mode_ids,
+        provenance={mode_id: held[mode_id] for mode_id in mode_ids},
+    )
 
 
 async def _clear_sample_items_for_reprocessing(
@@ -1817,10 +2244,66 @@ async def _clear_sample_items_for_reprocessing(
     return affected_sample_batch_ids
 
 
+async def _with_live_bindings(
+    provenance: dict[str, ItemProvenance],
+) -> dict[str, ItemProvenance]:
+    """The same provenance with any vanished binding dropped to None.
+
+    ``ON DELETE SET NULL`` reads as a blanket guarantee and is not one: it
+    rewrites rows that exist when the delete runs, and says nothing about a
+    row inserted a minute later. A binding id is read before the items are
+    written - at the rung, and for a re-process during validation, which can
+    be minutes earlier - so a binding deleted in between would fail the whole
+    file's processing on the foreign key.
+
+    Losing the id costs an item its link to the binding, which is provenance.
+    Failing the insert costs the file its samples. So the id goes and the rung
+    stays: "bound by its acquisition method" is still true of that item.
+
+    :param provenance: How each mode came to bind the file.
+    :return: The same map, with ids no longer in ``method_binding`` cleared.
+    :rtype: dict[str, ItemProvenance]
+    """
+    wanted = {
+        held.method_binding_id
+        for held in provenance.values()
+        if held.method_binding_id is not None
+    }
+    if not wanted:
+        return provenance
+    async with async_session() as session:
+        live = set(
+            (
+                await session.scalars(
+                    select(MethodBinding.method_binding_id).where(
+                        MethodBinding.method_binding_id.in_(wanted)
+                    )
+                )
+            ).all()
+        )
+    gone = wanted - live
+    if not gone:
+        return provenance
+    runtime.logger.info(
+        f"{len(gone)} method binding(s) were deleted while this file was "
+        "processed, so its samples record the rung that bound them and no "
+        "binding row"
+    )
+    return {
+        mode_id: (
+            held
+            if held.method_binding_id in live or held.method_binding_id is None
+            else ItemProvenance(held.bound_by, None)
+        )
+        for mode_id, held in provenance.items()
+    }
+
+
 async def create_acquisition_batches_and_items(
     sample_file: SampleFile,
     dataset_id: str,
     ionization_modes: list[IonizationMode],
+    provenance: dict[str, ItemProvenance],
 ) -> tuple[list[dict], list[dict]]:
     """
     Create ACQUISITION batches and sample items for each ionization mode of sample file.
@@ -1830,17 +2313,42 @@ async def create_acquisition_batches_and_items(
     - Create ACQUISITION sample item within the batch
     - Configure batch with appropriate target collections and ionization mechanisms
 
+    Each item records how it was bound, so that how a file was routed is a
+    column rather than a reconstruction
+    (``docs/dev/ingest_routing_and_splitting.md``, section 5.2). An item bound
+    by its acquisition method also names the binding row that did it; every
+    other rung leaves that empty, there being no row to name.
+
     :param sample_file: Sample file record containing polarities and metadata
     :type sample_file: SampleFile
     :param dataset_id: ID of ACQUISITION dataset to create batches in
     :type dataset_id: str
     :param ionization_modes: The modes the file is bound to, one per polarity
     :type ionization_modes: list[IonizationMode]
+    :param provenance: How each mode came to bind this file, by mode id.
+        Required rather than defaulted: a caller that forgot it would record
+        every item as routed by nothing, which is what NULL already means for
+        the items processed before this was recorded. A mode missing from it
+        gets exactly that, which is what a mode kept from an item predating
+        the column should say.
+    :type provenance: dict[str, ItemProvenance]
     :return: Tuple of (created sample items, created/retrieved batches)
     :rtype: tuple[list[dict], list[dict]]
     """
     sample_items_to_create = []
     acquisition_sample_batches = []
+    provenance = await _with_live_bindings(provenance)
+
+    # The rows of the file's scan streams, and the one each item below reads
+    # (process.streams): its polarity's composite where the file holds one,
+    # else the polarity's one stream, else none, which is an item over every
+    # MS1 scan of its polarity as before.
+    found = await read_store_streams(sample_file.filename)
+    rows = (
+        await sync_stream_rows(sample_file.sample_file_id, found)
+        if found.streams
+        else StreamRows()
+    )
 
     for ionization_mode in ionization_modes:
         # --- Generate daily ACQUISITION batch name for this ionization mode ---
@@ -1900,8 +2408,9 @@ async def create_acquisition_batches_and_items(
         acquisition_sample_batches.append(acquisition_sample_batch)
 
         # Prepare ACQUISITION sample item for this ionization mode
+        held = provenance.get(ionization_mode.ionization_mode_id, ItemProvenance())
         sample_items_to_create.append(
-            SampleItemCreate(
+            AcquisitionItemCreate(
                 sample_batch_id=acquisition_sample_batch["sample_batch_id"],
                 sample_file_id=sample_file.sample_file_id,
                 sample_item_name=sample_file.datetime.strftime("%Y-%m-%d %H:%M:%S"),
@@ -1909,6 +2418,9 @@ async def create_acquisition_batches_and_items(
                 sample_item_attributes={},
                 polarity=ionization_mode.ionization_mode_polarity,
                 ionization_mode_id=ionization_mode.ionization_mode_id,
+                bound_by=held.bound_by,
+                method_binding_id=held.method_binding_id,
+                stream_id=rows.item_stream(ionization_mode.ionization_mode_polarity),
             )
         )
     # Step 3: Create ACQUISITION sample items
@@ -1918,7 +2430,7 @@ async def create_acquisition_batches_and_items(
         )
     ).get("data", [])
 
-    return acquisition_samples, acquisition_sample_batches
+    return acquisition_samples, acquisition_sample_batches, rows, found
 
 
 async def _record_calibration_failure(

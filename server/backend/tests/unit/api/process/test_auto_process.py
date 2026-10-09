@@ -19,10 +19,22 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from test_utils import captured_logs
 
-from mascope_backend.runtime import runtime
-
+from mascope_backend.api.controllers.sample.files.process.bindings import (
+    Declined,
+)
+from mascope_backend.api.controllers.sample.files.process.service import (
+    ItemProvenance,
+)
 
 # Module path prefix for patching
+from mascope_backend.api.controllers.sample.files.process.streams import (
+    StoreStreams,
+    StreamRows,
+)
+from mascope_backend.runtime import runtime
+from mascope_runtime.logging import SENTRY_FINGERPRINT
+
+
 _SVC = "mascope_backend.api.controllers.sample.files.process.service"
 _NOTIF = "mascope_backend.socket.notifications"
 _UTILS = "mascope_backend.api.lib.utils"
@@ -170,20 +182,33 @@ def status():
     """The processing-status writer, recorded instead of written.
 
     Also stubs the scan stream census, which would read the file's props
-    from the filestore, and the method-binding learner, which would write to
-    the database. Request the fixture by name to read what was recorded:
+    from the filestore, the method-binding learner, which would write to
+    the database, and the reading of the file's acquisition record, which
+    would query it: these files have none unless a test says so through
+    ``status.declares``, and the rung that reads it is covered in
+    test_auto_process_declared.py. Request the fixture by name to read what
+    was recorded:
     ``[(status, detail), ...]`` in order via :func:`_recorded`.
     """
     with (
         patch(f"{_SVC}.record_processing_status", new_callable=AsyncMock) as record,
         patch(f"{_SVC}.read_scan_streams", new_callable=AsyncMock) as census,
+        patch(f"{_SVC}.read_store_stream_keys", new_callable=AsyncMock) as stitched,
         patch(f"{_SVC}.pooled_streams_note") as note,
         patch(f"{_SVC}.learn_method_bindings", new_callable=AsyncMock) as learn,
+        patch(
+            f"{_SVC}._modes_its_record_declares",
+            new_callable=AsyncMock,
+            return_value=([], None),
+        ) as declares,
     ):
         census.return_value = []
+        stitched.return_value = []
         note.return_value = None
         record.note = note
+        record.declares = declares
         record.census = census
+        record.stitched = stitched
         record.learn = learn
         yield record
 
@@ -216,7 +241,12 @@ async def test_passes_instrument_year_and_user_to_get_acquisition_dataset():
 
     mocks["fetch_sample_file"].return_value = sample_file
     mocks["get_acquisition_dataset"].return_value = {"data": dataset}
-    mocks["create_batches"].return_value = ([sample_item], [batch])
+    mocks["create_batches"].return_value = (
+        [sample_item],
+        [batch],
+        StreamRows(),
+        StoreStreams(),
+    )
     mocks["fetch_affected"].return_value = _make_affected_data([sample_item])
 
     # Mock the async context manager for session.get(IonizationMode, ...)
@@ -271,7 +301,12 @@ async def test_derives_year_from_instrument_local_datetime():
 
     mocks["fetch_sample_file"].return_value = sample_file
     mocks["get_acquisition_dataset"].return_value = {"data": dataset}
-    mocks["create_batches"].return_value = ([sample_item], [batch])
+    mocks["create_batches"].return_value = (
+        [sample_item],
+        [batch],
+        StreamRows(),
+        StoreStreams(),
+    )
     mocks["fetch_affected"].return_value = _make_affected_data([sample_item])
 
     mock_session = AsyncMock()
@@ -314,7 +349,12 @@ async def test_calibrates_when_calibration_collection_is_set():
 
     mocks["fetch_sample_file"].return_value = sample_file
     mocks["get_acquisition_dataset"].return_value = {"data": dataset}
-    mocks["create_batches"].return_value = ([sample_item], [batch])
+    mocks["create_batches"].return_value = (
+        [sample_item],
+        [batch],
+        StreamRows(),
+        StoreStreams(),
+    )
     mocks["fetch_affected"].return_value = _make_affected_data([sample_item])
 
     mock_session = AsyncMock()
@@ -360,7 +400,12 @@ async def test_failed_calibration_skips_matching_and_assignment():
 
     mocks["fetch_sample_file"].return_value = sample_file
     mocks["get_acquisition_dataset"].return_value = {"data": dataset}
-    mocks["create_batches"].return_value = ([sample_item], [batch])
+    mocks["create_batches"].return_value = (
+        [sample_item],
+        [batch],
+        StreamRows(),
+        StoreStreams(),
+    )
     mocks["fetch_affected"].return_value = _make_affected_data([sample_item])
     mocks["calibrate"].return_value = _outcome(False, "The m/z calibration failed.")
 
@@ -407,7 +452,12 @@ async def test_blank_file_skips_calibration_matching_and_assignment():
 
     mocks["fetch_sample_file"].return_value = sample_file
     mocks["get_acquisition_dataset"].return_value = {"data": dataset}
-    mocks["create_batches"].return_value = ([sample_item], [batch])
+    mocks["create_batches"].return_value = (
+        [sample_item],
+        [batch],
+        StreamRows(),
+        StoreStreams(),
+    )
     mocks["fetch_affected"].return_value = _make_affected_data([sample_item])
 
     mock_session = AsyncMock()
@@ -449,7 +499,12 @@ async def test_skips_calibration_when_no_calibration_collection():
 
     mocks["fetch_sample_file"].return_value = sample_file
     mocks["get_acquisition_dataset"].return_value = {"data": dataset}
-    mocks["create_batches"].return_value = ([sample_item], [batch])
+    mocks["create_batches"].return_value = (
+        [sample_item],
+        [batch],
+        StreamRows(),
+        StoreStreams(),
+    )
     mocks["fetch_affected"].return_value = _make_affected_data([sample_item])
 
     mock_session = AsyncMock()
@@ -514,6 +569,8 @@ async def test_processes_multiple_ionization_modes():
     mocks["create_batches"].return_value = (
         [sample_neg, sample_pos],
         [batch_neg, batch_pos],
+        StreamRows(),
+        StoreStreams(),
     )
     mocks["fetch_affected"].return_value = _make_affected_data([sample_neg, sample_pos])
 
@@ -577,6 +634,8 @@ def _start_dual_polarity(*, calibrate, neg_collection="cal-neg", pos_collection=
             _make_batch(sample_batch_id="batch-neg"),
             _make_batch(sample_batch_id="batch-pos"),
         ],
+        StreamRows(),
+        StoreStreams(),
     )
     mocks["fetch_affected"].return_value = _make_affected_data(samples)
 
@@ -794,7 +853,12 @@ async def test_creates_batches_with_correct_dataset_id():
 
     mocks["fetch_sample_file"].return_value = sample_file
     mocks["get_acquisition_dataset"].return_value = {"data": dataset}
-    mocks["create_batches"].return_value = ([sample_item], [batch])
+    mocks["create_batches"].return_value = (
+        [sample_item],
+        [batch],
+        StreamRows(),
+        StoreStreams(),
+    )
     mocks["fetch_affected"].return_value = _make_affected_data([sample_item])
 
     mock_session = AsyncMock()
@@ -815,6 +879,10 @@ async def test_creates_batches_with_correct_dataset_id():
         sample_file=sample_file,
         dataset_id="ds-specific",
         ionization_modes=mocks["resolve"].return_value,
+        provenance={
+            mode.ionization_mode_id: ItemProvenance("token")
+            for mode in mocks["resolve"].return_value
+        },
     )
 
 
@@ -836,7 +904,12 @@ async def test_return_structure():
 
     mocks["fetch_sample_file"].return_value = sample_file
     mocks["get_acquisition_dataset"].return_value = {"data": dataset}
-    mocks["create_batches"].return_value = ([sample_item], [batch])
+    mocks["create_batches"].return_value = (
+        [sample_item],
+        [batch],
+        StreamRows(),
+        StoreStreams(),
+    )
     mocks["fetch_affected"].return_value = _make_affected_data([sample_item])
 
     mock_session = AsyncMock()
@@ -1135,10 +1208,10 @@ async def test_give_up_error_reads_the_same_for_every_file():
     """
     The ERROR text depends on the kind of fault only, never on the file.
 
-    Error monitoring groups issues by the formatted message, so text that
-    carries the file id or the error opens an issue - and an alert - per file.
-    The same fault on two files has to read identically, while different
-    faults still read apart.
+    The same fault on two files has to read identically - the file and the
+    error are named at INFO - while different faults still read apart, and
+    error monitoring groups them apart too: by status code, not by the call
+    site every give-up shares.
     """
     from mascope_backend.api.lib.exceptions.api_exceptions import ApiException
 
@@ -1150,10 +1223,16 @@ async def test_give_up_error_reads_the_same_for_every_file():
     )
     other, _ = await _run_until_given_up("sf-third", ApiException("busy", {}, 503))
 
-    first, second, other = (_lines(_monitored(r)) for r in (first, second, other))
+    first, second, other = (_monitored(r) for r in (first, second, other))
+    fingerprints = [
+        r[0]["extra"].get(SENTRY_FINGERPRINT) for r in (first, second, other)
+    ]
+    first, second, other = (_lines(r) for r in (first, second, other))
     assert len(first) == 1 and first == second, (first, second)
     assert "sf-" not in first[0][1] and "corrupt" not in first[0][1], first
     assert len(other) == 1 and other != first, other
+    assert fingerprints[0] == fingerprints[1] != fingerprints[2], fingerprints
+    assert fingerprints[0] is not None, fingerprints
 
 
 @pytest.mark.asyncio
@@ -1239,7 +1318,12 @@ def _start_single(
     mocks["fetch_sample_file"].return_value = sample_file
     mocks["get_acquisition_dataset"].return_value = {"data": _make_dataset()}
     mocks["resolve"].return_value = [ion_mode]
-    mocks["create_batches"].return_value = ([sample_item], [_make_batch()])
+    mocks["create_batches"].return_value = (
+        [sample_item],
+        [_make_batch()],
+        StreamRows(),
+        StoreStreams(),
+    )
     mocks["fetch_affected"].return_value = _make_affected_data([sample_item])
 
     mock_session = AsyncMock()
@@ -1276,6 +1360,161 @@ async def test_records_each_stage_a_calibrated_file_reaches(status):
     assert recorded[0][1] == "Bound by file-name token to 'Bromide RI' (-)."
     assert recorded[-1][1] == "Matched 1 sample."
     assert all(call.args[0] == "sf-001" for call in status.call_args_list)
+
+
+def _no_token(filename="2025.09.20_test_file.raw"):
+    """What the token rule raises for a file no token names."""
+    from mascope_backend.api.new.ionization.modes.util import NoTokenMatchError
+
+    return NoTokenMatchError(
+        f"No ionization mode tokens found for file {filename}. "
+        "Configure tokens in ionization settings"
+    )
+
+
+def _routing(mode, binding_id="mb-000000000001"):
+    from mascope_backend.api.controllers.sample.files.process.bindings import (
+        MethodRouting,
+    )
+
+    return MethodRouting(mode=mode, binding_id=binding_id)
+
+
+@pytest.mark.asyncio
+async def test_a_token_less_file_parks_while_the_rung_is_off(status):
+    """The default. Nothing about routing changes until a site switches it."""
+    mocks, _ = _start_single()
+    mocks["resolve"].side_effect = _no_token()
+
+    with patch(f"{_SVC}.routes_on_method_binding", return_value=False):
+        with patch(
+            f"{_SVC}.resolve_modes_by_method_binding", new_callable=AsyncMock
+        ) as rung:
+            result = await _run_pipeline()
+
+    assert result["status"] == "parked"
+    # Not even consulted: a shadow deployment runs no extra query per file.
+    rung.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_the_rung_binds_a_token_less_file_to_its_method(status):
+    """What `method_binding = "route"` buys: this file parks on every other
+    deployment."""
+    mocks, _ = _start_single()
+    mode = mocks["resolve"].return_value[0]
+    mocks["resolve"].side_effect = _no_token()
+
+    with patch(f"{_SVC}.routes_on_method_binding", return_value=True):
+        with patch(
+            f"{_SVC}.resolve_modes_by_method_binding",
+            new_callable=AsyncMock,
+            return_value=([_routing(mode)], None),
+        ):
+            await _run_pipeline()
+
+    # Bound, not parked, and the items say which rung and which row.
+    assert [state for state, _ in _recorded(status)] == [
+        "bound",
+        "calibrated",
+        "done",
+    ]
+    assert _recorded(status)[0][1] == (
+        "Bound to 'Bromide RI' (-) by its acquisition method."
+    )
+    assert _recorded_provenance(mocks) == {
+        "im-001": ItemProvenance("method", "mb-000000000001")
+    }
+    # And the binding learns nothing from the file it routed itself: that
+    # would be counting its own answer as evidence for itself.
+    status.learn.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_the_park_detail_says_what_the_method_could_not_tell_either(status):
+    """Two reasons, because a person reading it has two things to check."""
+    mocks, _ = _start_single()
+    mocks["resolve"].side_effect = _no_token()
+
+    with patch(f"{_SVC}.routes_on_method_binding", return_value=True):
+        with patch(
+            f"{_SVC}.resolve_modes_by_method_binding",
+            new_callable=AsyncMock,
+            return_value=(
+                [],
+                Declined(
+                    "its acquisition method has not been seen before",
+                    "Choose a chemistry for one file of this method and the "
+                    "rest will follow it.",
+                ),
+            ),
+        ):
+            result = await _run_pipeline()
+
+    assert result["status"] == "parked"
+    (state, detail) = _recorded(status)[0]
+    assert state == "needs_chemistry"
+    # Asserted as one string, not as two substrings: the token rule's message
+    # ends without a full stop, so the two sentences ran together.
+    assert detail == (
+        "No ionization mode tokens found for file 2025.09.20_test_file.raw. "
+        "Configure tokens in ionization settings. Its acquisition method does "
+        "not say either: its acquisition method has not been seen before. "
+        "Choose a chemistry for one file of this method and the rest will "
+        "follow it."
+    )
+
+
+@pytest.mark.asyncio
+async def test_the_remedy_comes_from_the_guard_that_declined(status):
+    """Four of the six guards are not fixed by choosing one file's chemistry.
+
+    The call site joins what the guard said rather than appending advice of
+    its own, because the wrong version of that advice - "choose one and the
+    rest follow" for an instrument that reports the same method name for every
+    acquisition - is the one most people on the fleet would read.
+    """
+    mocks, _ = _start_single()
+    mocks["resolve"].side_effect = _no_token()
+
+    with patch(f"{_SVC}.routes_on_method_binding", return_value=True):
+        with patch(
+            f"{_SVC}.resolve_modes_by_method_binding",
+            new_callable=AsyncMock,
+            return_value=(
+                [],
+                Declined("it reports no method name", "Use a filename token."),
+            ),
+        ):
+            await _run_pipeline()
+
+    (_, detail) = _recorded(status)[0]
+    assert detail.endswith(
+        "Its acquisition method does not say either: it reports no method "
+        "name. Use a filename token."
+    )
+
+
+@pytest.mark.asyncio
+async def test_an_ambiguous_name_does_not_reach_the_rung(status):
+    """A name carrying two tokens is a configuration to fix.
+
+    The binding must not stand in for it: that would route a file whose own
+    name says two contradictory things, and hide the thing to correct.
+    """
+    mocks, _ = _start_single()
+    mocks["resolve"].side_effect = ValueError(
+        "Ionization mode tokens must match exactly one mode per polarity"
+    )
+
+    with patch(f"{_SVC}.routes_on_method_binding", return_value=True):
+        with patch(
+            f"{_SVC}.resolve_modes_by_method_binding", new_callable=AsyncMock
+        ) as rung:
+            result = await _run_pipeline()
+
+    assert result["status"] == "parked"
+    rung.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -1476,6 +1715,243 @@ async def test_a_file_a_person_routed_teaches_its_method_binding(status):
         await _run_pipeline(ionization_mode_ids=["im-001"])
 
     assert status.learn.await_args.kwargs["source"] == "explicit"
+
+
+def _recorded_provenance(mocks) -> dict:
+    """The provenance the run passed for each mode it bound."""
+    return mocks["create_batches"].await_args.kwargs["provenance"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "chosen, rung",
+    [(None, "token"), (["im-001"], "explicit")],
+    ids=["a token routed it", "a person chose"],
+)
+async def test_the_items_record_the_rung_the_binding_was_taught(status, chosen, rung):
+    """One rung, written to the items and taught to the binding.
+
+    Asserted together rather than in two tests, because the thing worth
+    pinning is that they agree: a report counting items by rung is read
+    beside a table learned from those same rungs, and the two drifting apart
+    is the failure that would not look like one.
+    """
+    mocks, _ = _start_single()
+
+    with patch(
+        f"{_SVC}.fetch_ionization_modes",
+        new_callable=AsyncMock,
+        return_value=mocks["resolve"].return_value,
+    ):
+        await _run_pipeline(ionization_mode_ids=chosen)
+
+    assert _recorded_provenance(mocks) == {
+        "im-001": ItemProvenance(rung),
+    }
+    assert status.learn.await_args.kwargs["source"] == rung
+
+
+@pytest.mark.asyncio
+async def test_a_kept_mode_carries_the_rung_that_bound_it_before(status):
+    """Re-processing a file no token binds is nobody's decision.
+
+    ``ionization_mode_ids`` is not only the choose-chemistry route. A file a
+    token bound months ago reaches the same path once that token has been
+    renamed, and its modes are then copied from its own previous samples. The
+    rung has to come with them: calling that "explicit" would say a person
+    vouched for a chemistry nobody was asked about, and the count of explicit
+    bindings in any report would climb every time a batch was re-processed.
+    """
+    mocks, _ = _start_single()
+    kept = {"im-001": ItemProvenance("token", "mb-000000000001")}
+
+    with patch(
+        f"{_SVC}.fetch_ionization_modes",
+        new_callable=AsyncMock,
+        return_value=mocks["resolve"].return_value,
+    ):
+        await _run_pipeline(ionization_mode_ids=["im-001"], kept_provenance=kept)
+
+    assert _recorded_provenance(mocks) == kept
+    # And the method learns nothing: the observation was recorded when the
+    # mode was first matched or chosen, and repeating it would both claim a
+    # strength nobody gave and let a re-processed batch drag the binding
+    # back toward the row those files were bound under.
+    status.learn.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_kept_mode_from_before_the_columns_invents_no_rung(status):
+    """NULL carries forward as NULL, which is the one honest answer."""
+    mocks, _ = _start_single()
+
+    with patch(
+        f"{_SVC}.fetch_ionization_modes",
+        new_callable=AsyncMock,
+        return_value=mocks["resolve"].return_value,
+    ):
+        await _run_pipeline(
+            ionization_mode_ids=["im-001"],
+            kept_provenance={"im-001": ItemProvenance()},
+        )
+
+    assert _recorded_provenance(mocks) == {"im-001": ItemProvenance(None, None)}
+    status.learn.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_mode_missing_from_the_kept_provenance_records_nothing(status):
+    """A mode whose own item predates the columns is not given a rung."""
+    mocks, _ = _start_single()
+
+    with patch(
+        f"{_SVC}.fetch_ionization_modes",
+        new_callable=AsyncMock,
+        return_value=mocks["resolve"].return_value,
+    ):
+        await _run_pipeline(ionization_mode_ids=["im-001"], kept_provenance={})
+
+    assert _recorded_provenance(mocks) == {"im-001": ItemProvenance()}
+
+
+@pytest.mark.asyncio
+async def test_the_note_is_told_which_streams_the_store_stitched(status):
+    """A file whose peaks were detected per stream is not described as
+    pooled: the note is given the census and the store's streams."""
+    census = [{"key": "A", "signature": {"polarity": "-", "ms_order": 1}}]
+    status.census.return_value = census
+    status.stitched.return_value = ["A", "B"]
+    _start_single()
+
+    await _run_pipeline()
+
+    status.note.assert_called_once_with(census, ["A", "B"])
+
+
+@pytest.mark.asyncio
+async def test_a_row_kept_for_a_sample_is_named_in_every_later_status(status):
+    """A stream row the file no longer describes, kept because a sample still
+    reads it, is reported from the status after the items on."""
+    mocks, _sample_file = _start_single()
+    samples, batches, _rows, _found = mocks["create_batches"].return_value
+    mocks["create_batches"].return_value = (
+        samples,
+        batches,
+        StreamRows(
+            kept={"FTMS - p NSI Full ms [40.0000-138.0000] R=120000": ["si-copy"]}
+        ),
+        StoreStreams(),
+    )
+
+    await _run_pipeline()
+
+    details = [detail for _status, detail in _recorded(status)]
+    after_items = details[
+        details.index(next(d for d in details if d and "is kept because" in d)) :
+    ]
+    assert after_items and all(
+        "Scan stream 'FTMS - p NSI Full ms [40.0000-138.0000] R=120000' is no longer "
+        "among the file's streams and is kept because a sample si-copy still reads it."
+        in detail
+        for detail in after_items
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_stale_peak_store_is_named_in_every_later_status(status):
+    """A per-stream store the file no longer reads back is not refused: the
+    rows are written pooled, and the statuses from the items on say why."""
+    mocks, _sample_file = _start_single()
+    samples, batches, rows, _found = mocks["create_batches"].return_value
+    mocks["create_batches"].return_value = (
+        samples,
+        batches,
+        rows,
+        StoreStreams(streams=[{"key": "A", "signature": {}}], stale=["A event=2"]),
+    )
+
+    await _run_pipeline()
+
+    details = [detail for _status, detail in _recorded(status)]
+    first = details.index(next(d for d in details if d and "peak store" in d))
+    assert all(
+        "The file's peak store holds scan streams the file does not read back "
+        "now: A event=2. Its peaks are detected again when a match meets it; "
+        "until then its streams are recorded as pooled." in detail
+        for detail in details[first:]
+    )
+
+
+#: What a record that named a chemistry nothing here answers to leaves in
+#: the file's status (``_modes_its_record_declares``).
+UNANSWERED = (
+    "Its acquisition record names the chemistry 'Br', but no ionization mode "
+    "of this instrument has that token in a polarity the file holds"
+)
+
+
+@pytest.mark.asyncio
+async def test_a_file_its_name_bound_still_says_what_its_record_named_when_done(
+    status,
+):
+    """The record names one chemistry and the name bound the file to another.
+    Whoever opens the file reads the status its run ended on, so the sentence
+    is in every status from the binding on, and not in the first alone."""
+    status.declares.return_value = ([], UNANSWERED)
+    _start_single()
+
+    await _run_pipeline()
+
+    assert _recorded(status) == [
+        ("bound", f"Bound by file-name token to 'Bromide RI' (-). {UNANSWERED}."),
+        ("calibrated", f"{UNANSWERED}."),
+        ("done", f"Matched 1 sample. {UNANSWERED}."),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_a_failed_calibration_says_what_the_record_named_as_well(status):
+    status.declares.return_value = ([], UNANSWERED)
+    mocks, _ = _start_single()
+    mocks["calibrate"].return_value = _outcome(
+        False, "The m/z calibration failed: No calibration peaks found."
+    )
+
+    await _run_pipeline()
+
+    assert _recorded(status)[-1] == (
+        "calibration_failed",
+        "The m/z calibration failed: No calibration peaks found. Matching and "
+        f"peak assignment were skipped. {UNANSWERED}.",
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_blank_file_says_what_its_record_named_as_well(status):
+    status.declares.return_value = ([], UNANSWERED)
+    _start_single(instrument_function_id=None)
+
+    await _run_pipeline()
+
+    assert _recorded(status)[-1] == (
+        "done",
+        f"Blank measurement: no peaks to calibrate, match or assign. {UNANSWERED}.",
+    )
+
+
+@pytest.mark.asyncio
+async def test_what_the_record_named_comes_before_what_the_streams_say(status):
+    note = "Polarity - pools 2 MS1 scan streams into one peak list: A; B."
+    status.note.return_value = note
+    status.declares.return_value = ([], UNANSWERED)
+    _start_single()
+
+    await _run_pipeline()
+
+    assert _recorded(status)[-1] == (
+        "done",
+        f"Matched 1 sample. {UNANSWERED}. {note}",
+    )
 
 
 @pytest.mark.asyncio

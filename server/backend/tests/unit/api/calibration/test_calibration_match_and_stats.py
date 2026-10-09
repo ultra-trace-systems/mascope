@@ -2,6 +2,7 @@
 
 import numpy as np
 import pandas as pd
+import pytest
 from calibration_test_support import get_test_calibration_handler
 
 
@@ -139,6 +140,74 @@ class TestSelectRetainedMatches:
 
         assert len(result) == 5
         assert 660.0 not in result["sample_peak_mz"].values
+
+
+def _calibrants(*mz_and_error_ppm: tuple[float, float]) -> pd.DataFrame:
+    """Matched calibrants, each observed ``error_ppm`` off its target m/z."""
+    mzs = np.array([mz for mz, _ in mz_and_error_ppm])
+    errors = np.array([error for _, error in mz_and_error_ppm])
+    return pd.DataFrame(
+        {
+            "mz": mzs,
+            "sample_peak_mz": mzs * (1.0 + errors * 1e-6),
+            "sample_peak_tof": np.zeros(mzs.size),
+            "match_mz_error": errors,
+            "calibrant_to_tic": np.full(mzs.size, 0.1),
+            "target_ion_id": [f"ion-{idx}" for idx in range(mzs.size)],
+        }
+    )
+
+
+class TestSelectBetweenCalibrantsThatDisagree:
+    """Calibrants further apart than the tolerance, and no majority among them.
+
+    An Orbitrap fit needs one point, and one point fits itself exactly, so
+    every calibrant of such a file is a consistent subset with nothing left of
+    its residual but rounding. The one kept is the one that asks for the
+    smallest correction, whatever the rounding and whatever order they come in.
+    """
+
+    def setup_method(self):
+        self.handler = get_test_calibration_handler("orbitrap", "+")
+        self.handler._get_old_factor = lambda: 1.0
+        assert self.handler.params.mz_error_tolerance == 5
+
+    def _kept_mzs(self, df: pd.DataFrame) -> list[float]:
+        return self.handler._select_retained_matches(df)["mz"].tolist()
+
+    @pytest.mark.parametrize("near_ppm", [0.14, -0.14])
+    @pytest.mark.parametrize("far_ppm", [14.4, -14.4])
+    @pytest.mark.parametrize("near_first", [True, False])
+    def test_two_keep_the_one_nearer_its_target(self, near_ppm, far_ppm, near_first):
+        near, far = (62.98540, near_ppm), (124.98401, far_ppm)
+        df = _calibrants(near, far) if near_first else _calibrants(far, near)
+
+        assert self._kept_mzs(df) == [62.98540]
+
+    def test_the_choice_does_not_turn_on_rounding(self):
+        """The same two calibrants on axes a fraction of a ppm apart.
+
+        Which of two exact fits leaves the smaller rounding residue changes
+        from one axis to the next; the calibrant kept must not.
+        """
+        for shift_ppm in np.linspace(-1.0, 1.0, 201):
+            df = _calibrants(
+                (62.98540, 0.14 + shift_ppm), (124.98401, 14.4 + shift_ppm)
+            )
+
+            assert self._kept_mzs(df) == [62.98540], shift_ppm
+
+    def test_three_keep_the_one_nearest_its_target(self):
+        """Not the one furthest from the other two."""
+        df = _calibrants((100.0, 0.2), (200.0, 12.0), (300.0, 30.0))
+
+        assert self._kept_mzs(df) == [100.0]
+
+    def test_a_pair_that_agrees_better_still_wins_over_a_smaller_correction(self):
+        """The correction only ranks subsets that are equally consistent."""
+        df = _calibrants((100.0, 0.0), (200.0, 2.0), (300.0, 20.0), (400.0, 20.2))
+
+        assert self._kept_mzs(df) == [300.0, 400.0]
 
 
 class TestFitRetainedMatches:

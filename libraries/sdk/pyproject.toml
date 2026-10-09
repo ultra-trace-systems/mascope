@@ -1,6 +1,6 @@
 [project]
 name = "mascope_sdk"
-version = "2026.9.30"
+version = "2026.10.9"
 description = "Mascope's public SDK library, wrapping the app's REST API."
 classifiers = [
     "Topic :: Scientific/Engineering :: Atmospheric Science",
@@ -23,6 +23,8 @@ dependencies = [
     "pandas>=2.0.0",
     "tqdm>=4.70.0",
     "python-dotenv>=1.0.0",
+    # The acquisition record's schema (mascope_sdk.acquisition).
+    "pydantic>=2.6,<3",
 ]
 
 [project.optional-dependencies]

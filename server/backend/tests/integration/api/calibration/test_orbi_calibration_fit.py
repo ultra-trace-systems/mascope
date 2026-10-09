@@ -17,6 +17,12 @@ matched, but outside the error tolerance once the others are fitted, so the
 subset search has to leave it out. Background peaks far from every target have
 to be discarded by the refine window.
 
+A second file holds two calibrants whose lines overlap: the main line of each
+is a minor isotope line of the other, as with a labelled reagent beside its
+unlabelled compound. The two peaks carry different offsets, so the fit says
+which of them it was given - and it has to be both, whichever of the two ions
+the database happens to have numbered first.
+
 The peak timeseries are stored already computed. Computing a missing one from
 the signal on demand belongs to ``mascope_signal`` and is covered by its own
 tests (``libraries/signal/tests/test_load_peak_timeseries.py``).
@@ -71,6 +77,10 @@ OUTLIER_MZ = 450.0
 BACKGROUND_MZS = (120.0, 200.0, 300.0, 400.0, 500.0)
 CALIBRANT_OFFSET_PPM = 3.0
 OUTLIER_OFFSET_PPM = 15.0
+
+#: The two lines the overlapping calibrants share, and each peak's own offset.
+SHARED_LINE_MZS = (150.0, 151.0)
+SHARED_LINE_OFFSETS_PPM = (2.0, 4.0)
 
 N_SCANS = 10
 PEAK_HEIGHT = 1e6
@@ -157,13 +167,14 @@ def filestore(tmp_path, monkeypatch):
     return tmp_path
 
 
-@pytest_asyncio.fixture
-async def calibration_collection(async_session_factory):
-    """A calibration collection with one isotope per target, the outlier's included.
+async def _seed_collection(async_session_factory, ions) -> SimpleNamespace:
+    """Seed a calibration collection of one compound per ion, under one mechanism.
 
-    Each target is its own compound with one ion and one isotope of full
-    relative abundance, so every matched peak is its own abundance reference
-    and the match score turns on the m/z error alone.
+    :param ions: Per ion, its id and its isotopes as
+        ``(isotope formula, m/z, relative abundance)``
+    :type ions: list[tuple[str, list[tuple[str, float, float]]]]
+    :return: The ids of every row seeded
+    :rtype: SimpleNamespace
     """
     ids = SimpleNamespace(
         workspace=gen_id(),
@@ -198,14 +209,14 @@ async def calibration_collection(async_session_factory):
                 workspace_id=ids.workspace,
             )
         )
-        # Formulas are carried by the rows but never read by the fit: the
-        # isotopes' m/z values are what it calibrates against.
-        for mz in (*CALIBRANT_MZS, OUTLIER_MZ):
-            compound_id, ion_id, isotope_id = gen_id(), gen_id(), gen_id()
+        # The compound and ion formulas are carried by the rows but never read
+        # by the fit: the isotopes' m/z values are what it calibrates against.
+        for ion_id, isotopes in ions:
+            compound_id = gen_id()
             session.add(
                 TargetCompound(
                     target_compound_id=compound_id,
-                    target_compound_name=f"Calibrant {mz} {compound_id}",
+                    target_compound_name=f"Calibrant {compound_id}",
                     target_compound_formula="C6H12O6",
                 )
             )
@@ -223,23 +234,27 @@ async def calibration_collection(async_session_factory):
                     target_ion_formula="C6H13O6+",
                 )
             )
-            session.add(
-                TargetIsotope(
-                    target_isotope_id=isotope_id,
-                    target_ion_id=ion_id,
-                    target_isotope_formula="C6H13O6+",
-                    mz=mz,
-                    relative_abundance=1.0,
-                    resolution="HIGH",
+            for formula, mz, relative_abundance in isotopes:
+                isotope_id = gen_id()
+                session.add(
+                    TargetIsotope(
+                        target_isotope_id=isotope_id,
+                        target_ion_id=ion_id,
+                        target_isotope_formula=formula,
+                        mz=mz,
+                        relative_abundance=relative_abundance,
+                        resolution="HIGH",
+                    )
                 )
-            )
+                ids.isotopes.append(isotope_id)
             ids.compounds.append(compound_id)
             ids.ions.append(ion_id)
-            ids.isotopes.append(isotope_id)
         await session.commit()
+    return ids
 
-    yield ids
 
+async def _delete_collection(async_session_factory, ids: SimpleNamespace) -> None:
+    """Delete every row :func:`_seed_collection` seeded."""
     async with async_session_factory() as session:
         await session.execute(
             delete(TargetIsotope).where(
@@ -273,6 +288,35 @@ async def calibration_collection(async_session_factory):
             delete(Workspace).where(Workspace.workspace_id == ids.workspace)
         )
         await session.commit()
+
+
+@pytest_asyncio.fixture
+async def seed_collection(async_session_factory):
+    """Factory seeding a calibration collection, removed again after the test."""
+    seeded: list[SimpleNamespace] = []
+
+    async def _seed(ions) -> SimpleNamespace:
+        ids = await _seed_collection(async_session_factory, ions)
+        seeded.append(ids)
+        return ids
+
+    yield _seed
+
+    for ids in seeded:
+        await _delete_collection(async_session_factory, ids)
+
+
+@pytest_asyncio.fixture
+async def calibration_collection(seed_collection):
+    """A calibration collection with one isotope per target, the outlier's included.
+
+    Each target is its own compound with one ion and one isotope of full
+    relative abundance, so every matched peak is its own abundance reference
+    and the match score turns on the m/z error alone.
+    """
+    return await seed_collection(
+        [(gen_id(), [("C6H13O6+", mz, 1.0)]) for mz in (*CALIBRANT_MZS, OUTLIER_MZ)]
+    )
 
 
 @pytest_asyncio.fixture
@@ -387,6 +431,54 @@ async def test_fit_recovers_the_planted_offset_and_leaves_the_outlier_out(
         assert row["calibration_mz_error"] == pytest.approx(0.0, abs=1e-6)
     assert summary["match_mz_error"] == pytest.approx(CALIBRANT_OFFSET_PPM, abs=1e-6)
     assert summary["calibration_mz_error"] == pytest.approx(0.0, abs=1e-6)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("ion_numbered_first", [0, 1])
+async def test_calibrants_sharing_lines_are_both_fitted_whichever_id_sorts_first(
+    seed_collection, write_orbi_sample, ion_numbered_first
+):
+    """Neither calibrant is lost for being the other's minor line."""
+    # Ion ids as two databases might generate them: either ion's sorts first.
+    ion_ids = ["z" + gen_id(15), "z" + gen_id(15)]
+    ion_ids[ion_numbered_first] = "0" + gen_id(15)
+    first_mz, second_mz = SHARED_LINE_MZS
+    collection = await seed_collection(
+        [
+            (
+                ion_ids[0],
+                [("C6H13O6+", first_mz, 0.97), ("[13C]C5H13O6+", second_mz, 0.02)],
+            ),
+            (
+                ion_ids[1],
+                [("[13C]C5H13O6+", second_mz, 0.98), ("C6H13O6+", first_mz, 0.01)],
+            ),
+        ]
+    )
+    filename = await write_orbi_sample(
+        [
+            *(
+                (_shifted(mz, offset), PEAK_HEIGHT)
+                for mz, offset in zip(SHARED_LINE_MZS, SHARED_LINE_OFFSETS_PPM)
+            ),
+            *_background_peaks(),
+        ]
+    )
+    handler = _handler(filename, collection)
+
+    await handler.fit()
+
+    assert handler.warning is None
+    *calibrants, _ = handler.stats
+    assert [row["mz"] for row in calibrants] == pytest.approx(list(SHARED_LINE_MZS))
+    assert [row["target_ion_id"] for row in calibrants] == ion_ids
+    assert [row["relative_abundance"] for row in calibrants] == [0.97, 0.98]
+    # The one-point factor is the median of the calibrants' ratios: with both
+    # of them, half-way between the two offsets.
+    scaling = np.mean([1.0 / (1.0 + ppm * 1e-6) for ppm in SHARED_LINE_OFFSETS_PPM])
+    assert handler.fit_result["par"]["old_factor_scaling"] == pytest.approx(
+        scaling, rel=0, abs=1e-12
+    )
 
 
 @pytest.mark.asyncio

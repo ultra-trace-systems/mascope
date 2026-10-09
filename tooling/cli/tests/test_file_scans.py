@@ -130,6 +130,43 @@ def test_a_checkout_reads_the_file_in_process(cli_runner, raw_file, monkeypatch)
     assert "61.9884" in result.output
     assert "ambient_neg.meth" in result.output
     assert "Polarity - has 2 MS1 streams" in result.output
+    # This report names no scan event, as one from an older reader does not.
+    assert "scan event" not in result.output
+
+
+def test_a_streams_scan_event_is_shown_where_the_report_names_one(
+    cli_runner, raw_file, monkeypatch
+):
+    """Two experiments under one filter differ only in the event, so it is on
+    the line an operator reads to tell them apart."""
+    first, second = (
+        {**stream, "key": f"{REPORT['streams'][0]['key']} event={event}"}
+        for stream, event in zip(REPORT["streams"], (1, 2))
+    )
+    report = {
+        **REPORT,
+        "streams": [
+            {**first, "scan_segment": 1, "scan_event": 1},
+            {**second, "scan_segment": 2, "scan_event": 2},
+            # A file that records no experiment, and a fragmentation stream,
+            # which carries neither key.
+            {**REPORT["streams"][1], "scan_segment": None, "scan_event": None},
+            {**REPORT["streams"][0], "t_first": 9.5},
+        ],
+    }
+    monkeypatch.setattr(file_cmd, "_reader_available", lambda: True)
+    monkeypatch.setattr(file_cmd, "_report_in_process", lambda path, top: report)
+
+    result = cli_runner.invoke(app, ["file", "scans", str(raw_file)])
+
+    assert result.exit_code == 0, result.output
+    lines = [line.strip() for line in result.output.splitlines()]
+    # The method's first segment goes unnamed: nearly every method has one.
+    assert "3 scans in 3 block(s), 0.5-5.5 s, scan event 1" in lines
+    assert "3 scans in 3 block(s), 1.5-6.5 s, segment 2 scan event 2" in lines
+    # A stream that names none says nothing rather than "None".
+    assert "3 scans in 3 block(s), 1.5-6.5 s" in lines
+    assert "3 scans in 3 block(s), 9.5-5.5 s" in lines
 
 
 def test_an_operator_install_reads_the_file_in_the_backend_container(
