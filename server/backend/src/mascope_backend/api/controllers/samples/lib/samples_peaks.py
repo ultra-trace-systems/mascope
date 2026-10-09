@@ -137,11 +137,14 @@ def _aggregate_time_range(
         # every peak with no timeseries, so running it again leaves them all
         # out; a timeseries is computed when it is first asked for (matching
         # asks for the peaks it matches, the timeseries route for any peak).
+        # Named in the API's own terms: the server cannot know which client
+        # reads this, or what that client's version calls its wrapper.
         warnings.append(
             f"{n_missing} peak(s) were excluded because their timeseries "
             f"have not been computed yet. A peak's timeseries is computed when "
-            f"it is first requested (SDK: samples.compute_peak_timeseries); "
-            f"repeat this request afterwards to include them."
+            f"it is first requested (POST /api/samples/{{sample_item_id}}"
+            f"/peaks/timeseries); repeat this request afterwards to include "
+            f"them."
         )
         data = data.isel(mz=np.where(has_ts)[0])
 

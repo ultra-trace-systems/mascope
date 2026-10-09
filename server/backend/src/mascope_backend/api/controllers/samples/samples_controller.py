@@ -316,8 +316,9 @@ async def get_sample_peaks(
 
     When ``t_min`` or ``t_max`` is provided, peak intensities are aggregated
     from the per-scan timeseries data instead of pre-computed sums.  Peaks
-    whose timeseries have not been computed are excluded, and a warning is
-    included in the response message.
+    whose timeseries have not been computed are excluded, and a warning says
+    so: in the response's ``warnings`` list, and folded into its message for
+    a client that reads only that.
 
     :param sample_item_id: Unique identifier for the sample
     :type sample_item_id: str
@@ -366,10 +367,17 @@ async def get_sample_peaks(
         mz_max=mz_max,
     )
 
-    # Folded into the message of either answer. With every peak left out of a
-    # time-ranged read the answer is empty, and "no peaks found" on its own
-    # reads as a sample that has none.
-    warning_text = "".join(f" Warning: {warning}" for warning in peak_data.warnings)
+    # Carried by either answer. With every peak left out of a time-ranged read
+    # the answer is empty, and "no peaks found" on its own reads as a sample
+    # that has none.
+    #
+    # Twice over: as a list beside the data, which a client reads as it is,
+    # and folded into the message, which is all an older client reads. The
+    # message quotes the sample's name, so a client that has to find the
+    # warnings in it can be misled by a sample named for the marker; the list
+    # is there so that none has to.
+    warnings = list(peak_data.warnings)
+    warning_text = "".join(f" Warning: {warning}" for warning in warnings)
 
     if peak_data.count == 0:
         return {
@@ -378,6 +386,7 @@ async def get_sample_peaks(
                 f"with polarity '{sample.polarity}'.{warning_text}"
             ),
             "results": 0,
+            "warnings": warnings,
             "data": {
                 "peak_id": [],
                 "mz": [],
@@ -425,6 +434,7 @@ async def get_sample_peaks(
     return {
         "message": message,
         "results": peak_data.count,
+        "warnings": warnings,
         "data": response_data,
     }
 
