@@ -1904,6 +1904,12 @@ it is new work.
     method item the binding would then name a different mode from the item -
     the same shape a re-pointed binding (5.3) leaves behind, so a hand edit
     would read as one.
+  - **Read, never taken.** Both columns are returned with every serialised
+    item: by the item routes, and through `sample_view`, which backs
+    `GET /api/samples`, a sample's socket events and the answer to creating
+    an item. No model a route reads a request into has either field, so a
+    request cannot claim a rung for an item nobody routed; a structural test
+    walks every route's request models to keep it so.
   - **A kept mode keeps its rung.** A file no token binds is re-processed
     under the modes its own items held, and that path is not only the file
     somebody chose a chemistry for: a file a token bound months ago reaches

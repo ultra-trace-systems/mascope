@@ -187,7 +187,15 @@ class AcquisitionItemCreate(StreamItemCreate):
 
 
 class SampleItemRead(SampleItemBase):
-    """Model for reading sample items - includes database fields."""
+    """Model for reading sample items - includes database fields.
+
+    The one model that carries how an item's chemistry was decided besides
+    :class:`AcquisitionItemCreate`, and for the opposite reason: this one is
+    only ever built from a stored row and sent out. No route takes it, and
+    the models a route does take (:class:`SampleItemCreate`,
+    :class:`SampleItemUpdate`) do not inherit from it, so showing the two
+    fields here gives a request no way to set them.
+    """
 
     sample_item_id: str = Field(
         ..., description="Unique identifier for the sample item"
@@ -198,6 +206,25 @@ class SampleItemRead(SampleItemBase):
     )
     ionization_mode_id: str | None = Field(
         None, description="ID of the ionization mode used for the sample item"
+    )
+    bound_by: BindingRung | None = Field(
+        None,
+        description=(
+            "The rung of the binding ladder auto-processing bound this item's "
+            "chemistry by: 'declared' (the file's acquisition record), "
+            "'explicit' (a person's choice), 'token' (the file's name) or "
+            "'method' (a method binding). None for an item auto-processing "
+            "did not route: one made by hand, copied or imported, one "
+            "processed before the rung was recorded, and one whose mode a "
+            "person has changed since. Read-only."
+        ),
+    )
+    method_binding_id: str | None = Field(
+        None,
+        description=(
+            "The method binding that bound this item, where bound_by is "
+            "'method' and the binding still exists. Read-only."
+        ),
     )
     locked: int = Field(
         ..., description="Lock status of the sample item (0=unlocked, 1=locked)"
