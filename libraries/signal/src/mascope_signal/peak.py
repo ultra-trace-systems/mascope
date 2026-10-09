@@ -870,11 +870,18 @@ def compute_peaks(
         that record as it is, so that re-detecting a file's peaks never
         changes what was decided for it.
     :type per_stream: bool | None
+    :raises TimeoutError: If another process was detecting the same file's
+        peaks for longer than ``mascope_file.io.ZARR_PROCESS_LOCK_TIMEOUT``
     """
-    peak_detector = get_peak_detector(filename, instrument_functions, per_stream)
-    asyncio.run(peak_detector.detect_peaks(progress_callback=progress_callback))
-    peak_detector.record_decision()
-    asyncio.run(peak_detector.write_peaks_to_zarr())
+    # One detection of a file at a time, in whichever process: the detector
+    # reads the recorded decision when it is made, and a rebuild that read it
+    # before an explicit decision was recorded would write the store the old
+    # record describes over the one the new record does.
+    with m_io.zarr_write_lock(m_io.peak_detection_lock_path(filename)):
+        peak_detector = get_peak_detector(filename, instrument_functions, per_stream)
+        asyncio.run(peak_detector.detect_peaks(progress_callback=progress_callback))
+        peak_detector.record_decision()
+        asyncio.run(peak_detector.write_peaks_to_zarr())
 
 
 def write_empty_peak_timeseries(filename: str) -> None:

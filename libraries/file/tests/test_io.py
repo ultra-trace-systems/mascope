@@ -684,6 +684,19 @@ def test_the_calibration_lock_is_named_beside_the_samples_stores(sample_file_pat
     assert not path.endswith(".zarr")
 
 
+def test_the_detection_lock_is_named_beside_the_samples_stores(sample_file_path):
+    """Beside them and none of them, as the calibration lock is - and not
+    among what deleting a sample's peaks sweeps away, which is every
+    ``peak_*`` beside them: a detection holds its lock across the write of
+    the store it guards."""
+    path = m_io.peak_detection_lock_path(TEST_FILENAME)
+
+    assert path == os.path.join(sample_file_path, "detection")
+    assert not path.endswith(".zarr")
+    assert not os.path.basename(path).startswith("peak_")
+    assert path != m_io.mz_calibration_lock_path(TEST_FILENAME)
+
+
 class TestEnsureSparsityExists:
     """Tests for ensure_sparsity_exists backwards compatibility function."""
 

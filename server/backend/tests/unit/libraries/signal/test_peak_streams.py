@@ -15,6 +15,8 @@ stream is detected, stored and filled exactly as it was.
 import asyncio
 import json
 import os
+import subprocess
+import sys
 
 import numpy as np
 import pytest
@@ -1059,3 +1061,58 @@ def test_the_scripted_reader_refuses_a_key_as_the_real_one_does(acquire):
 
     with pytest.raises(m_thermo.NoScansFoundError):
         acquisition.scan_times(stream=MEASURING, t_max=0.5)
+
+
+# -- one detection of a file at a time, in whichever process --------------------
+
+_PROBE = (
+    "import sys, fasteners\n"
+    "lock = fasteners.InterProcessLock(sys.argv[1])\n"
+    "print('FREE' if lock.acquire(blocking=False) else 'HELD')\n"
+)
+
+
+def _probe(lock_file: str) -> str:
+    """Whether another process could take the lock now. Asked from another
+    process: a lock of this kind is its process's, so one taken here again
+    would always be had."""
+    return subprocess.run(
+        [sys.executable, "-c", _PROBE, lock_file],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+
+
+def test_a_detection_holds_the_files_detection_lock_until_its_store_is_written(
+    acquire, instrument_functions, sample_file_path, monkeypatch
+):
+    """The backend detects a re-processed file's peaks and the converter
+    rebuilds stores, each by its own decision. A rebuild that read the record
+    before a re-processing wrote it would write the store of the old record
+    over the store of the new one, so the two cannot overlap: from the read
+    of the record to the last write, a detection holds the file's lock."""
+    acquire(TWO_EXPERIMENTS)
+    lock_file = f"{m_io.peak_detection_lock_path(SAMPLE_FILENAME)}.lock"
+    seen = {}
+    read_props, write_peaks = m_io.read_props, m_io.write_peaks
+
+    def reading(filename):
+        if "at the read of the record" not in seen:
+            seen["at the read of the record"] = _probe(lock_file)
+        return read_props(filename)
+
+    async def writing(*args, **kwargs):
+        await write_peaks(*args, **kwargs)
+        seen["after the store is written"] = _probe(lock_file)
+
+    monkeypatch.setattr(m_io, "read_props", reading)
+    monkeypatch.setattr(m_io, "write_peaks", writing)
+
+    m_peak.compute_peaks(SAMPLE_FILENAME, instrument_functions, per_stream=True)
+
+    assert seen == {
+        "at the read of the record": "HELD",
+        "after the store is written": "HELD",
+    }
+    assert _probe(lock_file) == "FREE"
