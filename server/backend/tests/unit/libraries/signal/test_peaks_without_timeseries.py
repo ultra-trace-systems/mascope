@@ -9,7 +9,8 @@ strongest peaks.
 
 Nothing in the rows of a short listing shows that it is short. The warning
 is all there is, so it has to reach the reader in every answer, the empty one
-included, and name a remedy that works.
+included, name a remedy that works, and be readable without picking it out of
+a sentence that also quotes a name the user chose.
 """
 
 import asyncio
@@ -48,12 +49,12 @@ def _ask_for_timeseries(mzs) -> None:
     asyncio.run(m_compute.load_peak_timeseries(SAMPLE_FILENAME, list(mzs))).compute()
 
 
-def _answer(monkeypatch, *, ranged: bool = True) -> dict:
+def _answer(monkeypatch, *, ranged: bool = True, name: str = "Scripted") -> dict:
     """The peaks controller's answer for the scripted sample."""
     t0, t1 = _window()
     sample = SimpleNamespace(
         sample_item_id="sample-1",
-        sample_item_name="Scripted",
+        sample_item_name=name,
         filename=SAMPLE_FILENAME,
         polarity="-",
         t0=t0,
@@ -105,6 +106,34 @@ def test_asking_for_a_peaks_timeseries_brings_it_into_the_ranged_listing(composi
     assert listed.warnings == []
 
 
+def test_a_listing_from_time_zero_names_exactly_the_peaks_with_a_timeseries(
+    composite,
+):
+    """How a client learns which peaks still need one, the API having no
+    other way to say it: a ranged listing from time zero, nothing aggregated.
+    The SDK's ``compute_peak_timeseries`` asks exactly this, so that it does
+    not request again what is already computed."""
+    whole = _whole()
+    asked = whole.mz_values[1:3]
+    _ask_for_timeseries(asked)
+    t0, t1 = _window()
+
+    listed = extract_peaks(
+        SAMPLE_FILENAME,
+        "-",
+        t0,
+        t1,
+        areas=False,
+        heights=False,
+        average=False,
+        t_min=0.0,
+    )
+
+    assert listed.mz_values == pytest.approx(asked)
+    assert listed.peak_ids == whole.peak_ids[1:3]
+    assert listed.areas is None and listed.heights is None
+
+
 def test_the_warning_does_not_send_its_reader_to_peak_detection(composite):
     """It used to end "Re-run peak detection to include them", which leaves
     every peak out again: detection is what allocates them with none."""
@@ -112,7 +141,17 @@ def test_the_warning_does_not_send_its_reader_to_peak_detection(composite):
 
     assert "peak detection" not in warning.lower()
     assert "computed when it is first requested" in warning
-    assert "samples.compute_peak_timeseries" in warning
+
+
+def test_the_warning_names_the_remedy_in_the_apis_terms(composite):
+    """The route, which every client has, and no client's name for it: an SDK
+    older than its wrapper would be sent to a method it does not have, and a
+    client that is no SDK to one that was never its own."""
+    (warning,) = _ranged().warnings
+
+    assert "POST /api/samples/{sample_item_id}/peaks/timeseries" in warning
+    assert "SDK" not in warning
+    assert "compute_peak_timeseries" not in warning
 
 
 def test_an_answer_with_every_peak_left_out_still_carries_the_warning(
@@ -126,6 +165,7 @@ def test_an_answer_with_every_peak_left_out_still_carries_the_warning(
     assert answer["data"]["peak_id"] == []
     assert answer["message"].startswith("No peaks found in sample 'Scripted'")
     assert f" Warning: {_whole().count} peak(s) were excluded" in answer["message"]
+    assert answer["warnings"] == _ranged().warnings
 
 
 def test_an_answer_short_of_some_peaks_carries_it_beside_the_count(
@@ -139,6 +179,8 @@ def test_an_answer_short_of_some_peaks_carries_it_beside_the_count(
     assert answer["results"] == 2
     assert answer["message"].startswith("Successfully loaded 2 peaks")
     assert f" Warning: {whole.count - 2} peak(s) were excluded" in answer["message"]
+    (warning,) = answer["warnings"]
+    assert warning.startswith(f"{whole.count - 2} peak(s) were excluded")
 
 
 def test_an_answer_without_a_time_range_warns_of_nothing(composite, monkeypatch):
@@ -147,3 +189,20 @@ def test_an_answer_without_a_time_range_warns_of_nothing(composite, monkeypatch)
 
     assert answer["results"] == _whole().count
     assert "Warning:" not in answer["message"]
+    assert answer["warnings"] == []
+
+
+def test_the_warnings_are_listed_apart_from_the_sentence_that_quotes_the_name(
+    composite, monkeypatch
+):
+    """A sample may be named for the marker. Its message then holds the marker
+    with nothing left out - which is why the warnings are also a list of their
+    own, the same whatever the sample is called."""
+    whole = _answer(monkeypatch, ranged=False, name="Warning: blank 3")
+
+    assert "'Warning: blank 3'" in whole["message"]
+    assert whole["warnings"] == []
+
+    short = _answer(monkeypatch, name="Warning: blank 3")
+
+    assert short["warnings"] == _ranged().warnings
