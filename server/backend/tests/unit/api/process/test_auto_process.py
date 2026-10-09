@@ -1422,6 +1422,8 @@ async def test_the_rung_binds_a_token_less_file_to_its_method(status):
     assert _recorded(status)[0][1] == (
         "Bound to 'Bromide RI' (-) by its acquisition method."
     )
+    # Said at the binding and not carried to the end: only a record's rung is.
+    assert _recorded(status)[-1][1] == "Matched 1 sample."
     assert _recorded_provenance(mocks) == {
         "im-001": ItemProvenance("method", "mb-000000000001")
     }
@@ -1954,6 +1956,78 @@ async def test_what_the_record_named_comes_before_what_the_streams_say(status):
     )
 
 
+#: What a file its acquisition record bound says of it, in every status from
+#: the binding on.
+BY_ITS_RECORD = "Bound to 'Bromide RI' (-) by its acquisition record."
+
+
+def _start_declared(status, **kwargs):
+    """A one-polarity file whose acquisition record names its mode."""
+    mocks, sample_file = _start_single(**kwargs)
+    status.declares.return_value = (list(mocks["resolve"].return_value), None)
+    return mocks, sample_file
+
+
+@pytest.mark.asyncio
+async def test_a_file_its_record_bound_goes_on_saying_so_when_done(status):
+    """Nothing else Raw files shows of a file says that its record bound it,
+    and the status a person reads is the one its run ended on. The sentence
+    is said once in each status, the first included."""
+    mocks, _ = _start_declared(status)
+
+    await _run_pipeline()
+
+    mocks["resolve"].assert_not_called()
+    assert _recorded(status) == [
+        ("bound", BY_ITS_RECORD),
+        ("calibrated", BY_ITS_RECORD),
+        ("done", f"Matched 1 sample. {BY_ITS_RECORD}"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_a_failed_calibration_says_the_record_bound_the_file_as_well(status):
+    mocks, _ = _start_declared(status)
+    mocks["calibrate"].return_value = _outcome(
+        False, "The m/z calibration failed: No calibration peaks found."
+    )
+
+    await _run_pipeline()
+
+    assert _recorded(status)[-1] == (
+        "calibration_failed",
+        "The m/z calibration failed: No calibration peaks found. Matching and "
+        f"peak assignment were skipped. {BY_ITS_RECORD}",
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_blank_file_says_its_record_bound_it_as_well(status):
+    _start_declared(status, instrument_function_id=None)
+
+    await _run_pipeline()
+
+    assert _recorded(status)[-1] == (
+        "done",
+        f"Blank measurement: no peaks to calibrate, match or assign. {BY_ITS_RECORD}",
+    )
+
+
+@pytest.mark.asyncio
+async def test_what_bound_the_file_comes_before_what_the_streams_say(status):
+    note = "Polarity - pools 2 MS1 scan streams into one peak list: A; B."
+    status.note.return_value = note
+    _start_declared(status)
+
+    await _run_pipeline()
+
+    assert _recorded(status) == [
+        ("bound", f"{BY_ITS_RECORD} {note}"),
+        ("calibrated", f"{BY_ITS_RECORD} {note}"),
+        ("done", f"Matched 1 sample. {BY_ITS_RECORD} {note}"),
+    ]
+
+
 @pytest.mark.asyncio
 async def test_every_status_carries_the_pooled_streams_note(status):
     """The note describes the file, so no stage may drop it."""
@@ -2148,7 +2222,7 @@ async def test_modes_chosen_for_a_file_bind_it_without_its_tokens(status):
         "bound",
         "Bound to 'Nitrate' (-) without a file-name token.",
     )
-    assert _recorded(status)[-1][0] == "done"
+    assert _recorded(status)[-1] == ("done", "Matched 1 sample.")
 
 
 @pytest.mark.asyncio
