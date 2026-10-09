@@ -32,6 +32,12 @@ const spectrumHelp = peakAssignmentEnabled
         straight lines, so a peak's shape is only as fine as those points.
         </p>
         <p>
+        A file that measures the sample as several scan ranges is drawn range
+        by range, each in its own shade, with a dotted line where two meet.
+        Nothing is rescaled there, so the signal can step at a boundary: each
+        range reads what its own scans measured.
+        </p>
+        <p>
         Click a peak to focus it: the view zooms in, the inspector shows its
         assignment, and the predicted isotope pattern is drawn in crimson with
         circles at the expected peak heights.
@@ -50,6 +56,12 @@ const spectrumHelp = peakAssignmentEnabled
         Zoom in far enough and dots mark the points the instrument recorded.
         An Orbitrap file keeps about three across each peak, joined here by
         straight lines, so a peak's shape is only as fine as those points.
+        </p>
+        <p>
+        A file that measures the sample as several scan ranges is drawn range
+        by range, each in its own shade, with a dotted line where two meet.
+        Nothing is rescaled there, so the signal can step at a boundary: each
+        range reads what its own scans measured.
         </p>`,
       doc: app.ui.help.docUrl('how-it-works/peak-detection/')
     }
@@ -178,7 +190,9 @@ const layout = computed(() => {
     },
     margin: { l: 60, r: 10, t: 45, b: 50 },
     dragmode: 'zoom',
-    showlegend: false
+    showlegend: false,
+    // Where a stitched spectrum's scan ranges meet
+    shapes: data.shapes ?? []
   }
 })
 

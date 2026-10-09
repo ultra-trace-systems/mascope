@@ -5,6 +5,7 @@ import { useApp } from '@/stores'
 import { api } from '@/api'
 import { usePreview } from '@/lib/panes'
 import { peakAssignmentEnabled } from '@/lib/features'
+import { boundaryShapes, segmentColor, segmentDetail, signalStretches } from '@/lib/segments'
 
 // Peak coloring by confidence tier for the annotated spectrum. One Plotly trace
 // per tier; role reagent/artifact is grouped separately (orthogonal to tier).
@@ -29,9 +30,11 @@ function bucketOf(assignments, peak) {
 
 // Build a vertical-stick Plotly trace for a set of peaks. Three points per peak
 // (0 -> height -> gap) so the hover tooltip triggers along the whole marker.
-// customdata carries [height, area, mz, formula]; [height, area] also lets
-// ChartSampleSpectrum rescale for "average" instead of "sum".
-function peakTrace(name, color, peaks, assignments = null) {
+// customdata carries [height, area, mz, formula, segment]; [height, area] also
+// lets ChartSampleSpectrum rescale for "average" instead of "sum". The segment
+// is named only for a stitched sample (`segments`), whose peaks each come from
+// one of several scan ranges.
+function peakTrace(name, color, peaks, assignments = null, segments = null) {
   return {
     name,
     type: 'scatter',
@@ -42,7 +45,8 @@ function peakTrace(name, color, peaks, assignments = null) {
     customdata: peaks
       .map((peak) => {
         const formula = assignments?.forPeak(peak.peak_id)?.assigned_formula ?? ''
-        const point = [peak.height, peak.area, peak.mz, formula]
+        const segment = segments ? segmentDetail(segments, peak.segment) : ''
+        const point = [peak.height, peak.area, peak.mz, formula, segment]
         return [point, point, null]
       })
       .flat(),
@@ -52,7 +56,8 @@ function peakTrace(name, color, peaks, assignments = null) {
         'mz: <b>%{customdata[2]:.4f}</b>',
         assignments ? 'formula: <b>%{customdata[3]}</b>' : null,
         'height: <b>%{customdata[0]:.3e}</b>',
-        'area: <b>%{customdata[1]:.3e}</b>'
+        'area: <b>%{customdata[1]:.3e}</b>',
+        segments ? 'segment: <b>%{customdata[4]}</b>' : null
       ]
         .filter(Boolean)
         .join('<br>') + '<extra></extra>'
@@ -109,22 +114,31 @@ export const useChartData = defineStore('chart.sample.spectrum', () => {
 
   const mainTraces = computed(() => {
     const traces = []
-    // add spectrum trace
-    if (spectrumData.value) {
+    // add the spectrum: one trace, or one per run of a stitched spectrum, so
+    // that no line joins two scan ranges across the boundary where the signal
+    // steps from what one measured to what the next did
+    const segments = spectrumData.value?.segments ?? null
+    for (const stretch of signalStretches(spectrumData.value)) {
       traces.push({
         name: 'Signal',
         line: {
-          color: 'green'
+          color: segmentColor(segments, stretch.segment)
         },
         mode: 'lines',
         // the measured profile: dotted at its samples once zoomed in on them
         markSamples: true,
         type: 'scatter' + gl,
-        x: new Float32Array(spectrumData.value.mz),
-        y: new Float32Array(spectrumData.value.intensity),
+        x: new Float32Array(stretch.mz),
+        y: new Float32Array(stretch.intensity),
         hovertemplate:
-          ['<i>Signal</i>', 'm/z: <b>%{x:.4f}</b>', `intensity: <b>%{y:.3e}</b>`].join('<br>') +
-          '<extra></extra>' // use "<extra></extra>" to get rid of extra block from the hoverbox
+          [
+            '<i>Signal</i>',
+            'm/z: <b>%{x:.4f}</b>',
+            `intensity: <b>%{y:.3e}</b>`,
+            segments ? `segment: <b>${segmentDetail(segments, stretch.segment)}</b>` : null
+          ]
+            .filter(Boolean)
+            .join('<br>') + '<extra></extra>' // use "<extra></extra>" to get rid of extra block from the hoverbox
       })
     }
     // add peak traces, colored by assignment tier
@@ -135,12 +149,14 @@ export const useChartData = defineStore('chart.sample.spectrum', () => {
       // explicit assignment.
       if (!peakAssignmentEnabled || !assignments.run) {
         // No assignment run: keep the original single grey peak trace.
-        traces.push(peakTrace('Peak', 'grey', app.data.peak.list))
+        traces.push(peakTrace('Peak', 'grey', app.data.peak.list, null, app.data.peak.segments))
       } else {
         // Annotated spectrum: one trace per confidence tier.
         for (const { key, name, color } of TIER_TRACES) {
           const peaks = app.data.peak.list.filter((peak) => bucketOf(assignments, peak) === key)
-          if (peaks.length > 0) traces.push(peakTrace(name, color, peaks, assignments))
+          if (peaks.length > 0) {
+            traces.push(peakTrace(name, color, peaks, assignments, app.data.peak.segments))
+          }
         }
       }
     }
@@ -265,10 +281,13 @@ export const useChartData = defineStore('chart.sample.spectrum', () => {
     ...envelopeTrace.value
   ])
 
+  // Where a stitched spectrum's scan ranges meet, as layout shapes
+  const shapes = computed(() => boundaryShapes(spectrumData.value?.runs))
+
   // unload data and switch tab if necessary
   function unload() {
     spectrumData.value = null
   }
 
-  return { traces, length, unit, loading }
+  return { traces, shapes, length, unit, loading }
 })
