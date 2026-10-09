@@ -1,4 +1,5 @@
 import asyncio
+from dataclasses import dataclass
 from datetime import datetime
 
 import numpy as np
@@ -6,6 +7,10 @@ from sqlalchemy import Float, Integer, and_, cast, func, select
 
 import mascope_signal.compute as m_compute
 from mascope_backend.api.controllers.samples.lib.samples_fetch import fetch_sample
+from mascope_backend.api.controllers.samples.lib.samples_segments import (
+    read_sample_segments,
+    with_stream_rows,
+)
 from mascope_backend.api.lib.api_features import api_controller
 from mascope_backend.api.lib.exceptions.api_exceptions import (
     ApiException,
@@ -370,6 +375,11 @@ async def get_sample_peaks(
         mz_min=mz_min,
         mz_max=mz_max,
     )
+    # Where the sample's spectrum is stitched from several scan streams, the
+    # stream each peak came from: nothing is rescaled where two streams meet,
+    # so a peak's intensity reads against its own segment. None otherwise,
+    # for the peaks and for the segments alike.
+    segments = await _segments_of(sample)
 
     # Carried by either answer. With every peak left out of a time-ranged read
     # the answer is empty, and "no peaks found" on its own reads as a sample
@@ -399,6 +409,8 @@ async def get_sample_peaks(
                 "sparsity": [],
                 "signal_to_noise": [],
                 "match": [] if matches else None,
+                "segment": [] if segments else None,
+                "segments": segments.described if segments else None,
             },
         }
 
@@ -412,6 +424,8 @@ async def get_sample_peaks(
         # the noise where there is one and against abundance alone where there
         # is not, and a zero would say "measured, and noise-free".
         "signal_to_noise": peak_data.signal_to_noise,
+        "segment": peak_data.streams if segments else None,
+        "segments": segments.described if segments else None,
     }
     if areas:
         response_data["area"] = peak_data.areas
@@ -628,6 +642,34 @@ async def get_sample_peak_timeseries(
     }
 
 
+@dataclass(frozen=True)
+class _ListedSegments:
+    """A sample's segments, read and described for an answer."""
+
+    described: list[dict]
+
+
+async def _segments_of(sample) -> _ListedSegments | None:
+    """The segments of a sample's composite with what its file's stream rows
+    say of them, or None where its store stitches nothing of its polarity.
+
+    None as well for a store that cannot say - one that carries no map, or
+    only part of what a per-stream store does. The peak listing answers for
+    such a store as it did before it named segments, and what is wrong with
+    the store is said by the reads that refuse it."""
+    try:
+        segments = await asyncio.to_thread(
+            read_sample_segments, sample.filename, sample.polarity
+        )
+    except ValueError:
+        return None
+    if segments is None:
+        return None
+    return _ListedSegments(
+        await with_stream_rows(sample.sample_file_id, segments.segments)
+    )
+
+
 #: The unit of a sample spectrum's intensities: averaged over its scans.
 SPECTRUM_INTENSITY_UNIT = "counts/s"
 
@@ -701,7 +743,14 @@ async def get_sample_spectrum(
             spectrum = spectrum.sel(mz=slice(mz_min, mz_max)).compute()
         # Filter out NaN values to ensure JSON serialization
         spectrum = spectrum.dropna(dim="mz", how="any")
-        return spectrum.mz.values.tolist(), spectrum.values.tolist()
+        # A stitched signal says so itself: its samples carry their segment
+        segments = (
+            read_sample_segments(filename, polarity)
+            if "segment" in spectrum.coords
+            else None
+        )
+        runs = segments.runs_of(spectrum.mz.values) if segments else None
+        return spectrum.mz.values.tolist(), spectrum.values.tolist(), segments, runs
 
     spectrum_arrays = await asyncio.to_thread(_spectrum_arrays)
 
@@ -720,10 +769,12 @@ async def get_sample_spectrum(
                 "mz": [],
                 "intensity": [],
                 "intensity_unit": intensity_unit,
+                "segments": None,
+                "runs": None,
             },
         }
 
-    mz_values, intensity_values = spectrum_arrays
+    mz_values, intensity_values, segments, runs = spectrum_arrays
 
     # - Return the spectrum data with metadata
     message = f"Retrieved spectrum data with {len(mz_values)} m/z points from sample '{sample.sample_item_name}' with '{sample.polarity}' polarity."
@@ -738,6 +789,17 @@ async def get_sample_spectrum(
             "mz": mz_values,
             "intensity": intensity_values,
             "intensity_unit": intensity_unit,
+            # Where the spectrum is stitched from several scan streams: the
+            # streams, and the map's runs in m/z order, each with the range
+            # of positions its samples take in the arrays above. Nothing is
+            # rescaled where two runs meet, so the signal can step there.
+            # None for a spectrum of one stream, which is nearly every one.
+            "segments": (
+                await with_stream_rows(sample.sample_file_id, segments.segments)
+                if segments
+                else None
+            ),
+            "runs": runs,
         },
     }
 
@@ -884,6 +946,8 @@ async def get_samples_spectra(
                     "mz": [],
                     "intensity": [],
                     "intensity_unit": SPECTRUM_INTENSITY_UNIT,
+                    "segments": None,
+                    "runs": None,
                     "message": error.user_message,
                 }
             )

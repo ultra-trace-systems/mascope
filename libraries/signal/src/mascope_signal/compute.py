@@ -336,6 +336,48 @@ def _peak_store_metadata(base_filename: str) -> tuple[list[str], dict | None]:
     return keys, _stitch_map_of(attrs, "composite" in group)
 
 
+def peak_store_composite(
+    base_filename: str, polarity: Literal["+", "-"]
+) -> dict | None:
+    """What a polarity's composite is made of, for whoever shows it.
+
+    The store's stream keys and the polarity's runs under its stitch map,
+    read off the store's metadata as :func:`peak_store_stitches` reads it,
+    with the m/z calibration factor the file carries: the runs are in m/z as
+    the instrument recorded them, and a boundary is placed on the file's own
+    axis by that factor (``mascope_signal.stitch.owners``).
+
+    :param base_filename: Sample file filename
+    :type base_filename: str
+    :param polarity: The polarity asked about
+    :type polarity: str
+    :raises ValueError: If the store carries only part of what a per-stream
+        store does
+    :raises StalePeakStoreError: If it is a per-stream store with no map or
+        no mask
+    :return: None where the file has no store or its store stitches nothing
+        of the polarity; else ``{"keys", "runs", "source", "calibration"}``:
+        the store's stream keys, the polarity's runs ``[lower, upper, stream
+        index]`` in m/z order, whether the rule or a layout drew them, and
+        the factor
+    :rtype: dict | None
+    """
+    try:
+        keys, stitch = _peak_store_metadata(base_filename)
+    except FileNotFoundError:
+        return None
+    runs = stitch["runs"].get(polarity) if stitch else None
+    if not runs:
+        return None
+    calibration = m_io.read_props(base_filename)["mz_calibration"]
+    return {
+        "keys": keys,
+        "runs": [list(run) for run in runs],
+        "source": (stitch.get("sources") or {}).get(polarity),
+        "calibration": calibration["par"]["calibration_factor"] if calibration else 1.0,
+    }
+
+
 def get_scan_timestamps(
     base_filename: str,
     t_min: float | None = None,
