@@ -2589,9 +2589,15 @@ unchanged.
      it was detected in; still open: the item TIC, assignment loading, the
      spectrum and peak-listing routes returning each sample's and each
      peak's segment for the views, the bulk create giving a hand-made item
-     the stream of its file and polarity as the pipeline does (4.4), and a
+     the stream of its file and polarity as the pipeline does (4.4), a
      per-stream store a match meets stale being rebuilt and its rows
-     written with the composite on the next processing (4.4);
+     written with the composite on the next processing (4.4), the sample
+     spectrum route (`get_sample_spectrum`) asking for the rebuild of a
+     stale store it meets, as a match does
+     (`_request_stale_peak_store_rebuilds`), and the batch spectra route
+     (`get_samples_spectra`) answering the samples it can where one meets a
+     stale store, which fails the whole request today (both from the review
+     of #2311);
   7. **Step 7, the fits per segment:** calibration and the instrument
      function per segment, each segment on its own anchors where it holds
      enough, the overlap shift and the unshifted borrow as fallbacks, the
