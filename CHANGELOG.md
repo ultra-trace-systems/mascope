@@ -181,12 +181,15 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   calibration, the matching, the peak listing, the batch exports, a peak
   asked for by m/z - reads the stitched spectrum: one reading of each m/z,
   from the experiment that owns it, averaged over that experiment's own
-  scans and not over the scans of every experiment. The readings the other
-  experiments made of the same ions, and a peak detected only by an
+  scans and not over the scans of every experiment. The sample's spectrum
+  and the profile behind an ion's match view show that same stitched
+  spectrum, each experiment's range averaged over its own scans, so a
+  listed peak sits on the profile it was detected in. The readings the
+  other experiments made of the same ions, and a peak detected only by an
   experiment that does not own its m/z, stay in the store for what reads
   the overlap. What follows before the setting is for production: the m/z
   calibration and the instrument functions per experiment, assignment and
-  the spectrum views by experiment, and a hand-made sample's experiment.
+  the views by experiment, and a hand-made sample's experiment.
   The setting will be announced again when they are in.
 
   A file with one experiment in each polarity, which is nearly every file, is

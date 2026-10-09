@@ -1234,9 +1234,16 @@ default (`load_peak_data(..., composite=True)`), so the calibration, the
 matching, the peak listing and the batch exports take the composite's
 rows, and the listing and the alignment average each row over the scans
 of its own stream, counted on the store's own axis (`stored_scans_per_peak`;
-a time range's scans by `scans_per_peak`); the store's own machinery - the
-time-series fill, the refused-fill helper, the stale-store check - asks for
-the whole store. What step 6 still holds is listed in section 10.
+a time range's scans by `scans_per_peak`); the sample spectrum and the
+profile behind an ion's match view show the stitched sum signal of the
+polarity, each stream's range averaged over its own scans
+(`get_sample_sum_signal`, decided from the store's metadata: the stitched
+signal where the store stitches the polarity, the pooled one otherwise; a
+stale store is refused, so the sample pane shows the listed peaks and no
+spectrum until a match meets the store and asks for its rebuild), so a
+listed peak sits on the profile it was detected in; the store's own machinery -
+the time-series fill, the refused-fill helper, the stale-store check - asks
+for the whole store. What step 6 still holds is listed in section 10.
 
 - **The rule is a module of its own,** `mascope_signal.stitch`. It reads no
   file and no store: the census in, plain values out. A stream's microscan
@@ -2576,8 +2583,11 @@ unchanged.
      peak list: the loader answers the composite's rows by default, so the
      peak listing, matching, the calibration, the exports and the by-m/z
      route take them, and the listing and the alignment average each row by
-     its own stream's scans; still open: the item TIC, assignment loading,
-     the spectrum and peak-listing routes returning each sample's and each
+     its own stream's scans, and the sample spectrum and the match view's
+     profile show the stitched sum signal, each stream's range over its own
+     scans (`get_sample_sum_signal`), so a listed peak sits on the profile
+     it was detected in; still open: the item TIC, assignment loading, the
+     spectrum and peak-listing routes returning each sample's and each
      peak's segment for the views, the bulk create giving a hand-made item
      the stream of its file and polarity as the pipeline does (4.4), and a
      per-stream store a match meets stale being rebuilt and its rows

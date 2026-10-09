@@ -129,11 +129,23 @@ def peak_store_streams(peak_data: xr.Dataset) -> list[str]:
     :return: The stream keys, in the order the labels index them
     :rtype: list[str]
     """
-    keys = list(peak_data.attrs.get("streams") or [])
+    return _stream_keys_of(
+        peak_data.attrs.get("streams"),
+        "stream" in peak_data.variables,
+        "scan_stream" in peak_data.variables,
+    )
+
+
+def _stream_keys_of(keys, has_stream: bool, has_scan_stream: bool) -> list[str]:
+    """The decision of :func:`peak_store_streams`, from what a store carries:
+    its ``streams`` attribute and whether it holds a ``stream`` and a
+    ``scan_stream`` array. Shared with :func:`peak_store_stitches`, which
+    reads them off the store's metadata, so the two cannot disagree."""
+    keys = list(keys or [])
     carried = {
         "the stream keys": bool(keys),
-        "the stream of each peak": "stream" in peak_data.variables,
-        "the stream of each scan": "scan_stream" in peak_data.variables,
+        "the stream of each peak": has_stream,
+        "the stream of each scan": has_scan_stream,
     }
     if all(carried.values()):
         return keys
@@ -244,14 +256,61 @@ def peak_store_stitch_map(peak_data: xr.Dataset) -> dict | None:
     """
     if not peak_store_streams(peak_data):
         return None
-    stitch = peak_data.attrs.get(m_stitch.STITCH_MAP_ATTR)
-    if not stitch or "composite" not in peak_data.variables:
+    return _stitch_map_of(peak_data.attrs, "composite" in peak_data.variables)
+
+
+def _stitch_map_of(attrs, has_composite: bool) -> dict:
+    """The map of a per-stream store, from its attributes and whether it
+    holds the ``composite`` mask; stale without either. Shared by
+    :func:`peak_store_stitch_map` and :func:`peak_store_stitches`."""
+    stitch = attrs.get(m_stitch.STITCH_MAP_ATTR)
+    if not stitch or not has_composite:
         raise StalePeakStoreError(
             "The peak store holds a peak list per scan stream and no stitch "
             "map of them. Re-run peak detection for this sample file to "
             "rebuild the store."
         )
     return stitch
+
+
+def peak_store_stitches(base_filename: str, polarity: Literal["+", "-"]) -> bool:
+    """Whether a file's peak store stitches the polarity's scan streams.
+
+    Read off the store's metadata alone - its attributes, and whether it
+    holds the arrays a per-stream store does, each asked for by name, since
+    listing the store's arrays reads the metadata of every array it holds -
+    and not the dataset: what asks is deciding whether to open the dataset
+    for a stitched read, and a file detected whole, which is nearly every
+    file, must not pay for one it has nothing to stitch. The decision is the
+    one :func:`peak_store_streams` and :func:`peak_store_stitch_map` make on
+    the dataset, through the same code, and refuses what they refuse: a
+    store carrying only part of what a per-stream store does, and a
+    per-stream store with no map or no mask.
+
+    :param base_filename: Sample file filename
+    :type base_filename: str
+    :param polarity: The polarity asked about
+    :type polarity: str
+    :raises FileNotFoundError: If the file has no peak store
+    :raises ValueError: If the store carries only part of what a per-stream
+        store does
+    :raises StalePeakStoreError: If it is a per-stream store with no map or
+        no mask
+    :return: True where the store's map stitches the polarity
+    :rtype: bool
+    """
+    path = m_name.filename_to_zarr_path(base_filename, "peak_timeseries")
+    if not os.path.exists(path):
+        raise FileNotFoundError(path)
+    # A membership test on the group opened here reads the live store, as a
+    # listing does, and not consolidated metadata that may be stale
+    group = m_io.open_zarr_store(path)
+    attrs = dict(group.attrs)
+    if not _stream_keys_of(
+        attrs.get("streams"), "stream" in group, "scan_stream" in group
+    ):
+        return False
+    return bool(_stitch_map_of(attrs, "composite" in group)["runs"].get(polarity))
 
 
 def get_scan_timestamps(
@@ -736,6 +795,63 @@ def get_composite_sum_signal(
             scans_of[index] = count
         return stitched / scans_of[stitched.segment.values]
     return stitched
+
+
+def get_sample_sum_signal(
+    base_filename: str,
+    polarity: Literal["+", "-"],
+    t_min: float | None = None,
+    t_max: float | None = None,
+    average: bool = False,
+) -> xr.DataArray:
+    """Get the sum signal of one polarity of a file, as its sample reads it.
+
+    A file whose peak store stitches the polarity's scan streams into a
+    composite answers the stitched signal (:func:`get_composite_sum_signal`):
+    each stream's signal within the m/z it owns and, averaged, each divided
+    by that stream's own scans - the scans the sample's peak list divides by
+    (:func:`stored_scans_per_peak`), so that a listed peak sits on the
+    profile it was detected in. Any other file answers the polarity's pooled
+    signal (:func:`get_sum_signal`), averaged over every scan of the
+    polarity, as its peaks are: a store detected whole, a polarity with a
+    single stream, a file with no peak store yet.
+
+    Which of the two is read off the store's metadata
+    (:func:`peak_store_stitches`), so a file detected whole does not open the
+    dataset, and whatever the stitched read then raises is raised: nothing
+    is answered pooled for want of a stitch the store has. A store carrying
+    only part of what a per-stream store does is refused as the peak list
+    refuses it, a per-stream store the file no longer reads back is refused
+    (:class:`StalePeakStoreError`) - the pooled profile would sit under
+    peaks that were detected elsewhere - and a time range no stream has a
+    scan in is refused as any read of it is.
+
+    :param base_filename: Sample file filename
+    :type base_filename: str
+    :param polarity: The polarity whose signal to read
+    :type polarity: str
+    :param t_min: Min time value [s], defaults to None
+    :type t_min: float, optional
+    :param t_max: Max time value [s], defaults to None
+    :type t_max: float, optional
+    :param average: Whether to return the average signal
+    :type average: bool, optional
+    :raises StalePeakStoreError: If a per-stream store no longer reads back
+    :return: The polarity's sum signal; with ``segment`` along ``mz`` where
+        it is stitched
+    :rtype: xr.DataArray
+    """
+    try:
+        stitched = peak_store_stitches(base_filename, polarity)
+    except FileNotFoundError:
+        stitched = False  # no store yet: the polarity's pooled signal
+    if stitched:
+        return get_composite_sum_signal(
+            base_filename, polarity, t_min, t_max, average=average
+        )
+    return get_sum_signal(
+        base_filename, t_min, t_max, polarity=polarity, average=average
+    )
 
 
 def _composite_sum_signal_name(

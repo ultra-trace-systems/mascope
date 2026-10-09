@@ -661,12 +661,14 @@ async def get_sample_spectrum(
     polarity = sample.polarity
 
     def _spectrum_arrays():
-        spectrum = m_compute.get_sum_signal(
-            filename,
-            t_min_eff,
-            t_max_eff,
-            polarity=polarity,
-            average=True,
+        # The polarity's signal as the sample reads it: stitched, each
+        # stream over its own scans inside the sample's window, where the
+        # store stitches the polarity; pooled otherwise. A listed peak is a
+        # mean of the same stream, over the store's own scans - which can
+        # hold a first scan the window leaves out - so it sits on the
+        # profile it was detected in.
+        spectrum = m_compute.get_sample_sum_signal(
+            filename, polarity, t_min_eff, t_max_eff, average=True
         )
         if spectrum is None:
             return None

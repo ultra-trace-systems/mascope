@@ -130,7 +130,7 @@ filestreams = './filestreams'
 # such a file gets one sample per polarity, which points at that spectrum's
 # row and reads its peaks: one reading of each m/z, averaged over the scans of
 # the experiment that measured it. Still to come: the m/z calibration and the
-# instrument functions per experiment, assignment and the spectrum views by
+# instrument functions per experiment, assignment and the views by
 # experiment. The setting is here so that each step can be exercised on a
 # development server before the last one is in.
 #
