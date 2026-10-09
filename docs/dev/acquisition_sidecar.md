@@ -311,9 +311,18 @@ is read:
   the one it ends on included ("Matched 1 sample. Its acquisition record
   names ..."). A run that fails records how it failed and neither note; the
   run that processes the file again says both again.
-- Items bound this way record `bound_by = "declared"`, the file's status
-  reads "Bound to ... by its acquisition record.", and the declaration teaches
-  the file's method binding, as a token does.
+- Items bound this way record `bound_by = "declared"`, which the API
+  returns with each of them ([In the API](#the-server)), and the declaration
+  teaches the file's method binding, as a token does.
+- The file's status says so, and goes on saying so: "Bound to 'Nitrate' (-)
+  by its acquisition record." is in every status the run records from the
+  binding on, the one it ends on included ("Matched 1 sample. Bound to
+  'Nitrate' (-) by its acquisition record."), as the sentence of a record
+  that bound nothing is. The other rungs say what bound a file in its
+  `bound` status alone. A token is in the file's name, which Raw files shows
+  beside the status, and nearly every file is bound by one, so repeating it
+  would lengthen every status with what the row already shows; a record is
+  shown nowhere else.
 - **Re-processing asks the record again, first, and before anything of the
   file is cleared.** Re-process in Raw files, and processing one file on
   request, decide what a run starts with, and ask in the pipeline's order.
