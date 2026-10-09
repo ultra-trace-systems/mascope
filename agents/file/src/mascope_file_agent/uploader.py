@@ -13,7 +13,7 @@ import time
 from queue import Empty, Queue
 from threading import Event, Lock
 
-from mascope_file_agent._threads import Task
+from mascope_file_agent._threads import Task, interrupts
 from mascope_sdk import api_post_file_tus
 from mascope_sdk.acquisition import sidecar_path
 from mascope_sdk.exceptions import (
@@ -248,8 +248,14 @@ class FileUploader:
         these, though not every jump that looks for signals, so no later
         Python is simply the way out: see
         ``tests/test_interrupt_handlers.py`` before the agent moves to one.
+
+        An interrupt that was counted while the agent runs on the main
+        thread (``_threads.Interrupts``) is raised here, once every time
+        round: after the wait and before the look at the queue, with the
+        lock of neither in hand.
         """
         while not self.shutdown_event.wait(POLL_INTERVAL):
+            interrupts.raise_pending()
             fname = None
             try:
                 fname = self.jobs.get_nowait()

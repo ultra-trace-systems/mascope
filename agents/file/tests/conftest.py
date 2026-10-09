@@ -8,6 +8,11 @@ agent never runs in. The same call is made here so each test starts from the
 agent's real identity.
 """
 
+import ctypes
+import functools
+import os
+import signal
+
 import pytest
 import requests
 
@@ -61,3 +66,21 @@ def make_settings(tmp_path):
         )
 
     return make
+
+
+@pytest.fixture
+def ctrl_c():
+    """A real SIGINT for the thread that calls it, with Python's own handler.
+
+    Python acts on a signal where it next looks for one, which here is as
+    the call returns. It goes through the C library, because
+    ``signal.raise_signal`` acts on it before it returns, and the handler is
+    Python's whatever the suite was started with: a run started with
+    interrupts ignored has none.
+    """
+    libc = ctypes.CDLL("ucrtbase" if os.name == "nt" else None)
+    before = signal.signal(signal.SIGINT, signal.default_int_handler)
+    try:
+        yield functools.partial(getattr(libc, "raise"), int(signal.SIGINT))
+    finally:
+        signal.signal(signal.SIGINT, before)
