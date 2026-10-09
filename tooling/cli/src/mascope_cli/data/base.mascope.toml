@@ -138,8 +138,10 @@ filestreams = './filestreams'
 # processed exactly as before whichever way this is set, and so is one whose
 # method only runs the same experiment again in a polarity (the same scan at
 # the same microscans and AGC target). A file already converted keeps what
-# was decided for it then, so this applies to files converted after a restart
-# of the file converter.
+# was decided for it then, until it is re-processed: re-processing a file from
+# Raw files detects its peaks again under this setting as it is then. So this
+# applies to files converted after a restart of the file converter, and to
+# files re-processed after a restart of the backend.
 # composite_scan_streams = false
 # Reference chemistry: the per-record licence tags peak assignment's database
 # stage is allowed to match against. Unset (the default) means no gating -
