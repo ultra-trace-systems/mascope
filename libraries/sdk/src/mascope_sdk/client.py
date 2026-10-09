@@ -8,6 +8,7 @@ import json
 import os
 import re
 import sys
+from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
@@ -596,7 +597,8 @@ class MascopeClient:
             double-counting peaks whose matches share the same
             formula.
 
-            Returns None if no peaks are found.
+            Returns None if no peaks are found and nothing was warned
+            about.
 
             ``df.attrs["warnings"]`` lists what the server warned about
             the samples' reads, each warning once; empty when it warned
@@ -789,7 +791,8 @@ class MascopeClient:
                  - ``stage_name``: Stage label (or None)
                  - ``t_min`` / ``t_max``: Time range in seconds
 
-                 Returns None if no peaks are found.
+                 Returns None if no peaks are found and nothing was warned
+                 about.
 
                  ``df.attrs["warnings"]`` lists what the server warned about
                  the stages, each warning once; it is empty when no stage was
@@ -805,6 +808,14 @@ class MascopeClient:
             in ``df.attrs["warnings"]``; have the missing series computed with
             ``mascope.samples.compute_peak_timeseries(sample_id)`` and load
             again.
+
+            When *every* peak is left out - a sample that was detected and
+            never matched - the result is an empty frame carrying the
+            warnings, not None.
+
+            To combine the stages of several samples use :meth:`concat`:
+            ``pd.concat`` drops ``attrs`` that differ between frames, and two
+            samples short by different numbers of peaks differ.
 
         Example::
 
@@ -1024,6 +1035,44 @@ class MascopeClient:
                 max_workers=max_workers,
             )
         )
+
+    @staticmethod
+    def concat(
+        frames: Iterable[pd.DataFrame | None], *, ignore_index: bool = True
+    ) -> pd.DataFrame | None:
+        """Stack frames the SDK returned, keeping what their ``attrs`` say.
+
+        Use it in place of ``pd.concat`` to combine loads - one per sample,
+        say. ``pd.concat`` keeps ``attrs`` only when every frame's are equal,
+        and two peak reads short by different numbers of peaks differ in
+        ``attrs["warnings"]``: it then drops the warnings and
+        ``attrs["provenance"]`` with them.
+
+        Here every frame's warnings are kept, each once, and the provenance is
+        kept when every frame carries the same block, as ``pd.concat`` itself
+        would keep it. Anything else in ``attrs`` is left as ``pd.concat``
+        leaves it.
+
+        :param frames: The frames to stack. None entries - a load that found
+                       nothing - are skipped.
+        :type frames: Iterable[pd.DataFrame | None]
+        :param ignore_index: Number the rows afresh. Defaults to True.
+        :type ignore_index: bool
+        :return: The stacked frame, or None when there was no frame to stack.
+        :rtype: pd.DataFrame | None
+
+        Example::
+
+            peaks = mascope.concat(
+                mascope.load_peaks_by_stage(sample=name, stages=stages)
+                for name in sample_names
+            )
+            peaks.attrs["warnings"]  # what any of the loads warned
+            peaks.attrs["provenance"]
+        """
+        from ._loaders import concat_frames
+
+        return concat_frames(frames, ignore_index=ignore_index)
 
     def clear_cache(self) -> None:
         """Clear the metadata cache.
