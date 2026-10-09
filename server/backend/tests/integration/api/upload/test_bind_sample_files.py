@@ -641,6 +641,64 @@ async def test_reprocessing_lets_the_rung_answer_for_a_parked_file(
     assert pipeline.await_args.kwargs["kept_provenance"] is None
 
 
+@pytest.mark.asyncio
+async def test_reprocessing_does_not_leave_a_file_with_samples_to_the_rung(
+    async_session_factory, setup, pipeline, monkeypatch
+):
+    """A file bound once, whose mode was deleted since, where the rung is on.
+
+    Its samples are still there, with no mode, so it has no modes to keep -
+    which is what a parked file with no samples says too, and only that one
+    is the rung's to answer for. A run clears a file's samples before the
+    pipeline asks the method, so this file would park with its samples gone
+    if the method could not place it, where with the rung off it is refused
+    untouched.
+    """
+    monkeypatch.setattr(process_service, "routes_on_method_binding", lambda: True)
+    orphaned = await _file(
+        async_session_factory,
+        "mode-deleted-rung-on",
+        "-",
+        sample_under=(setup["batch"], None),
+    )
+
+    with pytest.raises(Exception, match="no longer bind it") as refused:
+        await process_service.re_process_sample_files(sample_file_ids=[orphaned])
+
+    assert "ionization mode tokens" in str(refused.value).lower()
+    pipeline.assert_not_called()
+    assert await _samples_of(async_session_factory, orphaned) == 1
+    assert await _status(async_session_factory, orphaned) == "done"
+
+
+@pytest.mark.asyncio
+async def test_reprocessing_does_not_leave_unread_samples_to_the_rung(
+    async_session_factory, setup, pipeline, monkeypatch
+):
+    """Samples that could not be read are not no samples either: this file
+    has one, under a mode that still binds it, and sent on to the rung it
+    would be cleared and bound by its method, or parked."""
+    monkeypatch.setattr(process_service, "routes_on_method_binding", lambda: True)
+    monkeypatch.setattr(
+        process_service,
+        "_kept_modes",
+        AsyncMock(side_effect=RuntimeError("the database went away")),
+    )
+    bound = await _file(
+        async_session_factory,
+        "samples-unread",
+        "-",
+        sample_under=(setup["batch"], setup["negative"]),
+    )
+
+    with pytest.raises(Exception, match="Failed to read the modes its samples have"):
+        await process_service.re_process_sample_files(sample_file_ids=[bound])
+
+    pipeline.assert_not_called()
+    assert await _samples_of(async_session_factory, bound) == 1
+    assert await _status(async_session_factory, bound) == "done"
+
+
 # ---------------------------------------------------------------------------
 # Re-processing a file that came with an acquisition record
 # ---------------------------------------------------------------------------
