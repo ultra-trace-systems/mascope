@@ -21,6 +21,35 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   so restart it as well as the file converter after changing the setting,
   which is still off by default and not yet for production.
 
+- **A sample's spectrum that cannot be read until its file's peak data is
+  rebuilt asks for the rebuild.** Opening such a sample answered that peak
+  detection has to be run again, and nothing ran it until somebody
+  refreshed the batch's matches. The spectrum now queues the detection
+  itself, for an editor of the sample's workspace, and says so; the sample's
+  matches are recomputed when it finishes. Asked for several samples at
+  once (`GET /api/samples/spectra`), the spectra of the other samples are
+  returned: a sample whose file is being rebuilt has an empty spectrum in
+  its place and is listed under `stale`, where the whole request failed
+  before.
+
+- **With `composite_scan_streams` on, a sample of a stitched file counts
+  the scans its peaks were detected over.** Its TIC is summed over the
+  scans of each experiment as that experiment selects them, which keeps a
+  first reagent scan that a read of the whole polarity leaves out, and a
+  sample made by hand from such a file reads the same stitched spectrum
+  row as the sample the pipeline made. Files with one experiment in each
+  polarity are read as before.
+
+### Fixed
+
+- **Exporting a sample's peaks per scan no longer refuses a stitched
+  file.** With `composite_scan_streams` on, a file that opens with a
+  reagent scan was refused with "Re-run peak detection", which did not
+  help: the export compared the file's scans, read as one polarity, with
+  the scans its peak data holds per experiment, and the two differ by that
+  first scan. The export now reads the scans the way the peak data holds
+  them.
+
 ## [1.11.0] - 2026.10.09
 
 ### Added

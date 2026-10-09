@@ -84,7 +84,7 @@ request for this work updates the table below and ticks its item on #2098.
 | 1 | Per-file processing state, persistent notifications, "needs a chemistry" | shipped (#2164, #2166-#2169) |
 | 2 | Method bindings: routing without tokens | learned in shadow on every server (#2193, #2196, #2206, #2226), measured (5.7), item provenance (#2254), the row-following learner (#2255), the rung (#2264) and the disagreement report (#2267) shipped; the backfill re-run and the per-site switch remain, section 10 lists them |
 | 8 | Chemistry profiles as the unit: complete the seeded profiles, ship the standard methods and their catalogue, list the profiles, a profile-first surface, batches named after the profile | open; follows the stream first cut, or runs beside it when there are hands for both (decided 2026-10-05) |
-| 3 | The part contract: stream and window honoured by every consumer | **in progress**: the composite cut, for files whose method measures more than one thing in a polarity (4.5), leads the work after phase 2 (decided 2026-10-05; a stitch, not a split, since 2026-10-06). The census keys streams on the method's experiments (#2273), the reader selects one stream's scans (#2278), and peak detection and the peak store follow a stream behind `composite_scan_streams` (#2279), and the store is stitched - the map, the per-peak mask, the overlap readings and the stitched sum signal (#2297); the stream table is in the schema with its composite column (#2282) and written for every file, each polarity's item pointing at its composite or its one stream (#2283), and the readers of the peak list take the composite's rows, each averaged over its own stream's scans (#2307); a re-processing detects a file's peaks again under the setting as it is then, so files converted before it was switched can be stitched (#2328); the rest of the consumers and the per-segment fits follow, and section 10 lists them |
+| 3 | The part contract: stream and window honoured by every consumer | **in progress**: the composite cut, for files whose method measures more than one thing in a polarity (4.5), leads the work after phase 2 (decided 2026-10-05; a stitch, not a split, since 2026-10-06). The census keys streams on the method's experiments (#2273), the reader selects one stream's scans (#2278), and peak detection and the peak store follow a stream behind `composite_scan_streams` (#2279), and the store is stitched - the map, the per-peak mask, the overlap readings and the stitched sum signal (#2297); the stream table is in the schema with its composite column (#2282) and written for every file, each polarity's item pointing at its composite or its one stream (#2283), and the readers of the peak list take the composite's rows, each averaged over its own stream's scans (#2307); a re-processing detects a file's peaks again under the setting as it is then, so files converted before it was switched can be stitched (#2328); the item TIC and the per-scan export read the scans the store holds, an item made by hand reads the row the pipeline's item reads, and a spectrum that meets a stale store asks for its rebuild (#2329); the views by segment and the per-segment fits follow, and section 10 lists them |
 | 4 | Per-stream state: calibration and instrument function per segment, MS2 | open; its per-segment calibration is part of the composite cut; follows 3 on the same track; no rebuild script (4.5, 9.1) |
 | 5 | Chemistry detection: audit first, then provisional binding | deferred behind phases 3, 4 and 8 (decision 3); its reagent libraries are on `develop` |
 | 6 | Recipes: time and trace windows, preview and apply | open |
@@ -908,7 +908,9 @@ throughout, because nothing here cuts a file into items, and it writes no
     holds 14 scans and the file-wide read 13 - and the export refuses with
     the stale-store message, which asks for a rebuild. No rebuild repairs
     this one: the store is right, and the export has to read per stream
-    (step 6).
+    (step 6). It does since #2329: `get_stored_tic_per_scan` reads the
+    TIC of a per-stream store's scans stream by stream, as its axis was
+    built, and file-wide for a store detected whole.
   - **`load_peak_timeseries` takes no stream.** It resolves an asked m/z
     to the nearest kept peak, of whichever stream. Where two streams hold a
     peak at one m/z, the row that kept the m/z answers and the other, set
@@ -1056,10 +1058,18 @@ yet:
   the polarity is stitched, else the polarity's one stream, else nothing -
   a polarity pooled from several streams, or a file with no census, gives
   an item over every MS1 scan of its polarity, which is what NULL says. An
-  item's name, batch, TIC and window are unchanged: they are its
-  polarity's. Only the models the pipeline and the copy build can name a
-  stream (`StreamItemCreate`); a request cannot, and a stream of another
-  file is refused. A copy reads what its source read.
+  item's name, batch and window are unchanged: they are its polarity's.
+  Its TIC is its polarity's as its sample reads it (#2329,
+  `get_sample_tic_per_scan`): where the store stitches the polarity, over
+  the scans of the polarity's streams, each as its own stream selects
+  them - the scans the store's axis holds, and the ones the item's peaks
+  were detected over. Read polarity-wide, a composite file that opens with
+  a reagent scan loses that scan to the file-wide first-scan rule, and its
+  TIC with it; the store decides which read it is, and a stale store is
+  read as a pooled one, as its rows are. Only the models the pipeline and
+  the copy build can name a stream (`StreamItemCreate`); a request cannot,
+  and a stream of another file is refused. A copy reads what its source
+  read.
 - **The processing detail says stitched** for a polarity whose streams the
   store stitched, where it said pooled; a polarity the store pools is still
   said to be pooled.
@@ -1074,6 +1084,19 @@ yet:
   stream of its file and polarity the way the pipeline does, so that a
   person's sample and the pipeline's of one file and polarity read the
   same spectrum; NULL then stays only where there is no stream to read.
+  - *As built* (#2329). The bulk create gives an item made through a
+    route the row the pipeline's item of its file and polarity would be
+    given now: what the file's census and store say decides which
+    (`item_stream_keys`), as for the pipeline's item, and the row is
+    looked up among the ones the file has (`read_item_streams`). It
+    writes none. The rows are the pipeline's to write, under the claim
+    that keeps two runs off one file, and a second writer in a request
+    would race it for the same keys. So NULL also stays where the file
+    has no such row yet - a file processed before the rows existed, or a
+    store rebuilt stitched since its rows were written - until the file's
+    next processing. What the pipeline and the copy name stands, None
+    included. A file whose streams cannot be read gives its item no row
+    and is not refused for it.
 
 ### 4.5 The composite cut: several m/z ranges, one chemistry, one spectrum
 
@@ -1251,8 +1274,9 @@ profile behind an ion's match view show the stitched sum signal of the
 polarity, each stream's range averaged over its own scans
 (`get_sample_sum_signal`, decided from the store's metadata: the stitched
 signal where the store stitches the polarity, the pooled one otherwise; a
-stale store is refused, so the sample pane shows the listed peaks and no
-spectrum until a match meets the store and asks for its rebuild), so a
+stale store is refused, and the spectrum route that meets one asks for its
+rebuild as a match does, for whoever may rematch the sample, while the
+route for several samples answers the others - #2329), so a
 listed peak sits on the profile it was detected in; the store's own machinery -
 the time-series fill, the refused-fill helper, the stale-store check - asks
 for the whole store. What step 6 still holds is listed in section 10.
@@ -2598,12 +2622,23 @@ unchanged.
      its own stream's scans, and the sample spectrum and the match view's
      profile show the stitched sum signal, each stream's range over its own
      scans (`get_sample_sum_signal`), so a listed peak sits on the profile
-     it was detected in; still open: the item TIC, assignment loading, the
-     spectrum and peak-listing routes returning each sample's and each
-     peak's segment for the views, the bulk create giving a hand-made item
-     the stream of its file and polarity as the pipeline does (4.4), and a
-     per-stream store a match meets stale being rebuilt and its rows
-     written with the composite on the next processing (4.4);
+     it was detected in. Assignment loading reads the composite through
+     the same loader. Built in #2329, the readers left over: the item
+     TIC over the scans of the polarity's streams where the store stitches
+     it, and the per-scan export's TIC on the store's own axis (4.3, 4.4);
+     the bulk create giving an item made by hand the row the pipeline's
+     item of its file and polarity reads, without writing any (4.4); the
+     sample spectrum route asking for the rebuild of a stale store it
+     meets, as a match does (`request_stale_peak_store_rebuilds`), in the
+     name of whoever opened it where that person may rematch the sample -
+     the request still fails for that sample, and says the detection is
+     queued; and the route for several samples' spectra answering the
+     samples it can, the stale ones empty in their place and listed under
+     `stale` (both from the review of #2311). Still open: the spectrum and
+     peak-listing routes returning each sample's and each peak's segment
+     for the views, and a per-stream store a match meets stale being
+     rebuilt and its rows written with the composite on the next
+     processing (4.4);
   7. **Step 7, the fits per segment:** calibration and the instrument
      function per segment, each segment on its own anchors where it holds
      enough, the overlap shift and the unshifted borrow as fallbacks, the
