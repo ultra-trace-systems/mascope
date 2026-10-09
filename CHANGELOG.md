@@ -716,6 +716,27 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   peak, and that height was sent in a number type the plot message cannot
   carry. This has been so since 1.8.0.
 
+- **A time-ranged peak read from the SDK says when it is short of peaks, and
+  how to complete it.** `samples.get_peaks(..., t_min=, t_max=)` and
+  `load_peaks_by_stage` are averaged from each peak's per-scan timeseries,
+  and leave out every peak whose timeseries has not been computed yet -
+  mostly the unmatched peaks, since matching computes the ones it matches.
+  On a measured single-stream file a ranged read returned one of its three
+  strongest peaks. The server has said so in a warning since 1.0.0 and the
+  SDK has logged it, but nothing on the returned frame showed it, a read
+  that left out every peak came back empty with no warning at all, and the
+  warning's advice - "Re-run peak detection" - leaves every peak out again.
+  The frames `get_peaks`, `load_peaks` and `load_peaks_by_stage` return now
+  list the warnings in `df.attrs["warnings"]` (empty when there are none;
+  the columns are unchanged), the empty answer carries the warning too, and
+  the warning names what works: a peak's timeseries is computed when it is
+  first requested. The new `samples.compute_peak_timeseries(sample_id)`
+  requests them for every peak of a sample, or for the `peak_ids` given,
+  after which a ranged read is whole; the `05_peaks_by_stage` example
+  notebook uses it in place of its hand-written loop. The SDK also no longer
+  logs a response as a warning merely because a sample's name contains the
+  word.
+
 ### Security
 
 - **Creating an ionization mechanism refuses one too long to store while the

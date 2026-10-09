@@ -50,6 +50,46 @@ def _coerce_utc_columns(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+#: What the server puts in front of each warning it folds into a response's
+#: ``message`` (``"Loaded 3 peaks ... Warning: 2 peak(s) were excluded ..."``).
+_WARNING_MARKER = "Warning:"
+
+
+def _api_warnings(message: Any) -> list[str]:
+    """The warnings a response's ``message`` carries, in the order given.
+
+    The server reports a condition the caller should know about - peaks left
+    out of a time-ranged read, say - by appending ``Warning: <text>`` to the
+    message, once per warning. Only that marker counts: a message that merely
+    contains the word, in a sample's name for one, carries none.
+
+    :param message: The envelope's ``message``, whatever it holds.
+    :return: Each warning's text, empty when there is none.
+    :rtype: list[str]
+    """
+    if not isinstance(message, str) or _WARNING_MARKER not in message:
+        return []
+    _, *warnings = message.split(_WARNING_MARKER)
+    return [text.strip() for text in warnings if text.strip()]
+
+
+def _log_api_message(message: Any) -> list[str]:
+    """Log a response's ``message``, and each warning in it at WARNING.
+
+    :param message: The envelope's ``message``.
+    :return: The warnings it carried, for a caller that also hands them on.
+    :rtype: list[str]
+    """
+    if not message:
+        return []
+    logger.debug(f"API response message: {message}")
+    warnings = _api_warnings(message)
+    for warning in warnings:
+        # WARNING: the answer is incomplete in a way its rows do not show
+        logger.warning(f"API warning: {warning}")
+    return warnings
+
+
 class BaseResource:
     """Base class for all API resource classes.
 
@@ -122,13 +162,29 @@ class BaseResource:
         if stream:
             return response
 
-        message = response.json().get("message")
-        if message:
-            logger.debug(f"API response message: {message}")
-            if "warning" in message.lower():
-                logger.warning(f"API warning: {message.split('Warning:')[-1].strip()}")
+        body = response.json()
+        _log_api_message(body.get("message"))
+        return body.get("data")
 
-        return response.json().get("data")
+    def _get_with_warnings(
+        self, path: str, params: dict[str, Any] | None = None
+    ) -> tuple[Any, list[str]]:
+        """GET *path* and return its ``data`` with the response's warnings.
+
+        :meth:`_get` logs a warning and returns the data alone, which leaves a
+        script nothing to test: the frame it gets looks complete. A read whose
+        answer can be silently short hands the warnings on as well, so its
+        caller can attach them to what it returns.
+
+        :param path: API path (without /api/ prefix).
+        :type path: str
+        :param params: Query parameters.
+        :type params: dict[str, Any], optional
+        :return: The parsed ``data``, and each warning's text (logged already).
+        :rtype: tuple[Any, list[str]]
+        """
+        body = self._get_envelope(path, params)
+        return body.get("data"), _log_api_message(body.get("message"))
 
     def _post(
         self,
