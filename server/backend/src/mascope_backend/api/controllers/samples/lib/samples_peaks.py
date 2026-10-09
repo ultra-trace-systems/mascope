@@ -133,9 +133,15 @@ def _aggregate_time_range(
     has_ts = data.is_timeseries_computed.values
     if not np.all(has_ts):
         n_missing = int(np.sum(~has_ts))
+        # The remedy named is the one that works. Peak detection allocates
+        # every peak with no timeseries, so running it again leaves them all
+        # out; a timeseries is computed when it is first asked for (matching
+        # asks for the peaks it matches, the timeseries route for any peak).
         warnings.append(
             f"{n_missing} peak(s) were excluded because their timeseries "
-            f"have not been computed yet. Re-run peak detection to include them."
+            f"have not been computed yet. A peak's timeseries is computed when "
+            f"it is first requested (SDK: samples.compute_peak_timeseries); "
+            f"repeat this request afterwards to include them."
         )
         data = data.isel(mz=np.where(has_ts)[0])
 
