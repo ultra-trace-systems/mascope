@@ -48,6 +48,14 @@ agent.stop(timeout=30)
   on the rest when the time runs out, and returns whether everything ended.
   `Agent.running` says whether it is still at work. An agent runs once; build
   another to run again.
+- On the main thread, `Agent.run_until_complete()` takes Ctrl+C for itself
+  while it runs. It replaces Python's handler for SIGINT with one that counts
+  the interrupts and puts Python's back before it returns; the agent acts on
+  each within a second or so: the first stops it and waits for the uploads
+  under way, a second keeps it waiting, a third stops it without them. A
+  handler your program has set is left in place, and so is a process that
+  ignores interrupts. On any other thread nothing is replaced, and
+  `Agent.stop()` is what ends the run.
 - `Agent.on_ready(callback)` calls `callback(path)` with each complete file
   before it is uploaded, one file at a time, on the watcher's thread. A step
   that raises is logged, and the file is uploaded all the same.
