@@ -163,6 +163,32 @@ def mz_calibration_lock_path(base_filename: str) -> str:
     )
 
 
+def peak_detection_lock_path(base_filename: str) -> str:
+    """Path naming the lock a sample file's peaks are detected under.
+
+    Not a store - only the name a lock file is derived from
+    (:func:`zarr_write_lock`), beside the sample's stores and distinct from
+    any of them, as :func:`mz_calibration_lock_path` is. Its name does not
+    begin with ``peak_``, so :func:`delete_peaks` leaves it where it is.
+
+    A detection holds it from reading what the file's properties record of
+    how its peaks are detected to the last write of the store built that way.
+    More than one process detects a file's peaks - the file converter, and
+    the backend where a file is re-processed - and they are not handed the
+    same decision, so two detections of one file may not overlap: the later
+    one has to read what the earlier one recorded, or the store one of them
+    writes is not the one the record describes.
+
+    :param base_filename: Sample file filename
+    :type base_filename: str
+    :return: The path the lock is named by
+    :rtype: str
+    """
+    return os.path.join(
+        m_name.parse_path_from_item_filename(base_filename), "detection"
+    )
+
+
 def remove_path(path: str) -> None:
     """Delete a store directory or a side-car file left beside one.
 
