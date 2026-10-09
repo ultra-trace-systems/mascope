@@ -82,6 +82,15 @@ DOI are recorded in the bundle registry
 (`tooling/cli/src/mascope_cli/cmd/demo/bundles.py`) and consumed by
 `mascope demo fetch`.
 
+The download is made to survive a bad hour at the host. A transfer that stalls
+for 60 seconds, ends short of the length the server announced, or meets a
+server error is attempted again, up to five attempts with a growing pause
+between them, and a retry asks only for the bytes still missing (an HTTP
+`Range` request) where the host allows it. The archive MD5 has the last word
+either way: a file of the full length that fails it is downloaded once more
+from the start, and a second mismatch is an error - at that point suspect the
+registry entry, not the transfer.
+
 ## The `mascope demo` command
 
 A top-level CLI app (`tooling/cli/src/mascope_cli/cmd/demo/`) that always

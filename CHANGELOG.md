@@ -4,6 +4,24 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 ## [Unreleased]
 
+### Fixed
+
+- **The demo bundle download survives a transfer that is cut short.** A
+  download host that closed the connection early left `mascope demo fetch`
+  with a short file and no error, so the first thing to notice was the
+  archive's checksum: the demo stack, the end-to-end job and the
+  reproducibility check failed with "Archive checksum mismatch" and a
+  different wrong checksum each time. The download now counts what arrives
+  against the length the server announced, and an attempt that falls short,
+  stalls for 60 seconds or meets a server error is made again, up to five
+  attempts with a growing pause between them. A retry asks only for the
+  bytes still missing and appends them where the host honors a `Range`
+  request, and starts the file over where it does not; when the attempts
+  run out, the error says how many bytes of how many arrived. The archive's
+  checksum still decides: a file of the full length that fails it is
+  downloaded once more from the start, with a warning, and a second
+  mismatch is reported as before.
+
 ## [1.11.0] - 2026.10.09
 
 ### Added
