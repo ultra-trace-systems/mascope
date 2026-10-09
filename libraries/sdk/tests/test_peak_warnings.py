@@ -540,6 +540,27 @@ class TestComputePeakTimeseries:
         assert samples.compute_peak_timeseries(SAMPLE_ID) == 1
         assert server.asked_for == ["p3"]
 
+    def test_a_peak_that_fails_every_time_can_be_left_out(
+        self, samples, server, logged
+    ):
+        """Going on from where it stopped does not get past a peak that always
+        fails: the order is fixed, so every run stops there and the peaks
+        after it are never reached. The log line names the way round."""
+        server.failing = {"p2"}
+
+        for _ in range(2):
+            with pytest.raises(ServerError):
+                samples.compute_peak_timeseries(SAMPLE_ID)
+
+        assert server.asked_for == ["p2", "p2"]
+        assert len(logged) == 2
+        assert all("pass peak_ids without that one" in line for line in logged)
+
+        server.posts.clear()
+
+        assert samples.compute_peak_timeseries(SAMPLE_ID, ["p3"]) == 1
+        assert server.asked_for == ["p3"]
+
     def test_a_ranged_read_made_afterwards_is_whole(self, samples, logged):
         assert _ranged(samples).attrs["warnings"]
         logged.clear()
@@ -798,6 +819,57 @@ class TestCombiningLoads:
         assert peaks.attrs == {}
         assert peaks["mz"].tolist() == [1.0, 2.0]
         assert peaks.index.tolist() == [0, 1]
+
+    def test_the_frames_stacked_keep_their_own_attrs(self):
+        # They are stacked without their attrs; that must not empty the inputs
+        a, b = self._load(["x"]), self._load(["y"])
+
+        MascopeClient.concat([a, b])
+
+        assert a.attrs == {"warnings": ["x"], "provenance": BLOCK}
+        assert b.attrs == {"warnings": ["y"], "provenance": BLOCK}
+
+    def test_an_entry_only_some_frames_carry_is_dropped(self):
+        a = self._load([])
+        a.attrs["run"] = {"peak_assignment_run_id": "run-1"}
+
+        peaks = MascopeClient.concat([a, self._load([])])
+
+        assert "run" not in peaks.attrs
+        assert peaks.attrs["provenance"] == BLOCK
+
+    @staticmethod
+    def _ledger(species) -> pd.DataFrame:
+        """A frame as ``load_batch_ledger`` returns it: the species table
+        rides on ``attrs``, a frame itself."""
+        frame = pd.DataFrame({"batch_peak_id": ["bp-1"]})
+        frame.attrs["batch_peaks"] = pd.DataFrame({"batch_peak_id": list(species)})
+        frame.attrs["provenance"] = dict(BLOCK)
+        return frame
+
+    def test_frames_whose_attrs_hold_a_frame_are_stacked_where_pd_concat_raises(
+        self,
+    ):
+        """pandas compares ``attrs`` with ``==``. A frame's ``==`` answers
+        cell by cell, and the truth of that answer raises - so ``pd.concat``
+        cannot stack two batch ledgers at all. The method is offered for the
+        frames the SDK returns, and these are among them."""
+        a, b = self._ledger(["x", "y"]), self._ledger(["x", "y"])
+
+        with pytest.raises(ValueError, match="ambiguous"):
+            pd.concat([a, b], ignore_index=True)
+
+        ledger = MascopeClient.concat([a, b])
+
+        assert len(ledger) == 2
+        assert ledger.attrs["provenance"] == BLOCK
+        assert ledger.attrs["batch_peaks"]["batch_peak_id"].tolist() == ["x", "y"]
+
+    def test_a_frame_in_attrs_that_differs_between_them_is_dropped(self):
+        ledger = MascopeClient.concat([self._ledger(["x"]), self._ledger(["y"])])
+
+        assert "batch_peaks" not in ledger.attrs
+        assert ledger.attrs["provenance"] == BLOCK
 
 
 class TestThroughTheClient:

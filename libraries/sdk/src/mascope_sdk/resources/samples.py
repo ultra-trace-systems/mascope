@@ -684,7 +684,9 @@ class SamplesResource(BaseResource):
         This asks for the time series of each peak that has none, so that a
         time-ranged read made afterwards includes it. Peaks that have one
         already are not asked for, which also makes it safe to call again
-        after an interruption: it goes on where it stopped.
+        after an interruption: it goes on where it stopped. A peak that fails
+        every time stops it at the same place each time; pass ``peak_ids``
+        without that peak to compute the rest.
 
         **It is slow on a sample with many peaks missing.** The API computes
         one peak per request, and for each the server reads the sample's data
@@ -754,7 +756,8 @@ class SamplesResource(BaseResource):
                     logger.warning(
                         "Stopped at peak {!r} with {} of {} timeseries computed. "
                         "Call it again to go on: the ones computed are not "
-                        "asked for twice.",
+                        "asked for twice. If it stops at the same peak again, "
+                        "pass peak_ids without that one to compute the rest.",
                         peak_id,
                         computed,
                         len(missing),
