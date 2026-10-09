@@ -6,14 +6,15 @@ without anything failing:
 
 - the pipeline writes the file's stream rows and points each polarity's item
   at its composite, or at the polarity's one stream, or at nothing;
-- the bulk create writes the stream for every row it inserts, and refuses a
-  stream of another file;
+- the bulk create writes the stream for every row it inserts, refuses a
+  stream of another file, and gives an item made through a route the row
+  the pipeline's item of its file and polarity reads;
 - a copy carries the stream of the item it was copied from.
 
-And two things that must not change: an item is named, cut and read as it
-always was - its TIC and window are its polarity's - and a request cannot
-name a stream (``docs/dev/ingest_routing_and_splitting.md``, sections 4.4
-and 4.5).
+And two things that must not change: an item is named and cut as it always
+was - its window is its polarity's, and its TIC is its polarity's as its
+sample reads it - and a request cannot name a stream
+(``docs/dev/ingest_routing_and_splitting.md``, sections 4.4 and 4.5).
 """
 
 from datetime import datetime
@@ -37,6 +38,7 @@ from mascope_backend.api.models.sample.items.sample_item_pydantic_model import (
     SampleItemCreate,
     StreamItemCreate,
 )
+from mascope_signal.compute import StalePeakStoreError
 
 
 _SVC = "mascope_backend.api.controllers.sample.files.process.service"
@@ -260,9 +262,18 @@ class _Session:
 _create = sample_items_controller.create_sample_items.__wrapped__
 
 
-async def _created(items, stream_rows=()):
-    """Run the bulk create; return the session and how the file was read."""
+async def _created(items, stream_rows=(), item_streams=None, sample_tic=None):
+    """Run the bulk create; return the session and how the file was read.
+
+    ``item_streams`` is the row an item made by hand reads, by polarity, as
+    ``read_item_streams`` finds it - or the error that read raises;
+    ``sample_tic`` what the read of the sample's TIC raises instead of
+    answering.
+    """
     session = _Session(stream_rows)
+    rows_read = AsyncMock(return_value=item_streams or {})
+    if isinstance(item_streams, Exception):
+        rows_read.side_effect = item_streams
     ids = [f"si-{index:04d}" for index in range(len(items))]
     with (
         patch(f"{_ITEMS}.async_session", return_value=session),
@@ -274,11 +285,18 @@ async def _created(items, stream_rows=()):
             f"{_ITEMS}.update_sample_batches_modified_timestamp",
             new_callable=AsyncMock,
         ),
+        patch(f"{_ITEMS}.read_item_streams", rows_read),
+        patch.object(
+            sample_items_controller.m_compute,
+            "get_sample_tic_per_scan",
+            return_value=(None, [1.0, 2.0]),
+            side_effect=sample_tic,
+        ) as tic,
         patch.object(
             sample_items_controller.m_compute,
             "get_tic_per_scan",
-            return_value=(None, [1.0, 2.0]),
-        ) as tic,
+            return_value=(None, [4.0, 5.0]),
+        ) as pooled_tic,
         patch.object(
             sample_items_controller.m_compute,
             "get_acquisition_window",
@@ -290,7 +308,13 @@ async def _created(items, stream_rows=()):
             affected_samples=[MagicMock(sample_item_id=item_id) for item_id in ids],
         )
         await _create(sample_items=items)
-    return SimpleNamespace(session=session, tic=tic, window=window)
+    return SimpleNamespace(
+        session=session,
+        tic=tic,
+        pooled_tic=pooled_tic,
+        window=window,
+        rows_read=rows_read,
+    )
 
 
 def _inserted(session):
@@ -298,7 +322,10 @@ def _inserted(session):
 
 
 @pytest.mark.asyncio
-async def test_an_items_tic_and_window_are_its_polaritys_whether_it_names_a_stream_or_not():
+async def test_an_items_tic_is_its_polaritys_as_its_sample_reads_it():
+    """Over the scans of the polarity's composite where the store stitches
+    it (``get_sample_tic_per_scan``), which the store decides and not the
+    row the item names. Its window is its polarity's, as before."""
     item = AcquisitionItemCreate(
         sample_item_name="the composite",
         sample_item_type="ACQUISITION",
@@ -308,11 +335,65 @@ async def test_an_items_tic_and_window_are_its_polaritys_whether_it_names_a_stre
 
     made = await _created([item], [_stream_row()])
 
-    made.tic.assert_called_once_with(base_filename=FILENAME, polarity="-")
+    made.tic.assert_called_once_with(FILENAME, "-")
+    made.pooled_tic.assert_not_called()
     made.window.assert_called_once_with(base_filename=FILENAME, polarity="-")
     row = _inserted(made.session)
     assert (row["tic_m0"], row["t0_m0"], row["t1_m0"]) == (3.0, 2.0, 5.0)
     assert row["stream_id_m0"] == "st-0"
+
+
+@pytest.mark.asyncio
+async def test_a_stale_store_gives_an_item_its_polaritys_pooled_tic():
+    """A stale per-stream store is taken as a pooled one for the file's
+    rows, and does not stop the run that makes its items: the TIC is read
+    the same way, and the file's next processing makes the item anew."""
+    item = AcquisitionItemCreate(
+        sample_item_name="x", sample_item_type="ACQUISITION", **COMMON
+    )
+
+    made = await _created([item], sample_tic=StalePeakStoreError("stale"))
+
+    made.pooled_tic.assert_called_once_with(FILENAME, polarity="-")
+    assert _inserted(made.session)["tic_m0"] == 9.0
+
+
+@pytest.mark.asyncio
+async def test_an_item_made_by_hand_reads_the_row_of_its_file_and_polarity():
+    """So that a person's sample and the pipeline's of one file and
+    polarity read one spectrum."""
+    plain = SampleItemCreate(sample_item_name="x", sample_item_type="UNKNOWN", **COMMON)
+
+    made = await _created([plain], item_streams={"-": "st-0", "+": "st-9"})
+
+    made.rows_read.assert_awaited_once_with("sf-001", FILENAME)
+    assert _inserted(made.session)["stream_id_m0"] == "st-0"
+
+
+@pytest.mark.asyncio
+async def test_what_the_pipeline_names_stands_none_included():
+    """The pipeline has just written the file's rows and says which one its
+    item reads. None is an answer - a polarity pooled from several streams -
+    and is not looked up again."""
+    item = AcquisitionItemCreate(
+        sample_item_name="x", sample_item_type="ACQUISITION", stream_id=None, **COMMON
+    )
+
+    made = await _created([item], item_streams={"-": "st-0"})
+
+    made.rows_read.assert_not_awaited()
+    assert _inserted(made.session)["stream_id_m0"] is None
+
+
+@pytest.mark.asyncio
+async def test_a_file_whose_streams_cannot_be_read_gives_its_item_no_row():
+    """The row is not worth the sample: it is made as every sample was
+    before the rows existed."""
+    plain = SampleItemCreate(sample_item_name="x", sample_item_type="UNKNOWN", **COMMON)
+
+    made = await _created([plain], item_streams=OSError("the raw file is gone"))
+
+    assert _inserted(made.session)["stream_id_m0"] is None
 
 
 @pytest.mark.asyncio
@@ -329,6 +410,8 @@ async def test_the_insert_names_the_stream_for_every_row():
 
     row = _inserted(made.session)
     assert (row["stream_id_m0"], row["stream_id_m1"]) == (None, "st-0")
+    # The plain item's file had no row for it to read
+    made.rows_read.assert_awaited_once_with("sf-001", FILENAME)
 
 
 @pytest.mark.asyncio

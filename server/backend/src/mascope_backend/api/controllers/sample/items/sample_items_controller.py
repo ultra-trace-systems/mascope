@@ -16,6 +16,9 @@ import mascope_signal.compute as m_compute
 from mascope_backend.api.controllers.sample.batches.status.service import (
     update_sample_batch_status,
 )
+from mascope_backend.api.controllers.sample.files.process.streams import (
+    read_item_streams,
+)
 from mascope_backend.api.controllers.sample.lib.fetch_affected_sample_data import (
     fetch_affected_sample_data,
 )
@@ -189,6 +192,41 @@ async def get_sample_item(sample_item_id: str) -> dict:
     }
 
 
+def _polarity_tic_per_scan(base_filename: str, polarity: str) -> tuple:
+    """The scans an item of this polarity covers, with the TIC of each.
+
+    As the item's sample reads them (``get_sample_tic_per_scan``): over the
+    scans of the polarity's composite where the file's store stitches it,
+    each stream's scans as that stream selects them. A stale per-stream store
+    is read as a pooled one, which is how the file's stream rows take it:
+    its next processing makes the item anew.
+
+    Synchronous: it reads the filestore, so it runs in a worker thread.
+    """
+    try:
+        return m_compute.get_sample_tic_per_scan(base_filename, polarity)
+    except m_compute.StalePeakStoreError:
+        return m_compute.get_tic_per_scan(base_filename, polarity=polarity)
+
+
+async def _item_streams_of(sample_file: SampleFile) -> dict[str, str]:
+    """The row an item made by hand reads, by polarity of its file.
+
+    A file whose streams cannot be read gives its items no row, as a file
+    with no census does: an item made from it spans its polarity, which is
+    what it would have been made as before the rows existed.
+    """
+    try:
+        return await read_item_streams(sample_file.sample_file_id, sample_file.filename)
+    except Exception:  # noqa: BLE001 - the row is not worth the item
+        # INFO: fires once per file a person makes a sample from
+        runtime.logger.opt(exception=True).info(
+            f"Could not read the scan streams of {sample_file.filename}; the "
+            "samples made from it read no stream row"
+        )
+        return {}
+
+
 @api_controller()
 async def create_sample_items(
     sample_items: list[SampleItemCreate], independent_transaction: bool = False
@@ -244,11 +282,23 @@ async def create_sample_items(
         if missing_ids := list(sample_file_ids - found_ids):
             raise NotFoundException(f"Sample files not found: {missing_ids}")
 
-        # --- The scan stream each item reads, for the items that name one ---
+        # --- The scan stream each item reads ---
         # Only the models the pipeline and the copy below build can name one
-        # (StreamItemCreate); a request cannot. An item's TIC and window are
-        # its polarity's whether it names a stream or not: the stream it
-        # reads is its polarity's composite, or the polarity's one stream.
+        # (StreamItemCreate), and what they name stands, None included. An
+        # item made through a route cannot name one and is given the row the
+        # pipeline's item of its file and polarity reads, so that a person's
+        # sample and the pipeline's read one spectrum
+        # (process.streams.read_item_streams). An item's window is its
+        # polarity's whichever stream it reads.
+        given_streams: dict[str, dict[str, str]] = {}
+        for sample_file_id in {
+            si.sample_file_id
+            for si in sample_items
+            if not isinstance(si, StreamItemCreate)
+        }:
+            given_streams[sample_file_id] = await _item_streams_of(
+                sample_files_map[sample_file_id]
+            )
         stream_ids = {
             stream_id
             for si in sample_items
@@ -301,7 +351,7 @@ async def create_sample_items(
                     # instance inside a live session, so its attributes must
                     # be read here on the loop, not in the worker thread.
                     _, tic_values = await asyncio.to_thread(
-                        m_compute.get_tic_per_scan,
+                        _polarity_tic_per_scan,
                         base_filename=sample_file.filename,
                         polarity=sample_item.polarity,  # sample_item polarity (+ or -)
                     )
@@ -358,8 +408,14 @@ async def create_sample_items(
             # which came first, and dropping it is the dangerous half.
             sample_item_dict.setdefault("bound_by", None)
             sample_item_dict.setdefault("method_binding_id", None)
-            # The same for the stream, which only StreamItemCreate carries.
-            sample_item_dict.setdefault("stream_id", None)
+            # The same for the stream, which only StreamItemCreate carries:
+            # any other item reads the row found for its file and polarity.
+            sample_item_dict.setdefault(
+                "stream_id",
+                given_streams.get(sample_item.sample_file_id, {}).get(
+                    sample_item.polarity
+                ),
+            )
 
             sample_items_data.append(sample_item_dict)
 
@@ -986,9 +1042,11 @@ async def sample_item_export_peaks(
     # Get ticks for each time scan. Every other column of the frame comes from
     # the peak store, and this one is read from the sample file - so the two
     # are only pairable by position once the store's scan axis is known to be
-    # the one the file still reads back.
+    # the one the file still reads back. Read as the store holds its scans:
+    # a per-stream store's are each stream's own, which a file-wide read
+    # does not always give back.
     def _read_tic():
-        tic_time, tic_per_scan = m_compute.get_tic_per_scan(filename)
+        tic_time, tic_per_scan = m_compute.get_stored_tic_per_scan(filename)
         m_compute.check_stored_scan_axis(tic_time, sample_peak_time)
         return tic_per_scan
 
