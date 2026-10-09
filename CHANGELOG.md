@@ -4,6 +4,23 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 ## [Unreleased]
 
+### Changed
+
+- **Re-processing a file detects its peaks again under the server's
+  `composite_scan_streams` setting as it is then.** Whether the peaks of a
+  raw Orbitrap file are detected per experiment was decided once, when the
+  file was converted, and every rebuild and re-processing after that went
+  by it, so switching the setting on reached only the files converted
+  afterwards. Re-processing a file from Raw files now decides again. With
+  the setting on, a file whose method measures more than one thing in a
+  polarity has its peaks detected per experiment and stitched before its
+  samples are made; with it off, a stitched file is pooled again. A file
+  with one experiment in each polarity - nearly every file - keeps its
+  peak data as it is. A file whose scan streams cannot be read is refused
+  with nothing of it changed. The backend reads the setting when it starts,
+  so restart it as well as the file converter after changing the setting,
+  which is still off by default and not yet for production.
+
 ## [1.11.0] - 2026.10.09
 
 ### Added
