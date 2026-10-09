@@ -597,6 +597,10 @@ class MascopeClient:
             formula.
 
             Returns None if no peaks are found.
+
+            ``df.attrs["warnings"]`` lists what the server warned about
+            the samples' reads, each warning once; empty when it warned
+            about none.
         :rtype: pd.DataFrame | None
         :raises ValueError: If the dataset or batches cannot be resolved.
         :raises KeyboardInterrupt: If the user declines the confirmation prompt.
@@ -786,7 +790,21 @@ class MascopeClient:
                  - ``t_min`` / ``t_max``: Time range in seconds
 
                  Returns None if no peaks are found.
+
+                 ``df.attrs["warnings"]`` lists what the server warned about
+                 the stages, each warning once; it is empty when no stage was
+                 warned about.
         :rtype: pd.DataFrame | None
+
+        .. note::
+
+            A stage is a time-ranged read, which leaves out every peak whose
+            time series the server has not computed yet - typically the peaks
+            no target matched. The frame is then short without its rows
+            showing it. Each such read logs a warning and the frame carries it
+            in ``df.attrs["warnings"]``; have the missing series computed with
+            ``mascope.samples.compute_peak_timeseries(sample_id)`` and load
+            again.
 
         Example::
 
@@ -804,6 +822,14 @@ class MascopeClient:
             )
 
             peaks.groupby("stage_name")["area"].sum()
+
+            # Were peaks left out for want of a time series?
+            if peaks.attrs["warnings"]:
+                mascope.samples.compute_peak_timeseries("my-sample-id")
+                peaks = mascope.load_peaks_by_stage(
+                    sample="my-sample-id",
+                    stages=stages,
+                )
         """
         from ._loaders import load_peaks_by_stage as _load_peaks_by_stage
 

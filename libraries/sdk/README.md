@@ -297,6 +297,33 @@ The `sample` parameter accepts a sample name or ID. Stage tuples can be `(t_min,
 
 Key columns: `stage`, `stage_name`, `t_min`, `t_max`, plus all columns from `get_peaks`.
 
+#### Peaks left out of a time range
+
+A stage, like any `get_peaks(..., t_min=, t_max=)`, is averaged from each peak's per-scan timeseries, and the server computes a timeseries only when it is first requested. Matching requests the peaks it matches, so the ones still without are mostly the unmatched peaks - and a time-ranged read **leaves those out**. The frame is then shorter than the same read without a time range, and nothing in its rows shows it.
+
+The server says so in a warning, which the SDK logs and attaches to the frame:
+
+```python
+peaks = mascope.load_peaks_by_stage(sample="My Sample", stages=stages)
+# WARNING | API warning: 212 peak(s) were excluded because their timeseries
+#           have not been computed yet. ...
+
+peaks.attrs["warnings"]  # [] when nothing was left out
+```
+
+`compute_peak_timeseries` requests the timeseries of every peak of a sample, which computes and stores them; a time-ranged read made afterwards includes all peaks:
+
+```python
+if peaks.attrs["warnings"]:
+    sample_id = peaks["sample_item_id"].iloc[0]
+    mascope.samples.compute_peak_timeseries(sample_id)
+    peaks = mascope.load_peaks_by_stage(sample="My Sample", stages=stages)
+```
+
+It is one request per peak, so it can take a while on a sample with thousands of them; pass `peak_ids=[...]` to limit it to the peaks you need. When every peak of a range is left out there is no frame to carry the warning (the loader returns `None`), and the log is the only notice - so keep the SDK's log level at `WARNING` or below.
+
+`attrs["warnings"]` is on the frames `get_peaks`, `load_peaks` and `load_peaks_by_stage` return, with the caveats every `attrs` entry has (see [Provenance](#provenance)): read it from the frame the loader returned.
+
 ---
 
 ### `load_batch_ledger`: The batch ledger
@@ -378,7 +405,7 @@ mascope.provenance()
 
 The versions describe the server as it runs when asked. A result it stored earlier was computed by whichever build ran then; where a record carries provenance of its own, as a peak-assignment run does on `df.attrs["run"]`, that record is the authority for it.
 
-Frames loaded from one deployment and build carry the same block, so `pd.concat` of several loads keeps it. Frames from different builds - the server was updated between two loads - carry different blocks, and `pd.concat` drops the attribute: no single build produced the result.
+Frames loaded from one deployment and build carry the same block, so `pd.concat` of several loads keeps it. Frames from different builds - the server was updated between two loads - carry different blocks, and `pd.concat` drops the attribute: no single build produced the result. `pd.concat` compares the whole of `attrs`, so the same happens when two peak loads differ in `attrs["warnings"]` (one was [short of peaks](#peaks-left-out-of-a-time-range), the other was not): read both attributes from the loads before combining them.
 
 The attribute is best effort, in two ways. A server that predates it (`GET /api/provenance` answers 404) returns its frames without the attribute, and the load succeeds as before; so does any other failure to ask, which holds the frame back for about 15 seconds at most. And pandas does not reliably carry `attrs` through other operations - `merge`, `copy` and the like - so read it from the frames the loaders returned, or from their concatenation: the same caveat `attrs["run"]` and `attrs["batch_peaks"]` live with.
 
@@ -567,9 +594,12 @@ comes from its flags. For example,
 | `get(sample_id)`                                | Get sample details                                   | `dict│None`         |
 | `get_peaks(sample_id, ...)`                     | Get peak data with optional match/filter/time params | `pd.DataFrame│None` |
 | `get_peak_timeseries(sample_id, mz=, peak_id=)` | Get intensity over time for a peak                   | `pd.DataFrame│None` |
+| `compute_peak_timeseries(sample_id, peak_ids=)` | Have the server compute peaks' timeseries            | `int`               |
 | `get_spectrum(sample_id, ...)`                  | Get averaged spectrum                                | `pd.DataFrame│None` |
 | `get_spectra(sample_ids, ...)`                  | Get spectra for multiple samples                     | `pd.DataFrame│None` |
 | `get_centroids(sample_ids)`                     | Get centroid data                                    | `dict│None`         |
+
+A `get_peaks` over a time range (`t_min` / `t_max`) leaves out the peaks whose timeseries has not been computed yet; see [Peaks left out of a time range](#peaks-left-out-of-a-time-range).
 
 `list` accepts exactly one of `batch` (must match a single batch; raises if ambiguous) or `batches` (returns samples from all matching batches, with an added `sample_batch_name` column).
 
