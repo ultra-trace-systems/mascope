@@ -299,6 +299,28 @@ def peak_store_stitches(base_filename: str, polarity: Literal["+", "-"]) -> bool
     :return: True where the store's map stitches the polarity
     :rtype: bool
     """
+    _keys, stitch = _peak_store_metadata(base_filename)
+    return bool(stitch and stitch["runs"].get(polarity))
+
+
+def _peak_store_metadata(base_filename: str) -> tuple[list[str], dict | None]:
+    """A peak store's stream keys and stitch map, off its metadata alone.
+
+    What :func:`peak_store_stitches` decides from, for whoever needs the keys
+    as well: the attributes, and whether the store holds the arrays a
+    per-stream store does, each asked for by name.
+
+    :param base_filename: Sample file filename
+    :type base_filename: str
+    :raises FileNotFoundError: If the file has no peak store
+    :raises ValueError: If the store carries only part of what a per-stream
+        store does
+    :raises StalePeakStoreError: If it is a per-stream store with no map or
+        no mask
+    :return: The stream keys in the order the store's labels index them, and
+        the stitch map; ``[]`` and None for a pooled store
+    :rtype: tuple[list[str], dict | None]
+    """
     path = m_name.filename_to_zarr_path(base_filename, "peak_timeseries")
     if not os.path.exists(path):
         raise FileNotFoundError(path)
@@ -306,11 +328,12 @@ def peak_store_stitches(base_filename: str, polarity: Literal["+", "-"]) -> bool
     # listing does, and not consolidated metadata that may be stale
     group = m_io.open_zarr_store(path)
     attrs = dict(group.attrs)
-    if not _stream_keys_of(
+    keys = _stream_keys_of(
         attrs.get("streams"), "stream" in group, "scan_stream" in group
-    ):
-        return False
-    return bool(_stitch_map_of(attrs, "composite" in group)["runs"].get(polarity))
+    )
+    if not keys:
+        return [], None
+    return keys, _stitch_map_of(attrs, "composite" in group)
 
 
 def get_scan_timestamps(
@@ -1153,6 +1176,114 @@ def get_tic_per_scan(
                 tic_time = tic_time[scan_indices]
 
     return tic_time, tic_per_scan
+
+
+def get_sample_tic_per_scan(
+    base_filename: str, polarity: Literal["+", "-"]
+) -> tuple[np.ndarray, np.ndarray]:
+    """TIC per scan of one polarity of a file, as its sample reads it.
+
+    A file whose peak store stitches the polarity's scan streams answers the
+    scans of those streams, each as its own stream selects them: the scans
+    the store's axis holds for the polarity, which are the scans the
+    sample's peaks were detected and are filled over. Read polarity-wide
+    instead, the file's first scan is judged against every other scan of the
+    file, and a composite file that opens with a reagent scan loses it - a
+    scan its own stream keeps.
+
+    Any other file answers the polarity's scans as :func:`get_tic_per_scan`
+    reads them: a store detected whole, a polarity with a single stream, a
+    file with no peak store yet. Which of the two is read off the store's
+    metadata, as :func:`get_sample_sum_signal` decides it.
+
+    :param base_filename: Sample file filename
+    :type base_filename: str
+    :param polarity: The polarity whose scans to read
+    :type polarity: str
+    :raises ValueError: If the store carries only part of what a per-stream
+        store does
+    :raises StalePeakStoreError: If a per-stream store carries no map, or the
+        file holds no stream under a key it lists
+    :raises mascope_thermo.thermo.NoScansFoundError: If the file holds no
+        scan of the polarity
+    :return: Scan times [s] and the TIC of each, in time order
+    :rtype: tuple[np.ndarray, np.ndarray]
+    """
+    try:
+        keys, stitch = _peak_store_metadata(base_filename)
+    except FileNotFoundError:
+        keys, stitch = [], None  # no store yet: the polarity's own scans
+    if not (stitch and stitch["runs"].get(polarity)):
+        return get_tic_per_scan(base_filename, polarity=polarity)
+    return _tic_of_streams(base_filename, keys, polarity)
+
+
+def get_stored_tic_per_scan(base_filename: str) -> tuple[np.ndarray, np.ndarray]:
+    """TIC of each scan a file's peak store holds on its time axis.
+
+    For whatever pairs the store's scans with a fresh read of the file by
+    position. A store detected whole holds every MS1 scan of the file, as
+    :func:`get_tic_per_scan` reads them. A per-stream store holds each
+    stream's scans as that stream selects them, which a file-wide read does
+    not give back wherever the first-scan rule judges the two differently:
+    paired with it, a sound store is refused as stale, and no rebuild
+    answers that.
+
+    :param base_filename: Sample file filename
+    :type base_filename: str
+    :raises ValueError: If the store carries only part of what a per-stream
+        store does
+    :raises StalePeakStoreError: If a per-stream store carries no map, or the
+        file holds no stream under a key it lists
+    :return: Scan times [s] and the TIC of each, in time order
+    :rtype: tuple[np.ndarray, np.ndarray]
+    """
+    try:
+        keys, _stitch = _peak_store_metadata(base_filename)
+    except FileNotFoundError:
+        keys = []
+    if not keys:
+        return get_tic_per_scan(base_filename)
+    return _tic_of_streams(base_filename, keys)
+
+
+def _tic_of_streams(
+    base_filename: str, keys: list[str], polarity: Literal["+", "-"] | None = None
+) -> tuple[np.ndarray, np.ndarray]:
+    """The scans of several streams of a per-stream store, with their TIC.
+
+    Each stream is read under its own key, and the scans joined in time
+    order, as the store's axis was built. With a polarity, a stream of the
+    other one holds no scan to add and is passed over.
+
+    :param keys: Stream keys of the file's peak store
+    :param polarity: Keep only the scans of this polarity, defaults to None
+    :raises StalePeakStoreError: If the file holds no stream under a key
+    :raises mascope_thermo.thermo.NoScansFoundError: If none of the streams
+        holds a scan, of the polarity where one is given
+    :return: Scan times [s] and the TIC of each, in time order
+    :rtype: tuple[np.ndarray, np.ndarray]
+    """
+    times, tics = [], []
+    for key in keys:
+        try:
+            stream_time, stream_tic = get_tic_per_scan(
+                base_filename, polarity=polarity, stream=key
+            )
+        except m_thermo.UnknownStreamError as error:
+            raise _stale_stream_key(key) from error
+        except m_thermo.NoScansFoundError:
+            continue
+        times.append(np.asarray(stream_time, dtype=float))
+        tics.append(np.asarray(stream_tic, dtype=float))
+    if not times:
+        raise m_thermo.NoScansFoundError(
+            f"No scans found in the scan streams of '{base_filename}'"
+            + ("." if polarity is None else f" for polarity '{polarity}'.")
+        )
+    scan_time, scan_tic = np.concatenate(times), np.concatenate(tics)
+    order = np.argsort(scan_time, kind="stable")
+    return scan_time[order], scan_tic[order]
 
 
 def get_acquisition_window(
