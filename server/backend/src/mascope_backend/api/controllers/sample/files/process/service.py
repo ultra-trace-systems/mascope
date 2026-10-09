@@ -7,7 +7,7 @@ Handles automated creation of ACQUISITION datasets, batches, and sample items, a
 import asyncio
 from dataclasses import dataclass
 
-from sqlalchemy import and_, delete, select
+from sqlalchemy import and_, delete, func, select
 from sqlalchemy.exc import InterfaceError, OperationalError, SQLAlchemyError
 from sqlalchemy.exc import TimeoutError as SQLAlchemyTimeoutError
 
@@ -404,6 +404,27 @@ async def _acquisition_item_provenance(
     for mode_id, bound_by, method_binding_id in items:
         held.setdefault(mode_id, ItemProvenance(bound_by, method_binding_id))
     return held
+
+
+async def _pipeline_item_count(sample_file_id: str) -> int:
+    """How many samples auto-processing made for a file, whatever their mode.
+
+    Asked beside :func:`_acquisition_item_provenance`, which leaves out an
+    item with no mode. ``sample_item.ionization_mode_id`` is ``ON DELETE SET
+    NULL``, so a file whose mode was deleted since still has its samples and
+    none of them answers there: it reads as a file with no samples, and is
+    not one where the question is what a run would clear.
+    """
+    async with async_session() as session:
+        count = await session.scalar(
+            select(func.count())
+            .select_from(SampleItem)
+            .where(
+                SampleItem.sample_file_id == sample_file_id,
+                _pipeline_item(),
+            )
+        )
+    return count or 0
 
 
 def _failure_detail(exc: BaseException) -> str:
@@ -1947,15 +1968,42 @@ async def re_process_sample_files(
             # samples were created under. Read before they are cleared, and
             # outside the except clause, where an error would escape the
             # handlers that keep one file's failure its own.
+            #
+            # No modes to keep is what three files say: one with no samples,
+            # one whose samples no longer give a mode per polarity - a mode
+            # deleted since leaves them with none, the column being ON DELETE
+            # SET NULL - and one whose samples could not be read. Where the
+            # method rung is on, only the first may go on to the pipeline, so
+            # the samples are counted beside the modes.
+            by_method = routes_on_method_binding()
             try:
                 kept = await _kept_modes(sample_file)
+                unbound_samples = (
+                    await _pipeline_item_count(sample_file.sample_file_id)
+                    if kept is None and by_method
+                    else 0
+                )
             except Exception as e:  # noqa: BLE001 - one file's failure
                 runtime.logger.info(
                     f"Could not read the modes of sample file {sample_file.filename}'s "
                     f"samples: {e}"
                 )
-                kept = None
-            if kept is None and not routes_on_method_binding():
+                if by_method:
+                    # Not taken for a file with no samples: that one is sent
+                    # on to be cleared and rebuilt, and this one may have
+                    # samples, with modes that still bind it.
+                    failed_files.append(
+                        {
+                            "sample_file_id": sample_file.sample_file_id,
+                            "filename": sample_file.filename,
+                            "message": (
+                                f"Failed to read the modes its samples have: {str(e)}"
+                            ),
+                        }
+                    )
+                    continue
+                kept, unbound_samples = None, 0
+            if kept is None and not by_method:
                 failed_files.append(
                     {
                         "sample_file_id": sample_file.sample_file_id,
@@ -1964,8 +2012,30 @@ async def re_process_sample_files(
                     }
                 )
                 continue
+            if kept is None and unbound_samples:
+                # Samples, and no modes to keep from them. Not left to the
+                # method as the file below is: a run clears a file's samples
+                # and resets its calibration before the pipeline asks the
+                # rung, so one the method cannot place would park with its
+                # samples gone. Refused untouched, as it is with the rung off.
+                failed_files.append(
+                    {
+                        "sample_file_id": sample_file.sample_file_id,
+                        "filename": sample_file.filename,
+                        "message": _beside_the_declaration(
+                            undeclared,
+                            f"{str(no_token).rstrip('.')}. The ionization modes "
+                            "its samples were made under no longer bind it "
+                            "either, so it was left as it is: re-processing "
+                            "clears a file's samples before its acquisition "
+                            "method is asked. Choose its chemistry in Raw files "
+                            "to rebuild it.",
+                        ),
+                    }
+                )
+                continue
             if kept is None:
-                # No token, and no samples to keep - but this deployment lets
+                # No token, and no samples at all - but this deployment lets
                 # an acquisition method bind a file, and only the pipeline can
                 # ask it: the rung needs the file's scan-stream census, which
                 # is read there. So the file goes through with no modes of its
@@ -1978,8 +2048,8 @@ async def re_process_sample_files(
                 # a site does after switching the flag on - report "no tokens"
                 # for files the pipeline would have bound.
                 runtime.logger.debug(
-                    f"{sample_file.filename} has no token and no samples to "
-                    "keep; its acquisition method may still bind it"
+                    f"{sample_file.filename} has no token and no samples; its "
+                    "acquisition method may still bind it"
                 )
             else:
                 kept_modes[sample_file.sample_file_id] = kept

@@ -2371,9 +2371,14 @@ Needed before any rung can be provisional or park.
      before, several for a binding whose mode no longer applies, and a token
      is the only answer for an instrument that reports one method name for
      every acquisition. Bulk re-processing
-     reaches the rung too: a parked file with no samples to keep goes through
+     reaches the rung too: a parked file with no samples goes through
      to the pipeline rather than being refused on its name, which is what
-     selecting the parked files and pressing Re-process does. A file bound
+     selecting the parked files and pressing Re-process does. Only a file
+     with no samples, though: a run clears a file's samples before the
+     pipeline asks the rung, so a file whose samples are still there under
+     modes that no longer bind it - a mode deleted since leaves them with
+     none - is refused untouched, as it is where the rung is off, and so is
+     one whose samples could not be read. A file bound
      this way teaches its binding nothing, and its items record
      `method_binding_id`, which is checked against the table as the item is
      created rather than trusted from the earlier read: `ON DELETE SET NULL`
