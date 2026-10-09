@@ -526,6 +526,7 @@ class FileUploader:
                 sidecar, os.path.join(failed_dir, os.path.basename(sidecar))
             )
         except FileNotFoundError:
+            # No record beside the file, which is the ordinary case.
             pass
         except OSError as e:
             self.logger.warning(
