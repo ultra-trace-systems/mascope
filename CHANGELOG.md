@@ -726,16 +726,29 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   SDK has logged it, but nothing on the returned frame showed it, a read
   that left out every peak came back empty with no warning at all, and the
   warning's advice - "Re-run peak detection" - leaves every peak out again.
+
   The frames `get_peaks`, `load_peaks` and `load_peaks_by_stage` return now
   list the warnings in `df.attrs["warnings"]` (empty when there are none;
-  the columns are unchanged), the empty answer carries the warning too, and
-  the warning names what works: a peak's timeseries is computed when it is
-  first requested. The new `samples.compute_peak_timeseries(sample_id)`
-  requests them for every peak of a sample, or for the `peak_ids` given,
-  after which a ranged read is whole; the `05_peaks_by_stage` example
-  notebook uses it in place of its hand-written loop. The SDK also no longer
-  logs a response as a warning merely because a sample's name contains the
-  word.
+  the columns are unchanged). A load whose every peak was left out is an
+  empty frame carrying the warning, where it was `None`. The new
+  `samples.compute_peak_timeseries(sample_id)` requests the timeseries of
+  the peaks that have none - all of them, those in an m/z range, or the
+  `peak_ids` given - after which a ranged read is whole. It is one request
+  per missing peak, so it is slow on a sample that was never matched; it
+  skips what is already computed and can be run again after an
+  interruption. The `05_peaks_by_stage` example notebook uses it in place of
+  its hand-written loop. `mascope.concat` combines loads in place of
+  `pd.concat`, which drops the warnings and the provenance of any two loads
+  that warned differently - two samples short by different counts, for one.
+
+  API: the peaks response lists its warnings in a `warnings` field beside
+  `data` as well as in `message`, an answer with every peak left out carries
+  the warning too, and the warning names what works, in the API's terms: a
+  peak's timeseries is computed when it is first requested. Against a
+  server up to 1.10.1, which gives no warning with such an empty answer, the
+  SDK adds one of its own rather than report that nothing was left out. The
+  SDK also no longer logs a response as a warning merely because a sample's
+  name contains the word.
 
 ### Security
 

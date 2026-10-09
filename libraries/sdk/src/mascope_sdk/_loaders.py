@@ -1,6 +1,8 @@
 """High-level data loading functions for the Mascope SDK."""
 
+import copy
 import re
+from collections.abc import Iterable
 from typing import Any
 
 import pandas as pd
@@ -33,6 +35,68 @@ def _distinct(warned: list[str]) -> list[str]:
     warn alike.
     """
     return list(dict.fromkeys(warned))
+
+
+def _stack(frames: list[pd.DataFrame], warned: list[str]) -> pd.DataFrame | None:
+    """One frame from the reads of a loader, or None when there is nothing.
+
+    A read that listed no peak adds no rows. When none of them did, what is
+    returned depends on why: nothing found and nothing warned is None, as it
+    always was. But reads that warned came back empty because every peak was
+    left out of them - the state of any sample that was detected and never
+    matched - and None would say "no peaks here" to a script and take the
+    warnings with it. That is an empty frame instead, with the columns of a
+    read, for the caller to set the warnings on.
+
+    :param frames: What each read returned, the empty ones included.
+    :param warned: What the reads warned.
+    :return: The rows of every read, an empty frame, or None.
+    """
+    filled = [frame for frame in frames if not frame.empty]
+    if filled:
+        # Drop all-NA columns per frame to avoid FutureWarning on concat
+        # with mixed empty/populated columns.
+        filled = [frame.dropna(axis=1, how="all") for frame in filled]
+        return pd.concat(filled, ignore_index=True)
+    if warned and frames:
+        return frames[0].iloc[0:0].copy()
+    return None
+
+
+def concat_frames(
+    frames: Iterable[pd.DataFrame | None], *, ignore_index: bool = True
+) -> pd.DataFrame | None:
+    """Stack frames the SDK returned, keeping what their ``attrs`` say.
+
+    ``pd.concat`` keeps ``attrs`` only when every input's are equal, all or
+    nothing. Two peak reads that are short by different numbers of peaks
+    differ in ``attrs["warnings"]``, so concatenating them drops the warnings
+    and the provenance with them - and that is the common case for a loop
+    over samples.
+
+    Here the warnings of every frame are kept, each once, and the provenance
+    is kept when every frame carries the same block, as ``pd.concat`` itself
+    would keep it. Anything else in ``attrs`` is left as ``pd.concat`` leaves
+    it.
+
+    :param frames: The frames to stack. None entries - a load that found
+        nothing - are skipped.
+    :param ignore_index: Number the rows afresh. Defaults to True.
+    :return: The stacked frame, or None when there was no frame to stack.
+    """
+    kept = [frame for frame in frames if frame is not None]
+    if not kept:
+        return None
+    result = pd.concat(kept, ignore_index=ignore_index)
+
+    if any("warnings" in frame.attrs for frame in kept):
+        result.attrs["warnings"] = _distinct(
+            [warning for frame in kept for warning in frame.attrs.get("warnings", ())]
+        )
+    blocks = [frame.attrs.get("provenance") for frame in kept]
+    if blocks[0] is not None and all(block == blocks[0] for block in blocks):
+        result.attrs["provenance"] = copy.deepcopy(blocks[0])
+    return result
 
 
 def _resolve_sample(client: MascopeClient, sample: str) -> str:
@@ -277,7 +341,8 @@ def load_peaks(
              double-counting peaks whose matches share the same
              formula.
 
-             Returns None if no peaks are found.
+             Returns None if no peaks are found and nothing was warned
+             about.
 
              ``df.attrs["warnings"]`` lists what the server warned about
              the samples' reads, each warning once; empty when it warned
@@ -331,7 +396,7 @@ def load_peaks(
             average=average,
         )
         _note_warnings(warned, peaks)
-        if peaks is None or peaks.empty:
+        if peaks is None:
             return None
 
         # Enrich with batch and sample context
@@ -357,14 +422,11 @@ def load_peaks(
         unit="sample",
     )
 
-    if not frames:
+    result = _stack(frames, warned)
+    if result is None:
         logger.info("No peaks found")
         return None
 
-    # Drop all-NA columns per frame to avoid FutureWarning on concat
-    # with mixed empty/populated columns.
-    frames = [f.dropna(axis=1, how="all") for f in frames]
-    result = pd.concat(frames, ignore_index=True)
     result.attrs["warnings"] = _distinct(warned)
     logger.info("Loaded {} peaks total", len(result))
     return result
@@ -570,7 +632,7 @@ def load_peaks_by_stage(
 
              Plus all columns from
                :meth:`~mascope_sdk.resources.samples.SamplesResource.get_peaks`.
-             Returns None if no peaks are found.
+             Returns None if no peaks are found and nothing was warned about.
 
              ``df.attrs["warnings"]`` lists what the server warned about
              the stages, each warning once; it is empty when no stage was
@@ -584,6 +646,10 @@ def load_peaks_by_stage(
         series the server has not computed yet - typically the peaks no target
         matched. When ``df.attrs["warnings"]`` says so, have them computed with
         ``mascope.samples.compute_peak_timeseries(sample_id)`` and load again.
+
+        When *every* peak is left out - a sample that was detected and never
+        matched - the result is an empty frame carrying the warnings, not
+        None, so ``df.attrs["warnings"]`` can be read in that case too.
 
     Example::
 
@@ -642,7 +708,7 @@ def load_peaks_by_stage(
             t_max=t_max,
         )
         _note_warnings(warned, peaks)
-        if peaks is None or peaks.empty:
+        if peaks is None:
             return None
 
         peaks["stage"] = stage_idx
@@ -662,12 +728,11 @@ def load_peaks_by_stage(
         unit="stage",
     )
 
-    if not frames:
+    result = _stack(frames, warned)
+    if result is None:
         logger.info("No peaks found")
         return None
 
-    frames = [f.dropna(axis=1, how="all") for f in frames]
-    result = pd.concat(frames, ignore_index=True)
     result = result.sort_values("stage").reset_index(drop=True)
     result.attrs["warnings"] = _distinct(warned)
     logger.info("Loaded {} peaks across {} stages", len(result), len(stages))
