@@ -136,6 +136,15 @@ class ScriptedAcquisition:
     def _peaks(self, scan_number):
         return self._scans[scan_number - 1][2]
 
+    def tic_per_scan(self, polarity=None, stream=None):
+        """Each selected scan's time and total ion current: the sum of what
+        it recorded."""
+        rows = self._selected(polarity, stream=stream)
+        return (
+            np.array([row["time_s"] for row in rows]),
+            np.array([sum(self._peaks(row["scan"]).values()) for row in rows]),
+        )
+
     def average_centroids(self, scan_indices, ppm=1, average=False):
         """Every m/z any of the scans recorded, summed over the scans, as the
         real reader returns it with ``average=False``."""
