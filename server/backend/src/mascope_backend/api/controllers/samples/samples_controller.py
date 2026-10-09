@@ -366,9 +366,17 @@ async def get_sample_peaks(
         mz_max=mz_max,
     )
 
+    # Folded into the message of either answer. With every peak left out of a
+    # time-ranged read the answer is empty, and "no peaks found" on its own
+    # reads as a sample that has none.
+    warning_text = "".join(f" Warning: {warning}" for warning in peak_data.warnings)
+
     if peak_data.count == 0:
         return {
-            "message": f"No peaks found in sample '{sample.sample_item_name}' with polarity '{sample.polarity}'.",
+            "message": (
+                f"No peaks found in sample '{sample.sample_item_name}' "
+                f"with polarity '{sample.polarity}'.{warning_text}"
+            ),
             "results": 0,
             "data": {
                 "peak_id": [],
@@ -411,9 +419,8 @@ async def get_sample_peaks(
     message = (
         f"Successfully loaded {peak_data.count} peaks from sample "
         f"'{sample.sample_item_name}' with polarity '{sample.polarity}'"
+        f"{warning_text}"
     )
-    for warning in peak_data.warnings:
-        message += f" Warning: {warning}"
 
     return {
         "message": message,
