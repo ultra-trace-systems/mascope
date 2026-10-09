@@ -359,6 +359,10 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 ### Fixed
 
+- **The File Agent's setup says where "Pair an agent" is.** Its pairing
+  step said to click a profile icon to open the sidebar, and the web app
+  has neither: the button is in the Home menu (house icon, top-left), on
+  the Settings tab, under API Access Tokens, where the user guide puts it.
 - **Signing in no longer fails the uploads you still have queued.** Every
   sign-in of an editor or higher replaced the user's file-converter token,
   while each upload of theirs waiting for the converter carried the token it

@@ -578,7 +578,7 @@ def run_pairing(
         f"  Pairing code: {started['user_code']}\n"
         "\n"
         "  1. Log in to Mascope in your browser (editor role or higher)\n"
-        "  2. Click your profile icon to open the sidebar\n"
+        "  2. Open the Home menu (house icon, top-left) and its Settings tab\n"
         "  3. Under 'API Access Tokens', click 'Pair an agent'\n"
         "  4. Enter the code above and approve\n"
         "\n"
