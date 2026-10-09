@@ -484,7 +484,7 @@ class BackendConfig(ModuleConfig):
     # spectrum's row and reads its peaks - one reading of each m/z, averaged
     # over the scans of the experiment that measured it. Still to come: the
     # m/z calibration and the instrument functions per experiment,
-    # assignment and the spectrum views by experiment. The flag exists so
+    # assignment and the views by experiment. The flag exists so
     # that each step ships inert and can be exercised on a development server.
     #
     # A file with one experiment in each polarity - nearly every file - is
