@@ -20,7 +20,7 @@ dependencies = [
     "mascope_sdk>=2026.10.9",
     "requests>=2.34.2,<3",
     "tzlocal>=5.4.4",
-    "watchdog~=4.0",
+    "watchdog>=4,<7",
 ]
 
 [project.scripts]
