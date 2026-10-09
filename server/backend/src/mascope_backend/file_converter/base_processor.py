@@ -46,7 +46,9 @@ def composites_scan_streams() -> bool:
     (``mascope_runtime.config.BackendConfig``). The converter reads it
     because peak detection runs here, and it is the first conversion of a
     file that decides whether its peak store holds a peak list per scan
-    stream; a rebuild of the store keeps what was decided then.
+    stream; a rebuild of the store keeps what was decided then. The backend
+    reads the same setting where a file is re-processed, which decides again
+    (``mascope_backend.api.controllers.sample.files.process.peaks``).
 
     :return: True when a file whose method measures more than one thing in a
         polarity is to get a peak list per stream
