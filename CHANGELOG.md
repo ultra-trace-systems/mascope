@@ -4,6 +4,25 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 ## [Unreleased]
 
+### Fixed
+
+- **Re-processing no longer clears the samples of a file whose ionization
+  mode was deleted, on a server that binds files by their acquisition
+  method.** A file with no mode's token in its name is re-processed under
+  the modes its samples have, and one with no such modes is refused
+  untouched. With `backend.method_binding = "route"` it was sent on to the
+  pipeline instead, for its acquisition method to bind, on the reading that
+  a file with no modes to keep is a parked file with no samples. A file
+  whose mode was deleted since says the same - its samples are still there,
+  with no mode - and so does one whose samples could not be read, and a run
+  clears a file's samples and resets its calibration before the method is
+  asked: where the method could not place the file, it parked with its
+  samples gone. Only a file with no samples is left to the method now. One
+  that has samples no mode binds is refused before anything of it is
+  touched, with a reason that says so, and choosing its chemistry in Raw
+  files rebuilds it. Servers that do not route on method bindings, the
+  default, were not affected.
+
 ## [1.11.0] - 2026.10.09
 
 ### Added
