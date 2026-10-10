@@ -81,6 +81,7 @@ const SEGMENTS = [
     origin: 'm/z 40-138',
     calibration_factor: 1 - 11.517e-6,
     shared_ions: 26,
+    note: 'No calibration peaks found',
     quality: null
   },
   {
@@ -143,10 +144,10 @@ describe('DialogCalibration', () => {
 
     expect(listed.map((item) => item.text())).toEqual([
       'm/z 40-138: fitted on 2 calibrants (-11.93 ppm).',
-      'm/z 66-124: holds no calibrant, so it takes the calibration of m/z 40-138 ' +
-        'across the 26 ions both ranges measure (-11.52 ppm).',
-      'm/z 132-460: holds no calibrant and shares too few ions with a neighbouring ' +
-        'range, so it takes the calibration of m/z 40-138 as it is (-11.93 ppm).'
+      'm/z 66-124: not fitted on calibrants of its own (no calibration peaks found); ' +
+        'takes the calibration of m/z 40-138 across the 26 ions both ranges measure (-11.52 ppm).',
+      'm/z 132-460: not fitted on calibrants of its own; takes the calibration of ' +
+        'm/z 40-138 unchanged (-11.93 ppm).'
     ])
     // The ranges that run on another range's calibration stand out
     expect(listed.map((item) => item.classes('carried'))).toEqual([false, true, true])

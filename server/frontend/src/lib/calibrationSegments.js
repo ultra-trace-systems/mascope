@@ -9,17 +9,33 @@
  *
  * - `source: "anchors"` - fitted on calibrants the range holds itself; its
  *   own `quality` block says on how many.
- * - `source: "overlap"` - it holds none, and takes the calibration of
- *   `origin` shifted by what both ranges read of the `shared_ions` in their
- *   overlap.
- * - `source: "borrowed"` - it holds none and shares too few ions with a
- *   neighbour, so it takes the calibration of `origin` as it is.
+ * - `source: "overlap"` - it has no fit of its own, and takes the
+ *   calibration of `origin` shifted by what both ranges read of the
+ *   `shared_ions` in their overlap.
+ * - `source: "borrowed"` - it has no fit of its own, and takes the
+ *   calibration of `origin` as it is.
+ *
+ * `source` says how a range came by its calibration and not why it has no
+ * fit of its own: that is in `note`, where the backend recorded one. A range
+ * with no fit need not lack calibrants - the ones it holds may have failed
+ * the fit's filters, or disagreed with each other - and a range takes
+ * `origin`'s calibration unchanged also where the two share plenty of ions
+ * but `origin` was not fitted itself. So the texts state what happened and
+ * quote the recorded reason, and guess at neither.
  *
  * A sample that is not stitched has no `segments`, and nothing here says
  * anything about it.
  */
 
 const signedPpm = (value) => `${value < 0 ? '-' : '+'}${Math.abs(value).toFixed(2)} ppm`
+
+// "not fitted on calibrants of its own", with the reason the fit recorded
+// where it recorded one: the backend's sentence, as part of this one
+const notFitted = (segment) => {
+  const note = (segment.note ?? '').trim().replace(/\.$/, '')
+  const reason = note ? ` (${note.charAt(0).toLowerCase()}${note.slice(1)})` : ''
+  return `not fitted on calibrants of its own${reason}`
+}
 
 /**
  * The scan ranges of a fit or of a calibration record.
@@ -44,14 +60,14 @@ export function segmentCalibrationText(segment) {
   const correction = signedPpm((segment.calibration_factor - 1) * 1e6)
   if (segment.source === 'overlap') {
     return (
-      `${segment.label}: holds no calibrant, so it takes the calibration of ${segment.origin} ` +
+      `${segment.label}: ${notFitted(segment)}; takes the calibration of ${segment.origin} ` +
       `across the ${segment.shared_ions} ions both ranges measure (${correction}).`
     )
   }
   if (segment.source === 'borrowed') {
     return (
-      `${segment.label}: holds no calibrant and shares too few ions with a neighbouring ` +
-      `range, so it takes the calibration of ${segment.origin} as it is (${correction}).`
+      `${segment.label}: ${notFitted(segment)}; takes the calibration of ${segment.origin} ` +
+      `unchanged (${correction}).`
     )
   }
   const points = segment.quality?.n_points
@@ -65,7 +81,9 @@ export function segmentCalibrationText(segment) {
  *
  * @param {object|null|undefined} mzCalibration - `sample.mz_calibration`
  * @returns {string} A sentence with a leading space, or an empty string when
- *   every range was fitted on its own calibrants or the sample is not stitched
+ *   every range was fitted on its own calibrants or the sample is not stitched.
+ *   It does not say why a range has no fit of its own: the calibration dialog
+ *   lists each range with the reason recorded for it.
  */
 export function carriedSegmentsText(mzCalibration) {
   const carried = calibrationSegments(mzCalibration).filter(
@@ -76,6 +94,6 @@ export function carriedSegmentsText(mzCalibration) {
   }
   const labels = carried.map((segment) => segment.label).join('; ')
   return carried.length === 1
-    ? ` Scan range ${labels} holds no calibrant and takes a neighbouring range's calibration.`
-    : ` Scan ranges ${labels} hold no calibrant and take a neighbouring range's calibration.`
+    ? ` Scan range ${labels} was not fitted on calibrants of its own and takes a neighbouring range's calibration.`
+    : ` Scan ranges ${labels} were not fitted on calibrants of their own and take a neighbouring range's calibration.`
 }
