@@ -186,4 +186,50 @@ describe('calibrationStatus', () => {
 
     expect(status.state).toBe('ok')
   })
+
+  describe('a stitched sample', () => {
+    const segments = [
+      { label: 'm/z 40-138', source: 'anchors', calibration_factor: 1.000002 },
+      { label: 'm/z 66-124', source: 'overlap', calibration_factor: 1.0000016 },
+      { label: 'm/z 132-460', source: 'borrowed', calibration_factor: 1.000002 }
+    ]
+    const applied = (extra = {}) => ({
+      status: 'ok',
+      verified: true,
+      quality: { n_points: 2, pre_fit_mz_error_ppm: 2, post_fit_mz_error_ppm: 0.1, segments },
+      ...extra
+    })
+    const carried =
+      ' Scan ranges m/z 66-124; m/z 132-460 were not fitted on calibrants of their own ' +
+      "and take a neighbouring range's calibration."
+
+    it('names the ranges that run on another range’s calibration', () => {
+      const status = calibrationStatus(applied())
+
+      expect(status.state).toBe('ok')
+      expect(status.tooltip).toBe(
+        `m/z calibrated: 2 points, 2.00 ppm → 0.10 ppm mean |m/z error|.${carried}`
+      )
+    })
+
+    it('says nothing more where every range was fitted on its own', () => {
+      const status = calibrationStatus(
+        applied({ quality: { n_points: 2, segments: segments.slice(0, 1) } })
+      )
+
+      expect(status.tooltip).toBe('m/z calibrated: 2 points')
+    })
+
+    it.each([
+      ['drifted', { acquisition_drift: true, acquisition_drift_ppm: 12 }],
+      ['warned', { status: 'poor', quality_issues: [{ message: 'Too far.' }] }],
+      ['accepted', { status: 'poor', accepted_by: 4, quality_issues: [{ message: 'Too far.' }] }],
+      ['poor', { status: 'poor', verified: false, quality_issues: [{ message: 'Too far.' }] }]
+    ])('names them on a %s badge too', (state, extra) => {
+      const status = calibrationStatus(applied(extra))
+
+      expect(status.state).toBe(state)
+      expect(status.tooltip).toContain(carried)
+    })
+  })
 })

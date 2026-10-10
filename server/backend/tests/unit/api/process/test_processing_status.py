@@ -83,8 +83,19 @@ def test_streams_the_store_stitched_are_not_called_pooled():
         [_stream(LOW, "-"), _stream(HIGH, "-")], stitched=[LOW, HIGH]
     )
 
+    # Each by its scan range, as the sample's views name a segment
     assert note == (
-        f"Polarity - stitches 2 MS1 scan streams into one spectrum: {LOW}; {HIGH}."
+        "Polarity - stitches 2 MS1 scan streams into one spectrum: "
+        "m/z 40-160; m/z 128-600."
+    )
+
+
+def test_pooled_streams_are_still_named_by_their_whole_key():
+    """Nothing else says which experiments a pooled peak list mixes."""
+    note = status.pooled_streams_note([_stream(LOW, "-"), _stream(HIGH, "-")])
+
+    assert note == (
+        f"Polarity - pools 2 MS1 scan streams into one peak list: {LOW}; {HIGH}."
     )
 
 
@@ -301,3 +312,307 @@ async def test_a_status_that_cannot_be_written_is_logged_not_raised(failure):
     assert len(warnings) == 1 and "'done'" in warnings[0], lines
     assert "sf-1" not in warnings[0], lines
     assert any(level == "INFO" and "sf-1" in message for level, message in lines)
+
+
+# -- what a stitched file's ranges read where they overlap --------------------------
+
+REAGENT_KEY = "FTMS - p NSI Full ms [40.0000-138.0000] R=120000"
+LOW_KEY = "FTMS - p NSI Full ms [66.0000-124.0000] R=120000"
+MID_KEY = "FTMS - p NSI Full ms [132.0000-460.0000] R=120000"
+HIGH_KEY = "FTMS - p NSI Full ms [440.0000-1200.0000] R=120000"
+STORE_KEYS = [REAGENT_KEY, LOW_KEY, MID_KEY, HIGH_KEY]
+
+
+def _overlap(first, second, shared, ppm=None, ratio=None):
+    """An overlap reading as the store records it: quartiles over the ions
+    two ranges share, None where they share none."""
+    return {
+        "streams": [first, second],
+        "shared": shared,
+        "ppm": None if ppm is None else [ppm - 0.2, ppm, ppm + 0.2],
+        "ratio": None if ratio is None else [ratio * 0.9, ratio, ratio * 1.1],
+    }
+
+
+def test_an_overlap_says_how_far_apart_and_how_high_its_two_ranges_read():
+    note = status.overlap_readings_note(
+        STORE_KEYS,
+        [_overlap(0, 1, 26, -0.417, 1.37), _overlap(2, 3, 33, 0.611, 1.25)],
+    )
+
+    assert note == (
+        "Where two scan ranges overlap: m/z 66-124 reads the 26 ions it shares "
+        "with m/z 40-138 0.42 ppm lower, at 1.37 times the intensity; m/z 440-1200 "
+        "reads the 33 ions it shares with m/z 132-460 0.61 ppm higher, at 1.25 "
+        "times the intensity."
+    )
+
+
+def test_the_reading_is_the_median_over_the_ions_shared():
+    reading = {
+        "streams": [0, 1],
+        "shared": 3,
+        "ppm": [-9.0, 0.5, 9.0],
+        "ratio": [0.1, 2.0, 30.0],
+    }
+
+    note = status.overlap_readings_note(STORE_KEYS, [reading])
+
+    assert "0.50 ppm higher, at 2.00 times" in note
+
+
+def test_one_shared_ion_is_one_ion():
+    note = status.overlap_readings_note(STORE_KEYS, [_overlap(2, 3, 1, 0.4, 0.8)])
+
+    assert "reads the 1 ion it shares with m/z 132-460" in note
+
+
+def test_two_ranges_that_share_no_ion_say_nothing():
+    """The reagent scan and the mid window overlap over two m/z and hold no
+    ion in common: there is nothing to read."""
+    readings = [_overlap(0, 2, 0), _overlap(0, 1, 26, -0.4, 1.4)]
+
+    note = status.overlap_readings_note(STORE_KEYS, readings)
+
+    assert "m/z 132-460" not in note
+    assert note.count("reads the") == 1
+
+
+def test_a_file_whose_ranges_share_nothing_has_no_overlap_note():
+    assert status.overlap_readings_note(STORE_KEYS, [_overlap(0, 2, 0)]) is None
+    assert status.overlap_readings_note(STORE_KEYS, []) is None
+
+
+def _stitched_store(readings, keys=STORE_KEYS):
+    """What the signal library reads off a stitched store with these readings."""
+    from types import SimpleNamespace
+
+    store = SimpleNamespace(attrs={"stitch_overlaps": readings})
+    return (
+        patch.object(status.m_io, "load_array", return_value=store),
+        patch.object(status.m_compute, "peak_store_streams", return_value=keys),
+    )
+
+
+@pytest.mark.asyncio
+async def test_the_overlap_readings_are_read_off_the_store():
+    opened, keys = _stitched_store([_overlap(0, 1, 26, -0.417, 1.37)])
+    with opened, keys:
+        note = await status.read_overlap_readings_note("x.raw")
+
+    assert note.startswith("Where two scan ranges overlap: m/z 66-124 reads the 26")
+
+
+@pytest.mark.asyncio
+async def test_a_pooled_store_has_no_overlap_readings():
+    """Whatever its attributes hold: it has no streams to read against each
+    other."""
+    opened, keys = _stitched_store([_overlap(0, 1, 26, -0.4, 1.4)], keys=[])
+    with opened, keys:
+        assert await status.read_overlap_readings_note("x.raw") is None
+
+
+@pytest.mark.asyncio
+async def test_a_stitched_store_that_recorded_no_readings_has_none():
+    from types import SimpleNamespace
+
+    with (
+        patch.object(status.m_io, "load_array", return_value=SimpleNamespace(attrs={})),
+        patch.object(status.m_compute, "peak_store_streams", return_value=STORE_KEYS),
+        captured_logs() as records,
+    ):
+        assert await status.read_overlap_readings_note("x.raw") is None
+
+    # Nothing went wrong: a store with nothing to read is not a failure
+    assert not [r["message"] for r in records if "overlap readings" in r["message"]]
+
+
+@pytest.mark.asyncio
+async def test_a_store_that_cannot_be_read_says_so_quietly():
+    with (
+        patch.object(status.m_io, "load_array", side_effect=OSError("disk")),
+        captured_logs() as records,
+    ):
+        assert await status.read_overlap_readings_note("x.raw") is None
+
+    lines = [(r["level"].name, r["message"]) for r in records]
+    assert [level for level, message in lines if "overlap readings" in message] == [
+        "DEBUG"
+    ], lines
+
+
+@pytest.mark.asyncio
+async def test_a_file_with_no_store_has_no_overlap_readings():
+    with patch.object(status.m_io, "load_array", side_effect=FileNotFoundError("x")):
+        assert await status.read_overlap_readings_note("x.raw") is None
+
+
+@pytest.mark.asyncio
+async def test_a_stored_files_note_says_its_streams_and_then_what_they_read():
+    streams = [_stream(REAGENT_KEY, "-"), _stream(LOW_KEY, "-")]
+    with (
+        patch.object(status, "read_scan_streams", AsyncMock(return_value=streams)),
+        patch.object(
+            status,
+            "read_store_stream_keys",
+            AsyncMock(return_value=[REAGENT_KEY, LOW_KEY]),
+        ),
+        patch.object(
+            status,
+            "read_overlap_readings_note",
+            AsyncMock(return_value="Where two scan ranges overlap: A."),
+        ),
+    ):
+        note = await status.read_pooled_streams_note("x.raw")
+
+    assert note.startswith("Polarity - stitches 2 MS1 scan streams into one spectrum")
+    assert note.endswith(" Where two scan ranges overlap: A.")
+
+
+# -- which ranges run on a neighbour's calibration -----------------------------------
+
+
+def _segment(label, source, origin=None, shared=None, note=None):
+    return {
+        "label": label,
+        "source": source,
+        "origin": origin,
+        "shared_ions": shared,
+        "note": note,
+    }
+
+
+def _calibrated(*segments):
+    return {"status": "ok", "verified": True, "quality": {"segments": list(segments)}}
+
+
+def test_a_range_calibrated_across_an_overlap_says_from_which_and_over_how_many():
+    note = status.carried_calibration_note(
+        _calibrated(
+            _segment("m/z 40-138", "anchors"),
+            _segment("m/z 66-124", "overlap", "m/z 40-138", 26),
+        )
+    )
+
+    assert note == (
+        "m/z 66-124 has no fit of its own: calibrated from m/z 40-138 across the "
+        "26 ions both measure."
+    )
+
+
+def test_a_range_given_a_neighbours_calibration_says_whose():
+    note = status.carried_calibration_note(
+        _calibrated(
+            _segment("m/z 40-138", "anchors"),
+            _segment("m/z 132-460", "borrowed", "m/z 40-138"),
+        )
+    )
+
+    assert note == (
+        "m/z 132-460 has no fit of its own: given the calibration of m/z 40-138 "
+        "as it is."
+    )
+
+
+def test_every_range_without_a_calibrant_is_named():
+    note = status.carried_calibration_note(
+        _calibrated(
+            _segment("m/z 40-138", "anchors"),
+            _segment("m/z 66-124", "overlap", "m/z 40-138", 1),
+            _segment("m/z 132-460", "borrowed", "m/z 40-138"),
+        )
+    )
+
+    assert note.count("has no fit of its own") == 2
+    assert "across the 1 ion both measure." in note
+    assert "m/z 40-138 has" not in note
+
+
+def test_the_reason_the_fit_recorded_for_a_range_is_quoted():
+    """A range with no fit of its own need not lack calibrants: the ones it
+    holds can have disagreed. Which it was is the fit's to say, so that a
+    site is not sent to extend a collection that reaches the window."""
+    note = status.carried_calibration_note(
+        _calibrated(
+            _segment(
+                "m/z 66-124",
+                "overlap",
+                "m/z 40-138",
+                26,
+                note="No calibration peaks found",
+            ),
+            _segment(
+                "m/z 132-460",
+                "borrowed",
+                "m/z 40-138",
+                note="No suitable subset of calibration peaks found; skipping calibration.",
+            ),
+        )
+    )
+
+    assert note == (
+        "m/z 66-124 has no fit of its own (no calibration peaks found): calibrated "
+        "from m/z 40-138 across the 26 ions both measure. m/z 132-460 has no fit of "
+        "its own (no suitable subset of calibration peaks found; skipping "
+        "calibration): given the calibration of m/z 40-138 as it is."
+    )
+
+
+def test_a_stitched_files_whole_detail_fits_the_bound():
+    """Four ranges, the three overlaps a layout can have, a fit below the
+    bar and every analyte window on a neighbour's calibration: what a file
+    of the settled layout can have to say at once. Named by their keys, the
+    ranges alone took a quarter of the bound and the readings fell off the
+    end."""
+    streams = [_stream(key, "-") for key in STORE_KEYS]
+    carried = status.carried_calibration_note(
+        _calibrated(
+            _segment("m/z 40-138", "anchors"),
+            *(
+                _segment(
+                    label, "overlap", "m/z 40-138", 26, "No calibration peaks found"
+                )
+                for label in ("m/z 66-124", "m/z 132-460", "m/z 440-1200")
+            ),
+        )
+    )
+    detail = status.compose_detail(
+        "Matched 1 sample.",
+        "The m/z calibration is below the quality bar: m/z 40-138: Mean m/z error "
+        "after calibration is 1.27 ppm (limit 1 ppm).",
+        carried,
+        status.pooled_streams_note(streams, stitched=STORE_KEYS),
+        status.overlap_readings_note(
+            STORE_KEYS,
+            [
+                _overlap(0, 1, 26, -0.417, 1.37),
+                _overlap(0, 2, 4, 0.2, 0.9),
+                _overlap(2, 3, 33, 0.611, 1.25),
+            ],
+        ),
+    )
+
+    assert len(detail) < status._DETAIL_LIMIT
+    assert not detail.endswith("...")
+    assert detail.endswith("0.61 ppm higher, at 1.25 times the intensity.")
+    assert (
+        "Polarity - stitches 4 MS1 scan streams into one spectrum: m/z 40-138; "
+        "m/z 66-124; m/z 132-460; m/z 440-1200."
+    ) in detail
+
+
+@pytest.mark.parametrize(
+    "record",
+    [
+        None,
+        {"status": "failed"},
+        {"status": "ok", "quality": {"n_points": 3}},
+        {"status": "ok", "quality": None},
+        {
+            "status": "ok",
+            "quality": {"segments": [{"label": "a", "source": "anchors"}]},
+        },
+    ],
+)
+def test_a_file_whose_ranges_all_hold_calibrants_has_nothing_to_say(record):
+    assert status.carried_calibration_note(record) is None

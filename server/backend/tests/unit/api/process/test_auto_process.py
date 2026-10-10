@@ -195,6 +195,11 @@ def status():
         patch(f"{_SVC}.read_scan_streams", new_callable=AsyncMock) as census,
         patch(f"{_SVC}.read_store_stream_keys", new_callable=AsyncMock) as stitched,
         patch(f"{_SVC}.pooled_streams_note") as note,
+        patch(
+            f"{_SVC}.read_overlap_readings_note",
+            new_callable=AsyncMock,
+            return_value=None,
+        ) as overlaps,
         patch(f"{_SVC}.learn_method_bindings", new_callable=AsyncMock) as learn,
         patch(
             f"{_SVC}._modes_its_record_declares",
@@ -206,6 +211,7 @@ def status():
         stitched.return_value = []
         note.return_value = None
         record.note = note
+        record.overlaps = overlaps
         record.declares = declares
         record.census = census
         record.stitched = stitched
@@ -1967,6 +1973,136 @@ async def test_every_status_carries_the_pooled_streams_note(status):
     assert [state for state, _ in recorded] == ["bound", "calibrated", "done"]
     assert all(detail.endswith(note) for _, detail in recorded)
     assert recorded[1][1] == note
+
+
+@pytest.mark.asyncio
+async def test_every_status_says_what_a_stitched_files_ranges_read(status):
+    """Beside the streams themselves: it is as much a fact about the file."""
+    streams = "Polarity - stitches 2 MS1 scan streams into one spectrum: A; B."
+    overlaps = "Where two scan ranges overlap: B reads the 26 ions it shares with A."
+    status.note.return_value = streams
+    status.overlaps.return_value = overlaps
+    _start_single()
+
+    await _run_pipeline()
+
+    recorded = _recorded(status)
+    assert [state for state, _ in recorded] == ["bound", "calibrated", "done"]
+    assert all(detail.endswith(f"{streams} {overlaps}") for _, detail in recorded)
+
+
+@pytest.mark.asyncio
+async def test_a_file_that_is_not_stitched_says_nothing_of_overlaps(status):
+    status.note.return_value = "Polarity - pools 2 MS1 scan streams: A; B."
+    _start_single()
+
+    await _run_pipeline()
+
+    assert _recorded(status)[-1] == (
+        "done",
+        "Matched 1 sample. Polarity - pools 2 MS1 scan streams: A; B.",
+    )
+
+
+@pytest.mark.asyncio
+async def test_done_names_the_ranges_that_run_on_a_neighbours_calibration(status):
+    """A stitched file is calibrated range by range, and a range that holds
+    no calibrant of the collection is matched on a neighbour's calibration:
+    the file says which, so that a collection that falls short of a window
+    is seen."""
+    mocks, sample_file = _start_single()
+
+    async def calibrate(**_):
+        sample_file.mz_calibration = {
+            "status": "ok",
+            "verified": True,
+            "quality": {
+                "segments": [
+                    {"label": "m/z 40-138", "source": "anchors"},
+                    {
+                        "label": "m/z 132-460",
+                        "source": "borrowed",
+                        "origin": "m/z 40-138",
+                    },
+                ]
+            },
+        }
+        return _outcome(True)
+
+    mocks["calibrate"].side_effect = calibrate
+
+    await _run_pipeline()
+
+    assert _recorded(status)[-1] == (
+        "done",
+        "Matched 1 sample. m/z 132-460 has no fit of its own: given the "
+        "calibration of m/z 40-138 as it is.",
+    )
+
+
+@pytest.mark.asyncio
+async def test_done_names_them_after_what_the_calibration_fell_short_of(status):
+    mocks, sample_file = _start_single()
+
+    async def calibrate(**_):
+        sample_file.mz_calibration = {
+            "status": "poor",
+            "verified": True,
+            "quality_issues": [{"message": "Mean error 4.1 ppm."}],
+            "quality": {
+                "segments": [
+                    {
+                        "label": "m/z 66-124",
+                        "source": "overlap",
+                        "origin": "m/z 40-138",
+                        "shared_ions": 26,
+                    }
+                ]
+            },
+        }
+        return _outcome(True)
+
+    mocks["calibrate"].side_effect = calibrate
+
+    await _run_pipeline()
+
+    assert _recorded(status)[-1] == (
+        "done",
+        "Matched 1 sample. The m/z calibration is below the quality bar: "
+        "Mean error 4.1 ppm. m/z 66-124 has no fit of its own: calibrated from "
+        "m/z 40-138 across the 26 ions both measure.",
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_file_held_back_from_matching_does_not_name_them(status):
+    """Its samples were not matched on any calibration, which is what it says."""
+    mocks, sample_file = _start_single()
+
+    async def calibrate(**_):
+        sample_file.mz_calibration = {
+            "status": "poor",
+            "verified": False,
+            "quality_issues": [{"message": "Mean error 4.1 ppm."}],
+            "quality": {
+                "segments": [
+                    {
+                        "label": "m/z 132-460",
+                        "source": "borrowed",
+                        "origin": "m/z 40-138",
+                    }
+                ]
+            },
+        }
+        return _outcome(False)
+
+    mocks["calibrate"].side_effect = calibrate
+
+    await _run_pipeline()
+
+    state, detail = _recorded(status)[-1]
+    assert state == "calibration_failed"
+    assert "has no fit of its own" not in detail
 
 
 @pytest.mark.asyncio

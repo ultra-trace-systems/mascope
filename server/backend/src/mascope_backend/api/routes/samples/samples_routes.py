@@ -4,10 +4,12 @@ from mascope_backend.api.controllers.samples.samples_controller import (
     get_sample,
     get_sample_peak_timeseries,
     get_sample_peaks,
-    get_sample_spectrum,
     get_samples,
     get_samples_centroids,
-    get_samples_spectra,
+)
+from mascope_backend.api.controllers.samples.spectrum_service import (
+    get_sample_spectrum_for,
+    get_samples_spectra_for,
 )
 from mascope_backend.api.lib.api_features import api_route
 from mascope_backend.api.models.samples.sample_pydantic_model import (
@@ -94,11 +96,16 @@ async def get_samples_spectra_route(
     :type mz_max: float | None, optional
     :param user: The current authenticated user. Requires workspace guest role.
     :type user: User
-    :return: A dictionary containing the spectra for the specified samples.
+    :return: A dictionary containing the spectra for the specified samples,
+        one entry per sample in the order asked. A sample whose file's peak
+        data has to be rebuilt first has an empty spectrum and is listed
+        under ``stale``; the rebuild is asked for where the user is an
+        editor of the sample's workspace.
     :rtype: dict
     """
     await check_sample_access_bulk(sample_item_ids, user, "guest")
-    return await get_samples_spectra(
+    return await get_samples_spectra_for(
+        user,
         sample_item_ids=sample_item_ids,
         t_min=t_min,
         t_max=t_max,
@@ -215,6 +222,6 @@ async def get_sample_spectrum_route(
     :return: Spectrum data with m/z values and intensities, filtered by sample polarity
     :rtype: dict
     """
-    return await get_sample_spectrum(
-        sample_item_id=sample_item_id, **query_params.model_dump()
+    return await get_sample_spectrum_for(
+        user, sample_item_id=sample_item_id, **query_params.model_dump()
     )

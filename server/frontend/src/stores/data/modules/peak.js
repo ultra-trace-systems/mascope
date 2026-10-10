@@ -1,4 +1,4 @@
-import { ref, watch } from 'vue'
+import { ref, shallowRef, watch } from 'vue'
 import { defineStore } from 'pinia'
 
 import { api } from '@/api'
@@ -17,10 +17,27 @@ export const usePeak = defineStore('app.data.peak', () => {
   const name = 'peak'
   const key = 'peak_id'
 
+  // The scan ranges the focused sample's spectrum is stitched from, or null
+  // for a sample of one range, which is nearly every one. A peak's `segment`
+  // is the `index` of one of them (see @/lib/segments).
+  //
+  // Written only by a response for the sample that is focused when it
+  // arrives. The loader discards the peaks of a response that a later
+  // request superseded, and that happens after this function returns: a slow
+  // answer for the sample just left would otherwise leave its segments beside
+  // the peaks of the sample now shown.
+  const segments = shallowRef(null)
+  const keep = (sampleItemId, value) => {
+    if (sampleItemId === useSample().focusedId) {
+      segments.value = value
+    }
+  }
+
   const data = useData(
     name,
     async ({ sample_item_id }) => {
       if (!sample_item_id) {
+        segments.value = null
         return []
       }
       const data = await api.http.get(`/samples/${sample_item_id}/peaks`, {
@@ -33,16 +50,21 @@ export const usePeak = defineStore('app.data.peak', () => {
         type: 'load_sample_peaks'
       })
       if (data) {
-        const { peak_id, mz, area, height, match } = data
+        const { peak_id, mz, area, height, match, segment } = data
+        keep(sample_item_id, data.segments ?? null)
         const records = mz.map((mz, i) => ({
           mz: mz,
           peak_id: peak_id[i],
           area: area[i],
           height: height[i],
-          match: match[i]
+          match: match[i],
+          // null from a server that names no segments, and for a sample
+          // whose spectrum is not stitched
+          segment: segment?.[i] ?? null
         }))
         return records
       } else {
+        keep(sample_item_id, null)
         return []
       }
     },
@@ -201,6 +223,7 @@ export const usePeak = defineStore('app.data.peak', () => {
 
   return {
     ...data,
+    segments,
     // api
     computeAll: ({ sample_file_id }) =>
       api.http.post(
