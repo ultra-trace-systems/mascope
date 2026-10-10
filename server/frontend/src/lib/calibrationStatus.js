@@ -24,7 +24,13 @@
  *   mean |m/z error| in ppm) recorded at fit time. `acquisition_drift` marks a
  *   file whose own axis was far off before the fit corrected it: the
  *   calibration is fine, the instrument wants retuning.
+ *
+ * A stitched sample's record lists its scan ranges in `quality.segments`
+ * (`@/lib/calibrationSegments`); the badge of an applied fit names the ranges
+ * that hold no calibrant and run on a neighbouring range's calibration.
  */
+
+import { carriedSegmentsText } from '@/lib/calibrationSegments'
 
 const ppm = (value) => (value === null || value === undefined ? null : `${value.toFixed(2)} ppm`)
 
@@ -113,6 +119,7 @@ export function calibrationStatus(mzCalibration) {
         .join(', ')
     : null
   const drift = mzCalibration.acquisition_drift ? ` ${driftText(mzCalibration)}` : ''
+  const carried = carriedSegmentsText(mzCalibration)
 
   if (mzCalibration.status === 'poor') {
     const issues = issueText(mzCalibration)
@@ -126,7 +133,7 @@ export function calibrationStatus(mzCalibration) {
         tooltip:
           `m/z calibration below the quality bar${detail ? ` (${detail})` : ''}: ${issues} ` +
           'Matches and assignments use it – treat their mass errors with care. ' +
-          `Click to recalibrate.${drift}`
+          `Click to recalibrate.${carried}${drift}`
       }
     }
     if (mzCalibration.verified) {
@@ -138,7 +145,7 @@ export function calibrationStatus(mzCalibration) {
         tooltip:
           `m/z calibration below the quality bar${detail ? ` (${detail})` : ''}: ${issues} ` +
           'Accepted by an operator, so matches and assignments use it – ' +
-          `treat their mass errors with care.${drift}`
+          `treat their mass errors with care.${carried}${drift}`
       }
     }
     return {
@@ -149,7 +156,7 @@ export function calibrationStatus(mzCalibration) {
       tooltip:
         `m/z calibration below the quality bar${detail ? ` (${detail})` : ''}: ${issues} ` +
         'Match computation and peak assignment are skipped. ' +
-        `Click to recalibrate, or to accept the fit.${drift}`
+        `Click to recalibrate, or to accept the fit.${carried}${drift}`
     }
   }
 
@@ -173,7 +180,7 @@ export function calibrationStatus(mzCalibration) {
       clickable: true,
       tooltip:
         `m/z calibrated${detail ? ` (${detail})` : ''}; the calibration corrected the ` +
-        `instrument's offset.${drift}`
+        `instrument's offset.${carried}${drift}`
     }
   }
 
@@ -182,6 +189,6 @@ export function calibrationStatus(mzCalibration) {
     icon: 'ph ph-scales',
     severity: 'muted',
     clickable: true,
-    tooltip: `m/z calibrated${detail ? `: ${detail}` : ''}`
+    tooltip: `m/z calibrated${detail ? `: ${detail}` : ''}${carried ? `.${carried}` : ''}`
   }
 }
