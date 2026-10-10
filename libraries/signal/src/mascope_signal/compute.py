@@ -13,6 +13,7 @@ import zarr
 
 import mascope_file.io as m_io
 import mascope_file.name as m_name
+import mascope_signal.mz_factor as m_factor
 import mascope_signal.stitch as m_stitch
 import mascope_thermo.streams as m_streams
 import mascope_thermo.thermo as m_thermo
@@ -30,6 +31,11 @@ ALIGNMENT_MIN_FRACTION = 1.0  # Minimum fraction of scans for mass alignment
 
 # Peak aggregation parameters
 AGGREGATION_WINDOW_FACTOR = 1  # Peak aggregation window factor (times FWHM)
+
+#: The attribute a cached sum signal of one scan stream names its stream by,
+#: the stream's key. A signal cached before streams were calibrated apart
+#: carries none.
+CACHED_STREAM_ATTR = "stream"
 
 
 def _refuse_stream_unless_raw_orbitrap(sample_type: str, stream: str | None) -> None:
@@ -343,9 +349,10 @@ def peak_store_composite(
 
     The store's stream keys and the polarity's runs under its stitch map,
     read off the store's metadata as :func:`peak_store_stitches` reads it,
-    with the m/z calibration factor the file carries: the runs are in m/z as
-    the instrument recorded them, and a boundary is placed on the file's own
-    axis by that factor (``mascope_signal.stitch.owners``).
+    with the m/z calibration factor each stream carries
+    (``mascope_signal.mz_factor``): the runs are in m/z as the instrument
+    recorded them, and a run is placed on the file's own axis by the factor
+    of the stream that owns it (``mascope_signal.stitch.owners``).
 
     :param base_filename: Sample file filename
     :type base_filename: str
@@ -356,10 +363,10 @@ def peak_store_composite(
     :raises StalePeakStoreError: If it is a per-stream store with no map or
         no mask
     :return: None where the file has no store or its store stitches nothing
-        of the polarity; else ``{"keys", "runs", "source", "calibration"}``:
+        of the polarity; else ``{"keys", "runs", "source", "factors"}``:
         the store's stream keys, the polarity's runs ``[lower, upper, stream
         index]`` in m/z order, whether the rule or a layout drew them, and
-        the factor
+        the factor of each stream, in the order of the keys
     :rtype: dict | None
     """
     try:
@@ -374,7 +381,7 @@ def peak_store_composite(
         "keys": keys,
         "runs": [list(run) for run in runs],
         "source": (stitch.get("sources") or {}).get(polarity),
-        "calibration": calibration["par"]["calibration_factor"] if calibration else 1.0,
+        "factors": m_factor.stream_factors(calibration, keys).tolist(),
     }
 
 
@@ -615,10 +622,11 @@ def get_sum_signal(
             # current factor. So the factor goes on - the full signal's too:
             # one averaged after the file was calibrated, as every one is once
             # a new reader renames the cache, has to start where they are.
+            # A stream's signal goes by the stream's own factor, as an apply
+            # moves it by.
             calibration = m_io.read_props(base_filename)["mz_calibration"]
             if calibration:
-                fit_parameters = calibration["par"]
-                factor = fit_parameters["calibration_factor"]
+                factor = m_factor.stream_factor(calibration, stream)
                 sum_signal = sum_signal.assign_coords(mz=sum_signal.mz.values * factor)
         case "orbi_zarr":
             # Summed from the stored signal, which a calibration rescales in
@@ -637,6 +645,12 @@ def get_sum_signal(
                     # Leave only sum_signal.mz.size last values in full_sum_signal_mz
                     full_sum_signal_mz = full_sum_signal_mz[-sum_signal.mz.size :]
                 sum_signal = sum_signal.assign_coords(mz=full_sum_signal_mz)
+
+    if stream is not None:
+        # A cached signal is named by a hash, and an m/z calibration moves a
+        # stream's signals by that stream's factor: it has to be able to
+        # tell whose a signal is.
+        sum_signal.attrs[CACHED_STREAM_ATTR] = stream
 
     # Save the computed sum signal to the sample file for future use
     concurrent_sum_signal = _write_cached_sum_signal(
@@ -788,7 +802,11 @@ def get_composite_sum_signal(
     The map is the peak store's, so the signal and the store's ``composite``
     mask cut the file in the same places. It is in m/z as the instrument
     recorded them, and a stream's signal is on the file's calibrated axis,
-    so it is cut by the factor the file carries.
+    so it is cut by the factor the stream carries
+    (``mascope_signal.mz_factor``). Two streams calibrated apart can meet
+    out of order at a boundary, by the difference of their factors: the
+    later run then starts above the last sample of the one before, so that
+    the axis only rises.
 
     Averaged, each sample is divided by the scans of its own stream inside
     the time range, since the streams of a composite hold different numbers
@@ -801,7 +819,9 @@ def get_composite_sum_signal(
     the file being read (:func:`get_sum_signal`). The stitched signal is
     cached beside the streams', under a name that carries the runs it was
     cut by and the keys they index, so a store rebuilt to another map is
-    not handed a signal stitched for the last.
+    not handed a signal stitched for the last - and, where the file's
+    streams are calibrated apart, the factors the runs were placed by, so
+    neither is a file calibrated again.
 
     :param base_filename: Sample file filename
     :type base_filename: str
@@ -844,12 +864,22 @@ def get_composite_sum_signal(
             f"'{base_filename}' (t_min={t_min}, t_max={t_max})."
         )
 
+    calibration = m_io.read_props(base_filename)["mz_calibration"]
+    factors = m_factor.stream_factors(calibration, keys)
     cached_name = _composite_sum_signal_name(
-        t_min, t_max, polarity, m_name.get_sample_file_type(base_filename), runs, keys
+        t_min,
+        t_max,
+        polarity,
+        m_name.get_sample_file_type(base_filename),
+        runs,
+        keys,
+        factors if (calibration or {}).get(m_factor.STREAM_FACTORS) else None,
     )
     stitched = _try_get_cached_sum_signal(base_filename, cached_name)
     if stitched is None:
-        stitched = _stitch_sum_signals(base_filename, t_min, t_max, runs, keys, scans)
+        stitched = _stitch_sum_signals(
+            base_filename, t_min, t_max, runs, keys, scans, factors
+        )
         concurrent = _write_cached_sum_signal(base_filename, cached_name, stitched)
         if concurrent is not None:
             stitched = concurrent
@@ -926,6 +956,7 @@ def _composite_sum_signal_name(
     sample_type: str,
     runs: list,
     keys: list[str],
+    factors: np.ndarray | None = None,
 ) -> str:
     """The name a polarity's stitched sum signal is cached under.
 
@@ -935,11 +966,18 @@ def _composite_sum_signal_name(
     is the signal of one map of one set of streams, so the name carries the
     runs and the keys they index.
 
+    :param factors: The m/z calibration factor of each stream, by stream
+        index, for a file whose streams are calibrated apart; None for one
+        calibrated by a single factor, whose signal keeps the name it had
+        before streams were
     :return: The name, with the suffix of ``sample_type``
     :rtype: str
     """
     members = {index: keys[index] for index in sorted({run[2] for run in runs})}
-    key_str = json.dumps([t_min, t_max, polarity, "composite", runs, members])
+    key = [t_min, t_max, polarity, "composite", runs, members]
+    if factors is not None:
+        key.append({index: float(factors[index]) for index in members})
+    key_str = json.dumps(key)
     hash_addition = hashlib.sha1(key_str.encode()).hexdigest()[:12]
     return f"sum_signal_{hash_addition}" + sum_signal_suffix(sample_type)
 
@@ -971,6 +1009,7 @@ def _stitch_sum_signals(
     runs: list,
     keys: list[str],
     scans: dict[int, int],
+    factors: np.ndarray,
 ) -> xr.DataArray:
     """The sum signals of a composite's streams, cut by its runs and joined.
 
@@ -978,14 +1017,14 @@ def _stitch_sum_signals(
         m/z order
     :param keys: The store's stream keys, as the runs index them
     :param scans: How many scans of each stream the time range holds
+    :param factors: The m/z calibration factor of each stream, by stream
+        index
     :return: The stitched signal, ``segment`` naming each sample's stream
     :rtype: xr.DataArray
     """
-    calibration = m_io.read_props(base_filename)["mz_calibration"]
-    factor = calibration["par"]["calibration_factor"] if calibration else 1.0
-
     signals: dict[int, xr.DataArray] = {}
     parts = []
+    last = None
     for lower, upper, index in runs:
         if not scans[index]:
             continue
@@ -994,9 +1033,16 @@ def _stitch_sum_signals(
                 base_filename, t_min, t_max, stream=keys[index]
             )
         signal = signals[index]
-        part = signal.isel(
-            mz=m_stitch.owned_slice(signal.mz.values, lower, upper, factor)
-        )
+        mz = signal.mz.values
+        owned = m_stitch.owned_slice(mz, lower, upper, float(factors[index]))
+        start = owned.start
+        if last is not None:
+            # Past the run before, which another factor can have put above
+            # this one's first samples
+            start = max(start, int(np.searchsorted(mz, last, side="right")))
+        part = signal.isel(mz=slice(start, max(start, owned.stop)))
+        if part.mz.size:
+            last = float(part.mz.values[-1])
         parts.append(
             part.assign_coords(
                 segment=("mz", np.full(part.mz.size, index, dtype=np.int16))
@@ -1439,9 +1485,7 @@ async def get_orbi_centroids(
             props = m_io.read_props(base_filename)
             calibration = props["mz_calibration"]
             if calibration:
-                fit_parameters = calibration["par"]
-                factor = fit_parameters["calibration_factor"]
-                masses = masses * factor
+                masses = masses * m_factor.stream_factor(calibration, stream)
             if u_list:
                 # Create a mask for the masses that are within 0.5 of any value in u_list
                 mz_mask = np.zeros_like(masses, dtype=bool)
@@ -1500,8 +1544,7 @@ def get_orbi_centroids_per_scan(
             props = m_io.read_props(base_filename)
             calibration = props["mz_calibration"]
             if calibration:
-                fit_parameters = calibration["par"]
-                factor = fit_parameters["calibration_factor"]
+                factor = m_factor.stream_factor(calibration, stream)
                 for scan_centroids in centroids_per_scan:
                     scan_centroids["masses"] = scan_centroids["masses"] * factor
 
@@ -2351,13 +2394,13 @@ async def get_peak_timeseries(
             datafile_path = m_name.filename_to_datafile_path(base_filename)
 
             # Orbitrap raw files store raw data, mzs need to be uncalibrated
-            # before extracting peak timeseries
+            # before extracting peak timeseries: by the factor of the stream
+            # read, which is the one its peaks carry
             props = m_io.read_props(base_filename)
             calibration = props["mz_calibration"]
             factor = 1.0
             if calibration:
-                fit_parameters = calibration["par"]
-                factor = fit_parameters["calibration_factor"]
+                factor = m_factor.stream_factor(calibration, stream)
             uncalibrated_mzs = np.array(mzs) / factor
             peak_timeseries = await asyncio.to_thread(
                 m_thermo.get_peak_timeseries,

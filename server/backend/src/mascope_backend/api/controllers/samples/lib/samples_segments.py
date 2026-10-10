@@ -46,34 +46,56 @@ class SampleSegments:
     #: The map's runs ``[lower, upper, stream index]`` in m/z order, in m/z
     #: as the instrument recorded them.
     runs: list[list] = field(default_factory=list)
-    #: The m/z calibration factor the file carries, by which a boundary is
-    #: placed on the file's own axis.
-    calibration: float = 1.0
+    #: The m/z calibration factor each stream carries, by stream index: a
+    #: run is placed on the file's own axis by its owner's
+    #: (``mascope_signal.mz_factor``).
+    factors: list[float] = field(default_factory=list)
+
+    def _factor(self, index: int) -> float:
+        return self.factors[index] if index < len(self.factors) else 1.0
 
     def boundaries(self) -> list[dict]:
-        """The runs on the file's own m/z axis: who owns from where to where."""
+        """The runs on the file's own m/z axis: who owns from where to where.
+
+        Each run's edges are where its owner's samples and peaks lie. Two
+        segments calibrated apart therefore need not meet at one m/z: a
+        boundary can show a gap or an overlap of the difference of the two
+        factors, some parts per million of it.
+        """
         return [
             {
                 "segment": int(index),
-                "mz_lower": float(lower) * self.calibration,
-                "mz_upper": float(upper) * self.calibration,
+                "mz_lower": float(lower) * self._factor(index),
+                "mz_upper": float(upper) * self._factor(index),
             }
             for lower, upper, index in self.runs
         ]
 
-    def runs_of(self, mz: np.ndarray) -> list[dict]:
+    def runs_of(self, mz: np.ndarray, segment: np.ndarray | None = None) -> list[dict]:
         """The runs with where each one's samples lie in a stitched signal.
 
         :param mz: The m/z axis of the signal as it is answered: the
             stitched signal's, or a part of it, ascending.
+        :param segment: The stream each sample is of, as the stitched signal
+            labels it. With it a run takes exactly its own samples where its
+            edge, placed by its owner's factor, falls among a neighbour's;
+            without, the samples inside its edges.
         :return: :meth:`boundaries`, each with ``from`` and ``to``: the
             half-open range of positions on ``mz`` the run's samples take.
             Empty for a run none of whose samples are on ``mz``.
         """
         described = []
-        for run, (lower, upper, _index) in zip(self.boundaries(), self.runs):
-            owned = m_stitch.owned_slice(mz, lower, upper, self.calibration)
-            described.append({**run, "from": int(owned.start), "to": int(owned.stop)})
+        position = 0
+        for run, (lower, upper, index) in zip(self.boundaries(), self.runs):
+            owned = m_stitch.owned_slice(mz, lower, upper, self._factor(index))
+            start = max(position, int(owned.start))
+            stop = max(start, int(owned.stop))
+            if segment is not None:
+                own = np.flatnonzero(np.asarray(segment[start:stop]) == index)
+                stop = start + int(own[-1]) + 1 if own.size else start
+                start = start + int(own[0]) if own.size else start
+            position = stop
+            described.append({**run, "from": start, "to": stop})
         return described
 
 
@@ -125,7 +147,7 @@ def read_sample_segments(filename: str, polarity: str) -> SampleSegments | None:
             for index in owners
         ],
         runs=composite["runs"],
-        calibration=composite["calibration"],
+        factors=composite["factors"],
     )
 
 

@@ -21,6 +21,7 @@ import pytest
 from composite_acquisition import COMPOSITE, KEYS, MICROSCANS
 from scripted_acquisition import SAMPLE_FILENAME
 
+import mascope_file.io as m_io
 import mascope_signal.peak as m_peak
 from mascope_backend.db.scripts import report_stitch_overlaps as report
 from mascope_backend.db.scripts.report_stitch_overlaps import (
@@ -80,6 +81,33 @@ def test_a_pair_says_who_owns_the_overlap_and_what_each_reads(composite):
     assert low.ppm == pytest.approx(0.5, abs=0.01)
     # And the window holds two more ions there, at 100 and 121
     assert (low.kept_first, low.kept_second) == (1, 3)
+
+
+def test_a_ranges_peaks_are_counted_where_its_own_factor_put_them(
+    composite, instrument_functions
+):
+    """The streams of a file are calibrated each by its own factor. The low
+    window's, far larger than any real one, takes its ion at 121 past the
+    overlap's upper edge as the instrument recorded it, and the ion is the
+    window's all the same: the edge moves with it."""
+    m_io.update_props(
+        SAMPLE_FILENAME,
+        {
+            "mz_calibration": {
+                "par": {"calibration_factor": 1.0},
+                "streams": {LOW: {"calibration_factor": 1.01}},
+            }
+        },
+    )
+    m_peak.compute_peaks(SAMPLE_FILENAME, instrument_functions)
+
+    (reading,) = read_file(_file())
+    low = next(pair for pair in reading.pairs if pair.second == LOW)
+
+    assert 121.0 * 1.01 > 122
+    assert (low.kept_first, low.kept_second) == (1, 3)
+    assert low.shared == 1
+    assert low.ppm == pytest.approx(0.5, abs=0.01)
 
 
 def test_a_file_that_stitches_nothing_has_no_reading(acquire, instrument_functions):

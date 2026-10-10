@@ -56,6 +56,7 @@ from sqlalchemy import select, tuple_
 
 import mascope_file.io as m_io
 import mascope_file.name as m_name
+import mascope_signal.mz_factor as m_factor
 import mascope_signal.stitch as m_stitch
 import mascope_thermo.streams as m_streams
 from mascope_backend.api.controllers.samples.lib.samples_segments import (
@@ -209,10 +210,12 @@ def read_file(sample_file: SampleFile) -> list[FileReading]:
     # The peaks each range holds in an overlap, which the record leaves out:
     # it counts the ions both hold, and a change of owner is about the rest
     store = m_io.load_array(filename, var="peak_timeseries")
-    calibration = m_io.read_props(filename).get("mz_calibration")
-    factor = calibration["par"]["calibration_factor"] if calibration else 1.0
     mz = store.mz.values
     stream = store.stream.values
+    # Each peak by its own stream's factor, as the store places it
+    factor = m_factor.stream_factors(
+        m_io.read_props(filename).get("mz_calibration"), keys
+    )[stream]
     kept = ~(store.is_weak.values | store.is_satellite.values) & (
         store.sum_peak_heights.values > 0
     )

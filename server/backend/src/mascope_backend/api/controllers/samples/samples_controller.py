@@ -749,7 +749,11 @@ async def get_sample_spectrum(
             if "segment" in spectrum.coords
             else None
         )
-        runs = segments.runs_of(spectrum.mz.values) if segments else None
+        runs = (
+            segments.runs_of(spectrum.mz.values, spectrum.segment.values)
+            if segments
+            else None
+        )
         return spectrum.mz.values.tolist(), spectrum.values.tolist(), segments, runs
 
     spectrum_arrays = await asyncio.to_thread(_spectrum_arrays)

@@ -29,6 +29,7 @@ from composite_acquisition import (
 )
 from scripted_acquisition import SAMPLE_FILENAME
 
+import mascope_file.io as m_io
 import mascope_signal.compute as m_compute
 import mascope_signal.peak as m_peak
 from mascope_backend.api.controllers.samples import samples_controller
@@ -235,6 +236,35 @@ async def test_a_calibrated_files_runs_hold_their_own_streams_samples(
     intensity = np.array(data["intensity"])
     for run in data["runs"]:
         assert len(set(np.round(intensity[run["from"] : run["to"]], 6))) == 1, run
+
+
+@pytest.mark.asyncio
+async def test_a_run_is_its_own_streams_samples_where_two_are_calibrated_apart(
+    composite, asked
+):
+    """Each stream of a file carries its own factor. The reagent scan's edge
+    at 67, placed by a factor far larger than its neighbour's, lies among
+    the low window's samples: a run is the samples that say they are of its
+    stream, and the runs still follow each other without a gap."""
+    m_io.update_props(
+        SAMPLE_FILENAME,
+        {
+            "mz_calibration": {
+                "par": {"calibration_factor": 1.0},
+                "streams": {KEYS[0]: {"calibration_factor": 1.005}},
+            }
+        },
+    )
+
+    data = await asked(samples_controller.get_sample_spectrum)
+
+    intensity = np.array(data["intensity"])
+    for run in data["runs"]:
+        assert len(set(np.round(intensity[run["from"] : run["to"]], 6))) == 1, run
+    for run, after in zip(data["runs"], data["runs"][1:]):
+        assert run["to"] == after["from"]
+    assert data["runs"][0]["mz_upper"] == 67 * 1.005
+    assert data["runs"][1]["mz_lower"] == 67.0
 
 
 @pytest.mark.asyncio
