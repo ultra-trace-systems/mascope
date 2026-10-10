@@ -2764,9 +2764,14 @@ unchanged.
      stream beside the file's, every reader of one stream goes by it, an
      apply moves each stream's rows and signals by its own and keeps the
      store's axis in order, and the fit goes stream by stream with the two
-     fallbacks (4.3, 4.5). Still open: the instrument function per segment,
-     and the calibration dialog and the sample's badge naming a segment
-     that borrowed its factor - the record and the fit's answer carry it;
+     fallbacks (4.3, 4.5). ~~The calibration dialog and the sample's badge
+     naming a segment that took its factor from a neighbour~~ - built in
+     #2333: the dialog lists the sample's scan ranges above the calibrants,
+     each with how it was calibrated and how far that moves it, and says
+     which range each calibrant was found in; the badge of an applied fit
+     names the ranges that hold no calibrant
+     (`src/lib/calibrationSegments.js`). Still open: the instrument function
+     per segment;
   8. **Step 8, re-process.** ~~A re-process rebuilds a file's store under
      the current rule, so a site's composite batches can be
      re-processed~~ - built in #2328: a re-processing
