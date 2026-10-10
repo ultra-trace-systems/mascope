@@ -67,9 +67,10 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 - **The calibration dialog and the sample's calibration badge say how each
   scan range of a stitched sample was calibrated.** The dialog lists the
   ranges above the calibrants: fitted on how many calibrants, or whose
-  calibration it took and over how many shared ions, with how far that moves
-  the range. The calibrants say which range each was found in, and the badge
-  names the ranges that hold no calibrant of their own.
+  calibration it took and over how many shared ions, with the reason the
+  fit recorded for it and how far that moves the range. The calibrants say
+  which range each was found in, and the badge names the ranges that were
+  not fitted on calibrants of their own.
 
 - **A sample stitched from several scan ranges shows where they meet.**
   With `composite_scan_streams` on, the spectrum of such a sample is one

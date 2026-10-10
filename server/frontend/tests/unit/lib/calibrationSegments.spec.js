@@ -27,6 +27,7 @@ const ACROSS = {
   calibration_factor: 1 - 11.517e-6,
   shift_ppm: 0.417,
   shared_ions: 26,
+  note: 'No calibration peaks found',
   quality: null
 }
 const AS_IT_IS = {
@@ -37,6 +38,7 @@ const AS_IT_IS = {
   calibration_factor: 1 + 0.004e-6,
   shift_ppm: null,
   shared_ions: null,
+  note: 'No suitable subset of calibration peaks found; skipping calibration.',
   quality: null
 }
 
@@ -71,15 +73,28 @@ describe('segmentCalibrationText', () => {
 
   it('says whose calibration a range took across an overlap, and over how many ions', () => {
     expect(segmentCalibrationText(ACROSS)).toBe(
-      'm/z 66-124: holds no calibrant, so it takes the calibration of m/z 40-138 ' +
-        'across the 26 ions both ranges measure (-11.52 ppm).'
+      'm/z 66-124: not fitted on calibrants of its own (no calibration peaks found); ' +
+        'takes the calibration of m/z 40-138 across the 26 ions both ranges measure (-11.52 ppm).'
     )
   })
 
-  it('says whose calibration a range took as it is', () => {
+  it('says whose calibration a range took unchanged, and the reason recorded for it', () => {
+    // Calibrants it does hold, which disagreed: the range is not short of them
     expect(segmentCalibrationText(AS_IT_IS)).toBe(
-      'm/z 132-460: holds no calibrant and shares too few ions with a neighbouring ' +
-        'range, so it takes the calibration of m/z 40-138 as it is (+0.00 ppm).'
+      'm/z 132-460: not fitted on calibrants of its own (no suitable subset of calibration ' +
+        'peaks found; skipping calibration); takes the calibration of m/z 40-138 unchanged ' +
+        '(+0.00 ppm).'
+    )
+  })
+
+  it('guesses at no reason where none was recorded', () => {
+    expect(segmentCalibrationText({ ...ACROSS, note: null })).toBe(
+      'm/z 66-124: not fitted on calibrants of its own; takes the calibration of m/z 40-138 ' +
+        'across the 26 ions both ranges measure (-11.52 ppm).'
+    )
+    expect(segmentCalibrationText({ ...AS_IT_IS, note: undefined })).toBe(
+      'm/z 132-460: not fitted on calibrants of its own; takes the calibration of ' +
+        'm/z 40-138 unchanged (+0.00 ppm).'
     )
   })
 
@@ -93,14 +108,15 @@ describe('segmentCalibrationText', () => {
 describe('carriedSegmentsText', () => {
   it('names the one range that runs on a neighbouring range’s calibration', () => {
     expect(carriedSegmentsText(record(FITTED, ACROSS))).toBe(
-      " Scan range m/z 66-124 holds no calibrant and takes a neighbouring range's calibration."
+      ' Scan range m/z 66-124 was not fitted on calibrants of its own and takes a ' +
+        "neighbouring range's calibration."
     )
   })
 
   it('names several', () => {
     expect(carriedSegmentsText(record(FITTED, ACROSS, AS_IT_IS))).toBe(
-      ' Scan ranges m/z 66-124; m/z 132-460 hold no calibrant and take a neighbouring ' +
-        "range's calibration."
+      ' Scan ranges m/z 66-124; m/z 132-460 were not fitted on calibrants of their own ' +
+        "and take a neighbouring range's calibration."
     )
   })
 

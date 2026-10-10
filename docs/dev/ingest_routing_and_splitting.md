@@ -2769,8 +2769,13 @@ unchanged.
      #2333: the dialog lists the sample's scan ranges above the calibrants,
      each with how it was calibrated and how far that moves it, and says
      which range each calibrant was found in; the badge of an applied fit
-     names the ranges that hold no calibrant
-     (`src/lib/calibrationSegments.js`). Still open: the instrument function
+     names the ranges not fitted on calibrants of their own
+     (`src/lib/calibrationSegments.js`). A range's `source` says how it
+     came by its calibration and not why it has no fit: the texts quote
+     the reason the fit recorded for the range and guess at none, since a
+     range can hold calibrants that failed the fit, and can take a
+     neighbour's calibration unchanged though the two share plenty of
+     ions. Still open: the instrument function
      per segment;
   8. **Step 8, re-process.** ~~A re-process rebuilds a file's store under
      the current rule, so a site's composite batches can be
