@@ -80,6 +80,7 @@ from mascope_match.params import (
     UnmatchedIsotopeParams,
 )
 from mascope_signal.peak import rows_set_apart
+from mascope_thermo.scan_filter import parse_scan_filter
 from mascope_tofwerk.calibration import mz_calibrate, tof_to_mass
 
 
@@ -148,6 +149,9 @@ class BaseCalibrationHandler:
         self.segments: list[dict] | None = None
         # The stream being fitted, by key, while a fit goes stream by stream
         self._stream_key: str | None = None
+        # What that stream read, by the place of each of its rows on the
+        # store's axis (see _peaks_to_match)
+        self._read_at: dict[float, float] = {}
 
     def _calibration_lock_path(self) -> str:
         """Path naming the lock that guards a whole ``apply`` for this sample.
@@ -180,7 +184,12 @@ class BaseCalibrationHandler:
         converter - which the event loop never did.
         """
         with m_io.zarr_write_lock(self._calibration_lock_path()):
-            return self._apply_sync(fit)
+            # The signal library caches a sum signal under this same lock, so
+            # that one made across an apply is not kept on the axis the apply
+            # is replacing. This thread makes some itself, and says it holds
+            # the lock already.
+            with m_compute.holding_mz_calibration_lock(self._calibration_lock_path()):
+                return self._apply_sync(fit)
 
     def _nothing_to_calibrate_against(self, warning: str) -> None:
         """Record a calibration that never got as far as matching.
@@ -272,8 +281,17 @@ class BaseCalibrationHandler:
 
         def _averaged_peaks_dict():
             averaged_peaks = peaks.mean(dim="time").compute()
+            places = averaged_peaks.mz.values
             return {
-                "mz": averaged_peaks.mz.values,
+                # A row of one stream is fitted on what the stream read,
+                # which is not always where the store keeps the row
+                "mz": (
+                    places
+                    if stream is None
+                    else np.array(
+                        [self._read_at.get(float(place), place) for place in places]
+                    )
+                ),
                 "tof": averaged_peaks.tof.values,
                 "intensity": averaged_peaks.values,
             }
@@ -434,6 +452,16 @@ class BaseCalibrationHandler:
         calibrates it whether or not the stitched spectrum shows that
         reading.
 
+        The rows are found by their place on the store's axis, as everything
+        finds them. A reading the composite leaves out can have been set
+        beside the row it would have passed
+        (``mascope_signal.peak.rows_set_apart``), so the m/z a stream's fit
+        is made on is the one it recorded times the factor it carries, kept
+        here by place for the matching to read
+        (``mascope_signal.compute.recorded_mz``). Fitted on the place, a
+        stream whose calibrant was set apart would be moved by how far the
+        two streams disagree about that ion.
+
         :param stream: The stream's index among the store's keys, or None
         :type stream: int | None
         :return: The peak dataset
@@ -441,7 +469,13 @@ class BaseCalibrationHandler:
         if stream is None:
             return m_io.load_peak_data(self.filename)
         peak_data = m_io.load_peak_data(self.filename, composite=False)
-        return peak_data.isel(mz=np.flatnonzero(peak_data.stream.values == stream))
+        peak_data = peak_data.isel(mz=np.flatnonzero(peak_data.stream.values == stream))
+        calibration = peak_data.attrs["props"]["mz_calibration"]
+        read = m_compute.recorded_mz(peak_data, calibration) * m_factor.stream_factor(
+            calibration, self._stream_key
+        )
+        self._read_at = dict(zip(peak_data.mz.values.tolist(), read.tolist()))
+        return peak_data
 
     def _filter_mzs_by_polarity_and_snr(self, peak_data) -> np.ndarray:
         """Filter m/z values based on polarity and signal-to-noise ratio (SNR) thresholds."""
@@ -1220,9 +1254,14 @@ class OrbiCalibrationHandler(BaseCalibrationHandler):
         and not off the fit: its new factor over the one it has. An apply
         whose factors the file already has moves nothing.
 
-        - The peak store's rows are moved each by its own stream, and the
-          axis put back in order where two streams' readings of one ion
-          passed each other (``mascope_signal.peak.rows_set_apart``).
+        - The peak store's rows are placed each at what its stream
+          recorded times the stream's new factor, and the axis put back in
+          order where two streams' readings of one ion passed each other
+          (``mascope_signal.peak.rows_set_apart``). From the reading, which
+          the store keeps (``mascope_signal.compute.recorded_mz``), and not
+          from where the row was: a row set apart once would carry that
+          into every calibration after. A store written before the readings
+          were kept is given them first.
         - The file's full sum signal, every scan pooled, goes by the file's
           factor, as it is read back by.
         - A cached signal of one stream goes by that stream's. A stitched
@@ -1270,7 +1309,12 @@ class OrbiCalibrationHandler(BaseCalibrationHandler):
             )
 
         store = m_io.load_array(self.filename, "peak_timeseries")
-        moved = store.mz.values * (new / old)[store.stream.values]
+        recorded = m_compute.recorded_mz(store, stored)
+        if m_compute.RECORDED_MZ not in store.variables:
+            # Before any row moves: from here on a row's place is no longer
+            # always its reading
+            m_io.write_peak_variable(self.filename, m_compute.RECORDED_MZ, recorded)
+        moved = recorded * new[store.stream.values]
         composite = (
             store.composite.values
             if "composite" in store.variables
@@ -1332,10 +1376,19 @@ class OrbiCalibrationHandler(BaseCalibrationHandler):
         detected per stream, what the fit of each stream and the carrying of
         a factor between them need.
 
+        The streams are the store's of the polarity, by what their keys
+        say, and how far each reaches is its scan range. Not the peaks a
+        load of the store keeps: a range that reads nothing but weak peaks
+        is a stream of the file all the same, and left out it would be
+        given no factor of its own to take from a neighbour - its signal
+        and its rows would go by the file's. A key that states no range
+        reaches as far as the stream's kept peaks do, and a stream with
+        neither is left to the file's factor.
+
         :return: ``keys``, the store's stream keys; ``members``, the indexes
-            of the streams that hold a peak of the polarity; ``extents``,
-            the lowest and highest m/z each holds one at; and ``overlaps``,
-            the store's overlap readings
+            of the polarity's streams; ``extents``, the m/z each reaches
+            from and to; ``held``, how many peaks a load keeps of each; and
+            ``overlaps``, the store's overlap readings
         :rtype: dict | None
         """
         keys = self._store_stream_keys()
@@ -1343,18 +1396,30 @@ class OrbiCalibrationHandler(BaseCalibrationHandler):
             return None
         store = m_io.load_peak_data(self.filename, composite=False)
         mz, stream = store.mz.values, store.stream.values
-        of_polarity = store.polarity.values == self.params.polarity
-        members = [int(index) for index in np.unique(stream[of_polarity])]
+        filters = [parse_scan_filter(key.split(" R=")[0]) for key in keys]
+        extents: dict[int, tuple[float, float]] = {}
+        held: dict[int, int] = {}
+        for index, scan_filter in enumerate(filters):
+            own = mz[stream == index]
+            polarity = scan_filter.polarity
+            if polarity is None and own.size:
+                # A key that does not say: what its peaks were detected as
+                polarity = str(store.polarity.values[stream == index][0])
+            if polarity != self.params.polarity:
+                continue
+            held[index] = int(own.size)
+            if scan_filter.scan_ranges:
+                extents[index] = (
+                    float(min(lower for lower, _upper in scan_filter.scan_ranges)),
+                    float(max(upper for _lower, upper in scan_filter.scan_ranges)),
+                )
+            elif own.size:
+                extents[index] = (float(own.min()), float(own.max()))
         return {
             "keys": keys,
-            "members": members,
-            "extents": {
-                index: (
-                    float(mz[stream == index].min()),
-                    float(mz[stream == index].max()),
-                )
-                for index in members
-            },
+            "members": sorted(extents),
+            "extents": extents,
+            "held": held,
             "overlaps": store.attrs.get(m_stitch.STITCH_OVERLAPS_ATTR) or [],
         }
 
@@ -1389,6 +1454,10 @@ class OrbiCalibrationHandler(BaseCalibrationHandler):
         for index in members:
             self._stream_key = keys[index]
             self.warning = None
+            if not streams["held"][index]:
+                # Nothing a load of the store keeps: no calibrant among it
+                notes[index] = "No calibration peaks found"
+                continue
             _, good_matches_df = await self._match_calibration_compounds(
                 target_isotopes_df, stream=index
             )
@@ -1411,6 +1480,7 @@ class OrbiCalibrationHandler(BaseCalibrationHandler):
                 ),
             }
         self._stream_key = None
+        self._read_at = {}
         self.warning = None
 
         await self._send_progress(0.75)

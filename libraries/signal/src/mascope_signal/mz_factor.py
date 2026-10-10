@@ -91,6 +91,21 @@ def stream_factors(record: dict | None, keys: Iterable[str]) -> np.ndarray:
     return np.array([stream_factor(record, key) for key in keys], dtype=np.float64)
 
 
+def factors(record: dict | None) -> tuple:
+    """Every factor a record holds, as one value to compare two records by.
+
+    :param record: The file's calibration record
+    :type record: dict | None
+    :return: The file's factor, and each named stream's by key
+    :rtype: tuple
+    """
+    named = (record or {}).get(STREAM_FACTORS) or {}
+    return (
+        file_factor(record),
+        tuple(sorted((key, stream_factor(record, key)) for key in named)),
+    )
+
+
 #: How a stream came by its factor: fitted on calibrants of its own, carried
 #: from a neighbour by what both read in their overlap, or a neighbour's as
 #: it is.

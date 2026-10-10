@@ -322,7 +322,116 @@ def test_a_run_takes_its_own_samples_where_its_edge_falls_among_anothers(composi
     assert exact[0]["to"] == by_edges[0]["to"] - 1
 
 
+# -- a signal made while the file is calibrated again -----------------------------------
+
+
+def _calibrated_during(monkeypatch, target, name, record):
+    """Have ``record`` become the file's calibration while ``target.name``
+    first runs, as an apply that finishes meanwhile leaves it; count the runs."""
+    original = getattr(target, name)
+    runs = []
+
+    def during(*args, **kwargs):
+        if not runs:
+            m_io.update_props(SAMPLE_FILENAME, {"mz_calibration": record})
+        runs.append(1)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(target, name, during)
+    return runs
+
+
+def test_a_signal_averaged_across_a_calibration_is_made_again(composite, monkeypatch):
+    """It was put on the axis of the calibration the file had when its
+    factor was read, and the file has another by the time it is cached: an
+    apply held the lock in between. Kept, it would stay on the old axis
+    under peaks that moved. It is averaged once more instead, and that one
+    is kept."""
+    m_io.update_props(
+        SAMPLE_FILENAME, {"mz_calibration": {"par": {"calibration_factor": 1 + 1e-6}}}
+    )
+    # The factor is read once the scans are averaged; the apply ends right
+    # after that read
+    _calibrated_during(
+        monkeypatch,
+        m_compute.m_factor,
+        "stream_factor",
+        {"par": {"calibration_factor": FILE}},
+    )
+    averaged = composite.profiles_averaged
+
+    signal = m_compute.get_sum_signal(SAMPLE_FILENAME, polarity="-")
+
+    assert composite.profiles_averaged == averaged + 2
+    assert signal.mz.values[0] == 40.0 * FILE
+    (cached,) = [
+        entry
+        for name, entry in cached_sum_signals().items()
+        if name.startswith("sum_signal_")
+    ]
+    assert cached.mz[0] == 40.0 * FILE
+
+
+def test_a_signal_stitched_across_a_calibration_is_stitched_again(
+    composite, monkeypatch
+):
+    runs = _calibrated_during(
+        monkeypatch,
+        m_compute,
+        "_stitch_sum_signals",
+        {"par": {"calibration_factor": FILE}},
+    )
+
+    stitched = m_compute.get_composite_sum_signal(SAMPLE_FILENAME, "-")
+
+    assert len(runs) == 2
+    mz, segment = stitched.mz.values, stitched.segment.values
+    assert mz[segment == LOW][0] == 67.0 * FILE
+    assert sum(entry.stitched for entry in cached_sum_signals().values()) == 1
+
+
+def test_a_signal_made_on_the_calibration_the_file_still_has_is_kept(composite):
+    m_io.update_props(
+        SAMPLE_FILENAME, {"mz_calibration": {"par": {"calibration_factor": FILE}}}
+    )
+
+    m_compute.get_sum_signal(SAMPLE_FILENAME, polarity="-")
+    averaged = composite.profiles_averaged
+    again = m_compute.get_sum_signal(SAMPLE_FILENAME, polarity="-")
+
+    assert composite.profiles_averaged == averaged
+    assert again.mz.values[0] == 40.0 * FILE
+
+
+def test_the_thread_applying_a_calibration_caches_without_waiting_for_itself(composite):
+    """An apply holds the file's calibration lock and makes sum signals
+    under it. The lock is not one a thread takes twice."""
+    lock_path = m_io.mz_calibration_lock_path(SAMPLE_FILENAME)
+
+    with m_io.zarr_write_lock(lock_path):
+        with m_compute.holding_mz_calibration_lock(lock_path):
+            signal = m_compute.get_sum_signal(SAMPLE_FILENAME, polarity="-")
+
+    assert signal.mz.values[0] == 40.0
+    # And says so no longer once it has let go
+    assert lock_path not in getattr(m_compute._applying, "paths", ())
+
+
 # -- peaks detected again on a file calibrated stream by stream ----------------------
+
+
+def test_a_detection_keeps_what_each_stream_recorded(composite):
+    """Beside the row's place on the axis, which a calibration of the
+    streams apart can set a hair off its reading."""
+    rows = store_rows()
+
+    assert rows.recorded.tolist() == rows.mz.tolist()
+    assert (
+        m_compute.recorded_mz(
+            m_io.load_array(SAMPLE_FILENAME, "peak_timeseries"), None
+        ).tolist()
+        == rows.mz.tolist()
+    )
 
 
 def test_a_file_is_cut_in_the_same_places_once_its_streams_are_calibrated(
@@ -350,6 +459,11 @@ def test_a_file_is_cut_in_the_same_places_once_its_streams_are_calibrated(
     after = store_rows()
 
     assert np.all(np.diff(after.mz) > 0)
+    # Each row keeps what its stream recorded, the factor taken off again
+    assert after.recorded == pytest.approx(after.mz / ALL[after.stream], rel=1e-15)
+    assert sorted(np.round(after.recorded, 4).tolist()) == sorted(
+        np.round(before.mz, 4).tolist()
+    )
     assert {
         (int(stream), round(float(mz / ALL[stream]), 4)): bool(taken)
         for mz, stream, taken in zip(after.mz, after.stream, after.composite)
