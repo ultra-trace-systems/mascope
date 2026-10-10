@@ -84,7 +84,7 @@ request for this work updates the table below and ticks its item on #2098.
 | 1 | Per-file processing state, persistent notifications, "needs a chemistry" | shipped (#2164, #2166-#2169) |
 | 2 | Method bindings: routing without tokens | learned in shadow on every server (#2193, #2196, #2206, #2226), measured (5.7), item provenance (#2254), the row-following learner (#2255), the rung (#2264) and the disagreement report (#2267) shipped; the backfill re-run and the per-site switch remain, section 10 lists them |
 | 8 | Chemistry profiles as the unit: complete the seeded profiles, ship the standard methods and their catalogue, list the profiles, a profile-first surface, batches named after the profile | open; follows the stream first cut, or runs beside it when there are hands for both (decided 2026-10-05) |
-| 3 | The part contract: stream and window honoured by every consumer | **in progress**: the composite cut, for files whose method measures more than one thing in a polarity (4.5), leads the work after phase 2 (decided 2026-10-05; a stitch, not a split, since 2026-10-06). The census keys streams on the method's experiments (#2273), the reader selects one stream's scans (#2278), and peak detection and the peak store follow a stream behind `composite_scan_streams` (#2279), and the store is stitched - the map, the per-peak mask, the overlap readings and the stitched sum signal (#2297); the stream table is in the schema with its composite column (#2282) and written for every file, each polarity's item pointing at its composite or its one stream (#2283), and the readers of the peak list take the composite's rows, each averaged over its own stream's scans (#2307); a re-processing detects a file's peaks again under the setting as it is then, so files converted before it was switched can be stitched (#2328); the item TIC and the per-scan export read the scans the store holds, an item made by hand reads the row the pipeline's item reads, and a spectrum that meets a stale store asks for its rebuild (#2329); the spectrum and the peak listing name each segment, and the sample's views draw the scan ranges apart (#2330); each segment is calibrated by a factor of its own, fitted on the calibrants it holds or taken from a neighbour (#2332); the instrument function per segment follows, and section 10 lists it |
+| 3 | The part contract: stream and window honoured by every consumer | **in progress**: the composite cut, for files whose method measures more than one thing in a polarity (4.5), leads the work after phase 2 (decided 2026-10-05; a stitch, not a split, since 2026-10-06). The census keys streams on the method's experiments (#2273), the reader selects one stream's scans (#2278), and peak detection and the peak store follow a stream behind `composite_scan_streams` (#2279), and the store is stitched - the map, the per-peak mask, the overlap readings and the stitched sum signal (#2297); the stream table is in the schema with its composite column (#2282) and written for every file, each polarity's item pointing at its composite or its one stream (#2283), and the readers of the peak list take the composite's rows, each averaged over its own stream's scans (#2307); a re-processing detects a file's peaks again under the setting as it is then, so files converted before it was switched can be stitched (#2328); the item TIC and the per-scan export read the scans the store holds, an item made by hand reads the row the pipeline's item reads, and a spectrum that meets a stale store asks for its rebuild (#2329); the spectrum and the peak listing name each segment, and the sample's views draw the scan ranges apart (#2330); each segment is calibrated by a factor of its own, fitted on the calibrants it holds or taken from a neighbour (#2332), which the calibration dialog and the badge show (#2333); a stitched file's processing detail says what its ranges read where they overlap and which ranges hold no calibrant (#2334); the instrument function per segment follows, and section 10 lists it |
 | 4 | Per-stream state: calibration and instrument function per segment, MS2 | open; its per-segment calibration is built with the composite cut (#2332); follows 3 on the same track; no rebuild script (4.5, 9.1) |
 | 5 | Chemistry detection: audit first, then provisional binding | deferred behind phases 3, 4 and 8 (decision 3); its reagent libraries are on `develop` |
 | 6 | Recipes: time and trace windows, preview and apply | open |
@@ -2775,8 +2775,12 @@ unchanged.
      the reason the fit recorded for the range and guess at none, since a
      range can hold calibrants that failed the fit, and can take a
      neighbour's calibration unchanged though the two share plenty of
-     ions. Still open: the instrument function
-     per segment;
+     ions. ~~The detail naming a window no anchor falls in~~ - built in
+     #2334, from the fit: a file matched on its calibration says which of
+     its ranges have no fit of their own, with the reason recorded, and
+     whose calibration each was given, across how many shared ions or as
+     it is (`process.status.carried_calibration_note`). Still open: the
+     instrument function per segment;
   8. **Step 8, re-process.** ~~A re-process rebuilds a file's store under
      the current rule, so a site's composite batches can be
      re-processed~~ - built in #2328: a re-processing
@@ -2810,7 +2814,16 @@ unchanged.
      starts, as the converter does, so both are restarted after a change;
   9. **Step 9, the override and the drift:** the layout override in the
      catalogue entry and the recipe, and the overlap drift in the
-     processing detail.
+     processing detail. ~~The overlap reading in the detail~~ - built in
+     #2334: every status of a stitched file says, for each pair of ranges
+     that share an ion, how far the second reads the ions from the first in
+     ppm, as the instrument recorded them, and at how many times the
+     intensity - the medians the store recorded at detection
+     (`process.status.overlap_readings_note`). It reports and judges
+     nothing. Still open: a warning when a file's reading leaves what its
+     layout usually reads, which needs the layout's history and a bound
+     nobody has measured yet; and the layout override, which waits for a
+     layout that needs one (decision 17).
 - **The scope object.** A scan scope (stream, t0, t1), the stream a
   composite where the file holds one, replaces the bare polarity in:
   - reader selection;

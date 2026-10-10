@@ -41,9 +41,11 @@ from mascope_backend.api.controllers.sample.files.process.peaks import (
     redetection_decision,
 )
 from mascope_backend.api.controllers.sample.files.process.status import (
+    carried_calibration_note,
     claim_for_processing,
     compose_detail,
     pooled_streams_note,
+    read_overlap_readings_note,
     read_scan_streams,
     read_store_stream_keys,
     record_processing_status,
@@ -1117,8 +1119,11 @@ async def _auto_process_sample_file(
     # Describes the file rather than a stage, so every status this run
     # records carries it.
     scan_streams = await read_scan_streams(sample_file.filename)
-    streams_note = pooled_streams_note(
-        scan_streams or [], await read_store_stream_keys(sample_file.filename)
+    streams_note = compose_detail(
+        pooled_streams_note(
+            scan_streams or [], await read_store_stream_keys(sample_file.filename)
+        ),
+        await read_overlap_readings_note(sample_file.filename),
     )
 
     # --- Get ACQUISITION dataset for the instrument --- #
@@ -1480,6 +1485,12 @@ async def _auto_process_sample_file(
     elif mz_calibration is not None and mz_calibration.get("status") == "poor":
         # Verified under a gate that only warns, and matched on.
         calibration_note = _calibration_failure_detail(mz_calibration)
+    # A file matched on its calibration says which of its scan ranges that
+    # calibration reached only through a neighbour. One held back from
+    # matching says why instead, and this note is not part of that.
+    calibration_note = compose_detail(
+        calibration_note, carried_calibration_note(mz_calibration)
+    )
 
     # --- Match and assign the samples --- #
     for sample in acquisition_samples:
