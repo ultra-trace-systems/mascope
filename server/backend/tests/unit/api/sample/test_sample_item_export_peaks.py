@@ -64,19 +64,35 @@ def _peak_store():
     )
 
 
-async def _run_export(tmp_path, live_scan_times, live_tics):
+async def _run_export(tmp_path, live_scan_times, live_tics, streams=None):
     """Export the stub sample, with the reader covering `live_scan_times`.
+
+    With ``streams`` the store is a per-stream one: ``{key: scan positions}``
+    says which of the stored scans each of its streams selects, and a read
+    that names a stream answers those, while a read that names none answers
+    `live_scan_times`.
 
     :return: The path the export wrote to, and the CSV read back
     """
 
-    def fake_get_tic_per_scan(base_filename, timestamps=None, polarity=None):
+    def fake_get_tic_per_scan(
+        base_filename, timestamps=None, polarity=None, stream=None
+    ):
+        if stream is not None:
+            scans = np.asarray(streams[stream])
+            return STORED_TIME[scans], TIC_VALUES[scans]
         return (
             np.asarray(live_scan_times, dtype=float),
             np.asarray(live_tics, dtype=float),
         )
 
+    def fake_metadata(base_filename):
+        if streams is None:
+            raise FileNotFoundError(base_filename)
+        return list(streams), {"runs": {"-": []}}
+
     with (
+        patch("mascope_signal.compute._peak_store_metadata", fake_metadata),
         patch(f"{_MOD}.fetch_sample", AsyncMock(return_value=_sample())),
         patch(
             f"{_MOD}.fetch_sample_batch",
@@ -164,6 +180,25 @@ async def test_each_tic_lands_on_the_scan_it_was_measured_in(tmp_path):
     first_peak = frame[frame.mz == MZ_VALUES[0]].sort_values("datetime")
     np.testing.assert_allclose(first_peak.tic.to_numpy(), TIC_VALUES)
     # The peak intensities are the store's own
+    np.testing.assert_allclose(first_peak.intensity.to_numpy(), INTENSITIES[0])
+
+
+@pytest.mark.asyncio
+async def test_a_per_stream_store_is_paired_with_its_streams_own_scans(tmp_path):
+    """A per-stream store holds each stream's scans as that stream selects
+    them. A composite file that opens with a reagent scan keeps it in its
+    own stream, while a file-wide read judges it against the analyte windows
+    and leaves it out: paired with that read the store is a scan long, and
+    was refused as stale though no rebuild changes it. The export reads the
+    TIC stream by stream, as the store's axis was built."""
+    streams = {"reagent scan": [0, 2, 4], "analyte window": [1, 3]}
+
+    _, frame = await _run_export(
+        tmp_path, STORED_TIME[1:], TIC_VALUES[1:], streams=streams
+    )
+
+    first_peak = frame[frame.mz == MZ_VALUES[0]].sort_values("datetime")
+    np.testing.assert_allclose(first_peak.tic.to_numpy(), TIC_VALUES)
     np.testing.assert_allclose(first_peak.intensity.to_numpy(), INTENSITIES[0])
 
 

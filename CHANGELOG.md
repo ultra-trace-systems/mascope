@@ -4,6 +4,95 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 ## [Unreleased]
 
+### Added
+
+- **A report of what a stitched file's scan ranges read where two of them
+  overlap**: `db script run report_stitch_overlaps`. For servers that run
+  `composite_scan_streams`. It reads the newest raw Orbitrap files, newest
+  first (`STITCH_REPORT_FILES`, 5,000 by default), and says for each
+  layout and each pair of ranges that overlap: which range owns the
+  overlap, how many ions both hold and how the second reads them against
+  the first, how many peaks each holds there that the other does not, and
+  which ions most of the files read very differently in the two. It
+  writes nothing, so no backup is taken before it. It is what the choice
+  of which range should own an overlap is to be made on.
+
+### Changed
+
+- **Re-processing a file detects its peaks again under the server's
+  `composite_scan_streams` setting as it is then.** Whether the peaks of a
+  raw Orbitrap file are detected per experiment was decided once, when the
+  file was converted, and every rebuild and re-processing after that went
+  by it, so switching the setting on reached only the files converted
+  afterwards. Re-processing a file from Raw files now decides again. With
+  the setting on, a file whose method measures more than one thing in a
+  polarity has its peaks detected per experiment and stitched before its
+  samples are made; with it off, a stitched file is pooled again. A file
+  with one experiment in each polarity - nearly every file - keeps its
+  peak data as it is. A file whose scan streams cannot be read is refused
+  with nothing of it changed. The backend reads the setting when it starts,
+  so restart it as well as the file converter after changing the setting,
+  which is still off by default and not yet for production.
+
+- **A sample's spectrum that cannot be read until its file's peak data is
+  rebuilt asks for the rebuild.** Opening such a sample answered that peak
+  detection has to be run again, and nothing ran it until somebody
+  refreshed the batch's matches. The spectrum now queues the detection
+  itself, for an editor of the sample's workspace, and says so; the sample's
+  matches are recomputed when it finishes. Asked for several samples at
+  once (`GET /api/samples/spectra`), the spectra of the other samples are
+  returned: a sample whose file is being rebuilt has an empty spectrum in
+  its place and is listed under `stale`, where the whole request failed
+  before.
+
+- **With `composite_scan_streams` on, a sample of a stitched file counts
+  the scans its peaks were detected over.** Its TIC is summed over the
+  scans of each experiment as that experiment selects them, which keeps a
+  first reagent scan that a read of the whole polarity leaves out, and a
+  sample made by hand from such a file reads the same stitched spectrum
+  row as the sample the pipeline made. Files with one experiment in each
+  polarity are read as before.
+
+- **With `composite_scan_streams` on, each scan range of a stitched file
+  is m/z calibrated on its own.** Two ranges of one file read an ion up to
+  a ppm apart, and one factor for the file left every range but one off by
+  that much. A range is now fitted on the calibrants it holds itself; one
+  that holds none takes a neighbouring range's calibration, shifted by what
+  the two read in their overlap where they share at least five ions, and as
+  it is where they do not. The calibration's quality record lists each
+  range with how it came by its calibration, and a range fitted on a wrong
+  peak marks the file's calibration as below the bar, naming the range.
+  Files that are not stitched are calibrated exactly as before.
+
+- **The calibration dialog and the sample's calibration badge say how each
+  scan range of a stitched sample was calibrated.** The dialog lists the
+  ranges above the calibrants: fitted on how many calibrants, or whose
+  calibration it took and over how many shared ions, with the reason the
+  fit recorded for it and how far that moves the range. The calibrants say
+  which range each was found in, and the badge names the ranges that were
+  not fitted on calibrants of their own.
+
+- **A sample stitched from several scan ranges shows where they meet.**
+  With `composite_scan_streams` on, the spectrum of such a sample is one
+  range after another with nothing rescaled between them, so the signal can
+  step at a boundary and a peak's intensity is what its own range measured.
+  The sum spectrum now draws each range in its own shade with a dotted line
+  where two meet, and the peak table has a segment column naming the range
+  each peak came from; hovering the signal or a peak names it too, with its
+  scan and microscan counts. The spectrum and peak-listing routes return
+  the segments (`segments`, `runs`, and a `segment` per peak), null for
+  every sample of one range.
+
+### Fixed
+
+- **Exporting a sample's peaks per scan no longer refuses a stitched
+  file.** With `composite_scan_streams` on, a file that opens with a
+  reagent scan was refused with "Re-run peak detection", which did not
+  help: the export compared the file's scans, read as one polarity, with
+  the scans its peak data holds per experiment, and the two differ by that
+  first scan. The export now reads the scans the way the peak data holds
+  them.
+
 ## [1.11.0] - 2026.10.09
 
 ### Added

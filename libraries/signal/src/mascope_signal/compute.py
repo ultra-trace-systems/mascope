@@ -2,7 +2,8 @@ import asyncio
 import hashlib
 import json
 import os
-from contextlib import suppress
+import threading
+from contextlib import contextmanager, suppress
 from typing import Iterable, Literal
 
 import dask.array as da
@@ -13,6 +14,7 @@ import zarr
 
 import mascope_file.io as m_io
 import mascope_file.name as m_name
+import mascope_signal.mz_factor as m_factor
 import mascope_signal.stitch as m_stitch
 import mascope_thermo.streams as m_streams
 import mascope_thermo.thermo as m_thermo
@@ -30,6 +32,79 @@ ALIGNMENT_MIN_FRACTION = 1.0  # Minimum fraction of scans for mass alignment
 
 # Peak aggregation parameters
 AGGREGATION_WINDOW_FACTOR = 1  # Peak aggregation window factor (times FWHM)
+
+#: The attribute a cached sum signal of one scan stream names its stream by,
+#: the stream's key. A signal cached before streams were calibrated apart
+#: carries none.
+CACHED_STREAM_ATTR = "stream"
+
+#: The per-peak variable of a per-stream store that holds each peak's m/z as
+#: the instrument recorded it (:func:`recorded_mz`).
+RECORDED_MZ = "mz_recorded"
+
+#: What :func:`_write_cached_sum_signal` answers for a signal it did not
+#: keep, because the file was calibrated again while it was made.
+_SUPERSEDED = object()
+
+#: What it is told of a signal whose axis no calibration record puts in place.
+_UNGUARDED = object()
+
+# The calibration locks this thread holds, by path
+_applying = threading.local()
+
+
+@contextmanager
+def holding_mz_calibration_lock(lock_path: str):
+    """Say that this thread holds a file's calibration lock, while it does.
+
+    An apply rewrites the m/z axes of a file's stores and records the
+    calibration last, and it holds the file's calibration lock from the
+    first write to that one (``mascope_file.io.mz_calibration_lock_path``).
+    Whoever makes a sum signal of the file takes the same lock to cache it
+    (:func:`_write_cached_sum_signal`), so that a signal is never kept on
+    the axis of a calibration an apply was replacing meanwhile.
+
+    The apply reads sum signals itself and may have to make one, and the
+    lock is not one a thread can take twice. Inside this, the thread that
+    holds it caches without asking for it again.
+
+    :param lock_path: The path the held lock is named by
+    :type lock_path: str
+    """
+    held = getattr(_applying, "paths", frozenset())
+    _applying.paths = held | {lock_path}
+    try:
+        yield
+    finally:
+        _applying.paths = held
+
+
+def recorded_mz(peak_data: xr.Dataset, calibration: dict | None) -> np.ndarray:
+    """The m/z the instrument recorded of each row of a per-stream store.
+
+    A row's ``mz`` coordinate is where the store finds it. For nearly every
+    row that is the recorded m/z times its stream's calibration factor, but
+    a reading no composite takes is set beside the row it would have passed
+    (``mascope_signal.peak.rows_set_apart``), and what it read is not to be
+    had from its place any more. A fit made on such a place, or a read of
+    the raw file at it, would be of another m/z than the stream measured.
+
+    The store keeps the readings (:data:`RECORDED_MZ`). One written before
+    it did has never had a row set apart - that begins with the first
+    calibration of its streams apart, which writes the readings first - so
+    its rows are taken back by their streams' factors.
+
+    :param peak_data: A per-stream store, or rows of one
+    :type peak_data: xr.Dataset
+    :param calibration: The file's calibration record
+    :type calibration: dict | None
+    :return: One m/z per row
+    :rtype: np.ndarray
+    """
+    if RECORDED_MZ in peak_data.variables:
+        return peak_data[RECORDED_MZ].values
+    by_stream = m_factor.stream_factors(calibration, peak_store_streams(peak_data))
+    return peak_data.mz.values / by_stream[peak_data.stream.values]
 
 
 def _refuse_stream_unless_raw_orbitrap(sample_type: str, stream: str | None) -> None:
@@ -299,6 +374,28 @@ def peak_store_stitches(base_filename: str, polarity: Literal["+", "-"]) -> bool
     :return: True where the store's map stitches the polarity
     :rtype: bool
     """
+    _keys, stitch = _peak_store_metadata(base_filename)
+    return bool(stitch and stitch["runs"].get(polarity))
+
+
+def _peak_store_metadata(base_filename: str) -> tuple[list[str], dict | None]:
+    """A peak store's stream keys and stitch map, off its metadata alone.
+
+    What :func:`peak_store_stitches` decides from, for whoever needs the keys
+    as well: the attributes, and whether the store holds the arrays a
+    per-stream store does, each asked for by name.
+
+    :param base_filename: Sample file filename
+    :type base_filename: str
+    :raises FileNotFoundError: If the file has no peak store
+    :raises ValueError: If the store carries only part of what a per-stream
+        store does
+    :raises StalePeakStoreError: If it is a per-stream store with no map or
+        no mask
+    :return: The stream keys in the order the store's labels index them, and
+        the stitch map; ``[]`` and None for a pooled store
+    :rtype: tuple[list[str], dict | None]
+    """
     path = m_name.filename_to_zarr_path(base_filename, "peak_timeseries")
     if not os.path.exists(path):
         raise FileNotFoundError(path)
@@ -306,11 +403,55 @@ def peak_store_stitches(base_filename: str, polarity: Literal["+", "-"]) -> bool
     # listing does, and not consolidated metadata that may be stale
     group = m_io.open_zarr_store(path)
     attrs = dict(group.attrs)
-    if not _stream_keys_of(
+    keys = _stream_keys_of(
         attrs.get("streams"), "stream" in group, "scan_stream" in group
-    ):
-        return False
-    return bool(_stitch_map_of(attrs, "composite" in group)["runs"].get(polarity))
+    )
+    if not keys:
+        return [], None
+    return keys, _stitch_map_of(attrs, "composite" in group)
+
+
+def peak_store_composite(
+    base_filename: str, polarity: Literal["+", "-"]
+) -> dict | None:
+    """What a polarity's composite is made of, for whoever shows it.
+
+    The store's stream keys and the polarity's runs under its stitch map,
+    read off the store's metadata as :func:`peak_store_stitches` reads it,
+    with the m/z calibration factor each stream carries
+    (``mascope_signal.mz_factor``): the runs are in m/z as the instrument
+    recorded them, and a run is placed on the file's own axis by the factor
+    of the stream that owns it (``mascope_signal.stitch.owners``).
+
+    :param base_filename: Sample file filename
+    :type base_filename: str
+    :param polarity: The polarity asked about
+    :type polarity: str
+    :raises ValueError: If the store carries only part of what a per-stream
+        store does
+    :raises StalePeakStoreError: If it is a per-stream store with no map or
+        no mask
+    :return: None where the file has no store or its store stitches nothing
+        of the polarity; else ``{"keys", "runs", "source", "factors"}``:
+        the store's stream keys, the polarity's runs ``[lower, upper, stream
+        index]`` in m/z order, whether the rule or a layout drew them, and
+        the factor of each stream, in the order of the keys
+    :rtype: dict | None
+    """
+    try:
+        keys, stitch = _peak_store_metadata(base_filename)
+    except FileNotFoundError:
+        return None
+    runs = stitch["runs"].get(polarity) if stitch else None
+    if not runs:
+        return None
+    calibration = m_io.read_props(base_filename)["mz_calibration"]
+    return {
+        "keys": keys,
+        "runs": [list(run) for run in runs],
+        "source": (stitch.get("sources") or {}).get(polarity),
+        "factors": m_factor.stream_factors(calibration, keys).tolist(),
+    }
 
 
 def get_scan_timestamps(
@@ -542,6 +683,7 @@ def get_sum_signal(
     # writes the calibrated axis into its store and the filtered ones take it
     # from there, so one summed afresh from the data file keeps that file's axis.
     is_full_sum_signal = t_min is None and t_max is None and polarity is None
+    made_on = _UNGUARDED
     match sample_type:
         case "orbi_raw":
             # Averaged from the raw file, on the acquisition axis, while
@@ -550,10 +692,12 @@ def get_sum_signal(
             # current factor. So the factor goes on - the full signal's too:
             # one averaged after the file was calibrated, as every one is once
             # a new reader renames the cache, has to start where they are.
+            # A stream's signal goes by the stream's own factor, as an apply
+            # moves it by.
             calibration = m_io.read_props(base_filename)["mz_calibration"]
+            made_on = calibration
             if calibration:
-                fit_parameters = calibration["par"]
-                factor = fit_parameters["calibration_factor"]
+                factor = m_factor.stream_factor(calibration, stream)
                 sum_signal = sum_signal.assign_coords(mz=sum_signal.mz.values * factor)
         case "orbi_zarr":
             # Summed from the stored signal, which a calibration rescales in
@@ -573,12 +717,25 @@ def get_sum_signal(
                     full_sum_signal_mz = full_sum_signal_mz[-sum_signal.mz.size :]
                 sum_signal = sum_signal.assign_coords(mz=full_sum_signal_mz)
 
+    if stream is not None:
+        # A cached signal is named by a hash, and an m/z calibration moves a
+        # stream's signals by that stream's factor: it has to be able to
+        # tell whose a signal is.
+        sum_signal.attrs[CACHED_STREAM_ATTR] = stream
+
     # Save the computed sum signal to the sample file for future use
     concurrent_sum_signal = _write_cached_sum_signal(
         base_filename,
         cached_name,
         sum_signal,
+        made_on=made_on,
     )
+    if concurrent_sum_signal is _SUPERSEDED:
+        # The file was calibrated again while this was averaged: it is on an
+        # axis the file no longer has. Made once more, on the one it has.
+        return get_sum_signal(
+            base_filename, t_min, t_max, polarity, average=average, stream=stream
+        )
     if concurrent_sum_signal is not None:
         sum_signal = concurrent_sum_signal
 
@@ -655,10 +812,20 @@ def _write_cached_sum_signal(
     base_filename: str,
     cached_name: str,
     sum_signal: xr.DataArray,
-) -> xr.DataArray | None:
+    made_on: dict | None | object = _UNGUARDED,
+) -> xr.DataArray | None | object:
     """Helper function to write the computed sum signal to the sample file with
     concurrency handling. If another process has already written the sum signal
     concurrently, it will load and return the existing cached sum signal.
+
+    A raw Orbitrap file's signal is put on the file's axis by the
+    calibration record read when it was made, and an apply moves the cached
+    signals and records the new calibration last. A signal made across an
+    apply would be cached on the old axis after the apply had moved, or
+    removed, what was cached - and stay there. So such a signal is cached
+    under the file's calibration lock, which an apply holds throughout
+    (:func:`holding_mz_calibration_lock`), and only if the record still holds
+    the factors it was made on. The caller makes it again otherwise.
 
     :param base_filename: Sample file filename
     :type base_filename: str
@@ -666,6 +833,31 @@ def _write_cached_sum_signal(
     :type cached_name: str
     :param sum_signal: The computed sum signal to cache
     :type sum_signal: xr.DataArray
+    :param made_on: The calibration record the signal's axis was placed by,
+        for a raw Orbitrap file; left out for a signal no record places
+    :type made_on: dict | None
+    :return: The cached sum signal if it was created concurrently;
+        :data:`_SUPERSEDED` if the file's calibration is no longer the one
+        the signal was made on, and nothing was written; otherwise None
+    :rtype: xr.DataArray | None
+    """
+    lock_path = m_io.mz_calibration_lock_path(base_filename)
+    if made_on is _UNGUARDED or lock_path in getattr(_applying, "paths", ()):
+        return _cache_sum_signal(base_filename, cached_name, sum_signal)
+    with m_io.zarr_write_lock(lock_path):
+        now = m_io.read_props(base_filename)["mz_calibration"]
+        if m_factor.factors(now) != m_factor.factors(made_on):
+            return _SUPERSEDED
+        return _cache_sum_signal(base_filename, cached_name, sum_signal)
+
+
+def _cache_sum_signal(
+    base_filename: str,
+    cached_name: str,
+    sum_signal: xr.DataArray,
+) -> xr.DataArray | None:
+    """Write a sum signal to the sample file, unless one is there already.
+
     :return: The cached sum signal if it was created concurrently, otherwise None
     :rtype: xr.DataArray | None
     """
@@ -723,7 +915,11 @@ def get_composite_sum_signal(
     The map is the peak store's, so the signal and the store's ``composite``
     mask cut the file in the same places. It is in m/z as the instrument
     recorded them, and a stream's signal is on the file's calibrated axis,
-    so it is cut by the factor the file carries.
+    so it is cut by the factor the stream carries
+    (``mascope_signal.mz_factor``). Two streams calibrated apart can meet
+    out of order at a boundary, by the difference of their factors: the
+    later run then starts above the last sample of the one before, so that
+    the axis only rises.
 
     Averaged, each sample is divided by the scans of its own stream inside
     the time range, since the streams of a composite hold different numbers
@@ -736,7 +932,9 @@ def get_composite_sum_signal(
     the file being read (:func:`get_sum_signal`). The stitched signal is
     cached beside the streams', under a name that carries the runs it was
     cut by and the keys they index, so a store rebuilt to another map is
-    not handed a signal stitched for the last.
+    not handed a signal stitched for the last - and, where the file's
+    streams are calibrated apart, the factors the runs were placed by, so
+    neither is a file calibrated again.
 
     :param base_filename: Sample file filename
     :type base_filename: str
@@ -779,13 +977,30 @@ def get_composite_sum_signal(
             f"'{base_filename}' (t_min={t_min}, t_max={t_max})."
         )
 
+    calibration = m_io.read_props(base_filename)["mz_calibration"]
+    factors = m_factor.stream_factors(calibration, keys)
     cached_name = _composite_sum_signal_name(
-        t_min, t_max, polarity, m_name.get_sample_file_type(base_filename), runs, keys
+        t_min,
+        t_max,
+        polarity,
+        m_name.get_sample_file_type(base_filename),
+        runs,
+        keys,
+        factors if (calibration or {}).get(m_factor.STREAM_FACTORS) else None,
     )
     stitched = _try_get_cached_sum_signal(base_filename, cached_name)
     if stitched is None:
-        stitched = _stitch_sum_signals(base_filename, t_min, t_max, runs, keys, scans)
-        concurrent = _write_cached_sum_signal(base_filename, cached_name, stitched)
+        stitched = _stitch_sum_signals(
+            base_filename, t_min, t_max, runs, keys, scans, factors
+        )
+        concurrent = _write_cached_sum_signal(
+            base_filename, cached_name, stitched, made_on=calibration
+        )
+        if concurrent is _SUPERSEDED:
+            # Calibrated again while it was stitched: stitched once more
+            return get_composite_sum_signal(
+                base_filename, polarity, t_min, t_max, average=average
+            )
         if concurrent is not None:
             stitched = concurrent
 
@@ -861,6 +1076,7 @@ def _composite_sum_signal_name(
     sample_type: str,
     runs: list,
     keys: list[str],
+    factors: np.ndarray | None = None,
 ) -> str:
     """The name a polarity's stitched sum signal is cached under.
 
@@ -870,11 +1086,18 @@ def _composite_sum_signal_name(
     is the signal of one map of one set of streams, so the name carries the
     runs and the keys they index.
 
+    :param factors: The m/z calibration factor of each stream, by stream
+        index, for a file whose streams are calibrated apart; None for one
+        calibrated by a single factor, whose signal keeps the name it had
+        before streams were
     :return: The name, with the suffix of ``sample_type``
     :rtype: str
     """
     members = {index: keys[index] for index in sorted({run[2] for run in runs})}
-    key_str = json.dumps([t_min, t_max, polarity, "composite", runs, members])
+    key = [t_min, t_max, polarity, "composite", runs, members]
+    if factors is not None:
+        key.append({index: float(factors[index]) for index in members})
+    key_str = json.dumps(key)
     hash_addition = hashlib.sha1(key_str.encode()).hexdigest()[:12]
     return f"sum_signal_{hash_addition}" + sum_signal_suffix(sample_type)
 
@@ -906,6 +1129,7 @@ def _stitch_sum_signals(
     runs: list,
     keys: list[str],
     scans: dict[int, int],
+    factors: np.ndarray,
 ) -> xr.DataArray:
     """The sum signals of a composite's streams, cut by its runs and joined.
 
@@ -913,14 +1137,14 @@ def _stitch_sum_signals(
         m/z order
     :param keys: The store's stream keys, as the runs index them
     :param scans: How many scans of each stream the time range holds
+    :param factors: The m/z calibration factor of each stream, by stream
+        index
     :return: The stitched signal, ``segment`` naming each sample's stream
     :rtype: xr.DataArray
     """
-    calibration = m_io.read_props(base_filename)["mz_calibration"]
-    factor = calibration["par"]["calibration_factor"] if calibration else 1.0
-
     signals: dict[int, xr.DataArray] = {}
     parts = []
+    last = None
     for lower, upper, index in runs:
         if not scans[index]:
             continue
@@ -929,9 +1153,16 @@ def _stitch_sum_signals(
                 base_filename, t_min, t_max, stream=keys[index]
             )
         signal = signals[index]
-        part = signal.isel(
-            mz=m_stitch.owned_slice(signal.mz.values, lower, upper, factor)
-        )
+        mz = signal.mz.values
+        owned = m_stitch.owned_slice(mz, lower, upper, float(factors[index]))
+        start = owned.start
+        if last is not None:
+            # Past the run before, which another factor can have put above
+            # this one's first samples
+            start = max(start, int(np.searchsorted(mz, last, side="right")))
+        part = signal.isel(mz=slice(start, max(start, owned.stop)))
+        if part.mz.size:
+            last = float(part.mz.values[-1])
         parts.append(
             part.assign_coords(
                 segment=("mz", np.full(part.mz.size, index, dtype=np.int16))
@@ -1155,6 +1386,114 @@ def get_tic_per_scan(
     return tic_time, tic_per_scan
 
 
+def get_sample_tic_per_scan(
+    base_filename: str, polarity: Literal["+", "-"]
+) -> tuple[np.ndarray, np.ndarray]:
+    """TIC per scan of one polarity of a file, as its sample reads it.
+
+    A file whose peak store stitches the polarity's scan streams answers the
+    scans of those streams, each as its own stream selects them: the scans
+    the store's axis holds for the polarity, which are the scans the
+    sample's peaks were detected and are filled over. Read polarity-wide
+    instead, the file's first scan is judged against every other scan of the
+    file, and a composite file that opens with a reagent scan loses it - a
+    scan its own stream keeps.
+
+    Any other file answers the polarity's scans as :func:`get_tic_per_scan`
+    reads them: a store detected whole, a polarity with a single stream, a
+    file with no peak store yet. Which of the two is read off the store's
+    metadata, as :func:`get_sample_sum_signal` decides it.
+
+    :param base_filename: Sample file filename
+    :type base_filename: str
+    :param polarity: The polarity whose scans to read
+    :type polarity: str
+    :raises ValueError: If the store carries only part of what a per-stream
+        store does
+    :raises StalePeakStoreError: If a per-stream store carries no map, or the
+        file holds no stream under a key it lists
+    :raises mascope_thermo.thermo.NoScansFoundError: If the file holds no
+        scan of the polarity
+    :return: Scan times [s] and the TIC of each, in time order
+    :rtype: tuple[np.ndarray, np.ndarray]
+    """
+    try:
+        keys, stitch = _peak_store_metadata(base_filename)
+    except FileNotFoundError:
+        keys, stitch = [], None  # no store yet: the polarity's own scans
+    if not (stitch and stitch["runs"].get(polarity)):
+        return get_tic_per_scan(base_filename, polarity=polarity)
+    return _tic_of_streams(base_filename, keys, polarity)
+
+
+def get_stored_tic_per_scan(base_filename: str) -> tuple[np.ndarray, np.ndarray]:
+    """TIC of each scan a file's peak store holds on its time axis.
+
+    For whatever pairs the store's scans with a fresh read of the file by
+    position. A store detected whole holds every MS1 scan of the file, as
+    :func:`get_tic_per_scan` reads them. A per-stream store holds each
+    stream's scans as that stream selects them, which a file-wide read does
+    not give back wherever the first-scan rule judges the two differently:
+    paired with it, a sound store is refused as stale, and no rebuild
+    answers that.
+
+    :param base_filename: Sample file filename
+    :type base_filename: str
+    :raises ValueError: If the store carries only part of what a per-stream
+        store does
+    :raises StalePeakStoreError: If a per-stream store carries no map, or the
+        file holds no stream under a key it lists
+    :return: Scan times [s] and the TIC of each, in time order
+    :rtype: tuple[np.ndarray, np.ndarray]
+    """
+    try:
+        keys, _stitch = _peak_store_metadata(base_filename)
+    except FileNotFoundError:
+        keys = []
+    if not keys:
+        return get_tic_per_scan(base_filename)
+    return _tic_of_streams(base_filename, keys)
+
+
+def _tic_of_streams(
+    base_filename: str, keys: list[str], polarity: Literal["+", "-"] | None = None
+) -> tuple[np.ndarray, np.ndarray]:
+    """The scans of several streams of a per-stream store, with their TIC.
+
+    Each stream is read under its own key, and the scans joined in time
+    order, as the store's axis was built. With a polarity, a stream of the
+    other one holds no scan to add and is passed over.
+
+    :param keys: Stream keys of the file's peak store
+    :param polarity: Keep only the scans of this polarity, defaults to None
+    :raises StalePeakStoreError: If the file holds no stream under a key
+    :raises mascope_thermo.thermo.NoScansFoundError: If none of the streams
+        holds a scan, of the polarity where one is given
+    :return: Scan times [s] and the TIC of each, in time order
+    :rtype: tuple[np.ndarray, np.ndarray]
+    """
+    times, tics = [], []
+    for key in keys:
+        try:
+            stream_time, stream_tic = get_tic_per_scan(
+                base_filename, polarity=polarity, stream=key
+            )
+        except m_thermo.UnknownStreamError as error:
+            raise _stale_stream_key(key) from error
+        except m_thermo.NoScansFoundError:
+            continue
+        times.append(np.asarray(stream_time, dtype=float))
+        tics.append(np.asarray(stream_tic, dtype=float))
+    if not times:
+        raise m_thermo.NoScansFoundError(
+            f"No scans found in the scan streams of '{base_filename}'"
+            + ("." if polarity is None else f" for polarity '{polarity}'.")
+        )
+    scan_time, scan_tic = np.concatenate(times), np.concatenate(tics)
+    order = np.argsort(scan_time, kind="stable")
+    return scan_time[order], scan_tic[order]
+
+
 def get_acquisition_window(
     base_filename: str,
     polarity: Literal["+", "-"] | None = None,
@@ -1266,9 +1605,7 @@ async def get_orbi_centroids(
             props = m_io.read_props(base_filename)
             calibration = props["mz_calibration"]
             if calibration:
-                fit_parameters = calibration["par"]
-                factor = fit_parameters["calibration_factor"]
-                masses = masses * factor
+                masses = masses * m_factor.stream_factor(calibration, stream)
             if u_list:
                 # Create a mask for the masses that are within 0.5 of any value in u_list
                 mz_mask = np.zeros_like(masses, dtype=bool)
@@ -1327,8 +1664,7 @@ def get_orbi_centroids_per_scan(
             props = m_io.read_props(base_filename)
             calibration = props["mz_calibration"]
             if calibration:
-                fit_parameters = calibration["par"]
-                factor = fit_parameters["calibration_factor"]
+                factor = m_factor.stream_factor(calibration, stream)
                 for scan_centroids in centroids_per_scan:
                     scan_centroids["masses"] = scan_centroids["masses"] * factor
 
@@ -1703,7 +2039,7 @@ def check_stored_scan_axis(
 
 
 async def _read_stream_back(
-    base_filename: str, mzs: np.ndarray, key: str
+    base_filename: str, mzs: np.ndarray, key: str, calibrated: bool = True
 ) -> xr.DataArray:
     """One stream of a per-stream store, read back from the file by its key.
 
@@ -1720,12 +2056,17 @@ async def _read_stream_back(
     :type mzs: np.ndarray
     :param key: The stream's key, as the store lists it
     :type key: str
+    :param calibrated: Whether the m/z values are on the file's calibrated
+        axis; False for values as the instrument recorded them
+    :type calibrated: bool
     :raises StalePeakStoreError: If the file holds no stream under the key
     :return: The peaks' timeseries over the scans of that stream
     :rtype: xr.DataArray
     """
     try:
-        return await get_peak_timeseries(base_filename, mzs, stream=key)
+        return await get_peak_timeseries(
+            base_filename, mzs, stream=key, calibrated=calibrated
+        )
     except m_thermo.UnknownStreamError as error:
         raise _stale_stream_key(key) from error
 
@@ -2082,6 +2423,7 @@ async def _stream_timeseries_update(
         missing = peak_timeseries.isel(mz=np.flatnonzero(to_compute_mask))
         return (
             missing.mz.values,
+            missing[RECORDED_MZ].values if RECORDED_MZ in missing.variables else None,
             missing.stream.values,
             missing.sum_peak_heights.values,
             missing.sum_peak_areas.values,
@@ -2091,6 +2433,7 @@ async def _stream_timeseries_update(
 
     (
         mzs_to_compute,
+        recorded,
         peak_stream,
         sum_peak_heights,
         sum_peak_areas,
@@ -2106,8 +2449,13 @@ async def _stream_timeseries_update(
     for index in np.unique(peak_stream):
         peaks = np.flatnonzero(peak_stream == index)
         scans = np.flatnonzero(scan_stream == index)
+        # At what the stream recorded where the store keeps it: a row's
+        # place on the axis is not always its reading (recorded_mz)
         new_peak_timeseries = await _read_stream_back(
-            base_filename, mzs_to_compute[peaks], streams[int(index)]
+            base_filename,
+            mzs_to_compute[peaks] if recorded is None else recorded[peaks],
+            streams[int(index)],
+            calibrated=recorded is None,
         )
         check_stored_scan_axis(new_peak_timeseries.time.values, time_coords[scans])
 
@@ -2151,6 +2499,7 @@ async def get_peak_timeseries(
     t_max: float | None = None,
     polarity: Literal["+", "-"] | None = None,
     stream: str | None = None,
+    calibrated: bool = True,
 ) -> xr.DataArray:
     """Get peak timeseries for given peak m/z values in the time range [t_min, t_max]
 
@@ -2167,6 +2516,11 @@ async def get_peak_timeseries(
     :param stream: Key of the scan stream to read, for a raw Orbitrap file,
         defaults to None (every stream)
     :type stream: str, optional
+    :param calibrated: Whether the m/z values are on the file's calibrated
+        axis, defaults to True. False for a raw Orbitrap file's values as
+        the instrument recorded them, which are read as they are and
+        answered as they were given.
+    :type calibrated: bool, optional
     :raises ValueError: If a stream is asked of a type that has none
     :return: peak timeseries for the given m/z values
     :rtype: xr.DataArray
@@ -2178,13 +2532,13 @@ async def get_peak_timeseries(
             datafile_path = m_name.filename_to_datafile_path(base_filename)
 
             # Orbitrap raw files store raw data, mzs need to be uncalibrated
-            # before extracting peak timeseries
+            # before extracting peak timeseries: by the factor of the stream
+            # read, which is the one its peaks carry
             props = m_io.read_props(base_filename)
             calibration = props["mz_calibration"]
             factor = 1.0
-            if calibration:
-                fit_parameters = calibration["par"]
-                factor = fit_parameters["calibration_factor"]
+            if calibration and calibrated:
+                factor = m_factor.stream_factor(calibration, stream)
             uncalibrated_mzs = np.array(mzs) / factor
             peak_timeseries = await asyncio.to_thread(
                 m_thermo.get_peak_timeseries,

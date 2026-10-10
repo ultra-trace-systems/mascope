@@ -33,6 +33,10 @@ class PeakData:
     # predicted isotopologue's absence against the noise. ``None`` for a file
     # that stores none, which is an honest "no estimate" and never a zero.
     signal_to_noise: list[float] | None = None
+    # Per peak, the scan stream it was detected in, as an index among the
+    # store's stream keys; ``None`` for a store that labels no peak with one,
+    # which is every store detected whole.
+    streams: list[int] | None = None
     warnings: list[str] = field(default_factory=list)
 
     @property
@@ -79,6 +83,14 @@ def _peak_signal_to_noise(data: xr.Dataset) -> list[float] | None:
     return data.signal_to_noise.values.tolist()
 
 
+def _peak_streams(data: xr.Dataset) -> list[int] | None:
+    """The stream each peak was detected in, or None for a store that labels
+    none: a peak of a store detected whole is of no stream in particular."""
+    if "stream" not in data:
+        return None
+    return data.stream.values.astype(int).tolist()
+
+
 def _aggregate_full_sample(
     data: xr.Dataset,
     filename: str,
@@ -108,6 +120,7 @@ def _aggregate_full_sample(
         ),
         sparsity=data.sparsity.values.tolist(),
         signal_to_noise=_peak_signal_to_noise(data),
+        streams=_peak_streams(data),
     )
 
 
@@ -170,6 +183,7 @@ def _aggregate_time_range(
             heights=[0.0] * data.mz.size if heights else None,
             sparsity=data.sparsity.values.tolist(),
             signal_to_noise=_peak_signal_to_noise(data),
+            streams=_peak_streams(data),
             warnings=warnings,
         )
 
@@ -195,6 +209,7 @@ def _aggregate_time_range(
         ),
         sparsity=data.sparsity.values.tolist(),
         signal_to_noise=_peak_signal_to_noise(data),
+        streams=_peak_streams(data),
         warnings=warnings,
     )
 

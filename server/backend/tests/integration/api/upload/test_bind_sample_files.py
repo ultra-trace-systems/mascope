@@ -1102,6 +1102,217 @@ async def test_reprocessing_refuses_a_file_someone_made_a_sample_from(
 
 
 # ---------------------------------------------------------------------------
+# Re-processing detects a file's peaks under the setting of the moment
+# ---------------------------------------------------------------------------
+
+
+class _Steps:
+    """What a re-processing does to a file, in order.
+
+    The decision and the detection are stood in for
+    (``process.peaks``, tested on a scripted file in
+    ``test_peaks_redetected_on_reprocess``): ``decision`` is what the file is
+    decided, or the error reading it raises, and ``detection_error`` what
+    detecting its peaks raises.
+    """
+
+    def __init__(self):
+        self.done: list[str] = []
+        self.decision: bool | None | Exception = True
+        self.detection_error: Exception | None = None
+
+
+@pytest.fixture
+def steps(monkeypatch, pipeline) -> _Steps:
+    steps = _Steps()
+    clear = process_service._clear_sample_items_for_reprocessing
+
+    async def decide(sample_file):
+        steps.done.append("decided")
+        if isinstance(steps.decision, Exception):
+            raise steps.decision
+        return steps.decision
+
+    async def detect(sample_file, per_stream):
+        if steps.detection_error is not None:
+            raise steps.detection_error
+        steps.done.append(f"detected {'per stream' if per_stream else 'whole'}")
+
+    async def reset(sample_file):
+        steps.done.append("reset the calibration")
+
+    async def cleared(**kwargs):
+        steps.done.append("cleared the samples")
+        return await clear(**kwargs)
+
+    async def ran(**kwargs):
+        steps.done.append("ran the pipeline")
+        return {"_notification_data": {}}
+
+    monkeypatch.setattr(process_service, "redetection_decision", decide)
+    monkeypatch.setattr(process_service, "redetect_peaks", detect)
+    monkeypatch.setattr(process_service, "reset_mz_calibration", reset)
+    monkeypatch.setattr(
+        process_service, "_clear_sample_items_for_reprocessing", cleared
+    )
+    pipeline.side_effect = ran
+    return steps
+
+
+async def _detail(async_session_factory, sample_file_id: str) -> str | None:
+    async with async_session_factory() as session:
+        return await session.scalar(
+            select(SampleFile.processing_detail).where(
+                SampleFile.sample_file_id == sample_file_id
+            )
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "decision, detected",
+    [(True, "detected per stream"), (False, "detected whole")],
+    ids=["setting-on", "setting-off"],
+)
+async def test_reprocessing_detects_a_files_peaks_before_it_makes_its_samples(
+    async_session_factory, setup, steps, decision, detected
+):
+    """On the acquisition axis, as a first conversion detects them, so after
+    the calibration is reset; and under the samples the pipeline is about to
+    make, so before the old ones go and the new ones are cut from the store."""
+    bound = await _file(
+        async_session_factory,
+        "restitched",
+        "-",
+        sample_under=(setup["batch"], setup["negative"]),
+    )
+    steps.decision = decision
+
+    result = await process_service.re_process_sample_files(sample_file_ids=[bound])
+
+    assert "Successfully re-processed 1" in result["message"]
+    assert steps.done == [
+        "decided",
+        "reset the calibration",
+        detected,
+        "cleared the samples",
+        "ran the pipeline",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_reprocessing_leaves_the_peaks_of_a_file_nothing_is_decided_for(
+    async_session_factory, setup, steps
+):
+    """Nearly every file: its store is the one any decision gives it."""
+    bound = await _file(
+        async_session_factory,
+        "as-it-was",
+        "-",
+        sample_under=(setup["batch"], setup["negative"]),
+    )
+    steps.decision = None
+
+    await process_service.re_process_sample_files(sample_file_ids=[bound])
+
+    assert steps.done == [
+        "decided",
+        "reset the calibration",
+        "cleared the samples",
+        "ran the pipeline",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_reprocessing_refuses_a_file_it_cannot_decide_for_untouched(
+    async_session_factory, setup, steps
+):
+    """A file whose streams cannot be read cannot be told from one whose
+    peaks have to be detected apart. It is refused before it is claimed, so
+    it keeps the status of its last run, its calibration and its samples."""
+    unreadable = await _file(
+        async_session_factory,
+        "unreadable",
+        "-",
+        sample_under=(setup["batch"], setup["negative"]),
+    )
+    steps.decision = OSError("the raw file is gone")
+
+    with pytest.raises(Exception, match="nothing of it was changed") as refused:
+        await process_service.re_process_sample_files(sample_file_ids=[unreadable])
+
+    assert "the raw file is gone" in str(refused.value)
+    assert steps.done == ["decided"]
+    assert await _status(async_session_factory, unreadable) == "done"
+    assert await _samples_of(async_session_factory, unreadable) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_file_whose_peaks_cannot_be_detected_again_keeps_its_samples(
+    async_session_factory, setup, steps
+):
+    """Its run ends there, and says so: no pipeline follows to record how it
+    ended. The samples of its last run are still its samples, and the status
+    everyone who lists the file can read names the stage and not the error,
+    whose text can hold a path."""
+    failing = await _file(
+        async_session_factory,
+        "undetectable",
+        "-",
+        sample_under=(setup["batch"], setup["negative"]),
+    )
+    steps.detection_error = OSError("/srv/filestore/site/file: No space left")
+
+    with pytest.raises(Exception, match="could not be detected again") as failed:
+        await process_service.re_process_sample_files(sample_file_ids=[failing])
+
+    # Whoever asked is told what stopped it
+    assert "No space left" in str(failed.value)
+    assert steps.done == ["decided", "reset the calibration"]
+    assert await _samples_of(async_session_factory, failing) == 1
+    assert await _status(async_session_factory, failing) == "failed"
+    detail = await _detail(async_session_factory, failing)
+    assert "could not be detected again" in detail
+    assert "/srv/filestore" not in detail
+
+
+@pytest.mark.asyncio
+async def test_one_files_failed_detection_does_not_stop_the_files_after_it(
+    async_session_factory, setup, steps, monkeypatch
+):
+    first = await _file(
+        async_session_factory,
+        "fails-first",
+        "-",
+        sample_under=(setup["batch"], setup["negative"]),
+    )
+    second = await _file(
+        async_session_factory,
+        "follows",
+        "-",
+        sample_under=(setup["batch"], setup["negative"]),
+    )
+    failed_for: list[str] = []
+
+    async def detect(sample_file, per_stream):
+        if not failed_for:
+            failed_for.append(sample_file.sample_file_id)
+            raise OSError("No space left")
+        steps.done.append("detected per stream")
+
+    monkeypatch.setattr(process_service, "redetect_peaks", detect)
+
+    # A partial result is a warning, which the task reports and does not raise
+    await process_service.re_process_sample_files(sample_file_ids=[first, second])
+
+    assert steps.done.count("ran the pipeline") == 1
+    other = second if failed_for == [first] else first
+    assert await _samples_of(async_session_factory, failed_for[0]) == 1
+    assert await _status(async_session_factory, failed_for[0]) == "failed"
+    assert await _status(async_session_factory, other) == "queued"
+
+
+# ---------------------------------------------------------------------------
 # Processing a file on request, and the pipeline's own samples
 # ---------------------------------------------------------------------------
 
