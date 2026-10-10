@@ -771,13 +771,23 @@ it. Four things the build settled:
     signal stitched before. Detection places a peak by its stream's factor
     when it draws the `composite` mask, and reads the overlaps as the
     instrument recorded them (4.5).
-  - *The apply.* Each stream's peak rows move by the stream's new factor
-    over the one the record holds, read under the lock an apply holds. A
-    fit that names no stream - a reset, a fit made before the file was
-    detected per stream - moves the whole file as one. The cached signal
-    of a stream moves by that stream's factor, which it names in an
+  - *The apply.* Each stream's peak rows are placed at what the stream
+    recorded times its new factor. The store keeps each row's reading for
+    that (`mz_recorded`, written at detection; a store detected before is
+    given it at its first calibration of streams apart), so nothing of one
+    calibration is left in the next. A fit that names no stream - a reset,
+    a fit made before the file was detected per stream - moves the whole
+    file as one. The cached signal of a stream moves by that stream's new
+    factor over the one the record holds, and names its stream in an
     attribute; a stitched one is removed and stitched again on demand, and
     so is a cached signal that does not say whose it is.
+  - *A signal made across an apply is not kept.* An apply holds the file's
+    calibration lock from its first write to the record it writes last. A
+    sum signal of a raw Orbitrap file is cached under the same lock, and
+    only if the record still holds the factors it was placed by; otherwise
+    it is made again (`_write_cached_sum_signal`). Without that, a signal
+    averaged while an apply ran was cached on the old axis after the apply
+    had moved or removed what was cached, and stayed there.
   - *The store's axis keeps its order.* The store finds a row by its m/z,
     and its rows stay in the order they were detected in. Two streams read
     one ion a fraction of a ppm apart, so moving each by its own factor
@@ -785,7 +795,12 @@ it. Four things the build settled:
     the composites keep the m/z their calibration gives them, and a reading
     the composite leaves out gives way: it is set beside the row it would
     have passed (`mascope_signal.peak.rows_set_apart`), off by how far the
-    two streams disagree about that ion once both are calibrated. Two rows
+    two streams disagree about that ion once both are calibrated. Its
+    place is then not its reading, so whatever needs the reading takes it
+    from the store (`mascope_signal.compute.recorded_mz`): the fit of its
+    stream, which would otherwise be moved by that disagreement where the
+    row is a calibrant, the next apply, and the read of its timeseries
+    from the raw file. Two rows
     of composites pass each other only across a boundary of the map, or, in
     a file of two polarities, where an ion of each lies within the
     difference of two factors; the later one is then moved by that
@@ -1581,7 +1596,10 @@ for the whole store. What step 6 still holds is listed in section 10.
     per-stream store is one fit per stream of the sample's polarity, each
     made as a file's is - the same matching, the same filters, the same
     selection among calibrants that disagree - among that stream's own
-    peaks. All of them: a stream is calibrated on what it read, so a
+    peaks. The polarity's streams are the store's by what their keys say,
+    one that reads nothing above the noise included: left out it would be
+    given no factor to take from a neighbour. All of a stream's peaks: a
+    stream is calibrated on what it read, so a
     calibrant it holds calibrates it whether or not the composite takes
     that reading from another stream. "Enough" is what a file needs, one
     calibrant for an Orbitrap, and each fitted stream is judged by the
@@ -1595,7 +1613,9 @@ for the whole store. What step 6 still holds is listed in section 10.
       sharing fewer. The offset is the one the store recorded when the
       peaks were detected, of the two streams as the instrument read them;
     - else unshifted, the stream nearest in m/z to one that has a factor
-      taking it as it is, and the overlaps are then tried again from
+      taking it as it is - nearest by their scan ranges, the gap between
+      two and then the distance of their middles - and the overlaps are
+      then tried again from
       there, so that two windows that share ions keep their measured
       distance though neither holds a calibrant.
 

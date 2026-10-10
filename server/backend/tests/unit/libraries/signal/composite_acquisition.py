@@ -57,11 +57,15 @@ def record_calibration(factor):
 
 
 def store_rows():
-    """The test sample's peak store, row by row: m/z, stream, whether its
-    composite takes the row, peak id, and the store's attributes."""
+    """The test sample's peak store, row by row: m/z, what the instrument
+    recorded where the store keeps it, stream, whether its composite takes
+    the row, peak id, and the store's attributes."""
     store = m_io.load_array(SAMPLE_FILENAME, "peak_timeseries")
     return SimpleNamespace(
         mz=store.mz.values,
+        recorded=(
+            store.mz_recorded.values if "mz_recorded" in store.variables else None
+        ),
         stream=store.stream.values,
         composite=store.composite.values,
         peak_id=store.peak_id.values,

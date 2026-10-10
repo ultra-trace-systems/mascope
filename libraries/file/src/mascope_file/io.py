@@ -354,7 +354,14 @@ def load_peak_data(
     both as an index into the stream keys listed by its ``streams``
     attribute. A peak of such a store holds values only on the scans of its
     own stream. Read them through ``mascope_signal.compute.peak_store_streams``,
-    which answers ``[]`` for a pooled store.
+    which answers ``[]`` for a pooled store. It carries as well:
+    - mz_recorded (mz): the peak's m/z as the instrument recorded it. The
+      ``mz`` coordinate is where the store finds the row, which for a
+      reading no composite takes can be set a hair beside its calibrated
+      m/z (``mascope_signal.peak.rows_set_apart``); whatever needs the
+      reading itself goes by this one, through
+      ``mascope_signal.compute.recorded_mz``. A store written before it was
+      kept has none until its streams are first calibrated apart.
 
     The streams of one polarity are stitched into one spectrum, so such a
     store carries as well:
@@ -1143,6 +1150,50 @@ def ensure_sparsity_exists(base_filename: str) -> bool:
 
     runtime.logger.info(f"Migration complete: 'sparsity' added to {base_filename}")
     return True
+
+
+def write_peak_variable(base_filename: str, name: str, values: np.ndarray) -> None:
+    """Write a per-peak variable of a file's peak store, adding it if absent.
+
+    For what a store written before a variable existed has to carry from
+    some point on. The values are along ``mz``, one per row of the store,
+    kept or not.
+
+    :param base_filename: Sample file filename
+    :type base_filename: str
+    :param name: The variable's name
+    :type name: str
+    :param values: One value per row of the store
+    :type values: np.ndarray
+    :raises FileNotFoundError: If the file has no peak store
+    :raises ValueError: If the values are not one per row
+    """
+    path = m_name.filename_to_zarr_path(base_filename, "peak_timeseries")
+    if not os.path.exists(path):
+        raise FileNotFoundError(path)
+    values = np.asarray(values)
+    with zarr_write_lock(path):
+        # The live listing, as for the sparsity: see ensure_sparsity_exists
+        store = open_zarr_store(path, mode="r+")
+        rows = store["mz"].shape[0]
+        if values.shape != (rows,):
+            raise ValueError(
+                f"'{name}' of '{base_filename}' takes one value per peak, "
+                f"{rows}, and was given {values.shape}."
+            )
+        if name not in store:
+            like = store["is_timeseries_computed"]
+            array = store.create_array(
+                name,
+                shape=values.shape,
+                chunks=like.chunks or values.shape,
+                dtype=values.dtype,
+            )
+            # The dimension, as xarray reads it
+            array.attrs.update({"_ARRAY_DIMENSIONS": ["mz"]})
+        store[name][:] = values
+        # So that xr.open_zarr, which reads the consolidated listing, sees it
+        zarr.consolidate_metadata(path)
 
 
 def delete_peaks(base_filename: str) -> None:

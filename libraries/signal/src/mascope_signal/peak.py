@@ -479,6 +479,7 @@ class OrbiPeakDetector(BasePeakDetector):
             f"Detecting the peaks of '{self._filename}' per scan stream: "
             f"{'; '.join(stream['key'] for stream in self._streams)}"
         )
+        calibration = self._sample_file_props.get("mz_calibration")
         datasets = []
         for index, stream in enumerate(self._streams):
             peaks = await self._extract_peaks_for_polarity(
@@ -486,7 +487,17 @@ class OrbiPeakDetector(BasePeakDetector):
             )
             datasets.append(
                 peaks.assign(
-                    stream=(("mz"), np.full(peaks.mz.shape, index, dtype=np.int16))
+                    stream=(("mz"), np.full(peaks.mz.shape, index, dtype=np.int16)),
+                    # The reading itself, beside the row's place on the axis:
+                    # the centroids come by the stream's factor, which is
+                    # taken off again (m_compute.RECORDED_MZ)
+                    **{
+                        m_compute.RECORDED_MZ: (
+                            ("mz"),
+                            peaks.mz.values
+                            / m_factor.stream_factor(calibration, stream["key"]),
+                        )
+                    },
                 )
             )
         peaks = xarray.concat(datasets, dim="mz").sortby("mz")

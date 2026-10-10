@@ -2,7 +2,8 @@ import asyncio
 import hashlib
 import json
 import os
-from contextlib import suppress
+import threading
+from contextlib import contextmanager, suppress
 from typing import Iterable, Literal
 
 import dask.array as da
@@ -36,6 +37,74 @@ AGGREGATION_WINDOW_FACTOR = 1  # Peak aggregation window factor (times FWHM)
 #: the stream's key. A signal cached before streams were calibrated apart
 #: carries none.
 CACHED_STREAM_ATTR = "stream"
+
+#: The per-peak variable of a per-stream store that holds each peak's m/z as
+#: the instrument recorded it (:func:`recorded_mz`).
+RECORDED_MZ = "mz_recorded"
+
+#: What :func:`_write_cached_sum_signal` answers for a signal it did not
+#: keep, because the file was calibrated again while it was made.
+_SUPERSEDED = object()
+
+#: What it is told of a signal whose axis no calibration record puts in place.
+_UNGUARDED = object()
+
+# The calibration locks this thread holds, by path
+_applying = threading.local()
+
+
+@contextmanager
+def holding_mz_calibration_lock(lock_path: str):
+    """Say that this thread holds a file's calibration lock, while it does.
+
+    An apply rewrites the m/z axes of a file's stores and records the
+    calibration last, and it holds the file's calibration lock from the
+    first write to that one (``mascope_file.io.mz_calibration_lock_path``).
+    Whoever makes a sum signal of the file takes the same lock to cache it
+    (:func:`_write_cached_sum_signal`), so that a signal is never kept on
+    the axis of a calibration an apply was replacing meanwhile.
+
+    The apply reads sum signals itself and may have to make one, and the
+    lock is not one a thread can take twice. Inside this, the thread that
+    holds it caches without asking for it again.
+
+    :param lock_path: The path the held lock is named by
+    :type lock_path: str
+    """
+    held = getattr(_applying, "paths", frozenset())
+    _applying.paths = held | {lock_path}
+    try:
+        yield
+    finally:
+        _applying.paths = held
+
+
+def recorded_mz(peak_data: xr.Dataset, calibration: dict | None) -> np.ndarray:
+    """The m/z the instrument recorded of each row of a per-stream store.
+
+    A row's ``mz`` coordinate is where the store finds it. For nearly every
+    row that is the recorded m/z times its stream's calibration factor, but
+    a reading no composite takes is set beside the row it would have passed
+    (``mascope_signal.peak.rows_set_apart``), and what it read is not to be
+    had from its place any more. A fit made on such a place, or a read of
+    the raw file at it, would be of another m/z than the stream measured.
+
+    The store keeps the readings (:data:`RECORDED_MZ`). One written before
+    it did has never had a row set apart - that begins with the first
+    calibration of its streams apart, which writes the readings first - so
+    its rows are taken back by their streams' factors.
+
+    :param peak_data: A per-stream store, or rows of one
+    :type peak_data: xr.Dataset
+    :param calibration: The file's calibration record
+    :type calibration: dict | None
+    :return: One m/z per row
+    :rtype: np.ndarray
+    """
+    if RECORDED_MZ in peak_data.variables:
+        return peak_data[RECORDED_MZ].values
+    by_stream = m_factor.stream_factors(calibration, peak_store_streams(peak_data))
+    return peak_data.mz.values / by_stream[peak_data.stream.values]
 
 
 def _refuse_stream_unless_raw_orbitrap(sample_type: str, stream: str | None) -> None:
@@ -614,6 +683,7 @@ def get_sum_signal(
     # writes the calibrated axis into its store and the filtered ones take it
     # from there, so one summed afresh from the data file keeps that file's axis.
     is_full_sum_signal = t_min is None and t_max is None and polarity is None
+    made_on = _UNGUARDED
     match sample_type:
         case "orbi_raw":
             # Averaged from the raw file, on the acquisition axis, while
@@ -625,6 +695,7 @@ def get_sum_signal(
             # A stream's signal goes by the stream's own factor, as an apply
             # moves it by.
             calibration = m_io.read_props(base_filename)["mz_calibration"]
+            made_on = calibration
             if calibration:
                 factor = m_factor.stream_factor(calibration, stream)
                 sum_signal = sum_signal.assign_coords(mz=sum_signal.mz.values * factor)
@@ -657,7 +728,14 @@ def get_sum_signal(
         base_filename,
         cached_name,
         sum_signal,
+        made_on=made_on,
     )
+    if concurrent_sum_signal is _SUPERSEDED:
+        # The file was calibrated again while this was averaged: it is on an
+        # axis the file no longer has. Made once more, on the one it has.
+        return get_sum_signal(
+            base_filename, t_min, t_max, polarity, average=average, stream=stream
+        )
     if concurrent_sum_signal is not None:
         sum_signal = concurrent_sum_signal
 
@@ -734,10 +812,20 @@ def _write_cached_sum_signal(
     base_filename: str,
     cached_name: str,
     sum_signal: xr.DataArray,
-) -> xr.DataArray | None:
+    made_on: dict | None | object = _UNGUARDED,
+) -> xr.DataArray | None | object:
     """Helper function to write the computed sum signal to the sample file with
     concurrency handling. If another process has already written the sum signal
     concurrently, it will load and return the existing cached sum signal.
+
+    A raw Orbitrap file's signal is put on the file's axis by the
+    calibration record read when it was made, and an apply moves the cached
+    signals and records the new calibration last. A signal made across an
+    apply would be cached on the old axis after the apply had moved, or
+    removed, what was cached - and stay there. So such a signal is cached
+    under the file's calibration lock, which an apply holds throughout
+    (:func:`holding_mz_calibration_lock`), and only if the record still holds
+    the factors it was made on. The caller makes it again otherwise.
 
     :param base_filename: Sample file filename
     :type base_filename: str
@@ -745,6 +833,31 @@ def _write_cached_sum_signal(
     :type cached_name: str
     :param sum_signal: The computed sum signal to cache
     :type sum_signal: xr.DataArray
+    :param made_on: The calibration record the signal's axis was placed by,
+        for a raw Orbitrap file; left out for a signal no record places
+    :type made_on: dict | None
+    :return: The cached sum signal if it was created concurrently;
+        :data:`_SUPERSEDED` if the file's calibration is no longer the one
+        the signal was made on, and nothing was written; otherwise None
+    :rtype: xr.DataArray | None
+    """
+    lock_path = m_io.mz_calibration_lock_path(base_filename)
+    if made_on is _UNGUARDED or lock_path in getattr(_applying, "paths", ()):
+        return _cache_sum_signal(base_filename, cached_name, sum_signal)
+    with m_io.zarr_write_lock(lock_path):
+        now = m_io.read_props(base_filename)["mz_calibration"]
+        if m_factor.factors(now) != m_factor.factors(made_on):
+            return _SUPERSEDED
+        return _cache_sum_signal(base_filename, cached_name, sum_signal)
+
+
+def _cache_sum_signal(
+    base_filename: str,
+    cached_name: str,
+    sum_signal: xr.DataArray,
+) -> xr.DataArray | None:
+    """Write a sum signal to the sample file, unless one is there already.
+
     :return: The cached sum signal if it was created concurrently, otherwise None
     :rtype: xr.DataArray | None
     """
@@ -880,7 +993,14 @@ def get_composite_sum_signal(
         stitched = _stitch_sum_signals(
             base_filename, t_min, t_max, runs, keys, scans, factors
         )
-        concurrent = _write_cached_sum_signal(base_filename, cached_name, stitched)
+        concurrent = _write_cached_sum_signal(
+            base_filename, cached_name, stitched, made_on=calibration
+        )
+        if concurrent is _SUPERSEDED:
+            # Calibrated again while it was stitched: stitched once more
+            return get_composite_sum_signal(
+                base_filename, polarity, t_min, t_max, average=average
+            )
         if concurrent is not None:
             stitched = concurrent
 
@@ -1919,7 +2039,7 @@ def check_stored_scan_axis(
 
 
 async def _read_stream_back(
-    base_filename: str, mzs: np.ndarray, key: str
+    base_filename: str, mzs: np.ndarray, key: str, calibrated: bool = True
 ) -> xr.DataArray:
     """One stream of a per-stream store, read back from the file by its key.
 
@@ -1936,12 +2056,17 @@ async def _read_stream_back(
     :type mzs: np.ndarray
     :param key: The stream's key, as the store lists it
     :type key: str
+    :param calibrated: Whether the m/z values are on the file's calibrated
+        axis; False for values as the instrument recorded them
+    :type calibrated: bool
     :raises StalePeakStoreError: If the file holds no stream under the key
     :return: The peaks' timeseries over the scans of that stream
     :rtype: xr.DataArray
     """
     try:
-        return await get_peak_timeseries(base_filename, mzs, stream=key)
+        return await get_peak_timeseries(
+            base_filename, mzs, stream=key, calibrated=calibrated
+        )
     except m_thermo.UnknownStreamError as error:
         raise _stale_stream_key(key) from error
 
@@ -2298,6 +2423,7 @@ async def _stream_timeseries_update(
         missing = peak_timeseries.isel(mz=np.flatnonzero(to_compute_mask))
         return (
             missing.mz.values,
+            missing[RECORDED_MZ].values if RECORDED_MZ in missing.variables else None,
             missing.stream.values,
             missing.sum_peak_heights.values,
             missing.sum_peak_areas.values,
@@ -2307,6 +2433,7 @@ async def _stream_timeseries_update(
 
     (
         mzs_to_compute,
+        recorded,
         peak_stream,
         sum_peak_heights,
         sum_peak_areas,
@@ -2322,8 +2449,13 @@ async def _stream_timeseries_update(
     for index in np.unique(peak_stream):
         peaks = np.flatnonzero(peak_stream == index)
         scans = np.flatnonzero(scan_stream == index)
+        # At what the stream recorded where the store keeps it: a row's
+        # place on the axis is not always its reading (recorded_mz)
         new_peak_timeseries = await _read_stream_back(
-            base_filename, mzs_to_compute[peaks], streams[int(index)]
+            base_filename,
+            mzs_to_compute[peaks] if recorded is None else recorded[peaks],
+            streams[int(index)],
+            calibrated=recorded is None,
         )
         check_stored_scan_axis(new_peak_timeseries.time.values, time_coords[scans])
 
@@ -2367,6 +2499,7 @@ async def get_peak_timeseries(
     t_max: float | None = None,
     polarity: Literal["+", "-"] | None = None,
     stream: str | None = None,
+    calibrated: bool = True,
 ) -> xr.DataArray:
     """Get peak timeseries for given peak m/z values in the time range [t_min, t_max]
 
@@ -2383,6 +2516,11 @@ async def get_peak_timeseries(
     :param stream: Key of the scan stream to read, for a raw Orbitrap file,
         defaults to None (every stream)
     :type stream: str, optional
+    :param calibrated: Whether the m/z values are on the file's calibrated
+        axis, defaults to True. False for a raw Orbitrap file's values as
+        the instrument recorded them, which are read as they are and
+        answered as they were given.
+    :type calibrated: bool, optional
     :raises ValueError: If a stream is asked of a type that has none
     :return: peak timeseries for the given m/z values
     :rtype: xr.DataArray
@@ -2399,7 +2537,7 @@ async def get_peak_timeseries(
             props = m_io.read_props(base_filename)
             calibration = props["mz_calibration"]
             factor = 1.0
-            if calibration:
+            if calibration and calibrated:
                 factor = m_factor.stream_factor(calibration, stream)
             uncalibrated_mzs = np.array(mzs) / factor
             peak_timeseries = await asyncio.to_thread(
