@@ -200,7 +200,8 @@ describe('calibrationStatus', () => {
       ...extra
     })
     const carried =
-      " Scan ranges m/z 66-124; m/z 132-460 hold no calibrant and take a neighbouring range's calibration."
+      ' Scan ranges m/z 66-124; m/z 132-460 were not fitted on calibrants of their own ' +
+      "and take a neighbouring range's calibration."
 
     it('names the ranges that run on another range’s calibration', () => {
       const status = calibrationStatus(applied())
