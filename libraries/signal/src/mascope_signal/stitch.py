@@ -43,7 +43,9 @@ calibration moves its peaks by parts per million and leaves what its method
 asked for where it was, so whoever asks which stream owns an m/z says which
 calibration factor that m/z carries, and the boundaries are put on the same
 axis before the two are compared. A file is then cut in the same places
-whenever it is cut, before its calibration or after.
+whenever it is cut, before its calibration or after. The streams of a file
+are calibrated each by its own factor (``mascope_signal.mz_factor``), so the
+factor is said per m/z where the values are of more than one stream.
 
 Nothing here reads a file or a store. The functions take what the census
 and the peak store hold and answer in plain values, so that the rule can be
@@ -317,7 +319,9 @@ def stitch_map(streams: list[dict], layout: dict | None = None) -> dict:
     return {"rule": STITCH_RULE, "runs": runs, "sources": sources, "notes": notes}
 
 
-def owners(mz: np.ndarray, runs: list, calibration: float = 1.0) -> np.ndarray:
+def owners(
+    mz: np.ndarray, runs: list, calibration: float | np.ndarray = 1.0
+) -> np.ndarray:
     """The stream that owns each m/z under one polarity's runs.
 
     :param mz: m/z values
@@ -327,14 +331,24 @@ def owners(mz: np.ndarray, runs: list, calibration: float = 1.0) -> np.ndarray:
     :param calibration: The m/z calibration factor the values carry: what
         the instrument recorded, multiplied by it. The runs' edges are
         multiplied by it too, which places a value exactly as its recorded
-        m/z would be placed. Dividing the values back would not.
-    :type calibration: float, optional
+        m/z would be placed. Dividing the values back would not. One factor
+        for all the values, or one per value where they are of streams
+        calibrated apart.
+    :type calibration: float | np.ndarray, optional
     :return: The owner's stream index per m/z, -1 where the map has a gap
     :rtype: np.ndarray
     """
     mz = np.asarray(mz, dtype=np.float64)
     out = np.full(mz.shape, -1, dtype=np.int64)
     if not len(runs):
+        return out
+    if np.ndim(calibration):
+        # Factor by factor, so that each value meets the edges exactly as a
+        # value carrying that one factor does
+        calibration = np.broadcast_to(np.asarray(calibration, dtype=float), mz.shape)
+        for factor in np.unique(calibration):
+            rows = np.flatnonzero(calibration == factor)
+            out[rows] = owners(mz[rows], runs, float(factor))
         return out
     lower = np.array([run[0] for run in runs], dtype=np.float64) * calibration
     upper = np.array([run[1] for run in runs], dtype=np.float64) * calibration
@@ -350,7 +364,7 @@ def composite_mask(
     stream: np.ndarray,
     polarity: np.ndarray,
     stitch: dict,
-    calibration: float = 1.0,
+    calibration: float | np.ndarray = 1.0,
 ) -> np.ndarray:
     """Which peaks of a per-stream store are in their polarity's composite.
 
@@ -367,18 +381,23 @@ def composite_mask(
     :param stitch: The store's map, from :func:`stitch_map`
     :type stitch: dict
     :param calibration: The m/z calibration factor the peaks carry
-        (:func:`owners`)
-    :type calibration: float, optional
+        (:func:`owners`): one for all, or one per peak, each peak carrying
+        its own stream's
+    :type calibration: float | np.ndarray, optional
     :return: One flag per peak
     :rtype: np.ndarray
     """
     mz = np.asarray(mz, dtype=np.float64)
     stream = np.asarray(stream)
     polarity = np.asarray(polarity)
+    per_peak = bool(np.ndim(calibration))
+    if per_peak:
+        calibration = np.broadcast_to(np.asarray(calibration, dtype=float), mz.shape)
     mask = np.ones(mz.shape, dtype=bool)
     for stitched, runs in stitch["runs"].items():
         rows = np.flatnonzero(polarity == stitched)
-        mask[rows] = owners(mz[rows], runs, calibration) == stream[rows]
+        factor = calibration[rows] if per_peak else calibration
+        mask[rows] = owners(mz[rows], runs, factor) == stream[rows]
     return mask
 
 
@@ -442,7 +461,7 @@ def overlap_readings(
     heights: np.ndarray,
     kept: np.ndarray,
     scans: np.ndarray,
-    calibration: float = 1.0,
+    calibration: float | np.ndarray = 1.0,
 ) -> list[dict]:
     """What two streams of one polarity read where both measure.
 
@@ -462,6 +481,12 @@ def overlap_readings(
     saw an ion as well as how high it read it, and a short scan at one
     microscan misses a weak ion where a window at ten does not.
 
+    The m/z offset is of the two readings as the instrument recorded them,
+    whatever calibration the peaks carry: it is what carries a calibration
+    from one stream to the other, so it may not hold one already. Under one
+    factor for the whole file that is the offset of the peaks as they are;
+    where each stream carries its own, each peak is taken back by its own.
+
     :param streams: The streams the store's labels index, as the census
         gives them
     :type streams: list[dict]
@@ -477,8 +502,9 @@ def overlap_readings(
     :param scans: How many scans each stream holds, by stream index
     :type scans: np.ndarray
     :param calibration: The m/z calibration factor the peaks carry
-        (:func:`owners`)
-    :type calibration: float, optional
+        (:func:`owners`): one for all, or one per peak, each peak carrying
+        its own stream's
+    :type calibration: float | np.ndarray, optional
     :return: Per pair: ``streams``, the two stream indexes; ``overlap``, the
         m/z ``[lower, upper]`` both claim; ``shared``, how many ions both
         hold there; ``ratio``, the quartiles of their per-scan height in
@@ -493,6 +519,12 @@ def overlap_readings(
     stream = np.asarray(stream)
     heights = np.asarray(heights, dtype=np.float64)
     usable = np.asarray(kept, dtype=bool) & (heights > 0)
+    # The readings as recorded. One factor leaves every ratio of two m/z as
+    # it is, so only peaks calibrated apart are taken back.
+    recorded = mz
+    if np.ndim(calibration):
+        calibration = np.broadcast_to(np.asarray(calibration, dtype=float), mz.shape)
+        recorded = mz / calibration
 
     by_polarity: dict[str, list[Segment]] = {}
     for segment in segments(streams):
@@ -517,7 +549,9 @@ def overlap_readings(
                     inside |= (mz >= lower * calibration) & (mz < upper * calibration)
                 rows_first = np.flatnonzero(usable & inside & (stream == first.index))
                 rows_second = np.flatnonzero(usable & inside & (stream == second.index))
-                in_first, in_second = _shared_ions(mz[rows_first], mz[rows_second])
+                in_first, in_second = _shared_ions(
+                    recorded[rows_first], recorded[rows_second]
+                )
                 rows_first, rows_second = rows_first[in_first], rows_second[in_second]
                 reading = {
                     "streams": [first.index, second.index],
@@ -534,7 +568,9 @@ def overlap_readings(
                     )
                     reading["ratio"] = _quartiles(ratio)
                     reading["ppm"] = _quartiles(
-                        (mz[rows_second] - mz[rows_first]) / mz[rows_first] * 1e6
+                        (recorded[rows_second] - recorded[rows_first])
+                        / recorded[rows_first]
+                        * 1e6
                     )
                     median = reading["ratio"][1]
                     off = np.maximum(ratio / median, median / ratio)
