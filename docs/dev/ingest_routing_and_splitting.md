@@ -2652,7 +2652,8 @@ unchanged.
      segment. Still open: a per-stream store a match meets stale being
      rebuilt and its rows written with the composite on the next
      processing (4.4);
-  7. **Step 7, the fits per segment:** calibration and the instrument
+  7. **Step 7, the fits per segment** (next, decision 17 being settled):
+     calibration and the instrument
      function per segment, each segment on its own anchors where it holds
      enough, the overlap shift and the unshifted borrow as fallbacks, the
      quality block per segment naming which (decision 5);
@@ -3093,23 +3094,42 @@ through a short-lived stacked branch, merged as one unit.
     claimed nothing and lost its region to whatever wider window lay over
     it. The tie-breaks stay: the narrower window winning outright would
     move the boundary the site drew between its mid and its high window.
-    **Still open, and to be read off a site's files: which window owns an
-    overlap.** More microscans is a rule of thumb, and it gives an overlap
-    to a window that runs one scan. `db script run report_stitch_overlaps`
-    (#2331) reads what the stitched stores of a site's newest files
-    record, layout by layout: who owns each overlap today, how the second
-    range reads the ions both hold against the first - the ratio and the
-    m/z offset, as the middle of the files' medians with their spread -
-    how many peaks each holds there that the other does not, which is what
-    a change of owner would gain and lose, and the ions most of the files
-    list as far off the layout's ratio. It writes nothing and decides
-    nothing: a ratio far from one can be the layout's factor or chemistry
-    inside the instrument, and the report names the ions. Run on the two
-    composite specimens of the regression corpus, it gives the low window
-    104 and 128 peaks in its overlap with the reagent scan that the
-    reagent scan does not hold, against 2 and 0 the other way, the shared
-    ions at 1.3 and 2.8 times the reagent scan's reading, and in the
-    uronium file m/z 78.065 at 0.06 of it.
+    **Decided 2026-10-10: the computed rule stands as the default, and the
+    map rule does not change.** A layout's own map, in the catalogue entry
+    or the recipe, stays the place for what the rule cannot know, and is
+    built when a layout needs one. Whether more microscans should decide
+    an overlap had been left to be read off a site's files, on the worry
+    that the rule hands an overlap to a window that runs a single scan.
+    Read on the internal test box over 507 stitched polarities of one
+    site's files, twelve layouts acquired over six days: in every overlap
+    of every layout, the window the rule picks holds more kept peaks there
+    than the one it passes over. The low or narrow window holds 126 to 158
+    where the reagent scan beside it holds 11 to 36; a window run once at
+    ten microscans holds about 130 where five reagent scans at one
+    microscan hold 27 to 44; the mid and the high window, which tie on
+    microscans, 32 to 36 against 38 to 41 over m/z 444 to 451.
+    - **The ammonia channel is the case the rule was questioned on, and it
+      is read as the method means it.** In the uronium layouts m/z 78.065
+      is taken from the narrow window in 88 of 88 files, at 1,400 to 2,200
+      a scan and a signal-to-noise of 50 to 71, where the reagent scan
+      reads 19,000 to 22,000 at 24 to 26: the reagent dimer's fragment on
+      the same m/z (4.5), which the narrow window exists to keep out. So
+      the channel steps down some nine to fourteen times between a pooled
+      file and a stitched one of the same method, and that step is the
+      measurement becoming the one the method was designed for.
+    - **One ownership is left as the rule draws it, and is the site's to
+      change.** The newest uronium layout adds a SIM window over m/z 40 to
+      75 at ten microscans, which takes the bottom of the range from the
+      reagent scan: 20 peaks there against 12, the reagent scan reading the
+      ions both hold at 1.9 times the window's. If the reagent ions are
+      meant to be read from the reagent scan, that layout is the first to
+      need a map of its own.
+    - **The report stays for the next layout.** `db script run
+      report_stitch_overlaps` (#2331) reads the same records per layout on
+      any server: who owns each overlap, how the second range reads the
+      ions both hold against the first, how many peaks each holds there
+      that the other does not, and the ions most of the files list as far
+      off the layout's ratio. It writes nothing and decides nothing.
     No map of the test set moves, so "every layout of the test set maps
     with nothing configured" holds as it did (4.5).
 
