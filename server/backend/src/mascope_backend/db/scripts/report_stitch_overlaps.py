@@ -129,6 +129,9 @@ class FileReading:
     acquired: dt | None
     sample_file_id: str
     pairs: tuple = ()
+    #: The polarity's stitch map: ``(lower, upper, owner's key)`` per run,
+    #: in m/z order.
+    runs: tuple = ()
 
 
 @dataclass
@@ -253,6 +256,7 @@ def read_file(sample_file: SampleFile) -> list[FileReading]:
                 acquired=sample_file.datetime_utc,
                 sample_file_id=sample_file.sample_file_id,
                 pairs=tuple(pairs),
+                runs=tuple((lower, upper, keys[index]) for lower, upper, index in runs),
             )
         )
     return readings
@@ -265,23 +269,76 @@ def _spread(values: list[float]) -> list[float] | None:
     return [float(quartile) for quartile in np.percentile(values, [25, 50, 75])]
 
 
+def _ions_listed(read: list[PairReading]) -> list[dict]:
+    """The ions most of a layout's files list as far off the pair's ratio.
+
+    An ion is the same ion from file to file within
+    ``mascope_signal.stitch.OVERLAP_MATCH_PPM``, which is what makes two
+    readings of one file the same ion. Rounding the m/z instead would split
+    an ion that lies near a rounding step between two entries, each with
+    part of its files, and drop it from the list or show it twice. A file
+    counts once toward an ion, however often it lists it.
+
+    :param read: One pair's reading in each file of a layout.
+    :return: Per ion at least :data:`_OUTLIER_SHARE` of the files list:
+        ``mz``, the middle of its readings; ``files``, how many list it; and
+        ``ratio``, the middle of their ratios. The ion most files list
+        first.
+    """
+    listings = sorted(
+        (ion, ratio, file)
+        for file, pair in enumerate(read)
+        for ion, ratio in pair.outliers
+    )
+    ions: list[list[tuple]] = []
+    for listing in listings:
+        # Against the lowest reading of the ion, so that a run of readings
+        # each near the last cannot string two ions into one
+        lowest = ions[-1][0][0] if ions else None
+        if lowest is not None and (
+            listing[0] - lowest <= lowest * m_stitch.OVERLAP_MATCH_PPM * 1e-6
+        ):
+            ions[-1].append(listing)
+        else:
+            ions.append([listing])
+    return sorted(
+        (
+            {
+                "mz": round(float(np.median([ion for ion, _ratio, _file in group])), 4),
+                "files": len({file for _ion, _ratio, file in group}),
+                "ratio": float(np.median([ratio for _ion, ratio, _file in group])),
+            }
+            for group in ions
+            if len({file for _ion, _ratio, file in group}) >= _OUTLIER_SHARE * len(read)
+        ),
+        key=lambda entry: (-entry["files"], entry["mz"]),
+    )
+
+
 def summarise(readings: list[FileReading]) -> list[dict]:
     """What each layout's files read in each of its overlaps.
 
+    A layout is an instrument's polarity, the ranges it runs and the map
+    they are stitched by. The map is part of it because a range's key does
+    not say everything the map is drawn from: a method whose microscan
+    counts were changed keeps its keys and can change who owns an overlap,
+    and its files before and after are then read apart, each with its own
+    owner and its own count.
+
     :param readings: The files' readings, as :func:`read_file` gives them.
-    :return: One entry per (instrument, polarity, layout), the layout with
+    :return: One entry per (instrument, polarity, layout, map), the one with
         the most files first: its ``files``, when the first and the last of
-        them were acquired, the newest file's id, and per pair of ranges
-        whose claims meet what the files read there.
+        them were acquired, the newest file's id, its ``runs``, and per pair
+        of ranges whose claims meet what the files read there.
     """
     by_layout: dict[tuple, list[FileReading]] = defaultdict(list)
     for reading in readings:
-        by_layout[(reading.instrument, reading.polarity, reading.layout)].append(
-            reading
-        )
+        by_layout[
+            (reading.instrument, reading.polarity, reading.layout, reading.runs)
+        ].append(reading)
 
     summary = []
-    for (instrument, polarity, layout), files in by_layout.items():
+    for (instrument, polarity, layout, runs), files in by_layout.items():
         by_pair: dict[tuple, list[PairReading]] = defaultdict(list)
         for file in files:
             for pair in file.pairs:
@@ -290,22 +347,7 @@ def summarise(readings: list[FileReading]) -> list[dict]:
         newest = max(files, key=lambda file: (file.acquired is not None, file.acquired))
         pairs = []
         for (first, second), read in by_pair.items():
-            ions: dict[float, list[float]] = defaultdict(list)
-            for pair in read:
-                for ion, ratio in pair.outliers:
-                    ions[round(ion, 3)].append(ratio)
-            listed = sorted(
-                (
-                    {
-                        "mz": ion,
-                        "files": len(ratios),
-                        "ratio": float(np.median(ratios)),
-                    }
-                    for ion, ratios in ions.items()
-                    if len(ratios) >= _OUTLIER_SHARE * len(read)
-                ),
-                key=lambda entry: (-entry["files"], entry["mz"]),
-            )
+            listed = _ions_listed(read)
             pairs.append(
                 {
                     "first": first,
@@ -337,6 +379,7 @@ def summarise(readings: list[FileReading]) -> list[dict]:
                 "instrument": instrument,
                 "polarity": polarity,
                 "layout": list(layout),
+                "runs": [list(run) for run in runs],
                 "files": len(files),
                 "first_acquired": acquired[0] if acquired else None,
                 "last_acquired": acquired[-1] if acquired else None,
@@ -479,6 +522,14 @@ async def _log(walked: Walked, files_limit: int) -> None:
         )
         for key in layout["layout"]:
             log(f"    range {_named(key, settings)}")
+        if layout["runs"]:
+            log(
+                "    stitched: "
+                + "; ".join(
+                    f"m/z {lower:g}-{upper:g} from {segment_label(key)}"
+                    for lower, upper, key in layout["runs"]
+                )
+            )
         if not layout["pairs"]:
             log("    No two of its ranges overlap.")
         for pair in layout["pairs"]:
