@@ -2819,7 +2819,10 @@ unchanged.
      that share an ion, how far the second reads the ions from the first in
      ppm, as the instrument recorded them, and at how many times the
      intensity - the medians the store recorded at detection
-     (`process.status.overlap_readings_note`). It reports and judges
+     (`process.status.overlap_readings_note`). The detail names a stitched
+     file's ranges by scan range, as the views do, where it printed each
+     stream's whole key: four keys took a quarter of the detail's bound,
+     and what is said of the ranges comes after them. It reports and judges
      nothing. Still open: a warning when a file's reading leaves what its
      layout usually reads, which needs the layout's history and a bound
      nobody has measured yet; and the layout override, which waits for a

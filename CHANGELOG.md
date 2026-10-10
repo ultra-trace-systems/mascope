@@ -73,13 +73,15 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   not fitted on calibrants of their own.
 
 - **A stitched file's processing detail says what its scan ranges read
-  where they overlap, and which ranges hold no calibrant.** For each pair
-  of ranges that share an ion: how far apart in ppm the two read the shared
-  ions and at how many times the intensity, so that a file whose ranges
-  have drifted apart shows in Raw files. And once the file is calibrated
-  and matched, which of its ranges were given a neighbouring range's
-  calibration - the sign that the calibration collection does not reach
-  every window of the method.
+  where they overlap, and which ranges have no calibration fit of their
+  own.** For each pair of ranges that share an ion: how far apart in ppm
+  the two read the shared ions and at how many times the intensity, so
+  that a file whose ranges have drifted apart shows in Raw files. And once
+  the file is calibrated and matched, which of its ranges were given a
+  neighbouring range's calibration, with the reason the fit recorded - no
+  calibrant of the collection found in the window, or ones that could not
+  be fitted. The detail names a stitched file's ranges by their scan range
+  ("m/z 66-124") where it used to print each one's full scan filter.
 
 - **A sample stitched from several scan ranges shows where they meet.**
   With `composite_scan_streams` on, the spectrum of such a sample is one

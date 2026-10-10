@@ -2035,8 +2035,8 @@ async def test_done_names_the_ranges_that_run_on_a_neighbours_calibration(status
 
     assert _recorded(status)[-1] == (
         "done",
-        "Matched 1 sample. m/z 132-460 holds no calibrant: given the calibration "
-        "of m/z 40-138 as it is.",
+        "Matched 1 sample. m/z 132-460 has no fit of its own: given the "
+        "calibration of m/z 40-138 as it is.",
     )
 
 
@@ -2069,7 +2069,7 @@ async def test_done_names_them_after_what_the_calibration_fell_short_of(status):
     assert _recorded(status)[-1] == (
         "done",
         "Matched 1 sample. The m/z calibration is below the quality bar: "
-        "Mean error 4.1 ppm. m/z 66-124 holds no calibrant: calibrated from "
+        "Mean error 4.1 ppm. m/z 66-124 has no fit of its own: calibrated from "
         "m/z 40-138 across the 26 ions both measure.",
     )
 
@@ -2102,7 +2102,7 @@ async def test_a_file_held_back_from_matching_does_not_name_them(status):
 
     state, detail = _recorded(status)[-1]
     assert state == "calibration_failed"
-    assert "holds no calibrant" not in detail
+    assert "has no fit of its own" not in detail
 
 
 @pytest.mark.asyncio
