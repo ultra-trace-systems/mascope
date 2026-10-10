@@ -16,6 +16,7 @@ import { useApp } from '@/stores'
 import { useMzFit } from '@/lib/mzFit'
 import { PaneSettingsCalibration } from '@/lib/panes'
 import { canCalibrateInstruments } from '@/lib/permissions'
+import { calibrationSegments, segmentCalibrationText } from '@/lib/calibrationSegments'
 
 const mzFit = useMzFit()
 const confirm = useConfirm()
@@ -87,6 +88,9 @@ const title = computed(() =>
 // Why the previewed fit misses the quality bar (empty when it clears it). The
 // backend judges again on apply; this is what the operator is shown first.
 const qualityIssues = computed(() => mzFit.current?.quality_issues ?? [])
+// The scan ranges of a stitched sample, each with how it came by its
+// calibration. Empty for a sample that is not stitched.
+const segments = computed(() => calibrationSegments(mzFit.current))
 // Whether the deployment keeps a below-bar fit out of matching ("enforce"),
 // which is the only case saving one needs an explicit acceptance.
 const gateEnforced = computed(() => mzFit.current?.quality_gate === 'enforce')
@@ -220,6 +224,10 @@ const calibration = computed(() => ({
   key: 0,
   rows: mzFit.stats ?? [],
   columns: [
+    // A stitched sample's calibrants say which scan range each was found in
+    ...((mzFit.stats ?? []).some((row) => row.segment_label)
+      ? [{ field: 'segment_label', label: 'Scan range' }]
+      : []),
     { field: 'mz', label: 'Isotope m/z' },
     { field: 'sample_peak_mz', label: 'Observed m/z' },
     {
@@ -243,6 +251,7 @@ const calibration = computed(() => ({
 }))
 
 const columnFormatters = computed(() => ({
+  segment_label: { format: (label) => label },
   mz: num.mz,
   sample_peak_mz: num.mz,
   calibration_mz: num.mz,
@@ -289,6 +298,15 @@ const formatter = new Intl.NumberFormat('en-US', {
         >
           {{ qualityIssuesSummary }}
         </Message>
+        <ul v-if="segments.length > 0" class="segment-list" data-testid="calibration-segments">
+          <li
+            v-for="segment in segments"
+            :key="segment.key"
+            :class="{ carried: segment.source !== 'anchors' }"
+          >
+            {{ segmentCalibrationText(segment) }}
+          </li>
+        </ul>
         <h3>Calibration Results</h3>
         <div class="content-wrapper" :class="{ 'batch-layout': !!samples }">
           <div v-if="samples" class="list-wrapper">
@@ -450,6 +468,18 @@ const formatter = new Intl.NumberFormat('en-US', {
   padding-top: 1rem;
   border-top: 1px solid var(--surface-border, #3c434d);
   flex-shrink: 0;
+}
+
+.segment-list {
+  flex-shrink: 0;
+  margin: 0 0 0.5rem;
+  padding-inline-start: 1.2rem;
+  font-size: 0.85rem;
+  color: var(--text-color-secondary, #a0a7b4);
+}
+
+.segment-list .carried {
+  color: var(--p-message-warn-color, #eab308);
 }
 
 .message-container {
