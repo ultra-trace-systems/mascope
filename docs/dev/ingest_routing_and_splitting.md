@@ -84,7 +84,7 @@ request for this work updates the table below and ticks its item on #2098.
 | 1 | Per-file processing state, persistent notifications, "needs a chemistry" | shipped (#2164, #2166-#2169) |
 | 2 | Method bindings: routing without tokens | learned in shadow on every server (#2193, #2196, #2206, #2226), measured (5.7), item provenance (#2254), the row-following learner (#2255), the rung (#2264) and the disagreement report (#2267) shipped; the backfill re-run and the per-site switch remain, section 10 lists them |
 | 8 | Chemistry profiles as the unit: complete the seeded profiles, ship the standard methods and their catalogue, list the profiles, a profile-first surface, batches named after the profile | open; follows the stream first cut, or runs beside it when there are hands for both (decided 2026-10-05) |
-| 3 | The part contract: stream and window honoured by every consumer | **in progress**: the composite cut, for files whose method measures more than one thing in a polarity (4.5), leads the work after phase 2 (decided 2026-10-05; a stitch, not a split, since 2026-10-06). The census keys streams on the method's experiments (#2273), the reader selects one stream's scans (#2278), and peak detection and the peak store follow a stream behind `composite_scan_streams` (#2279), and the store is stitched - the map, the per-peak mask, the overlap readings and the stitched sum signal (#2297); the stream table is in the schema with its composite column (#2282) and written for every file, each polarity's item pointing at its composite or its one stream (#2283), and the readers of the peak list take the composite's rows, each averaged over its own stream's scans (#2307); the rest of the consumers and the per-segment fits follow, and section 10 lists them |
+| 3 | The part contract: stream and window honoured by every consumer | **in progress**: the composite cut, for files whose method measures more than one thing in a polarity (4.5), leads the work after phase 2 (decided 2026-10-05; a stitch, not a split, since 2026-10-06). The census keys streams on the method's experiments (#2273), the reader selects one stream's scans (#2278), and peak detection and the peak store follow a stream behind `composite_scan_streams` (#2279), and the store is stitched - the map, the per-peak mask, the overlap readings and the stitched sum signal (#2297); the stream table is in the schema with its composite column (#2282) and written for every file, each polarity's item pointing at its composite or its one stream (#2283), and the readers of the peak list take the composite's rows, each averaged over its own stream's scans (#2307); a re-processing detects a file's peaks again under the setting as it is then, so files converted before it was switched can be stitched (#2328); the rest of the consumers and the per-segment fits follow, and section 10 lists them |
 | 4 | Per-stream state: calibration and instrument function per segment, MS2 | open; its per-segment calibration is part of the composite cut; follows 3 on the same track; no rebuild script (4.5, 9.1) |
 | 5 | Chemistry detection: audit first, then provisional binding | deferred behind phases 3, 4 and 8 (decision 3); its reagent libraries are on `develop` |
 | 6 | Recipes: time and trace windows, preview and apply | open |
@@ -843,9 +843,21 @@ throughout, because nothing here cuts a file into items, and it writes no
   Otherwise switching the flag would take a pooled store apart by stream,
   or pool a per-stream one, under samples that already exist, which is rule
   1 of 9.1 broken from underneath. Only an explicit decision changes the
-  record, and the re-process of step 8 is where one is made. It is written
+  record, and the re-process of step 8 is where one is made (#2328): it
+  hands detection the setting as it is at that moment, for the files where
+  that can give another store than the one they have. It is written
   before the store, so that a store whose write is cut short is rebuilt the
   way it was being built.
+  - **Two processes detect a file's peaks, never at once.** The converter
+    runs every other detection; a re-processing runs its own in the backend,
+    because it needs the store before it makes the file's samples and the
+    converter answers over a socket whenever it is done. A detector reads
+    the record when it is made, so a rebuild that read it before a
+    re-processing wrote it would write the store of the old record over the
+    store of the new one. A detection therefore holds a lock of the file
+    from its read of the record to the last write of its store
+    (`mascope_file.io.peak_detection_lock_path`), whichever process runs
+    it.
   - **The decision holds where a rebuild finds nothing to detect apart.**
     Under another reader or another keying a file can read back one stream
     in each polarity. The store is then rebuilt pooled, readers go by the
@@ -2230,7 +2242,7 @@ What that leaves in place, and what happens to it:
 | Files processed before phase 1, with no status or registration time | NULL, shown as no status |
 | Items bound under the token rule before #2158, or calibrated in the order before #2153 | as bound; a re-process applies the current rules |
 | Items bound to one of several mode rows for a chemistry | as bound; the binding follows the newest row for the files that arrive later, and a retired mode keeps its batches |
-| Multi-stream files processed before the composite cut: two polarities as two items, several ranges pooled into one spectrum that blends the scan types | as processed; an explicit re-process stitches them under the rules then current. A site already acquiring composite files re-processes those batches once the cut ships |
+| Multi-stream files processed before the composite cut: two polarities as two items, several ranges pooled into one spectrum that blends the scan types | as processed; an explicit re-process stitches them under the rules then current (#2328). A site already acquiring composite files re-processes those batches once the cut ships |
 | Bindings the backfill read from history (`source = history`) | kept; they carry no per-file rung, and provenance starts with the item columns |
 | Files with no acquisition sample | parked, or older than the parked state; an explicit bind routes them under the current rules |
 
@@ -2596,8 +2608,37 @@ unchanged.
      function per segment, each segment on its own anchors where it holds
      enough, the overlap shift and the unshifted borrow as fallbacks, the
      quality block per segment naming which (decision 5);
-  8. **Step 8, re-process:** a re-process rebuilds a file's store under
-     the current rule, so a site's composite batches can be re-processed;
+  8. **Step 8, re-process.** ~~A re-process rebuilds a file's store under
+     the current rule, so a site's composite batches can be
+     re-processed~~ - built in #2328: a re-processing
+     (`re_process_sample_files`) is the one run that decides again how a
+     file's peaks are detected. It reads the setting as it is at that
+     moment and detects the file's peaks under it before it makes the
+     file's samples (`process/peaks.py`): after the calibration is reset,
+     so on the acquisition axis, as a first conversion detects them, and
+     before the old samples are cleared, so that a file whose peaks cannot
+     be detected keeps them. The decision is recorded as a conversion
+     records it, and every rebuild after goes by it. Only where the answer
+     can differ from the store the file has: a raw Orbitrap file whose
+     record or whose store says per stream - its map is drawn by the rule
+     of the day as well - or, with the setting on, whose own streams give
+     more than one thing measured in a polarity. Every other file's store
+     is left as it is, its peak ids included, and with the setting off a
+     pooled file is not read for its streams at all. A file whose streams
+     cannot be read is refused before anything of it is touched, since it
+     cannot be told from one whose peaks have to be detected apart - and
+     one whose record or store already says per stream is read for them
+     as well, since its peaks are detected again either way and that takes
+     the raw file. A detection writes its store beside the one the file has
+     and puts it in its place once it is whole
+     (`mascope_file.io.write_peaks`), so a write that fails part-way leaves
+     the file its store, and the decision that store was built by is put
+     back; a file with no store yet keeps the new decision, which its
+     first store is built by. A bind
+     and a process-on-request keep going by the record: they rebuild files
+     a person may have made a sample from, and that sample is defined
+     against the store as it is. The backend reads the setting when it
+     starts, as the converter does, so both are restarted after a change;
   9. **Step 9, the override and the drift:** the layout override in the
      catalogue entry and the recipe, and the overlap drift in the
      processing detail.
