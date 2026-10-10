@@ -2626,7 +2626,15 @@ unchanged.
      is left as it is, its peak ids included, and with the setting off a
      pooled file is not read for its streams at all. A file whose streams
      cannot be read is refused before anything of it is touched, since it
-     cannot be told from one whose peaks have to be detected apart. A bind
+     cannot be told from one whose peaks have to be detected apart - and
+     one whose record or store already says per stream is read for them
+     as well, since its peaks are detected again either way and that takes
+     the raw file. A detection writes its store beside the one the file has
+     and puts it in its place once it is whole
+     (`mascope_file.io.write_peaks`), so a write that fails part-way leaves
+     the file its store, and the decision that store was built by is put
+     back; a file with no store yet keeps the new decision, which its
+     first store is built by. A bind
      and a process-on-request keep going by the record: they rebuild files
      a person may have made a sample from, and that sample is defined
      against the store as it is. The backend reads the setting when it
