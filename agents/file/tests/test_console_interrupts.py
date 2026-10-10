@@ -11,6 +11,12 @@ a stubbed `stop()` cannot show, and it is where the platforms differ:
 - Elsewhere the interrupt reaches the join, and CPython 3.12 then marks the
   thread as stopped while it runs (python/cpython#90882), so the next wait
   finds nothing to wait for and the process exits with the upload in flight.
+- Anywhere, an interrupt raised just as the main thread has taken the lock
+  inside an event or a queue leaves that lock held, and the agent waits for
+  it for ever at its next use. The interrupts here fall just as the upload
+  loop wakes, and on Windows that hung a few runs in a hundred until the
+  agent counted its interrupts and raised them itself (`_threads.Interrupts`;
+  `test_agent.py` places one there).
 
 So the agent runs in a process of its own (`interrupted_console.py`), with an
 upload held and the interrupts raised the way the operating system raises

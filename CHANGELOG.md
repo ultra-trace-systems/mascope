@@ -4,6 +4,31 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 ## [Unreleased]
 
+### Fixed
+
+- **A Ctrl+C can no longer leave the File Agent hung.** Python raises an
+  interrupt on the main thread at whichever instruction that thread has
+  reached, and the agent's main thread spends its time in events and queues,
+  which Python builds around a lock. An interrupt that landed in the instant
+  after such a lock was taken, and before the code that releases it was
+  under way, left the lock held: the agent logged "Shutdown requested by
+  user." and then waited for its own lock for ever, deaf to any further
+  Ctrl+C, until its window was closed. It was rare in use, and common enough
+  in the agent's own console tests, whose interrupts fall just as the upload
+  loop wakes, to hang a few runs in a hundred on Windows. While
+  `Agent.run_until_complete()` runs on the main thread, interrupts are now
+  counted instead of raised, and the agent acts on each itself between two
+  of its waits, within a second or so and with no lock in hand. What the
+  three of them do is unchanged: the first stops the agent and waits for the
+  uploads under way, a second keeps it waiting, a third stops it without
+  them. Python's own handling of Ctrl+C is put back when the agent returns;
+  a handler a program has set itself and a process started with interrupts
+  ignored are left as they are, and an agent run on any other thread
+  replaces nothing. An interrupt that arrives while the agent asks the
+  server about its credential at start now stops the agent as any other
+  does, where it used to end the program with a traceback; Ctrl+C at the
+  offer to pair the machine again still only declines the offer.
+
 ## [1.11.0] - 2026.10.09
 
 ### Added

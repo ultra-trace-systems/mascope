@@ -61,6 +61,12 @@ def held_upload(**kwargs) -> None:
     global began
     began = time.monotonic()
     say("upload began")
+    # On the dot after the upload loop last woke, which it did to hand this
+    # file over. On Windows a wait runs out on a timer tick and so does a
+    # timer, so each interrupt tends to arrive just as the loop wakes again,
+    # into its few instructions of work and not into its wait. That is where
+    # an interrupt raised on arrival left a lock held (`_threads.Interrupts`),
+    # and the times stay on the dot to keep arriving there.
     for seconds in INTERRUPT_AT:
         threading.Timer(seconds, interrupt).start()
     time.sleep(HOLD)
