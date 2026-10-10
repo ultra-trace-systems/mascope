@@ -53,6 +53,17 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   row as the sample the pipeline made. Files with one experiment in each
   polarity are read as before.
 
+- **With `composite_scan_streams` on, each scan range of a stitched file
+  is m/z calibrated on its own.** Two ranges of one file read an ion up to
+  a ppm apart, and one factor for the file left every range but one off by
+  that much. A range is now fitted on the calibrants it holds itself; one
+  that holds none takes a neighbouring range's calibration, shifted by what
+  the two read in their overlap where they share at least five ions, and as
+  it is where they do not. The calibration's quality record lists each
+  range with how it came by its calibration, and a range fitted on a wrong
+  peak marks the file's calibration as below the bar, naming the range.
+  Files that are not stitched are calibrated exactly as before.
+
 - **A sample stitched from several scan ranges shows where they meet.**
   With `composite_scan_streams` on, the spectrum of such a sample is one
   range after another with nothing rescaled between them, so the signal can
