@@ -83,8 +83,19 @@ def test_streams_the_store_stitched_are_not_called_pooled():
         [_stream(LOW, "-"), _stream(HIGH, "-")], stitched=[LOW, HIGH]
     )
 
+    # Each by its scan range, as the sample's views name a segment
     assert note == (
-        f"Polarity - stitches 2 MS1 scan streams into one spectrum: {LOW}; {HIGH}."
+        "Polarity - stitches 2 MS1 scan streams into one spectrum: "
+        "m/z 40-160; m/z 128-600."
+    )
+
+
+def test_pooled_streams_are_still_named_by_their_whole_key():
+    """Nothing else says which experiments a pooled peak list mixes."""
+    note = status.pooled_streams_note([_stream(LOW, "-"), _stream(HIGH, "-")])
+
+    assert note == (
+        f"Polarity - pools 2 MS1 scan streams into one peak list: {LOW}; {HIGH}."
     )
 
 
@@ -461,8 +472,14 @@ async def test_a_stored_files_note_says_its_streams_and_then_what_they_read():
 # -- which ranges run on a neighbour's calibration -----------------------------------
 
 
-def _segment(label, source, origin=None, shared=None):
-    return {"label": label, "source": source, "origin": origin, "shared_ions": shared}
+def _segment(label, source, origin=None, shared=None, note=None):
+    return {
+        "label": label,
+        "source": source,
+        "origin": origin,
+        "shared_ions": shared,
+        "note": note,
+    }
 
 
 def _calibrated(*segments):
@@ -478,8 +495,8 @@ def test_a_range_calibrated_across_an_overlap_says_from_which_and_over_how_many(
     )
 
     assert note == (
-        "m/z 66-124 holds no calibrant: calibrated from m/z 40-138 across the 26 "
-        "ions both measure."
+        "m/z 66-124 has no fit of its own: calibrated from m/z 40-138 across the "
+        "26 ions both measure."
     )
 
 
@@ -492,7 +509,8 @@ def test_a_range_given_a_neighbours_calibration_says_whose():
     )
 
     assert note == (
-        "m/z 132-460 holds no calibrant: given the calibration of m/z 40-138 as it is."
+        "m/z 132-460 has no fit of its own: given the calibration of m/z 40-138 "
+        "as it is."
     )
 
 
@@ -505,9 +523,82 @@ def test_every_range_without_a_calibrant_is_named():
         )
     )
 
-    assert note.count("holds no calibrant") == 2
+    assert note.count("has no fit of its own") == 2
     assert "across the 1 ion both measure." in note
-    assert "m/z 40-138 holds" not in note
+    assert "m/z 40-138 has" not in note
+
+
+def test_the_reason_the_fit_recorded_for_a_range_is_quoted():
+    """A range with no fit of its own need not lack calibrants: the ones it
+    holds can have disagreed. Which it was is the fit's to say, so that a
+    site is not sent to extend a collection that reaches the window."""
+    note = status.carried_calibration_note(
+        _calibrated(
+            _segment(
+                "m/z 66-124",
+                "overlap",
+                "m/z 40-138",
+                26,
+                note="No calibration peaks found",
+            ),
+            _segment(
+                "m/z 132-460",
+                "borrowed",
+                "m/z 40-138",
+                note="No suitable subset of calibration peaks found; skipping calibration.",
+            ),
+        )
+    )
+
+    assert note == (
+        "m/z 66-124 has no fit of its own (no calibration peaks found): calibrated "
+        "from m/z 40-138 across the 26 ions both measure. m/z 132-460 has no fit of "
+        "its own (no suitable subset of calibration peaks found; skipping "
+        "calibration): given the calibration of m/z 40-138 as it is."
+    )
+
+
+def test_a_stitched_files_whole_detail_fits_the_bound():
+    """Four ranges, the three overlaps a layout can have, a fit below the
+    bar and every analyte window on a neighbour's calibration: what a file
+    of the settled layout can have to say at once. Named by their keys, the
+    ranges alone took a quarter of the bound and the readings fell off the
+    end."""
+    streams = [_stream(key, "-") for key in STORE_KEYS]
+    carried = status.carried_calibration_note(
+        _calibrated(
+            _segment("m/z 40-138", "anchors"),
+            *(
+                _segment(
+                    label, "overlap", "m/z 40-138", 26, "No calibration peaks found"
+                )
+                for label in ("m/z 66-124", "m/z 132-460", "m/z 440-1200")
+            ),
+        )
+    )
+    detail = status.compose_detail(
+        "Matched 1 sample.",
+        "The m/z calibration is below the quality bar: m/z 40-138: Mean m/z error "
+        "after calibration is 1.27 ppm (limit 1 ppm).",
+        carried,
+        status.pooled_streams_note(streams, stitched=STORE_KEYS),
+        status.overlap_readings_note(
+            STORE_KEYS,
+            [
+                _overlap(0, 1, 26, -0.417, 1.37),
+                _overlap(0, 2, 4, 0.2, 0.9),
+                _overlap(2, 3, 33, 0.611, 1.25),
+            ],
+        ),
+    )
+
+    assert len(detail) < status._DETAIL_LIMIT
+    assert not detail.endswith("...")
+    assert detail.endswith("0.61 ppm higher, at 1.25 times the intensity.")
+    assert (
+        "Polarity - stitches 4 MS1 scan streams into one spectrum: m/z 40-138; "
+        "m/z 66-124; m/z 132-460; m/z 440-1200."
+    ) in detail
 
 
 @pytest.mark.parametrize(

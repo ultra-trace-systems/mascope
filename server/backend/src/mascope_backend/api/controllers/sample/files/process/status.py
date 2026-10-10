@@ -13,7 +13,9 @@ The detail is one or two plain sentences for a person: what the status means
 for this file, and, for a file whose MS1 scans of one polarity come from more
 than one scan stream, that peak detection pools them. A file stitched from
 its streams says more of them: what two scan ranges read where they overlap,
-and which ranges hold no calibrant and run on a neighbour's m/z calibration.
+and which ranges have no fit of their own and run on a neighbour's m/z
+calibration. Its ranges are named as the views name them, by scan range, so
+that what is said of them has room inside the detail's bound.
 """
 
 import asyncio
@@ -81,7 +83,10 @@ def pooled_streams_note(
     Unless the file's peaks were detected per stream and stitched. Its peak
     store then holds a peak list for each and the map that makes one
     spectrum of them, and saying they are pooled would be wrong: the
-    sentence says they are stitched instead.
+    sentence says they are stitched instead, and names each stream by its
+    scan range, as the sample's views and everything else the detail says
+    of a stitched file do (``segment_label``). The full keys are in the
+    file's stream rows; four of them alone take a quarter of the detail.
 
     :param streams: The file's scan stream census, as
         :func:`read_scan_streams` returns it: every entry a dict with a dict
@@ -107,7 +112,7 @@ def pooled_streams_note(
     notes = [
         (
             f"Polarity {polarity} stitches {len(keys)} MS1 scan streams into one "
-            f"spectrum: {'; '.join(keys)}."
+            f"spectrum: {'; '.join(segment_label(key) for key in keys)}."
             if all(key in stitched for key in keys)
             else f"Polarity {polarity} pools {len(keys)} MS1 scan streams into "
             f"one peak list: {'; '.join(keys)}."
@@ -269,14 +274,18 @@ async def read_overlap_readings_note(filename: str) -> str | None:
 def carried_calibration_note(mz_calibration: dict | None) -> str | None:
     """Which scan ranges of a stitched file run on a neighbour's m/z calibration.
 
-    A stitched file is calibrated range by range, and a range that holds no
-    calibrant of the file's collection takes the calibration of a
-    neighbouring range: across their overlap where they share enough ions,
-    else as it is. The file's calibration record lists the ranges with how
-    each came by its own (``quality.segments``). A collection that reaches
-    every window of its layout leaves nothing to say here; one that does not
-    is named window by window, which is what tells a site its collection is
-    short.
+    A stitched file is calibrated range by range, and a range with no fit
+    of its own takes the calibration of a neighbouring range: across their
+    overlap where they share enough ions, else as it is. The file's
+    calibration record lists the ranges with how each came by its own
+    (``quality.segments``).
+
+    Why a range has no fit is the fit's to say, and it is quoted where it
+    was recorded (``note``): a range can hold no calibrant of the
+    collection, or hold ones too weak for the fit, or ones that disagree,
+    and only the first is a collection that falls short of the window. The
+    sentence says the range has no fit of its own and nothing it does not
+    know.
 
     :param mz_calibration: The file's calibration record.
     :return: One sentence per range that was not fitted on calibrants of its
@@ -291,17 +300,18 @@ def carried_calibration_note(mz_calibration: dict | None) -> str | None:
             segment.get("label"),
             segment.get("origin"),
         )
+        note = (segment.get("note") or "").strip().rstrip(".")
+        unfitted = f"{label} has no fit of its own" + (
+            f" ({note[0].lower()}{note[1:]})" if note else ""
+        )
         if source == m_factor.OVERLAP:
             shared = segment.get("shared_ions")
             sentences.append(
-                f"{label} holds no calibrant: calibrated from {origin} across the "
+                f"{unfitted}: calibrated from {origin} across the "
                 f"{shared} ion{'' if shared == 1 else 's'} both measure."
             )
         elif source == m_factor.BORROWED:
-            sentences.append(
-                f"{label} holds no calibrant: given the calibration of {origin} "
-                "as it is."
-            )
+            sentences.append(f"{unfitted}: given the calibration of {origin} as it is.")
     return " ".join(sentences) or None
 
 
