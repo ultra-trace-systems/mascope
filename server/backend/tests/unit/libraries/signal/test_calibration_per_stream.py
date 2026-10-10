@@ -17,12 +17,15 @@ larger than an instrument's, so that a move by the wrong one is seen.
 """
 
 import asyncio
+import os
+import shutil
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import numpy as np
 import pandas as pd
 import pytest
+import zarr
 from composite_acquisition import (
     COMPOSITE,
     IN_HIGH,
@@ -35,6 +38,7 @@ from composite_acquisition import (
 from scripted_acquisition import SAMPLE_FILENAME
 
 import mascope_file.io as m_io
+import mascope_file.name as m_name
 import mascope_signal.compute as m_compute
 import mascope_signal.mz_factor as m_factor
 import mascope_signal.peak as m_peak
@@ -167,10 +171,63 @@ def test_a_second_fit_moves_each_stream_from_where_the_first_left_it(composite):
 
     factors = np.array([again[REAGENT], again[LOW], again[MID], 1 + 2e-6])
     taken = before.composite
-    assert after.mz[taken] == pytest.approx(
-        before.mz[taken] * factors[before.stream[taken]], rel=1e-15
+    # From what each row recorded, so to the last digit: nothing of the
+    # first calibration is left in the second
+    assert (
+        after.mz[taken].tolist()
+        == (before.mz[taken] * factors[before.stream[taken]]).tolist()
     )
+    assert after.recorded.tolist() == before.mz.tolist()
     assert m_factor.stream_factors(_record(), KEYS).tolist() == factors.tolist()
+
+
+def _forget_readings():
+    """Make the test sample's store one written before its rows kept what
+    the instrument recorded."""
+    path = m_name.filename_to_zarr_path(SAMPLE_FILENAME, "peak_timeseries")
+    shutil.rmtree(os.path.join(path, "mz_recorded"))
+    zarr.consolidate_metadata(path)
+    assert store_rows().recorded is None
+
+
+def test_a_store_written_before_readings_were_kept_is_given_them_first(composite):
+    """Calibrated by one factor since, as every such store was: its rows
+    are taken back by it, kept, and only then moved apart."""
+    before = store_rows()
+    _apply(_fit(streams=None))
+    _forget_readings()
+
+    _apply(_fit())
+    after = store_rows()
+
+    assert after.recorded == pytest.approx(before.mz, rel=1e-15)
+    taken = before.composite
+    assert after.mz[taken] == pytest.approx(
+        before.mz[taken] * ALL[before.stream[taken]], rel=1e-15
+    )
+    # And the row that gave way still says what it read
+    passed = int(np.flatnonzero((before.stream == REAGENT) & (before.mz == 80.0))[0])
+    assert after.recorded[passed] == pytest.approx(80.0, rel=1e-15)
+    assert after.mz[passed] != pytest.approx(80.0 * FACTORS[REAGENT], rel=1e-9)
+
+
+@pytest.mark.asyncio
+async def test_a_reading_set_apart_is_read_back_at_what_it_recorded(composite):
+    """The reagent scan's reading of the ion at 80 gave way to the low
+    window's, sixty ppm from where its own factor puts it. Its timeseries is
+    read from the file at the m/z the reagent scan recorded: at the row's
+    place less the factor, the file holds nothing."""
+    await asyncio.to_thread(_apply, _fit())
+    rows = store_rows()
+    passed = int(np.flatnonzero((rows.stream == REAGENT) & (rows.recorded == 80.0))[0])
+    assert not rows.composite[passed]
+
+    filled = await m_compute.load_peak_timeseries(
+        SAMPLE_FILENAME, [float(rows.mz[passed])]
+    )
+
+    assert filled.peak_id.values.tolist() == [rows.peak_id[passed]]
+    assert float(np.nansum(filled.peak_heights.values)) == pytest.approx(50.0)
 
 
 def test_a_fit_the_file_already_has_moves_nothing(composite):
@@ -406,15 +463,16 @@ async def test_each_stream_is_fitted_on_the_calibrants_it_holds(fitted):
 @pytest.mark.asyncio
 async def test_a_stream_with_no_calibrant_takes_the_nearest_fit_as_it_is(fitted):
     """The mid window shares one ion with the high window, too few to carry
-    a calibration across. It lies against the high window."""
+    a calibration across. Its scan range overlaps the reagent scan's and the
+    high window's, and its middle lies nearer the reagent scan's."""
     handler = await fitted()
 
     mid = handler.segments[MID]
     assert handler.fit_result["streams"][KEYS[MID]] == {
-        "calibration_factor": pytest.approx(ASKED[HIGH], rel=1e-15)
+        "calibration_factor": pytest.approx(ASKED[REAGENT], rel=1e-15)
     }
     assert mid["source"] == "borrowed"
-    assert mid["origin"] == LABELS[HIGH]
+    assert mid["origin"] == LABELS[REAGENT]
     assert mid["shift_ppm"] is None
     assert mid["quality"] is None
     assert mid["note"] == "No calibration peaks found"
@@ -521,6 +579,81 @@ async def test_a_fit_starts_from_the_factor_each_stream_already_has(fitted):
 
 
 @pytest.mark.asyncio
+async def test_a_calibrant_set_apart_does_not_move_its_stream_at_the_next_fit(fitted):
+    """The reagent scan's reading of the ion at 80 passed the low window's
+    when each was moved by its own factor, and gave way: its row lies twenty
+    ppm from where the reagent scan's factor puts it. That ion is then a
+    calibrant, with its target exactly there. The reagent scan read it
+    right, and its factor stays; fitted on the row's place it would be moved
+    by the twenty ppm the two streams disagree."""
+    reagent, low = 1 + 10e-6, 1 - 10e-6
+    await asyncio.to_thread(
+        _apply, _fit(file=1.0, streams={REAGENT: reagent, LOW: low})
+    )
+    rows = store_rows()
+    passed = int(np.flatnonzero((rows.stream == REAGENT) & (rows.recorded == 80.0))[0])
+    assert rows.mz[passed] == pytest.approx(IN_LOW * low, rel=1e-9)
+
+    handler = await fitted([("ion-80", "C2HO4-", 80.0 * reagent)])
+
+    streams = handler.fit_result["streams"]
+    assert streams[KEYS[REAGENT]]["calibration_factor"] == pytest.approx(
+        reagent, rel=1e-13
+    )
+    point = next(row for row in handler.stats[:-1] if row["segment"] == REAGENT)
+    assert point["sample_peak_mz"] == pytest.approx(80.0 * reagent, rel=1e-13)
+    assert point["match_mz_error"] == pytest.approx(0.0, abs=1e-6)
+
+
+def _weaken(index):
+    """Flag every peak of one stream weak, as a range that read nothing
+    above the noise has them."""
+    path = m_name.filename_to_zarr_path(SAMPLE_FILENAME, "peak_timeseries")
+    store = zarr.open_group(path, mode="r+")
+    weak = store["is_weak"][:]
+    weak[store["stream"][:] == index] = True
+    store["is_weak"][:] = weak
+
+
+@pytest.mark.asyncio
+async def test_a_range_that_reads_nothing_above_the_noise_still_takes_a_factor(fitted):
+    """It is a stream of the file whatever a load of the store keeps of it:
+    its signal and its rows are moved with a neighbour's, and the fit says
+    so, where left out it would go by the file's factor unsaid."""
+    _weaken(MID)
+
+    handler = await fitted()
+
+    assert set(handler.fit_result["streams"]) == set(KEYS)
+    mid = handler.segments[MID]
+    assert [segment["label"] for segment in handler.segments] == LABELS
+    assert (mid["source"], mid["origin"]) == ("borrowed", LABELS[REAGENT])
+    assert mid["note"] == "No calibration peaks found"
+    assert handler.fit_result["streams"][KEYS[MID]]["calibration_factor"] == (
+        pytest.approx(ASKED[REAGENT], rel=1e-15)
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_range_with_no_kept_peak_is_not_searched_for_calibrants(
+    fitted, monkeypatch
+):
+    _weaken(MID)
+    searched = []
+    original = OrbiCalibrationHandler._match_calibration_compounds
+
+    async def counted(self, isotopes, stream=None):
+        searched.append(stream)
+        return await original(self, isotopes, stream=stream)
+
+    monkeypatch.setattr(OrbiCalibrationHandler, "_match_calibration_compounds", counted)
+
+    await fitted()
+
+    assert searched == [REAGENT, LOW, HIGH]
+
+
+@pytest.mark.asyncio
 async def test_a_fit_applied_puts_every_calibrant_on_its_target(fitted):
     handler = await fitted()
 
@@ -531,7 +664,7 @@ async def test_a_fit_applied_puts_every_calibrant_on_its_target(fitted):
         nearest = rows.mz[np.argmin(np.abs(rows.mz - target))]
         assert nearest == pytest.approx(target, rel=1e-13)
     assert m_factor.stream_factor(_record(), KEYS[MID]) == pytest.approx(
-        ASKED[HIGH], rel=1e-15
+        ASKED[REAGENT], rel=1e-15
     )
 
 
