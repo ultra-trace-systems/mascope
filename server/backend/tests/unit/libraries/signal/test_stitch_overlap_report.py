@@ -57,6 +57,14 @@ def test_a_stitched_file_is_read_for_each_pair_of_ranges_that_overlap(composite)
     # The reagent scan and the low window both claim 67 to 122, and the mid
     # and the high window 444 to 451
     assert set(pairs) >= {(REAGENT, LOW), (MID, HIGH)}
+    # The map the file is stitched by, its owners by key
+    assert reading.runs == (
+        (40, 67, REAGENT),
+        (67, 122, LOW),
+        (122, 133, REAGENT),
+        (133, 444, MID),
+        (444, 900, HIGH),
+    )
 
 
 def test_a_pair_says_who_owns_the_overlap_and_what_each_reads(composite):
@@ -155,12 +163,14 @@ def test_a_per_stream_store_with_no_map_has_no_reading(composite, monkeypatch):
 # -- a layout's files ----------------------------------------------------------------
 
 
-def _pair(ratio, shared=10, kept=(12, 40), outliers=(), ppm=0.4):
+def _pair(
+    ratio, shared=10, kept=(12, 40), outliers=(), ppm=0.4, owners=((67, 122, LOW),)
+):
     return PairReading(
         first=REAGENT,
         second=LOW,
         overlap=((67, 122),),
-        owners=((67, 122, LOW),),
+        owners=owners,
         shared=shared,
         ratio=ratio,
         ppm=ppm,
@@ -170,7 +180,9 @@ def _pair(ratio, shared=10, kept=(12, 40), outliers=(), ppm=0.4):
     )
 
 
-def _reading(*pairs, layout=(REAGENT, LOW), hour=14, file_id="sf", instrument="A"):
+def _reading(
+    *pairs, layout=(REAGENT, LOW), hour=14, file_id="sf", instrument="A", runs=()
+):
     return FileReading(
         instrument=instrument,
         polarity="-",
@@ -178,6 +190,7 @@ def _reading(*pairs, layout=(REAGENT, LOW), hour=14, file_id="sf", instrument="A
         acquired=datetime(2026, 10, 9, hour, tzinfo=timezone.utc),
         sample_file_id=file_id,
         pairs=tuple(pairs),
+        runs=tuple(runs),
     )
 
 
@@ -225,8 +238,109 @@ def test_an_ion_off_the_ratio_is_named_where_most_files_list_it():
 
     ((pair,),) = [layout["pairs"] for layout in summarise(files)]
 
-    assert pair["off_ratio"] == [{"mz": 78.065, "files": 8, "ratio": 0.07}]
+    assert pair["off_ratio"] == [{"mz": 78.0651, "files": 8, "ratio": 0.07}]
     assert pair["off_ratio_more"] == 0
+
+
+def test_an_ion_on_a_rounding_step_is_one_ion():
+    """The same ion from file to file within the few ppm two readings of one
+    file are, though half its readings round one way and half the other."""
+    low, high = 78.06549, 78.06551
+    assert round(low, 3) != round(high, 3)
+    files = [
+        _reading(_pair(2.0, outliers=[(low if n % 2 else high, 0.07)]))
+        for n in range(8)
+    ]
+
+    ((pair,),) = [layout["pairs"] for layout in summarise(files)]
+
+    assert pair["off_ratio"] == [{"mz": 78.0655, "files": 8, "ratio": 0.07}]
+
+
+def test_two_ions_further_apart_than_two_readings_of_one_stay_two():
+    """Ten ppm apart, each listed by every file."""
+    files = [
+        _reading(_pair(2.0, outliers=[(78.0650, 0.07), (78.0658, 9.0)]))
+        for _ in range(4)
+    ]
+
+    ((pair,),) = [layout["pairs"] for layout in summarise(files)]
+
+    assert [(ion["mz"], ion["files"]) for ion in pair["off_ratio"]] == [
+        (78.065, 4),
+        (78.0658, 4),
+    ]
+
+
+def test_a_run_of_readings_each_near_the_last_is_not_one_ion():
+    """Three ions four ppm apart: the first and the last are eight apart,
+    which is two ions, whatever lies between them."""
+    step = 78.0 * 4e-6
+    files = [
+        _reading(_pair(2.0, outliers=[(78.0 + n * step, 0.1) for n in range(3)]))
+        for _ in range(4)
+    ]
+
+    ((pair,),) = [layout["pairs"] for layout in summarise(files)]
+
+    assert len(pair["off_ratio"]) == 2
+
+
+def test_a_file_counts_once_toward_an_ion_it_lists_twice():
+    """One file of eight lists the ion twice, and nobody else does: it is
+    one file's, and stays off the list."""
+    twice = _reading(_pair(2.0, outliers=[(78.06500, 0.07), (78.06501, 0.08)]))
+    files = [twice] + [_reading(_pair(2.0)) for _ in range(7)]
+
+    ((pair,),) = [layout["pairs"] for layout in summarise(files)]
+
+    assert pair["off_ratio"] == []
+
+
+def test_an_ion_is_counted_by_the_files_that_list_it():
+    """Every file lists the ion, and one of them twice: four files, though
+    five readings, and the ratio the middle of all of them."""
+    files = [_reading(_pair(2.0, outliers=[(78.06500, 0.07)])) for _ in range(3)]
+    files.append(_reading(_pair(2.0, outliers=[(78.06500, 0.07), (78.06501, 0.09)])))
+
+    ((pair,),) = [layout["pairs"] for layout in summarise(files)]
+
+    assert pair["off_ratio"] == [{"mz": 78.065, "files": 4, "ratio": 0.07}]
+
+
+def test_files_of_one_method_stitched_by_two_maps_are_read_apart():
+    """The method's microscan counts were changed: its ranges keep their
+    keys, and the overlap went from the low window to the reagent scan. Each
+    map is listed with its own files and its own owner, the newest file of
+    each saying how it is measured."""
+    by_low = [(40, 67, REAGENT), (67, 122, LOW), (122, 135, REAGENT)]
+    by_reagent = [(40, 135, REAGENT)]
+    files = [
+        _reading(
+            _pair(2.0, owners=((67, 122, LOW),)), runs=by_low, file_id=f"a{n}", hour=10
+        )
+        for n in range(3)
+    ] + [
+        _reading(
+            _pair(0.4, owners=((67, 122, REAGENT),)),
+            runs=by_reagent,
+            file_id=f"b{n}",
+            hour=20,
+        )
+        for n in range(2)
+    ]
+
+    first, second = summarise(files)
+
+    assert (first["files"], second["files"]) == (3, 2)
+    assert first["layout"] == second["layout"] == [REAGENT, LOW]
+    assert first["runs"] == [list(run) for run in by_low]
+    assert second["runs"] == [list(run) for run in by_reagent]
+    assert first["pairs"][0]["owners"] == ((67, 122, LOW),)
+    assert second["pairs"][0]["owners"] == ((67, 122, REAGENT),)
+    assert (first["pairs"][0]["files"], second["pairs"][0]["files"]) == (3, 2)
+    assert second["newest_file_id"].startswith("b")
+    assert second["pairs"][0]["ratio"] == [0.4, 0.4, 0.4]
 
 
 def test_layouts_are_told_apart_and_the_busiest_comes_first():
@@ -296,6 +410,11 @@ def test_the_report_says_what_it_read(composite, monkeypatch):
     said = "\n".join(lines)
     assert "read 1 raw Orbitrap file(s)" in said and "1 of them are stitched" in said
     assert "range m/z 40-138 [5 scans, 1 microscan]" in said
+    assert (
+        "stitched: m/z 40-67 from m/z 40-138; m/z 67-122 from m/z 66-124; "
+        "m/z 122-133 from m/z 40-138; m/z 133-444 from m/z 132-460; "
+        "m/z 444-900 from m/z 440-900"
+    ) in said
     assert "m/z 40-138 and m/z 66-124 overlap over m/z 67-122" in said
     assert "owned 67-122 by m/z 66-124" in said
     assert "m/z 66-124 reads them at 1.40 (1.40 to 1.40) of m/z 40-138" in said
