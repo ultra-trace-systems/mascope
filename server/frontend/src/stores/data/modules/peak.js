@@ -20,7 +20,18 @@ export const usePeak = defineStore('app.data.peak', () => {
   // The scan ranges the focused sample's spectrum is stitched from, or null
   // for a sample of one range, which is nearly every one. A peak's `segment`
   // is the `index` of one of them (see @/lib/segments).
+  //
+  // Written only by a response for the sample that is focused when it
+  // arrives. The loader discards the peaks of a response that a later
+  // request superseded, and that happens after this function returns: a slow
+  // answer for the sample just left would otherwise leave its segments beside
+  // the peaks of the sample now shown.
   const segments = shallowRef(null)
+  const keep = (sampleItemId, value) => {
+    if (sampleItemId === useSample().focusedId) {
+      segments.value = value
+    }
+  }
 
   const data = useData(
     name,
@@ -40,7 +51,7 @@ export const usePeak = defineStore('app.data.peak', () => {
       })
       if (data) {
         const { peak_id, mz, area, height, match, segment } = data
-        segments.value = data.segments ?? null
+        keep(sample_item_id, data.segments ?? null)
         const records = mz.map((mz, i) => ({
           mz: mz,
           peak_id: peak_id[i],
@@ -53,7 +64,7 @@ export const usePeak = defineStore('app.data.peak', () => {
         }))
         return records
       } else {
-        segments.value = null
+        keep(sample_item_id, null)
         return []
       }
     },
