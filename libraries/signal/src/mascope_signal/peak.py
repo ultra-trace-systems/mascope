@@ -880,8 +880,43 @@ def compute_peaks(
     with m_io.zarr_write_lock(m_io.peak_detection_lock_path(filename)):
         peak_detector = get_peak_detector(filename, instrument_functions, per_stream)
         asyncio.run(peak_detector.detect_peaks(progress_callback=progress_callback))
+        props = m_io.read_props(filename)
+        had_store = os.path.exists(
+            m_name.filename_to_zarr_path(filename, "peak_timeseries")
+        )
         peak_detector.record_decision()
-        asyncio.run(peak_detector.write_peaks_to_zarr())
+        try:
+            asyncio.run(peak_detector.write_peaks_to_zarr())
+        except Exception:
+            if had_store:
+                # The store the file had is still the one it has
+                # (``mascope_file.io.write_peaks``), so the decision it was
+                # built by stands too: a store and a record that disagree
+                # would have the next rebuild write another store than the
+                # file's samples were made against. A file with no store
+                # keeps the new record, which is the decision its first
+                # store is to be built by (record_decision).
+                _restore_decision(filename, props)
+            raise
+
+
+def _restore_decision(filename: str, props: dict) -> None:
+    """Put a file's recorded decision back to what ``props`` held of it.
+
+    :param filename: Filename of the sample file.
+    :param props: The file's ``.props`` as they were before a detection
+        recorded its own decision.
+    """
+    now = m_io.read_props(filename)
+    if now.get(PER_STREAM_PROP) is props.get(PER_STREAM_PROP):
+        return
+    if PER_STREAM_PROP in props:
+        m_io.update_props(filename, {PER_STREAM_PROP: props[PER_STREAM_PROP]})
+    else:
+        # Nobody had decided: the entry goes, and the file's props are what
+        # they were
+        now.pop(PER_STREAM_PROP, None)
+        m_io.write_props(filename, now)
 
 
 def write_empty_peak_timeseries(filename: str) -> None:

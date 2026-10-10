@@ -62,26 +62,33 @@ def _decide(filename: str) -> bool | None:
     if not m_compute.has_scan_streams(filename):
         return None
     setting = composites_scan_streams()
-    if m_io.read_props(filename).get(PER_STREAM_PROP):
-        return setting
-    try:
-        store = m_io.load_array(filename, var="peak_timeseries")
-    except FileNotFoundError:
-        store = None
-    if store is not None:
+    per_stream_now = bool(m_io.read_props(filename).get(PER_STREAM_PROP))
+    if not per_stream_now:
         try:
-            per_stream_store = bool(m_compute.peak_store_streams(store))
-        except ValueError:
-            # Labelled in part, which nothing reads: detecting writes all of it
-            per_stream_store = True
-        if per_stream_store:
-            return setting
+            store = m_io.load_array(filename, var="peak_timeseries")
+        except FileNotFoundError:
+            store = None
+        if store is not None:
+            try:
+                per_stream_now = bool(m_compute.peak_store_streams(store))
+            except ValueError:
+                # Labelled in part, which nothing reads: detecting writes all
+                # of it
+                per_stream_now = True
+    if not (per_stream_now or setting):
+        # Pooled, and to stay so: nothing is detected, and the file is not
+        # read for its streams
+        return None
+    # Its peaks are to be detected again, or may be: the streams are read
+    # here, whatever the answer, because here nothing of the file has been
+    # touched yet. A file whose streams cannot be read fails this, and is
+    # refused as it stands rather than after its calibration is reset.
+    streams = m_compute.get_peak_streams(filename)
+    if per_stream_now:
+        return setting
     # Pooled, with no decision recorded for per stream: only a file whose
-    # method measures more than one thing in a polarity is detected otherwise,
-    # and only where the setting asks for it
-    if setting and m_compute.get_peak_streams(filename):
-        return True
-    return None
+    # method measures more than one thing in a polarity is detected otherwise
+    return True if streams else None
 
 
 async def redetection_decision(sample_file: SampleFile) -> bool | None:

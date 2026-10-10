@@ -346,6 +346,127 @@ def test_a_file_whose_streams_cannot_be_read_is_not_decided_for(
     assert _props(sample_file_path) == {"mz_calibration": None}
 
 
+@pytest.mark.parametrize("now", [True, False], ids=["setting-on", "setting-off"])
+def test_a_per_stream_file_whose_streams_cannot_be_read_is_not_decided_for(
+    acquire, instrument_functions, sample_file_path, setting, monkeypatch, now
+):
+    """Its record already says how its peaks are detected, and they are to
+    be detected again whichever way the setting stands. That takes the raw
+    file, so it is read for its streams here, before the re-processing has
+    claimed the file or reset its calibration: unreadable, it is refused as
+    it stands."""
+    acquire(TWO_EXPERIMENTS, MICROSCANS)
+    _converted(instrument_functions, per_stream=True)
+    before = _props(sample_file_path)
+    ids = _store().peak_id.values.tolist()
+
+    def unreadable(_filename):
+        raise OSError("the raw file is gone")
+
+    monkeypatch.setattr(peaks.m_compute, "get_peak_streams", unreadable)
+
+    setting(now)
+    with pytest.raises(OSError, match="the raw file is gone"):
+        asyncio.run(peaks.redetection_decision(FILE))
+
+    assert _store().peak_id.values.tolist() == ids
+    assert _props(sample_file_path) == before
+
+
+def test_a_per_stream_store_whose_record_is_gone_is_read_for_its_streams_too(
+    acquire, instrument_functions, sample_file_path, setting, monkeypatch
+):
+    acquire(TWO_EXPERIMENTS, MICROSCANS)
+    _converted(instrument_functions, per_stream=True)
+    with open(os.path.join(sample_file_path, ".props"), "w") as f:
+        json.dump({"mz_calibration": None}, f)
+
+    def unreadable(_filename):
+        raise OSError("the raw file is gone")
+
+    monkeypatch.setattr(peaks.m_compute, "get_peak_streams", unreadable)
+
+    setting(False)
+    with pytest.raises(OSError, match="the raw file is gone"):
+        asyncio.run(peaks.redetection_decision(FILE))
+
+
+# -- a detection that cannot write its store ------------------------------------
+
+
+def _failing_write(monkeypatch):
+    """Make the store's write fail after the peaks are detected."""
+
+    async def out_of_space(self, overwrite=True):
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(m_peak.BasePeakDetector, "write_peaks_to_zarr", out_of_space)
+
+
+def test_a_detection_that_cannot_write_leaves_the_file_as_it_was_decided(
+    acquire, instrument_functions, sample_file_path, setting, monkeypatch
+):
+    """The file's samples read the store it has, so that store stays and so
+    does the decision it was built by: a record saying pooled beside a store
+    detected per stream would have the next rebuild write another store than
+    the samples were made against."""
+    acquire(TWO_EXPERIMENTS, MICROSCANS)
+    _converted(instrument_functions, per_stream=True)
+    before = _props(sample_file_path)
+    ids = _store().peak_id.values.tolist()
+    _failing_write(monkeypatch)
+
+    with pytest.raises(OSError, match="No space left on device"):
+        m_peak.compute_peaks(SAMPLE_FILENAME, instrument_functions, per_stream=False)
+
+    assert _props(sample_file_path) == before
+    assert before[m_peak.PER_STREAM_PROP] is True
+    assert _store().peak_id.values.tolist() == ids
+    assert m_compute.peak_store_streams(_store()) == [SETTLING, MEASURING]
+
+
+def test_a_file_nobody_had_decided_for_is_undecided_again(
+    acquire, instrument_functions, sample_file_path, monkeypatch
+):
+    """Its ``.props`` are what they were, the entry gone and not null."""
+    acquire(TWO_EXPERIMENTS, MICROSCANS)
+    m_peak.compute_peaks(SAMPLE_FILENAME, instrument_functions)
+    assert _props(sample_file_path) == {"mz_calibration": None}
+    _failing_write(monkeypatch)
+
+    with pytest.raises(OSError):
+        m_peak.compute_peaks(SAMPLE_FILENAME, instrument_functions, per_stream=True)
+
+    assert _props(sample_file_path) == {"mz_calibration": None}
+    assert m_compute.peak_store_streams(_store()) == []
+
+
+def test_a_first_detection_that_cannot_write_keeps_its_decision(
+    acquire, instrument_functions, sample_file_path, monkeypatch
+):
+    """The file has no store for a record to disagree with: the decision
+    stands, and is what its first store is built by."""
+    acquire(TWO_EXPERIMENTS, MICROSCANS)
+    _failing_write(monkeypatch)
+
+    with pytest.raises(OSError):
+        m_peak.compute_peaks(SAMPLE_FILENAME, instrument_functions, per_stream=True)
+
+    assert _props(sample_file_path)[m_peak.PER_STREAM_PROP] is True
+
+
+def test_a_detection_that_writes_keeps_the_decision_it_recorded(
+    acquire, instrument_functions, sample_file_path
+):
+    acquire(TWO_EXPERIMENTS, MICROSCANS)
+    _converted(instrument_functions, per_stream=True)
+
+    m_peak.compute_peaks(SAMPLE_FILENAME, instrument_functions, per_stream=False)
+
+    assert _props(sample_file_path)[m_peak.PER_STREAM_PROP] is False
+    assert m_compute.peak_store_streams(_store()) == []
+
+
 def test_a_file_with_no_peak_store_is_decided_by_its_streams(
     acquire, setting, sample_file_path
 ):
