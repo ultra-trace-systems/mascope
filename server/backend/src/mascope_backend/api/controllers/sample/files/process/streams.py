@@ -29,6 +29,15 @@ its peaks are detected again when a match meets it, and until then the rows
 describe the file's streams with nothing stitched, and the file's processing
 detail says so (:func:`stale_store_note`).
 
+**An item made by hand reads what the pipeline's item reads.** A sample a
+person makes from a file is given the row the pipeline's item of that file
+and polarity would be given now, among the rows the file has
+(:func:`read_item_streams`): the two then read one spectrum. Nothing is
+written for it - the rows are the pipeline's to write, under the claim that
+keeps two runs off one file - so where the file has no such row yet, the
+item reads none, like every item of a file processed before the rows
+existed.
+
 **A rebuild updates the rows in place.** A bind and a process-on-request
 rebuild a file that has a person's sample, and that sample may read one of
 the file's streams, so the rows cannot be deleted and written again: each is
@@ -140,6 +149,63 @@ class StreamRows:
         """The stream an item of this polarity reads: its composite, else
         its one stream, else none."""
         return self.composites.get(polarity) or self.single.get(polarity)
+
+
+def item_stream_keys(found: StoreStreams) -> dict[str, str]:
+    """The key of the row an item of each polarity reads.
+
+    The polarity's composite where the store stitches it, else the
+    polarity's one MS1 stream. A polarity it leaves out has no row to read:
+    one pooled from several streams, or of a file with no census. The same
+    choice :meth:`StreamRows.item_stream` makes among the rows a sync wrote.
+
+    :param found: The file's streams, as :func:`read_store_streams` returns
+        them.
+    :return: The stream key by polarity.
+    """
+    keys = {polarity: composite_key(polarity) for polarity in found.segments()}
+    by_polarity: dict[str, list[str]] = {}
+    for stream in found.streams:
+        signature = stream["signature"]
+        if signature.get("ms_order") == 1:
+            by_polarity.setdefault(signature.get("polarity"), []).append(stream["key"])
+    for polarity, stream_keys in by_polarity.items():
+        if polarity not in keys and len(stream_keys) == 1:
+            keys[polarity] = stream_keys[0]
+    return keys
+
+
+async def read_item_streams(sample_file_id: str, filename: str) -> dict[str, str]:
+    """The row an item of each polarity of a file reads, among its rows.
+
+    For an item the pipeline does not make. What the file's census and store
+    say now decides which row (:func:`item_stream_keys`), as it does for the
+    pipeline's item, and the row is looked up among the ones the file has.
+    Nothing is written: a row the file does not have yet is written by its
+    next processing, and until then the polarity is left out.
+
+    :param sample_file_id: The file.
+    :param filename: Its stored name.
+    :return: ``stream_id`` by polarity, for the polarities that have a row
+        to read.
+    """
+    wanted = item_stream_keys(await read_store_streams(filename))
+    if not wanted:
+        return {}
+    async with async_session() as session:
+        ids = dict(
+            (
+                await session.execute(
+                    select(
+                        AcquisitionStream.stream_key, AcquisitionStream.stream_id
+                    ).where(
+                        AcquisitionStream.sample_file_id == sample_file_id,
+                        AcquisitionStream.stream_key.in_(wanted.values()),
+                    )
+                )
+            ).all()
+        )
+    return {polarity: ids[key] for polarity, key in wanted.items() if key in ids}
 
 
 def kept_rows_note(rows: StreamRows) -> str | None:

@@ -97,6 +97,8 @@ async def _re_process(
         patch(f"{_SVC}.async_session", lambda: _Session(sample_files)),
         patch(f"{_SVC}._modes_its_record_declares", AsyncMock(return_value=([], None))),
         patch(f"{_SVC}.resolve_ionization_modes_by_tokens", AsyncMock()),
+        # No file's peaks are detected again: none has a store to read
+        patch(f"{_SVC}.redetection_decision", AsyncMock(return_value=None)),
         patch(f"{_SVC}.claim_for_processing", AsyncMock(side_effect=claim)),
         patch(f"{_SVC}.reset_mz_calibration", AsyncMock()),
         patch(

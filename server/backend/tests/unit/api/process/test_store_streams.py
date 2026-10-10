@@ -10,7 +10,7 @@ polarity reads: the composite, else the polarity's one stream, else none
 """
 
 from datetime import datetime, timezone
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 import pytest_asyncio
@@ -805,6 +805,156 @@ async def test_another_files_streams_are_left_alone(
 
         assert mine.ids[SETTLING] != other.ids[SETTLING]
         assert set(await _rows(async_session_factory, other_id)) == {SETTLING}
+    finally:
+        async with async_session_factory() as session:
+            await session.execute(
+                delete(SampleFile).where(SampleFile.sample_file_id == other_id)
+            )
+            await session.commit()
+
+
+# -- the row an item made by hand reads -----------------------------------------------
+
+POOLED_FILE = StoreStreams(
+    [_stream(SETTLING), _stream(MEASURING, event=2), _stream(POS, "+")]
+)
+
+
+@pytest.mark.parametrize(
+    "found, expected",
+    [
+        (
+            StoreStreams(COMPOSITE_CENSUS, [REAGENT, LOW, POS], MAP),
+            {"-": composite_key("-"), "+": POS},
+        ),
+        (POOLED_FILE, {"+": POS}),
+        (
+            StoreStreams([_stream(REAGENT), _stream(FRAGMENTS, ms_order=2)]),
+            {"-": REAGENT},
+        ),
+        (StoreStreams(), {}),
+    ],
+    ids=["stitched", "pooled-from-two", "one-stream-and-fragments", "no-census"],
+)
+def test_the_key_of_the_row_an_item_reads(found, expected):
+    """The composite where the store stitches the polarity, else the
+    polarity's one MS1 stream, else no row at all."""
+    assert streams.item_stream_keys(found) == expected
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "found",
+    [
+        StoreStreams(COMPOSITE_CENSUS, [REAGENT, LOW, POS], MAP),
+        POOLED_FILE,
+        StoreStreams([_stream(REAGENT), _stream(FRAGMENTS, ms_order=2)]),
+    ],
+    ids=["stitched", "pooled-from-two", "one-stream-and-fragments"],
+)
+async def test_an_item_made_by_hand_reads_the_row_the_pipelines_item_reads(
+    async_session_factory, sample_file_id, found
+):
+    """Whatever the pipeline's item of a polarity is pointed at, an item a
+    person makes from the same file is pointed at too."""
+    rows = await streams.sync_stream_rows(sample_file_id, found)
+
+    with patch.object(streams, "read_store_streams", AsyncMock(return_value=found)):
+        read = await streams.read_item_streams(sample_file_id, FILENAME)
+
+    assert read == {
+        polarity: rows.item_stream(polarity)
+        for polarity in ("-", "+")
+        if rows.item_stream(polarity) is not None
+    }
+
+
+@pytest.mark.asyncio
+async def test_reading_an_items_row_writes_none(async_session_factory, sample_file_id):
+    """The rows are the pipeline's to write. A file it has not written any
+    for gives an item made by hand no row to read."""
+    found = StoreStreams(COMPOSITE_CENSUS, [REAGENT, LOW, POS], MAP)
+
+    with patch.object(streams, "read_store_streams", AsyncMock(return_value=found)):
+        read = await streams.read_item_streams(sample_file_id, FILENAME)
+
+    assert read == {}
+    assert await _rows(async_session_factory, sample_file_id) == {}
+
+
+@pytest.mark.asyncio
+async def test_a_composite_the_file_has_no_row_for_yet_is_not_read(
+    async_session_factory, sample_file_id
+):
+    """The store was rebuilt stitched after the rows were written: the
+    composite's row comes with the file's next processing, and until then
+    an item of that polarity reads none. Its other polarity's row is there."""
+    pooled = StoreStreams(COMPOSITE_CENSUS)
+    rows = await streams.sync_stream_rows(sample_file_id, pooled)
+    stitched = StoreStreams(COMPOSITE_CENSUS, [REAGENT, LOW, POS], MAP)
+
+    with patch.object(streams, "read_store_streams", AsyncMock(return_value=stitched)):
+        read = await streams.read_item_streams(sample_file_id, FILENAME)
+
+    assert read == {"+": rows.item_stream("+")}
+
+
+@pytest.mark.asyncio
+async def test_a_row_kept_for_another_sample_is_not_what_a_new_item_reads(
+    async_session_factory, sample_file_id
+):
+    """A composite the file no longer has stays while a person's copy reads
+    it. A new item is pointed at what the file holds now: the one stream its
+    polarity has come down to."""
+    first = await streams.sync_stream_rows(
+        sample_file_id, StoreStreams(COMPOSITE_CENSUS, [REAGENT, LOW, POS], MAP)
+    )
+    _item_id, remove = await _sample_reading(
+        async_session_factory, sample_file_id, first.composites["-"]
+    )
+    try:
+        now = StoreStreams([_stream(REAGENT), _stream(POS, "+")])
+        rows = await streams.sync_stream_rows(sample_file_id, now)
+        assert composite_key("-") in rows.kept
+
+        with patch.object(streams, "read_store_streams", AsyncMock(return_value=now)):
+            read = await streams.read_item_streams(sample_file_id, FILENAME)
+
+        stored = await _rows(async_session_factory, sample_file_id)
+        assert read == {"-": stored[REAGENT].stream_id, "+": stored[POS].stream_id}
+    finally:
+        await remove()
+
+
+@pytest.mark.asyncio
+async def test_an_item_reads_a_row_of_its_own_file_only(
+    async_session_factory, sample_file_id
+):
+    """The same key in two files is two streams: the other file's rows are
+    none of this file's, whose item reads no row while it has none."""
+    other_id = gen_test_id()
+    async with async_session_factory() as session:
+        session.add(
+            SampleFile(
+                sample_file_id=other_id,
+                filename=f"stream-rows-{other_id}.raw",
+                instrument="test-orbi-streams",
+                datetime=datetime(2026, 10, 5, 13, 0),
+                datetime_utc=datetime(2026, 10, 5, 13, 0, tzinfo=timezone.utc),
+                length=6.0,
+                range=[40.0, 600.0],
+                polarity="-",
+            )
+        )
+        await session.commit()
+    found = StoreStreams(COMPOSITE_CENSUS, [REAGENT, LOW, POS], MAP)
+    try:
+        await streams.sync_stream_rows(other_id, found)
+
+        with patch.object(streams, "read_store_streams", AsyncMock(return_value=found)):
+            read = await streams.read_item_streams(sample_file_id, FILENAME)
+
+        assert read == {}
     finally:
         async with async_session_factory() as session:
             await session.execute(

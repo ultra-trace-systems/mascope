@@ -492,10 +492,13 @@ class BackendConfig(ModuleConfig):
     # whose method only runs the same experiment again in a polarity (the
     # same scan at the same microscans and AGC target). A file already
     # converted keeps what was decided for it then: rebuilding a store goes by
-    # that decision and never by this setting, so this applies to files
-    # converted from then on.
+    # that decision and never by this setting. An explicit re-processing
+    # decides again, so this applies to files converted from then on and to
+    # files re-processed from then on.
     #
-    # Read by the file converter, which is where peaks are detected.
+    # Read where a decision is made, when the process starts: by the file
+    # converter for a file's first conversion, and by the backend for a
+    # re-processing.
     composite_scan_streams: bool = False
     # Allowlist of per-record reference licences the peak-assignment database
     # stage (Stage A) may match against. The reference mirror carries a

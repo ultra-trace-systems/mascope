@@ -33,6 +33,10 @@ CONCURRENT_WRITE_LIMIT = 2  # Max number of concurrent writes to prevent OutOfMe
 # blocking a uvicorn worker forever - fasteners' own default is to wait
 # indefinitely.
 ZARR_PROCESS_LOCK_TIMEOUT = 300.0
+
+#: What a peak store being written is named with, beside the store it is to
+#: replace: ``peak_timeseries.zarr.staged``. See ``_full_overwrite_peaks``.
+STAGED_STORE_SUFFIX = ".staged"
 # Global lock for zarr file writes - prevents concurrent modifications
 _zarr_write_locks: dict[str, threading.Lock] = {}
 _zarr_write_locks_lock = threading.Lock()
@@ -160,6 +164,32 @@ def mz_calibration_lock_path(base_filename: str) -> str:
     """
     return os.path.join(
         m_name.parse_path_from_item_filename(base_filename), "mz_calibration"
+    )
+
+
+def peak_detection_lock_path(base_filename: str) -> str:
+    """Path naming the lock a sample file's peaks are detected under.
+
+    Not a store - only the name a lock file is derived from
+    (:func:`zarr_write_lock`), beside the sample's stores and distinct from
+    any of them, as :func:`mz_calibration_lock_path` is. Its name does not
+    begin with ``peak_``, so :func:`delete_peaks` leaves it where it is.
+
+    A detection holds it from reading what the file's properties record of
+    how its peaks are detected to the last write of the store built that way.
+    More than one process detects a file's peaks - the file converter, and
+    the backend where a file is re-processed - and they are not handed the
+    same decision, so two detections of one file may not overlap: the later
+    one has to read what the earlier one recorded, or the store one of them
+    writes is not the one the record describes.
+
+    :param base_filename: Sample file filename
+    :type base_filename: str
+    :return: The path the lock is named by
+    :rtype: str
+    """
+    return os.path.join(
+        m_name.parse_path_from_item_filename(base_filename), "detection"
     )
 
 
@@ -671,15 +701,36 @@ async def _full_overwrite_peaks(
 ) -> None:
     """Perform a full overwrite of the peak timeseries zarr file.
 
+    The new store is written beside the old one and takes its place only once
+    it is whole. A file's peaks are detected again over a store its samples
+    read, and a write can fail part-way - a full disk is enough: the store
+    that was there then still is, and what was written of the new one is
+    removed. Giving the old store up comes last and writes no data.
+
     :param peak_timeseries: Dataset to write
     :param peak_timeseries_path: Path to the zarr file
     """
+    # Named so that a sweep of the file's peak data takes it along
+    # (``delete_peaks``) and a listing of its stores does not show it
+    # (``get_file_data_vars``)
+    staged_path = peak_timeseries_path + STAGED_STORE_SUFFIX
 
     def _write():
         with zarr_write_lock(peak_timeseries_path):
             runtime.logger.debug(
                 f"Full overwrite of peak_timeseries at {peak_timeseries_path}"
             )
+            # What a write cut short by its process ending left behind
+            remove_path(staged_path)
+            try:
+                peak_timeseries.to_zarr(
+                    staged_path,
+                    mode="w",
+                    encoding={"sparsity": {"_FillValue": 0.0}},
+                )
+            except BaseException:
+                remove_path(staged_path)
+                raise
             if os.path.exists(peak_timeseries_path):
                 try:
                     rmtree(peak_timeseries_path)
@@ -688,12 +739,7 @@ async def _full_overwrite_peaks(
                         "Failed to remove existing peak timeseries"
                     )
                     raise
-
-            peak_timeseries.to_zarr(
-                peak_timeseries_path,
-                mode="w",
-                encoding={"sparsity": {"_FillValue": 0.0}},
-            )
+            os.rename(staged_path, peak_timeseries_path)
 
     try:
         await asyncio.to_thread(_write)

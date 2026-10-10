@@ -47,6 +47,7 @@ from mascope_backend.api.lib.exceptions.api_exceptions import (
     is_expected_client_error,
     raise_api_warning,
 )
+from mascope_backend.api.lib.stale_peak_store import is_stale_peak_store
 from mascope_backend.api.new.auth.access_token.service import get_access_token
 from mascope_backend.api.new.match.params import default_match_params
 from mascope_backend.db import (
@@ -66,7 +67,6 @@ from mascope_backend.socket.notifications import (
     UserNotification,
     send_progress_user_notification,
 )
-from mascope_signal.compute import StalePeakStoreError
 
 
 # A failure reason is an exception message, which can run long; the summary it
@@ -697,33 +697,7 @@ def _user_facing_reason(error: Exception) -> str:
     return "Unexpected error."
 
 
-def _is_stale_peak_store(error: Exception) -> bool:
-    """
-    Whether a sample failed because its peak data predates how the file reads.
-
-    The failure is raised deep in the signal library and reaches this module
-    already wrapped by the ``@api_controller`` around the compute step, so the
-    class is looked for along the chain rather than on the exception itself.
-
-    :param error: The exception a single sample's match computation raised.
-    :type error: Exception
-    :return: ``True`` when re-running peak detection is what repairs it.
-    :rtype: bool
-    """
-    seen: set[int] = set()
-    current: BaseException | None = error
-    # Both links: `raise X from e` sets __cause__, a bare `raise X` inside an
-    # except block sets only __context__. `seen` guards a cycle, which a
-    # hand-built chain can have.
-    while current is not None and id(current) not in seen:
-        if isinstance(current, StalePeakStoreError):
-            return True
-        seen.add(id(current))
-        current = current.__cause__ or current.__context__
-    return False
-
-
-async def _request_stale_peak_store_rebuilds(
+async def request_stale_peak_store_rebuilds(
     stale_peak_store_files: dict[str, str],
     user: User | None,
     process_id: str | None,
@@ -1748,7 +1722,7 @@ async def match_compute_batch(
             # which for anything the decorated compute step did not wrap (an
             # undecorated fetch, this loop's own body) is an internal detail.
             # The log line below keeps the full message either way.
-            if _is_stale_peak_store(e):
+            if is_stale_peak_store(e):
                 # Named as one reason rather than by the underlying message,
                 # so every sample with this problem groups under it, and
                 # recorded so its file can be queued for rebuilding below.
@@ -1875,7 +1849,7 @@ async def match_compute_batch(
     # Asked for after the batch has finished its own work, so a converter that
     # is slow to answer cannot hold up the result, and once per file however
     # many of its samples tripped over it.
-    rebuilds_queued = await _request_stale_peak_store_rebuilds(
+    rebuilds_queued = await request_stale_peak_store_rebuilds(
         stale_peak_store_files, user, process_id
     )
 
