@@ -10,6 +10,7 @@ from sqlalchemy import (
     insert,
     select,
 )
+from sqlalchemy.exc import IntegrityError
 
 import mascope_file.io as m_io
 import mascope_signal.compute as m_compute
@@ -209,7 +210,12 @@ def _polarity_tic_per_scan(base_filename: str, polarity: str) -> tuple:
         return m_compute.get_tic_per_scan(base_filename, polarity=polarity)
 
 
-async def _item_streams_of(sample_file: SampleFile) -> dict[str, str]:
+#: The reference from an item to the stream row it reads, as the database
+#: names it (``sample_item.stream_id``).
+_STREAM_REFERENCE = "fk_sample_item_sample_file_id_acquisition_stream"
+
+
+async def _item_streams_of(sample_file_id: str, filename: str) -> dict[str, str]:
     """The row an item made by hand reads, by polarity of its file.
 
     A file whose streams cannot be read gives its items no row, as a file
@@ -217,11 +223,11 @@ async def _item_streams_of(sample_file: SampleFile) -> dict[str, str]:
     what it would have been made as before the rows existed.
     """
     try:
-        return await read_item_streams(sample_file.sample_file_id, sample_file.filename)
+        return await read_item_streams(sample_file_id, filename)
     except Exception:  # noqa: BLE001 - the row is not worth the item
         # INFO: fires once per file a person makes a sample from
         runtime.logger.opt(exception=True).info(
-            f"Could not read the scan streams of {sample_file.filename}; the "
+            f"Could not read the scan streams of {filename}; the "
             "samples made from it read no stream row"
         )
         return {}
@@ -290,15 +296,17 @@ async def create_sample_items(
         # sample and the pipeline's read one spectrum
         # (process.streams.read_item_streams). An item's window is its
         # polarity's whichever stream it reads.
-        given_streams: dict[str, dict[str, str]] = {}
-        for sample_file_id in {
-            si.sample_file_id
+        # By name, read now: the lookup is made again if the insert finds a
+        # row gone, and by then the session has let go of the files.
+        given_files = {
+            si.sample_file_id: sample_files_map[si.sample_file_id].filename
             for si in sample_items
             if not isinstance(si, StreamItemCreate)
-        }:
-            given_streams[sample_file_id] = await _item_streams_of(
-                sample_files_map[sample_file_id]
-            )
+        }
+        given_streams: dict[str, dict[str, str]] = {
+            sample_file_id: await _item_streams_of(sample_file_id, filename)
+            for sample_file_id, filename in given_files.items()
+        }
         stream_ids = {
             stream_id
             for si in sample_items
@@ -420,8 +428,30 @@ async def create_sample_items(
             sample_items_data.append(sample_item_dict)
 
         # --- Bulk insert to avoid event listeners ---
-        await session.execute(insert(SampleItem).values(sample_items_data))
-        await session.commit()
+        try:
+            await session.execute(insert(SampleItem).values(sample_items_data))
+            await session.commit()
+        except IntegrityError as error:
+            if not given_files or _STREAM_REFERENCE not in str(error.orig):
+                raise
+            # A row found for an item made by hand was gone by the insert:
+            # its file was processed again meanwhile, and its rows are the
+            # pipeline's to write and to remove (sync_stream_rows), which
+            # removes one no saved item reads. The file is asked once more
+            # and its items made on what it has now - the row that replaced
+            # the old one, or none. What a model named itself stands.
+            await session.rollback()
+            for sample_file_id, filename in given_files.items():
+                given_streams[sample_file_id] = await _item_streams_of(
+                    sample_file_id, filename
+                )
+            for sample_item, row in zip(sample_items, sample_items_data):
+                if not isinstance(sample_item, StreamItemCreate):
+                    row["stream_id"] = given_streams[sample_item.sample_file_id].get(
+                        sample_item.polarity
+                    )
+            await session.execute(insert(SampleItem).values(sample_items_data))
+            await session.commit()
 
     # --- Fetch created samples and affected sample batches ---
     created_item_ids = [si["sample_item_id"] for si in sample_items_data]

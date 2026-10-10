@@ -23,6 +23,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from sqlalchemy.dialects import postgresql
+from sqlalchemy.exc import IntegrityError
 
 from mascope_backend.api.controllers.sample.files.process.service import (
     ItemProvenance,
@@ -232,12 +233,14 @@ class _Session:
     """A session that answers the file query, then the stream query, and
     keeps every statement it was handed."""
 
-    def __init__(self, stream_rows):
+    def __init__(self, stream_rows, insert_errors=()):
         sample_file = MagicMock()
         sample_file.sample_file_id = "sf-001"
         sample_file.filename = FILENAME
         self._answers = [[sample_file], list(stream_rows)]
+        self._insert_errors = list(insert_errors)
         self.statements = []
+        self.rollbacks = 0
 
     async def __aenter__(self):
         return self
@@ -247,6 +250,8 @@ class _Session:
 
     async def execute(self, statement):
         self.statements.append(statement)
+        if statement.is_insert and self._insert_errors:
+            raise self._insert_errors.pop(0)
         result = MagicMock()
         rows = self._answers.pop(0) if self._answers else []
         result.scalars.return_value.all.return_value = rows
@@ -256,23 +261,29 @@ class _Session:
     async def commit(self):
         pass
 
+    async def rollback(self):
+        self.rollbacks += 1
+
 
 # The controller as written, without the decorator that turns whatever it
 # raises into the API's own exception: what it refuses, and how, is the point.
 _create = sample_items_controller.create_sample_items.__wrapped__
 
 
-async def _created(items, stream_rows=(), item_streams=None, sample_tic=None):
+async def _created(
+    items, stream_rows=(), item_streams=None, sample_tic=None, insert_errors=()
+):
     """Run the bulk create; return the session and how the file was read.
 
     ``item_streams`` is the row an item made by hand reads, by polarity, as
-    ``read_item_streams`` finds it - or the error that read raises;
-    ``sample_tic`` what the read of the sample's TIC raises instead of
-    answering.
+    ``read_item_streams`` finds it - the error that read raises, or a list
+    of what one read after another finds; ``sample_tic`` what the read of
+    the sample's TIC raises instead of answering; ``insert_errors`` what one
+    insert after another raises.
     """
-    session = _Session(stream_rows)
+    session = _Session(stream_rows, insert_errors)
     rows_read = AsyncMock(return_value=item_streams or {})
-    if isinstance(item_streams, Exception):
+    if isinstance(item_streams, (Exception, list)):
         rows_read.side_effect = item_streams
     ids = [f"si-{index:04d}" for index in range(len(items))]
     with (
@@ -368,6 +379,116 @@ async def test_an_item_made_by_hand_reads_the_row_of_its_file_and_polarity():
 
     made.rows_read.assert_awaited_once_with("sf-001", FILENAME)
     assert _inserted(made.session)["stream_id_m0"] == "st-0"
+
+
+def _row_gone():
+    """What the database raises for an item naming a stream row that was
+    removed: the reference from the item to its stream."""
+    return IntegrityError(
+        "INSERT INTO sample_item ...",
+        {},
+        Exception(
+            'insert or update on table "sample_item" violates foreign key '
+            'constraint "fk_sample_item_sample_file_id_acquisition_stream"'
+        ),
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_row_removed_before_the_insert_is_looked_up_again():
+    """The file was processed again between the lookup and the insert, and
+    its old row removed: no saved item read it yet. The item is made on the
+    row the file has now, and the request does not fail."""
+    plain = SampleItemCreate(sample_item_name="x", sample_item_type="UNKNOWN", **COMMON)
+
+    made = await _created(
+        [plain],
+        item_streams=[{"-": "st-gone"}, {"-": "st-new"}],
+        insert_errors=[_row_gone()],
+    )
+
+    assert made.rows_read.await_count == 2
+    assert made.session.rollbacks == 1
+    first, second = [
+        statement.compile(dialect=postgresql.dialect()).params
+        for statement in made.session.statements
+        if statement.is_insert
+    ]
+    assert first["stream_id_m0"] == "st-gone"
+    assert second["stream_id_m0"] == "st-new"
+    assert second["sample_item_id_m0"] == first["sample_item_id_m0"]
+
+
+@pytest.mark.asyncio
+async def test_a_file_left_with_no_row_gives_the_item_none():
+    """Stitched before and pooled now: the item spans its polarity."""
+    plain = SampleItemCreate(sample_item_name="x", sample_item_type="UNKNOWN", **COMMON)
+
+    made = await _created(
+        [plain], item_streams=[{"-": "st-gone"}, {}], insert_errors=[_row_gone()]
+    )
+
+    assert _inserted(made.session)["stream_id_m0"] is None
+
+
+@pytest.mark.asyncio
+async def test_what_a_model_named_stands_through_the_second_insert():
+    """Only the rows found for items made by hand are looked up again."""
+    plain = SampleItemCreate(sample_item_name="x", sample_item_type="UNKNOWN", **COMMON)
+    named = StreamItemCreate(
+        sample_item_name="y", sample_item_type="UNKNOWN", stream_id="st-0", **COMMON
+    )
+
+    made = await _created(
+        [named, plain],
+        stream_rows=[_stream_row()],
+        item_streams=[{"-": "st-gone"}, {"-": "st-new"}],
+        insert_errors=[_row_gone()],
+    )
+
+    row = _inserted(made.session)
+    assert (row["stream_id_m0"], row["stream_id_m1"]) == ("st-0", "st-new")
+
+
+@pytest.mark.asyncio
+async def test_a_row_gone_twice_fails_the_request():
+    plain = SampleItemCreate(sample_item_name="x", sample_item_type="UNKNOWN", **COMMON)
+
+    with pytest.raises(IntegrityError):
+        await _created(
+            [plain],
+            item_streams=[{"-": "st-gone"}, {"-": "st-gone-too"}],
+            insert_errors=[_row_gone(), _row_gone()],
+        )
+
+
+@pytest.mark.asyncio
+async def test_another_refusal_of_the_insert_is_not_tried_again():
+    plain = SampleItemCreate(sample_item_name="x", sample_item_type="UNKNOWN", **COMMON)
+    duplicate = IntegrityError(
+        "INSERT INTO sample_item ...",
+        {},
+        Exception('duplicate key value violates unique constraint "pk_sample_item"'),
+    )
+
+    with pytest.raises(IntegrityError, match="duplicate key"):
+        await _created(
+            [plain], item_streams={"-": "st-0"}, insert_errors=[duplicate, _row_gone()]
+        )
+
+
+@pytest.mark.asyncio
+async def test_a_row_only_the_pipeline_named_is_not_looked_up():
+    """Nothing here was found by a lookup, so there is none to make again:
+    the pipeline names its rows under its own claim of the file."""
+    named = StreamItemCreate(
+        sample_item_name="y", sample_item_type="UNKNOWN", stream_id="st-0", **COMMON
+    )
+
+    with pytest.raises(IntegrityError):
+        await _created(
+            [named], stream_rows=[_stream_row()], insert_errors=[_row_gone()]
+        )
 
 
 @pytest.mark.asyncio
