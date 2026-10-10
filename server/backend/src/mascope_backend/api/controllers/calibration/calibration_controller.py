@@ -74,6 +74,7 @@ from mascope_backend.socket.notifications import (
 )
 from mascope_runtime.logging import SENTRY_FINGERPRINT
 from mascope_signal.compute import get_sum_signal
+from mascope_signal.mz_factor import STREAM_FACTORS
 
 
 # Monotonic timestamp of the last emission of each distinct drift warning,
@@ -435,18 +436,21 @@ def _canonical(value):
 
 
 def _fit_seal(fit: dict, filename: str) -> str:
-    """HMAC over what the verdict rests on: the file, the model and its quality."""
-    payload = json.dumps(
-        _canonical(
-            {
-                "filename": filename,
-                "mode": fit.get("mode"),
-                "par": fit.get("par"),
-                "quality": fit.get("quality"),
-            }
-        ),
-        sort_keys=True,
-    )
+    """HMAC over what the verdict rests on: the file, the model and its quality.
+
+    The model of a file calibrated stream by stream is its streams' factors
+    as well (``mascope_signal.mz_factor``). They join what is sealed only
+    where a fit carries them, so a fit of one factor is sealed as it was.
+    """
+    sealed = {
+        "filename": filename,
+        "mode": fit.get("mode"),
+        "par": fit.get("par"),
+        "quality": fit.get("quality"),
+    }
+    if fit.get(STREAM_FACTORS) is not None:
+        sealed[STREAM_FACTORS] = fit[STREAM_FACTORS]
+    payload = json.dumps(_canonical(sealed), sort_keys=True)
     key = derive_token_secret(_FIT_SEAL_PURPOSE).encode("utf-8")
     return hmac.new(key, payload.encode("utf-8"), hashlib.sha256).hexdigest()
 
@@ -784,6 +788,12 @@ async def calibration_mz_fit(
             calibration_data["fit"]["quality"]["axis_correction_ppm"] = (
                 axis_correction_ppm(calibration_data["fit"])
             )
+            if calibration_handler.segments is not None:
+                # A file fitted stream by stream: how each stream of the
+                # sample's polarity came by its factor
+                calibration_data["fit"]["quality"]["segments"] = (
+                    calibration_handler.segments
+                )
         # A preview for the calibration dialog, so the operator sees what the
         # fit would be stored as before applying it. Apply decides again from
         # the quality block rather than trusting this.

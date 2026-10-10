@@ -74,6 +74,8 @@ async def test_orbi_apply_warns_when_peak_timeseries_is_absent():
             np.zeros(8), dims="mz", coords={"mz": mz}
         )
         m_io.load_coord.side_effect = _load_coord_missing_peak_timeseries
+        # No store to read the file's streams off either
+        m_io.load_array.side_effect = FileNotFoundError("peak_timeseries.zarr")
         m_io.get_file_data_vars.return_value = ["sum_signal"]
         # No calibration on the file yet, so apply() does not short-circuit
         m_io.read_props.return_value = {"mz_calibration": None}
