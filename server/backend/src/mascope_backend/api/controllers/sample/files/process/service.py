@@ -36,6 +36,10 @@ from mascope_backend.api.controllers.sample.files.process.bindings import (
     resolve_modes_by_method_binding,
     routes_on_method_binding,
 )
+from mascope_backend.api.controllers.sample.files.process.peaks import (
+    redetect_peaks,
+    redetection_decision,
+)
 from mascope_backend.api.controllers.sample.files.process.status import (
     claim_for_processing,
     compose_detail,
@@ -1737,6 +1741,15 @@ async def bind_sample_files(
 MAX_LISTED_REPROCESS_FAILURES = 10
 
 
+#: What the status of a file says when a re-processing stopped at detecting
+#: its peaks again: the stage, and that its samples are still the ones of its
+#: last run.
+_PEAKS_NOT_REDETECTED = (
+    "Its peaks could not be detected again for re-processing, so its samples "
+    "were left as they were."
+)
+
+
 def _compose_reprocess_failure_message(failed_files: list[dict], header: str) -> str:
     """
     Summarise a re-processing run's failures, naming the files.
@@ -1783,8 +1796,9 @@ async def re_process_sample_files(
 
     Steps:
     - Validate all sample files exist and have no user-created samples
-    - Delete existing ACQUISITION sample items for all files
-    - Run auto-process pipeline for each file
+    - For each file: detect its peaks again where the deployment's scan-stream
+      setting can give it another peak store than it has, delete its existing
+      ACQUISITION sample items, and run the auto-process pipeline
     - Return aggregated results
 
     :param sample_file_ids: List of IDs of the sample files to re-process
@@ -1997,6 +2011,33 @@ async def re_process_sample_files(
     # meant to repair.
     for sample_file in valid_sample_files:
         try:
+            # What the file's peaks are to be detected by, as the deployment
+            # is set now: a re-processing is the one run that decides it
+            # again. Read before the file is claimed, while refusing it costs
+            # it nothing: a file whose streams cannot be read cannot be told
+            # from one whose peaks have to be detected apart, so it keeps the
+            # status of its last run and all of its samples.
+            try:
+                per_stream = await redetection_decision(sample_file)
+            except Exception as e:  # noqa: BLE001 - one file's failure
+                # INFO: the reason goes to whoever asked, in the result
+                runtime.logger.opt(exception=True).info(
+                    "Could not read how the peaks of sample file "
+                    f"{sample_file.filename} are to be detected for its "
+                    "re-processing"
+                )
+                failed_files.append(
+                    {
+                        "sample_file_id": sample_file.sample_file_id,
+                        "filename": sample_file.filename,
+                        "message": (
+                            "Could not read its scan streams or its peak "
+                            "store, which say how its peaks are to be "
+                            f"detected, so nothing of it was changed: {str(e)}"
+                        ),
+                    }
+                )
+                continue
             # Before anything of the file is destroyed: until the rebuild
             # records its own stages, the row would still say how the last run
             # ended - `done` on a file with no samples, if a restart cut in -
@@ -2026,6 +2067,33 @@ async def re_process_sample_files(
                     f"'{sample_file.filename}' before re-processing; the "
                     "previous calibration remains in effect."
                 )
+
+            if per_stream is not None:
+                # After the reset, so that the peaks are detected on the
+                # acquisition axis, as a first conversion detects them; and
+                # before the samples are cleared, so that a file whose peaks
+                # could not be detected keeps them.
+                try:
+                    await redetect_peaks(sample_file, per_stream)
+                except Exception as e:  # noqa: BLE001 - one file's failure
+                    runtime.logger.exception(
+                        "Could not detect the peaks of sample file "
+                        f"{sample_file.filename} again for its re-processing"
+                    )
+                    # No pipeline runs for the file after this, and the
+                    # pipeline is what records how a run ended. The error's
+                    # own text can hold a path, so the status names the stage.
+                    await _record_failed(
+                        sample_file.sample_file_id, ValueError(_PEAKS_NOT_REDETECTED)
+                    )
+                    failed_files.append(
+                        {
+                            "sample_file_id": sample_file.sample_file_id,
+                            "filename": sample_file.filename,
+                            "message": f"{_PEAKS_NOT_REDETECTED} {str(e)}",
+                        }
+                    )
+                    continue
 
             try:
                 cleared_batch_ids = await _clear_sample_items_for_reprocessing(
