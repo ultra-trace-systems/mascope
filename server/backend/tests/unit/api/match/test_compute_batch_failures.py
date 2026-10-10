@@ -19,11 +19,11 @@ from mascope_backend.api.controllers.match.match_controller import (
     AGGREGATION_FAILURE_REASON,
     FAILURE_REASON_MAX_CHARS,
     STALE_PEAK_STORE_REASON,
-    _is_stale_peak_store,
     _summarize_sample_failures,
     match_compute_batch,
 )
 from mascope_backend.api.lib.exceptions.api_exceptions import ApiException
+from mascope_backend.api.lib.stale_peak_store import is_stale_peak_store
 from mascope_signal.compute import StalePeakStoreError
 
 
@@ -483,19 +483,19 @@ class TestIsStalePeakStore:
     """The failure arrives wrapped, so the class is looked for on the chain."""
 
     def test_the_exception_itself(self):
-        assert _is_stale_peak_store(StalePeakStoreError("stale"))
+        assert is_stale_peak_store(StalePeakStoreError("stale"))
 
     def test_a_cause_one_level_down(self):
-        assert _is_stale_peak_store(_wrapped_stale())
+        assert is_stale_peak_store(_wrapped_stale())
 
     def test_a_context_rather_than_a_cause(self):
         """A bare `raise` inside an except block sets only __context__."""
         outer = _wrapped("something else")
         outer.__context__ = StalePeakStoreError("stale")
-        assert _is_stale_peak_store(outer)
+        assert is_stale_peak_store(outer)
 
     def test_an_unrelated_failure(self):
-        assert not _is_stale_peak_store(_wrapped("unreadable file"))
+        assert not is_stale_peak_store(_wrapped("unreadable file"))
 
     def test_a_cyclic_chain_terminates(self):
         """A hand-built chain can point back at itself."""
@@ -503,7 +503,7 @@ class TestIsStalePeakStore:
         second = _wrapped("two")
         first.__cause__ = second
         second.__cause__ = first
-        assert not _is_stale_peak_store(first)
+        assert not is_stale_peak_store(first)
 
 
 class TestSummarizeSampleFailures:

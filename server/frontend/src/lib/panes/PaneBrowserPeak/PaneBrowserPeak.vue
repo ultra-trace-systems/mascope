@@ -10,6 +10,7 @@ import TabMenu from 'primevue/tabmenu'
 import { num } from '@/lib/formatters'
 import { BaseLoadError, BaseTierTag } from '@/lib/base'
 import { peakAssignmentEnabled } from '@/lib/features'
+import { segmentDetail, segmentName } from '@/lib/segments'
 import { useApp } from '@/stores'
 import { usePeakScroller } from './stores'
 
@@ -179,6 +180,25 @@ onBeforeUnmount(() => {
       >
         <template #body="{ data }">
           {{ num.peakIntensity.format(data.area) }}
+        </template>
+      </Column>
+      <!-- Only for a sample whose spectrum is stitched from several scan
+           ranges: nothing is rescaled where two meet, so a peak's intensity
+           reads against the range it was measured in. -->
+      <Column
+        v-if="app.data.peak.segments"
+        field="segment"
+        header="segment"
+        sortable
+        style="height: 20px; min-width: 6rem"
+      >
+        <template #body="{ data }">
+          <span
+            class="segment-cell"
+            v-tooltip.top="segmentDetail(app.data.peak.segments, data.segment)"
+          >
+            {{ segmentName(app.data.peak.segments, data.segment) }}
+          </span>
         </template>
       </Column>
       <!-- The matched isotope buttons are a peak's route into the Match tab,
