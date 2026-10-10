@@ -2627,7 +2627,9 @@ unchanged.
      TIC over the scans of the polarity's streams where the store stitches
      it, and the per-scan export's TIC on the store's own axis (4.3, 4.4);
      the bulk create giving an item made by hand the row the pipeline's
-     item of its file and polarity reads, without writing any (4.4); the
+     item of its file and polarity reads, without writing any (4.4) - and
+     looking it up once more where the insert finds the row gone, the file
+     having been processed again meanwhile; the
      sample spectrum route asking for the rebuild of a stale store it
      meets, as a match does (`request_stale_peak_store_rebuilds`), in the
      name of whoever opened it where that person may rematch the sample -
