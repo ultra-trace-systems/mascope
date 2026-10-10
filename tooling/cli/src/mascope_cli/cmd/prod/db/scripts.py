@@ -82,6 +82,8 @@ _FORWARDED_ENV_VARS = [
     # report_method_binding_disagreements
     "BINDING_REPORT_FILES",
     "BINDING_REPORT_PER_KEY",
+    # report_stitch_overlaps
+    "STITCH_REPORT_FILES",
 ]
 
 # Runs inside the backend container (`<container_python> -c ...`) and prints
