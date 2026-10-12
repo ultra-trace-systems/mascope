@@ -872,7 +872,10 @@ class SamplesResource(BaseResource):
                  - ``mz``: m/z values
                  - ``intensity``: Intensity values
 
-                 Returns None if no data is found.
+                 Returns None if no data is found. A sample whose file's
+                 peak data has to be rebuilt before its spectrum can be read
+                 has no rows in the frame; the server names those files in a
+                 warning, which is logged.
         :rtype: pd.DataFrame | None
         :raises AuthenticationError: If authentication fails.
         :raises MascopeAPIError: If the API request fails.

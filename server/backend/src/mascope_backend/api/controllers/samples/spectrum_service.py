@@ -12,7 +12,12 @@ somebody happens to refresh the batch.
 **Asked for on behalf of whoever opened the spectrum, where they may.** The
 rebuild rematches every sample of the file as that person, which is what an
 editor's refresh of the batch does and a guest cannot do. A guest is told
-what the store's own error says and nothing is queued.
+what the store's own error says and nothing is queued. Two roles decide it,
+and they are independent (``docs/authorization.md``): the person's role in
+the sample's workspace, checked here, and the role of their account, which
+the file converter's token takes (``request_stale_peak_store_rebuilds``).
+An editor of the workspace whose account is a guest is answered as a guest
+is.
 
 **Asked for, never waited for.** The request still fails for the stale
 sample: its spectrum does not exist until the detection has run. Its message
@@ -52,7 +57,8 @@ async def request_rebuilds_for(user: User, stale: list[dict]) -> int:
         ``sample_item_id``, ``sample_file_id`` and ``filename``.
     :type stale: list[dict]
     :return: How many files were queued: those of the samples the person may
-        rematch, once each, where the file converter could be asked.
+        rematch, once each, where the file converter could be asked and the
+        person's account may ask it.
     :rtype: int
     """
     files: dict[str, str] = {}
@@ -119,8 +125,9 @@ async def get_samples_spectra_for(
     :type sample_item_ids: list[str]
     :param params: The time and m/z ranges, as :func:`get_samples_spectra`
         takes them.
-    :return: What :func:`get_samples_spectra` returns, its message saying
-        how many of the stale files were queued for peak detection.
+    :return: What :func:`get_samples_spectra` returns, its message and its
+        warning saying how many of the stale files were queued for peak
+        detection.
     :rtype: dict
     """
     result = await get_samples_spectra(sample_item_ids=sample_item_ids, **params)
@@ -130,9 +137,11 @@ async def get_samples_spectra_for(
     queued = await request_rebuilds_for(user, stale)
     if queued:
         files = len({entry["sample_file_id"] for entry in stale})
-        result["message"] += (
+        said = (
             " Peak detection has been queued for "
             f"{'it' if files == 1 else f'{queued} of them'}: ask again once it "
             "has finished."
         )
+        result["message"] += said
+        result["warnings"] = [warning + said for warning in result["warnings"]]
     return result

@@ -39,7 +39,8 @@ from mascope_backend.api.models.sample.items.sample_item_pydantic_model import (
     SampleItemCreate,
     StreamItemCreate,
 )
-from mascope_signal.compute import StalePeakStoreError
+from mascope_signal.compute import PartialPeakStoreError, StalePeakStoreError
+from mascope_thermo.thermo import NoScansFoundError
 
 
 _SVC = "mascope_backend.api.controllers.sample.files.process.service"
@@ -367,6 +368,33 @@ async def test_a_stale_store_gives_an_item_its_polaritys_pooled_tic():
 
     made.pooled_tic.assert_called_once_with(FILENAME, polarity="-")
     assert _inserted(made.session)["tic_m0"] == 9.0
+
+
+@pytest.mark.asyncio
+async def test_a_store_labelled_in_part_gives_an_item_its_polaritys_pooled_tic():
+    """A store that carries only part of what a per-stream store does is
+    neither sound nor stale. Its rows cannot be read, so the item reads none
+    and spans its polarity, and its TIC is the polarity's - the item such a
+    file was always given, and not a file with no scans of the polarity."""
+    plain = SampleItemCreate(sample_item_name="x", sample_item_type="UNKNOWN", **COMMON)
+
+    made = await _created(
+        [plain],
+        item_streams=ValueError("this one is missing the stream keys."),
+        sample_tic=PartialPeakStoreError("this one is missing the stream keys."),
+    )
+
+    made.pooled_tic.assert_called_once_with(FILENAME, polarity="-")
+    inserted = _inserted(made.session)
+    assert (inserted["tic_m0"], inserted["stream_id_m0"]) == (9.0, None)
+
+
+@pytest.mark.asyncio
+async def test_a_file_with_no_scan_of_the_polarity_is_refused_as_that():
+    plain = SampleItemCreate(sample_item_name="x", sample_item_type="UNKNOWN", **COMMON)
+
+    with pytest.raises(NotFoundException, match="No scans with 'negative' polarity"):
+        await _created([plain], sample_tic=NoScansFoundError("none of it"))
 
 
 @pytest.mark.asyncio

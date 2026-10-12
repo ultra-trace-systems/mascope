@@ -98,9 +98,10 @@ async def get_samples_spectra_route(
     :type user: User
     :return: A dictionary containing the spectra for the specified samples,
         one entry per sample in the order asked. A sample whose file's peak
-        data has to be rebuilt first has an empty spectrum and is listed
-        under ``stale``; the rebuild is asked for where the user is an
-        editor of the sample's workspace.
+        data has to be rebuilt first has an empty spectrum, is listed
+        under ``stale`` and is named in ``warnings``; the rebuild is asked
+        for where the user is an editor of the sample's workspace and their
+        account's own role is editor or above.
     :rtype: dict
     """
     await check_sample_access_bulk(sample_item_ids, user, "guest")

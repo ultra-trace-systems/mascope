@@ -9,12 +9,15 @@ polarity reads: the composite, else the polarity's one stream, else none
 (``docs/dev/ingest_routing_and_splitting.md``, sections 4.4 and 4.5).
 """
 
+import asyncio
 from datetime import datetime, timezone
-from unittest.mock import AsyncMock, patch
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 import pytest_asyncio
 from sqlalchemy import delete, select, text
+from sqlalchemy.exc import IntegrityError
 from test_utils import gen_test_id
 
 from mascope_backend.api.controllers.sample.files.process import streams
@@ -25,7 +28,11 @@ from mascope_backend.api.controllers.sample.files.process.streams import (
     kept_rows_note,
     stale_store_note,
 )
-from mascope_backend.db import AcquisitionStream, SampleFile
+from mascope_backend.api.controllers.sample.items import sample_items_controller
+from mascope_backend.api.models.sample.items.sample_item_pydantic_model import (
+    SampleItemCreate,
+)
+from mascope_backend.db import AcquisitionStream, IonizationMode, SampleFile
 from mascope_signal.compute import StalePeakStoreError
 
 
@@ -98,18 +105,18 @@ def _read(census=None, props=None, raw=True, store=False, keys=(), stitch=None):
     """``read_store_streams`` for a file: ``census`` is what the raw file
     reads as, ``props`` what its ``.props`` holds; ``store`` False is a file
     with no peak store, otherwise the store's keys and map are what the
-    signal library would read off it, a map given as an exception being
-    raised by that read."""
+    signal library reads off its metadata, a map given as an exception being
+    raised when the map is asked for."""
 
-    def _load(filename, var):
-        if store is False:
-            raise FileNotFoundError(var)
-        return object()
-
-    def _map(_store):
+    def _map():
         if isinstance(stitch, Exception):
             raise stitch
         return stitch
+
+    def _header(filename):
+        if store is False:
+            raise FileNotFoundError(filename)
+        return SimpleNamespace(streams=list(keys), stitch_map=_map)
 
     with (
         patch.object(streams.m_compute, "has_scan_streams", return_value=raw),
@@ -119,9 +126,9 @@ def _read(census=None, props=None, raw=True, store=False, keys=(), stitch=None):
         patch.object(
             streams.m_io, "read_props", return_value=props or {}
         ) as read_props,
-        patch.object(streams.m_io, "load_array", side_effect=_load) as opened,
-        patch.object(streams.m_compute, "peak_store_streams", return_value=list(keys)),
-        patch.object(streams.m_compute, "peak_store_stitch_map", side_effect=_map),
+        patch.object(
+            streams.m_compute, "read_peak_store_header", side_effect=_header
+        ) as opened,
     ):
         found = streams._read_store_streams(FILENAME)
     return found, read_file, read_props, opened
@@ -961,3 +968,250 @@ async def test_an_item_reads_a_row_of_its_own_file_only(
                 delete(SampleFile).where(SampleFile.sample_file_id == other_id)
             )
             await session.commit()
+
+
+# -- an item saved while the rows are synced ------------------------------------------
+
+_ITEM = (
+    "INSERT INTO sample_item (sample_item_id, sample_batch_id, sample_file_id,"
+    " sample_item_name, sample_item_type, polarity, stream_id)"
+    " VALUES (:item, :batch, :file, 'made by hand', 'UNKNOWN', '-', :stream)"
+)
+
+#: Long enough for a statement nothing holds back to have finished.
+_SETTLED_S = 0.5
+
+
+async def _batch(async_session_factory, tag):
+    """A batch for a person's samples; returns its id and what removes it
+    again, with the samples made in it."""
+    ids = {
+        "workspace": f"ws-sync-{tag}",
+        "dataset": f"ds-sync-{tag}",
+        "batch": f"sb-sync-{tag}",
+    }
+    async with async_session_factory() as session:
+        for statement in (
+            "INSERT INTO workspace (workspace_id, workspace_name)"
+            " VALUES (:workspace, 'sync')",
+            "INSERT INTO dataset (dataset_id, workspace_id, dataset_name)"
+            " VALUES (:dataset, :workspace, 'sync')",
+            "INSERT INTO sample_batch (sample_batch_id, dataset_id, sample_batch_name)"
+            " VALUES (:batch, :dataset, 'sync')",
+        ):
+            await session.execute(text(statement), ids)
+        await session.commit()
+
+    async def _remove():
+        async with async_session_factory() as session:
+            await session.execute(
+                text("DELETE FROM sample_item WHERE sample_batch_id = :batch"), ids
+            )
+            await session.execute(
+                text("DELETE FROM workspace WHERE workspace_id = :workspace"), ids
+            )
+            await session.commit()
+
+    return ids["batch"], _remove
+
+
+def _before_the_delete(monkeypatch, during):
+    """Run ``during`` inside the next sync, once: after it has read the
+    file's rows and looked for readers of the ones it is about to remove,
+    and before it removes them."""
+    real = streams.async_session
+
+    def paused():
+        session = real()
+        flush = session.flush
+
+        async def flush_after(*args, **kwargs):
+            session.flush = flush
+            await during()
+            return await flush(*args, **kwargs)
+
+        session.flush = flush_after
+        return session
+
+    monkeypatch.setattr(streams, "async_session", paused)
+
+
+@pytest.mark.asyncio
+async def test_an_item_saved_while_its_row_is_removed_waits_and_is_refused(
+    async_session_factory, sample_file_id, monkeypatch
+):
+    """An item naming a row the sync is about to remove, saved after the
+    sync looked for that row's readers. The sync holds the file's rows, so
+    the item waits for it and is refused once the row has gone - by the
+    reference ``create_sample_items`` knows to look the row up again for -
+    and the sync ends well. Were the rows not held, the item would be saved
+    and the sync's delete refused instead, failing the file's processing."""
+    first = await streams.sync_stream_rows(sample_file_id, _composite_file())
+    batch_id, remove = await _batch(async_session_factory, sample_file_id[-8:])
+    item = {
+        "item": f"si-sync-{sample_file_id[-8:]}",
+        "batch": batch_id,
+        "file": sample_file_id,
+        "stream": first.composites["-"],
+    }
+
+    async def save():
+        async with async_session_factory() as session:
+            await session.execute(text(_ITEM), item)
+            await session.commit()
+
+    saving: list[asyncio.Task] = []
+
+    async def while_the_rows_are_held():
+        saving.append(asyncio.create_task(save()))
+        await asyncio.sleep(_SETTLED_S)
+        assert not saving[0].done(), "the item was saved under the sync"
+
+    _before_the_delete(monkeypatch, while_the_rows_are_held)
+    try:
+        rows = await streams.sync_stream_rows(
+            sample_file_id, StoreStreams(COMPOSITE_CENSUS)
+        )
+        with pytest.raises(IntegrityError) as refused:
+            await saving[0]
+        stored = await _rows(async_session_factory, sample_file_id)
+    finally:
+        for task in saving:
+            task.cancel()
+        await remove()
+
+    # The database's own words for it are the ones the create looks for
+    assert sample_items_controller._STREAM_REFERENCE in str(refused.value.orig)
+    assert (rows.kept, rows.composites) == ({}, {})
+    assert set(stored) == {REAGENT, LOW, POS}
+
+
+@pytest.mark.asyncio
+async def test_an_item_not_yet_committed_holds_the_sync_until_it_counts(
+    async_session_factory, sample_file_id
+):
+    """The same item, its insert open when the sync starts: the sync waits
+    for it at its read of the rows, then finds the item among the readers
+    and keeps the row."""
+    first = await streams.sync_stream_rows(sample_file_id, _composite_file())
+    batch_id, remove = await _batch(async_session_factory, sample_file_id[-8:])
+    item = {
+        "item": f"si-sync-{sample_file_id[-8:]}",
+        "batch": batch_id,
+        "file": sample_file_id,
+        "stream": first.composites["-"],
+    }
+    syncing = None
+    try:
+        async with async_session_factory() as session:
+            await session.execute(text(_ITEM), item)
+            syncing = asyncio.create_task(
+                streams.sync_stream_rows(sample_file_id, StoreStreams(COMPOSITE_CENSUS))
+            )
+            await asyncio.sleep(_SETTLED_S)
+            assert not syncing.done(), "the sync did not wait for the item"
+            await session.commit()
+        rows = await syncing
+        stored = await _rows(async_session_factory, sample_file_id)
+    finally:
+        if syncing is not None:
+            syncing.cancel()
+        await remove()
+
+    assert rows.kept == {composite_key("-"): [item["item"]]}
+    assert stored[composite_key("-")].stream_id == first.composites["-"]
+
+
+@pytest.mark.asyncio
+async def test_a_create_whose_row_went_meanwhile_saves_the_item_on_the_row_there_now(
+    async_session_factory, sample_file_id, monkeypatch
+):
+    """The create itself, on the database: the file is processed again
+    between the lookup of the item's row and the insert, and its composite
+    removed. The insert is refused by the reference, the session rolled
+    back, the row looked up again, and the item saved on the one stream the
+    polarity has by then."""
+    await streams.sync_stream_rows(sample_file_id, _composite_file())
+    tag = sample_file_id[-8:]
+    batch_id, remove = await _batch(async_session_factory, tag)
+    mode_id, item_id = f"im-sync-{tag}", f"si-sync-{tag}"
+    async with async_session_factory() as session:
+        session.add(
+            IonizationMode(
+                ionization_mode_id=mode_id,
+                ionization_mode_name=f"Sync {tag}",
+                ionization_mode_token=f"S{tag}",
+                ionization_mode_polarity="-",
+                ionization_mechanism_ids=[],
+            )
+        )
+        await session.commit()
+
+    one_stream = StoreStreams([_stream(REAGENT), _stream(POS, "+")])
+    read_item_streams = streams.read_item_streams
+    lookups: list[dict] = []
+
+    async def lookup(file_id, filename):
+        found = await read_item_streams(file_id, filename)
+        lookups.append(found)
+        if len(lookups) == 1:
+            await streams.sync_stream_rows(sample_file_id, one_stream)
+        return found
+
+    monkeypatch.setattr(
+        streams,
+        "read_store_streams",
+        AsyncMock(side_effect=[_composite_file(), one_stream]),
+    )
+    monkeypatch.setattr(sample_items_controller, "read_item_streams", lookup)
+    monkeypatch.setattr(sample_items_controller, "gen_id", lambda: item_id)
+    monkeypatch.setattr(
+        sample_items_controller,
+        "fetch_affected_sample_data",
+        AsyncMock(
+            return_value=MagicMock(
+                affected_sample_batch_ids=[batch_id],
+                affected_samples=[MagicMock(sample_item_id=item_id)],
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        sample_items_controller, "update_sample_batches_modified_timestamp", AsyncMock()
+    )
+    try:
+        await sample_items_controller.create_sample_items.__wrapped__(
+            sample_items=[
+                SampleItemCreate(
+                    sample_batch_id=batch_id,
+                    sample_file_id=sample_file_id,
+                    sample_item_name="made by hand",
+                    sample_item_type="UNKNOWN",
+                    sample_item_attributes={},
+                    polarity="-",
+                    ionization_mode_id=mode_id,
+                    tic=1.0,
+                    t0=0.0,
+                    t1=3.0,
+                )
+            ]
+        )
+        stored = await _rows(async_session_factory, sample_file_id)
+        async with async_session_factory() as session:
+            read = await session.scalar(
+                text("SELECT stream_id FROM sample_item WHERE sample_item_id = :item"),
+                {"item": item_id},
+            )
+    finally:
+        await remove()
+        async with async_session_factory() as session:
+            await session.execute(
+                delete(IonizationMode).where(
+                    IonizationMode.ionization_mode_id == mode_id
+                )
+            )
+            await session.commit()
+
+    assert len(lookups) == 2
+    assert composite_key("-") not in stored
+    assert lookups[0]["-"] != stored[REAGENT].stream_id
+    assert read == stored[REAGENT].stream_id

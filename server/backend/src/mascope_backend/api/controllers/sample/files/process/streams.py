@@ -22,8 +22,8 @@ names no rows, and the file's items read nothing, as every item did before.
 
 **The peak store decides what is stitched, not the deployment's setting.**
 Whether a file's peaks were detected per stream was decided when they were,
-and the store records it with the map (``mascope_signal.compute``
-``peak_store_streams`` and ``peak_store_stitch_map``). A per-stream store
+and the store records it with the map, both read off its metadata
+(``mascope_signal.compute.read_peak_store_header``). A per-stream store
 whose keys the file no longer reads back, or that carries no map, is stale:
 its peaks are detected again when a match meets it, and until then the rows
 describe the file's streams with nothing stitched, and the file's processing
@@ -36,7 +36,10 @@ and polarity would be given now, among the rows the file has
 written for it - the rows are the pipeline's to write, under the claim that
 keeps two runs off one file - so where the file has no such row yet, the
 item reads none, like every item of a file processed before the rows
-existed.
+existed. A sync holds the file's rows locked while it decides which to
+remove (:func:`sync_stream_rows`), so an item saved meanwhile is either
+counted among the row's readers or waits and is refused once its row has
+gone, which the create answers by looking the row up again.
 
 **A rebuild updates the rows in place.** A bind and a process-on-request
 rebuild a file that has a person's sample, and that sample may read one of
@@ -156,8 +159,9 @@ def item_stream_keys(found: StoreStreams) -> dict[str, str]:
 
     The polarity's composite where the store stitches it, else the
     polarity's one MS1 stream. A polarity it leaves out has no row to read:
-    one pooled from several streams, or of a file with no census. The same
-    choice :meth:`StreamRows.item_stream` makes among the rows a sync wrote.
+    one pooled from several streams, or of a file with no census. The one
+    place that chooses: a sync files the rows it wrote by it
+    (:func:`sync_stream_rows`), and an item made by hand is looked up by it.
 
     :param found: The file's streams, as :func:`read_store_streams` returns
         them.
@@ -280,23 +284,28 @@ def _census(filename: str) -> list[dict]:
 
 
 def _read_store_streams(filename: str) -> StoreStreams:
-    """Synchronous body of :func:`read_store_streams`: it reads the filestore."""
+    """Synchronous body of :func:`read_store_streams`: it reads the filestore.
+
+    The store is asked for its keys and its map off its metadata and is not
+    opened: this runs once per file processed, and once per file a person
+    makes a sample from, on the path of that request.
+    """
     streams = _census(filename)
     if not streams:
         return StoreStreams()
     try:
-        store = m_io.load_array(filename, var="peak_timeseries")
+        store = m_compute.read_peak_store_header(filename)
     except FileNotFoundError:
         # No peak store yet: its census alone describes the file
         return StoreStreams(streams)
-    keys = m_compute.peak_store_streams(store)
+    keys = store.streams
     if not keys:
         return StoreStreams(streams)
     known = {stream.get("key") for stream in streams}
     if missing := [key for key in keys if key not in known]:
         return StoreStreams(streams, stale=missing)
     try:
-        stitch = m_compute.peak_store_stitch_map(store) or {}
+        stitch = store.stitch_map() or {}
     except m_compute.StalePeakStoreError:
         return StoreStreams(streams, stale=["no map"])
     return StoreStreams(streams, keys, stitch)
@@ -359,6 +368,15 @@ async def sync_stream_rows(sample_file_id: str, found: StoreStreams) -> StreamRo
     composite's map no longer names it. Both are reported through
     :attr:`StreamRows.kept` and :attr:`StreamRows.kept_for`.
 
+    The file's rows are read ``FOR UPDATE`` and so held until the sync
+    commits. An item that names one of them takes a share of that row when
+    it is saved, so it either landed before the rows were read here, and is
+    found among the readers, or waits for the commit and is refused if its
+    row has gone - the refusal ``create_sample_items`` answers by looking
+    the row up again. Read unlocked, such an item could be saved between
+    the search for readers and the delete, and the delete would be the
+    statement refused: the file's processing would fail on it.
+
     :param sample_file_id: The file the streams are of.
     :param found: The streams, as :func:`read_store_streams` returns them.
     :return: The rows, by what an item needs of them.
@@ -375,9 +393,9 @@ async def sync_stream_rows(sample_file_id: str, found: StoreStreams) -> StreamRo
             row.stream_key: row
             for row in (
                 await session.execute(
-                    select(AcquisitionStream).where(
-                        AcquisitionStream.sample_file_id == sample_file_id
-                    )
+                    select(AcquisitionStream)
+                    .where(AcquisitionStream.sample_file_id == sample_file_id)
+                    .with_for_update()
                 )
             ).scalars()
         }
@@ -451,18 +469,18 @@ async def sync_stream_rows(sample_file_id: str, found: StoreStreams) -> StreamRo
             if row.stream_id in readers
         }
 
-    by_polarity: dict[str, list[str]] = {}
-    for stream in found.streams:
-        signature = stream["signature"]
-        if signature.get("ms_order") == 1:
-            by_polarity.setdefault(signature.get("polarity"), []).append(stream["key"])
+    reads = item_stream_keys(found)
     return StreamRows(
         ids=ids,
-        composites={polarity: ids[composite_key(polarity)] for polarity in segments},
+        composites={
+            polarity: ids[key]
+            for polarity, key in reads.items()
+            if polarity in segments
+        },
         single={
-            polarity: ids[keys[0]]
-            for polarity, keys in by_polarity.items()
-            if len(keys) == 1
+            polarity: ids[key]
+            for polarity, key in reads.items()
+            if polarity not in segments
         },
         kept=kept_stale,
         kept_for={key: sorted(value) for key, value in kept_for.items()},

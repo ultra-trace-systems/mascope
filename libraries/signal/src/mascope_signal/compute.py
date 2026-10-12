@@ -3,6 +3,7 @@ import hashlib
 import json
 import os
 from contextlib import suppress
+from dataclasses import dataclass
 from typing import Iterable, Literal
 
 import dask.array as da
@@ -124,8 +125,8 @@ def peak_store_streams(peak_data: xr.Dataset) -> list[str]:
 
     :param peak_data: A peak store, or a selection of its peaks or scans
     :type peak_data: xr.Dataset
-    :raises ValueError: If the dataset carries only part of what a
-        per-stream store does
+    :raises PartialPeakStoreError: If the dataset carries only part of what
+        a per-stream store does
     :return: The stream keys, in the order the labels index them
     :rtype: list[str]
     """
@@ -151,7 +152,7 @@ def _stream_keys_of(keys, has_stream: bool, has_scan_stream: bool) -> list[str]:
         return keys
     if not any(carried.values()):
         return []
-    raise ValueError(
+    raise PartialPeakStoreError(
         "A peak store that holds a peak list per scan stream carries its "
         "stream keys and the stream of each peak and each scan together; "
         "this one is missing "
@@ -303,23 +304,54 @@ def peak_store_stitches(base_filename: str, polarity: Literal["+", "-"]) -> bool
     return bool(stitch and stitch["runs"].get(polarity))
 
 
-def _peak_store_metadata(base_filename: str) -> tuple[list[str], dict | None]:
-    """A peak store's stream keys and stitch map, off its metadata alone.
+@dataclass(frozen=True)
+class PeakStoreHeader:
+    """What a peak store says of its scan streams, off its metadata alone.
 
-    What :func:`peak_store_stitches` decides from, for whoever needs the keys
-    as well: the attributes, and whether the store holds the arrays a
-    per-stream store does, each asked for by name.
+    The keys :func:`peak_store_streams` answers and the map
+    :func:`peak_store_stitch_map` answers, for whoever decides from those
+    and has no use for the dataset: opening it costs several times the
+    read of its metadata, and is paid per file (:func:`read_peak_store_header`).
+    """
+
+    #: The stream keys, in the order the store's labels index them; ``[]``
+    #: for a pooled store.
+    streams: list[str]
+    #: The store's attributes.
+    attrs: dict
+    #: Whether a per-stream store holds its ``composite`` mask.
+    has_composite: bool
+
+    def stitch_map(self) -> dict | None:
+        """The store's stitch map, as :func:`peak_store_stitch_map` gives it.
+
+        :raises StalePeakStoreError: If it is a per-stream store with no map
+            or no mask
+        :return: The map, or None for a pooled store
+        :rtype: dict | None
+        """
+        if not self.streams:
+            return None
+        return _stitch_map_of(self.attrs, self.has_composite)
+
+
+def read_peak_store_header(base_filename: str) -> PeakStoreHeader:
+    """Read what a file's peak store says of its scan streams.
+
+    Off the store's metadata alone - its attributes, and whether it holds
+    the arrays a per-stream store does, each asked for by name, since
+    listing the store's arrays reads the metadata of every array it holds.
+    The keys are answered before the map is asked for, so a caller can judge
+    them first: a store whose keys the file no longer reads is said to hold
+    those keys, whether or not it also lost its map.
 
     :param base_filename: Sample file filename
     :type base_filename: str
     :raises FileNotFoundError: If the file has no peak store
-    :raises ValueError: If the store carries only part of what a per-stream
-        store does
-    :raises StalePeakStoreError: If it is a per-stream store with no map or
-        no mask
-    :return: The stream keys in the order the store's labels index them, and
-        the stitch map; ``[]`` and None for a pooled store
-    :rtype: tuple[list[str], dict | None]
+    :raises PartialPeakStoreError: If the store carries only part of what a
+        per-stream store does
+    :return: The store's header
+    :rtype: PeakStoreHeader
     """
     path = m_name.filename_to_zarr_path(base_filename, "peak_timeseries")
     if not os.path.exists(path):
@@ -331,9 +363,29 @@ def _peak_store_metadata(base_filename: str) -> tuple[list[str], dict | None]:
     keys = _stream_keys_of(
         attrs.get("streams"), "stream" in group, "scan_stream" in group
     )
-    if not keys:
-        return [], None
-    return keys, _stitch_map_of(attrs, "composite" in group)
+    # A pooled store has no mask to ask for
+    return PeakStoreHeader(keys, attrs, bool(keys) and "composite" in group)
+
+
+def _peak_store_metadata(base_filename: str) -> tuple[list[str], dict | None]:
+    """A peak store's stream keys and stitch map, off its metadata alone.
+
+    What :func:`peak_store_stitches` decides from, for whoever needs the keys
+    as well (:func:`read_peak_store_header`).
+
+    :param base_filename: Sample file filename
+    :type base_filename: str
+    :raises FileNotFoundError: If the file has no peak store
+    :raises PartialPeakStoreError: If the store carries only part of what a
+        per-stream store does
+    :raises StalePeakStoreError: If it is a per-stream store with no map or
+        no mask
+    :return: The stream keys in the order the store's labels index them, and
+        the stitch map; ``[]`` and None for a pooled store
+    :rtype: tuple[list[str], dict | None]
+    """
+    header = read_peak_store_header(base_filename)
+    return header.streams, header.stitch_map()
 
 
 def get_scan_timestamps(
@@ -1743,6 +1795,20 @@ def _load_deduplicated_peak_data(base_filename: str, mzs_arr: np.ndarray) -> xr.
     )
     _, unique_idx = np.unique(peak_timeseries.mz.values, return_index=True)
     return peak_timeseries.isel(mz=np.sort(unique_idx))
+
+
+class PartialPeakStoreError(ValueError):
+    """A peak store that carries only part of what a per-stream store does.
+
+    The stream keys, the stream of each peak and the stream of each scan
+    mean something only together (:func:`peak_store_streams`). A store with
+    some of them is neither read as pooled nor as per stream, and it is not
+    stale either: no read of the file says which it was meant to be.
+
+    A class of its own so that whoever reads a file's scans can tell it from
+    a file that holds no scan of what was asked for, which is a
+    ``ValueError`` as well (``mascope_thermo.thermo.NoScansFoundError``).
+    """
 
 
 class StalePeakStoreError(ValueError):

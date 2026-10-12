@@ -13,6 +13,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi import HTTPException
+from test_utils import captured_logs
 
 from mascope_backend.api.controllers.match import match_controller
 from mascope_backend.api.controllers.match.match_controller import (
@@ -24,6 +25,7 @@ from mascope_backend.api.controllers.match.match_controller import (
 )
 from mascope_backend.api.lib.exceptions.api_exceptions import ApiException
 from mascope_backend.api.lib.stale_peak_store import is_stale_peak_store
+from mascope_backend.api.new.auth.exceptions import InvalidTokenException
 from mascope_signal.compute import StalePeakStoreError
 
 
@@ -102,6 +104,7 @@ async def _compute(
     user=_USER,
     converter_available=True,
     rebuild_side_effect=None,
+    token_refused=False,
 ):
     """Run match_compute_batch over ``samples`` with a stubbed per-sample step.
 
@@ -144,6 +147,12 @@ async def _compute(
         patch(f"{_MOD}.request_peak_detection", new_callable=AsyncMock) as rebuild,
     ):
         token.return_value = "token-1"
+        if token_refused:
+            # What the file converter's token answers an account below editor
+            token.side_effect = InvalidTokenException(
+                "You don't have access to this service. Uploading needs the "
+                "editor role or above."
+            )
         if rebuild_side_effect is not None:
             rebuild.side_effect = rebuild_side_effect
         if not converter_available:
@@ -380,6 +389,28 @@ class TestStalePeakStores:
         assert result["status"] == "partial", "the batch still reports its own result"
         assert result["data"]["computed_samples_count"] == 1
         assert "Peak detection has been queued" not in notification.message
+
+    @pytest.mark.asyncio
+    async def test_an_account_the_converter_refuses_is_no_fault(self):
+        """An editor of the batch's workspace whose account is a guest: the
+        converter's token is the account's to be given, and it is refused.
+        Nothing is queued, and that is said once at INFO, where it was an
+        error with its traceback on every refresh such a person makes."""
+        samples = [_make_sample("s1"), _make_sample("s2")]
+
+        with captured_logs("INFO") as records:
+            result, notification, rebuilds = await _compute(
+                samples, [_matched(), _wrapped_stale()], token_refused=True
+            )
+
+        assert rebuilds == []
+        assert result["data"]["peak_rebuilds_queued"] == 0
+        assert "Peak detection has been queued" not in notification.message
+        said = [
+            record for record in records if "may not ask the file" in record["message"]
+        ]
+        assert [record["level"].name for record in said] == ["INFO"]
+        assert not [record for record in records if record["level"].name == "ERROR"]
 
 
 @pytest.fixture
