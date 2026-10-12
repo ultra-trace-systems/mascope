@@ -133,6 +133,33 @@ def test_a_counted_interrupt_is_raised_on_the_thread_that_was_interrupted(
             interrupts.raise_pending()
 
 
+def test_an_interrupt_is_pending_from_when_it_is_counted_until_it_is_raised(ctrl_c):
+    """What is asked before a prompt, which would not hear that interrupt."""
+    elsewhere = []
+    with interrupts.recorded():
+        assert interrupts.pending is False
+        with nothing_raised_where_it_arrived():
+            ctrl_c()
+        assert interrupts.pending is True
+
+        # Entering the block neither raises it nor takes it.
+        with nothing_raised_where_it_arrived():
+            with interrupts.immediate():
+                assert interrupts.pending is True
+        thread = threading.Thread(target=lambda: elsewhere.append(interrupts.pending))
+        thread.start()
+        thread.join(10)
+        assert elsewhere == [False]
+
+        with pytest.raises(KeyboardInterrupt):
+            interrupts.raise_pending()
+        assert interrupts.pending is False
+
+    with pytest.raises(KeyboardInterrupt):
+        ctrl_c()
+    assert interrupts.pending is False
+
+
 def test_the_first_interrupt_of_an_immediate_block_is_raised_where_it_arrives(ctrl_c):
     """As at a prompt, which is written for Ctrl+C to get out of it."""
     with interrupts.recorded():

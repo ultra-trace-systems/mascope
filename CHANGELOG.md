@@ -52,8 +52,9 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   ignored are left as they are, and an agent run on any other thread
   replaces nothing. An interrupt that arrives while the agent asks the
   server about its credential at start now stops the agent as any other
-  does, where it used to end the program with a traceback; Ctrl+C at the
-  offer to pair the machine again still only declines the offer.
+  does, where it used to end the program with a traceback, and a credential
+  the server refuses in that moment is logged and not asked about. Ctrl+C
+  at the offer to pair the machine again still only declines the offer.
 
 ## [1.11.0] - 2026.10.09
 

@@ -536,6 +536,45 @@ def test_an_interrupt_during_the_check_at_start_stops_the_agent(
     assert not agent.running
 
 
+def test_an_interrupted_check_that_finds_the_credential_refused_asks_nothing(
+    make_agent, monkeypatch, ctrl_c
+):
+    """Ctrl+C while the server is being asked, and the answer is a refusal.
+
+    A refused credential is offered a repair, which at the console is a
+    question. Whoever has just asked the agent to stop is not asked it: an
+    interrupt counted before the offer is not one the prompt would hear, so
+    the prompt would wait for an answer or for a second Ctrl+C. The refusal
+    is logged, and the upload loop answers the interrupt.
+    """
+
+    def refused(host, token, verify):
+        ctrl_c()
+        return credentials.CREDENTIAL_REJECTED, "Revoked."
+
+    monkeypatch.setattr(credentials, "check_credential", refused)
+    agent = make_agent()
+    offered = []
+
+    class AsksAtTheConsole(Repair):
+        def offer(self, reason, pair):
+            offered.append(reason)
+            return None
+
+    agent.credentials.repair = AsksAtTheConsole()
+
+    try:
+        agent.run_until_complete()
+    except KeyboardInterrupt:
+        pytest.fail("the interrupt went past the agent")
+
+    assert offered == []
+    assert agent.logger.said("error", "This machine's Mascope credential was refused")
+    assert agent.logger.said("info", "Shutdown requested by user.")
+    assert agent.logger.said("info", "File system watcher stopped")
+    assert not agent.running
+
+
 def test_a_repair_offered_at_the_start_is_interrupted_as_any_prompt_is(
     make_agent, monkeypatch, ctrl_c
 ):
