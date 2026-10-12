@@ -2003,12 +2003,19 @@ async def re_process_sample_files(
                     # Not taken for a file with no samples: that one is sent
                     # on to be cleared and rebuilt, and this one may have
                     # samples, with modes that still bind it.
+                    #
+                    # The error's own text stays in the log above. This is a
+                    # fault, not something the file's name or samples say, and
+                    # its text can hold SQL with its bound parameters
+                    # (:func:`_failure_detail`), while the report goes to
+                    # whoever pressed Re-process.
                     failed_files.append(
                         {
                             "sample_file_id": sample_file.sample_file_id,
                             "filename": sample_file.filename,
                             "message": (
-                                f"Failed to read the modes its samples have: {str(e)}"
+                                "Failed to read the modes its samples have, so "
+                                "it was left as it is. Re-process it again."
                             ),
                         }
                     )
