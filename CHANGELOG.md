@@ -89,6 +89,14 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   touched, with a reason that says so, and choosing its chemistry in Raw
   files rebuilds it. Servers that do not route on method bindings, the
   default, were not affected.
+- **A re-processing report no longer repeats an internal error's text.**
+  Where an unexpected error stopped a file - reading its acquisition record
+  or the modes its samples have, resolving its name's tokens, or claiming
+  and clearing it before its run - the report named the file with the
+  error's own words, which for a database error can be the statement and
+  its values. The report now says what failed and that the file was left as
+  it is, or names the kind of failure in the words a failed file's status
+  uses. What the error said is in the server's log.
 
 ## [1.11.0] - 2026.10.09
 

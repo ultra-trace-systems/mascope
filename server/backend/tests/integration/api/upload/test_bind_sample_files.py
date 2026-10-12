@@ -586,6 +586,12 @@ def pipeline(monkeypatch) -> AsyncMock:
     return stub
 
 
+def _report(refused) -> str:
+    """What a refused run tells its user: the message, and the reasons per
+    file that the notification carries beside it."""
+    return f"{refused.value.user_message}\n{refused.value.tech_message}"
+
+
 @pytest.mark.asyncio
 async def test_reprocessing_keeps_the_modes_a_file_was_bound_to(
     async_session_factory, setup, pipeline
@@ -700,10 +706,50 @@ async def test_reprocessing_does_not_leave_unread_samples_to_the_rung(
     ) as refused:
         await process_service.re_process_sample_files(sample_file_ids=[bound])
 
-    assert "the database went away" not in str(refused.value)
+    assert "the database went away" not in _report(refused)
     pipeline.assert_not_called()
     assert await _samples_of(async_session_factory, bound) == 1
     assert await _status(async_session_factory, bound) == "done"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("failing", "says"),
+    [
+        ("_declared_before_a_run", "Failed to read its acquisition record"),
+        ("resolve_ionization_modes_by_tokens", "Failed to resolve ionization modes"),
+        (
+            "_clear_sample_items_for_reprocessing",
+            "Processing failed: Processing stopped on an unexpected error",
+        ),
+    ],
+)
+async def test_reprocessing_reports_a_fault_without_its_text(
+    async_session_factory, setup, pipeline, monkeypatch, failing, says
+):
+    """The report goes to whoever pressed Re-process, and a fault's own text
+    can hold SQL with its bound parameters. Wherever one stops a file - at
+    the read of its record, at the reading of its name, or at the clearing
+    before its run - the report says what failed, and what the error said
+    is left to the log."""
+    monkeypatch.setattr(
+        process_service,
+        failing,
+        AsyncMock(side_effect=RuntimeError("the database went away")),
+    )
+    bound = await _file(
+        async_session_factory,
+        "stopped-by-a-fault",
+        "-",
+        sample_under=(setup["batch"], setup["negative"]),
+    )
+
+    with pytest.raises(Exception, match=says) as refused:
+        await process_service.re_process_sample_files(sample_file_ids=[bound])
+
+    assert "the database went away" not in _report(refused)
+    pipeline.assert_not_called()
+    assert await _samples_of(async_session_factory, bound) == 1
 
 
 # ---------------------------------------------------------------------------
