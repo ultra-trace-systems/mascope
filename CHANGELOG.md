@@ -75,8 +75,30 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   "Matched 1 sample." like any other and nothing showed that its record had
   bound it. The sentence is now kept in every status from the binding on,
   the last included: "Matched 1 sample. Bound to 'Nitrate' (-) by its
-  acquisition record." Files bound by a token, a method or a person's choice
-  end on the status they did before.
+  acquisition record." Files bound by a token or a method end on the status
+  they did before.
+
+- **A chemistry chosen by hand outlasts a re-process, whatever the file's
+  name says.** Choose chemistry in Raw files binds a file to the ionization
+  modes a person picks, and re-processing kept that choice only for a file
+  with no ionization mode token in its name. A file whose name carried a
+  token went back through the binding ladder, so its acquisition record, or
+  that token, bound it again: the choice was undone, and the run reported
+  nothing but success. A record cannot be corrected once it is stored, so
+  for a file named with a token there was no lasting way to overrule a
+  record that named the wrong chemistry. Re-process, and processing one
+  file on request, now keep a person's choice ahead of the record and of
+  the name alike, until somebody chooses again; a name that matches two
+  modes of one polarity no longer refuses such a file. To put a file back
+  under the mode its record or its name would bind it to, choose that mode:
+  fixing the tokens and re-processing no longer moves a file somebody chose
+  the chemistry of. Its status says "Bound to ... as chosen by hand." and
+  goes on saying it once the file is processed ("Matched 1 sample. Bound to
+  'Nitrate' (-) as chosen by hand."), where it read "Bound to ... without a
+  file-name token." and only while the file was bound. Files bound by a
+  record, a token or a method, and ones given a chemistry before samples
+  recorded how they were bound, are re-processed as before
+  (`docs/dev/acquisition_sidecar.md`).
 
 - **Re-processing a file detects its peaks again under the server's
   `composite_scan_streams` setting as it is then.** Whether the peaks of a

@@ -227,10 +227,12 @@ attention** in the notifications pane.
 
 The files are processed under those modes as if their names carried the
 modes' tokens: calibrated, matched, and filed in the daily acquisition
-batches. An editor of the instrument may do it. Re-processing a file whose
-name carries no mode's token later keeps the modes it was given. Re-processing
-refuses a name with tokens of two modes of one polarity, or with a token for
-only one of its polarities: choose its chemistry again, or fix the tokens.
+batches. An editor of the instrument may do it. The modes stay with the file:
+re-processing it later keeps them, whatever tokens its name carries and
+whatever tokens are configured by then, and its status goes on saying so:
+"Matched 1 sample. Bound to 'Nitrate' (-) as chosen by hand." To change them,
+or to put the file under the mode its name would bind it to, choose its
+chemistry again.
 
 The same action gives a chemistry to a file that failed before its samples
 were made, and corrects a wrong choice: a file that has samples already is
@@ -328,9 +330,9 @@ batch has samples, you can go straight to analysis:
   polarity from the dropdown.
 - **A file needs re-processing.** Right-click it in the raw-files table and choose
   **Re-process** to rebuild its acquisition data under the current ionization
-  modes. A file whose name matches no token keeps the modes its samples have,
-  such as one whose chemistry was chosen by hand. This is only available for
-  files not tied to a batch you created.
+  modes. A file whose chemistry was chosen by hand keeps it, whatever its name
+  says, and a file whose name matches no token keeps the modes its samples
+  have. This is only available for files not tied to a batch you created.
 - **Uploads from the File Agent keep failing.** See the File Agent's
   [troubleshooting section](../instruments/index.md#troubleshooting-uploads) —
   it covers rejected tokens, HTTP 404s, and the 100 MB size limit.

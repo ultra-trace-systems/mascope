@@ -1422,7 +1422,8 @@ async def test_the_rung_binds_a_token_less_file_to_its_method(status):
     assert _recorded(status)[0][1] == (
         "Bound to 'Bromide RI' (-) by its acquisition method."
     )
-    # Said at the binding and not carried to the end: only a record's rung is.
+    # Said at the binding and not carried to the end: only a record's rung
+    # and a person's choice are.
     assert _recorded(status)[-1][1] == "Matched 1 sample."
     assert _recorded_provenance(mocks) == {
         "im-001": ItemProvenance("method", "mb-000000000001")
@@ -1798,6 +1799,56 @@ async def test_a_kept_mode_from_before_the_columns_invents_no_rung(status):
         )
 
     assert _recorded_provenance(mocks) == {"im-001": ItemProvenance(None, None)}
+    status.learn.assert_not_awaited()
+
+
+#: What a file a person chose the chemistry of says of it, in every status
+#: from the binding on.
+CHOSEN_BY_HAND = "Bound to 'Nitrate' (-) as chosen by hand."
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "bound_by, bound, done",
+    [
+        ("explicit", CHOSEN_BY_HAND, f"Matched 1 sample. {CHOSEN_BY_HAND}"),
+        (
+            "token",
+            "Bound to 'Nitrate' (-) without a file-name token.",
+            "Matched 1 sample.",
+        ),
+        (
+            None,
+            "Bound to 'Nitrate' (-) without a file-name token.",
+            "Matched 1 sample.",
+        ),
+    ],
+    ids=["a person chose", "a token since renamed", "nothing recorded"],
+)
+async def test_a_kept_choice_says_so_and_teaches_nothing(status, bound_by, bound, done):
+    """A choice kept across a re-process is still somebody's choice.
+
+    It stands ahead of a token in the file's name, so the status the run
+    ends on is what tells whoever fixed the tokens and re-processed why this
+    file did not follow them. It reads as it did on the run the choice was
+    made for. The method learns nothing all the same: that run taught it. A
+    mode nobody chose says only that no file name chose it, and only while
+    the file is bound.
+    """
+    mocks, _ = _start_single()
+    chosen = _make_ionization_mode(ionization_mode_name="Nitrate")
+    kept = {"im-001": ItemProvenance(bound_by)}
+
+    with patch(
+        f"{_SVC}.fetch_ionization_modes",
+        new_callable=AsyncMock,
+        return_value=[chosen],
+    ):
+        await _run_pipeline(ionization_mode_ids=["im-001"], kept_provenance=kept)
+
+    assert _recorded(status)[0] == ("bound", bound)
+    assert _recorded(status)[-1] == ("done", done)
+    assert _recorded_provenance(mocks) == kept
     status.learn.assert_not_awaited()
 
 
@@ -2218,11 +2269,10 @@ async def test_modes_chosen_for_a_file_bind_it_without_its_tokens(status):
     fetch.assert_awaited_once_with(["im-001"])
     mocks["resolve"].assert_not_called()
     assert mocks["create_batches"].call_args.kwargs["ionization_modes"] == [chosen]
-    assert _recorded(status)[0] == (
-        "bound",
-        "Bound to 'Nitrate' (-) without a file-name token.",
-    )
-    assert _recorded(status)[-1] == ("done", "Matched 1 sample.")
+    assert _recorded(status)[0] == ("bound", CHOSEN_BY_HAND)
+    # Carried to the end, as a record's rung is: nothing else Raw files shows
+    # says a person chose, and the name beside it may say otherwise.
+    assert _recorded(status)[-1] == ("done", f"Matched 1 sample. {CHOSEN_BY_HAND}")
 
 
 @pytest.mark.asyncio
