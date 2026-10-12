@@ -619,6 +619,31 @@ A `get_peaks` over a time range (`t_min` / `t_max`) leaves out the peaks whose t
 
 `list` accepts exactly one of `batch` (must match a single batch; raises if ambiguous) or `batches` (returns samples from all matching batches, with an added `sample_batch_name` column).
 
+#### `mascope.sample_files`
+
+| Method                                                              | Description                                           | Returns             |
+| ------------------------------------------------------------------- | ----------------------------------------------------- | ------------------- |
+| `get_scans(sample_file_id, fields=, first_scan=, last_scan=, ...)`  | A file's scan table: one row per scan, no centroids   | `pd.DataFrame│None` |
+
+A sample names the file it was cut from in `sample_file_id` (`mascope.samples.get(sample_id)["sample_file_id"]`). `get_scans` returns one row per scan of that file with the scan's statistics (`ScanNumber`, `StartTime` in minutes, `TIC`, `ScanType`, `MsType`) and its trailer under the instrument's own labels, colon included (`"FT Resolution:"`, `"Conversion Parameter B:"`). Scans of every MS order are in it and none is left out; filter on `MsType` for the MS1 scans alone. No peak is read for it, so it stays under a megabyte for a file whose centroids run to hundreds.
+
+```python
+file_id = mascope.samples.get(sample_id)["sample_file_id"]
+scans = mascope.sample_files.get_scans(
+    file_id,
+    fields=[
+        "Conversion Parameter B:",
+        "Conversion Parameter C:",
+        "FT Resolution:",
+        "MsType",
+    ],
+    first_scan=1,
+    last_scan=100,
+)
+```
+
+`fields` keeps the named columns (`ScanNumber` always comes with them); `first_scan` / `last_scan`, `t_min` / `t_max` (seconds) and `polarity` narrow the scans. The number of scans in the file and the file's own statistics ride on `df.attrs["num_of_scans"]` and `df.attrs["stats_per_file"]`. Only a file whose raw Orbitrap data is stored has a scan table.
+
 #### `mascope.matching`
 
 | Method                                 | Description                  | Returns           |
@@ -822,6 +847,7 @@ mascope_sdk/
 │   ├── ionization.py    # IonizationResource
 │   ├── matching.py      # MatchingResource (compound matching)
 │   ├── peak_assignments.py  # PeakAssignmentsResource (read persisted assignment runs)
+│   ├── sample_files.py  # SampleFilesResource (a file's scan table)
 │   ├── samples.py       # SamplesResource (peaks, spectra, timeseries)
 │   └── workspaces.py    # WorkspacesResource
 └── examples/            # Jupyter notebook examples
