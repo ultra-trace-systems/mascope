@@ -1939,7 +1939,7 @@ async def re_process_sample_files(
             # The report says which read failed and not what the error said.
             # It goes to whoever pressed Re-process, and a fault's own text
             # can hold SQL with its bound parameters (:func:`_failure_detail`),
-            # so that text is left to the log below - here and in the two
+            # so that text is left to the log below - here and in the
             # refusals like this one further down.
             failed_files.append(
                 {
@@ -2112,8 +2112,12 @@ async def re_process_sample_files(
             # status of its last run and all of its samples.
             try:
                 per_stream = await redetection_decision(sample_file)
-            except Exception as e:  # noqa: BLE001 - one file's failure
-                # INFO: the reason goes to whoever asked, in the result
+            except Exception:  # noqa: BLE001 - one file's failure
+                # The report says which read failed and not what the error
+                # said, as the refusals above do: here that text can hold a
+                # path of the filestore. INFO, with the error: a file that
+                # cannot be read is that file's condition, and whoever asked
+                # is told of it in the result.
                 runtime.logger.opt(exception=True).info(
                     "Could not read how the peaks of sample file "
                     f"{sample_file.filename} are to be detected for its "
@@ -2126,7 +2130,7 @@ async def re_process_sample_files(
                         "message": (
                             "Could not read its scan streams or its peak "
                             "store, which say how its peaks are to be "
-                            f"detected, so nothing of it was changed: {str(e)}"
+                            "detected, so nothing of it was changed."
                         ),
                     }
                 )
@@ -2175,7 +2179,9 @@ async def re_process_sample_files(
                     )
                     # No pipeline runs for the file after this, and the
                     # pipeline is what records how a run ended. The error's
-                    # own text can hold a path, so the status names the stage.
+                    # own text can hold a path, so the status names the stage,
+                    # and the report adds only the kind of failure, in the
+                    # words a failed file's status uses.
                     await _record_failed(
                         sample_file.sample_file_id, ValueError(_PEAKS_NOT_REDETECTED)
                     )
@@ -2183,7 +2189,9 @@ async def re_process_sample_files(
                         {
                             "sample_file_id": sample_file.sample_file_id,
                             "filename": sample_file.filename,
-                            "message": f"{_PEAKS_NOT_REDETECTED} {str(e)}",
+                            "message": (
+                                f"{_PEAKS_NOT_REDETECTED} {_failure_detail(e)}"
+                            ),
                         }
                     )
                     continue

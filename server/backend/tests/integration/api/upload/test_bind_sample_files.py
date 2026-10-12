@@ -1340,19 +1340,25 @@ async def test_reprocessing_refuses_a_file_it_cannot_decide_for_untouched(
 ):
     """A file whose streams cannot be read cannot be told from one whose
     peaks have to be detected apart. It is refused before it is claimed, so
-    it keeps the status of its last run, its calibration and its samples."""
+    it keeps the status of its last run, its calibration and its samples.
+
+    The report says which read failed and not what the error said, whose
+    text can hold a path of the filestore: that is left to the log, as for
+    every other read a re-processing refuses a file on."""
     unreadable = await _file(
         async_session_factory,
         "unreadable",
         "-",
         sample_under=(setup["batch"], setup["negative"]),
     )
-    steps.decision = OSError("the raw file is gone")
+    steps.decision = OSError("/srv/filestore/site/file: the raw file is gone")
 
     with pytest.raises(Exception, match="nothing of it was changed") as refused:
         await process_service.re_process_sample_files(sample_file_ids=[unreadable])
 
-    assert "the raw file is gone" in str(refused.value)
+    assert "Could not read its scan streams or its peak store" in _report(refused)
+    assert "the raw file is gone" not in _report(refused)
+    assert "/srv/filestore" not in _report(refused)
     assert steps.done == ["decided"]
     assert await _status(async_session_factory, unreadable) == "done"
     assert await _samples_of(async_session_factory, unreadable) == 1
@@ -1365,7 +1371,9 @@ async def test_a_file_whose_peaks_cannot_be_detected_again_keeps_its_samples(
     """Its run ends there, and says so: no pipeline follows to record how it
     ended. The samples of its last run are still its samples, and the status
     everyone who lists the file can read names the stage and not the error,
-    whose text can hold a path."""
+    whose text can hold a path. The report to whoever asked adds the kind of
+    failure, in the words a failed file's status uses, and no more of the
+    error than that."""
     failing = await _file(
         async_session_factory,
         "undetectable",
@@ -1377,8 +1385,9 @@ async def test_a_file_whose_peaks_cannot_be_detected_again_keeps_its_samples(
     with pytest.raises(Exception, match="could not be detected again") as failed:
         await process_service.re_process_sample_files(sample_file_ids=[failing])
 
-    # Whoever asked is told what stopped it
-    assert "No space left" in str(failed.value)
+    assert "Processing stopped on an unexpected error" in _report(failed)
+    assert "No space left" not in _report(failed)
+    assert "/srv/filestore" not in _report(failed)
     assert steps.done == ["decided", "reset the calibration"]
     assert await _samples_of(async_session_factory, failing) == 1
     assert await _status(async_session_factory, failing) == "failed"
