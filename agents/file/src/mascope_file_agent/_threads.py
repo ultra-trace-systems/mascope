@@ -102,6 +102,15 @@ class Interrupts:
             if signal.getsignal(signal.SIGINT) is handler:
                 signal.signal(signal.SIGINT, signal.default_int_handler)
 
+    @property
+    def pending(self) -> bool:
+        """Whether the calling thread has an interrupt counted and not yet raised.
+
+        False on any thread but the one whose interrupts are counted, and
+        while none are counted.
+        """
+        return self._listener == get_ident() and self._answered < self._recorded
+
     def raise_pending(self) -> None:
         """Raise the oldest interrupt that was counted and not yet raised.
 
@@ -111,7 +120,7 @@ class Interrupts:
 
         :raises KeyboardInterrupt: For an interrupt that was counted
         """
-        if self._listener == get_ident() and self._answered < self._recorded:
+        if self.pending:
             self._answered += 1
             raise KeyboardInterrupt
 
@@ -122,7 +131,9 @@ class Interrupts:
         For a step that talks to whoever is at the console and is written
         for Ctrl+C to cut it short, such as a prompt, or a wait that says
         "Ctrl+C to cancel". The first interrupt of the block is raised
-        where it arrives, and the ones after it are counted again. On a
+        where it arrives, and the ones after it are counted again. One
+        counted before the block is not raised in it, and a prompt would
+        not hear it: see :attr:`pending` before asking anything. On a
         thread whose interrupts are not counted, the block runs as it would
         have without this.
         """

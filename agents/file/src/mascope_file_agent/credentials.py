@@ -64,7 +64,9 @@ class Repair:
 
         Called at most once at a time, and not again once it has returned
         None: a refused credential stays refused, and the operator is not
-        asked once per file.
+        asked once per file. Not called at all for a credential found
+        refused after ``Agent.run_until_complete()`` was interrupted: the
+        agent is stopping, and says in the log what it found.
 
         Called on the thread that found the credential refused: the thread
         the agent runs on for the check at start, an upload worker after
@@ -256,6 +258,13 @@ class Credentials:
             if self.current_access_token() != token_used:
                 return True  # another worker re-paired while this one waited
             if self._repair_declined:
+                return False
+            if interrupts.pending:
+                # Asked to stop while the server was being asked. A prompt
+                # would not hear that interrupt, only a second one, and
+                # nobody who is leaving wants the question. Not a refusal
+                # of the offer either: the agent's loop answers the
+                # interrupt, and the next start asks.
                 return False
             # Whoever is at the console gets out of a prompt with Ctrl+C.
             with interrupts.immediate():
