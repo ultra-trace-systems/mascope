@@ -2586,7 +2586,10 @@ Needed before any rung can be provisional or park.
      pipeline asks the rung, so a file whose samples are still there under
      modes that no longer bind it - a mode deleted since leaves them with
      none - is refused untouched, as it is where the rung is off, and so is
-     one whose samples could not be read. A file bound
+     one whose samples could not be read. Processing one file on request
+     (`POST /api/sample/files/{id}/process`) refuses such a file too, with
+     the rung on or off, since its run clears the samples before anything
+     binds the file; samples it cannot read fail the request. A file bound
      this way teaches its binding nothing, and its items record
      `method_binding_id`, which is checked against the table as the item is
      created rather than trusted from the earlier read: `ON DELETE SET NULL`

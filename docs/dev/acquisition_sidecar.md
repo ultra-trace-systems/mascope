@@ -341,9 +341,12 @@ is read:
   rebuilt under the modes its samples have; with neither, Re-process
   refuses it, says what its record named, and touches nothing. It is not
   sent to the pipeline to find out, because a run clears a file's samples
-  and resets its calibration before it asks. A record that cannot be read
-  is not taken for one that binds nothing either: Re-process refuses the
-  file untouched and says so, and processing on request fails.
+  and resets its calibration before it asks. Processing on request refuses
+  it the same way where it has samples, and sends one with none on to the
+  pipeline, which has nothing of it to clear and parks it again. A record
+  that cannot be read is not taken for one that binds nothing either:
+  Re-process refuses the file untouched and says so, and processing on
+  request fails.
 - **A chemistry a person chose stands ahead of the record, and of the
   file's name.** A record is stored as it was sent and cannot be corrected,
   so choosing by hand is the one way to overrule a record that names the

@@ -10,8 +10,10 @@ A file that has samples already is rebuilt under the chosen modes; one with a
 sample a person made from it keeps its calibration, and one the chosen modes
 do not fit is refused. Re-processing, and processing a file on request, keep
 the modes a file was bound to that way, whatever its name and its acquisition
-record say, until somebody chooses again. Only the pipeline's own samples are
-replaced, wherever a person's sample is.
+record say, until somebody chooses again. A file whose samples no mode binds
+any longer is started on neither road: a run clears a file's samples before
+it binds the file. Only the pipeline's own samples are replaced, wherever a
+person's sample is.
 
 For a file nobody chose the chemistry of, its acquisition record is asked
 first on both of those roads, as the pipeline asks it: a file its record
@@ -1658,6 +1660,137 @@ async def test_processing_a_hand_bound_file_on_request_keeps_its_modes(
 
     assert resp.status_code == 202, resp.text
     assert spawn.await_args.kwargs["ionization_mode_ids"] == [setup["negative"]]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("under", "by_method"),
+    [(None, False), (None, True), ("positive", False)],
+    ids=["mode deleted", "mode deleted, method rung on", "mode of another polarity"],
+)
+async def test_processing_on_request_leaves_a_file_no_mode_binds_its_samples(
+    async_session_factory, setup, admin_client, monkeypatch, under, by_method
+):
+    """A file bound once, whose samples no longer give a mode per polarity:
+    a mode deleted since leaves them with none, and one whose polarity was
+    changed since is no mode of the file's. It has no modes to keep, which
+    is what a parked file with no samples says too - but a run clears a
+    file's samples before it binds the file, so this one would park with
+    its samples gone. It is refused before it is claimed, and with the
+    method rung on as with it off: the samples are cleared before the
+    method is asked, too."""
+    monkeypatch.setattr(process_service, "routes_on_method_binding", lambda: by_method)
+    orphaned = await _file(
+        async_session_factory,
+        "on-request-mode-deleted",
+        "-",
+        sample_under=(setup["batch"], setup[under] if under else None),
+    )
+    spawn = AsyncMock()
+    monkeypatch.setattr(sample_files_routes, "spawn_auto_process_sample_file", spawn)
+
+    resp = await admin_client.post(f"/api/sample/files/{orphaned}/process")
+
+    assert resp.status_code == 422, resp.text
+    reason = resp.json()["error"]
+    assert "ionization mode tokens" in reason.lower()
+    assert "no longer bind it" in reason
+    assert "Choose its chemistry in Raw files" in reason
+    spawn.assert_not_called()
+    assert await _samples_of(async_session_factory, orphaned) == 1
+    assert await _status(async_session_factory, orphaned) == "done"
+
+
+@pytest.mark.asyncio
+async def test_processing_on_request_asks_the_record_of_a_file_no_mode_binds(
+    async_session_factory, setup, admin_client, mode_with_token, monkeypatch
+):
+    """The record is asked before the samples are counted. A file its record
+    binds starts with no modes of its own though its samples have none: the
+    run binds it by the record, and rebuilds it. One whose record names a
+    chemistry nothing here answers to is refused, and the reason says what
+    the record named."""
+    _mode_id, token = await mode_with_token("-")
+    declared = await _file(
+        async_session_factory,
+        "on-request-record-binds",
+        "-",
+        sample_under=(setup["batch"], None),
+        declaring=token,
+    )
+    unanswered = await _file(
+        async_session_factory,
+        "on-request-record-unanswered",
+        "-",
+        sample_under=(setup["batch"], None),
+        declaring="T-no-mode-has",
+    )
+    spawn = AsyncMock()
+    monkeypatch.setattr(sample_files_routes, "spawn_auto_process_sample_file", spawn)
+
+    resp = await admin_client.post(f"/api/sample/files/{declared}/process")
+
+    assert resp.status_code == 202, resp.text
+    assert spawn.await_args.kwargs["sample_file_id"] == declared
+    assert spawn.await_args.kwargs["ionization_mode_ids"] is None
+
+    resp = await admin_client.post(f"/api/sample/files/{unanswered}/process")
+
+    assert resp.status_code == 422, resp.text
+    reason = resp.json()["error"]
+    assert "names the chemistry 'T-no-mode-has', but no ionization mode" in reason
+    assert "no longer bind it" in reason
+    spawn.assert_awaited_once()
+    assert await _samples_of(async_session_factory, unanswered) == 1
+    assert await _status(async_session_factory, unanswered) == "done"
+
+
+@pytest.mark.asyncio
+async def test_processing_a_parked_file_on_request_leaves_it_to_the_run(
+    async_session_factory, setup, admin_client, monkeypatch
+):
+    """No samples, so nothing a run could cost it: it starts with no modes
+    of its own, and the run binds it or parks it again."""
+    parked = await _file(async_session_factory, "on-request-parked", "-")
+    spawn = AsyncMock()
+    monkeypatch.setattr(sample_files_routes, "spawn_auto_process_sample_file", spawn)
+
+    resp = await admin_client.post(f"/api/sample/files/{parked}/process")
+
+    assert resp.status_code == 202, resp.text
+    assert spawn.await_args.kwargs["ionization_mode_ids"] is None
+    assert spawn.await_args.kwargs["kept_provenance"] is None
+
+
+@pytest.mark.asyncio
+async def test_processing_on_request_fails_when_its_samples_cannot_be_counted(
+    async_session_factory, setup, admin_client, monkeypatch
+):
+    """Samples that could not be counted are not no samples: started with no
+    modes on that guess, the run would clear the one this file has. The
+    request fails before anything is claimed, as it does for a record and
+    for a choice that cannot be read."""
+    monkeypatch.setattr(
+        process_service,
+        "_pipeline_item_count",
+        AsyncMock(side_effect=RuntimeError("the database went away")),
+    )
+    unread = await _file(
+        async_session_factory,
+        "on-request-samples-unread",
+        "-",
+        sample_under=(setup["batch"], None),
+    )
+    spawn = AsyncMock()
+    monkeypatch.setattr(sample_files_routes, "spawn_auto_process_sample_file", spawn)
+
+    resp = await admin_client.post(f"/api/sample/files/{unread}/process")
+
+    assert resp.status_code >= 500, resp.text
+    assert "the database went away" not in resp.text
+    spawn.assert_not_called()
+    assert await _samples_of(async_session_factory, unread) == 1
+    assert await _status(async_session_factory, unread) == "done"
 
 
 @pytest.mark.asyncio
