@@ -1,0 +1,85 @@
+name: Demo bundle cache
+run-name: Demo bundle cache on ${{ github.head_ref || github.ref_name }}
+
+# Every job that starts the demo stack restores the demo bundle from the
+# Actions cache (.github/actions/demo-bundle-cache) and downloads it only on a
+# miss. Which caches a run may read is decided by where they were saved: on
+# its own ref, on the default branch, and - for a pull request - on its base
+# branch. The test workflow runs for pull requests alone, and what a pull
+# request saves only that pull request can read, so nothing it does fills the
+# cache the next pull request starts from.
+#
+# This does. On each push to develop and to master it restores the bundle that
+# branch's registry names, or downloads and saves it, in the one place every
+# pull request into the branch can read. Without it each pull request's first
+# run would download the bundle for itself, and fail whenever the host that
+# publishes it refuses.
+#
+# Each push, not only one that changes the registry: GitHub evicts caches by
+# least recent use once the repository is over its quota, and any that go
+# unread for a week. A run that hits costs seconds; one that finds the cache
+# gone puts it back before the next pull request needs it.
+#
+# A pull request that changes this workflow or the action runs it as well, so
+# the change is exercised before it merges. What that run saves is readable by
+# the pull request alone, like everything else a pull request saves.
+on:
+  workflow_dispatch:
+  push:
+    branches: [develop, master]
+  pull_request:
+    paths:
+      - .github/workflows/demo-bundle-cache.yaml
+      - .github/actions/demo-bundle-cache/**
+
+permissions:
+  contents: read
+
+# One at a time per ref, the next waiting for the one before it: two runs that
+# both miss would both download, and only one of them could save.
+concurrency:
+  group: demo-bundle-cache-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  fill:
+    name: Keep the demo bundle cached
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Restore the demo bundle from the cache
+        id: bundle
+        uses: ./.github/actions/demo-bundle-cache
+
+      - name: Install uv
+        if: steps.bundle.outputs.cache-hit != 'true'
+        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          version: "0.11.2"
+          # The one package installed below is not worth a cache entry of its
+          # own, in a repository whose cache quota is what this run is here to
+          # work within.
+          enable-cache: false
+
+      - name: Download and verify the bundle
+        # No stack here, so no demo_init: the CLI's fetch runs on the runner,
+        # into the directory the action restores to. It is the same fetch
+        # demo_init runs - the archive checksum, then every file against the
+        # manifest - and the action's post step saves the directory only if
+        # this step, and so the job, succeeded.
+        #
+        # Called as demo_init calls it, not as `mascope demo fetch`: in a
+        # checkout the `mascope` entry point loads the developer commands
+        # too, and those import what only the CLI's dev extra installs. The
+        # fetch needs none of it, so the CLI package alone is enough.
+        if: steps.bundle.outputs.cache-hit != 'true'
+        env:
+          MASCOPE_PATH: ${{ github.workspace }}
+        run: |
+          uv run --frozen --no-dev --package mascope_cli \
+            python -c "from mascope_cli.cmd.demo import _fetch; _fetch.fetch()"

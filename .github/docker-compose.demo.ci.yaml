@@ -1,0 +1,28 @@
+# CI-only override for docker-compose.demo.yaml: demo_init keeps the demo
+# bundle in the checkout's .runtime/demo instead of the demo_cache volume.
+#
+#   docker compose -f docker-compose.demo.yaml -f .github/docker-compose.demo.ci.yaml up -d
+#
+# That directory is what .github/actions/demo-bundle-cache restores from the
+# Actions cache and saves to it, so a job whose cache step hit starts the stack
+# without downloading anything. demo_init does not know the difference: it runs
+# the same fetch, which returns early only for a bundle that is present and
+# whose every manifest checksum verifies, and downloads otherwise.
+#
+# It is also the CLI's own bundle cache for a checkout
+# (MASCOPE_PATH/.runtime/demo), so a step that calls the fetch on the host -
+# the reproducibility test does - finds the same copy instead of downloading a
+# second one, and a step that needs a file out of the bundle reads it there.
+#
+# The path is relative to the directory of the FIRST -f file, the repository
+# root: that is how Compose resolves relative paths across several files, so
+# it is not relative to .github/. A service's volumes are merged by container
+# path, so this entry replaces the demo_cache mount rather than adding a
+# second one.
+#
+# Not for end users: docker-compose.demo.yaml on its own is the demo, and its
+# named volume already keeps the bundle between one `up` and the next.
+services:
+  demo_init:
+    volumes:
+      - ./.runtime/demo:/app/.runtime/demo
