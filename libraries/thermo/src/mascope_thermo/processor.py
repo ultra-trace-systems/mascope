@@ -15,11 +15,16 @@ from mascope_backend.file_converter.base_processor import (
 from mascope_backend.file_converter.errors import (
     EMPTY_ACQUISITION_MESSAGE,
     NO_MS1_SCANS_MESSAGE,
+    UNFINISHED_ACQUISITION_MESSAGE,
     EmptyAcquisitionError,
 )
 from mascope_thermo.backend import open_backend
 from mascope_thermo.streams import pooled_ms1_streams, scan_streams
-from mascope_thermo.thermo import NoScansFoundError, get_polarity_options
+from mascope_thermo.thermo import (
+    NoScansFoundError,
+    UnfinishedAcquisitionError,
+    get_polarity_options,
+)
 
 
 _log = logging.getLogger(__name__)
@@ -225,15 +230,22 @@ class RawProcessor(BaseFileProcessor):
         MS2 scans, so extraction succeeds and the file fails later, inside the
         instrument-function fit. It is checked up front instead.
 
+        A file written without a run header does not open at all, and the
+        reader says so from the first property that asks for the file. It is
+        named apart from the scanless file, because scans may have been
+        recorded in it that nothing can reach.
+
         :return: The properties extracted from the file
         :rtype: SampleFileProps
-        :raises EmptyAcquisitionError: When the file recorded no scans, or none
-            that peak detection can run on.
+        :raises EmptyAcquisitionError: When the file recorded no scans, none
+            that peak detection can run on, or was never finished.
         """
         try:
             if not self._records_ms1_scans:
                 raise EmptyAcquisitionError(NO_MS1_SCANS_MESSAGE)
             return super()._get_sample_file_props()
+        except UnfinishedAcquisitionError as e:
+            raise EmptyAcquisitionError(UNFINISHED_ACQUISITION_MESSAGE) from e
         except NoScansFoundError as e:
             raise EmptyAcquisitionError(EMPTY_ACQUISITION_MESSAGE) from e
 
