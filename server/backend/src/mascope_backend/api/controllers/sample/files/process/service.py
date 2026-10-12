@@ -2378,23 +2378,52 @@ async def modes_to_rebind(sample_file_id: str) -> KeptModes | None:
     deleted - which is why what comes back carries each mode's own
     provenance rather than being treated as a choice.
 
+    **A file with samples that no mode binds any longer is refused.** No
+    modes to keep is what a parked file with no samples says, and that one
+    is the run's to bind or park again. A file whose samples no longer give
+    a mode per polarity says it too - a mode deleted since leaves them with
+    none, the column being ``ON DELETE SET NULL`` - and a run clears a
+    file's samples before it binds the file
+    (:func:`_delete_partial_acquisition_items`): started with no modes, it
+    would park that file with its samples gone. So the samples are counted
+    beside the modes, as re-processing counts them, and the file is refused
+    here, where nothing of it is claimed or cleared yet. Samples that
+    cannot be counted fail the request too, and are not taken for none.
+
     :param sample_file_id: The file.
+    :raises ApiException: 422 when the file has samples and nothing binds
+        it: not its record, a token, or the modes those samples have.
     :return: The modes its samples have with how each was bound, or None.
     """
     sample_file = await fetch_sample_file(sample_file_id=sample_file_id)
     kept = await _kept_modes(sample_file)
     if _chosen_by_a_person(kept):
         return kept
-    declared, _undeclared = await _modes_its_record_declares(sample_file)
+    declared, undeclared = await _modes_its_record_declares(sample_file)
     if declared:
         return None
+    no_token: NoTokenMatchError | None = None
     try:
         await resolve_ionization_modes_by_tokens(sample_file)
-    except NoTokenMatchError:
-        return kept
+    except NoTokenMatchError as e:
+        no_token = e
     except ValueError:
         return None
-    return None
+    if no_token is None:
+        return None
+    if kept is not None or not await _pipeline_item_count(sample_file_id):
+        return kept
+    raise ApiException(
+        user_message=_beside_the_declaration(
+            undeclared,
+            f"{str(no_token).rstrip('.')}. The ionization modes its samples "
+            "were made under no longer bind it either, so it was left as it "
+            "is: processing a file clears its samples before anything binds "
+            "it. Choose its chemistry in Raw files to rebuild it.",
+        ),
+        tech_message={},
+        status_code=422,
+    )
 
 
 async def _kept_modes(sample_file: SampleFile) -> KeptModes | None:

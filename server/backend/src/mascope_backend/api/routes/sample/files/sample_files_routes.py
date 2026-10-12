@@ -457,7 +457,9 @@ async def process_sample_item_route(
     # A file a person chose the chemistry of, and one nothing binds now,
     # keep the modes their own samples hold, and how each of them was bound
     # - which is not necessarily anybody's choice: a token that has since
-    # been renamed bound some of them.
+    # been renamed bound some of them. One whose samples no mode binds any
+    # longer is refused here, with nothing of it claimed: the run would
+    # clear those samples and park the file.
     kept = await modes_to_rebind(sample_file_id)
     # The run starts by clearing what an earlier run left, and until it
     # records its own stages the row would still say how that run ended. A
