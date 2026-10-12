@@ -123,13 +123,18 @@ def _attempt(url: str, dest: Path) -> None:
             request, timeout=_TIMEOUT_S
         )
     except urllib.error.HTTPError as e:
-        if offset and e.code == 416:
+        range_refused = bool(offset) and e.code == 416
+        if not range_refused and e.code not in _TRANSIENT_STATUSES:
+            raise
+        # An HTTPError is the response as well, and holds its connection until
+        # it is closed. Nothing reads this one, and the exception chained to
+        # it below outlives the pause before the next attempt.
+        e.close()
+        if range_refused:
             dest.unlink()
             raise _AttemptFailed(
                 f"the server would not resume at byte {offset:,}"
             ) from e
-        if e.code not in _TRANSIENT_STATUSES:
-            raise
         raise _AttemptFailed(f"HTTP {e.code} {e.reason}") from e
     except (OSError, http.client.HTTPException) as e:
         raise _AttemptFailed(str(e) or type(e).__name__) from e

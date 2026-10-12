@@ -131,9 +131,10 @@ class _Host:
         return _Response(status, headers, delivered, answer.then)
 
 
-def _http_error(code: int) -> urllib.error.HTTPError:
+def _http_error(code: int, body: io.BytesIO | None = None) -> urllib.error.HTTPError:
+    """Build the error ``urlopen`` raises for a status, around ``body`` if given."""
     return urllib.error.HTTPError(
-        URL, code, http.client.responses[code], http.client.HTTPMessage(), None
+        URL, code, http.client.responses[code], http.client.HTTPMessage(), body
     )
 
 
@@ -254,6 +255,27 @@ def test_request_that_fails_for_now_is_made_again(failure, serve, pauses, tmp_pa
     assert dest.read_bytes() == PAYLOAD
     assert host.ranges_asked == [None, None]
     assert len(pauses) == 1
+
+
+@pytest.mark.parametrize("code", [504, 416])
+def test_retried_error_response_is_closed_before_the_pause(
+    code, serve, monkeypatch, tmp_path
+):
+    """An error is a response too, and an open one holds its connection."""
+    body = io.BytesIO(b"<html>not now</html>")
+    closed_at_pause: list[bool] = []
+    monkeypatch.setattr(
+        _fetch.time, "sleep", lambda _: closed_at_pause.append(body.closed)
+    )
+    script = [_http_error(code, body), _Answer()]
+    if code == 416:
+        # A 416 answers a request to resume, so a transfer cut short precedes it.
+        script.insert(0, _Answer(deliver=3000))
+    serve(script)
+
+    _fetch._download(URL, tmp_path / "bundle.zip")
+
+    assert closed_at_pause[-1] is True
 
 
 def test_status_that_will_not_change_is_not_retried(serve, pauses, tmp_path):
