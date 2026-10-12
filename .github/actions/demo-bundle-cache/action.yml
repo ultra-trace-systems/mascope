@@ -1,0 +1,108 @@
+name: Demo bundle cache
+description: >-
+  Restore the demo bundle into the checkout's .runtime/demo from the Actions
+  cache, and save it there at the end of a job that had to download it.
+
+# The demo stack's demo_init container downloads the demo bundle from the
+# archive that publishes it. A job that starts the stack therefore fails
+# whenever that host refuses or stalls, and a refusal can outlast any retry a
+# job can afford. This keeps a copy in the repository's Actions cache instead:
+#
+#   - uses: ./.github/actions/demo-bundle-cache
+#   - run: >-
+#       docker compose -f docker-compose.demo.yaml
+#       -f .github/docker-compose.demo.ci.yaml up -d
+#
+# The second compose file mounts .runtime/demo into demo_init in place of the
+# demo_cache volume, so what this restored is what the stack finds.
+#
+# The cache is never trusted on its own. demo_init runs the same fetch as
+# always (mascope_cli.cmd.demo._fetch.fetch), which uses a copy that is
+# already there only when every checksum in its manifest verifies, and
+# downloads otherwise. A cache that is missing, stale or damaged costs a
+# download; it cannot put a wrong dataset under a test.
+#
+# On a miss nothing here downloads: demo_init does, as it does without this
+# action, and the cache step's own post step saves the directory once the job
+# has succeeded. A job that succeeded got past demo_init, so only a bundle the
+# fetch verified is ever saved.
+#
+# Which runs can read a saved copy is GitHub's rule, not this action's: a run
+# reads caches saved on its own ref, on the default branch and, for a pull
+# request, on its base branch. .github/workflows/demo-bundle-cache.yaml is what
+# saves one where pull requests can read it.
+
+outputs:
+  cache-hit:
+    description: "'true' when the bundle was restored from the cache."
+    value: ${{ steps.cache.outputs.cache-hit }}
+  version:
+    description: The bundle version the registry names as its default.
+    value: ${{ steps.registry.outputs.version }}
+
+runs:
+  using: composite
+  steps:
+    - name: Read the bundle version and checksum from the registry
+      id: registry
+      shell: bash
+      run: |
+        # The key is the registry's own entry, so registering a new bundle is
+        # all it takes to stop reading the old one: a different version or a
+        # different archive is a different key.
+        #
+        # Loaded by path, not as mascope_cli.cmd.demo.bundles: importing the
+        # package pulls in Typer and the runtime, and a job reaches this step
+        # with or without an environment that has them. The registry module
+        # needs the standard library alone.
+        python3 - <<'PY' >> "$GITHUB_OUTPUT"
+        import importlib.util
+        import sys
+
+        spec = importlib.util.spec_from_file_location(
+            "demo_bundles", "tooling/cli/src/mascope_cli/cmd/demo/bundles.py"
+        )
+        bundles = importlib.util.module_from_spec(spec)
+        # dataclasses finds a class's module by name while building it
+        sys.modules[spec.name] = bundles
+        spec.loader.exec_module(bundles)
+
+        bundle = bundles.get_bundle()
+        print(f"version={bundle.version}")
+        print(f"key=demo-bundle-{bundle.version}-{bundle.archive_md5 or 'no-md5'}")
+        PY
+
+    - name: Restore the bundle from the cache
+      id: cache
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        # The extracted bundle, where the CLI keeps it for a checkout
+        # (MASCOPE_PATH/.runtime/demo/<version>). Every job has to name the
+        # same path: it is part of what identifies a cache entry.
+        path: .runtime/demo/${{ steps.registry.outputs.version }}
+        key: ${{ steps.registry.outputs.key }}
+
+    - name: Hand the directory to the stack
+      shell: bash
+      env:
+        CACHE_HIT: ${{ steps.cache.outputs.cache-hit }}
+        VERSION: ${{ steps.registry.outputs.version }}
+      run: |
+        # A restore that fails part-way is reported as a miss and can leave
+        # part of the tree behind. Start a miss from nothing, so the download
+        # that follows is what the job runs on.
+        if [ "$CACHE_HIT" != "true" ]; then
+          rm -rf ".runtime/demo/${VERSION:?}"
+        fi
+        mkdir -p .runtime/demo
+        # demo_init runs as the image's own user, which is not the runner's.
+        # It has to write here on a miss, and on a hit whose verification
+        # fails it has to delete what was restored before it downloads again -
+        # which takes write access to every directory in the tree, all of them
+        # the runner's after a restore.
+        chmod -R a+rwX .runtime/demo
+        if [ "$CACHE_HIT" = "true" ]; then
+          echo "Demo bundle $VERSION restored from the cache into .runtime/demo."
+        else
+          echo "No cached demo bundle $VERSION: this job downloads it, and saves it if it succeeds."
+        fi
