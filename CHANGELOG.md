@@ -316,8 +316,12 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   reason that says the modes its samples were made under no longer bind it,
   and choosing its chemistry in Raw files rebuilds it. A file with no
   samples is started as before, and samples that cannot be read fail the
-  request. The route is reached only with a signed-in session, and the web
-  app does not call it: Re-process in Raw files goes through re-processing.
+  request. A file with samples whose name matches tokens ambiguously - two
+  modes of one polarity, say, after a token was added - lost them the same
+  way, since its run parks it on its name, and is refused the same way with
+  what the tokens matched. The route is reached only with a signed-in
+  session, and the web app does not call it: Re-process in Raw files goes
+  through re-processing.
 - **A re-processing report no longer repeats an internal error's text.**
   Where an unexpected error stopped a file - reading its acquisition record
   or the modes its samples have, resolving its name's tokens, or claiming

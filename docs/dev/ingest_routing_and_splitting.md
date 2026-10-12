@@ -2597,7 +2597,8 @@ Needed before any rung can be provisional or park.
      one whose samples could not be read. Processing one file on request
      (`POST /api/sample/files/{id}/process`) refuses such a file too, with
      the rung on or off, since its run clears the samples before anything
-     binds the file; samples it cannot read fail the request. A file bound
+     binds the file; samples it cannot read fail the request. It refuses a
+     file with samples and an ambiguous name on the same ground. A file bound
      this way teaches its binding nothing, and its items record
      `method_binding_id`, which is checked against the table as the item is
      created rather than trusted from the earlier read: `ON DELETE SET NULL`

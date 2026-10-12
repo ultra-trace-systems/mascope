@@ -2390,9 +2390,16 @@ async def modes_to_rebind(sample_file_id: str) -> KeptModes | None:
     here, where nothing of it is claimed or cleared yet. Samples that
     cannot be counted fail the request too, and are not taken for none.
 
+    A name whose tokens match, but not one mode per polarity, is refused on
+    the same terms. It is a configuration to fix, which no earlier binding
+    stands in for, so the modes the file's samples have are not kept: the
+    run parks the file on its name, and with samples it would park it with
+    them gone.
+
     :param sample_file_id: The file.
-    :raises ApiException: 422 when the file has samples and nothing binds
-        it: not its record, a token, or the modes those samples have.
+    :raises ApiException: 422 when the file has samples and the run would
+        bind it to nothing: its record does not bind it, and its name has
+        no token while its samples give no modes, or has ambiguous tokens.
     :return: The modes its samples have with how each was bound, or None.
     """
     sample_file = await fetch_sample_file(sample_file_id=sample_file_id)
@@ -2403,24 +2410,33 @@ async def modes_to_rebind(sample_file_id: str) -> KeptModes | None:
     if declared:
         return None
     no_token: NoTokenMatchError | None = None
+    ambiguous: ValueError | None = None
     try:
         await resolve_ionization_modes_by_tokens(sample_file)
     except NoTokenMatchError as e:
         no_token = e
-    except ValueError:
+    except ValueError as e:
+        ambiguous = e
+    if no_token is None and ambiguous is None:
         return None
-    if no_token is None:
-        return None
-    if kept is not None or not await _pipeline_item_count(sample_file_id):
+    if no_token is not None and kept is not None:
         return kept
-    raise ApiException(
-        user_message=_beside_the_declaration(
-            undeclared,
+    if not await _pipeline_item_count(sample_file_id):
+        return None
+    if no_token is not None:
+        reason = (
             f"{str(no_token).rstrip('.')}. The ionization modes its samples "
             "were made under no longer bind it either, so it was left as it "
             "is: processing a file clears its samples before anything binds "
-            "it. Choose its chemistry in Raw files to rebuild it.",
-        ),
+            "it. Choose its chemistry in Raw files to rebuild it."
+        )
+    else:
+        reason = (
+            f"{str(ambiguous).rstrip('.')}. It was left as it is: processing "
+            "a file clears its samples before anything binds it."
+        )
+    raise ApiException(
+        user_message=_beside_the_declaration(undeclared, reason),
         tech_message={},
         status_code=422,
     )

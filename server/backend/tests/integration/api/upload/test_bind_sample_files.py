@@ -1763,6 +1763,44 @@ async def test_processing_a_parked_file_on_request_leaves_it_to_the_run(
 
 
 @pytest.mark.asyncio
+async def test_processing_on_request_leaves_an_ambiguous_name_its_samples(
+    async_session_factory, setup, admin_client, mode_with_token, monkeypatch
+):
+    """A name two tokens of one polarity match is a configuration to fix,
+    which no earlier binding stands in for: the run binds the file to
+    nothing and parks it, after clearing the sample it has. Refused before
+    it is claimed, with what the tokens matched. The same name on a file
+    with no samples has nothing to lose, and its run says why it parks."""
+    _one, token_one = await mode_with_token("-")
+    _two, token_two = await mode_with_token("-")
+    bound = await _file(
+        async_session_factory,
+        f"{token_one}_{token_two}_bound",
+        "-",
+        sample_under=(setup["batch"], setup["negative"]),
+    )
+    parked = await _file(async_session_factory, f"{token_one}_{token_two}_parked", "-")
+    spawn = AsyncMock()
+    monkeypatch.setattr(sample_files_routes, "spawn_auto_process_sample_file", spawn)
+
+    resp = await admin_client.post(f"/api/sample/files/{bound}/process")
+
+    assert resp.status_code == 422, resp.text
+    reason = resp.json()["error"]
+    assert "2 modes match polarity -" in reason
+    assert "left as it is" in reason
+    spawn.assert_not_called()
+    assert await _samples_of(async_session_factory, bound) == 1
+    assert await _status(async_session_factory, bound) == "done"
+
+    resp = await admin_client.post(f"/api/sample/files/{parked}/process")
+
+    assert resp.status_code == 202, resp.text
+    assert spawn.await_args.kwargs["sample_file_id"] == parked
+    assert spawn.await_args.kwargs["ionization_mode_ids"] is None
+
+
+@pytest.mark.asyncio
 async def test_processing_on_request_fails_when_its_samples_cannot_be_counted(
     async_session_factory, setup, admin_client, monkeypatch
 ):
