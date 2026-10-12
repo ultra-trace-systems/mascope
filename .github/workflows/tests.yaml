@@ -447,6 +447,12 @@ jobs:
           export MASCOPE_PATH=$GITHUB_WORKSPACE
           uv run mascope prod build
 
+      - name: Restore the demo bundle from the cache
+        # Before the stack starts: demo_init looks for the bundle in the
+        # directory this fills, and downloads it only when it is not there or
+        # does not verify. The action says what a hit and a miss each mean.
+        uses: ./.github/actions/demo-bundle-cache
+
       - name: Start the demo stack
         run: |
           # The CLI tagged the images with the branch-derived version; point
@@ -455,7 +461,15 @@ jobs:
           # which is the failure we want.
           VERSION=$(docker images "ghcr.io/${{ github.repository }}/backend" --format '{{.Tag}}' | head -1)
           echo "Built image tag: $VERSION"
-          MASCOPE_VERSION=$VERSION docker compose -f docker-compose.demo.yaml up -d
+          # The second file is CI's own: it mounts the checkout's
+          # .runtime/demo, which the step above filled, into demo_init in
+          # place of the demo_cache volume.
+          MASCOPE_VERSION=$VERSION docker compose \
+            -f docker-compose.demo.yaml -f .github/docker-compose.demo.ci.yaml up -d
+          # What demo_init did for the bundle - used the restored copy, or
+          # downloaded - is in its own log, which a passing job never shows.
+          docker logs mascope_demo_init 2>&1 \
+            | grep -E "Demo bundle '|Cached bundle '|Downloading http|Download attempt" || true
 
       - name: Set up Node
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
@@ -473,8 +487,9 @@ jobs:
       - name: Wait for the stack to come up
         id: wait-stack
         run: |
-          # demo_init downloads and restores the demo bundle on first start,
-          # so allow generous time before the frontend answers.
+          # demo_init restores the demo bundle, and downloads it first when
+          # the cache step missed, so allow generous time before the
+          # frontend answers.
           for i in $(seq 1 120); do
             if curl -fsS -o /dev/null http://127.0.0.1:8080; then
               echo "Stack is up."
@@ -488,11 +503,11 @@ jobs:
 
       - name: Stage a raw file for the upload spec
         run: |
-          # The upload e2e re-ingests a real demo raw file. The bundle was
-          # already fetched by demo_init into its cache volume; copy one raw
-          # file out instead of downloading the bundle a second time.
-          docker cp mascope_demo_init:/app/.runtime/demo /tmp/demo-bundle
-          RAW=$(find /tmp/demo-bundle -path "*/raw/*.raw" | head -1)
+          # The upload e2e re-ingests a real demo raw file. The bundle is in
+          # the checkout's .runtime/demo, which demo_init had mounted, so
+          # take one raw file from there instead of downloading the bundle a
+          # second time.
+          RAW=$(find "$GITHUB_WORKSPACE/.runtime/demo" -path "*/raw/*.raw" | head -1)
           if [ -z "$RAW" ]; then
             echo "No raw file found in the demo bundle cache." >&2
             exit 1

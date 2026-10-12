@@ -2959,6 +2959,13 @@ The e2e environment is configured via `MASCOPE_E2E_BASE_URL`, `MASCOPE_E2E_API_U
 `MASCOPE_E2E_EMAIL` and `MASCOPE_E2E_PASSWORD` (see `tests/e2e/fixtures/env.js`);
 `MASCOPE_E2E_STACK=demo` lets Playwright bring the demo stack up itself.
 
+In CI the e2e job, like every job that starts the demo stack, does not download
+the demo bundle on each run: it restores it from the GitHub Actions cache and
+starts the stack with a compose file of CI's own beside
+`docker-compose.demo.yaml`. `demo_init` still verifies what it is given and
+downloads when there is nothing, or nothing good - see
+[The bundle in CI](../demo_dataset.md#the-bundle-in-ci).
+
 #### Test conventions
 
 - Prefer accessible locators (`getByLabel`, `getByRole`) over CSS selectors; add
