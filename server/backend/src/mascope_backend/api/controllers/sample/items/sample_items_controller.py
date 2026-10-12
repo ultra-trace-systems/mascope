@@ -200,13 +200,17 @@ def _polarity_tic_per_scan(base_filename: str, polarity: str) -> tuple:
     scans of the polarity's composite where the file's store stitches it,
     each stream's scans as that stream selects them. A stale per-stream store
     is read as a pooled one, which is how the file's stream rows take it:
-    its next processing makes the item anew.
+    its next processing makes the item anew. So is a store that carries only
+    part of what a per-stream store does: its item reads no stream row
+    either (:func:`_item_streams_of`), and spans its polarity as an item of
+    that file always did. Neither is a file with no scan of the polarity,
+    which is what the caller reports for any other ``ValueError``.
 
     Synchronous: it reads the filestore, so it runs in a worker thread.
     """
     try:
         return m_compute.get_sample_tic_per_scan(base_filename, polarity)
-    except m_compute.StalePeakStoreError:
+    except (m_compute.StalePeakStoreError, m_compute.PartialPeakStoreError):
         return m_compute.get_tic_per_scan(base_filename, polarity=polarity)
 
 

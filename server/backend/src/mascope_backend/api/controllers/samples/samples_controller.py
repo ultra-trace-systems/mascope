@@ -844,7 +844,9 @@ async def get_samples_spectra(
         One entry per sample asked for, in the order asked. A sample whose
         file's peak store is stale has an empty spectrum with a ``message``
         saying why, and is listed under ``stale`` with its file, so that
-        whoever asked can have the store rebuilt.
+        whoever asked can have the store rebuilt. The ``warnings`` list says
+        the same in a sentence: it is what a client that reads only
+        ``data`` is told by, where the whole request failed before.
     :rtype: dict
     """
     if not sample_item_ids:
@@ -891,8 +893,18 @@ async def get_samples_spectra(
         spectra_data.append(spectrum_response["data"])
 
     message = "Spectra retrieved successfully."
+    warnings: list[str] = []
     if stale:
         files = sorted({entry["filename"] for entry in stale})
+        # Beside the data and not only in the message: the SDK pairs `data`
+        # with the ids it asked for, so a stale sample is rows that are not
+        # there, and `warnings` is the one thing it logs of an answer.
+        warnings.append(
+            f"No spectrum was read for {len(stale)} of the {len(spectra_data)} "
+            f"sample{'s' if len(spectra_data) != 1 else ''} asked for: the peak "
+            f"data of {len(files)} sample file{'s' if len(files) != 1 else ''} "
+            f"has to be rebuilt first ({', '.join(files)})."
+        )
         message = (
             f"Spectra retrieved for {len(spectra_data) - len(stale)} of "
             f"{len(spectra_data)} samples. The peak data of "
@@ -904,6 +916,7 @@ async def get_samples_spectra(
     return {
         "message": message,
         "results": len(spectra_data),
+        "warnings": warnings,
         "data": spectra_data,
         "stale": stale,
     }

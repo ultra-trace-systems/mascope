@@ -13,6 +13,7 @@ was.
 
 import numpy as np
 import pytest
+import zarr
 from composite_acquisition import (
     COMPOSITE,
     KEYS,
@@ -24,9 +25,14 @@ from composite_acquisition import (
 from scripted_acquisition import SAMPLE_FILENAME
 
 import mascope_file.io as m_io
+import mascope_file.name as m_name
 import mascope_signal.compute as m_compute
 import mascope_signal.peak as m_peak
-from mascope_signal.compute import StalePeakStoreError
+import mascope_signal.stitch as m_stitch
+from mascope_backend.api.controllers.sample.files.process import (
+    streams as stream_rows,
+)
+from mascope_signal.compute import PartialPeakStoreError, StalePeakStoreError
 from mascope_thermo.thermo import NoScansFoundError
 
 
@@ -128,6 +134,25 @@ def test_a_polarity_the_file_does_not_hold_has_no_scans(composite):
         m_compute.get_sample_tic_per_scan(SAMPLE_FILENAME, "+")
 
 
+def test_streams_that_read_no_scan_between_them_are_no_scans(composite, monkeypatch):
+    """Every stream the store lists is still in the file and none reads a
+    scan. Said as a file with no scans of what was asked, which is what a
+    caller handles, and not as whatever joining nothing raises."""
+    selected = composite._selected
+
+    def _selected(polarity=None, t_min=None, t_max=None, stream=None):
+        if stream is not None:
+            raise NoScansFoundError(f"No scans found: stream={stream!r}")
+        return selected(polarity, t_min, t_max, stream)
+
+    monkeypatch.setattr(composite, "_selected", _selected)
+
+    with pytest.raises(NoScansFoundError, match="scan streams of .* for polarity '-'"):
+        m_compute.get_sample_tic_per_scan(SAMPLE_FILENAME, "-")
+    with pytest.raises(NoScansFoundError, match=r"scan streams of '.*'\.$"):
+        m_compute.get_stored_tic_per_scan(SAMPLE_FILENAME)
+
+
 # -- a file detected whole, and one with no store ---------------------------------
 
 
@@ -216,3 +241,119 @@ def test_the_stitch_decision_reads_the_same_metadata(composite):
     assert sorted(stitch["runs"]) == ["-"]
     assert m_compute.peak_store_stitches(SAMPLE_FILENAME, "-") is True
     assert m_compute.peak_store_stitches(SAMPLE_FILENAME, "+") is False
+
+
+# -- the store's header, and the rows read by it ---------------------------------
+
+
+def _without(*names):
+    """Take attributes off the composite's store, as a store that lost them."""
+    path = m_name.filename_to_zarr_path(SAMPLE_FILENAME, "peak_timeseries")
+    group = m_io.open_zarr_store(path, mode="r+")
+    for name in names:
+        del group.attrs[name]
+    zarr.consolidate_metadata(path)
+
+
+@pytest.fixture
+def unopened(monkeypatch):
+    """Fail the test if the peak store is opened as a dataset."""
+
+    def _opened(*args, **kwargs):
+        raise AssertionError("the peak store was opened")
+
+    monkeypatch.setattr(m_io, "load_array", _opened)
+    monkeypatch.setattr(m_io, "load_peak_data", _opened)
+
+
+def test_a_stores_header_gives_its_keys_and_its_map_unopened(composite, unopened):
+    header = m_compute.read_peak_store_header(SAMPLE_FILENAME)
+
+    assert header.streams == KEYS
+    assert sorted(header.stitch_map()["runs"]) == ["-"]
+
+
+def test_a_pooled_stores_header_names_no_streams(acquire, instrument_functions):
+    acquire(COMPOSITE, MICROSCANS)
+    m_peak.compute_peaks(SAMPLE_FILENAME, instrument_functions, per_stream=False)
+
+    header = m_compute.read_peak_store_header(SAMPLE_FILENAME)
+
+    assert (header.streams, header.stitch_map()) == ([], None)
+
+
+def test_a_file_with_no_store_has_no_header(acquire):
+    acquire(COMPOSITE, MICROSCANS)
+
+    with pytest.raises(FileNotFoundError):
+        m_compute.read_peak_store_header(SAMPLE_FILENAME)
+
+
+def test_a_header_gives_its_keys_before_its_map_is_asked_for(composite):
+    """A store that lost its map still says which streams it holds: whoever
+    reads it judges the keys first."""
+    _without(m_stitch.STITCH_MAP_ATTR)
+
+    header = m_compute.read_peak_store_header(SAMPLE_FILENAME)
+
+    assert header.streams == KEYS
+    with pytest.raises(StalePeakStoreError, match="no stitch map"):
+        header.stitch_map()
+
+
+def test_a_store_labelled_in_part_is_not_a_file_with_no_scans(composite):
+    """Both are a ``ValueError`` to whoever reads a file's scans, and only
+    one of them means the file holds none of the polarity."""
+    _without("streams")
+
+    with pytest.raises(PartialPeakStoreError, match="missing the stream keys"):
+        m_compute.read_peak_store_header(SAMPLE_FILENAME)
+    with pytest.raises(PartialPeakStoreError) as refused:
+        m_compute.get_sample_tic_per_scan(SAMPLE_FILENAME, "-")
+    assert not isinstance(refused.value, (NoScansFoundError, StalePeakStoreError))
+
+
+def test_a_files_rows_are_read_off_a_sound_store_unopened(composite, unopened):
+    found = stream_rows._read_store_streams(SAMPLE_FILENAME)
+
+    assert found.per_stream == KEYS
+    assert sorted(found.stitch["runs"]) == ["-"]
+    assert found.stale == []
+    assert sorted(found.segments()) == ["-"]
+
+
+def test_a_store_with_no_map_gives_rows_with_nothing_stitched(composite):
+    _without(m_stitch.STITCH_MAP_ATTR)
+
+    found = stream_rows._read_store_streams(SAMPLE_FILENAME)
+
+    assert (found.per_stream, found.stitch, found.stale) == ([], {}, ["no map"])
+    assert sorted(stream["key"] for stream in found.streams) == sorted(KEYS)
+
+
+def test_keys_the_file_no_longer_reads_are_named_whether_or_not_the_map_is_there(
+    composite, acquire
+):
+    """The keys are judged before the map: a store of another layout that
+    also lost its map is said to hold those keys, not to have no map."""
+    _without(m_stitch.STITCH_MAP_ATTR)
+    acquire([("FTMS - p NSI Full ms [40.0000-600.0000]", 1, {62.0: 100.0})] * 3)
+
+    found = stream_rows._read_store_streams(SAMPLE_FILENAME)
+
+    assert found.stale == KEYS
+    assert (found.per_stream, found.stitch) == ([], {})
+
+
+@pytest.mark.parametrize("detected", [True, False], ids=["pooled-store", "no-store"])
+def test_a_file_detected_whole_or_not_yet_is_its_census_alone(
+    acquire, instrument_functions, detected
+):
+    acquire(COMPOSITE, MICROSCANS)
+    if detected:
+        m_peak.compute_peaks(SAMPLE_FILENAME, instrument_functions, per_stream=False)
+
+    found = stream_rows._read_store_streams(SAMPLE_FILENAME)
+
+    assert sorted(stream["key"] for stream in found.streams) == sorted(KEYS)
+    assert (found.per_stream, found.stitch, found.stale) == ([], {}, [])

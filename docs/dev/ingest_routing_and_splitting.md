@@ -1096,7 +1096,21 @@ yet:
     store rebuilt stitched since its rows were written - until the file's
     next processing. What the pipeline and the copy name stands, None
     included. A file whose streams cannot be read gives its item no row
-    and is not refused for it.
+    and is not refused for it; a store that carries only part of what a
+    per-stream store does is such a file, and its item's TIC is its
+    polarity's, as a stale store's is. The store is asked for its keys
+    and its map off its metadata (`read_peak_store_header`), here and in
+    the pipeline, and is not opened for them.
+  - *The rows and an item saved meanwhile.* A sync reads the file's rows
+    `FOR UPDATE` and holds them until it commits (`sync_stream_rows`). An
+    item that names one of them takes a share of that row when it is
+    saved, so it either landed before the sync read the rows, and is
+    counted among the row's readers, or waits for the sync and is refused
+    by the reference once its row has gone. The create answers that
+    refusal by looking the row up again and saving the item on what the
+    file has by then. Without the lock the other order was open: the
+    item saved between the sync's search for readers and its delete, and
+    the delete refused, which fails the file's processing.
 
 ### 4.5 The composite cut: several m/z ranges, one chemistry, one spectrum
 
@@ -2643,11 +2657,14 @@ unchanged.
      having been processed again meanwhile; the
      sample spectrum route asking for the rebuild of a stale store it
      meets, as a match does (`request_stale_peak_store_rebuilds`), in the
-     name of whoever opened it where that person may rematch the sample -
+     name of whoever opened it where that person may rematch the sample
+     and their account may ask the file converter (an editor of the
+     workspace whose global role is editor or above) -
      the request still fails for that sample, and says the detection is
      queued; and the route for several samples' spectra answering the
-     samples it can, the stale ones empty in their place and listed under
-     `stale` (both from the review of #2311). Still open: the spectrum and
+     samples it can, the stale ones empty in their place, listed under
+     `stale` and named in `warnings`, which is what the SDK logs of an
+     answer (both from the review of #2311). Still open: the spectrum and
      peak-listing routes returning each sample's and each peak's segment
      for the views, and a per-stream store a match meets stale being
      rebuilt and its rows written with the composite on the next

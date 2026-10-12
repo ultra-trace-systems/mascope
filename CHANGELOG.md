@@ -49,12 +49,16 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   rebuilt asks for the rebuild.** Opening such a sample answered that peak
   detection has to be run again, and nothing ran it until somebody
   refreshed the batch's matches. The spectrum now queues the detection
-  itself, for an editor of the sample's workspace, and says so; the sample's
-  matches are recomputed when it finishes. Asked for several samples at
-  once (`GET /api/samples/spectra`), the spectra of the other samples are
-  returned: a sample whose file is being rebuilt has an empty spectrum in
-  its place and is listed under `stale`, where the whole request failed
-  before.
+  itself, for an editor of the sample's workspace whose global role is
+  editor or above, and says so; the sample's matches are recomputed when it
+  finishes. Asked for several samples at once (`GET /api/samples/spectra`),
+  the spectra of the other samples are returned: a sample whose file is
+  being rebuilt has an empty spectrum in its place, is listed under `stale`
+  and is named in the response's `warnings`, where the whole request failed
+  before. The SDK's `get_spectra` logs that warning; the frame it returns
+  holds no rows for such a sample. A workspace editor whose global role is
+  guest has no rebuild queued, by a spectrum or by a refresh of a batch's
+  matches, and the server no longer logs that as an error.
 
 - **With `composite_scan_streams` on, a sample of a stitched file counts
   the scans its peaks were detected over.** Its TIC is summed over the
