@@ -1759,6 +1759,18 @@ of it that reads: for every key it says what confirming would change, which
 is why it asks the rung about the files a token already names. The flow that
 records a confirmation, with the column naming who made it, follows.
 
+**A person's choice, as built, stands ahead of the declaration as well as
+the token, and stays.** The table ranks a declaration above an explicit
+choice, which is the order of the evidence where both are new. They are not
+new together. A record is stored as it was sent and cannot be corrected, so a
+choice made after it is the one correction there is, and it is not checked
+against the record when it is made. Until bindings per file have a table of
+their own, the choice lives on the file's items (`bound_by = "explicit"`),
+and re-processing keeps it ahead of the record and of a token in the file's
+name alike, until a person chooses again (5.6). There is no action that
+returns a file to automatic binding: choosing the mode its record or its
+name would bind it to is how that is done.
+
 **Rung 4 holds the learned binding. The instrument default once planned
 there was dropped, and #1463 is not one.** The default was to be admin-set
 per (instrument, polarity): what an instrument runs, for a file nothing else
@@ -1881,7 +1893,9 @@ were *acquired*, and re-processing a batch of old files is routine. A mode
 kept from a file's own items teaches nothing (#2254), which covers most of
 it, but a re-processed old file whose filename token still resolves to the
 retired row binds on the token and teaches at full strength - so three of
-those in a row walk the binding back to the retired row. Whether that can
+those in a row walk the binding back to the retired row. (Not a file a
+person chose the chemistry of: its choice is kept whatever its name says,
+and a kept mode teaches nothing - 5.6.) Whether that can
 happen at a site depends on whether its old token still names the old mode:
 a token is unique among the modes that could match one file, so the two rows
 carry different tokens or the retired one carries none at all. It is left
@@ -2092,6 +2106,19 @@ it is new work.
     was asked about, and teaching from it would both claim a strength nobody
     gave and let a re-processed batch build a run (5.3) back toward the row
     those files were bound under.
+  - **A person's choice is kept whatever binds the file now.** A file whose
+    kept modes are all `explicit` is re-processed under them ahead of its
+    acquisition record and of its name, and neither is read. A token in the
+    name used to send such a file back through the ladder, where the record
+    or the token undid the choice and the run reported nothing but success.
+    A name that matches too much does not refuse such a file either: the
+    choice is the remedy the parked file was offered. The items stay
+    `explicit`, every status of the run says "Bound to ... as chosen by
+    hand.", the one it ends on included, and the method learns nothing, as
+    for any kept mode. Every kept mode has to be a choice: an item bound
+    before the column existed, or edited through the item API since, is
+    NULL and nobody's, and such a file is asked for its record and its name
+    as before.
   - The rung is a closed vocabulary (`mascope_backend.binding_rungs`): a
     `Literal` the item models validate and a check constraint on the column.
     The column is only ever read by counting, so a misspelled rung would be
@@ -2487,8 +2514,11 @@ Steps 6 and 7 of the setup-simplification proposal:
     files to one mode per polarity through `POST /api/sample/files/bind`;
   - re-processing, and processing a file on request, keep a file's modes
     when no token occurs in its name. This is the explicit rung of section
-    5.2, kept on the file's samples until phase 2 gives bindings a table;
-    until then a token added later outranks a choice made by hand;
+    5.2, kept on the file's samples until bindings per file have a table.
+    As shipped, a token added later outranked a choice made by hand; since
+    the items record how they were bound (#2254), a person's choice is told
+    from a kept mode nobody chose, and is kept ahead of the name and of the
+    acquisition record alike (5.6);
   - a bind claims each file (`queued`) before its run starts, so a second
     choice for the same file cannot start a second run; a file that has
     samples already is rebuilt under the chosen modes;

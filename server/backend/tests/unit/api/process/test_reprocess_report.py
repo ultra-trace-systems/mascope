@@ -47,7 +47,8 @@ def _sample_file(index: int) -> MagicMock:
 
 
 class _Session:
-    """The two queries the run makes: the files, then their user-made samples."""
+    """The three queries the run makes: the files, their user-made samples,
+    and which of the files a person chose the chemistry of - none here."""
 
     def __init__(self, files):
         self._files = files

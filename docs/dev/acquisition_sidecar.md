@@ -318,11 +318,14 @@ is read:
   by its acquisition record." is in every status the run records from the
   binding on, the one it ends on included ("Matched 1 sample. Bound to
   'Nitrate' (-) by its acquisition record."), as the sentence of a record
-  that bound nothing is. The other rungs say what bound a file in its
+  that bound nothing is. A token and a method say what bound a file in its
   `bound` status alone. A token is in the file's name, which Raw files shows
   beside the status, and nearly every file is bound by one, so repeating it
   would lengthen every status with what the row already shows; a record is
-  shown nowhere else.
+  shown nowhere else. Neither is a person's choice, which is carried to the
+  end the same way ("Matched 1 sample. Bound to 'Nitrate' (-) as chosen by
+  hand."): it stands ahead of the name, so the row may show a token that
+  did not bind the file.
 - **Re-processing asks the record again, first, and before anything of the
   file is cleared.** Re-process in Raw files, and processing one file on
   request, decide what a run starts with, and ask in the pipeline's order.
@@ -341,14 +344,25 @@ is read:
   and resets its calibration before it asks. A record that cannot be read
   is not taken for one that binds nothing either: Re-process refuses the
   file untouched and says so, and processing on request fails.
-- **A chemistry a person chose stands ahead of the record.** A record is
-  stored as it was sent and cannot be corrected, so choosing by hand is the
-  one way to overrule a record that names the wrong chemistry. The record
-  is not consulted when a person chooses, and re-processing does not ask it
-  of a file whose samples all carry a person's choice: with no token in its
-  name, the file is rebuilt under what they chose. Where its name does
-  carry a token, the file goes back through the pipeline's ladder, as a
-  file with a token always did.
+- **A chemistry a person chose stands ahead of the record, and of the
+  file's name.** A record is stored as it was sent and cannot be corrected,
+  so choosing by hand is the one way to overrule a record that names the
+  wrong chemistry. The record is not consulted when a person chooses, and
+  re-processing asks neither it nor the name of a file whose samples all
+  carry a person's choice (`bound_by = "explicit"`): the file is rebuilt
+  under what they chose, still recorded as their choice, and every status
+  of the run says "Bound to ... as chosen by hand." The name is left unread
+  because the rule's reason does not depend on it. A file with a token in
+  its name used to go back through the pipeline's ladder, record first, so
+  the record overruled the person one step after the check had stepped
+  aside for them, and the run reported nothing but success. A name that
+  matches two modes of one polarity does not refuse such a file either.
+  The choice stands until a person chooses again, which is also the way
+  back: there is no action that returns a file to its record or its name,
+  and choosing the mode they name does it. Samples the record bound, or a
+  token did, or ones older than the record of how they were bound, are
+  nobody's choice, and for those everything above holds. A kept choice
+  teaches the file's method binding nothing; the run it was made for did.
 
 Not built:
 

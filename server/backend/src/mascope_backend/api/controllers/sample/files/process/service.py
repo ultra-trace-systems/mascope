@@ -367,10 +367,11 @@ class ItemProvenance:
 class KeptModes:
     """The modes a file's own samples hold, to re-process it under them.
 
-    A file no token binds keeps the modes its samples were made under - and
-    with them how each was bound, because copying a mode forward is nobody's
-    decision. The rung stays the one that decided it in the first place: a
-    token, a person, or nothing at all.
+    A file no token binds keeps the modes its samples were made under, and
+    so does one a person chose the chemistry of, whatever binds it
+    (:func:`_chosen_by_a_person`) - and with them how each was bound, because
+    copying a mode forward is nobody's decision. The rung stays the one that
+    decided it in the first place: a token, a person, or nothing at all.
     """
 
     mode_ids: list[str]
@@ -540,45 +541,35 @@ async def _modes_its_record_declares(
     )
 
 
-async def _declared_before_a_run(
-    sample_file: SampleFile,
-) -> tuple[list[IonizationMode], str | None]:
-    """What a file's record declares, for the checks that come before a run.
+def _chosen_by_a_person(kept: KeptModes | None) -> bool:
+    """Whether the modes a file's samples have are a person's choice.
 
     Re-processing, and processing on request, decide what a run is started
-    with before anything of the file is cleared, and the pipeline asks the
-    record before it reads the name. So they ask it first too, or they would
-    judge a file by a name the pipeline never reads, and by samples it is
-    about to replace.
+    with before anything of the file is cleared. A file a person chose the
+    chemistry of starts with what they chose, ahead of everything the
+    pipeline would ask: neither its acquisition record nor its name is read.
 
-    **Not where a person chose the file's chemistry.** A record is stored as
-    it was sent and cannot be corrected, so choosing by hand is the one way
-    to overrule a record that names the wrong chemistry, and the choice has
-    to outlast the next re-process. A file whose samples all carry a
-    person's choice is not asked for its record: it is left to its name,
-    and with no token there, to the modes its samples have. Samples the
-    record itself bound, or a token since renamed, are nobody's choice, and
-    the record is asked again.
+    **Why ahead of both.** A record is stored as it was sent and cannot be
+    corrected, so choosing by hand is the one way to overrule a record that
+    names the wrong chemistry, and the choice has to outlast the next
+    re-process. That does not depend on the file's name. Left to a name that
+    carries a token, the file goes back through the pipeline's ladder, where
+    the record is asked first: the choice is undone one step later than the
+    check that stepped aside for it, and nothing says so. So the choice
+    stands until a person chooses again (:func:`bind_sample_files`), which
+    is also the way back to what the record or the name would bind.
 
-    **A reading that fails is raised, not taken for a record that binds
-    nothing.** Acted on, that guess rebuilds a file under the modes it has
-    while its record names others, or refuses one that waited for its record
-    as if it had none. The caller refuses the file, or fails the request,
-    with nothing of the file touched.
+    **Every kept mode has to be a choice.** Samples the record itself bound,
+    a token since renamed, and ones older than the record of how they were
+    bound are nobody's choice, and such a file is asked for its record and
+    its name again. So is a file whose chosen mode was deleted since:
+    :func:`_kept_modes` gives none for it.
 
-    :param sample_file: The file.
-    :return: As :func:`_modes_its_record_declares`; no modes and None for a
-        file a person chose the chemistry of.
-    :rtype: tuple[list[IonizationMode], str | None]
+    :param kept: What :func:`_kept_modes` gives for the file.
     """
-    if getattr(sample_file, "acquisition_id", None) is None:
-        return [], None
-    kept = await _kept_modes(sample_file)
-    if kept is not None and all(
+    return kept is not None and all(
         held.bound_by == "explicit" for held in kept.provenance.values()
-    ):
-        return [], None
-    return await _modes_its_record_declares(sample_file)
+    )
 
 
 def _beside_the_declaration(undeclared: str | None, reason: str) -> str:
@@ -597,10 +588,12 @@ def _bound_detail(ionization_modes: list[IonizationMode], rung: str) -> str:
     """Name the modes a file was bound to, and what bound it.
 
     Read by whoever is looking at the file in Raw files, so it says which rung
-    answered. ``"declared"``, ``"token"`` and ``"method"`` each get their
-    own sentence; a person's choice and a mode kept from the file's own
-    samples share one, because what a reader needs there is that no file name
-    chose it.
+    answered. Each gets its own sentence. A person's choice has to: it stands
+    ahead of a token in the file's name, so the sentence is what tells
+    someone who fixed the tokens and re-processed why this file did not
+    follow them, and the run carries it to the status it ends on. A mode
+    kept from the file's own samples that nobody chose says only that no
+    file name chose it.
 
     :param ionization_modes: The modes it bound to, one per polarity.
     :param rung: What bound it this run - "declared", "token", "method",
@@ -614,6 +607,8 @@ def _bound_detail(ionization_modes: list[IonizationMode], rung: str) -> str:
         return f"Bound to {names} by its acquisition record."
     if rung == "method":
         return f"Bound to {names} by its acquisition method."
+    if rung == "explicit":
+        return f"Bound to {names} as chosen by hand."
     if rung != "token":
         return f"Bound to {names} without a file-name token."
     tokens = "token" if len(ionization_modes) == 1 else "tokens"
@@ -1284,7 +1279,14 @@ async def _auto_process_sample_file(
             for mode in bound_modes
         }
         teaches = None
-        rung = "kept"
+        # A choice kept is still somebody's choice, and the status says so,
+        # as it did on the run the choice was made for. It teaches nothing
+        # all the same: that run did the teaching.
+        rung = (
+            "explicit"
+            if all(held.bound_by == "explicit" for held in provenance.values())
+            else "kept"
+        )
     else:
         provenance = {
             mode.ionization_mode_id: ItemProvenance("explicit") for mode in bound_modes
@@ -1335,15 +1337,20 @@ async def _auto_process_sample_file(
         ProcessingStatus.BOUND,
         compose_detail(bound_detail, file_note),
     )
-    # What bound the file is the news of this one stage, for every rung but
-    # the record's. A token is in the file's name, which Raw files shows
-    # beside the status, and nearly every file is bound by one: said again
-    # at the end it would lengthen every status with what the row already
-    # shows. A record is shown nowhere else, so a file its record bound goes
-    # on saying so in every status this run records, as a record that bound
+    # What bound the file is the news of this one stage, for a token and a
+    # method. A token is in the file's name, which Raw files shows beside
+    # the status, and nearly every file is bound by one: said again at the
+    # end it would lengthen every status with what the row already shows. A
+    # record is shown nowhere else, so a file its record bound goes on
+    # saying so in every status this run records, as a record that bound
     # nothing does through the note above. The two never meet: a record
     # either bound the file or it did not.
-    if rung == "declared":
+    #
+    # A person's choice is shown nowhere else either, and it stands ahead of
+    # the name: the row may show a token that did not bind the file. Whoever
+    # fixed the tokens and re-processed reads the status the run ended on,
+    # and that is where it says why this file did not follow them.
+    if rung in ("declared", "explicit"):
         file_note = compose_detail(bound_detail, file_note)
 
     # Extract batch and sample IDs for notifications
@@ -1640,10 +1647,11 @@ async def bind_sample_files(
     the same ingest gate as every upload. A file that has samples already is
     rebuilt under the chosen modes, as re-processing rebuilds one: its m/z
     calibration is reset, and the pipeline replaces its samples.
-    Re-processing keeps the modes a file bound here has where no token in
-    its name binds it again. Its acquisition record is not asked then:
-    choosing here is how a record that names the wrong chemistry is
-    overruled, and the choice outlasts a re-process.
+    Re-processing keeps the modes a file bound here has. Neither its
+    acquisition record nor its name is asked then, whatever they say:
+    choosing here is how a record or a name that says the wrong chemistry is
+    overruled, and the choice stands until somebody chooses here again
+    (:func:`_chosen_by_a_person`).
 
     A sample a person made from the file is never touched: the pipeline
     replaces only its own. Such a file - one processed by hand into someone's
@@ -1891,6 +1899,21 @@ async def re_process_sample_files(
         )
         user_created_samples = result.all()
 
+        # The files with a sample a person chose the chemistry of. One query
+        # for the run, so that the modes of a file's samples are read ahead
+        # of its record and its name only where there may be a choice to
+        # keep, and not for every file selected.
+        result = await session.execute(
+            select(SampleItem.sample_file_id)
+            .where(
+                SampleItem.sample_file_id.in_(found_ids),
+                _pipeline_item(),
+                SampleItem.bound_by == "explicit",
+            )
+            .distinct()
+        )
+        hand_chosen = {sample_file_id for (sample_file_id,) in result.all()}
+
     # Map sample_file_id → (sample_item, batch) for fast lookup
     user_samples_dict = {
         sample_item.sample_file_id: (sample_item, batch)
@@ -1899,7 +1922,8 @@ async def re_process_sample_files(
 
     # --- Validate each file --- #
     valid_sample_files = []
-    # Files no token binds, re-processed under the modes their samples have.
+    # Files a person chose the chemistry of, and files nothing binds now,
+    # re-processed under the modes their samples have.
     kept_modes: dict[str, KeptModes] = {}
 
     for sample_file in sample_files:
@@ -1918,11 +1942,16 @@ async def re_process_sample_files(
             )
             continue
 
-        # Rung 0 first, as the pipeline has it. A record that binds the file
+        # What a person chose first: the file goes through under the modes
+        # they chose, and neither its record nor its name is asked
+        # (:func:`_chosen_by_a_person`). Sent to the pipeline with no modes
+        # of its own it would be bound by its record or its name again, and
+        # the choice would be undone with nothing to say so.
+        #
+        # Then rung 0, as the pipeline has it. A record that binds the file
         # is read there ahead of the name, so nothing below is asked: the
         # file goes through with no modes of its own, whatever its name says
-        # and whatever its record or a token bound it to before. A file a
-        # person chose the chemistry of is not asked for its record at all.
+        # and whatever its record or a token bound it to before.
         #
         # Asked here and not left to the pipeline, because by the time the
         # pipeline asks, the file's samples are cleared and its calibration
@@ -1930,11 +1959,23 @@ async def re_process_sample_files(
         # such a file is judged below as one with no record is, and what its
         # record named goes into the reason if it is refused.
         try:
-            declared, undeclared = await _declared_before_a_run(sample_file)
+            modes_it_has = (
+                await _kept_modes(sample_file)
+                if sample_file.sample_file_id in hand_chosen
+                else None
+            )
+            if _chosen_by_a_person(modes_it_has):
+                kept_modes[sample_file.sample_file_id] = modes_it_has
+                valid_sample_files.append(sample_file)
+                continue
+            declared, undeclared = await _modes_its_record_declares(sample_file)
         except Exception:
-            # Not judged by its name and its samples instead: that would be
-            # acting on a guess about what its record says. Refused with
-            # nothing touched, and asked again when Re-process is.
+            # A reading that fails is not taken for "nobody chose" or for a
+            # record that binds nothing. Judging the file by its name and
+            # its samples instead would be acting on a guess: it undoes a
+            # choice, or rebuilds a file under the modes it has while its
+            # record names others. Refused with nothing touched, and asked
+            # again when Re-process is.
             #
             # The report says which read failed and not what the error said.
             # It goes to whoever pressed Re-process, and a fault's own text
@@ -1998,8 +2039,9 @@ async def re_process_sample_files(
             continue
 
         if no_token is not None:
-            # A file bound without a token - its chemistry chosen by hand -
-            # has no token to bind it again, so it keeps the modes its
+            # A file nothing binds now - the token that bound it was renamed,
+            # its record's token was taken off the mode, or it was given a
+            # chemistry before samples recorded how - keeps the modes its
             # samples were created under. Read before they are cleared, and
             # outside the except clause, where an error would escape the
             # handlers that keep one file's failure its own.
@@ -2209,8 +2251,9 @@ async def re_process_sample_files(
                 raise
             affected_sample_batch_ids.update(cleared_batch_ids)
 
-            # Set only for a file no token binds: it is re-processed under
-            # the modes its own samples held, carrying their provenance.
+            # Set for a file a person chose the chemistry of, and for one
+            # nothing binds now: it is re-processed under the modes its own
+            # samples held, carrying their provenance.
             kept = kept_modes.get(sample_file.sample_file_id)
             result = await auto_process_sample_file(
                 sample_file_id=sample_file.sample_file_id,
@@ -2315,16 +2358,20 @@ async def re_process_sample_files(
 
 
 async def modes_to_rebind(sample_file_id: str) -> KeptModes | None:
-    """The modes to process a file under again, when nothing binds it now.
+    """The modes to process a file under again, when its samples decide them.
 
-    A file that neither its acquisition record nor a token binds has nothing
-    to bind it again, so it keeps the modes its samples were made under, as
-    re-processing keeps them. None leaves the binding to the run: the record
-    or a token binds the file, or the run finds that neither does and parks
-    it. The record is asked first, as the run asks it, so a file its record
-    binds is not rebuilt under whatever it or a token bound it to before;
-    what a person chose is kept (:func:`_declared_before_a_run`). A record
-    that cannot be read fails the request, which has claimed nothing yet.
+    Two files keep the modes their samples were made under, as re-processing
+    keeps them. One is a file a person chose the chemistry of: what they
+    chose stands ahead of its acquisition record and of its name, and neither
+    is asked (:func:`_chosen_by_a_person`). The other is a file that neither
+    its record nor a token binds, which has nothing to bind it again.
+
+    None leaves the binding to the run: the record or a token binds the
+    file, or the run finds that neither does and parks it. The record is
+    asked before the name, as the run asks it, so a file its record binds is
+    not rebuilt under whatever it or a token bound it to before. A record
+    that cannot be read fails the request, which has claimed nothing yet,
+    and so do the modes of the file's samples: neither is guessed at.
 
     Not only a file somebody chose a chemistry for. A file a token bound
     months ago reaches this too, once that token has been renamed or
@@ -2335,13 +2382,16 @@ async def modes_to_rebind(sample_file_id: str) -> KeptModes | None:
     :return: The modes its samples have with how each was bound, or None.
     """
     sample_file = await fetch_sample_file(sample_file_id=sample_file_id)
-    declared, _undeclared = await _declared_before_a_run(sample_file)
+    kept = await _kept_modes(sample_file)
+    if _chosen_by_a_person(kept):
+        return kept
+    declared, _undeclared = await _modes_its_record_declares(sample_file)
     if declared:
         return None
     try:
         await resolve_ionization_modes_by_tokens(sample_file)
     except NoTokenMatchError:
-        return await _kept_modes(sample_file)
+        return kept
     except ValueError:
         return None
     return None

@@ -9,15 +9,16 @@ second choice cannot start a second run - unless the run holding it stalled.
 A file that has samples already is rebuilt under the chosen modes; one with a
 sample a person made from it keeps its calibration, and one the chosen modes
 do not fit is refused. Re-processing, and processing a file on request, keep
-the modes a file was bound to that way, since no token binds it again. Only
-the pipeline's own samples are replaced, wherever a person's sample is.
+the modes a file was bound to that way, whatever its name and its acquisition
+record say, until somebody chooses again. Only the pipeline's own samples are
+replaced, wherever a person's sample is.
 
-A file's acquisition record is asked first on both of those roads, as the
-pipeline asks it: a file its record binds starts with no modes of its own,
-whatever its name says and whatever its record or a token bound it to, and
-one its record does not bind is judged as a file with no record is. What a
-person chose stands ahead of the record, and a record that cannot be read
-is no answer to act on.
+For a file nobody chose the chemistry of, its acquisition record is asked
+first on both of those roads, as the pipeline asks it: a file its record
+binds starts with no modes of its own, whatever its name says and whatever
+its record or a token bound it to, and one its record does not bind is
+judged as a file with no record is. A record that cannot be read is no
+answer to act on, and neither are samples that cannot be.
 
 The pipeline itself is stubbed: what is pinned is which files start, under
 which modes, and what is refused. One test runs the pipeline's own binding
@@ -716,7 +717,7 @@ async def test_reprocessing_does_not_leave_unread_samples_to_the_rung(
 @pytest.mark.parametrize(
     ("failing", "says"),
     [
-        ("_declared_before_a_run", "Failed to read its acquisition record"),
+        ("_modes_its_record_declares", "Failed to read its acquisition record"),
         ("resolve_ionization_modes_by_tokens", "Failed to resolve ionization modes"),
         (
             "_clear_sample_items_for_reprocessing",
@@ -806,30 +807,26 @@ class _SeenEnough(Exception):
     """Ends the pipeline where a test has seen what it bound."""
 
 
-@pytest.mark.asyncio
-async def test_reprocessing_binds_a_file_that_waited_for_its_records_token(
-    async_session_factory, setup, mode_with_token, monkeypatch
-):
-    """A file whose chemistry is in its acquisition record has no reason to
-    carry a token in its name. It parks while no mode has the token the
-    record names, and once one does, selecting the parked files and pressing
-    Re-process is how a site picks them up.
+@pytest.fixture
+def binding(setup, monkeypatch) -> dict[str, AsyncMock]:
+    """Run the pipeline's own binding behind the check.
 
-    The check and the pipeline behind it, together: the pipeline's own
-    binding runs here, on a row stored as an upload stores it, as far as the
-    samples it would make. The method rung is off, as it is unless a
-    deployment turns it on."""
-    mode_id, token = await mode_with_token("-")
-    parked = await _file(
-        async_session_factory, "parked-with-a-record", "-", declaring=token
-    )
+    The check and the pipeline behind it, together: what re-processing
+    starts is the pipeline's own ``_auto_process_sample_file``, on a row
+    stored as an upload stores it, as far as the samples it would make. The
+    method rung is off, as it is unless a deployment turns it on.
+
+    Gives ``create``, called with the modes the samples would be made under,
+    and ``learn``, the method-binding learner.
+    """
     create = AsyncMock(side_effect=_SeenEnough)
+    learn = AsyncMock()
     for name, stand_in in {
         "create_acquisition_batches_and_items": create,
         "reset_mz_calibration": AsyncMock(),
         "read_scan_streams": AsyncMock(return_value=[]),
         "read_store_stream_keys": AsyncMock(return_value=[]),
-        "learn_method_bindings": AsyncMock(),
+        "learn_method_bindings": learn,
         "get_acquisition_dataset": AsyncMock(
             return_value={"data": {"dataset_id": setup["dataset"]}}
         ),
@@ -850,13 +847,61 @@ async def test_reprocessing_binds_a_file_that_waited_for_its_records_token(
     monkeypatch.setattr(
         process_service, "auto_process_sample_file", as_far_as_the_binding
     )
+    return {"create": create, "learn": learn}
+
+
+@pytest.mark.asyncio
+async def test_reprocessing_binds_a_file_that_waited_for_its_records_token(
+    async_session_factory, setup, mode_with_token, binding
+):
+    """A file whose chemistry is in its acquisition record has no reason to
+    carry a token in its name. It parks while no mode has the token the
+    record names, and once one does, selecting the parked files and pressing
+    Re-process is how a site picks them up."""
+    mode_id, token = await mode_with_token("-")
+    parked = await _file(
+        async_session_factory, "parked-with-a-record", "-", declaring=token
+    )
 
     result = await process_service.re_process_sample_files(sample_file_ids=[parked])
 
     assert "Successfully re-processed 1" in result["message"]
-    bound = create.await_args.kwargs
+    bound = binding["create"].await_args.kwargs
     assert [mode.ionization_mode_id for mode in bound["ionization_modes"]] == [mode_id]
     assert bound["provenance"] == {mode_id: process_service.ItemProvenance("declared")}
+
+
+@pytest.mark.asyncio
+async def test_a_choice_against_the_record_and_the_name_outlasts_a_reprocess(
+    async_session_factory, setup, mode_with_token, binding
+):
+    """A file named for one chemistry, whose record declares it too, and a
+    person who chose another by hand: a record cannot be corrected, so that
+    is the one way to say it is wrong. Re-processing that day's files, for
+    whatever reason, makes the file's samples under what the person chose
+    again, still recorded as their choice. The method learns nothing from
+    the run: the choice taught it once, when it was made."""
+    _mode_id, token = await mode_with_token("-")
+    chosen = await _file(
+        async_session_factory,
+        f"{token}_chosen-against-both",
+        "-",
+        sample_under=(setup["batch"], setup["negative"]),
+        declaring=token,
+        bound_by="explicit",
+    )
+
+    result = await process_service.re_process_sample_files(sample_file_ids=[chosen])
+
+    assert "Successfully re-processed 1" in result["message"]
+    bound = binding["create"].await_args.kwargs
+    assert [mode.ionization_mode_id for mode in bound["ionization_modes"]] == [
+        setup["negative"]
+    ]
+    assert bound["provenance"] == {
+        setup["negative"]: process_service.ItemProvenance("explicit")
+    }
+    binding["learn"].assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -960,22 +1005,52 @@ async def test_reprocessing_keeps_a_chemistry_a_person_chose_against_the_record(
 
 
 @pytest.mark.asyncio
-async def test_reprocessing_does_not_keep_a_choice_for_a_file_its_name_binds(
-    async_session_factory, setup, pipeline, mode_with_token
+@pytest.mark.parametrize("with_a_record", [True, False])
+async def test_reprocessing_keeps_a_choice_for_a_file_its_name_binds(
+    async_session_factory, setup, pipeline, mode_with_token, with_a_record
 ):
-    """Where the rule about a person's choice stops. The modes a file has
-    stand in only for a name that carries no token, so a file whose name
-    does goes to the pipeline with no modes of its own, and the pipeline
-    asks its record first: what somebody chose for it by hand is not kept,
-    as it never was for a file with a token in its name."""
+    """The rule about a person's choice does not stop at the file's name.
+    Sent to the pipeline with no modes of its own, as a file with a token in
+    its name used to be, it is bound by its record again, or by that token:
+    the choice is undone one step after the check stepped aside for it, and
+    the run reports nothing but success. It starts under what was chosen,
+    with a record and without one."""
     _mode_id, token = await mode_with_token("-")
     named = await _file(
         async_session_factory,
         f"{token}_chosen",
         "-",
         sample_under=(setup["batch"], setup["negative"]),
-        declaring=token,
+        declaring=token if with_a_record else None,
         bound_by="explicit",
+    )
+
+    await process_service.re_process_sample_files(sample_file_ids=[named])
+
+    pipeline.assert_awaited_once()
+    started = pipeline.await_args.kwargs
+    assert started["ionization_mode_ids"] == [setup["negative"]]
+    assert started["kept_provenance"] == {
+        setup["negative"]: process_service.ItemProvenance("explicit")
+    }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("bound_by", ["declared", "token", None])
+async def test_reprocessing_reads_the_name_of_a_file_nobody_chose_for(
+    async_session_factory, setup, pipeline, mode_with_token, bound_by
+):
+    """Only a person's choice stands ahead of the name. Samples a record
+    bound, or a token did, or ones older than the record of how they were
+    bound, are nobody's choice: a token in the file's name binds it again,
+    as fixing the tokens and re-processing has always had it."""
+    _mode_id, token = await mode_with_token("-")
+    named = await _file(
+        async_session_factory,
+        f"{token}_unchosen",
+        "-",
+        sample_under=(setup["batch"], setup["negative"]),
+        bound_by=bound_by,
     )
 
     await process_service.re_process_sample_files(sample_file_ids=[named])
@@ -983,6 +1058,102 @@ async def test_reprocessing_does_not_keep_a_choice_for_a_file_its_name_binds(
     pipeline.assert_awaited_once()
     assert pipeline.await_args.kwargs["ionization_mode_ids"] is None
     assert pipeline.await_args.kwargs["kept_provenance"] is None
+
+
+@pytest.mark.asyncio
+async def test_reprocessing_reads_the_name_of_a_file_whose_chosen_mode_is_gone(
+    async_session_factory, setup, pipeline, mode_with_token
+):
+    """A choice whose mode was deleted since is no choice any more: there is
+    nothing to rebuild the file under, and its name is asked."""
+    _mode_id, token = await mode_with_token("-")
+    orphaned = await _file(
+        async_session_factory,
+        f"{token}_choice-deleted",
+        "-",
+        sample_under=(setup["batch"], None),
+        bound_by="explicit",
+    )
+
+    await process_service.re_process_sample_files(sample_file_ids=[orphaned])
+
+    pipeline.assert_awaited_once()
+    assert pipeline.await_args.kwargs["ionization_mode_ids"] is None
+    assert pipeline.await_args.kwargs["kept_provenance"] is None
+
+
+@pytest.mark.asyncio
+async def test_reprocessing_reads_the_name_of_a_file_chosen_for_in_part(
+    async_session_factory, setup, pipeline, mode_with_token
+):
+    """Every mode a file has must be a person's choice for the name to go
+    unread. Choosing binds every polarity of a file at once, so samples that
+    disagree about it did not come from one choice, and the tokens in the
+    file's name bind both polarities again."""
+    (_negative, negative_token), (_positive, positive_token) = (
+        await mode_with_token("-"),
+        await mode_with_token("+"),
+    )
+    mixed = await _file(
+        async_session_factory, f"{negative_token}_{positive_token}", "+-"
+    )
+    async with async_session_factory() as session:
+        for polarity, mode, bound_by in (
+            ("-", "negative", "explicit"),
+            ("+", "positive", "token"),
+        ):
+            session.add(
+                SampleItem(
+                    sample_item_id=gen_id(),
+                    sample_batch_id=setup["batch"],
+                    sample_file_id=mixed,
+                    sample_item_name=f"2026-09-01 12:00:00 {polarity}",
+                    sample_item_type="ACQUISITION",
+                    sample_item_attributes={},
+                    polarity=polarity,
+                    ionization_mode_id=setup[mode],
+                    bound_by=bound_by,
+                    sample_item_utc_created=_NOW,
+                )
+            )
+        await session.commit()
+
+    await process_service.re_process_sample_files(sample_file_ids=[mixed])
+
+    pipeline.assert_awaited_once()
+    assert pipeline.await_args.kwargs["ionization_mode_ids"] is None
+    assert pipeline.await_args.kwargs["kept_provenance"] is None
+
+
+@pytest.mark.asyncio
+async def test_reprocessing_refuses_a_file_whose_choice_cannot_be_read(
+    async_session_factory, setup, pipeline, mode_with_token, monkeypatch
+):
+    """Whether somebody chose is not guessed at. Taken for "nobody did", a
+    failed read sends this file to the pipeline with no modes of its own,
+    and its name binds it over the choice. It is refused with nothing
+    touched."""
+    _mode_id, token = await mode_with_token("-")
+    chosen = await _file(
+        async_session_factory,
+        f"{token}_choice-unread",
+        "-",
+        sample_under=(setup["batch"], setup["negative"]),
+        bound_by="explicit",
+    )
+    monkeypatch.setattr(
+        process_service,
+        "_kept_modes",
+        AsyncMock(side_effect=RuntimeError("the database went away")),
+    )
+
+    with pytest.raises(Exception, match="or the modes its samples have") as refused:
+        await process_service.re_process_sample_files(sample_file_ids=[chosen])
+
+    assert "the database went away" not in _report(refused)
+    pipeline.assert_not_called()
+    assert await _samples_of(async_session_factory, chosen) == 1
+    assert await _status(async_session_factory, chosen) == "done"
 
 
 @pytest.mark.asyncio
@@ -1054,11 +1225,14 @@ async def test_reprocessing_refuses_a_file_whose_record_cannot_be_read(
     mode it has while its record may name another, and reported as
     re-processed. It is refused with nothing touched, and the file selected
     with it runs."""
-    monkeypatch.setattr(
-        process_service,
-        "_modes_its_record_declares",
-        AsyncMock(side_effect=RuntimeError("the database went away")),
-    )
+
+    async def unread_record(sample_file):
+        # As the reading itself has it: a file with no record is not read.
+        if sample_file.acquisition_id is None:
+            return [], None
+        raise RuntimeError("the database went away")
+
+    monkeypatch.setattr(process_service, "_modes_its_record_declares", unread_record)
     unread = await _file(
         async_session_factory,
         "record-unread",
@@ -1089,10 +1263,40 @@ async def test_reprocessing_refuses_a_file_whose_record_cannot_be_read(
 
 
 @pytest.mark.asyncio
-async def test_reprocessing_refuses_an_ambiguous_name_whatever_its_samples(
+async def test_reprocessing_keeps_a_choice_for_a_name_that_matches_too_much(
+    async_session_factory, setup, pipeline, mode_with_token
+):
+    """A name with the tokens of two modes of one polarity parks a file,
+    and choosing its chemistry is the remedy its status offers. The choice
+    is not refused at the next re-process for the name it answered."""
+    (_first, first_token), (_second, second_token) = (
+        await mode_with_token("-"),
+        await mode_with_token("-"),
+    )
+    both = await _file(
+        async_session_factory,
+        f"{first_token}_{second_token}",
+        "-",
+        sample_under=(setup["batch"], setup["negative"]),
+        bound_by="explicit",
+    )
+
+    await process_service.re_process_sample_files(sample_file_ids=[both])
+
+    pipeline.assert_awaited_once()
+    started = pipeline.await_args.kwargs
+    assert started["ionization_mode_ids"] == [setup["negative"]]
+    assert started["kept_provenance"] == {
+        setup["negative"]: process_service.ItemProvenance("explicit")
+    }
+
+
+@pytest.mark.asyncio
+async def test_reprocessing_refuses_an_ambiguous_name_nobody_chose_for(
     async_session_factory, setup, pipeline
 ):
-    """Only a name no token matches stands its earlier binding in."""
+    """Only a name no token matches stands its earlier binding in, where
+    that binding was nobody's choice."""
     tokens = [f"T{gen_id(6)}", f"T{gen_id(6)}"]
     mode_ids = [gen_id(16), gen_id(16)]
     async with async_session_factory() as session:
@@ -1500,6 +1704,90 @@ async def test_processing_on_request_keeps_a_chemistry_a_person_chose(
 
     assert resp.status_code == 202, resp.text
     assert spawn.await_args.kwargs["ionization_mode_ids"] == [setup["negative"]]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("with_a_record", [True, False])
+async def test_processing_on_request_keeps_a_choice_for_a_file_its_name_binds(
+    async_session_factory,
+    setup,
+    admin_client,
+    mode_with_token,
+    monkeypatch,
+    with_a_record,
+):
+    """As re-processing does: a token in the file's name does not undo what
+    a person chose, with a record or without one."""
+    _mode_id, token = await mode_with_token("-")
+    named = await _file(
+        async_session_factory,
+        f"{token}_on-request-chosen",
+        "-",
+        sample_under=(setup["batch"], setup["negative"]),
+        declaring=token if with_a_record else None,
+        bound_by="explicit",
+    )
+    spawn = AsyncMock()
+    monkeypatch.setattr(sample_files_routes, "spawn_auto_process_sample_file", spawn)
+
+    resp = await admin_client.post(f"/api/sample/files/{named}/process")
+
+    assert resp.status_code == 202, resp.text
+    assert spawn.await_args.kwargs["ionization_mode_ids"] == [setup["negative"]]
+    assert spawn.await_args.kwargs["kept_provenance"] == {
+        setup["negative"]: process_service.ItemProvenance("explicit")
+    }
+
+
+@pytest.mark.asyncio
+async def test_processing_on_request_reads_the_name_of_a_file_nobody_chose_for(
+    async_session_factory, setup, admin_client, mode_with_token, monkeypatch
+):
+    _mode_id, token = await mode_with_token("-")
+    named = await _file(
+        async_session_factory,
+        f"{token}_on-request-unchosen",
+        "-",
+        sample_under=(setup["batch"], setup["negative"]),
+        bound_by="token",
+    )
+    spawn = AsyncMock()
+    monkeypatch.setattr(sample_files_routes, "spawn_auto_process_sample_file", spawn)
+
+    resp = await admin_client.post(f"/api/sample/files/{named}/process")
+
+    assert resp.status_code == 202, resp.text
+    assert spawn.await_args.kwargs["ionization_mode_ids"] is None
+    assert spawn.await_args.kwargs["kept_provenance"] is None
+
+
+@pytest.mark.asyncio
+async def test_processing_on_request_fails_when_the_choice_cannot_be_read(
+    async_session_factory, setup, admin_client, mode_with_token, monkeypatch
+):
+    """Before anything is claimed, as for a record: no run starts on a guess
+    that nobody chose the file's chemistry."""
+    _mode_id, token = await mode_with_token("-")
+    chosen = await _file(
+        async_session_factory,
+        f"{token}_on-request-choice-unread",
+        "-",
+        sample_under=(setup["batch"], setup["negative"]),
+        bound_by="explicit",
+    )
+    monkeypatch.setattr(
+        process_service,
+        "_kept_modes",
+        AsyncMock(side_effect=RuntimeError("the database went away")),
+    )
+    spawn = AsyncMock()
+    monkeypatch.setattr(sample_files_routes, "spawn_auto_process_sample_file", spawn)
+
+    resp = await admin_client.post(f"/api/sample/files/{chosen}/process")
+
+    assert resp.status_code >= 500, resp.text
+    spawn.assert_not_awaited()
+    assert await _status(async_session_factory, chosen) == "done"
 
 
 @pytest.mark.asyncio

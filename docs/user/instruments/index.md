@@ -223,12 +223,14 @@ what the record named, and goes on saying it once the file is processed, so
 a record and a file name that disagree do not go unnoticed. Once an
 ionization mode has the token, select the files that waited in Raw files and
 re-process them: they are bound by their records then. A chemistry somebody
-chose for a file by hand is kept, unless the file's name carries an
-ionization mode token: such a file is bound again by its record, or by that
-token. For a file whose name carries none, choosing by hand is also how a
-record that names the wrong chemistry is overruled. Re-processing takes the
-*admin* role on the instrument. With the *editor* role, right-click a file
-and choose its chemistry instead.
+chose for a file by hand is kept, whatever the file's record and its name
+say, until somebody chooses again. So choosing by hand is how a record that
+names the wrong chemistry is overruled, and Raw files goes on saying that
+somebody chose: "Matched 1 sample. Bound to 'Nitrate' (-) as chosen by
+hand." To have such a file bound by its record after all, choose the
+chemistry its record names. Re-processing takes the *admin* role on the
+instrument. With the *editor* role, right-click a file and choose its
+chemistry instead.
 
 A record never keeps a file from being uploaded:
 
