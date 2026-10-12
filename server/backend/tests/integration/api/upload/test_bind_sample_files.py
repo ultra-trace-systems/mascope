@@ -677,7 +677,11 @@ async def test_reprocessing_does_not_leave_unread_samples_to_the_rung(
 ):
     """Samples that could not be read are not no samples either: this file
     has one, under a mode that still binds it, and sent on to the rung it
-    would be cleared and bound by its method, or parked."""
+    would be cleared and bound by its method, or parked.
+
+    The report says that the read failed and not what the error said: a
+    fault's own text can hold SQL with its bound parameters, and stays in
+    the log."""
     monkeypatch.setattr(process_service, "routes_on_method_binding", lambda: True)
     monkeypatch.setattr(
         process_service,
@@ -691,9 +695,12 @@ async def test_reprocessing_does_not_leave_unread_samples_to_the_rung(
         sample_under=(setup["batch"], setup["negative"]),
     )
 
-    with pytest.raises(Exception, match="Failed to read the modes its samples have"):
+    with pytest.raises(
+        Exception, match="Failed to read the modes its samples have"
+    ) as refused:
         await process_service.re_process_sample_files(sample_file_ids=[bound])
 
+    assert "the database went away" not in str(refused.value)
     pipeline.assert_not_called()
     assert await _samples_of(async_session_factory, bound) == 1
     assert await _status(async_session_factory, bound) == "done"
