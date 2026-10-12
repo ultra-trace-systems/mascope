@@ -1917,10 +1917,16 @@ async def re_process_sample_files(
         # record named goes into the reason if it is refused.
         try:
             declared, undeclared = await _declared_before_a_run(sample_file)
-        except Exception as e:
+        except Exception:
             # Not judged by its name and its samples instead: that would be
             # acting on a guess about what its record says. Refused with
             # nothing touched, and asked again when Re-process is.
+            #
+            # The report says which read failed and not what the error said.
+            # It goes to whoever pressed Re-process, and a fault's own text
+            # can hold SQL with its bound parameters (:func:`_failure_detail`),
+            # so that text is left to the log below - here and in the two
+            # refusals like this one further down.
             failed_files.append(
                 {
                     "sample_file_id": sample_file.sample_file_id,
@@ -1928,7 +1934,8 @@ async def re_process_sample_files(
                     # Either read: the modes its samples have come first.
                     "message": (
                         "Failed to read its acquisition record, or the modes "
-                        f"its samples have: {str(e)}"
+                        "its samples have, so it was left as it is. "
+                        "Re-process it again."
                     ),
                 }
             )
@@ -1958,13 +1965,16 @@ async def re_process_sample_files(
                 }
             )
             continue
-        except Exception as e:
+        except Exception:
             # Other unexpected errors
             failed_files.append(
                 {
                     "sample_file_id": sample_file.sample_file_id,
                     "filename": sample_file.filename,
-                    "message": f"Failed to resolve ionization modes: {str(e)}",
+                    "message": (
+                        "Failed to resolve ionization modes, so it was left "
+                        "as it is. Re-process it again."
+                    ),
                 }
             )
             runtime.logger.exception(
@@ -2002,13 +2012,8 @@ async def re_process_sample_files(
                 if by_method:
                     # Not taken for a file with no samples: that one is sent
                     # on to be cleared and rebuilt, and this one may have
-                    # samples, with modes that still bind it.
-                    #
-                    # The error's own text stays in the log above. This is a
-                    # fault, not something the file's name or samples say, and
-                    # its text can hold SQL with its bound parameters
-                    # (:func:`_failure_detail`), while the report goes to
-                    # whoever pressed Re-process.
+                    # samples, with modes that still bind it. The error's
+                    # own text stays in the log above, as for the record.
                     failed_files.append(
                         {
                             "sample_file_id": sample_file.sample_file_id,
@@ -2174,11 +2179,19 @@ async def re_process_sample_files(
                 }
             )
         except Exception as e:
+            # Not the pipeline's: whatever it raises reaches this loop as an
+            # ApiException, logged where it was raised and worded for a
+            # person. This is the claim or the clearing failing, a fault
+            # nothing else logs, so it is logged here and the report names
+            # only its kind, in the words a failed file's status uses.
+            runtime.logger.exception(
+                f"Unexpected error re-processing sample file {sample_file.filename}"
+            )
             failed_files.append(
                 {
                     "sample_file_id": sample_file.sample_file_id,
                     "filename": sample_file.filename,
-                    "message": f"Processing failed: {str(e)}",
+                    "message": f"Processing failed: {_failure_detail(e)}",
                 }
             )
 
