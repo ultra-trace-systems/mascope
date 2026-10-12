@@ -392,8 +392,9 @@ class GetSpectrumQueryParams(CommonValidators, QueryParamsModel):
 class GetSampleFileScansQueryParams(CommonValidators, QueryParamsModel):
     """
     Query parameters for a sample file's scan table: which scans to describe,
-    and which entries of each. Polarity and time range validation is inherited
-    from CommonValidators.
+    and which entries of each. Polarity validation is inherited from
+    CommonValidators. The ranges are validated here: both of their ends are
+    included, so one that starts and ends on the same value is a range.
     """
 
     fields: list[str] | None = Field(
@@ -432,6 +433,22 @@ class GetSampleFileScansQueryParams(CommonValidators, QueryParamsModel):
             and self.last_scan < self.first_scan
         ):
             raise ValueError("last_scan must not be less than first_scan")
+        return self
+
+    @model_validator(mode="after")
+    def validate_time_range(self):
+        """A time range may be one instant, but not end before it starts.
+
+        Replaces the rule of the same name in CommonValidators, which refuses
+        equal bounds. Here ``t_min=0&t_max=0`` asks for the scans recorded at
+        0 s, and the reader answers it.
+        """
+        if (
+            self.t_min is not None
+            and self.t_max is not None
+            and self.t_max < self.t_min
+        ):
+            raise ValueError("t_max must not be less than t_min")
         return self
 
 

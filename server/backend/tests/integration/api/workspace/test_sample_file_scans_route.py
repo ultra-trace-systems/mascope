@@ -172,6 +172,8 @@ async def test_fields_keep_the_named_entries_and_the_scan_number(
         pytest.param("t_min=100000", [], id="after-the-run"),
         # Both scans start after 0 s; a scan recorded at 0 would be found.
         pytest.param("t_max=0", [], id="at-time-zero"),
+        # One instant is a range: asked for, and answered, not refused.
+        pytest.param("t_min=0&t_max=0", [], id="the-instant-zero"),
         pytest.param("polarity=%2B", SCANS, id="polarity"),
         # A client that does not encode the plus sends a space.
         pytest.param("polarity=+", SCANS, id="polarity-unencoded"),
@@ -206,6 +208,26 @@ async def test_a_time_window_takes_the_scan_that_starts_on_its_bound(
 
     assert resp.status_code == 200, resp.text
     assert list(resp.json()["data"]["stats_per_scan"]) == ["2"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("scan", SCANS)
+async def test_a_time_window_of_one_instant_takes_the_scan_that_starts_then(
+    guest_client, sample_file, alpha_item, scan
+):
+    # Both ends of a range are included, so the same time at both ends is the
+    # way to ask for the scan that starts exactly then - a scan recorded at
+    # 0 s among them, which no other time window singles out.
+    full = _document(include_centroids=False)["stats_per_scan"]
+    start_s = full[scan]["StartTime"] * 60
+
+    resp = await guest_client.get(
+        f"/api/sample/files/{sample_file}/scans",
+        params={"t_min": start_s, "t_max": start_s},
+    )
+
+    assert resp.status_code == 200, resp.text
+    assert list(resp.json()["data"]["stats_per_scan"]) == [scan]
 
 
 @pytest.mark.asyncio
