@@ -95,6 +95,19 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 ### Fixed
 
+- **An Orbitrap acquisition that was never finished fails as one.** An
+  acquisition that is aborted before it records a scan leaves a small raw
+  file holding the instrument method and no index of scans. The reader
+  could not open such a file and did not say why: the upload failed with
+  "I/O error: Invalid argument (os error 22)" or with "unexpected end of
+  file at offset 0x2700000026 (needed 4 bytes)", the offset another for
+  every method, and each one was reported to error monitoring as a fault in
+  Mascope. The file is now recognised by what it lacks, and the upload
+  fails with "The acquisition was never finished: the file has no index of
+  its scans, so nothing in it can be read.", as an empty acquisition does
+  and without an error report. A file that is damaged or was cut short in
+  transfer is still reported as before.
+
 - **A Ctrl+C can no longer leave the File Agent hung.** Python raises an
   interrupt on the main thread at whichever instruction that thread has
   reached, and the agent's main thread spends its time in events and queues,

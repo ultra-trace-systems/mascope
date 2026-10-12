@@ -54,6 +54,19 @@ class NoScansFoundError(ValueError):
     pass
 
 
+class UnfinishedAcquisitionError(NoScansFoundError):
+    """A raw file that was written without a run header.
+
+    The acquisition ended before its index was written, so no scan in the file
+    can be reached, whether or not any was recorded. Raised on opening the
+    file, where both readers otherwise fail with an error of their own that
+    says nothing of the kind (:mod:`mascope_thermo.run_header`).
+
+    A :class:`NoScansFoundError` because that is what such a file is to every
+    caller: a file that holds no scans to select.
+    """
+
+
 class UnknownStreamError(LookupError):
     """A scan stream was asked for by a key the file holds no stream under.
 

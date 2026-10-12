@@ -31,6 +31,14 @@ EMPTY_ACQUISITION_MESSAGE = (
     "The file contains no scans; the acquisition is empty or was aborted."
 )
 
+#: The acquisition software created the file and the acquisition ended before
+#: the file's index was written. Whatever scans were recorded before that
+#: cannot be reached, so the message does not claim there were none.
+UNFINISHED_ACQUISITION_MESSAGE = (
+    "The acquisition was never finished: the file has no index of its scans, "
+    "so nothing in it can be read."
+)
+
 #: Exactly one scan: there is a spectrum but no second one to measure the
 #: spacing against, so neither an interval nor a length can be derived.
 SINGLE_SCAN_MESSAGE = (
@@ -60,6 +68,7 @@ class EmptyAcquisitionError(Exception):
 
     Raised by a processor when the reader reports an empty acquisition - a run
     that was aborted, or that wrote a file before recording a single scan -
+    when the file was left without the index its scans are read through,
     when what was recorded yields no measurable time axis, such as a single
     scan, and when the scans that are there are all fragmentation scans, which
     leaves peak detection nothing to run on. Nothing downstream can be derived

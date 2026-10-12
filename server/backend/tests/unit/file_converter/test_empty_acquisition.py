@@ -23,8 +23,14 @@ Both reader backends are exercised through their own scan selection rather
 than through a stand-in for it, because the guard is only as good as the error
 the reader actually raises - and the two backends reach a scanless file by
 different code.
+
+A file written without a run header is the same outcome met earlier still: the
+reader cannot open it at all, and failed on it with an error of its own -
+``Invalid argument (os error 22)`` for one file, ``unexpected end of file at
+offset 0x2700000026`` for the next - that said nothing about the acquisition.
 """
 
+import struct
 from contextlib import contextmanager
 from queue import Queue
 from threading import Event
@@ -38,13 +44,14 @@ from mascope_backend.file_converter.errors import (
     EMPTY_ACQUISITION_MESSAGE,
     NO_MS1_SCANS_MESSAGE,
     SINGLE_SCAN_MESSAGE,
+    UNFINISHED_ACQUISITION_MESSAGE,
     UNUSABLE_SCAN_TIMES_MESSAGE,
     EmptyAcquisitionError,
     describe_exception,
     is_routine_file_failure,
 )
 from mascope_thermo.processor import RawProcessor
-from mascope_thermo.thermo import NoScansFoundError
+from mascope_thermo.thermo import NoScansFoundError, UnfinishedAcquisitionError
 from mascope_tofwerk.processor import H5Processor
 from mascope_tofwerk.tofwerk import NoScansRecordedError, recorded_scan_times
 
@@ -277,6 +284,90 @@ class TestThermoMs1LessAcquisition:
         )
 
 
+def _unfinished_raw(tmp_path):
+    """Write a .raw as an acquisition leaves it that ends before recording.
+
+    The front of the file - file header, sequence row, autosampler block and
+    raw file info - with every run header address zero, and filler where the
+    instrument method would follow. The reader fails on an address it takes
+    from the filler, as it does on one it takes from a method.
+    """
+
+    def text(value=""):
+        return struct.pack("<I", len(value)) + value.encode("utf-16-le")
+
+    file_header = bytearray(1356)
+    struct.pack_into("<H", file_header, 0, 0xA101)
+    file_header[2:20] = "Finnigan\0".encode("utf-16-le")
+    struct.pack_into("<I", file_header, 36, 66)
+    seq_row = bytes(64) + text() * 16 + bytes(4) + text() * 15
+    autosampler = bytes(24) + text()
+    # The method flag and date, seven integers, a reserved area, the address
+    # table's region with nothing recorded in it, then five label headings
+    # and the computer name.
+    info = bytes(20) + struct.pack("<7I", 1, 0, 0, 0, 0, 0, 0) + bytes(760)
+    info += bytes(1048) + text() * 6
+
+    path = tmp_path / "ORBI-1_unfinished.raw"
+    path.write_bytes(bytes(file_header) + seq_row + autosampler + info + b"\xff" * 6000)
+    return str(path)
+
+
+class TestThermoUnfinishedAcquisition:
+    """A file written without a run header fails as data, on being opened.
+
+    Driven through the processor's own file context and the real reader, over
+    a file on disk: what is under test is the error the reader raises when it
+    cannot open the file, and a stand-in handle would never be asked to.
+    """
+
+    @staticmethod
+    def _processor(tmp_path):
+        processor = RawProcessor(
+            socket_client=None, file_queue=Queue(), shutdown_event=Event()
+        )
+        processor.file_to_process = _unfinished_raw(tmp_path)
+        return processor
+
+    def test_extraction_names_the_unfinished_acquisition(self, tmp_path):
+        with pytest.raises(EmptyAcquisitionError) as e:
+            self._processor(tmp_path)._get_sample_file_props()
+        assert str(e.value) == UNFINISHED_ACQUISITION_MESSAGE
+
+    def test_the_reader_error_is_kept_as_the_cause(self, tmp_path):
+        with pytest.raises(EmptyAcquisitionError) as e:
+            self._processor(tmp_path)._get_sample_file_props()
+        named = e.value.__cause__
+        assert isinstance(named, UnfinishedAcquisitionError)
+        assert isinstance(named.__cause__, OSError)
+
+    def test_it_is_reported_as_data_not_as_a_fault(self, tmp_path):
+        from mascope_runtime.logging import _SENTRY_LEVELS
+
+        processor = self._processor(tmp_path)
+        raised = []
+
+        def _extract():
+            try:
+                processor._get_sample_file_props()
+            except EmptyAcquisitionError as e:
+                raised.append(e)
+
+        records = _captured(_extract)
+        assert is_routine_file_failure(raised[0])
+        assert [r for r in records if r["level"].name in _SENTRY_LEVELS] == []
+
+    def test_a_file_cut_short_inside_its_front_stays_a_fault(self, tmp_path):
+        # It records no run header either, because it records nothing. An
+        # upload that stopped is not an acquisition that did.
+        processor = self._processor(tmp_path)
+        with open(processor.file_to_process, "r+b") as f:
+            f.truncate(1500)
+        with pytest.raises(OSError) as e:
+            processor._get_sample_file_props()
+        assert not is_routine_file_failure(e.value)
+
+
 class TestTofEmptyAcquisition:
     def test_all_zero_buf_times_raise_empty_acquisition(self):
         # The recorder created the file but never wrote a scan, so every buf
@@ -370,7 +461,12 @@ class TestRoutineFailureReporting:
 
     @pytest.mark.parametrize(
         "message",
-        [EMPTY_ACQUISITION_MESSAGE, SINGLE_SCAN_MESSAGE, UNUSABLE_SCAN_TIMES_MESSAGE],
+        [
+            EMPTY_ACQUISITION_MESSAGE,
+            UNFINISHED_ACQUISITION_MESSAGE,
+            SINGLE_SCAN_MESSAGE,
+            UNUSABLE_SCAN_TIMES_MESSAGE,
+        ],
     )
     def test_message_reaches_the_user_as_written(self, message):
         # describe_exception prefixes the class name only for cryptic builtin

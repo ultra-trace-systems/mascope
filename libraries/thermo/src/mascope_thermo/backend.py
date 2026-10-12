@@ -32,6 +32,7 @@ from typing import Literal, Protocol, runtime_checkable
 
 import numpy as np
 
+from mascope_thermo.run_header import records_no_run_header
 from mascope_thermo.scan_filter import parse_scan_filter
 
 
@@ -783,6 +784,31 @@ def _ppm_bin(
     return binned_mz, isum, binned_extras, counts.astype(np.float64), members
 
 
+def _raise_if_unfinished(datafile_path: str, cause: BaseException) -> None:
+    """Name a failure to open as an unfinished acquisition, when it is one.
+
+    Neither reader reports a file written without a run header as what it is.
+    OpenTFRaw fails on an address it read from the wrong place, the Thermo
+    library on a file with no MS controller to select, and both look like any
+    other failure to open. So the file itself is asked
+    (:func:`mascope_thermo.run_header.records_no_run_header`), and only once
+    a reader has already failed on it: the question costs a file that opens
+    nothing, and cannot be why one does not.
+
+    :param datafile_path: Path to the raw file the reader could not open.
+    :param cause: The reader's own error, kept as the cause.
+    :raises UnfinishedAcquisitionError: When the file records no run header.
+    """
+    if not records_no_run_header(datafile_path):
+        return
+    from mascope_thermo.thermo import UnfinishedAcquisitionError
+
+    raise UnfinishedAcquisitionError(
+        "No scans found: the file records no run header, so the acquisition "
+        "was never finished."
+    ) from cause
+
+
 class ThermoBackend:
     """:class:`ReaderBackend` backed by Thermo RawFileReader via pythonnet.
 
@@ -800,7 +826,15 @@ class ThermoBackend:
         from mascope_thermo.thermo import RawFileManager
 
         self._mgr = RawFileManager(self.datafile_path)
-        self._raw = self._mgr.__enter__()
+        try:
+            self._raw = self._mgr.__enter__()
+        except Exception as e:
+            # The library opens such a file and fails selecting its MS
+            # controller, so the handle it took has to be given back here.
+            self._mgr.__exit__(None, None, None)
+            self._mgr = None
+            _raise_if_unfinished(self.datafile_path, e)
+            raise
         return self
 
     def __exit__(self, *exc) -> None:
@@ -1290,7 +1324,11 @@ class OpenTFRawBackend:
     def __enter__(self) -> OpenTFRawBackend:
         import opentfraw
 
-        self._raw = opentfraw.RawFile(self.datafile_path)
+        try:
+            self._raw = opentfraw.RawFile(self.datafile_path)
+        except OSError as e:
+            _raise_if_unfinished(self.datafile_path, e)
+            raise
         return self
 
     def __exit__(self, *exc) -> None:

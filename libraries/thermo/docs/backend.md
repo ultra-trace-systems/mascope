@@ -16,6 +16,22 @@ Backends are resolved through the `open_backend(datafile_path)` function.
 It selects the implementation based on the `MASCOPE_THERMO_BACKEND` environment variable.
 Public functions in `mascope_thermo` are backend-agnostic, interacting only with the resolved instance via a standardized protocol.
 
+### A file written without a run header
+
+An acquisition that ends before it records anything leaves a raw file that holds its front (file header, sequence row, raw file info) and the instrument method, and no run header.
+The run header is the index to a controller's scans, so nothing in such a file can be read, including whatever scans an acquisition cut off later had already written.
+
+Neither reader reports the condition.
+OpenTFRaw finds every run header address zero and reads a run header at offset zero instead, which puts the stream addresses it then follows among the bytes of the instrument method.
+An address larger than the filesystem lets a file be has the seek refused, `I/O error: Invalid argument (os error 22)`; a smaller one is sought to and the read finds nothing there, `unexpected end of file at offset 0x2700000026 (needed 4 bytes)`.
+Which of the two a file earns turns on where its method happens to lie, and the second carries the address in its text, so it reads differently for every method.
+The Thermo library opens the file and fails selecting an MS controller it does not have.
+
+Both backends therefore ask the file itself once their reader has failed to open it (`mascope_thermo.run_header.records_no_run_header`), and raise `UnfinishedAcquisitionError` when every run header address in its raw file info is zero.
+It is a `NoScansFoundError`, so callers built on the scanless-file handling need no arm of their own, and the file converter reports it as a property of the data rather than a fault.
+The question is only asked of a file that already failed to open, and answers no for anything it cannot follow: a file cut short, a file that is not a raw file, a format version other than 64 and 66.
+Those keep failing with the reader's own error.
+
 ## API Contract: `ReaderBackend`
 
 All implementations must satisfy the `ReaderBackend` protocol, which defines a capability interface rather than emulating specific .NET objects.
