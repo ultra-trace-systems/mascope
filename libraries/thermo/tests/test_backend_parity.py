@@ -560,6 +560,29 @@ def test_stats_per_scan_keys_match_thermo(monkeypatch, path):
         assert list(ot[scan_number]) == list(row), f"scan {scan_number}"
 
 
+def _scan_rows(path):
+    with open_backend(path) as backend:
+        return backend.scan_rows()
+
+
+@pytest.mark.skipif(not RAW_FILES, reason="no .raw files in test_files/")
+@pytest.mark.parametrize("path", RAW_FILES, ids=lambda p: p.name)
+def test_scan_rows_keys_match_thermo(monkeypatch, path):
+    """The scan table must describe the same scans under both backends -
+    every scan of the file, the first included - and give each the same
+    keys in the same order, so a ``fields`` filter keeps the same entries
+    whichever backend read the file.
+    """
+    path = str(path)
+
+    th = _run_under(monkeypatch, "thermo", _scan_rows, path)
+    ot = _run_under(monkeypatch, "opentfraw", _scan_rows, path)
+
+    assert list(ot) == list(th) == list(range(1, _num_of_scans(path) + 1))
+    for scan_number, row in th.items():
+        assert list(ot[scan_number]) == list(row), f"scan {scan_number}"
+
+
 def _hcd_tuple(value):
     return tuple(
         round(float(part.replace(",", ".")), 2)
