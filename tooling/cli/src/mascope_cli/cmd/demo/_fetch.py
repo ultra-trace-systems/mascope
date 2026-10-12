@@ -6,12 +6,15 @@ Pure download/extract/verify logic - no Typer concerns. The CLI command in
 """
 
 import http.client
+import math
 import shutil
 import tarfile
 import time
 import urllib.error
 import urllib.request
 import zipfile
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 from pathlib import Path
 
 from mascope_cli.cmd.demo import bundles
@@ -31,12 +34,26 @@ _MAX_ATTEMPTS = 5
 # before it: 5, 10, 20, 40.
 _RETRY_PAUSE_S = 5
 
+# The longest pause a server's ``Retry-After`` can ask for, in seconds. A server
+# that asks for more is asked again after this long all the same.
+_MAX_RETRY_AFTER_S = 60
+
 # Statuses that say "not now" rather than "never", and are worth asking again.
 _TRANSIENT_STATUSES = frozenset({408, 425, 429, 500, 502, 503, 504})
 
 
 class _AttemptFailed(Exception):
-    """One attempt at a download that did not deliver the file, and may be retried."""
+    """
+    One attempt at a download that did not deliver the file, and may be retried.
+
+    :param problem: What went wrong, worded for a log line.
+    :param retry_after: Seconds the server asked to be left alone for, if it
+                        refused the request and said.
+    """
+
+    def __init__(self, problem: str, retry_after: int | None = None):
+        super().__init__(problem)
+        self.retry_after = retry_after
 
 
 def _extract_archive(archive: Path, dest: Path) -> None:
@@ -85,6 +102,30 @@ def _announced_length(response) -> int | None:
         return None
 
 
+def _retry_after(headers) -> int | None:
+    """
+    Read how long a server asked to be left alone, from its ``Retry-After``.
+
+    The header holds either a number of seconds or an HTTP date. It is read
+    only where a request was refused: a rate limiter may put it on every
+    response it sends, and on one that carries the file it asks for nothing.
+
+    :param headers: The headers of the response that refused the request.
+    :return: Whole seconds from now, zero for a date already past, or ``None``
+             if the header is absent or holds neither form.
+    """
+    value = headers.get("Retry-After", "").strip()
+    try:
+        if value.isascii() and value.isdigit():
+            return int(value)
+        when = parsedate_to_datetime(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=timezone.utc)
+    return max(0, math.ceil((when - datetime.now(timezone.utc)).total_seconds()))
+
+
 def _arrived(received: int, total: int | None) -> str:
     """Word how much of a file has arrived, for a log line or an error."""
     if total is None:
@@ -108,7 +149,9 @@ def _attempt(url: str, dest: Path) -> None:
     :param url: Source URL.
     :param dest: Destination file path; its parent must exist.
     :raises _AttemptFailed: If the transfer failed, stalled or ended short in
-                            a way another attempt may not.
+                            a way another attempt may not. It carries the
+                            ``Retry-After`` of a server that refused the
+                            request with one.
     :raises OSError: On a failure that asking again will not change: a status
                      such as 404 (``urllib.error.HTTPError``), or an error
                      writing ``dest``.
@@ -135,7 +178,10 @@ def _attempt(url: str, dest: Path) -> None:
             raise _AttemptFailed(
                 f"the server would not resume at byte {offset:,}"
             ) from e
-        raise _AttemptFailed(f"HTTP {e.code} {e.reason}") from e
+        problem = f"HTTP {e.code} {e.reason}"
+        if "Retry-After" in e.headers:
+            problem += f" (Retry-After: {e.headers['Retry-After']})"
+        raise _AttemptFailed(problem, retry_after=_retry_after(e.headers)) from e
     except (OSError, http.client.HTTPException) as e:
         raise _AttemptFailed(str(e) or type(e).__name__) from e
 
@@ -193,6 +239,10 @@ def _download(url: str, dest: Path) -> None:
     later attempt resumes from the bytes the earlier ones wrote where the
     server allows it (see :func:`_attempt`).
 
+    The pauses double from :data:`_RETRY_PAUSE_S`. A server that refuses a
+    request and says how long to stay away (``Retry-After``) is given that
+    long where it is longer, up to :data:`_MAX_RETRY_AFTER_S`.
+
     All this establishes is that the announced length arrived. Whether the
     file is the right one, a resumed file included, is for the caller's
     checksum to say.
@@ -217,6 +267,8 @@ def _download(url: str, dest: Path) -> None:
                     f"Download of {url} failed after {_MAX_ATTEMPTS} attempts: {e}"
                 ) from e
             pause = _RETRY_PAUSE_S * 2 ** (attempt - 1)
+            if e.retry_after is not None:
+                pause = max(pause, min(e.retry_after, _MAX_RETRY_AFTER_S))
             runtime.logger.warning(
                 f"Download attempt {attempt} of {_MAX_ATTEMPTS} failed: {e}. "
                 f"Trying again in {pause} s"

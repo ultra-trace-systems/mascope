@@ -16,6 +16,8 @@ import urllib.error
 import urllib.request
 import zipfile
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
+from email.utils import format_datetime
 
 import pytest
 from loguru import logger
@@ -90,6 +92,7 @@ class _Host:
     :param ranges: Whether a ``Range`` request is honored with a 206. A host
                    that does not honor it sends the whole file with a 200.
     :param announce: Whether responses carry a ``Content-Length``.
+    :param headers: Further headers the host puts on every response it serves.
     """
 
     def __init__(
@@ -99,11 +102,13 @@ class _Host:
         *,
         ranges: bool = True,
         announce: bool = True,
+        headers: dict[str, str] | None = None,
     ):
         self.payload = payload
         self.script = list(script)
         self.ranges = ranges
         self.announce = announce
+        self.headers = headers or {}
         self.ranges_asked: list[str | None] = []
         self.timeouts: list[float | None] = []
 
@@ -117,7 +122,7 @@ class _Host:
             raise answer
 
         payload = self.payload if answer.payload is None else answer.payload
-        status, start, headers = 200, 0, {}
+        status, start, headers = 200, 0, dict(self.headers)
         if asked and self.ranges:
             status = 206
             start = int(asked.removeprefix("bytes=").removesuffix("-"))
@@ -131,11 +136,25 @@ class _Host:
         return _Response(status, headers, delivered, answer.then)
 
 
-def _http_error(code: int, body: io.BytesIO | None = None) -> urllib.error.HTTPError:
-    """Build the error ``urlopen`` raises for a status, around ``body`` if given."""
-    return urllib.error.HTTPError(
-        URL, code, http.client.responses[code], http.client.HTTPMessage(), body
-    )
+def _http_error(
+    code: int, body: io.BytesIO | None = None, retry_after: str | None = None
+) -> urllib.error.HTTPError:
+    """
+    Build the error ``urlopen`` raises for a status.
+
+    :param body: The error's response body, where a test watches it.
+    :param retry_after: Sent as the error's ``Retry-After`` header.
+    """
+    headers = http.client.HTTPMessage()
+    if retry_after is not None:
+        headers["Retry-After"] = retry_after
+    return urllib.error.HTTPError(URL, code, http.client.responses[code], headers, body)
+
+
+def _http_date(seconds_from_now: float) -> str:
+    """Word a moment relative to now as an HTTP date, the other ``Retry-After`` form."""
+    moment = datetime.now(timezone.utc) + timedelta(seconds=seconds_from_now)
+    return format_datetime(moment, usegmt=True)
 
 
 @pytest.fixture(autouse=True)
@@ -276,6 +295,105 @@ def test_retried_error_response_is_closed_before_the_pause(
     _fetch._download(URL, tmp_path / "bundle.zip")
 
     assert closed_at_pause[-1] is True
+
+
+@pytest.mark.parametrize("code", [429, 503])
+def test_retry_after_lengthens_the_pause_and_never_shortens_it(
+    code, serve, pauses, tmp_path
+):
+    """The first pause would be 5 s and the second 10 s; the server asks for 7 s."""
+    serve(
+        [
+            _http_error(code, retry_after="7"),
+            _http_error(code, retry_after="7"),
+            _Answer(),
+        ]
+    )
+    dest = tmp_path / "bundle.zip"
+
+    _fetch._download(URL, dest)
+
+    assert dest.read_bytes() == PAYLOAD
+    assert pauses == [7, 10]
+
+
+def test_retry_after_is_capped(serve, pauses, tmp_path):
+    """A server that asks for an hour is asked again after the cap all the same."""
+    serve([_http_error(429, retry_after="3600"), _Answer()])
+
+    _fetch._download(URL, tmp_path / "bundle.zip")
+
+    assert pauses == [_fetch._MAX_RETRY_AFTER_S]
+
+
+def test_retry_after_as_a_date_is_the_time_left_until_it(serve, pauses, tmp_path):
+    """A date 45 s ahead is 45 s to wait, less what its whole seconds drop."""
+    serve([_http_error(503, retry_after=_http_date(45)), _Answer()])
+
+    _fetch._download(URL, tmp_path / "bundle.zip")
+
+    assert len(pauses) == 1
+    assert 43 <= pauses[0] <= 45
+
+
+@pytest.mark.parametrize(
+    ("retry_after", "pause"),
+    [
+        (_http_date(86400), _fetch._MAX_RETRY_AFTER_S),
+        (_http_date(86400).replace("GMT", "-0000"), _fetch._MAX_RETRY_AFTER_S),
+        (_http_date(-3600), _fetch._RETRY_PAUSE_S),
+        ("soon", _fetch._RETRY_PAUSE_S),
+        ("-30", _fetch._RETRY_PAUSE_S),
+        ("1.5", _fetch._RETRY_PAUSE_S),
+        ("9" * 5000, _fetch._RETRY_PAUSE_S),
+        ("", _fetch._RETRY_PAUSE_S),
+    ],
+    ids=[
+        "date-far-ahead",
+        "date-without-a-zone",
+        "date-past",
+        "words",
+        "negative",
+        "fraction",
+        "digits-past-reading",
+        "empty",
+    ],
+)
+def test_retry_after_is_a_date_or_whole_seconds_or_nothing(
+    retry_after, pause, serve, pauses, tmp_path
+):
+    """A date far ahead meets the cap; a past one, or neither form, changes nothing."""
+    serve([_http_error(429, retry_after=retry_after), _Answer()])
+
+    _fetch._download(URL, tmp_path / "bundle.zip")
+
+    assert pauses == [pause]
+
+
+def test_retry_after_on_a_transfer_cut_short_is_not_a_request_to_wait(
+    serve, pauses, tmp_path
+):
+    """A rate limiter puts the header on every response; only a refusal means it."""
+    serve([_Answer(deliver=3000), _Answer()], headers={"Retry-After": "60"})
+
+    _fetch._download(URL, tmp_path / "bundle.zip")
+
+    assert pauses == [_fetch._RETRY_PAUSE_S]
+
+
+def test_refusals_to_the_end_report_what_the_server_asked_for(serve, pauses, tmp_path):
+    attempts = _fetch._MAX_ATTEMPTS
+    host = serve([_http_error(429, retry_after="60") for _ in range(attempts)])
+
+    with pytest.raises(RuntimeError) as raised:
+        _fetch._download(URL, tmp_path / "bundle.zip")
+
+    assert str(raised.value).endswith(
+        f"failed after {attempts} attempts: "
+        "HTTP 429 Too Many Requests (Retry-After: 60)"
+    )
+    assert len(host.ranges_asked) == attempts
+    assert pauses == [60] * (attempts - 1)
 
 
 def test_status_that_will_not_change_is_not_retried(serve, pauses, tmp_path):

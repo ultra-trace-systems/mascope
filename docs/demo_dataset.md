@@ -83,13 +83,19 @@ DOI are recorded in the bundle registry
 `mascope demo fetch`.
 
 The download is made to survive a bad hour at the host. A transfer that stalls
-for 60 seconds, ends short of the length the server announced, or meets a
-server error is attempted again, up to five attempts with a growing pause
-between them, and a retry asks only for the bytes still missing (an HTTP
-`Range` request) where the host allows it. The archive MD5 has the last word
-either way: a file of the full length that fails it is downloaded once more
-from the start, and a second mismatch is an error - at that point suspect the
-registry entry, not the transfer.
+for 60 seconds, ends short of the length the server announced, or is refused
+for now (a server error, or a 429 from the host's rate limit) is attempted
+again, up to five attempts with a growing pause between them: 5, 10, 20 and 40
+seconds, or as long as the server's `Retry-After` asks where that is longer, up
+to 60 seconds. A retry asks only for the bytes still missing (an HTTP `Range`
+request) where the host allows it. The archive MD5 has the last word either
+way: a file of the full length that fails it is downloaded once more from the
+start, and a second mismatch is an error - at that point suspect the registry
+entry, not the transfer.
+
+None of this outlasts a host that refuses for longer than a few minutes. The
+command then fails saying what the server answered, and running it again later
+is the remedy.
 
 ## The `mascope demo` command
 
