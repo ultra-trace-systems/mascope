@@ -216,8 +216,8 @@ Task-level handoff for agents: [handoff_fair_phase0.md](handoff_fair_phase0.md),
 which also records Phase 0 as built and where the build departed from the items
 below.
 
-**Status (2026-10-01): built.** Item 4 shipped first, as the published OpenAPI
-document; items 1-3 and 5 together after it.
+**Status (2026-10-02): built and merged** (PR #2257). Item 4 shipped first,
+as the published OpenAPI document; items 1-3 and 5 together after it.
 
 1. **A provenance block, defined once.** A single serializer returning
    `mascope_version`, `engine_version`, `score_version`, generation timestamp,
@@ -238,6 +238,11 @@ document; items 1-3 and 5 together after it.
    that survives into a paper.
 
 ### Phase 1 - describable, licensable datasets (weeks)
+
+Design and task-level handoff for agents:
+[handoff_fair_phase1.md](handoff_fair_phase1.md). Where it departs from the
+items as written below - notably item 9's reference link - its §3 records
+the reasoning.
 
 6. **Dataset descriptive metadata.** `license` (SPDX id), `authors` /
    `contributors` (with optional ORCID), `keywords`, `related_identifiers`
@@ -315,6 +320,14 @@ attached to them, not scheduled against them.
 The practical consequence: **Phase 0 can start now and depends on nothing.**
 Phase 1 items 6-8 are independent. Phase 1 item 9 and all of Phase 2 should
 follow the ionization Phase 1 landing on `develop`.
+
+> **Correction (2026-10-02):** item 9 does not actually wait on the
+> ionization work - its prerequisites (the reference tables and the
+> annotation path) shipped with the public-database integration, and nothing
+> in it touches instruments or ionization. Only Phase 2 waits.
+> [handoff_fair_phase1.md](handoff_fair_phase1.md) §3 records this; the
+> sentence above is kept as written for the ionization/Phase 2 half, which
+> still holds.
 
 ---
 
