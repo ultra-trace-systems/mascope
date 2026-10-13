@@ -116,7 +116,8 @@ export const useChartData = defineStore('chart.sample.spectrum', () => {
     const traces = []
     // add the spectrum: one trace, or one per run of a stitched spectrum, so
     // that no line joins two scan ranges across the boundary where the signal
-    // steps from what one measured to what the next did
+    // steps from what one measured to what the next did. Each run is drawn out
+    // to its bounds along the baseline, so only m/z no range owns is left empty
     const segments = spectrumData.value?.segments ?? null
     for (const stretch of signalStretches(spectrumData.value)) {
       traces.push({

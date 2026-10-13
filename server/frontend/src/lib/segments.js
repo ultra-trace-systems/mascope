@@ -48,19 +48,79 @@ export function segmentDetail(segments, index) {
   return parts.join(' · ')
 }
 
-// The signal cut where the map cuts it: one stretch per run that holds any
-// sample, or the whole signal as one where nothing is stitched.
+// How many of the steps next to a run's end are read for how far apart its
+// samples lie there.
+const STEPS_READ = 4
+
+// The spacing of a run's samples at one of its ends: the narrowest of the few
+// steps next to it. A profile is stored in clusters around its peaks, so the
+// step right at an end can be the empty stretch between two clusters, and the
+// steps inside a cluster are the narrow ones. Null for a run of fewer than two
+// samples, which has no step.
+function stepAt(mz, upper) {
+  let narrowest = null
+  for (let back = 0; back < Math.min(STEPS_READ, mz.length - 1); back++) {
+    const at = upper ? mz.length - 1 - back : back + 1
+    const step = mz[at] - mz[at - 1]
+    if (narrowest === null || step < narrowest) narrowest = step
+  }
+  return narrowest
+}
+
+// The m/z at which a run's line is carried on at zero from its outermost
+// sample to one of the run's bounds, in the order met going outward.
+//
+// A stored profile has samples only around its peaks, with a zero just outside
+// each cluster, so that the line between two clusters is the baseline. A run's
+// outermost cluster has that baseline cut off at the boundary, and the line
+// would stop short of it: an empty stretch that reads as m/z nobody measured.
+// A sample at zero is already on the baseline, which goes on to the bound. One
+// above it is the end of a range's own profile, which has no zero outside it:
+// the line comes down one sample step out, as it does after every cluster
+// inside a run, and goes on from there. Nothing is added where the samples
+// come up to the bound, which is a peak the boundary cuts: its two halves are
+// what two ranges measured, and a zero between them would be a dip that is
+// not there. A lone sample above zero has no step to say which it is, and is
+// left as it is.
+function baselineTo(mz, intensity, bound, upper) {
+  if (!mz.length) return [bound]
+  const edge = upper ? mz.length - 1 : 0
+  const reach = Math.abs(bound - mz[edge])
+  if (intensity[edge] === 0) return reach > 0 ? [bound] : []
+  const step = stepAt(mz, upper)
+  if (step === null || reach <= step) return []
+  return [upper ? mz[edge] + step : mz[edge] - step, bound]
+}
+
+// The signal cut where the map cuts it: one stretch per run, or the whole
+// signal as one where nothing is stitched.
+//
+// Each stretch is drawn out along the baseline to the bounds of its run (see
+// `baselineTo`), so that two runs that meet are drawn up to their boundary
+// from either side, and the only m/z left empty is what no run owns. A run
+// with no sample at all is its baseline from bound to bound. That holds for
+// the bounds that lie among the samples shown: the ends of the signal stay
+// where its samples end, as those of a spectrum of one range do, and a run
+// outside the part shown is left out.
 export function signalStretches(spectrum) {
   if (!spectrum) return []
   const { mz, intensity, runs } = spectrum
   if (!runs?.length) return [{ segment: null, mz, intensity }]
+  const among = (bound) => mz.length > 0 && mz[0] < bound && bound < mz[mz.length - 1]
+  const zeros = (points) => points.map(() => 0)
   return runs
-    .filter((run) => run.to > run.from)
-    .map((run) => ({
-      segment: run.segment,
-      mz: mz.slice(run.from, run.to),
-      intensity: intensity.slice(run.from, run.to)
-    }))
+    .map((run) => {
+      const x = mz.slice(run.from, run.to)
+      const y = intensity.slice(run.from, run.to)
+      const below = among(run.mz_lower) ? baselineTo(x, y, run.mz_lower, false).reverse() : []
+      const above = among(run.mz_upper) ? baselineTo(x, y, run.mz_upper, true) : []
+      return {
+        segment: run.segment,
+        mz: [...below, ...x, ...above],
+        intensity: [...zeros(below), ...y, ...zeros(above)]
+      }
+    })
+    .filter((stretch) => stretch.mz.length > 0)
 }
 
 // Where one run ends and the next begins, in m/z. An edge two runs share is
