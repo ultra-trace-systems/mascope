@@ -27,6 +27,11 @@ from mascope_backend.api.lib.exceptions.api_exceptions import ApiException
 from mascope_backend.api.models.samples.sample_pydantic_model import (
     GetSampleSpectrumQueryParams,
 )
+from mascope_backend.api.new.auth.access_token.service import (
+    get_access_token,
+    may_hold_converter_token,
+)
+from mascope_backend.api.new.auth.config import auth_settings
 from mascope_backend.api.new.auth.exceptions import (
     ForbiddenAccessException,
     InvalidTokenException,
@@ -40,7 +45,14 @@ STALE = (
     "sample file now reads back no stream under that key. Re-run peak "
     "detection for this sample file to rebuild the store."
 )
-USER = SimpleNamespace(id=7, username="editor", to_dict=lambda: {"id": 7})
+ROLES = auth_settings.ROLE_ACCESS_LEVELS
+USER = SimpleNamespace(
+    id=7, username="editor", role_id=ROLES["editor"], to_dict=lambda: {"id": 7}
+)
+#: An account whose own role is guest, whatever it is in a workspace.
+GUEST_ACCOUNT = SimpleNamespace(
+    id=8, username="guest account", role_id=ROLES["guest"], is_superuser=False
+)
 
 
 def _sample(item_id: str, file_id: str | None = None):
@@ -275,13 +287,14 @@ async def test_a_guest_is_told_what_the_store_says_and_nothing_is_queued():
 @pytest.mark.asyncio
 async def test_an_editor_of_the_workspace_whose_account_is_a_guest_is_answered_as_one():
     """The workspace role is checked here and the account's own by the file
-    converter's token, and the two are independent. The token is refused to
-    such an account: nothing is queued, the answer promises nothing, and
-    nothing is reported as a fault for every stale sample the person opens."""
-    refusal = InvalidTokenException(
-        "You don't have access to this service. Uploading needs the editor "
-        "role or above."
-    )
+    converter's token, and the two are independent. Such an account is given
+    no token: nothing is queued, the answer promises nothing, and nothing is
+    reported as a fault for every stale sample the person opens.
+
+    Run through the request and the token function as they are, with only
+    the converter stood in for. The token's refusal reaches a caller wrapped
+    as the API's own exception, so a stand-in raising it bare would pass
+    whatever the request does with the real one."""
     with _Files([_sample("a")], stale=["file-of-a"]):
         with (
             patch.object(
@@ -289,24 +302,49 @@ async def test_an_editor_of_the_workspace_whose_account_is_a_guest_is_answered_a
                 "request_stale_peak_store_rebuilds",
                 match_controller.request_stale_peak_store_rebuilds,
             ),
-            patch.object(match_controller, "ensure_converter_available", AsyncMock()),
             patch.object(
-                match_controller, "get_access_token", AsyncMock(side_effect=refusal)
-            ),
+                match_controller, "ensure_converter_available", AsyncMock()
+            ) as converter,
             patch.object(
                 match_controller, "request_peak_detection", AsyncMock()
             ) as asked,
             captured_logs("INFO") as records,
         ):
             with pytest.raises(ApiException) as refused:
-                await spectrum_service.get_sample_spectrum_for(USER, sample_item_id="a")
+                await spectrum_service.get_sample_spectrum_for(
+                    GUEST_ACCOUNT, sample_item_id="a"
+                )
 
     asked.assert_not_awaited()
+    converter.assert_not_awaited()
     assert "queued" not in refused.value.user_message
     assert "Re-run peak detection" in refused.value.user_message
     said = [record for record in records if "may not ask the file" in record["message"]]
     assert [record["level"].name for record in said] == ["INFO"]
-    assert not [record for record in records if record["level"].name == "ERROR"]
+    assert not [record for record in records if record["level"].no >= 30]
+
+
+@pytest.mark.parametrize(
+    "role, may",
+    [(None, False), ("guest", False), ("editor", True), ("admin", True)],
+)
+def test_the_converters_token_is_an_editor_accounts_to_hold(role, may):
+    account = SimpleNamespace(role_id=ROLES.get(role))
+
+    assert may_hold_converter_token(account) is may
+
+
+@pytest.mark.asyncio
+async def test_the_tokens_refusal_reaches_a_caller_wrapped():
+    """Why the request asks the rule and does not catch the refusal: the
+    token function is a controller, and what it raises for an account below
+    editor arrives as the API's own exception with the refusal as its cause,
+    which is how any fault inside it arrives too."""
+    with pytest.raises(ApiException) as refused:
+        await get_access_token(user=GUEST_ACCOUNT, service_name="file-converter")
+
+    assert not isinstance(refused.value, InvalidTokenException)
+    assert isinstance(refused.value.__cause__, InvalidTokenException)
 
 
 @pytest.mark.asyncio

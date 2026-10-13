@@ -75,6 +75,25 @@ def _age_seconds(token: AccessToken) -> float:
     return (dt.now(timezone.utc) - created_at).total_seconds()
 
 
+def may_hold_converter_token(user: User) -> bool:
+    """Whether the file converter's token is this account's to be given.
+
+    An account whose own role is editor or above, whatever role it holds in
+    a workspace: the two layers are independent (``docs/authorization.md``).
+    The rule :func:`get_access_token` refuses the token by, for a caller
+    that has to know before it asks. The refusal itself is no way to find
+    out: :func:`get_access_token` is a controller, so what it raises reaches
+    its caller as the API's own exception, like any fault inside it.
+
+    :param user: The account.
+    :type user: User
+    :return: True where the account's role is editor or above.
+    :rtype: bool
+    """
+    editor = auth_settings.ROLE_ACCESS_LEVELS["editor"]
+    return user.role_id is not None and user.role_id >= editor
+
+
 @api_controller()
 async def get_access_token(user: User, service_name: str) -> str:
     """The user's access token for the service.
@@ -105,8 +124,7 @@ async def get_access_token(user: User, service_name: str) -> str:
         token is invalid or missing
     """
     if service_name == _FILE_CONVERTER_SERVICE:
-        editor = auth_settings.ROLE_ACCESS_LEVELS["editor"]
-        if user.role_id is None or user.role_id < editor:
+        if not may_hold_converter_token(user):
             raise InvalidTokenException(
                 "You don't have access to this service. Uploading needs the "
                 "editor role or above."

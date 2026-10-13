@@ -48,8 +48,10 @@ from mascope_backend.api.lib.exceptions.api_exceptions import (
     raise_api_warning,
 )
 from mascope_backend.api.lib.stale_peak_store import is_stale_peak_store
-from mascope_backend.api.new.auth.access_token.service import get_access_token
-from mascope_backend.api.new.auth.exceptions import InvalidTokenException
+from mascope_backend.api.new.auth.access_token.service import (
+    get_access_token,
+    may_hold_converter_token,
+)
 from mascope_backend.api.new.match.params import default_match_params
 from mascope_backend.db import (
     MatchCollection,
@@ -726,8 +728,8 @@ async def request_stale_peak_store_rebuilds(
     :type stale_peak_store_files: dict[str, str]
     :param user: The user the rebuild is done on behalf of. Absent when the
         caller is a service rather than a person, and then nothing is queued;
-        nor is anything for an account the file converter's token is refused
-        to, one whose own role is below editor.
+        nor is anything for an account the file converter's token is not
+        given to, one whose own role is below editor.
     :type user: User | None
     :param process_id: Process identifier the rebuilds report progress under.
     :type process_id: str | None
@@ -746,22 +748,24 @@ async def request_stale_peak_store_rebuilds(
         )
         return 0
 
-    try:
-        await ensure_converter_available()
-        access_token = await get_access_token(user=user, service_name="file-converter")
-    except InvalidTokenException:
+    if not may_hold_converter_token(user):
         # The file converter's token takes an account whose own role is
         # editor or above, whatever role it holds in the workspace of what it
         # opened: the two are independent (docs/authorization.md). Nothing
         # is queued for such an account, as for a run with no user, and that
         # is no fault to report - INFO, since it is met on every stale store
-        # such a person opens or refreshes.
+        # such a person opens or refreshes. Asked here and not learned from
+        # the token's refusal, which would arrive below as any fault does.
         runtime.logger.info(
             f"{len(stale_peak_store_files)} sample file(s) need their peak data "
             "rebuilt, but the account that met them may not ask the file "
             "converter for it."
         )
         return 0
+
+    try:
+        await ensure_converter_available()
+        access_token = await get_access_token(user=user, service_name="file-converter")
     except Exception:
         runtime.logger.exception(
             f"Could not request peak detection for {len(stale_peak_store_files)} "

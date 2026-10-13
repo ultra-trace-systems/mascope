@@ -25,14 +25,19 @@ from mascope_backend.api.controllers.match.match_controller import (
 )
 from mascope_backend.api.lib.exceptions.api_exceptions import ApiException
 from mascope_backend.api.lib.stale_peak_store import is_stale_peak_store
-from mascope_backend.api.new.auth.exceptions import InvalidTokenException
+from mascope_backend.api.new.auth.config import auth_settings
 from mascope_signal.compute import StalePeakStoreError
 
 
 _MOD = "mascope_backend.api.controllers.match.match_controller"
 _FEATURES = "mascope_backend.api.lib.api_features"
 
-_USER = SimpleNamespace(id=7, username="tester", role_id="editor")
+_ROLES = auth_settings.ROLE_ACCESS_LEVELS
+_USER = SimpleNamespace(id=7, username="tester", role_id=_ROLES["editor"])
+#: An account whose own role is guest, whatever it is in a workspace.
+_GUEST_ACCOUNT = SimpleNamespace(
+    id=8, username="guest account", role_id=_ROLES["guest"], is_superuser=False
+)
 
 
 def _wrapped(user_message):
@@ -104,9 +109,13 @@ async def _compute(
     user=_USER,
     converter_available=True,
     rebuild_side_effect=None,
-    token_refused=False,
+    real_token=False,
 ):
     """Run match_compute_batch over ``samples`` with a stubbed per-sample step.
+
+    ``real_token`` leaves the file converter's token to the function that
+    gives it, for an account it gives none: it reads the account's role
+    before anything else.
 
     ``incomplete_ids`` stands in for samples an interrupted earlier run left
     with incomplete aggregates: they are what puts a batch in the aggregation
@@ -143,16 +152,18 @@ async def _compute(
         patch(
             f"{_MOD}.ensure_converter_available", new_callable=AsyncMock
         ) as converter,
-        patch(f"{_MOD}.get_access_token", new_callable=AsyncMock) as token,
+        patch(
+            f"{_MOD}.get_access_token",
+            **(
+                {"new": match_controller.get_access_token}
+                if real_token
+                else {"new_callable": AsyncMock}
+            ),
+        ) as token,
         patch(f"{_MOD}.request_peak_detection", new_callable=AsyncMock) as rebuild,
     ):
-        token.return_value = "token-1"
-        if token_refused:
-            # What the file converter's token answers an account below editor
-            token.side_effect = InvalidTokenException(
-                "You don't have access to this service. Uploading needs the "
-                "editor role or above."
-            )
+        if not real_token:
+            token.return_value = "token-1"
         if rebuild_side_effect is not None:
             rebuild.side_effect = rebuild_side_effect
         if not converter_available:
@@ -393,14 +404,21 @@ class TestStalePeakStores:
     @pytest.mark.asyncio
     async def test_an_account_the_converter_refuses_is_no_fault(self):
         """An editor of the batch's workspace whose account is a guest: the
-        converter's token is the account's to be given, and it is refused.
-        Nothing is queued, and that is said once at INFO, where it was an
-        error with its traceback on every refresh such a person makes."""
+        converter's token is the account's to be given, and it is given
+        none. Nothing is queued, and that is said once at INFO, where it was
+        an error with its traceback on every refresh such a person makes.
+
+        The token function is the real one: its refusal reaches a caller
+        wrapped as the API's own exception, so a stand-in that raises the
+        refusal bare proves nothing about what is logged."""
         samples = [_make_sample("s1"), _make_sample("s2")]
 
         with captured_logs("INFO") as records:
             result, notification, rebuilds = await _compute(
-                samples, [_matched(), _wrapped_stale()], token_refused=True
+                samples,
+                [_matched(), _wrapped_stale()],
+                user=_GUEST_ACCOUNT,
+                real_token=True,
             )
 
         assert rebuilds == []
