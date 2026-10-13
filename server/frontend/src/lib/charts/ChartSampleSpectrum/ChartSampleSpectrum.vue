@@ -35,7 +35,9 @@ const spectrumHelp = peakAssignmentEnabled
         A file that measures the sample as several scan ranges is drawn range
         by range, each in its own shade, with a dotted line where two meet.
         Nothing is rescaled there, so the signal can step at a boundary: each
-        range reads what its own scans measured.
+        range reads what its own scans measured. The line is missing only
+        between two dotted lines that no range covers: nothing measured that
+        m/z.
         </p>
         <p>
         Click a peak to focus it: the view zooms in, the inspector shows its
@@ -61,7 +63,9 @@ const spectrumHelp = peakAssignmentEnabled
         A file that measures the sample as several scan ranges is drawn range
         by range, each in its own shade, with a dotted line where two meet.
         Nothing is rescaled there, so the signal can step at a boundary: each
-        range reads what its own scans measured.
+        range reads what its own scans measured. The line is missing only
+        between two dotted lines that no range covers: nothing measured that
+        m/z.
         </p>`,
       doc: app.ui.help.docUrl('how-it-works/peak-detection/')
     }

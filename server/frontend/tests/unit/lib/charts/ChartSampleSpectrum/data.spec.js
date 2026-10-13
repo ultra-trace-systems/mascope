@@ -6,8 +6,9 @@ import { SEGMENT_COLORS } from '@/lib/segments'
 
 // The spectrum chart's traces. A spectrum stitched from several scan ranges is
 // drawn run by run, so that no line joins two ranges across a boundary where
-// the signal steps, with a line at each boundary; a spectrum of one range is
-// the single green trace it has always been.
+// the signal steps, with a line at each boundary and each run drawn out to it
+// along the baseline; a spectrum of one range is the single green trace it has
+// always been.
 
 const get = vi.fn()
 vi.mock('@/api', () => ({ api: { http: { get: (...args) => get(...args) } } }))
@@ -21,15 +22,17 @@ const segments = [
   { index: 0, key: 'reagent', label: 'm/z 40-138', scans: 5, microscans: 1 },
   { index: 1, key: 'low', label: 'm/z 66-124', scans: 3, microscans: 10 }
 ]
+// A profile as it is stored: a cluster of samples around each peak with a zero
+// outside it, and nothing between two clusters
 const stitched = {
-  mz: [41, 60, 70, 90, 125],
-  intensity: [9, 9, 4, 4, 9],
+  mz: [41, 41.5, 42, 80, 80.5, 81, 125, 125.5, 126],
+  intensity: [5, 9, 0, 0, 4, 0, 0, 9, 3],
   intensity_unit: 'counts/s',
   segments,
   runs: [
-    { segment: 0, mz_lower: 40, mz_upper: 67, from: 0, to: 2 },
-    { segment: 1, mz_lower: 67, mz_upper: 122, from: 2, to: 4 },
-    { segment: 0, mz_lower: 122, mz_upper: 133, from: 4, to: 5 }
+    { segment: 0, mz_lower: 40, mz_upper: 67, from: 0, to: 3 },
+    { segment: 1, mz_lower: 67, mz_upper: 122, from: 3, to: 6 },
+    { segment: 0, mz_lower: 122, mz_upper: 133, from: 6, to: 9 }
   ]
 }
 const single = {
@@ -71,8 +74,25 @@ describe('the signal of a stitched spectrum', () => {
   it('is one trace per run, so that no line crosses a boundary', async () => {
     await open(stitched)
 
-    expect(signal().map((trace) => [...trace.x])).toEqual([[41, 60], [70, 90], [125]])
-    expect(signal().map((trace) => [...trace.y])).toEqual([[9, 9], [4, 4], [9]])
+    expect(signal().map((trace) => [...trace.x])).toEqual([
+      [41, 41.5, 42, 67],
+      [67, 80, 80.5, 81, 122],
+      [122, 125, 125.5, 126]
+    ])
+    expect(signal().map((trace) => [...trace.y])).toEqual([
+      [5, 9, 0, 0],
+      [0, 0, 4, 0, 0],
+      [0, 0, 9, 3]
+    ])
+  })
+
+  it('leaves no stretch empty between two runs that meet', async () => {
+    await open(stitched)
+
+    const [low, middle, high] = signal()
+    expect([low.x.at(-1), middle.x[0]]).toEqual([67, 67])
+    expect([middle.x.at(-1), high.x[0]]).toEqual([122, 122])
+    expect([low.y.at(-1), middle.y[0], middle.y.at(-1), high.y[0]]).toEqual([0, 0, 0, 0])
   })
 
   it('draws a segment in one colour wherever it owns a run', async () => {

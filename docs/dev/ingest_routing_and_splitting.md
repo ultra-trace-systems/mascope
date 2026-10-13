@@ -2676,8 +2676,13 @@ unchanged.
      (`samples.lib.samples_segments`). The sum spectrum view draws one
      trace per run, so that no line joins two ranges across the step at a
      boundary, each segment in its own shade, with a dotted line where two
-     runs meet; a peak's hover and a column of the peak table name its
-     segment. Still open: a per-stream store a match meets stale being
+     runs meet. A run is drawn out to its bounds along the baseline - a
+     stored profile has samples only around its peaks, and a run's line
+     would otherwise stop at its last cluster, short of the boundary - so
+     the line is missing only over m/z that no run owns; where a boundary
+     cuts a peak nothing is added, and the two halves stand as two ranges
+     measured them (`segments.js`, `signalStretches`). A peak's hover and a
+     column of the peak table name its segment. Still open: a per-stream store a match meets stale being
      rebuilt and its rows written with the composite on the next
      processing (4.4);
   7. **Step 7, the fits per segment:** calibration and the instrument

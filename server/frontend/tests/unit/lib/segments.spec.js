@@ -40,6 +40,8 @@ describe('a stitched spectrum is drawn run by run', () => {
     ])
   })
 
+  // (the third run above is a lone sample above zero, which has no step to
+  // say whether it comes up to a bound, and is left as it is)
   it('leaves out a run that holds no sample of the part shown', () => {
     const part = {
       ...spectrum,
@@ -60,6 +62,125 @@ describe('a stitched spectrum is drawn run by run', () => {
       expect(signalStretches(single)).toEqual([{ segment: null, mz: [1, 2], intensity: [3, 4] }])
     }
     expect(signalStretches(null)).toEqual([])
+  })
+})
+
+// A profile as it is stored: samples in clusters around the peaks, a zero just
+// outside each cluster, and nothing between two clusters. Four runs: the first
+// two meet at 73 with baseline on either side, the second and third meet at
+// 116 in the middle of a peak, and no run owns 131 to 132.
+const profile = {
+  mz: [
+    ...[41, 41.5, 42, 60, 60.5, 61],
+    ...[80, 80.5, 81, 115.5, 115.75],
+    ...[116, 116.25, 120, 120.25, 120.5],
+    ...[140, 140.5, 141, 300, 300.5]
+  ],
+  intensity: [...[5, 9, 0, 0, 7, 0], ...[0, 4, 0, 3, 6], ...[8, 2, 1, 6, 3], ...[2, 6, 0, 0, 1]],
+  runs: [
+    { segment: 0, mz_lower: 40, mz_upper: 73, from: 0, to: 6 },
+    { segment: 1, mz_lower: 73, mz_upper: 116, from: 6, to: 11 },
+    { segment: 0, mz_lower: 116, mz_upper: 131, from: 11, to: 16 },
+    { segment: 3, mz_lower: 132, mz_upper: 460, from: 16, to: 21 }
+  ]
+}
+
+describe('a run is drawn out to its bounds along the baseline', () => {
+  const [first, second, third, fourth] = signalStretches(profile)
+
+  it('carries the baseline on from either side to a boundary two runs share', () => {
+    expect(first.mz.slice(-2)).toEqual([61, 73])
+    expect(first.intensity.slice(-2)).toEqual([0, 0])
+    expect(second.mz.slice(0, 2)).toEqual([73, 80])
+    expect(second.intensity.slice(0, 2)).toEqual([0, 0])
+  })
+
+  it('adds nothing where the boundary cuts a peak, whose halves two ranges measured', () => {
+    expect(second.mz.slice(-2)).toEqual([115.5, 115.75])
+    expect(second.intensity.slice(-2)).toEqual([3, 6])
+    expect(third.mz.slice(0, 2)).toEqual([116, 116.25])
+    expect(third.intensity.slice(0, 2)).toEqual([8, 2])
+  })
+
+  it('comes down one sample step outside the end of a range that stops above zero', () => {
+    // the narrowest of the steps next to the end, not the empty stretch
+    // before the last cluster
+    expect(third.mz.slice(-3)).toEqual([120.5, 120.75, 131])
+    expect(third.intensity.slice(-3)).toEqual([3, 0, 0])
+    expect(fourth.mz.slice(0, 3)).toEqual([132, 139.5, 140])
+    expect(fourth.intensity.slice(0, 3)).toEqual([0, 0, 2])
+  })
+
+  it('reads the sample step inside a cluster, not across the empty stretch before a last one', () => {
+    const alone = {
+      mz: [50, 50.5, 51, 60, 80, 80.5, 81],
+      intensity: [0, 4, 0, 7, 0, 4, 0],
+      runs: [
+        { segment: 0, mz_lower: 40, mz_upper: 73, from: 0, to: 4 },
+        { segment: 1, mz_lower: 73, mz_upper: 90, from: 4, to: 7 }
+      ]
+    }
+
+    expect(signalStretches(alone)[0].mz).toEqual([50, 50.5, 51, 60, 60.5, 73])
+    expect(signalStretches(alone)[0].intensity).toEqual([0, 4, 0, 7, 0, 0])
+  })
+
+  it('leaves empty only the m/z that no run owns', () => {
+    expect(third.mz.at(-1)).toBe(131)
+    expect(fourth.mz[0]).toBe(132)
+  })
+
+  it('leaves the ends of the signal where its samples end', () => {
+    expect(first.mz[0]).toBe(41)
+    expect(fourth.mz.at(-1)).toBe(300.5)
+  })
+
+  it('adds no sample the spectrum did not hold, only zeros', () => {
+    const drawn = [first, second, third, fourth]
+    const added = drawn.flatMap(({ mz, intensity }) =>
+      mz.map((value, at) => [value, intensity[at]]).filter(([value]) => !profile.mz.includes(value))
+    )
+
+    expect(added).toEqual([
+      [73, 0],
+      [73, 0],
+      [120.75, 0],
+      [131, 0],
+      [132, 0],
+      [139.5, 0]
+    ])
+    expect(drawn.flatMap(({ mz }) => mz).filter((value) => profile.mz.includes(value))).toEqual(
+      profile.mz
+    )
+  })
+
+  it('draws a run with no sample among the samples shown as its baseline', () => {
+    const quiet = {
+      mz: [...profile.mz.slice(0, 11), ...profile.mz.slice(16)],
+      intensity: [...profile.intensity.slice(0, 11), ...profile.intensity.slice(16)],
+      runs: [
+        profile.runs[0],
+        profile.runs[1],
+        { ...profile.runs[2], from: 11, to: 11 },
+        { ...profile.runs[3], from: 11, to: 16 }
+      ]
+    }
+
+    expect(signalStretches(quiet)[2]).toEqual({ segment: 0, mz: [116, 131], intensity: [0, 0] })
+  })
+
+  it('goes straight on from a sample at zero, however close the bound', () => {
+    const close = {
+      mz: [50, 50.5, 51, 80, 80.5, 81],
+      intensity: [0, 4, 0, 0, 4, 0],
+      runs: [
+        { segment: 0, mz_lower: 40, mz_upper: 51.25, from: 0, to: 3 },
+        { segment: 1, mz_lower: 51.25, mz_upper: 90, from: 3, to: 6 }
+      ]
+    }
+
+    expect(signalStretches(close)[0].mz).toEqual([50, 50.5, 51, 51.25])
+    expect(signalStretches(close)[1].mz).toEqual([51.25, 80, 80.5, 81])
   })
 })
 
