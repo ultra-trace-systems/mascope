@@ -44,12 +44,19 @@ list view is a follow-up); reference-identity *search* UI for compounds
 
 1. **InChIKey is the link to reference chemistry; there is no FK to
    `ReferenceCompound`.** The roadmap item says "a nullable FK", written
-   before re-ingest semantics existed: `ReferenceSource` cascade-deletes its
-   compound rows on every versioned re-ingest (`reference_compound`,
-   `cascade="all, delete"`), so a row-level FK would be severed by routine
-   operation. `ReferenceCompound.inchikey` is already "the cross-source dedup
-   key" (its own docstring); resolve identity to the *active* reference rows
-   at query time via the indexed `inchikey` columns on both sides.
+   before the load semantics existed. Every ingest of a source inserts a
+   *new* load with fresh `reference_compound` rows and new ids; an activating
+   load flips the previous one inactive and keeps it on disk for
+   reproducibility, and `ingest(..., prune=True)` deletes the inactive loads
+   and their compounds outright (`mascope_reference.ingest`,
+   `_prune_inactive`; the `cascade="all, delete"` on `ReferenceSource` is
+   what carries that delete to the compounds). A row-level FK would therefore
+   point at one load's row: stale as soon as the source is re-ingested, gone
+   when an operator prunes. `ReferenceCompound.inchikey` is already "the
+   cross-source dedup key" (its own docstring) and is the identity that stays
+   stable across loads and sources; resolve identity to the *active*
+   reference rows at query time via the indexed `inchikey` columns on both
+   sides.
 2. **JSON columns, not child tables**, for `authors`, `keywords`,
    `related_identifiers`, `funding`. The lists are small, always read with
    the dataset, and never queried relationally in any planned phase; the
@@ -63,12 +70,21 @@ list view is a follow-up); reference-identity *search* UI for compounds
    them afresh. Carry `cas_number` over exactly as the current code does or
    does not - do not change its behaviour in passing.
 4. **InChI-vs-formula consistency is enforced, with a labelled-compound
-   escape.** When both `inchi` and the formula are present, the InChI's
-   formula layer (the segment after `InChI=1S/` up to the next `/`) must
-   equal the compound formula under `mascope_tools` Hill normalisation;
-   mismatch is a 422 naming both strings. Skip the check when the formula
-   carries caret isotopes (`^N` names a labelled reagent the InChI layer
-   cannot express). A wrong identity is worse than none.
+   escape - in the controllers, against the formula the row will have.**
+   Whenever a compound ends up with both an `inchi` and a formula, the
+   InChI's formula layer (the segment after `InChI=1S/` up to the next `/`)
+   must equal that formula under `mascope_tools` Hill normalisation;
+   mismatch is a 422 naming both strings. The check cannot live only in the
+   pydantic models: `TargetCompoundUpdate` lets a caller omit the formula, so
+   an identity-only update would never see the stored formula it has to
+   agree with, and could save an identity for a different compound.
+   `create_target_compound` checks the incoming pair;
+   `update_target_compound` checks the incoming `inchi` against the formula
+   the row will have after the update - the incoming one when it changes, the
+   stored one otherwise (a formula change without new identity clears the
+   identity under decision 3, leaving nothing to check). Skip the check when
+   that formula carries caret isotopes (`^N` names a labelled reagent the
+   InChI layer cannot express). A wrong identity is worse than none.
 5. **Tombstones are written on both delete paths.** `delete_dataset`
    (dataset controller) and `delete_workspace`
    (`api/new/workspaces/service.py`, which deletes datasets by cascade
@@ -257,19 +273,27 @@ write and watch the test go red.
 ## 8. Item 9 - target compound identity
 
 **Schema** - on `target_compound` (`models.py`): `inchikey: String(27)`
-indexed, `inchi: Text`, `smiles: Text`, all nullable. Validation in the
-pydantic layer (`api/models/target/compounds/target_compound_pydantic_model.py`,
+indexed, `inchi: Text`, `smiles: Text`, all nullable. Format validation in
+the pydantic layer (`api/models/target/compounds/target_compound_pydantic_model.py`,
 `TargetCompoundBase` and `TargetCompoundUpdate`): InChIKey regex
 `^[A-Z]{14}-[A-Z]{10}-[A-Z]$`; `inchi` must start `InChI=`; `smiles` trimmed
 non-empty (no cheminformatics dependency is added to parse it - do not pull
-one in for validation); the InChI formula-layer consistency check of
-decision 4, using the Hill normalisation already in
-`mascope_tools.composition.utils`.
+one in for validation). The InChI formula-layer consistency check of
+decision 4 is **not** a pydantic validator: it needs the formula the row
+will have, which an identity-only update does not carry. It lives in the
+controllers as one helper both of them call, using the Hill normalisation
+already in `mascope_tools.composition.utils`.
 
-**Controllers** (`api/controllers/target/compounds/...`): create passes the
-fields through; update follows decision 3 on the formula-change recreation
-path - read `update_target_compound` closely before touching it, it
-re-associates collections and queues rematches.
+**Controllers** (`api/controllers/target/compounds/...`): create checks the
+incoming `inchi` against the incoming formula and passes the fields through;
+update checks the incoming `inchi` against the formula the row will have
+after the update - the incoming one when it changes, the stored one
+otherwise - and follows decision 3 on the formula-change recreation path.
+Read `update_target_compound` closely before touching it: it re-associates
+collections and queues rematches. **Test to add:** an identity-only update
+whose `inchi` disagrees with the stored formula is refused with a 422
+naming both strings; the same `inchi` sent together with a matching formula
+is accepted.
 
 **Backfill** - `server/backend/src/mascope_backend/db/scripts/`
 `backfill_target_compound_identity.py`, run manually by an operator
