@@ -55,10 +55,12 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   the spectra of the other samples are returned: a sample whose file is
   being rebuilt has an empty spectrum in its place, is listed under `stale`
   and is named in the response's `warnings`, where the whole request failed
-  before. The SDK's `get_spectra` logs that warning; the frame it returns
-  holds no rows for such a sample. A workspace editor whose global role is
-  guest has no rebuild queued, by a spectrum or by a refresh of a batch's
-  matches, and the server no longer logs that as an error.
+  before. The SDK's `get_spectra` logs that warning, from the SDK released
+  with v1.11.0 on; the frame it returns holds no rows for such a sample,
+  and an older SDK is given that frame with no word of it. A workspace
+  editor whose global role is guest has no rebuild queued, by a spectrum or
+  by a refresh of a batch's matches, and the server no longer logs that as
+  an error.
 
 - **With `composite_scan_streams` on, a sample of a stitched file counts
   the scans its peaks were detected over.** Its TIC is summed over the

@@ -15,7 +15,8 @@ editor's refresh of the batch does and a guest cannot do. A guest is told
 what the store's own error says and nothing is queued. Two roles decide it,
 and they are independent (``docs/authorization.md``): the person's role in
 the sample's workspace, checked here, and the role of their account, which
-the file converter's token takes (``request_stale_peak_store_rebuilds``).
+the file converter's token takes (``may_hold_converter_token``, asked by
+``request_stale_peak_store_rebuilds``).
 An editor of the workspace whose account is a guest is answered as a guest
 is.
 
