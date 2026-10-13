@@ -16,7 +16,11 @@ import json
 
 import pytest
 
-from mascope_thermo.scan_filter import Precursor, parse_scan_filter
+from mascope_thermo.scan_filter import (
+    Precursor,
+    parse_scan_filter,
+    parse_stream_key,
+)
 
 
 def test_a_survey_scan_filter_is_read_field_by_field():
@@ -147,6 +151,82 @@ def test_a_named_scan_event_closes_the_key():
         "FTMS - p NSI Full ms [40.0000-600.0000] event=2"
     )
     assert parsed.stream_key(120000, event=None) == parsed.stream_key(120000)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "FTMS - p NSI Full ms [40.0000-600.0000]",
+        "FTMS + p NSI SIM ms [72.0000-118.0000]",
+        "FTMS + p NSI sid=35.00 Full ms [40.0000-600.0000, 700.0000-800.0000]",
+        "FTMS + c NSI Full ms2 445.1200@hcd30.00 [50.0000-460.0000]",
+    ],
+)
+@pytest.mark.parametrize(
+    "closed_by",
+    [
+        {},
+        {"resolution": 120000},
+        {"event": 2},
+        {"resolution": 120000, "event": 2},
+        {"resolution": 120000, "segment": 2, "event": 1},
+        {"resolution": "120k"},
+    ],
+)
+def test_a_key_is_read_back_into_what_it_was_made_of(text, closed_by):
+    """Whoever asks a key its polarity, its range or its experiment asks the
+    reader beside the writer, and the two agree on every key the writer
+    makes."""
+    written = parse_scan_filter(text)
+    key = written.stream_key(
+        closed_by.get("resolution"),
+        event=closed_by.get("event"),
+        segment=closed_by.get("segment"),
+    )
+
+    read = parse_stream_key(key)
+
+    assert read.scan_filter == written
+    assert read.resolution == closed_by.get("resolution")
+    assert read.segment == closed_by.get("segment")
+    assert read.event == closed_by.get("event")
+    assert (
+        read.scan_filter.stream_key(
+            read.resolution, event=read.event, segment=read.segment
+        )
+        == key
+    )
+
+
+def test_an_event_closes_a_key_that_states_no_resolution():
+    """Cut at the resolution alone, such a key's event would be read as part
+    of its filter."""
+    read = parse_stream_key("FTMS - p NSI Full ms [40.0000-600.0000] event=2")
+
+    assert read.event == 2 and read.resolution is None
+    assert read.scan_filter.polarity == "-"
+    assert read.scan_filter.scan_ranges == ((40.0, 600.0),)
+    assert not read.scan_filter.flags
+
+
+def test_what_closes_the_key_of_a_folded_family_is_read_all_the_same():
+    # A data-dependent family's key shows no precursor m/z and no range, so
+    # its signature does not read back whole; what closes it does.
+    family = parse_scan_filter(
+        "FTMS + c NSI d Full ms2 445.1200@hcd30.00 [50.0000-460.0000]"
+    )
+
+    read = parse_stream_key(family.stream_key(30000))
+
+    assert read.resolution == 30000
+    assert read.scan_filter.polarity == "+" and read.scan_filter.ms_order == 2
+
+
+def test_a_text_that_is_no_key_is_read_as_a_filter():
+    for text in ["", None, "not a filter"]:
+        read = parse_stream_key(text)
+        assert (read.resolution, read.segment, read.event) == (None, None, None)
+        assert read.scan_filter == parse_scan_filter(text)
 
 
 def test_a_named_segment_comes_before_the_event():

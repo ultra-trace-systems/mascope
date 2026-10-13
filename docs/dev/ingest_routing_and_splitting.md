@@ -762,15 +762,19 @@ it. Four things the build settled:
     of what every calibrant kept asks for: its target over its m/z as the
     instrument recorded it. There is no primary stream to copy, and a
     pooled reading wants the factor of the pool.
-  - *The readers.* A stream's sum signal, its averaged and per-scan
-    centroids and the m/z a peak timeseries is read back at all take the
-    stream's factor (`get_sum_signal`, `get_orbi_centroids`,
-    `get_orbi_centroids_per_scan`, `get_peak_timeseries`). A stitched
-    signal places each run by its owner's factor, and the name it is cached
-    under carries the factors, so a file calibrated again is not handed a
-    signal stitched before. Detection places a peak by its stream's factor
-    when it draws the `composite` mask, and reads the overlaps as the
-    instrument recorded them (4.5).
+  - *The readers.* A stream's sum signal, its scans, its averaged and
+    per-scan centroids and the m/z a peak timeseries is read back at all
+    take the stream's factor (`get_sum_signal`, `load_signal`,
+    `get_orbi_centroids`, `get_orbi_centroids_per_scan`,
+    `get_peak_timeseries`). A stitched signal places each run by its
+    owner's factor, and the name it is cached under carries the factors,
+    so a file calibrated again is not handed a signal stitched before.
+    Detection places a peak by its stream's factor when it draws the
+    `composite` mask, and reads the overlaps as the instrument recorded
+    them (4.5). It goes by one read of the record throughout: its
+    centroids are placed by that record and what each stream recorded is
+    the same factor taken off again, so a calibration applied to the file
+    while it runs is no part of what the store keeps as read.
   - *The apply.* Each stream's peak rows are placed at what the stream
     recorded times its new factor. The store keeps each row's reading for
     that (`mz_recorded`, written at detection; a store detected before is
@@ -779,8 +783,13 @@ it. Four things the build settled:
     a fit made before the file was detected per stream - moves the whole
     file as one. The cached signal of a stream moves by that stream's new
     factor over the one the record holds, and names its stream in an
-    attribute; a stitched one is removed and stitched again on demand, and
-    so is a cached signal that does not say whose it is.
+    attribute; a stitched one, which names none, is removed and stitched
+    again on demand, and so is a cached signal that does not say whose it
+    is. Which way an apply goes is the store's to say, and where a cached
+    signal sits is the record's: a record that names streams over a store
+    since detected whole, or gone, is applied to as one, and each stream's
+    cached signal then goes from its own factor to the file's new one,
+    which is what the record written says every stream reads by.
   - *A signal made across an apply is not kept.* An apply holds the file's
     calibration lock from its first write to the record it writes last. A
     sum signal of a raw Orbitrap file is cached under the same lock, and
@@ -1536,7 +1545,10 @@ for the whole store. What step 6 still holds is listed in section 10.
     factors, and where the earlier run's last samples lie above the later
     one's first, the later run starts above them, so that the axis only
     rises. The spectrum route places each run by the segment its samples
-    carry.
+    carry, and answers each run's own edges. The chart draws an edge two
+    runs share as one boundary, at the lower run's, and both runs up to
+    it: two facing edges within 50 ppm are one, where a stretch no run
+    owns is a whole m/z or more (`segments.js`, `runsAsDrawn`).
 
 **What stays from the first version, and why.**
 
@@ -1634,7 +1646,13 @@ for the whole store. What step 6 still holds is listed in section 10.
       distance though neither holds a calibrant.
 
     With no stream fitted there is no fit, as for a file that holds no
-    calibrant. The fit's quality block lists the polarity's streams under
+    calibrant, and the fit answers the reason a stream gave where one held
+    calibrants and had them turned down, as a file fitted as one does. A
+    calibrant's share of the ion current (`calibrant_to_tic`) is of its own
+    stream's scans, which its intensity is averaged over, so a narrow
+    window is not measured by scans that are mostly other streams'; the
+    file's is each fitted stream's share weighed by that stream's ion
+    current. The fit's quality block lists the polarity's streams under
     `segments`: for each its factor, whether it came from `anchors`, an
     `overlap` or was `borrowed`, from which stream, the shift and the ions
     shared, and for a fitted stream its own quality block. The calibrants

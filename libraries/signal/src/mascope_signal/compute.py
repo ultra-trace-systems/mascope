@@ -50,6 +50,11 @@ _SUPERSEDED = object()
 #: What it is told of a signal whose axis no calibration record puts in place.
 _UNGUARDED = object()
 
+#: What a reader is handed for a calibration record by a caller that holds
+#: none: it goes by the one the file holds when it reads. Not None, which is
+#: the record of a file no calibration was applied to.
+RECORD_ON_FILE = object()
+
 # The calibration locks this thread holds, by path
 _applying = threading.local()
 
@@ -1222,7 +1227,12 @@ def _stitch_sum_signals(
         )
     # One chunk, as a stream's own signal is: the pieces come in the sizes of
     # the runs, and a zarr array is not stored in chunks of unequal size
-    return xr.concat(parts, dim="mz").chunk({"mz": -1})
+    stitched = xr.concat(parts, dim="mz").chunk({"mz": -1})
+    # Joined, the pieces pass on the attributes of the first, and with them
+    # the stream it names. A stitched signal is of no one stream, and a
+    # signal that names a stream is that stream's, to whoever moves it.
+    stitched.attrs.pop(CACHED_STREAM_ATTR, None)
+    return stitched
 
 
 def load_signal(
@@ -1278,12 +1288,12 @@ def load_signal(
                 signal = m_thermo.get_signal(
                     datafile_path, t_min, t_max, mz_min, mz_max, polarity, stream=stream
                 )
-                # Handle m/z axis calibration
+                # Handle m/z axis calibration: a stream's scans go by the
+                # stream's own factor, as its sum signal and its peaks do
                 props = m_io.read_props(base_filename)
                 calibration = props["mz_calibration"]
                 if calibration:
-                    fit_parameters = calibration["par"]
-                    factor = fit_parameters["calibration_factor"]
+                    factor = m_factor.stream_factor(calibration, stream)
                     signal = signal.assign_coords(mz=signal.mz.values * factor)
                 return signal
             case "tof_h5":
@@ -1611,6 +1621,7 @@ async def get_orbi_centroids(
     ppm: int = 1,
     average: bool = False,
     stream: str | None = None,
+    calibration: dict | None | object = RECORD_ON_FILE,
 ) -> tuple:
     """
     Extract centroided peaks from an Orbitrap (Thermo .raw) file for specified m/z values and time range.
@@ -1635,6 +1646,13 @@ async def get_orbi_centroids(
     :type average: bool, optional
     :param stream: Key of the scan stream to average, defaults to None (every stream).
     :type stream: str, optional
+    :param calibration: The calibration record to put the centroids on the
+        file's axis by; left out, the one the file holds when they are read.
+        A caller that goes on to work with the factor the centroids carry -
+        a detection takes it off again for what a stream recorded - hands in
+        the record it read, so that the two are of one calibration whatever
+        is applied to the file meanwhile.
+    :type calibration: dict | None, optional
     :return: Tuple of (masses, intensities, resolutions, signal-to-noise) for centroid peaks
     matching the criteria.
     :rtype: tuple
@@ -1654,8 +1672,8 @@ async def get_orbi_centroids(
                 average=average,
                 stream=stream,
             )
-            props = m_io.read_props(base_filename)
-            calibration = props["mz_calibration"]
+            if calibration is RECORD_ON_FILE:
+                calibration = m_io.read_props(base_filename)["mz_calibration"]
             if calibration:
                 masses = masses * m_factor.stream_factor(calibration, stream)
             if u_list:

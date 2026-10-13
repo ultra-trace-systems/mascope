@@ -479,11 +479,17 @@ class OrbiPeakDetector(BasePeakDetector):
             f"Detecting the peaks of '{self._filename}' per scan stream: "
             f"{'; '.join(stream['key'] for stream in self._streams)}"
         )
+        # One read of the record for the whole detection: the centroids are
+        # placed by it, what each stream recorded is taken back by it, and
+        # the composite is drawn by it (_stitch). A calibration applied to
+        # the file meanwhile is then no part of what the store keeps as read.
         calibration = self._sample_file_props.get("mz_calibration")
         datasets = []
         for index, stream in enumerate(self._streams):
             peaks = await self._extract_peaks_for_polarity(
-                stream["signature"]["polarity"], stream=stream["key"]
+                stream["signature"]["polarity"],
+                stream=stream["key"],
+                calibration=calibration,
             )
             datasets.append(
                 peaks.assign(
@@ -520,12 +526,18 @@ class OrbiPeakDetector(BasePeakDetector):
         return times[order], labels[order]
 
     async def _extract_peaks_for_polarity(
-        self, polarity: str, stream: str | None = None
+        self,
+        polarity: str,
+        stream: str | None = None,
+        calibration: dict | None | object = m_compute.RECORD_ON_FILE,
     ) -> xarray.Dataset:
         """A workaround to extract peaks for a given polarity from Thermo Orbitrap files.
 
         :param stream: Key of the one scan stream to average, of that
             polarity; None averages every MS1 scan of the polarity.
+        :param calibration: The record to put the centroids on the file's
+            axis by, from a caller that holds one; left out, they go by the
+            record the file holds when they are read.
         """
         (
             peak_mzs,
@@ -533,7 +545,7 @@ class OrbiPeakDetector(BasePeakDetector):
             resolutions,
             signal_to_noise,
         ) = await m_compute.get_orbi_centroids(
-            self._filename, polarity=polarity, stream=stream
+            self._filename, polarity=polarity, stream=stream, calibration=calibration
         )
 
         # The m/z peak area is the integral of the analytic peak model, so it is
