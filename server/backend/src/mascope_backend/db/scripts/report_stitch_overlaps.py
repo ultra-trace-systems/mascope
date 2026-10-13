@@ -69,7 +69,7 @@ from mascope_backend.db import (
     configure_database_engine,
 )
 from mascope_backend.runtime import runtime
-from mascope_thermo.scan_filter import parse_scan_filter
+from mascope_thermo.scan_filter import parse_stream_key
 
 
 #: Read by ``mascope dev|prod db script run``, which then takes no pre-script
@@ -170,7 +170,7 @@ def _int_env(name: str, default: int, minimum: int) -> int:
 
 def _polarity(key: str) -> str | None:
     """The polarity a stream key states."""
-    return parse_scan_filter(key.split(" R=")[0]).polarity
+    return parse_stream_key(key).scan_filter.polarity
 
 
 def _owners(overlap: list, runs: list, keys: list[str]) -> tuple:

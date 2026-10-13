@@ -48,6 +48,31 @@ export function segmentDetail(segments, index) {
   return parts.join(' · ')
 }
 
+// How close the facing edges of two runs lie when the two meet in the map.
+//
+// A run's edges are where its own range's samples and peaks lie: the server
+// places each run on the file's axis by that range's m/z calibration. Two
+// ranges of one file are calibrated some parts per million apart, so an edge
+// two runs share arrives as two m/z that far apart, a gap or an overlap far
+// too narrow to show. A stretch no run owns is as wide as the gap between two
+// scan ranges of the method: a whole m/z or more, hundreds of ppm anywhere
+// in a spectrum.
+export const SHARED_EDGE_PPM = 50
+
+// The runs as they are drawn: an edge two of them share is one m/z, the
+// lower run's, so that it is one boundary and both runs are drawn up to it.
+export function runsAsDrawn(runs) {
+  if (!runs?.length) return []
+  const drawn = runs.map((run) => ({ ...run }))
+  for (let at = 1; at < drawn.length; at++) {
+    const edge = drawn[at - 1].mz_upper
+    if (Math.abs(drawn[at].mz_lower - edge) <= edge * SHARED_EDGE_PPM * 1e-6) {
+      drawn[at].mz_lower = edge
+    }
+  }
+  return drawn
+}
+
 // How many of the steps next to a run's end are read for how far apart its
 // samples lie there.
 const STEPS_READ = 4
@@ -81,14 +106,17 @@ function stepAt(mz, upper) {
 // come up to the bound, which is a peak the boundary cuts: its two halves are
 // what two ranges measured, and a zero between them would be a dip that is
 // not there. A lone sample above zero has no step to say which it is, and is
-// left as it is.
+// left as it is. Nor is anything added where the samples lie past the bound,
+// as the first of a run can past an edge it shares with the run below, which
+// is drawn at that run's (`runsAsDrawn`).
 function baselineTo(mz, intensity, bound, upper) {
   if (!mz.length) return [bound]
   const edge = upper ? mz.length - 1 : 0
-  const reach = Math.abs(bound - mz[edge])
-  if (intensity[edge] === 0) return reach > 0 ? [bound] : []
+  const short = upper ? bound - mz[edge] : mz[edge] - bound
+  if (short <= 0) return []
+  if (intensity[edge] === 0) return [bound]
   const step = stepAt(mz, upper)
-  if (step === null || reach <= step) return []
+  if (step === null || short <= step) return []
   return [upper ? mz[edge] + step : mz[edge] - step, bound]
 }
 
@@ -108,7 +136,7 @@ export function signalStretches(spectrum) {
   if (!runs?.length) return [{ segment: null, mz, intensity }]
   const among = (bound) => mz.length > 0 && mz[0] < bound && bound < mz[mz.length - 1]
   const zeros = (points) => points.map(() => 0)
-  return runs
+  return runsAsDrawn(runs)
     .map((run) => {
       const x = mz.slice(run.from, run.to)
       const y = intensity.slice(run.from, run.to)
@@ -124,13 +152,15 @@ export function signalStretches(spectrum) {
 }
 
 // Where one run ends and the next begins, in m/z. An edge two runs share is
-// one boundary; a gap between two runs has one on either side.
+// one boundary, wherever each run's own calibration puts its side of it; a
+// gap between two runs has one on either side.
 export function runBoundaries(runs) {
   if (!runs || runs.length < 2) return []
   const edges = new Set()
-  runs.forEach((run, position) => {
+  const drawn = runsAsDrawn(runs)
+  drawn.forEach((run, position) => {
     if (position > 0) edges.add(run.mz_lower)
-    if (position < runs.length - 1) edges.add(run.mz_upper)
+    if (position < drawn.length - 1) edges.add(run.mz_upper)
   })
   return [...edges].sort((a, b) => a - b)
 }

@@ -19,6 +19,7 @@ larger than an instrument's, so that a reading by the wrong one is seen.
 
 import numpy as np
 import pytest
+import xarray as xr
 from composite_acquisition import (
     IN_LOW,
     KEYS,
@@ -196,6 +197,49 @@ def test_a_streams_scans_are_on_its_own_factor(named, monkeypatch):
     assert pooled["masses"].tolist() == [62.0 * FILE, 80.0 * FILE]
 
 
+def test_a_streams_signal_is_on_its_own_factor(named, monkeypatch):
+    """The scans themselves, scan by scan: read by the file's factor, a
+    stream's scans would lie off its own sum signal and its own peaks by the
+    difference of the two."""
+
+    def scans(datafile_path, *args, stream=None, **kwargs):
+        return xr.Dataset(
+            {"signal": (("mz", "time"), np.ones((2, 1)))},
+            coords={"mz": [62.0, 80.0], "time": [0.0]},
+        )
+
+    monkeypatch.setattr(m_compute.m_thermo, "get_signal", scans)
+
+    low = m_compute.load_signal(SAMPLE_FILENAME, stream=KEYS[LOW])
+    high = m_compute.load_signal(SAMPLE_FILENAME, stream=KEYS[HIGH])
+    pooled = m_compute.load_signal(SAMPLE_FILENAME, polarity="-")
+
+    assert low.mz.values.tolist() == [62.0 * FACTORS[LOW], 80.0 * FACTORS[LOW]]
+    # A stream the record does not name, and the file pooled, go by the file's
+    assert high.mz.values.tolist() == [62.0 * FILE, 80.0 * FILE]
+    assert pooled.mz.values.tolist() == [62.0 * FILE, 80.0 * FILE]
+
+
+@pytest.mark.asyncio
+async def test_centroids_are_placed_by_the_record_a_caller_hands_in(named):
+    """Whoever goes on to work with the factor the centroids carry hands in
+    the record it read. None is a record too: that of a file nothing was
+    applied to."""
+    other = {"par": {"calibration_factor": 2.0}}
+
+    on_file, *_ = await m_compute.get_orbi_centroids(SAMPLE_FILENAME, stream=KEYS[LOW])
+    handed, *_ = await m_compute.get_orbi_centroids(
+        SAMPLE_FILENAME, stream=KEYS[LOW], calibration=other
+    )
+    as_read, *_ = await m_compute.get_orbi_centroids(
+        SAMPLE_FILENAME, stream=KEYS[LOW], calibration=None
+    )
+
+    assert on_file[1] == 100.0 * FACTORS[LOW]
+    assert handed[1] == 200.0
+    assert as_read.tolist() == [IN_LOW, 100.0, 121.0]
+
+
 @pytest.mark.asyncio
 async def test_a_stream_is_read_back_at_what_its_factor_takes_off(named):
     """The low window's ion at 100, asked for where its factor put it, is
@@ -221,6 +265,23 @@ def test_each_run_of_the_stitched_signal_is_placed_by_its_owner(named):
         own = mz[segment == index]
         assert own[0] == lower * ALL[index]
     assert np.all(np.diff(mz) > 0)
+
+
+def test_a_stitched_signal_names_no_stream(named):
+    """Its pieces each name theirs, and joined they pass on the first one's.
+    A signal that names a stream is moved as that stream's by an apply."""
+    stitched = m_compute.get_composite_sum_signal(SAMPLE_FILENAME, "-")
+    cached = cached_sum_signals()
+
+    assert m_compute.CACHED_STREAM_ATTR not in stitched.attrs
+    assert [signal.stream for signal in cached.values() if signal.stitched] == [None]
+    # Its streams' own still say whose they are, beside the file's full one
+    assert sorted(
+        str(signal.stream) for signal in cached.values() if not signal.stitched
+    ) == sorted([*KEYS, "None"])
+    # Read back from the cache
+    again = m_compute.get_composite_sum_signal(SAMPLE_FILENAME, "-")
+    assert m_compute.CACHED_STREAM_ATTR not in again.attrs
 
 
 def test_a_run_starts_above_the_one_before_where_their_factors_cross(composite):
@@ -432,6 +493,48 @@ def test_a_detection_keeps_what_each_stream_recorded(composite):
         ).tolist()
         == rows.mz.tolist()
     )
+
+
+def test_a_calibration_applied_during_a_detection_is_no_part_of_what_it_read(
+    composite, instrument_functions, monkeypatch
+):
+    """The centroids come by the stream's factor and the reading is that
+    factor taken off again. Read off the file twice, an apply landing between
+    the two would leave the store keeping, as what a stream recorded, a
+    reading that is off by how far the apply moved the stream - and every
+    later apply places the stream's rows by it."""
+    readings = store_rows().mz
+    started_on = {
+        "par": {"calibration_factor": FILE},
+        "streams": {
+            KEYS[index]: {"calibration_factor": factor}
+            for index, factor in FACTORS.items()
+        },
+    }
+    applied_meanwhile = {
+        "par": {"calibration_factor": FILE * (1 + 100e-6)},
+        "streams": {
+            KEYS[index]: {"calibration_factor": factor * (1 + 100e-6)}
+            for index, factor in FACTORS.items()
+        },
+    }
+    m_io.update_props(SAMPLE_FILENAME, {"mz_calibration": started_on})
+    read_centroids = m_compute.m_thermo.get_centroids
+
+    def while_an_apply_lands(*args, **kwargs):
+        m_io.update_props(SAMPLE_FILENAME, {"mz_calibration": applied_meanwhile})
+        return read_centroids(*args, **kwargs)
+
+    monkeypatch.setattr(m_compute.m_thermo, "get_centroids", while_an_apply_lands)
+
+    m_peak.compute_peaks(SAMPLE_FILENAME, instrument_functions)
+    after = store_rows()
+
+    assert sorted(after.recorded.tolist()) == pytest.approx(
+        sorted(readings.tolist()), rel=1e-12
+    )
+    # Its rows are where the record it started on puts those readings
+    assert after.mz == pytest.approx(after.recorded * ALL[after.stream], rel=1e-12)
 
 
 def test_a_file_is_cut_in_the_same_places_once_its_streams_are_calibrated(

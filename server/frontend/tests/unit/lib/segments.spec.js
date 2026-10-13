@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest'
 
 import {
   SEGMENT_COLORS,
+  SHARED_EDGE_PPM,
   boundaryShapes,
   runBoundaries,
   segmentColor,
@@ -181,6 +182,77 @@ describe('a run is drawn out to its bounds along the baseline', () => {
 
     expect(signalStretches(close)[0].mz).toEqual([50, 50.5, 51, 51.25])
     expect(signalStretches(close)[1].mz).toEqual([51.25, 80, 80.5, 81])
+  })
+})
+
+// Two runs that meet in the map, each placed by its own range's m/z
+// calibration: the edge they share arrives as two m/z, parts per million
+// apart, as a gap or as an overlap.
+describe('an edge two runs share is one, wherever each calibration puts it', () => {
+  const apart = (lower, upper) => ({
+    mz: [50, 50.5, 51, 80, 80.5, 81],
+    intensity: [0, 4, 0, 0, 4, 0],
+    runs: [
+      { segment: 0, mz_lower: 40, mz_upper: lower, from: 0, to: 3 },
+      { segment: 1, mz_lower: upper, mz_upper: 90, from: 3, to: 6 }
+    ]
+  })
+  const gap = apart(73, 73 * (1 + 1e-6))
+  const overlap = apart(73 * (1 + 1e-6), 73)
+
+  it("is one boundary line, at the lower run's edge", () => {
+    expect(runBoundaries(gap.runs)).toEqual([73])
+    expect(runBoundaries(overlap.runs)).toEqual([73 * (1 + 1e-6)])
+    expect(boundaryShapes(gap.runs)).toHaveLength(1)
+  })
+
+  it('has both runs drawn up to that one m/z, with no sliver between them', () => {
+    for (const spectrum of [gap, overlap]) {
+      const [low, high] = signalStretches(spectrum)
+      const [edge] = runBoundaries(spectrum.runs)
+
+      expect(low.mz.at(-1)).toBe(edge)
+      expect(high.mz[0]).toBe(edge)
+      expect([low.intensity.at(-1), high.intensity[0]]).toEqual([0, 0])
+    }
+  })
+
+  it('is still two where no run owns what lies between, however narrow', () => {
+    const wide = 73 * (1 + 2 * SHARED_EDGE_PPM * 1e-6)
+
+    expect(runBoundaries(apart(73, wide).runs)).toEqual([73, wide])
+    const [low, high] = signalStretches(apart(73, wide))
+    expect([low.mz.at(-1), high.mz[0]]).toEqual([73, wide])
+  })
+
+  it('adds nothing below a first sample that lies past the edge it is drawn at', () => {
+    // The upper run's calibration put its first sample a hair under the
+    // lower run's edge, which is where the boundary is drawn
+    const edge = 73 * (1 + 2e-6)
+    const past = {
+      mz: [50, 50.5, 51, 73.0001, 73.5, 74],
+      intensity: [0, 4, 0, 0, 4, 0],
+      runs: [
+        { segment: 0, mz_lower: 40, mz_upper: edge, from: 0, to: 3 },
+        { segment: 1, mz_lower: 73, mz_upper: 90, from: 3, to: 6 }
+      ]
+    }
+    expect(73.0001).toBeLessThan(edge)
+
+    const [low, high] = signalStretches(past)
+
+    expect(low.mz.at(-1)).toBe(edge)
+    expect(high.mz).toEqual([73.0001, 73.5, 74])
+  })
+
+  it('leaves the runs it was given as they were', () => {
+    const fresh = apart(73, 73 * (1 + 1e-6))
+    const before = JSON.stringify(fresh.runs)
+
+    runBoundaries(fresh.runs)
+    signalStretches(fresh)
+
+    expect(JSON.stringify(fresh.runs)).toBe(before)
   })
 })
 

@@ -379,6 +379,106 @@ def test_a_file_detected_whole_is_calibrated_by_the_files_factor_alone(
     assert _record() == {"mode": "one-point", "par": {"calibration_factor": FILE}}
 
 
+def _one_factor(new, old=FILE):
+    """A fit of the file as one, as the handler hands one to apply."""
+    return {
+        "mode": "one-point",
+        "par": {
+            "old_factor": old,
+            "old_factor_scaling": new / old,
+            "calibration_factor": new,
+        },
+    }
+
+
+@pytest.fixture
+def since_detected_whole(composite, instrument_functions):
+    """The composite calibrated stream by stream, its signals cached, and
+    its peaks then detected again as one: what a rebuild that cannot read the
+    streams back leaves. The record still names the streams, and each one's
+    cached signal sits on that stream's factor."""
+    _apply(_fit())
+    m_compute.get_composite_sum_signal(SAMPLE_FILENAME, "-")
+    m_compute.get_sum_signal(SAMPLE_FILENAME, polarity="-")
+    m_peak.compute_peaks(SAMPLE_FILENAME, instrument_functions, per_stream=False)
+    cached = {str(signal.stream): signal for signal in cached_sum_signals().values()}
+    assert cached[KEYS[LOW]].mz[0] == 66.0 * FACTORS[LOW]
+    assert set(_record()["streams"]) == {KEYS[REAGENT], KEYS[LOW], KEYS[MID]}
+    return composite
+
+
+def test_a_streams_cached_signal_follows_the_record_through_an_apply_as_one(
+    since_detected_whole,
+):
+    """Which way an apply goes is the store's to say; where a cached signal
+    sits is the record's. Moved by the file's scaling with the rest, a
+    stream's signal would stay off the file's factor by what the two
+    differed, under a record that no longer says so."""
+    again = 1 + 30e-6
+
+    _apply(_one_factor(again))
+
+    assert _record() == {"mode": "one-point", "par": {"calibration_factor": again}}
+    after = cached_sum_signals()
+    by_tag = {str(signal.stream): signal for signal in after.values()}
+    for index, lower in ((REAGENT, 40.0), (LOW, 66.0), (MID, 132.0), (HIGH, 440.0)):
+        assert by_tag[KEYS[index]].mz[0] == pytest.approx(lower * again, rel=1e-15)
+    assert by_tag["None"].mz[0] == pytest.approx(40.0 * again, rel=1e-15)
+    # The stitched one is gone, and the pooled one, which names no stream
+    assert not any(signal.stitched for signal in after.values())
+    assert sorted(str(signal.stream) for signal in after.values()) == sorted(
+        [*KEYS, "None"]
+    )
+    # A stream read again is where the record says a stream now reads
+    low = m_compute.get_sum_signal(SAMPLE_FILENAME, stream=KEYS[LOW])
+    assert low.mz.values[0] == pytest.approx(66.0 * again, rel=1e-15)
+
+
+@pytest.mark.asyncio
+async def test_a_reset_takes_such_a_files_stream_signals_back_too(
+    since_detected_whole,
+):
+    sample_file = SimpleNamespace(
+        sample_file_id="sf-1",
+        filename=SAMPLE_FILENAME,
+        mz_calibration=_record(),
+        to_dict=lambda: {},
+    )
+
+    with (
+        patch.object(calibration_controller, "update_sample_file", AsyncMock()),
+        patch.object(calibration_controller, "SampleFileUpdate", lambda **kw: kw),
+    ):
+        assert await calibration_controller.reset_mz_calibration(sample_file)
+
+    assert _record() is None
+    by_tag = {str(signal.stream): signal for signal in cached_sum_signals().values()}
+    for index, lower in ((REAGENT, 40.0), (LOW, 66.0), (MID, 132.0), (HIGH, 440.0)):
+        assert by_tag[KEYS[index]].mz[0] == pytest.approx(lower, rel=1e-15)
+
+
+def test_a_file_never_calibrated_by_stream_keeps_every_cached_signal(
+    acquire, instrument_functions
+):
+    """The record names no stream, so every cached signal sits on the
+    file's factor and moves by its scaling, as it always has: none is removed
+    to be made again."""
+    acquire(COMPOSITE, MICROSCANS)
+    m_peak.compute_peaks(SAMPLE_FILENAME, instrument_functions, per_stream=False)
+    _apply(_fit(streams=None))
+    m_compute.get_sum_signal(SAMPLE_FILENAME, polarity="-")
+    m_compute.get_sum_signal(SAMPLE_FILENAME, stream=KEYS[LOW])
+    before = cached_sum_signals()
+    again = 1 + 30e-6
+
+    _apply(_one_factor(again))
+    after = cached_sum_signals()
+
+    assert sorted(after) == sorted(before)
+    for name, signal in after.items():
+        assert signal.mz[0] == pytest.approx(before[name].mz[0] / FILE * again)
+
+
 def test_the_seal_of_a_fit_covers_its_streams_factors():
     with patch.object(calibration_controller, "derive_token_secret", lambda _: "key"):
         seal = calibration_controller._fit_seal
@@ -531,6 +631,50 @@ async def test_the_statistics_are_every_streams_calibrants_under_one_summary(fit
     assert summary["match_mz_error"] == pytest.approx((2 + 1 + 3) / 3, abs=1e-4)
 
 
+def _tic(stream=None):
+    return float(np.sum(m_compute.get_tic_per_scan(SAMPLE_FILENAME, stream=stream)[1]))
+
+
+@pytest.mark.asyncio
+async def test_a_streams_calibrants_are_measured_against_its_own_scans(fitted):
+    """A calibrant's intensity is averaged over its stream's scans, and its
+    share is of the ion current of those scans. Against the file's, a narrow
+    window's calibrants would be measured by scans that are mostly other
+    streams', and its block held to a bar by them."""
+    handler = await fitted()
+
+    *points, summary = handler.stats
+    by_segment = {segment["index"]: segment for segment in handler.segments}
+    for point in points:
+        own = _tic(KEYS[point["segment"]])
+        assert own < _tic()
+        assert point["calibrant_to_tic"] == pytest.approx(
+            point["sample_peak_intensity"] / own, rel=1e-12
+        )
+        assert by_segment[point["segment"]]["quality"]["calibrant_to_tic"] == (
+            pytest.approx(point["calibrant_to_tic"], rel=1e-12)
+        )
+    # The file's is over the scans its calibrants were kept in: no sum of
+    # shares of three different ion currents
+    kept_in = sum(_tic(KEYS[index]) for index in ASKED)
+    assert summary["calibrant_to_tic"] == pytest.approx(
+        sum(point["sample_peak_intensity"] for point in points) / kept_in, rel=1e-12
+    )
+    assert summary["calibrant_to_tic"] < sum(
+        point["calibrant_to_tic"] for point in points
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_file_of_one_fitted_stream_has_that_streams_share(fitted):
+    handler = await fitted([TARGETS[0]])
+
+    (point, summary) = handler.stats
+    assert summary["calibrant_to_tic"] == pytest.approx(
+        point["calibrant_to_tic"], rel=1e-12
+    )
+
+
 @pytest.mark.asyncio
 async def test_a_stream_is_fitted_on_a_calibrant_its_composite_takes_elsewhere(fitted):
     """The reagent scan holds the ion at 80, which the low window owns: it
@@ -558,6 +702,60 @@ async def test_with_no_calibrant_in_any_stream_there_is_no_fit(fitted):
     assert handler.fit_result is None
     assert handler.warning == "No calibration peaks found"
     assert handler.segments is None
+
+
+def _turned_down(reasons):
+    """Have the fit of each stream named turn its calibrants down, saying why."""
+    fit_retained = OrbiCalibrationHandler._fit_retained_matches
+
+    def turned_down(self, matches_df):
+        labels = set(matches_df["target_ion_id"])
+        for ion, reason in reasons.items():
+            if ion in labels:
+                self.warning = reason
+                return None, matches_df.iloc[0:0]
+        return fit_retained(self, matches_df)
+
+    return patch.object(OrbiCalibrationHandler, "_fit_retained_matches", turned_down)
+
+
+NO_SUBSET = "No suitable subset of calibration peaks found; skipping calibration."
+
+
+@pytest.mark.asyncio
+async def test_with_no_stream_fitted_the_reason_a_stream_gave_is_answered(fitted):
+    """The one stream that holds calibrants had them turned down. That is
+    what a file fitted as one answers, and what the dialog and the pipeline
+    are told: not that none were found."""
+    with _turned_down({"ion-reagent": NO_SUBSET}):
+        handler = await fitted([TARGETS[0]])
+
+    assert handler.fit_result is None and handler.segments is None
+    assert handler.warning == NO_SUBSET
+
+
+@pytest.mark.asyncio
+async def test_streams_that_gave_different_reasons_are_each_named(fitted):
+    after_filtering = "No calibration peaks found after filtering."
+    with _turned_down({"ion-reagent": NO_SUBSET, "ion-high": after_filtering}):
+        handler = await fitted([TARGETS[0], TARGETS[2]])
+
+    assert handler.fit_result is None
+    assert handler.warning == (
+        f"{LABELS[REAGENT]}: {NO_SUBSET}; {LABELS[HIGH]}: {after_filtering}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_stream_fitted_beside_one_turned_down_carries_the_fit(fitted):
+    """One stream's reason is no reason of the file's while another is
+    fitted: it is that stream's note."""
+    with _turned_down({"ion-reagent": NO_SUBSET}):
+        handler = await fitted()
+
+    assert handler.fit_result is not None and handler.warning is None
+    assert handler.segments[REAGENT]["note"] == NO_SUBSET
+    assert handler.segments[REAGENT]["source"] != "anchors"
 
 
 @pytest.mark.asyncio
@@ -650,7 +848,7 @@ async def test_a_range_with_no_kept_peak_is_not_searched_for_calibrants(
 
     await fitted()
 
-    assert searched == [REAGENT, LOW, HIGH]
+    assert searched == [KEYS[REAGENT], KEYS[LOW], KEYS[HIGH]]
 
 
 @pytest.mark.asyncio

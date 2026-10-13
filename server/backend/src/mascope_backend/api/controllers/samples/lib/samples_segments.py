@@ -22,7 +22,6 @@ last processing. Where the file has a row under a segment's key, the segment
 carries both; where it has none, it carries neither and is shown without.
 """
 
-import re
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -32,7 +31,7 @@ import mascope_signal.compute as m_compute
 import mascope_signal.stitch as m_stitch
 import mascope_thermo.streams as m_streams
 from mascope_backend.db import AcquisitionStream, async_session
-from mascope_thermo.scan_filter import parse_scan_filter
+from mascope_thermo.scan_filter import parse_stream_key
 
 
 @dataclass(frozen=True)
@@ -108,7 +107,8 @@ def segment_label(key: str) -> str:
     and an experiment that shares its filter with another says which it is.
     A key that states no range is shown as it is.
     """
-    scan_filter = parse_scan_filter(key.split(" R=")[0])
+    read = parse_stream_key(key)
+    scan_filter = read.scan_filter
     if not scan_filter.scan_ranges:
         return key
     ranges = ", ".join(
@@ -117,8 +117,8 @@ def segment_label(key: str) -> str:
     parts = [f"m/z {ranges}"]
     if scan_filter.scan_mode and scan_filter.scan_mode.lower() != "full":
         parts.append(scan_filter.scan_mode)
-    if event := re.search(r"\bevent=(\d+)", key):
-        parts.append(f"event {event.group(1)}")
+    if read.event is not None:
+        parts.append(f"event {read.event}")
     return ", ".join(parts)
 
 
