@@ -3050,7 +3050,12 @@ unchanged.
      (`mascope_file.io.write_peaks`), so a write that fails part-way leaves
      the file its store, and the decision that store was built by is put
      back; a file with no store yet keeps the new decision, which its
-     first store is built by. A bind
+     first store is built by. The calibration the reset cleared goes back
+     on such a file too (`restore_mz_calibration`, from both records as
+     the reset found them): the samples it keeps were matched on it, and
+     without it their matches would sit off a store left on the
+     acquisition axis. A restore that fails says so in the file's status
+     and the run's report, and the next re-processing repairs it. A bind
      and a process-on-request keep going by the record: they rebuild files
      a person may have made a sample from, and that sample is defined
      against the store as it is. The backend reads the setting when it
