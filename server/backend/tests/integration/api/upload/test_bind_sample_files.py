@@ -45,6 +45,7 @@ from mascope_backend.api.controllers.sample.files.process import (
 )
 from mascope_backend.api.controllers.sample.files.process import status
 from mascope_backend.api.controllers.sample.files.process.bindings import (
+    Declined,
     MethodRouting,
 )
 from mascope_backend.api.lib.exceptions.api_exceptions import ApiException
@@ -741,8 +742,8 @@ async def test_reprocessing_leaves_a_file_with_samples_its_method_binds_to_the_r
     run asks it, on the file's scan-stream census, and a file it binds is
     sent on with no modes of its own. It is asked in the loop that rebuilds
     the files, just before the file is claimed, and not with the checks in
-    front of the batch: the files ahead of it are bound by then, and teach
-    the bindings as they are.
+    front of the batch: the files ahead of it are bound by then, and those a
+    record or a token binds teach the bindings as they are.
     """
     monkeypatch.setattr(process_service, "routes_on_method_binding", lambda: True)
     rung, census = _method_binds(monkeypatch, setup)
@@ -841,6 +842,73 @@ async def test_reprocessing_leaves_a_file_as_it_is_when_its_method_cannot_be_ask
     assert steps.done == ["decided"]
     assert await _samples_of(async_session_factory, orphaned) == 1
     assert await _status(async_session_factory, orphaned) == "done"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "named_second", [True, False], ids=["named after a file that runs", "named first"]
+)
+async def test_reprocessing_asks_a_files_method_once_the_files_named_ahead_have_run(
+    async_session_factory, setup, pipeline, steps, monkeypatch, named_second
+):
+    """What the files ahead of a file taught is in its method's answer, and
+    the files ahead of it are the ones the request names first.
+
+    The rung's stand-in binds until the pipeline has run once and declines
+    after, as a key does once a file ahead of it shows the key a chemistry
+    it has not been seen with. Named after a file with modes to keep, the
+    file with orphaned samples is asked once that file has run, and refused
+    with its sample in place. Named first, it is asked before any run, and
+    rebuilt: the order is the request's, not the database's."""
+    monkeypatch.setattr(process_service, "routes_on_method_binding", lambda: True)
+    rung, _census = _method_binds(monkeypatch, setup)
+    binds = rung.return_value
+    declines = ([], Declined("the stand-in has seen two chemistries", "Choose one."))
+
+    def asked(*_args):
+        steps.done.append("asked its method")
+        return declines if "ran the pipeline" in steps.done else binds
+
+    rung.side_effect = asked
+    kept = await _file(
+        async_session_factory,
+        "kept-modes-named-with-it",
+        "-",
+        sample_under=(setup["batch"], setup["negative"]),
+    )
+    orphaned = await _file(
+        async_session_factory,
+        "orphaned-named-with-it",
+        "-",
+        sample_under=(setup["batch"], None),
+    )
+    rebuilt = [
+        "reset the calibration",
+        "detected per stream",
+        "cleared the samples",
+        "ran the pipeline",
+    ]
+
+    # A partial result is a warning, which the task reports and does not raise
+    await process_service.re_process_sample_files(
+        sample_file_ids=[kept, orphaned] if named_second else [orphaned, kept]
+    )
+
+    ran_for = [call.kwargs["sample_file_id"] for call in pipeline.await_args_list]
+    if named_second:
+        assert steps.done == ["decided", *rebuilt, "decided", "asked its method"]
+        assert ran_for == [kept]
+        assert await _samples_of(async_session_factory, orphaned) == 1
+        assert await _status(async_session_factory, orphaned) == "done"
+    else:
+        assert steps.done == [
+            "decided",
+            "asked its method",
+            *rebuilt,
+            "decided",
+            *rebuilt,
+        ]
+        assert ran_for == [orphaned, kept]
 
 
 @pytest.mark.asyncio

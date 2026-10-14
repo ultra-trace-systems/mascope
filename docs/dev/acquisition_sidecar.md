@@ -346,8 +346,8 @@ is read:
   calibration, before the pipeline asks - and send on a file the method
   binds; one it declines is refused with the method's reason beside the
   record's. Re-process asks just before it claims the file, once the files
-  ahead of it in the batch have taught their methods' bindings what they
-  will. A file with no samples has nothing a run could cost it.
+  ahead of it that a record or a token binds have taught their methods'
+  bindings. A file with no samples has nothing a run could cost it.
   Processing on request sends it
   on to the pipeline, which binds it by its acquisition method where the
   method rung is on, and parks it again otherwise; Re-process sends it on

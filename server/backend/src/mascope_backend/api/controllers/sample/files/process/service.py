@@ -2101,7 +2101,17 @@ async def re_process_sample_files(
         result = await session.execute(
             select(SampleFile).where(SampleFile.sample_file_id.in_(sample_file_ids))
         )
-        sample_files = result.scalars().all()
+        # In the order the request names them, not in the order the rows come
+        # back: a file's acquisition method is asked just before its turn, and
+        # the files ahead of it can change the answer, so which files are
+        # ahead of it is the request's to say.
+        position = {
+            sample_file_id: i
+            for i, sample_file_id in enumerate(dict.fromkeys(sample_file_ids))
+        }
+        sample_files = sorted(
+            result.scalars().all(), key=lambda sf: position[sf.sample_file_id]
+        )
 
     found_ids = {sf.sample_file_id for sf in sample_files}
     missing_ids = set(sample_file_ids) - found_ids
@@ -2351,9 +2361,10 @@ async def re_process_sample_files(
                 # the rung, so one the method cannot place would park with
                 # its samples gone. Its method is asked first, as the run
                 # asks it, just before the file is claimed below rather than
-                # here: the files ahead of it in this batch teach the
-                # bindings as they are bound, and one of them can make the
-                # method's answer for this file another by then.
+                # here: a file ahead of it in this batch that its record or a
+                # token binds teaches its method's binding as it is bound,
+                # and can make the method's answer for this file another by
+                # then.
                 ask_its_method[sample_file.sample_file_id] = (no_token, undeclared)
             elif kept is None:
                 # No token, and no samples to keep - but the pipeline can
@@ -2440,11 +2451,13 @@ async def re_process_sample_files(
                     )
                 except Exception:  # noqa: BLE001 - one file's failure
                     # Not taken for a binding or for a refusal: the file is
-                    # left as it is, and its fault's text to the log, as the
-                    # reads above leave theirs.
-                    runtime.logger.exception(
-                        "Unexpected error asking the acquisition method of "
-                        f"sample file {sample_file.filename}"
+                    # left as it is. INFO, with the error, as the read of its
+                    # peaks' detection above: one file of the batch, which
+                    # whoever asked is told of in the result, and whose
+                    # fault's text stays in the log.
+                    runtime.logger.opt(exception=True).info(
+                        "Could not ask the acquisition method of sample file "
+                        f"{sample_file.filename} for its re-processing"
                     )
                     failed_files.append(
                         {
@@ -2696,8 +2709,8 @@ async def modes_to_rebind(sample_file_id: str) -> KeptModes | None:
     declines on the same terms. It asks just before it claims the file
     rather than before its batch starts: it clears a file's samples before
     its run, so a file whose method stops binding it in between parks with
-    its samples gone, and the files ahead of it in the batch teach the
-    bindings as they are bound.
+    its samples gone, and a file ahead of it in the batch that its record or
+    a token binds teaches its method's binding as it is bound.
 
     Not refused: a file of fragmentation scans alone with no token. Its
     sample is the MS2 part its run filed without a chemistry, and the run
