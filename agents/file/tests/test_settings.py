@@ -8,7 +8,7 @@ import os
 
 import pytest
 
-from mascope_file_agent import AgentSettings, config, main
+from mascope_file_agent import AgentSettings, config, identity, main
 
 
 def _write_config(tmp_path, **overrides):
@@ -138,6 +138,8 @@ def test_a_file_agent_configuration_taken_over_stays_a_file_agent(tmp_path):
 
 
 def test_a_renewed_token_keeps_the_service_it_was_paired_as(tmp_path):
+    # A renewal is granted only under the name the token was paired as.
+    identity("instrument-agent")
     path = os.path.join(tmp_path, config.CONFIG_FILENAME)
     _write_config(tmp_path, instrument="Orbi-Lab2", paired_as="instrument-agent")
 
@@ -146,6 +148,38 @@ def test_a_renewed_token_keeps_the_service_it_was_paired_as(tmp_path):
     reread = AgentSettings.from_file(path)
     assert reread.access_token == "renewed-token"
     assert reread.paired_as == "instrument-agent"
+
+
+@pytest.mark.parametrize(
+    "recorded, process, expected_on_file",
+    [
+        # A taken-over File Agent configuration, moved by a program that
+        # names instrument-agent and lets the refusal re-pair the machine.
+        ("", "instrument-agent", "instrument-agent"),
+        # A standalone File Agent re-pairing on a file a program wrote.
+        ("instrument-agent", "file-agent", "file-agent"),
+    ],
+)
+def test_a_token_re_paired_under_another_name_is_saved_with_that_name(
+    tmp_path, recorded, process, expected_on_file
+):
+    """The running agent re-pairs under the process's name, not the file's.
+
+    Saved with the name read at the start, the new token would be named
+    wrongly: the next start would present it under the old name, be refused,
+    and pair back, leaving another machine under Paired machines each round.
+    """
+    path = os.path.join(tmp_path, config.CONFIG_FILENAME)
+    _write_config(tmp_path, instrument="Orbi-Lab2", paired_as=recorded)
+    writer = AgentSettings.from_file(path).token_writer(path)
+    identity(process)
+
+    writer("re-paired-token")
+
+    reread = AgentSettings.from_file(path)
+    assert reread.access_token == "re-paired-token"
+    assert reread.paired_as == expected_on_file
+    assert reread.service_name(unpaired="instrument-agent") == expected_on_file
 
 
 def test_settings_from_a_broken_config_toml_say_so(tmp_path):

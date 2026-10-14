@@ -111,7 +111,7 @@ All settings live in one file on the instrument PC:
 | ----------------- | ------------------------------------------------------------------ |
 | `host`            | Mascope server address, e.g. `mascope.example.com`                 |
 | `access_token`    | Device token (filled by pairing, renewed automatically)            |
-| `paired_as`       | The service the token was paired as, e.g. `file-agent` (written by pairing; do not edit it, the token is accepted under that name only) |
+| `paired_as`       | The service the token was paired as, e.g. `file-agent` (written with the token; do not edit it, the token is accepted under that name only) |
 | `source`          | Full path of the folder watched for new data files                 |
 | `recursive`       | `true` to also watch subfolders of `source` (default `false`)      |
 | `verify_tls`      | `true` to verify the server's TLS certificate (default `true`)     |
