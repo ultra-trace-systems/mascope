@@ -11,7 +11,9 @@ sample a person made from it keeps its calibration, and one the chosen modes
 do not fit is refused. Re-processing, and processing a file on request, keep
 the modes a file was bound to that way, whatever its name and its acquisition
 record say, until somebody chooses again. A file whose samples no mode binds
-any longer is started on neither road: the run would park it. Only the
+any longer is started on neither road, since the run would park it - but on
+request, where the method rung is on, it is left to the run: its acquisition
+method may bind it, and a run that parks it keeps its samples. Only the
 pipeline's own samples are replaced, wherever a person's sample is.
 
 For a file nobody chose the chemistry of, its acquisition record is asked
@@ -1722,20 +1724,18 @@ async def test_processing_a_hand_bound_file_on_request_keeps_its_modes(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("under", "by_method"),
-    [(None, False), (None, True), ("positive", False)],
-    ids=["mode deleted", "mode deleted, method rung on", "mode of another polarity"],
+    "under", [None, "positive"], ids=["mode deleted", "mode of another polarity"]
 )
 async def test_processing_on_request_leaves_a_file_no_mode_binds_its_samples(
-    async_session_factory, setup, admin_client, monkeypatch, under, by_method
+    async_session_factory, setup, admin_client, monkeypatch, under
 ):
     """A file bound once, whose samples no longer give a mode per polarity:
     a mode deleted since leaves them with none, and one whose polarity was
     changed since is no mode of the file's. It has no modes to keep, which
     is what a parked file with no samples says too - but this one has
-    samples, and a run would only park it. It is refused before it is
-    claimed, with the method rung on as with it off, and keeps its status."""
-    monkeypatch.setattr(process_service, "routes_on_method_binding", lambda: by_method)
+    samples, and with the method rung off a run could only park it. It is
+    refused before it is claimed, and keeps its status."""
+    monkeypatch.setattr(process_service, "routes_on_method_binding", lambda: False)
     orphaned = await _file(
         async_session_factory,
         "on-request-mode-deleted",
@@ -1755,6 +1755,41 @@ async def test_processing_on_request_leaves_a_file_no_mode_binds_its_samples(
     spawn.assert_not_called()
     assert await _samples_of(async_session_factory, orphaned) == 1
     assert await _status(async_session_factory, orphaned) == "done"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "under", [None, "positive"], ids=["mode deleted", "mode of another polarity"]
+)
+async def test_processing_on_request_lets_the_rung_answer_for_a_file_with_samples(
+    async_session_factory, setup, admin_client, monkeypatch, under
+):
+    """The same file where the server routes on method bindings. Its
+    acquisition method may bind it, and only the run can ask, so it starts
+    with no modes of its own. A run binds a file before it clears anything
+    of it: the method rebuilds it, or it parks with its samples as they
+    were. Its samples are not even counted."""
+    monkeypatch.setattr(process_service, "routes_on_method_binding", lambda: True)
+    counted = AsyncMock()
+    monkeypatch.setattr(process_service, "_pipeline_item_count", counted)
+    orphaned = await _file(
+        async_session_factory,
+        "on-request-left-to-the-rung",
+        "-",
+        sample_under=(setup["batch"], setup[under] if under else None),
+    )
+    spawn = AsyncMock()
+    monkeypatch.setattr(sample_files_routes, "spawn_auto_process_sample_file", spawn)
+
+    resp = await admin_client.post(f"/api/sample/files/{orphaned}/process")
+
+    assert resp.status_code == 202, resp.text
+    assert spawn.await_args.kwargs["sample_file_id"] == orphaned
+    assert spawn.await_args.kwargs["ionization_mode_ids"] is None
+    assert spawn.await_args.kwargs["kept_provenance"] is None
+    counted.assert_not_awaited()
+    assert await _samples_of(async_session_factory, orphaned) == 1
+    assert await _status(async_session_factory, orphaned) == "queued"
 
 
 @pytest.mark.asyncio
@@ -1849,14 +1884,17 @@ async def test_processing_a_parked_file_on_request_leaves_it_to_the_run(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("by_method", [False, True], ids=["rung off", "rung on"])
 async def test_processing_on_request_leaves_an_ambiguous_name_its_samples(
-    async_session_factory, setup, admin_client, mode_with_token, monkeypatch
+    async_session_factory, setup, admin_client, mode_with_token, monkeypatch, by_method
 ):
     """A name two tokens of one polarity match is a configuration to fix,
-    which no earlier binding stands in for: the run would bind the file to
-    nothing and park it. Refused before it is claimed, with what the tokens
-    matched and the two ways out its park would have offered. The same name
-    on a file with no samples is left to its run, which says why it parks."""
+    which no earlier binding stands in for and the method rung is never
+    asked about: the run would bind the file to nothing and park it.
+    Refused before it is claimed, with what the tokens matched and the two
+    ways out its park would have offered. The same name on a file with no
+    samples is left to its run, which says why it parks."""
+    monkeypatch.setattr(process_service, "routes_on_method_binding", lambda: by_method)
     _one, token_one = await mode_with_token("-")
     _two, token_two = await mode_with_token("-")
     bound = await _file(
