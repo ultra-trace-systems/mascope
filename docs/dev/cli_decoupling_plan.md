@@ -178,9 +178,10 @@ docstring says why. `libraries/runtime/tests/test_state.py` covers it
 | Fleet automation | `tooling/fleet/update.yml` checks out the tag and reinstalls the tool; `roles/deploy_env` refuses a home that is not a checkout | none |
 | Demo | the demo compose file (`mascope demo` is the developer's flow) | the demo compose file; `mascope demo` itself fails (section 2.3) |
 
-The fallback warning in `_deploy_version` tells a wheel operator to "deploy
-from a checkout at the release tag", which is the one remedy their install
-cannot take.
+The fallback warning in `_deploy_version` does name the remedy, the
+`MASCOPE_VERSION=vX.Y.Z` pin, but nothing a wheel install runs ever sets it
+durably: `prod update --version` sets it for its own process and says
+nothing when it lapses.
 
 So the wheel install is a working way to start a stack, and not yet a way to
 run one across releases. Closing that is phases 7 and 8. Whether to close it,
@@ -199,11 +200,10 @@ independent of the decision and can start now.
    `snapshot`, `verify`) only in a checkout, the way `main.py` gates `dev`,
    and have the group on a wheel point at the demo compose file. Keep
    `fetch` and `info`. `wheel_smoke.py` asserts the result.
-2. **Say what a wheel install does.** The `_deploy_version` warning names
-   the `MASCOPE_VERSION` pin as the remedy when there is no checkout, and
-   `prod update --version` on a wheel install says the pin does not outlive
-   the command. The README states the limits in section 3 until phase 7
-   removes them.
+2. **Say what a wheel install does.** `prod update --version` on a wheel
+   install says, once the update is done, that the pin does not outlive the
+   command and how to keep it. The README states the limits in section 3
+   until phase 7 removes them.
 3. **Published metadata.** Move the `dev` extra's packages to the root
    `pyproject.toml`, which is the only place that installs them, and add a
    `deptry` check of `tooling/cli` to CI with the checkout-only imports of
@@ -254,10 +254,12 @@ without touching a site.
 
 ### Phase 8 - boot, timers and the move (if 6 is b; 8.2 either way)
 
-1. **Units from the CLI.** Ship `tooling/systemd/` as package data and a
-   command that installs the units with the paths filled in, as
-   `tooling/ubuntu.sh` does now; `ubuntu.sh` keeps only the prerequisites
-   and the wheel install.
+1. **Units from the CLI.** Ship `tooling/systemd/` as package data, with
+   what its units run from outside it: `mascope-disk-check.service` runs
+   `tooling/disk-check.sh`, configured from `tooling/disk-check.env.example`
+   (or replace the script with a CLI command). Add a command that installs
+   the units with the paths filled in, as `tooling/ubuntu.sh` does now;
+   `ubuntu.sh` keeps only the prerequisites and the wheel install.
 2. **Packaged end-to-end smoke.** Install the wheel in a clean container,
    `mascope init`, `mascope prod up` against published release images, then
    `tooling/smoke-test.sh`. This is the first plan's open phase 4 item.
@@ -339,7 +341,8 @@ floor admits.
 What the open phases need first:
 
 - phase 5: `wheel_smoke.py` asserting which `demo` subcommands a wheel has,
-  and a test that the fallback warning differs with and without a checkout;
+  and a test that `prod update --version` without a checkout says the pin
+  lapses;
 - phase 7: tests of the deployed-release record through `_deploy_version`,
   `update` and `doctor`, written against today's behaviour before it
   changes; and, for the refresh, a test that the env overlay survives it;
