@@ -7,7 +7,7 @@ into one spectrum - its streams detected and stitched in the peak store,
 with nothing reading the stitch yet; phase 8 follows it; detection
 deferred** (2026-10-07). Written for issue #2098 ("Split files into
 samples by scan attributes"), which carries the checklist of pull
-requests. Decisions 1 to 5, 7, 9 and 11 to 16 in section 12 are settled;
+requests. Decisions 1 to 5, 7, 9, 11 to 16 and 18 in section 12 are settled;
 6, 8, 10 and 17 are open.
 
 ## Picking this up
@@ -3349,6 +3349,25 @@ through a short-lived stacked branch, merged as one unit.
       off the layout's ratio. It writes nothing and decides nothing.
     No map of the test set moves, so "every layout of the test set maps
     with nothing configured" holds as it did (4.5).
+
+18. **The quality badge of a stitched file.** Raised 2026-10-14 by a look at
+    #2333 on a stitched sample: with each fitted stream judged on its own
+    block, a one-calibrant range whose correction exceeded the lone-point
+    cap turned a file that had shown only the drift badge into a warning.
+    **Decided 2026-10-14 (MAS-87):** the badge stays as it is. The verdict
+    reads the worst fitted stream, so a stream anchored to a wrong peak
+    keeps the file below the bar and, under `enforce`, out of matching;
+    drift is read once, from the pooled pre-fit error, since it is the
+    instrument's condition and not a range's. The false warning is closed
+    by the vouching rule of section 4 (#2345): a stream fitted on too few
+    calibrants to vouch for its own correction is vouched for by another
+    of the file within `STREAM_CORROBORATION_PPM`. Not taken: a pooled-only
+    verdict, which would let a wrong-peak stream through; per-stream
+    badges, which need storage and a migration for a row that has one
+    badge. Files calibrated before #2345 keep their stored verdict until
+    re-processed under phase 8. Revisited only if per-stream drift becomes
+    real (Q Exactive band steps), which is the axis-fingerprint work in
+    the calibration node, not the badge.
 
 ---
 
