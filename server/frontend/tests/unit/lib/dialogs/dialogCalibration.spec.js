@@ -109,8 +109,8 @@ const point = (extra = {}) => ({
 })
 const SUMMARY = { match_mz_error: 11.3, calibration_mz_error: 0.6, calibrant_to_tic: 0.01 }
 
-const fitted = (quality, stats) =>
-  reactive({
+const fitted = (quality, stats) => {
+  const fit = reactive({
     current: { mode: 'one-point', quality, quality_issues: [], quality_gate: 'warn' },
     stats,
     status: 'success',
@@ -121,6 +121,21 @@ const fitted = (quality, stats) =>
     compute: vi.fn(),
     loadInstrumentDefaults: vi.fn()
   })
+  // What `useMzFit`'s does: the fit and what came with it are let go
+  fit.unload = vi.fn(() => {
+    Object.assign(fit, { status: null, current: null, error: null, stats: null })
+  })
+  return fit
+}
+// A fit as it arrives for a sample, once the dialog has asked for it
+const arrives = (fit, quality, stats) =>
+  Object.assign(fit, {
+    current: { mode: 'one-point', quality, quality_issues: [], quality_gate: 'warn' },
+    stats,
+    status: 'success'
+  })
+// Defaults that are still being fetched, so that the refit has not started
+const fetching = () => new Promise(() => {})
 
 const mountDialog = (context = SAMPLE) =>
   mount(DialogCalibration, {
@@ -254,19 +269,69 @@ describe('DialogCalibration', () => {
   it('waits on a fit under way, and on none that warned before it had calibrants', () => {
     mocks.fit = fitted(null, null)
     mocks.fit.current = null
-    const spinning = () => mountDialog().findComponent({ name: 'ProgressSpinner' }).exists()
+    const shown = () => {
+      const wrapper = mountDialog()
+      return {
+        spinner: wrapper.findComponent({ name: 'ProgressSpinner' }).exists(),
+        errors: wrapper
+          .findAllComponents({ name: 'Message' })
+          .filter((message) => message.props('severity') === 'error').length
+      }
+    }
 
     for (const status of [null, 'pending']) {
       mocks.fit.status = status
-      expect(spinning()).toBe(true)
+      expect(shown()).toEqual({ spinner: true, errors: 0 })
     }
     // A fit that found no calibrants ends in a warning with no rows: it is
-    // done, and the warning says why
+    // done, and the warning says why, alone
     mocks.fit.status = 'warning'
     mocks.fit.error = 'No calibration peaks found'
-    expect(spinning()).toBe(false)
+    expect(shown()).toEqual({ spinner: false, errors: 0 })
     mocks.fit.status = 'error'
-    expect(spinning()).toBe(false)
+    expect(shown()).toEqual({ spinner: false, errors: 1 })
+  })
+
+  it('shows no fit of the sample before beside a sample it is opened on again', async () => {
+    // The dialog stays mounted between openings, and the refit waits on the
+    // next sample's defaults: until it starts, the fit is the last sample's
+    mocks.fit = fitted({ n_points: 2, segments: SEGMENTS }, [point(), SUMMARY])
+    mocks.fit.loadInstrumentDefaults = vi.fn(fetching)
+    const applied = [{ ...SEGMENTS[0], quality: { n_points: 5 } }, ...SEGMENTS.slice(1)]
+    const next = { ...SAMPLE, sample_item_id: 'si-2', mz_calibration: record(applied) }
+    const wrapper = mount(DialogCalibration, {
+      props: { visible: false, context: next },
+      global: { plugins: [PrimeVue], stubs }
+    })
+
+    await wrapper.setProps({ visible: true })
+    await flushPromises()
+
+    // The sample's own record, and no fit until its own is made
+    expect(lists(wrapper).map((list) => list.heading)).toEqual(['Applied:'])
+    expect(wrapper.findComponent({ name: 'DataTable' }).exists()).toBe(false)
+  })
+
+  it('shows no fit of the sample picked before beside the one picked next', async () => {
+    const applied = [{ ...SEGMENTS[0], quality: { n_points: 5 } }, ...SEGMENTS.slice(1)]
+    const first = { ...SAMPLE, mz_calibration: record(SEGMENTS) }
+    const second = { ...SAMPLE, sample_item_id: 'si-2', mz_calibration: record(applied) }
+    api.http.get.mockResolvedValueOnce([first, second])
+    mocks.fit = fitted(null, null)
+    mocks.fit.current = null
+    const wrapper = mountDialog({ sample_batch_id: 'sb-1', sample_batch_name: 'composite' })
+    await flushPromises()
+    arrives(mocks.fit, { n_points: 2, segments: SEGMENTS }, [point(), SUMMARY])
+    await flushPromises()
+    // The first sample's fit repeats its record
+    expect(lists(wrapper).map((list) => list.heading)).toEqual([null])
+
+    mocks.fit.loadInstrumentDefaults = vi.fn(fetching)
+    wrapper.findComponent({ name: 'Listbox' }).vm.$emit('update:modelValue', second)
+    await flushPromises()
+
+    expect(lists(wrapper).map((list) => list.heading)).toEqual(['Applied:'])
+    expect(lists(wrapper)[0].ranges[0]).toBe('m/z 40-138: fitted on 5 calibrants (-11.93 ppm).')
   })
 
   it('lists nothing while there is no fit', () => {

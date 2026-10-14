@@ -170,6 +170,10 @@ const confirmMessage = computed(() => {
 watch(visible, init)
 async function init(active) {
   if (active) {
+    // The dialog stays mounted, and its fit is the last sample's until the
+    // refit below starts: set beside this sample's record it would read as
+    // this sample's fit while the defaults are fetched, and stay if that fails
+    await mzFit.unload()
     // Seed instrument-appropriate parameter defaults for the sample before
     // snapshotting, so the change does not read as a user edit (which would
     // trigger a second fit through the unsynced watcher).
@@ -188,6 +192,8 @@ const unsynced = computed(() =>
 )
 
 watch(previewSample, async (sample) => {
+  // The fit shown is the sample picked before, as on opening (see `init`)
+  await mzFit.unload()
   if (sample?.sample_item_id) {
     await mzFit.loadInstrumentDefaults(sample)
     // Absorb any default changes into the snapshot so the unsynced watcher
