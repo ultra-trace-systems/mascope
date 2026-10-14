@@ -294,6 +294,12 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   spinner turning below it as though the fit were still running. It now
   shows the warning alone.
 
+- **The calibration dialog shows no earlier sample's fit.** Opened on one
+  sample after another, or with another sample picked in a batch, it
+  showed the fit of the one before under the new sample's name until the
+  new fit started, which waits on fetching that sample's settings; if the
+  fetch failed, it stayed. It now shows no fit until the sample's own.
+
 ## [1.11.0] - 2026.10.09
 
 ### Added
