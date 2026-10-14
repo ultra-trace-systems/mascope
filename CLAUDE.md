@@ -204,6 +204,13 @@ Feature) carries the kind. Milestones are not used.
   backend pytest, library pytest, CLI pytest, File Agent pytest, frontend unit,
   the dependency licence check, and the demo-stack e2e suite on every PR; releases are gated on
   `tooling/smoke-test.sh`.
+- **A docs-only PR skips backend pytest and the e2e suite.** When every file a
+  PR changes is under `docs/` or ends in `.md`, the "Changed paths" job in
+  `tests.yaml` skips `test` and `End-to-end tests (demo stack)`; a job skipped
+  that way passes its required check, and every other job still runs. So a
+  backend or e2e test must not read a doc: one that did would go unrun on the
+  very PR that changes the doc. A test that has to read one belongs in a suite
+  that always runs, as the CLI tests read `docs/maintaining.md`.
 - The golden-dataset reproducibility check
   (`.github/workflows/reproducibility.yaml`) is required on PRs into `master`
   but does not run on PRs into `develop`. If a change can move the pipeline's
