@@ -1782,9 +1782,18 @@ def calibration_quality_issues(quality: dict | None, filename: str) -> list[dict
     kept, and each stream fitted on calibrants of its own is judged by the
     same bar on its own block: a stream's fit moves that stream's peaks, so
     one stream anchored to a wrong peak is a fault of the file's axis
-    whatever the others say. Such an issue names the stream, in its message
-    and under ``segment``. A stream that took its factor from a neighbour
-    has no fit to judge; how it came by the factor is in the block.
+    whatever the file's calibrants as a whole say. Such an issue names the
+    stream, in its message and under ``segment``. A stream that took its
+    factor from a neighbour has no fit to judge; how it came by the factor
+    is in the block.
+
+    A stream fitted on too few calibrants to vouch for its own correction -
+    one point, or isotopes of one ion - is vouched for by another stream of
+    the file that can: one fitted on calibrants of several ions that clears
+    the bar on its own, and whose correction lies within
+    ``STREAM_CORROBORATION_PPM`` of the first's. The two then read the
+    instrument's offset from the acquisition axis in two scan ranges, where
+    a stream anchored to a wrong peak lands tens of ppm from the others.
 
     :param quality: The fit's ``quality`` block (see :func:`fit_quality`).
     :param filename: Sample filename, selects the instrument-class bounds.
@@ -1792,10 +1801,28 @@ def calibration_quality_issues(quality: dict | None, filename: str) -> list[dict
         the fit clears the bar.
     """
     issues = _quality_block_issues(quality, filename)
-    for segment in (quality or {}).get("segments") or []:
-        if segment.get("source") != m_factor.ANCHORS:
-            continue
-        for issue in _quality_block_issues(segment.get("quality"), filename):
+    fitted = [
+        segment
+        for segment in (quality or {}).get("segments") or []
+        if segment.get("source") == m_factor.ANCHORS
+    ]
+    # The corrections of the streams whose own calibrants vouch for them
+    vouching = [
+        block["axis_correction_ppm"]
+        for block in (segment.get("quality") for segment in fitted)
+        if block
+        and block.get("axis_correction_ppm") is not None
+        and _corroborates_itself(block)
+        and not _quality_block_issues(block, filename)
+    ]
+    limit = calibration_config.STREAM_CORROBORATION_PPM
+    for segment in fitted:
+        block = segment.get("quality")
+        correction = (block or {}).get("axis_correction_ppm")
+        vouched = correction is not None and any(
+            abs(correction - other) <= limit for other in vouching
+        )
+        for issue in _quality_block_issues(block, filename, vouched=vouched):
             issues.append(
                 {
                     "code": issue["code"],
@@ -1806,7 +1833,28 @@ def calibration_quality_issues(quality: dict | None, filename: str) -> list[dict
     return issues
 
 
-def _quality_block_issues(quality: dict | None, filename: str) -> list[dict]:
+def _corroborates_itself(quality: dict) -> bool:
+    """
+    Whether a fit's own calibrants check each other: two points or more,
+    from different ions. One point zeroes its own residual, and one ion's
+    isotopes agree whatever peak they sit on. An unrecorded ion count is
+    not taken as corroboration.
+
+    :param quality: A fit's ``quality`` block (see :func:`fit_quality`).
+    :return: True when the points come from at least
+        ``MIN_VERIFIED_CALIBRATION_IONS`` ions.
+    """
+    n_ions = quality.get("n_ions")
+    return (
+        (quality.get("n_points") or 0) >= 2
+        and n_ions is not None
+        and n_ions >= calibration_config.MIN_VERIFIED_CALIBRATION_IONS
+    )
+
+
+def _quality_block_issues(
+    quality: dict | None, filename: str, vouched: bool = False
+) -> list[dict]:
     """
     Why one fit's quality block does not clear the bar.
 
@@ -1822,6 +1870,9 @@ def _quality_block_issues(quality: dict | None, filename: str) -> list[dict]:
 
     :param quality: The fit's ``quality`` block (see :func:`fit_quality`).
     :param filename: Sample filename, selects the instrument-class bounds.
+    :param vouched: Whether another stream of the file vouches for the
+        correction this block makes (see :func:`calibration_quality_issues`),
+        which corroborates a fit its own points cannot.
     :return: One ``{"code", "message"}`` dict per failed criterion; empty when
         the fit clears the bar.
     """
@@ -1870,10 +1921,8 @@ def _quality_block_issues(quality: dict | None, filename: str) -> list[dict]:
     min_ions = calibration_config.MIN_VERIFIED_CALIBRATION_IONS
     max_shift = calibration_config.LOW_POINT_MAX_AXIS_CORRECTION_PPM
     # Below min_points, a fit is corroborated only when its points come from
-    # different ions: one point zeroes its own residual, and one ion's
-    # isotopes agree whatever peak they sit on. An unrecorded ion count is
-    # not taken as corroboration.
-    corroborated = n_points >= 2 and n_ions is not None and n_ions >= min_ions
+    # different ions, or when another stream of the file vouches for it
+    corroborated = vouched or _corroborates_itself(quality)
     # How far the fit puts the axis from the acquisition axis. The pre-fit
     # error measures that only on a file no fit has moved yet: an Orbitrap
     # apply rescales the stored axis in place, so a refit of a file a wrong
@@ -1909,7 +1958,12 @@ def _quality_block_issues(quality: dict | None, filename: str) -> list[dict]:
             }
         )
 
-    if n_points >= min_points and n_ions is not None and n_ions < min_ions:
+    if (
+        n_points >= min_points
+        and n_ions is not None
+        and n_ions < min_ions
+        and not vouched
+    ):
         issues.append(
             {
                 "code": "ions",

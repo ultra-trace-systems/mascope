@@ -53,6 +53,7 @@ from mascope_backend.api.models.calibration.calibration_pydantic_model import (
     MzCalibrationParams,
     OrbiCalibrationParams,
 )
+from mascope_backend.api.models.calibration.config import calibration_config
 from mascope_signal.peak import MZ_ROW_SEPARATION
 
 
@@ -1043,7 +1044,8 @@ def test_a_fit_whose_streams_all_clear_the_bar_has_no_issue():
 
 def test_a_stream_fitted_on_one_point_far_off_is_an_issue_of_the_file():
     """One stream anchored to a wrong peak moves that stream's peaks,
-    whatever the file's other calibrants say."""
+    whatever the file's calibrants as a whole say: here no stream fitted on
+    calibrants of several ions agrees with it."""
     quality = {
         **_block(),
         "segments": [
@@ -1057,6 +1059,185 @@ def test_a_stream_fitted_on_one_point_far_off_is_an_issue_of_the_file():
     assert issue["code"] == "points"
     assert issue["segment"] == KEYS[HIGH]
     assert issue["message"].startswith("m/z 440-900: Fitted on 1 calibration point")
+
+
+# -- a stream vouched for by another of its file -------------------------------
+#
+# An instrument whose axis is 22 ppm off reads that offset in every scan
+# range; a stream fitted on one calibrant that reads it too found the right
+# peak, where one anchored to a wrong peak lands tens of ppm away.
+
+
+def test_a_stream_on_one_point_is_vouched_for_by_one_on_several_ions_that_agrees():
+    """The file that showed the drift badge as one fit: two ranges on one
+    calibrant each, both moved 22 ppm, as the ranges fitted on several ions
+    were."""
+    quality = {
+        **_block(points=6, ions=5, correction=22.44),
+        "segments": [
+            _segment(REAGENT, points=2, ions=2, correction=22.72),
+            _segment(LOW, points=1, ions=1, correction=22.43),
+            _segment(MID, points=2, ions=2, correction=22.53),
+            _segment(HIGH, points=1, ions=1, correction=21.94),
+        ],
+    }
+
+    assert calibration_quality_issues(quality, SAMPLE_FILENAME) == []
+
+
+def test_a_stream_that_does_not_agree_is_not_vouched_for():
+    quality = {
+        **_block(),
+        "segments": [
+            _segment(REAGENT, points=2, ions=2, correction=22.5),
+            _segment(HIGH, points=1, ions=1, correction=25.0),
+        ],
+    }
+
+    (issue,) = calibration_quality_issues(quality, SAMPLE_FILENAME)
+
+    assert issue["code"] == "points"
+    assert issue["segment"] == KEYS[HIGH]
+
+
+def test_the_agreement_limit_itself_vouches():
+    limit = calibration_config.STREAM_CORROBORATION_PPM
+    quality = {
+        **_block(),
+        "segments": [
+            _segment(REAGENT, points=2, ions=2, correction=22.5),
+            _segment(HIGH, points=1, ions=1, correction=22.5 + limit),
+            _segment(LOW, points=1, ions=1, correction=22.5 - limit - 0.01),
+        ],
+    }
+
+    (issue,) = calibration_quality_issues(quality, SAMPLE_FILENAME)
+
+    assert issue["segment"] == KEYS[LOW]
+
+
+def test_a_stream_on_one_point_does_not_vouch_for_another():
+    """Two lone points that agree are two fits nothing checks."""
+    quality = {
+        **_block(),
+        "segments": [
+            _segment(REAGENT, points=1, ions=1, correction=22.0),
+            _segment(HIGH, points=1, ions=1, correction=22.3),
+        ],
+    }
+
+    issues = calibration_quality_issues(quality, SAMPLE_FILENAME)
+
+    assert [issue["segment"] for issue in issues] == [KEYS[REAGENT], KEYS[HIGH]]
+
+
+def test_a_lone_point_that_clears_the_bar_does_not_vouch_either():
+    """One point within the correction a lone point may make clears the
+    bar, but nothing checks it either, so it cannot vouch for a neighbour
+    just beyond that correction."""
+    quality = {
+        **_block(),
+        "segments": [
+            _segment(REAGENT, points=1, ions=1, correction=9.5),
+            _segment(HIGH, points=1, ions=1, correction=11.0),
+        ],
+    }
+
+    (issue,) = calibration_quality_issues(quality, SAMPLE_FILENAME)
+
+    assert issue["segment"] == KEYS[HIGH]
+
+
+def test_a_stream_below_the_bar_does_not_vouch():
+    quality = {
+        **_block(),
+        "segments": [
+            _segment(REAGENT, points=2, ions=2, residual=2.5, correction=22.5),
+            _segment(HIGH, points=1, ions=1, correction=22.0),
+        ],
+    }
+
+    issues = calibration_quality_issues(quality, SAMPLE_FILENAME)
+
+    assert [(issue["segment"], issue["code"]) for issue in issues] == [
+        (KEYS[REAGENT], "residual"),
+        (KEYS[HIGH], "points"),
+    ]
+
+
+def test_a_stream_that_took_a_neighbours_factor_does_not_vouch():
+    """Its factor is a copy of another's, not a reading of its own."""
+    quality = {
+        **_block(),
+        "segments": [
+            {
+                **_segment(MID, source="borrowed"),
+                "quality": _block(points=2, ions=2, correction=22.4),
+            },
+            _segment(HIGH, points=1, ions=1, correction=22.0),
+        ],
+    }
+
+    (issue,) = calibration_quality_issues(quality, SAMPLE_FILENAME)
+
+    assert issue["segment"] == KEYS[HIGH]
+
+
+def test_isotopes_of_one_ion_are_vouched_for_as_one_point_is():
+    quality = {
+        **_block(),
+        "segments": [
+            _segment(REAGENT, points=2, ions=2, correction=22.5),
+            _segment(LOW, points=2, ions=1, correction=22.1),
+            _segment(HIGH, points=4, ions=1, correction=22.2),
+        ],
+    }
+
+    assert calibration_quality_issues(quality, SAMPLE_FILENAME) == []
+
+
+def test_a_vouched_stream_is_still_judged_on_its_residual():
+    quality = {
+        **_block(),
+        "segments": [
+            _segment(REAGENT, points=2, ions=2, correction=22.5),
+            _segment(HIGH, points=2, ions=1, residual=2.5, correction=22.0),
+        ],
+    }
+
+    (issue,) = calibration_quality_issues(quality, SAMPLE_FILENAME)
+
+    assert (issue["segment"], issue["code"]) == (KEYS[HIGH], "residual")
+
+
+def test_a_stream_whose_correction_is_not_recorded_is_not_vouched_for():
+    """Its pre-fit error stands in for the shift it is judged on, but a
+    refit reads that on the axis an earlier fit set, not from the acquisition
+    axis the other streams' corrections are measured from."""
+    unrecorded = _segment(HIGH, points=1, ions=1, correction=22.0)
+    unrecorded["quality"]["axis_correction_ppm"] = None
+    quality = {
+        **_block(),
+        "segments": [_segment(REAGENT, points=2, ions=2, correction=22.5), unrecorded],
+    }
+
+    (issue,) = calibration_quality_issues(quality, SAMPLE_FILENAME)
+
+    assert issue["segment"] == KEYS[HIGH]
+
+
+def test_the_fit_as_a_whole_is_vouched_for_by_nothing():
+    """Vouching is between the streams of a file; the file's own block is
+    judged on its calibrants as before."""
+    quality = {
+        **_block(points=1, ions=1, correction=22.0),
+        "segments": [_segment(REAGENT, points=2, ions=2, correction=22.0)],
+    }
+
+    (issue,) = calibration_quality_issues(quality, SAMPLE_FILENAME)
+
+    assert issue["code"] == "points"
+    assert "segment" not in issue
 
 
 def test_a_streams_residual_is_judged_by_the_files_bound():
