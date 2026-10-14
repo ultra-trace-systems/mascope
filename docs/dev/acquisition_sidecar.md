@@ -339,11 +339,14 @@ is read:
 - A record that binds nothing leaves the file to its name and its samples,
   as a file with no record: a token in the name binds it; with none, it is
   rebuilt under the modes its samples have. With neither, a file that has
-  samples is refused, by Re-process and by processing on request alike,
-  with what its record named and nothing of it touched. It is not sent to
-  the pipeline to find out, because a run clears a file's samples before
-  it asks, and a re-processing resets its calibration too. A file with no
-  samples has nothing a run could clear. Processing on request sends it
+  samples is refused with what its record named and nothing of it
+  touched. Re-process refuses it outright: it clears the file's samples,
+  and resets its calibration, before the pipeline asks the method rung.
+  Processing on request, where the rung is on, asks the file's acquisition
+  method first, as the pipeline asks it, and sends on a file the method
+  binds; one it declines is refused with the method's reason beside the
+  record's. A file with no samples has nothing a run could cost it.
+  Processing on request sends it
   on to the pipeline, which binds it by its acquisition method where the
   method rung is on, and parks it again otherwise; Re-process sends it on
   where the rung is on, and refuses it where the rung is off. A record

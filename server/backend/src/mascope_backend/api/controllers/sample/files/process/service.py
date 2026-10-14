@@ -2343,11 +2343,13 @@ async def re_process_sample_files(
             if kept is None:
                 # No token, and no samples to keep - but the pipeline can
                 # still place the file: this deployment lets an acquisition
-                # method bind it, which only the pipeline can ask, or the file
-                # records fragmentation scans alone, which are filed without a
-                # chemistry (its MS2 sample, which the rebuild clears, is
-                # filed again). So it goes through with no modes of its own
-                # and the pipeline decides.
+                # method bind it, or the file records fragmentation scans
+                # alone, which are filed without a chemistry (its MS2 sample,
+                # which the rebuild clears, is filed again). So it goes
+                # through with no modes of its own and the pipeline decides.
+                # The method is not asked here first: such a file has no
+                # samples a run could cost it, or only an MS2 part its run
+                # files again.
                 #
                 # It parks again if the method cannot place it, which is where
                 # it already is, with a detail naming both reasons instead of
@@ -2598,36 +2600,40 @@ async def modes_to_rebind(sample_file_id: str) -> KeptModes | None:
 
     None leaves the binding to the run: the record, a token or, where that
     rung is on, the acquisition method binds the file, or the run finds that
-    none does and parks it. The record is
-    asked before the name, as the run asks it, so a file its record binds is
-    not rebuilt under whatever it or a token bound it to before. A record
-    that cannot be read fails the request, which has claimed nothing yet,
-    and so do the modes of the file's samples: neither is guessed at.
+    none does and parks it. The record is asked before the name, as the run
+    asks it, so a file its record binds is not rebuilt under whatever it or
+    a token bound it to before. A record that cannot be read fails the
+    request, which has claimed nothing yet, and so do the modes of the
+    file's samples: neither is guessed at.
 
     Not only a file somebody chose a chemistry for. A file a token bound
     months ago reaches this too, once that token has been renamed or
     deleted - which is why what comes back carries each mode's own
     provenance rather than being treated as a choice.
 
-    **A file with samples that nothing could bind is refused.** No modes to
-    keep is what a parked file with no samples says, and that one is the
-    run's to bind or park again. A file whose samples no longer give a mode
-    per polarity says it too - a mode deleted since leaves them with none,
-    the column being ``ON DELETE SET NULL``. Where the deployment routes on
-    method bindings, that file is the run's as well: its acquisition method
-    may bind it, and only the run can ask, since the rung reads the file's
-    scan-stream census there. A run binds a file before it clears anything
-    of it (:func:`_delete_partial_acquisition_items`), so one the method
-    cannot place parks with its samples as they were. Where the rung is
-    off, the run could only park the file, so the request says why at once
-    and leaves the file's status as it was: the samples are counted beside
-    the modes, as re-processing counts them, and the file is refused here,
-    where nothing of it is claimed yet. Samples that cannot be counted fail
-    the request too, and are not taken for none.
+    **A file with samples that nothing binds is refused.** No modes to keep
+    is what a parked file with no samples says, and that one is the run's to
+    bind or park again. A file whose samples no longer give a mode per
+    polarity says it too - a mode deleted since leaves them with none, the
+    column being ``ON DELETE SET NULL`` - and started with no modes, a run
+    would park it unless its acquisition method binds it. So the samples are
+    counted beside the modes, as re-processing counts them. Where the
+    deployment routes on method bindings, the method is asked here as the
+    run asks it (:func:`resolve_modes_by_method_binding`, on the file's
+    scan-stream census), and a file it binds is left to the run, which asks
+    again and rebuilds the file under that chemistry. A file nothing binds -
+    the method declines, or the rung is off - is refused here, where nothing
+    of it is claimed yet: the request says why at once, with the method's
+    own reason where it was asked, and leaves the file's status as it was.
+    A run binds a file before it clears anything of it
+    (:func:`_delete_partial_acquisition_items`), so a file whose method
+    stops binding it between this check and its run parks with its samples
+    as they were. Samples that cannot be counted fail the request too, and
+    are not taken for none.
 
-    Re-processing refuses such a file with the rung on as well. It clears a
-    file's samples before its run, so there the method could only be asked
-    at the cost of them.
+    Re-processing refuses such a file with the rung on as well, unasked. It
+    clears a file's samples before its run, so a file whose method stopped
+    binding it in between would park with its samples gone.
 
     Not refused: a file of fragmentation scans alone with no token. Its
     sample is the MS2 part its run filed without a chemistry, and the run
@@ -2642,8 +2648,8 @@ async def modes_to_rebind(sample_file_id: str) -> KeptModes | None:
     :param sample_file_id: The file.
     :raises ApiException: 422 when the file has samples and the run could
         only park it: its record does not bind it, and its name has no
-        token while its samples give no modes and the method rung is off,
-        or has ambiguous tokens.
+        token while its samples give no modes and the method does not bind
+        it either, or has ambiguous tokens.
     :return: The modes its samples have with how each was bound, or None.
     """
     sample_file = await fetch_sample_file(sample_file_id=sample_file_id)
@@ -2665,22 +2671,33 @@ async def modes_to_rebind(sample_file_id: str) -> KeptModes | None:
         return None
     if no_token is not None and kept is not None:
         return kept
-    if no_token is not None and records_only_fragmentation_scans(
-        await read_scan_streams(sample_file.filename)
-    ):
+    # Read once: it says whether the file holds fragmentation scans alone,
+    # and it is what the method rung reads.
+    streams = (
+        await read_scan_streams(sample_file.filename) if no_token is not None else None
+    )
+    if no_token is not None and records_only_fragmentation_scans(streams):
         # An acquisition of fragmentation scans alone, which its run files
         # without a chemistry: the sample it has is its MS2 part, which has
         # no mode, and the run files it again after clearing it. Nothing of
         # it waits for a chemistry, so nothing is lost, as it is in
         # re-processing (filed_alone).
         return None
-    if no_token is not None and routes_on_method_binding():
-        # The method's turn, which only the run can give it. Its samples
-        # are not counted: the run keeps them unless it binds the file.
-        return None
     if not await _pipeline_item_count(sample_file_id):
         return None
-    if no_token is not None:
+    if no_token is not None and routes_on_method_binding():
+        # Asked as the run asks it. The run asks again, so the answer here
+        # only decides whether the file is refused before it is claimed.
+        _routed, declined = await resolve_modes_by_method_binding(sample_file, streams)
+        if declined is None:
+            return None
+        reason = (
+            f"{str(no_token).rstrip('.')}. The ionization modes its samples "
+            "were made under no longer bind it, and its acquisition method "
+            f"does not say either: {declined.reason}. {declined.remedy} "
+            "It was left as it is."
+        )
+    elif no_token is not None:
         reason = (
             f"{str(no_token).rstrip('.')}. The ionization modes its samples "
             "were made under no longer bind it either, so it was left as it "

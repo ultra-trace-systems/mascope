@@ -2714,18 +2714,20 @@ Needed before any rung can be provisional or park.
      are still there under modes that no longer bind it - a mode deleted
      since leaves them with none - is refused untouched, as it is where the
      rung is off, and so is one whose samples could not be read. Processing
-     one file on request (`POST /api/sample/files/{id}/process`) leaves such
-     a file to the rung where it is on: the run binds a file before it
-     clears anything of it (phase 1), so the method is asked with the
-     samples still there, and a file it cannot place parks with them. With
-     the rung off it refuses the file, and with the rung on or off a file
-     with samples and an ambiguous name, which the rung never answers: the
-     request says at once why the run would park the file, and leaves it
-     as it is; samples it cannot read fail the request. A run that parks a
-     file after these checks - started behind the ingest gate, with a mode
-     deleted or a token changed in between - keeps its samples too. A file
-     re-processing parks that way has been cleared by re-processing already,
-     between its check and its run. A file bound
+     one file on request (`POST /api/sample/files/{id}/process`) asks the
+     rung for such a file where it is on, as the run asks it, on the file's
+     scan-stream census: a file its method binds is started with no modes of
+     its own, and the run asks again and rebuilds it. One the method
+     declines is refused with the method's reason and remedy, and so is the
+     file where the rung is off, and with the rung on or off a file with
+     samples and an ambiguous name, which the rung never answers: the
+     request says at once why the run would park the file, and leaves it as
+     it is; samples it cannot read fail the request. The run binds a file
+     before it clears anything of it (phase 1), so a run that parks a file
+     after these checks - started behind the ingest gate, with a mode
+     deleted, a token changed or the binding moved in between - keeps its
+     samples. A file re-processing parks that way has been cleared by
+     re-processing already, between its check and its run. A file bound
      this way teaches its binding nothing, and its items record
      `method_binding_id`, which is checked against the table as the item is
      created rather than trusted from the earlier read: `ON DELETE SET NULL`
