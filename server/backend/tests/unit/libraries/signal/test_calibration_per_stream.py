@@ -940,6 +940,11 @@ async def _answered(segments, correction=2.0):
             "warning": None,
         },
     )
+    return await _answer(handler)
+
+
+async def _answer(handler):
+    """What ``calibration_mz_fit`` answers for the fit ``handler`` holds."""
     sample = SimpleNamespace(
         sample_item_id="si-1",
         sample_item_name="composite",
@@ -995,6 +1000,30 @@ async def test_the_fits_answer_previews_a_streams_issue():
 
     (issue,) = fit["quality_issues"]
     assert issue["segment"] == KEYS[HIGH]
+
+
+@pytest.mark.asyncio
+async def test_a_file_of_one_fitted_stream_previews_its_issue_once(fitted, monkeypatch):
+    """The reagent scan alone holds a calibrant, so the file's calibrants
+    are the reagent scan's, and a correction its one point cannot vouch
+    for is the reagent scan's issue: said once, where it is named."""
+    monkeypatch.setattr(calibration_config, "LOW_POINT_MAX_AXIS_CORRECTION_PPM", 1.0)
+    handler = await fitted([TARGETS[0]])
+    handler.fit = AsyncMock()
+
+    fit = await _answer(handler)
+
+    segments = fit["quality"]["segments"]
+    assert [s["label"] for s in segments if s["source"] == "anchors"] == [
+        LABELS[REAGENT]
+    ]
+    (issue,) = fit["quality_issues"]
+    assert issue["code"] == "points"
+    assert issue["segment"] == KEYS[REAGENT]
+    assert issue["message"].startswith(
+        f"{LABELS[REAGENT]}: Fitted on 1 calibration point but moves the m/z "
+        "axis 2.00 ppm"
+    )
 
 
 @pytest.mark.asyncio
@@ -1267,3 +1296,69 @@ def test_the_fit_as_a_whole_is_judged_as_before():
 
     assert issue["code"] == "residual"
     assert "segment" not in issue
+
+
+# -- a file of one fitted stream -----------------------------------------------
+#
+# With one stream fitted on calibrants of its own, the file's calibrants are
+# that stream's: the file's block is the stream's, and so are its issues.
+
+
+def test_the_issue_of_a_file_of_one_fitted_stream_is_said_once_by_the_stream():
+    quality = {
+        **_block(residual=1.27),
+        "segments": [_segment(LOW, residual=1.27), _segment(HIGH, source="overlap")],
+    }
+
+    assert calibration_quality_issues(quality, SAMPLE_FILENAME) == [
+        {
+            "code": "residual",
+            "message": (
+                f"{LABELS[LOW]}: Mean m/z error after calibration is 1.27 ppm "
+                "(limit 1 ppm)."
+            ),
+            "segment": KEYS[LOW],
+        }
+    ]
+
+
+def test_a_file_of_two_fitted_streams_keeps_its_own_issue():
+    """Its block is over both streams' calibrants, a reading of its own."""
+    quality = {
+        **_block(residual=1.27),
+        "segments": [_segment(REAGENT, residual=1.27), _segment(LOW, residual=1.27)],
+    }
+
+    issues = calibration_quality_issues(quality, SAMPLE_FILENAME)
+
+    assert [(issue.get("segment"), issue["code"]) for issue in issues] == [
+        (None, "residual"),
+        (KEYS[REAGENT], "residual"),
+        (KEYS[LOW], "residual"),
+    ]
+
+
+def test_an_issue_of_the_file_its_one_fitted_stream_does_not_have_is_kept():
+    quality = {
+        **_block(points=1, ions=1, residual=1.27, correction=22.0),
+        "segments": [_segment(LOW, points=2, ions=2, residual=1.27, correction=22.0)],
+    }
+
+    issues = calibration_quality_issues(quality, SAMPLE_FILENAME)
+
+    assert [(issue.get("segment"), issue["code"]) for issue in issues] == [
+        (None, "points"),
+        (KEYS[LOW], "residual"),
+    ]
+
+
+def test_an_issue_of_the_file_that_reads_otherwise_than_its_streams_is_kept():
+    """The same criterion read otherwise is not the stream's issue."""
+    quality = {**_block(residual=2.5), "segments": [_segment(LOW, residual=1.27)]}
+
+    issues = calibration_quality_issues(quality, SAMPLE_FILENAME)
+
+    assert [issue["message"] for issue in issues] == [
+        "Mean m/z error after calibration is 2.50 ppm (limit 1 ppm).",
+        f"{LABELS[LOW]}: Mean m/z error after calibration is 1.27 ppm (limit 1 ppm).",
+    ]
