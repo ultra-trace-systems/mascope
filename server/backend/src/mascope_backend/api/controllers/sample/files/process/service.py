@@ -37,6 +37,12 @@ from mascope_backend.api.controllers.sample.files.process.bindings import (
     resolve_modes_by_method_binding,
     routes_on_method_binding,
 )
+from mascope_backend.api.controllers.sample.files.process.ms2_parts import (
+    file_fragmentation_scans,
+    filed_sentence,
+    fragmentation_polarities,
+    records_only_fragmentation_scans,
+)
 from mascope_backend.api.controllers.sample.files.process.peaks import (
     redetect_peaks,
     redetection_decision,
@@ -691,6 +697,69 @@ async def _park_needing_chemistry(
     }
 
 
+async def _file_without_chemistry(
+    sample_file: SampleFile,
+    dataset_id: str,
+    polarities: list[str],
+    streams_note: str | None,
+) -> dict:
+    """File an acquisition of fragmentation scans alone, which nothing binds.
+
+    Such a file needs no chemistry. A chemistry is what a file's MS1 peaks are
+    calibrated, matched and assigned under, and this one records no MS1 scans,
+    so no peaks were detected and there is nothing to do under any mode. So it
+    does not wait for one: each polarity that holds fragmentation scans gets
+    an MS2 sample in the day's MS2 batch (``process/ms2_parts.py``), which its
+    MS2 data is read through, and the file is ``done``.
+
+    A file with MS1 scans never comes here. It waits for its chemistry with no
+    samples (:func:`_park_needing_chemistry`), MS2 scans or not.
+
+    The caller clears what an earlier run left before it files, as a run that
+    binds a file clears it before making its samples (``clear_earlier_run``):
+    an MS2 part an earlier run filed is replaced, not doubled. A fault while
+    filing ends the run as a fault in any other stage does, and the
+    pipeline retries a transient one, whose attempt clears again first.
+
+    :param sample_file: The file.
+    :param dataset_id: Its instrument's ACQUISITION dataset.
+    :param polarities: The polarities to file, from
+        :func:`fragmentation_polarities`.
+    :param streams_note: The file's pooled-streams note, if any.
+    :return: The run's result.
+    """
+    ms2_parts, ms2_batches = await file_fragmentation_scans(
+        sample_file, dataset_id, polarities
+    )
+    filed = filed_sentence(ms2_batches)
+    detail = (
+        f"{filed[0].upper()}{filed[1:]}. It records no MS1 scans, so no peaks "
+        "were detected and there is nothing to calibrate, match or assign."
+    )
+    await record_processing_status(
+        sample_file.sample_file_id,
+        ProcessingStatus.DONE,
+        compose_detail(detail, streams_note),
+    )
+    # INFO: what the acquisition recorded, not a fault
+    runtime.logger.info(
+        f"Sample file '{sample_file.filename}' holds fragmentation scans "
+        f"only: {filed} without a chemistry"
+    )
+    return {
+        "message": f"{sample_file.filename} was {filed} without a chemistry.",
+        "data": ms2_parts,
+        "_notification_data": {
+            "affected_sample_batch_ids": [
+                batch.get("sample_batch_id") for batch in ms2_batches
+            ],
+            "affected_sample_item_ids": [part["sample_item_id"] for part in ms2_parts],
+            "instrument": sample_file.instrument,
+            "sample_file_id": sample_file.sample_file_id,
+        },
+    }
+
+
 def _calibration_failure_detail(mz_calibration: dict | None) -> str:
     """Say what is wrong with a file's m/z calibration record.
 
@@ -1227,9 +1296,36 @@ async def _auto_process_sample_file(
         )
     ).get("data")
 
+    async def unbound(reason: str) -> dict:
+        """End the run of a file no rung binds.
+
+        A file of fragmentation scans alone needs no chemistry, and is filed
+        without one; any other file waits for its chemistry.
+        """
+        polarities = (
+            fragmentation_polarities(scan_streams, sample_file.polarity)
+            if records_only_fragmentation_scans(scan_streams)
+            else []
+        )
+        if polarities:
+            # Filing makes samples, so what an earlier run left is cleared
+            # first, as it is once a file is bound: the MS2 part an earlier
+            # run filed included, which filing again would otherwise double.
+            await clear_earlier_run(sample_file)
+            return await _file_without_chemistry(
+                sample_file,
+                acquisition_dataset.get("dataset_id"),
+                polarities,
+                streams_note,
+            )
+        return await _park_needing_chemistry(
+            sample_file, reason, streams_note, cleared_by_this_run
+        )
+
     # --- Bind the file to its ionization modes --- #
     # After the dataset on purpose: a file that binds to nothing still gets
-    # its instrument's workspace, which is where its modes are configured.
+    # its instrument's workspace, which is where its modes are configured -
+    # and where a file of fragmentation scans alone is filed.
     by_token = ionization_mode_ids is None
     routed_by_method: list[MethodRouting] = []
     # Rung 0, for a file nobody chose modes for: what its acquisition record
@@ -1257,12 +1353,7 @@ async def _auto_process_sample_file(
             # because a configuration to fix is not something a binding
             # stands in for (section 5.3).
             if not routes_on_method_binding():
-                return await _park_needing_chemistry(
-                    sample_file,
-                    _beside_the_declaration(undeclared, str(no_token)),
-                    streams_note,
-                    cleared_by_this_run,
-                )
+                return await unbound(_beside_the_declaration(undeclared, str(no_token)))
             routed_by_method, declined = await resolve_modes_by_method_binding(
                 sample_file, scan_streams
             )
@@ -1276,25 +1367,17 @@ async def _auto_process_sample_file(
                 # rstrip: the token rule's message ends without a full stop,
                 # and _park_needing_chemistry only normalises the end of the
                 # whole detail, so the first two would run together.
-                return await _park_needing_chemistry(
-                    sample_file,
+                return await unbound(
                     _beside_the_declaration(
                         undeclared,
                         f"{str(no_token).rstrip('.')}. Its acquisition method "
                         f"does not say either: {declined.reason}. "
                         f"{declined.remedy}",
-                    ),
-                    streams_note,
-                    cleared_by_this_run,
+                    )
                 )
             bound_modes = [routing.mode for routing in routed_by_method]
         except ValueError as e:
-            return await _park_needing_chemistry(
-                sample_file,
-                _beside_the_declaration(undeclared, str(e)),
-                streams_note,
-                cleared_by_this_run,
-            )
+            return await unbound(_beside_the_declaration(undeclared, str(e)))
     else:
         try:
             bound_modes = choose_ionization_modes(
@@ -1303,9 +1386,7 @@ async def _auto_process_sample_file(
         except ValueError as e:
             # A chosen mode was deleted, or changed, while the file waited:
             # it needs a chemistry again, and can be given one.
-            return await _park_needing_chemistry(
-                sample_file, str(e), streams_note, cleared_by_this_run
-            )
+            return await unbound(str(e))
 
     # How each item will say its chemistry was decided, and what the file's
     # method may be taught from it. The three ways in here are not equal. A
@@ -1448,8 +1529,13 @@ async def _auto_process_sample_file(
     )
 
     # Blank files are stored without an instrument config and have no peaks:
-    # they skip calibration, matching and peak assignment.
+    # they skip calibration, matching and peak assignment. So is an
+    # acquisition of fragmentation scans alone, which skips them for the same
+    # reason and is not a blank: its census says which of the two it is.
     is_blank_sample_file = sample_file.instrument_function_id is None
+    holds_ms2_only = is_blank_sample_file and records_only_fragmentation_scans(
+        scan_streams
+    )
 
     # --- Calibrate every ACQUISITION sample of the file before matching any --- #
     # The m/z calibration belongs to the FILE, not the sample item: applying a
@@ -1545,9 +1631,10 @@ async def _auto_process_sample_file(
             # match_compute_sample refuses a blank with a raised warning, which
             # would end the whole run and report a routine file to the
             # instrument room as a warning.
+            kind = "a file with no MS1 scans" if holds_ms2_only else "blank file"
             runtime.logger.info(
                 "Skipping m/z calibration, matching and peak assignment for "
-                f"blank file '{sample['sample_item_name']}': it has no peaks."
+                f"{kind} '{sample['sample_item_name']}': it has no peaks."
             )
             continue
         elif not shared_calibration:
@@ -1591,6 +1678,12 @@ async def _auto_process_sample_file(
                 if is_unfitted_record(mz_calibration) and not_calibrated_reason
                 else _calibration_failure_detail(mz_calibration)
             )
+    elif holds_ms2_only:
+        calibration_note = (
+            "It records no MS1 scans, so no peaks were detected and there is "
+            "nothing to calibrate, match or assign. Its fragmentation scans "
+            "are read through its samples."
+        )
     elif is_blank_sample_file:
         calibration_note = "Blank measurement: no peaks to calibrate, match or assign."
     elif not_calibrated_reason:
@@ -2146,6 +2239,12 @@ async def re_process_sample_files(
             # SET NULL - and one whose samples could not be read. Where the
             # method rung is on, only the first may go on to the pipeline, so
             # the samples are counted beside the modes.
+            #
+            # A file of fragmentation scans alone says it too, and goes on
+            # whatever the rung: the pipeline files it without a chemistry, so
+            # it never waits for one, and the MS2 sample a run clears is filed
+            # again by that run. Read off its census, once its samples were
+            # read: a file whose samples could not be read is left as it is.
             by_method = routes_on_method_binding()
             try:
                 kept = await _kept_modes(sample_file)
@@ -2153,6 +2252,9 @@ async def re_process_sample_files(
                     await _pipeline_item_count(sample_file.sample_file_id)
                     if kept is None and by_method
                     else 0
+                )
+                filed_alone = kept is None and records_only_fragmentation_scans(
+                    await read_scan_streams(sample_file.filename)
                 )
             except Exception as e:  # noqa: BLE001 - one file's failure
                 runtime.logger.info(
@@ -2175,8 +2277,8 @@ async def re_process_sample_files(
                         }
                     )
                     continue
-                kept, unbound_samples = None, 0
-            if kept is None and not by_method:
+                kept, unbound_samples, filed_alone = None, 0, False
+            if kept is None and not (by_method or filed_alone):
                 failed_files.append(
                     {
                         "sample_file_id": sample_file.sample_file_id,
@@ -2185,7 +2287,7 @@ async def re_process_sample_files(
                     }
                 )
                 continue
-            if kept is None and unbound_samples:
+            if kept is None and unbound_samples and not filed_alone:
                 # Samples, and no modes to keep from them. Not left to the
                 # method as the file below is: a run clears a file's samples
                 # and resets its calibration before the pipeline asks the
@@ -2208,11 +2310,13 @@ async def re_process_sample_files(
                 )
                 continue
             if kept is None:
-                # No token, and no samples at all - but this deployment lets
-                # an acquisition method bind a file, and only the pipeline can
-                # ask it: the rung needs the file's scan-stream census, which
-                # is read there. So the file goes through with no modes of its
-                # own and the pipeline decides.
+                # No token, and no samples to keep - but the pipeline can
+                # still place the file: this deployment lets an acquisition
+                # method bind it, which only the pipeline can ask, or the file
+                # records fragmentation scans alone, which are filed without a
+                # chemistry (its MS2 sample, which the rebuild clears, is
+                # filed again). So it goes through with no modes of its own
+                # and the pipeline decides.
                 #
                 # It parks again if the method cannot place it, which is where
                 # it already is, with a detail naming both reasons instead of
@@ -2221,8 +2325,9 @@ async def re_process_sample_files(
                 # a site does after switching the flag on - report "no tokens"
                 # for files the pipeline would have bound.
                 runtime.logger.debug(
-                    f"{sample_file.filename} has no token and no samples; its "
-                    "acquisition method may still bind it"
+                    f"{sample_file.filename} has no token and no samples to "
+                    "keep; its acquisition method may still bind it, or its "
+                    "fragmentation scans be filed without a chemistry"
                 )
             else:
                 kept_modes[sample_file.sample_file_id] = kept

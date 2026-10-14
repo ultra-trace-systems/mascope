@@ -136,10 +136,12 @@ class ScriptedAcquisition:
     def _peaks(self, scan_number):
         return self._scans[scan_number - 1][2]
 
-    def tic_per_scan(self, polarity=None, stream=None):
+    def tic_per_scan(
+        self, polarity=None, t_min=None, t_max=None, ms_type="Ms", stream=None
+    ):
         """Each selected scan's time and total ion current: the sum of what
         it recorded."""
-        rows = self._selected(polarity, stream=stream)
+        rows = self._selected(polarity, t_min, t_max, stream)
         return (
             np.array([row["time_s"] for row in rows]),
             np.array([sum(self._peaks(row["scan"]).values()) for row in rows]),

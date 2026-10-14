@@ -2680,3 +2680,306 @@ async def test_a_retry_is_told_when_its_run_has_cleared_the_file():
         False,
         True,
     ]
+
+
+# ---------------------------------------------------------------------------
+# MS2 parts: a file of fragmentation scans alone, which nothing binds
+# ---------------------------------------------------------------------------
+
+
+def _census(*ms_orders, polarity="-"):
+    """A scan-stream census holding one stream of each of these MS orders."""
+    return [
+        {
+            "key": f"FTMS {polarity} p NSI Full ms{order}",
+            "signature": {"ms_order": order, "polarity": polarity},
+        }
+        for order in ms_orders
+    ]
+
+
+_MS2_PART = {"sample_item_id": "si-ms2", "sample_batch_id": "batch-ms2"}
+_MS2_BATCH = {
+    "sample_batch_id": "batch-ms2",
+    "sample_batch_name": "2025-09-20 MS2 acquisition",
+    "polarity": "-",
+}
+_NO_TOKEN = (
+    "No ionization mode tokens found for file 2025.09.20_test_file.raw. "
+    "Configure tokens in ionization settings."
+)
+_FILED = (
+    "Filed as an MS2 sample in '2025-09-20 MS2 acquisition' (-). It records "
+    "no MS1 scans, so no peaks were detected and there is nothing to "
+    "calibrate, match or assign."
+)
+
+
+def _filing(filer=None):
+    """Patch the filer of MS2 parts.
+
+    :param filer: The filer's side effect; by default it files one part.
+    :return: The context manager. The filer's mock is read with ``_filer``.
+    """
+    return patch(
+        f"{_SVC}.file_fragmentation_scans",
+        new_callable=AsyncMock,
+        side_effect=filer,
+        return_value=([_MS2_PART], [_MS2_BATCH]),
+    )
+
+
+def _filer():
+    """The filer's mock, read back from the patched service module."""
+    from mascope_backend.api.controllers.sample.files.process import service
+
+    return service.file_fragmentation_scans
+
+
+def _ms2_only():
+    """Start the base patches for a file of fragmentation scans alone.
+
+    Stored as the converter stores one: no instrument config, as a blank is.
+    """
+    return _start_single(instrument_function_id=None)
+
+
+@pytest.mark.asyncio
+async def test_a_file_of_fragmentation_scans_alone_is_filed_and_done(status):
+    """Nothing a chemistry would add, so it does not wait for one.
+
+    No MS1 scan means no peaks were detected: under any mode there is nothing
+    to calibrate, match or assign. Left as ``needs_chemistry`` it would ask
+    the instrument's owners for a decision that changes nothing, and its MS2
+    data would have no sample to be read through meanwhile.
+    """
+    mocks, sample_file = _ms2_only()
+    mocks["resolve"].side_effect = _no_token()
+    status.census.return_value = _census(2)
+
+    with patch(f"{_FEATURES}.handle_notifications", new_callable=AsyncMock) as notify:
+        with _filing():
+            result = await _run_pipeline()
+            _filer().assert_awaited_once_with(sample_file, "ds-001", ["-"])
+
+    assert _recorded(status) == [("done", _FILED)]
+    # A finished run, reported as one - not a file waiting on a person.
+    assert "status" not in result
+    assert result["data"] == [_MS2_PART]
+    assert notify.call_args.args[1].status == "success"
+    # No bound items are made for it, and nothing is matched.
+    mocks["create_batches"].assert_not_called()
+    mocks["match"].assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_the_filed_parts_are_what_the_browser_reloads(status):
+    """The batch the part went into is new to anyone looking at the dataset."""
+    mocks, _ = _ms2_only()
+    mocks["resolve"].side_effect = _no_token()
+    status.census.return_value = _census(2)
+
+    with _filing():
+        result = await _run_pipeline()
+
+    assert result["_notification_data"] == {
+        "affected_sample_batch_ids": ["batch-ms2"],
+        "affected_sample_item_ids": ["si-ms2"],
+        "instrument": "Orbion",
+        "sample_file_id": "sf-001",
+    }
+
+
+@pytest.mark.asyncio
+async def test_a_file_with_ms1_scans_waits_for_its_chemistry_with_no_samples(status):
+    """Fragmentation scans or not, its MS1 peaks are matched under a chemistry.
+
+    Only a person can say which one, so it parks exactly as any file nothing
+    binds does, and no MS2 sample is made for it meanwhile.
+    """
+    mocks, _ = _start_single()
+    mocks["resolve"].side_effect = _no_token()
+    status.census.return_value = _census(1, 2)
+
+    with _filing():
+        result = await _run_pipeline()
+        _filer().assert_not_awaited()
+
+    assert _recorded(status) == [("needs_chemistry", _NO_TOKEN)]
+    assert result["status"] == "parked"
+    assert result["_notification_data"]["affected_sample_item_ids"] == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("census", [[], None])
+async def test_a_file_with_no_census_waits_for_its_chemistry(status, census):
+    """No census says nothing about the file's scans, so it is not taken to
+    have no MS1 scans: a blank converted before the census existed is stored
+    with no peaks just the same."""
+    mocks, _ = _ms2_only()
+    mocks["resolve"].side_effect = _no_token()
+    status.census.return_value = census
+
+    with _filing():
+        result = await _run_pipeline()
+        _filer().assert_not_awaited()
+
+    assert _recorded(status) == [("needs_chemistry", _NO_TOKEN)]
+    assert result["status"] == "parked"
+
+
+@pytest.mark.asyncio
+async def test_only_the_polarities_that_fragment_are_filed(status):
+    mocks, sample_file = _ms2_only()
+    sample_file.polarity = "+-"
+    mocks["resolve"].side_effect = _no_token()
+    status.census.return_value = _census(2)
+
+    with _filing():
+        await _run_pipeline()
+        _filer().assert_awaited_once_with(sample_file, "ds-001", ["-"])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "way", ["no token", "method declined", "ambiguous name", "chosen mode gone"]
+)
+async def test_every_way_of_binding_nothing_files_them(status, way):
+    """Each run clears the file's own items first, an earlier MS2 part included.
+
+    So a way of binding nothing that did not file again would cost the file
+    the MS2 sample it had - re-processing it, say, with its chemistry chosen
+    by hand and the mode deleted since.
+    """
+    mocks, sample_file = _ms2_only()
+    status.census.return_value = _census(2)
+    kwargs = {}
+    rung_on = way == "method declined"
+    declined = ([], Declined("it reports no method name", "Use a filename token."))
+    if way in ("no token", "method declined"):
+        mocks["resolve"].side_effect = _no_token()
+    elif way == "ambiguous name":
+        mocks["resolve"].side_effect = ValueError(
+            "Ionization mode tokens must match exactly one mode per polarity"
+        )
+    else:
+        sample_file.polarity = "+-"
+        kwargs = {"ionization_mode_ids": ["im-001"]}
+        status.census.return_value += _census(2, polarity="+")
+
+    with (
+        patch(f"{_SVC}.routes_on_method_binding", return_value=rung_on),
+        patch(
+            f"{_SVC}.resolve_modes_by_method_binding",
+            new_callable=AsyncMock,
+            return_value=declined,
+        ),
+        patch(
+            f"{_SVC}.fetch_ionization_modes",
+            new_callable=AsyncMock,
+            return_value=[_make_ionization_mode()],
+        ),
+        _filing(),
+    ):
+        result = await _run_pipeline(**kwargs)
+        _filer().assert_awaited_once()
+
+    assert "status" not in result
+    ((state, detail),) = _recorded(status)
+    assert (state, detail) == ("done", _FILED)
+
+
+@pytest.mark.asyncio
+async def test_a_fault_while_filing_fails_the_run(status):
+    """Filing is all the run does for such a file, so a fault in it is the
+    run's: reported as failed, where a person can re-process the file."""
+    mocks, _ = _ms2_only()
+    mocks["resolve"].side_effect = _no_token()
+    status.census.return_value = _census(2)
+
+    with (
+        patch(f"{_FEATURES}.handle_notifications", new_callable=AsyncMock),
+        patch(f"{_FEATURES}.handle_reloads", new_callable=AsyncMock),
+        _filing(filer=ValueError("the reader could not open the file")),
+    ):
+        await _run_pipeline()
+
+    assert _recorded(status) == [("failed", "the reader could not open the file")]
+
+
+@pytest.mark.asyncio
+async def test_a_transient_error_while_filing_is_left_to_the_retry(status):
+    """A starved pool clears on the pipeline's retry.
+
+    Item creation commits its rows before it reads them back, so the failed
+    attempt may have filed a part already; the retry clears it before it
+    files again, as every attempt clears what an earlier one left.
+    """
+    from mascope_backend.api.controllers.sample.files.process import service
+    from mascope_backend.api.lib.exceptions.api_exceptions import ApiException
+
+    mocks, _ = _ms2_only()
+    mocks["resolve"].side_effect = _no_token()
+    status.census.return_value = _census(2)
+    outcomes = [ApiException("busy", {}, 503), ([_MS2_PART], [_MS2_BATCH])]
+
+    with (
+        patch.object(service, "_AUTO_PROCESS_RETRY_DELAYS_S", (0, 0, 0)),
+        patch(
+            f"{_SVC}._delete_partial_acquisition_items", new_callable=AsyncMock
+        ) as clear,
+        _filing(filer=outcomes),
+    ):
+        result = await _run_pipeline()
+        assert _filer().await_count == 2
+
+    assert [call.args for call in clear.await_args_list] == [("sf-001",), ("sf-001",)]
+    assert _recorded(status) == [("done", _FILED)]
+    assert result["_notification_data"]["affected_sample_item_ids"] == ["si-ms2"]
+
+
+@pytest.mark.asyncio
+async def test_a_bound_file_with_no_ms1_scans_is_not_called_a_blank(status):
+    """It has no peaks for another reason, and its sample is worth opening.
+
+    A token or a person can bind such a file like any other. It is stored
+    without an instrument config, as a blank is, so it skips the same three
+    stages - but a blank was measured and showed nothing, and this file holds
+    fragmentation scans that are read through the sample just made.
+    """
+    mocks, _ = _ms2_only()
+    status.census.return_value = _census(2)
+
+    with _filing():
+        await _run_pipeline()
+        _filer().assert_not_awaited()
+
+    mocks["calibrate"].assert_not_called()
+    mocks["match"].assert_not_called()
+    mocks["assign"].assert_not_called()
+    assert _recorded(status) == [
+        ("bound", "Bound by file-name token to 'Bromide RI' (-)."),
+        (
+            "done",
+            "It records no MS1 scans, so no peaks were detected and there is "
+            "nothing to calibrate, match or assign. Its fragmentation scans "
+            "are read through its samples.",
+        ),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_a_blank_whose_file_also_fragments_is_still_a_blank(status):
+    """MS1 scans too weak to fit an instrument function, beside MS2 scans.
+
+    The census holds an MS1 stream, so the missing peaks are the blank kind.
+    """
+    _start_single(instrument_function_id=None)
+    status.census.return_value = _census(1, 2)
+
+    await _run_pipeline()
+
+    assert _recorded(status)[-1] == (
+        "done",
+        "Blank measurement: no peaks to calibrate, match or assign.",
+    )

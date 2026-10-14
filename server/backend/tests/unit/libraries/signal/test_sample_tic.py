@@ -107,9 +107,9 @@ def test_a_polarity_with_one_stream_is_read_as_its_polarity(
     asked = []
     tic_per_scan = acquisition.tic_per_scan
 
-    def _tic_per_scan(polarity=None, stream=None):
+    def _tic_per_scan(polarity=None, stream=None, **rest):
         asked.append((polarity, stream))
-        return tic_per_scan(polarity=polarity, stream=stream)
+        return tic_per_scan(polarity=polarity, stream=stream, **rest)
 
     monkeypatch.setattr(acquisition, "tic_per_scan", _tic_per_scan)
 

@@ -67,6 +67,44 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   the server knows. Nothing changes for an agent already paired: updating
   the server or the agent leaves every credential valid.
 
+- **An Orbitrap acquisition that records only fragmentation (MS2) scans is now
+  imported** instead of being refused with "contains no MS1 scans" (#2068).
+  Mascope detects peaks in MS1, so such a file has none: it is stored the way
+  a blank measurement is - no peaks, no instrument config - and skips m/z
+  calibration, matching and peak assignment for the same reason. It is not a
+  blank, though, and no longer reads as one: its Raw files status says it
+  records no MS1 scans, where a blank's says blank measurement.
+
+  It needs no chemistry either, since a chemistry is what MS1 peaks are
+  matched under. So when nothing binds it - no filename token, no method
+  binding - it does not wait as **Needs a chemistry** with no samples: each
+  polarity that holds fragmentation scans gets an acquisition sample with no
+  ionization mode, in the daily batch `<date> MS2 acquisition` of the
+  instrument's year dataset, and the file ends **Done**. A file a token or a
+  method does bind gets its sample in its mode's daily batch, as any file
+  does. A file that records MS1 scans too still waits for its chemistry, MS2
+  scans or not. Which scans a file records is read from the scan census
+  stored with it, so a file converted before the census existed waits as
+  before.
+
+  Its fragmentation scans are read through its sample like any other file's,
+  by the MS2 routes and `mascope.samples.ms2(...)` in the SDK. The sample's
+  TIC is that of the scans it has, since there is no MS1 TIC to report; it is
+  comparable only among such samples. A file with no scans at all is still
+  refused as the empty acquisition it is.
+
+  Its MS1 reads answer empty rather than failing: the sample's spectrum and
+  the MS1 centroids of the MS2 routes return no points for a sample with no
+  MS1 scans, where the raw reader's "no scans found" used to come back as a
+  400 quoting a scan filter. The browser therefore shows such a sample with
+  an empty spectrum and no peaks instead of an error and a chart that never
+  finishes loading, and a client that reads the precursor's intensity from
+  the MS1 centroids - the MS2 notebook toolkit does - gets the empty answer
+  it already handles. A request that is itself wrong still fails as before.
+  Nothing in the browser shows the fragmentation scans yet; they are read
+  with the SDK. The import guide gains a section on fragmentation
+  acquisitions, with the SDK calls that read them.
+
 ### Changed
 
 - **A file bound by its acquisition record goes on saying so once it is

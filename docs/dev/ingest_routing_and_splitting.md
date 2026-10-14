@@ -88,7 +88,7 @@ request for this work updates the table below and ticks its item on #2098.
 | 4 | Per-stream state: calibration and instrument function per segment, MS2 | open; its per-segment calibration is built with the composite cut (#2332) and shown with it (#2333); follows 3 on the same track; no rebuild script (4.5, 9.1) |
 | 5 | Chemistry detection: audit first, then provisional binding | deferred behind phases 3, 4 and 8 (decision 3); its reagent libraries are on `develop` |
 | 6 | Recipes: time and trace windows, preview and apply | open |
-| 7 | Declarations from the instrument side, MS2-only parts, manual acquisitions | open; its first declaration channel is built: a record of the whole file that the control program writes and the File Agent sends, which binds the file at rung 0 ([acquisition_sidecar.md](acquisition_sidecar.md)) |
+| 7 | Declarations from the instrument side, MS2-only parts, manual acquisitions | open; its first declaration channel is built: a record of the whole file that the control program writes and the File Agent sends, which binds the file at rung 0 ([acquisition_sidecar.md](acquisition_sidecar.md)); MS2 parts: first cut built (4.2) - a file with no MS1 scans is stored and, where nothing binds it, filed as an MS2 part |
 
 Related designs, and how this one relates to them (section 13):
 
@@ -134,7 +134,7 @@ Related designs, and how this one relates to them (section 13):
 | An item's window is stored and then ignored | `compute_match_isotopes`, `extract_peaks`, peak-assignment peak loading, calibration, `create_sample_items` TIC | A windowed item is matched and assigned as if it were the whole polarity. |
 | Calibration and the instrument function are per file | `calibration_mz_fit` `_apply_sync`, `calibration_mz_apply` | Two items of one file share one m/z factor. Applying a new fit rescales every peak row in the file and removes the matches of every item in the file. #2153 contains the damage: every sample of a file is calibrated before any is matched, and a file with two calibrating modes is not calibrated at all. |
 | A TOF file with no fit is never matched | `create_sample_file`, the verified gate in `match_compute_sample` | Registration stores a TOF file's converter coefficients as a record marked `unfitted` and not verified, and the gate refuses it. A TOF file whose mode names no calibrant collection is therefore never matched. Every run used to end on the gate's warning to calibrate the file, though the pipeline has no calibrants to calibrate it against; since phase 0 item 8 the pipeline holds the file back and records why. |
-| MS2-only acquisitions are refused; MS2 is reachable only through an item's polarity and window | `RawProcessor._get_sample_file_props`, `api/new/ms2` | #2068 |
+| MS2-only acquisitions are refused; MS2 is reachable only through an item's polarity and window | `RawProcessor._get_sample_file_props`, `api/new/ms2` | #2068. A file nothing binds has no item, so its MS2 data cannot be read until it has a chemistry - which a file with no MS1 scans would never need. 4.2 says how each is handled. |
 | The method identity was lost | `RawProcessor.method_file` returned `""` | Orbitrap files ingested from July 2026 carry no method name, and it is the routing key section 2.4 argues for. #2155 reads it again, and its `populate_orbitrap_method_file` script restores it on the files already ingested. |
 | Nothing recorded how far a file got | `sample_file` | The File Agent only learns that its bytes arrived. Phase 1 records a processing status on each file. |
 
@@ -627,12 +627,88 @@ it. Four things the build settled:
 - **Default.** MS2 streams create no sample items. They are reached from
   their parent's item, and the MS2 routes gain a stream parameter next to
   `t0`/`t1`/`polarity`.
-- **MS2-only acquisitions.** An MS2 stream with no parent becomes an MS2-only
-  part (#2068) once the item contract can build a TIC and time axis from MS2
-  scans (phase 7).
+- **MS2 parts.** An MS2 stream with no parent item to be reached through
+  becomes a part of its own. The first cut is built (below).
 - **The scan event.** MSn streams are keyed by signature alone, not by the
   experiment that produced them, until what their event counts has been
   measured (4.1).
+
+**What links a fragment scan to its precursor.** A method records each
+dependent scan's master scan and every scan's event. A manual acquisition
+records neither: on the stepped-energy files measured for this (2026-10-05)
+the master scan number and the scan event are 0 on every scan. So nothing
+here may lean on either:
+
+- The **precursor and the activation** are read from the fragment scan's own
+  filter (`445.1200@hcd30.00`), by one parser both reader backends share
+  (`backend._parse_ms2_event`). It read all 309 fragment scans of the four
+  files.
+- The **survey scan** is the MS1 scan of the same polarity before it in scan
+  order. On the same files the precursor m/z is in that scan, inside the
+  isolation window, for 309 of 309 fragment scans, within 0.2 mDa.
+- The **recorded master scan is not that scan**, where there is one. On the
+  two method-driven files it is one or two survey scans earlier for all 184
+  dependent scans - the scan the instrument chose the precursor from, which
+  the scan before the fragmentation has already replaced. Scan order is
+  therefore the one rule that reads both kinds of file alike, and a parent
+  taken from the master scan would disagree with it on every file that
+  records one.
+
+**An item's window spans every scan type.** Every MS2 read selects within
+the window of the item it is asked through. A manual acquisition records its
+MS1 scans first and its fragment scans after, so a window taken from the MS1
+scans holds none of them: 0 of 66 and 0 of 59 on the two manual files, and
+88 of 92 even on the interleaved ones, whose last fragment scans follow the
+last survey scan. That is how a stepped-energy file once read as MS1 only
+(#2066, shipped in v1.8.0: `get_acquisition_window`, and
+`fix_acquisition_window` for the items written before it). Whatever gives an
+item a window from here on - a stream's own scans in phase 4, a recipe's cut
+in phase 6 - has to keep the fragment scans read through that item inside
+it. The scripted acquisition of `test_manual_ms2_acquisition.py` pins the
+reader's half without a site file.
+
+**MS2 parts, as built** (first cut, 2026-10-05; unconditional since
+2026-10-14). An MS2 stream is left with no parent item to be reached through
+for one of two reasons, and they are not handled alike:
+
+- **The file recorded no MS1 scans** (#2068). It used to be refused at
+  conversion. It is now stored as a blank measurement is - an empty peak
+  store, on the time axis of every scan it has, and no instrument config -
+  and its census, which holds no MS1 stream, is what tells it from a blank.
+  It needs no chemistry: a chemistry is what MS1 peaks are calibrated,
+  matched and assigned under, and it has none. So where nothing binds it, it
+  does not park. It is filed as an MS2 part (below), and is `done`.
+- **Nothing binds its MS1 scans.** A manual acquisition names no method, so
+  no method binding can ever be learned for it (5.3), and without a filename
+  token it parks. It stays parked with no item, MS2 scans or not, until a
+  token or a person gives it the chemistry its MS1 peaks need - which only a
+  person can say - and its MS2 data is read through the bound item from then
+  on. Decided 2026-10-14: no part is filed for such a file meanwhile, and
+  neither rule is a setting.
+
+An MS2 part is one ACQUISITION item per polarity that holds fragmentation
+scans, with no ionization mode and no rung, in the day's
+`"<date> MS2 acquisition"` batch of the instrument's acquisition dataset. The
+item covers the whole acquisition in its polarity, so today's MS2 routes read
+every (precursor, activation) group through it, and the SDK finds it as it
+finds any sample.
+
+- **Replaced, not kept.** The part is the pipeline's own. Re-processing the
+  file once a token or a method binds it replaces it with the bound item. A
+  file bound from the start is not filed at all: it gets its mode's item,
+  which skips calibration, matching and assignment for having no peaks.
+- **TIC.** An item's TIC is that of its MS1 scans. One with no MS1 scan takes
+  the TIC of the scans it has, which says how much signal it holds and is
+  comparable only among such items.
+- **Read from the census, never from the file.** A file with no census says
+  nothing either way, and parks as before.
+
+**Still open** (decision 6): whether each (precursor, activation) stream
+becomes an item of its own, so that a stepped-energy acquisition is a batch
+of its steps. The first cut is one item per polarity because that is what
+the MS2 routes and the SDK already read; nothing in it stands in the way of
+the finer one. A fragment peak list per stream, which would let an MS2 part
+be matched, is the same question from the store's side (4.3).
 
 ### 4.3 Storage and computation
 
@@ -3041,14 +3117,24 @@ unchanged.
     and the channel readings to align them by, are not;
   - a control program paired as its own device and posting journal events;
   - an analog-input mapping for sites that wire one.
-- **MS2-only parts (#2068).**
+- **MS2-only parts (#2068).** First cut built (4.2): a file with no MS1
+  scans is stored and, where nothing binds it, filed as an MS2 part, one item
+  per polarity. Remaining: an item per (precursor, activation) stream if
+  decision 6 goes that way, a fragment peak list per MS2 stream, and the
+  browser's side. A sample with no MS1 scans opens there with an empty
+  spectrum and no peaks, and nothing yet shows its fragmentation scans or
+  says that they exist; they are read with the SDK.
 - **Adduct-pair evidence** for methods without reagent ions in range.
 - **Manual acquisitions.** A file started with no method loaded records no
   scan event - 14 of the corpus's 182 - and a setting changed by hand part
   way through leaves no mark. Such a file keeps the filter as its key (4.1).
   Splitting it where a declared setting changes is possible, since the
   microscan count and the AGC target never vary within a recorded event, and
-  is not a priority: methods first (decided 2026-10-05).
+  is not a priority: methods first (decided 2026-10-05). What does not wait
+  is its fragmentation: a manual MS2 acquisition records no master scan
+  either, names no method for a binding to be learned from, and puts its
+  fragment scans after its MS1 block, and 4.2 says what each of those costs
+  and how it is read.
 - **Items per segment.** A site that wants each range of a composite as
   its own item and batch, which the composite cut does not make, would get
   it from a recipe setting; the census, the store and the stream rows are
@@ -3170,7 +3256,12 @@ through a short-lived stacked branch, merged as one unit.
   holds nothing but the catalogue.
 - **A shareable composite and MS2 acquisition** is needed for committed
   fixtures. The corpus files cannot be used; a standard method of 5.3 run on
-  the internal instrument is the way to make one.
+  the internal instrument is the way to make one. Until there is one, the
+  MS2 tests that need no site file read a committed MS1 file as a
+  fragmentation acquisition, relabelling its scans at the OpenTFRaw
+  backend's seam (`test_manual_ms2_acquisition.py`, `test_tic_scan_type.py`,
+  `test_ms2_only_acquisition.py`): faithful for scan selection, the window
+  and the census, and no substitute for real fragment spectra.
 
 ---
 
@@ -3235,7 +3326,12 @@ through a short-lived stacked branch, merged as one unit.
    analytes are - calibrates on its own anchors or borrows unshifted, and
    the collections must carry anchors inside it (4.5).
 6. **MS2.** Attach to the parent item by default (recommended), or separate
-   MS2 items.
+   MS2 items. **Partly settled 2026-10-05** by the first cut of the MS2
+   parts (4.2): attached where the parent has an item, and one part per
+   polarity for a file with no MS1 scans that nothing binds. Open:
+   whether a part is cut finer, into an item per (precursor, activation)
+   stream, which is what would make a stepped-energy acquisition a batch of
+   its steps.
 7. **Batch naming.** ~~Add the signature class only when needed
    (recommended), or always.~~ **Decided 2026-10-05:** only when needed, and
    computed. Items join a batch by what their experiment measured - the
@@ -3455,6 +3551,7 @@ Function names are the stable reference; line numbers drift.
 | Chemistry surface | `server/frontend/src/lib/panes/PaneIonizationMode.vue`, `lib/dialogs/DialogChooseChemistry.vue`, `stores/data/modules/ionization/mode.js` | 8 |
 | Daily batches | `api/controllers/sample/batches/sample_batches_controller.py` `get_or_create_acquisition_batch` | 4 |
 | MS2 | `api/new/ms2/` | 4 |
+| MS2 parts | `api/controllers/sample/files/process/ms2_parts.py` (`fragmentation_polarities`, `file_fragmentation_scans`); `process/service.py` `_file_without_chemistry`; `file_converter/base_processor.py` `_process_without_survey_scans`; `libraries/thermo/src/mascope_thermo/processor.py` `RawProcessor._records_survey_scans`; `api/controllers/sample/items/sample_items_controller.py` `_sample_item_tic`; `libraries/signal/src/mascope_signal/peak.py` `write_empty_peak_timeseries` | 7 |
 | Notifications | `socket/notifications/service.py`; the background-task decorator in `api/lib/api_features.py` | 0, 1 |
 | Models | `db/models.py` (`SampleFile`, `SampleItem`, `IonizationMode`); new `AcquisitionStream`, `MethodBinding`, `IngestRecipe`, `Notification` | 1-6 |
 | Reagent libraries (on `develop`) | `libraries/tools/src/mascope_tools/composition/reagents.py` (`REAGENT_CLUSTERS`, `match_reagent_clusters`, `detect_channels`); `profiles.py` | 5, 8 |

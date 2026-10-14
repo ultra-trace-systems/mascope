@@ -517,6 +517,7 @@ def get_scan_timestamps(
     t_max: float | None = None,
     polarity: Literal["+", "-"] | None = None,
     stream: str | None = None,
+    scan_type: Literal["Ms", "Ms2"] | None = "Ms",
 ) -> np.ndarray:
     """
     Retrieve scan timestamps from a given file based on its type.
@@ -530,6 +531,12 @@ def get_scan_timestamps(
     :param stream: Key of the scan stream to read, for a raw Orbitrap file,
         defaults to None (every stream)
     :type stream: str, optional
+    :param scan_type: Raw Orbitrap files only: the scan type to read ('Ms' or
+                      'Ms2'), or None for every scan. Defaults to 'Ms', the MS1
+                      axis every peak is detected and timed on. No other file
+                      type records more than one kind of scan, so it is not
+                      read for them.
+    :type scan_type: Literal['Ms', 'Ms2'] | None, optional
     :return: An array of scan timestamps extracted from the sample file.
     """
     sample_type = m_name.get_sample_file_type(base_filename)
@@ -540,7 +547,12 @@ def get_scan_timestamps(
                 m_name.parse_path_from_item_filename(base_filename), "data.raw"
             )
             return m_thermo.get_scan_timestamps(
-                datafile_path, t_min, t_max, polarity, stream=stream
+                datafile_path,
+                t_min,
+                t_max,
+                polarity,
+                scan_type=scan_type,
+                stream=stream,
             )
         case "tof_h5":
             datafile_path = os.path.join(
@@ -1370,6 +1382,7 @@ def get_tic_per_scan(
     timestamps: Iterable | None = None,
     polarity: Literal["+", "-"] | None = None,
     stream: str | None = None,
+    scan_type: Literal["Ms", "Ms2"] | None = "Ms",
 ) -> tuple:
     """Get TIC per scan from the sample file depending on the file type
 
@@ -1382,6 +1395,12 @@ def get_tic_per_scan(
     :param stream: Key of the scan stream to read, for a raw Orbitrap file,
         defaults to None (every stream)
     :type stream: str | None
+    :param scan_type: Raw Orbitrap files only: the scan type to read ('Ms' or
+                      'Ms2'), or None for every scan. Defaults to 'Ms'. An
+                      acquisition of fragmentation scans alone records no MS1
+                      scan, and its TIC is read with None. Not read for other
+                      file types, which record one kind of scan.
+    :type scan_type: Literal['Ms', 'Ms2'] | None, optional
     :raises ValueError: If a stream is asked of a type that has none
     :return: TIC time and TIC per scan as numpy arrays
     :rtype: tuple
@@ -1392,7 +1411,11 @@ def get_tic_per_scan(
         case "orbi_raw":
             datafile_path = m_name.filename_to_datafile_path(base_filename)
             tic_time, tic_per_scan = m_thermo.get_tic_per_scan(
-                datafile_path, timestamps, polarity, stream=stream
+                datafile_path,
+                timestamps,
+                polarity,
+                scan_type=scan_type,
+                stream=stream,
             )
         case "tof_h5":
             datafile_path = m_name.filename_to_datafile_path(base_filename)

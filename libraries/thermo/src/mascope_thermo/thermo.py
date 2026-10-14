@@ -564,9 +564,10 @@ def get_tic_per_scan(
     timestamps: Iterable[float] | None = None,
     polarity: Literal["+", "-"] | None = None,
     stream: str | None = None,
+    scan_type: Literal["Ms", "Ms2"] | None = "Ms",
 ) -> tuple[np.ndarray, np.ndarray]:
     """
-    Allows filtering by timestamps, polarity and scan stream.
+    Allows filtering by timestamps, polarity, scan stream and scan type.
     If timestamps are provided, the function will return the TIC
     values for the closest scan to each timestamp.
 
@@ -582,12 +583,18 @@ def get_tic_per_scan(
                    ``mascope_thermo.streams``), optional, defaults to None
                    (every stream)
     :type stream: str, optional
+    :param scan_type: Filter by scan type ('Ms' or 'Ms2'), or None for every
+                      scan. Defaults to 'Ms': a sample's TIC is that of its MS1
+                      scans. An acquisition of fragmentation scans alone has
+                      none, so its TIC is read over the scans it does have,
+                      with None.
+    :type scan_type: Literal['Ms', 'Ms2'] | None, optional
     :return: Tuple containing the scan timestamps [s] and TIC values as numpy arrays
     :rtype: tuple
     """
     with open_backend(datafile_path) as backend:
         scan_timestamp, scan_tic = backend.tic_per_scan(
-            polarity=polarity, stream=stream
+            polarity=polarity, ms_type=scan_type, stream=stream
         )
 
     if timestamps is not None:
