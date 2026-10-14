@@ -98,6 +98,56 @@ def test_settings_are_read_from_a_config_toml(tmp_path):
     settings.validate()
 
 
+@pytest.mark.parametrize(
+    "access_token, paired_as, expected",
+    [
+        ("tok", "instrument-agent", "instrument-agent"),
+        ("tok", "file-agent", "file-agent"),
+        # Paired before the name was recorded: a File Agent's credential.
+        ("tok", "", "file-agent"),
+        # Not paired yet: whatever the program pairs a new machine as.
+        ("", "", "instrument-agent"),
+    ],
+)
+def test_a_paired_machine_stays_the_service_it_was_paired_as(
+    access_token, paired_as, expected
+):
+    settings = AgentSettings(
+        host="mascope.example.com",
+        access_token=access_token,
+        source="C:/data",
+        paired_as=paired_as,
+    )
+
+    assert settings.service_name(unpaired="instrument-agent") == expected
+
+
+def test_a_file_agent_configuration_taken_over_stays_a_file_agent(tmp_path):
+    """A File Agent's config.toml, as a program that embeds the agent adopts it.
+
+    Written before the name was recorded, it has a credential and no
+    ``paired_as``; the credential is a File Agent's, and is refused under any
+    other name.
+    """
+    _write_config(tmp_path, instrument="Orbi-Lab2")
+
+    settings = AgentSettings.from_file(os.path.join(tmp_path, config.CONFIG_FILENAME))
+
+    assert settings.paired_as == ""
+    assert settings.service_name(unpaired="instrument-agent") == "file-agent"
+
+
+def test_a_renewed_token_keeps_the_service_it_was_paired_as(tmp_path):
+    path = os.path.join(tmp_path, config.CONFIG_FILENAME)
+    _write_config(tmp_path, instrument="Orbi-Lab2", paired_as="instrument-agent")
+
+    AgentSettings.from_file(path).token_writer(path)("renewed-token")
+
+    reread = AgentSettings.from_file(path)
+    assert reread.access_token == "renewed-token"
+    assert reread.paired_as == "instrument-agent"
+
+
 def test_settings_from_a_broken_config_toml_say_so(tmp_path):
     path = tmp_path / config.CONFIG_FILENAME
     path.write_text("[file-agent\nhost = ", encoding="utf-8")

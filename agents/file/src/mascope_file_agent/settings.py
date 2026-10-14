@@ -13,6 +13,7 @@ from typing import Callable, Mapping
 
 from mascope_file_agent.config import (
     DEFAULT_SETTINGS,
+    SERVICE_NAME,
     ConfigError,
     is_valid_instrument,
     load_user_config,
@@ -52,6 +53,9 @@ class AgentSettings:
     filename_prefix: str = DEFAULT_SETTINGS["filename_prefix"]
     #: Text added behind each file name's stem on upload.
     filename_suffix: str = DEFAULT_SETTINGS["filename_suffix"]
+    #: The service ``access_token`` was paired as, recorded by pairing; empty
+    #: for a token paired before it was recorded. See :meth:`service_name`.
+    paired_as: str = DEFAULT_SETTINGS["paired_as"]
 
     @classmethod
     def from_mapping(cls, settings: Mapping) -> "AgentSettings":
@@ -80,6 +84,27 @@ class AgentSettings:
         :raises OSError: If the file cannot be read
         """
         return cls.from_mapping(load_user_config(config_path))
+
+    def service_name(self, unpaired: str = SERVICE_NAME) -> str:
+        """The service name to give ``identity()`` for this machine.
+
+        The server accepts a token under the service it was paired as and no
+        other, so a machine that holds one stays that service, whatever a
+        program would pair a new machine as: the name pairing recorded, or
+        ``file-agent`` for a token paired before the name was recorded (a
+        File Agent's own, or one a program took over from it). Only a machine
+        with no token yet pairs as ``unpaired``.
+
+        :param unpaired: The service to pair as when there is no token yet
+        :type unpaired: str
+        :return: The service name
+        :rtype: str
+        """
+        if self.paired_as:
+            return self.paired_as
+        if self.access_token:
+            return SERVICE_NAME
+        return unpaired
 
     def validate(self) -> None:
         """Refuse settings an agent cannot run on.

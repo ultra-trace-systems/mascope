@@ -23,7 +23,7 @@ from mascope_file_agent import __version__
 from mascope_file_agent import config as agent_config
 from mascope_file_agent._threads import Task, interrupts
 from mascope_file_agent.capabilities import ServerCapabilities
-from mascope_file_agent.config import ConfigError
+from mascope_file_agent.config import SERVICE_NAME, ConfigError
 from mascope_file_agent.credentials import Credentials, Repair
 from mascope_file_agent.provenance import UploadProvenance
 from mascope_file_agent.settings import AgentSettings
@@ -31,9 +31,6 @@ from mascope_file_agent.status import StatusFollower
 from mascope_file_agent.uploader import FAILED_UPLOADS_DIR, FileUploader
 from mascope_file_agent.watcher import FileSystemWatcher
 
-
-#: The service a File Agent pairs and uploads as.
-SERVICE_NAME = "file-agent"
 
 #: The name the SDK reports for a process that has not said who it is.
 SDK_SERVICE_NAME = "mascope_sdk"

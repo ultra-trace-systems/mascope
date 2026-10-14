@@ -41,10 +41,19 @@ agent.stop(timeout=30)
 
 - `identity()` names the service the machine pairs and uploads as.
   `file-agent` is the File Agent's own; a program that controls the
-  instrument passes `instrument-agent`, so that Mascope lists its machines
-  apart from standalone File Agents. A Mascope server older than the
-  `instrument-agent` name refuses to pair under it, and the setup prints the
-  server's reason.
+  instrument can pair as `instrument-agent`, so that Mascope lists its
+  machines apart from standalone File Agents. The server accepts a token
+  under the name it was paired as and no other, so setup records that name
+  in `config.toml` (`paired_as`), and
+  `identity(settings.service_name(unpaired="instrument-agent"), ...)` names
+  it again: a machine pairs as `instrument-agent` only when it has no token
+  yet, and one that holds a token stays what it was paired as. A token
+  paired before the name was recorded is a File Agent's, which covers a File
+  Agent configuration the program takes over. Moving a paired machine to the
+  other name means pairing it again under that name; the new pairing is a
+  new machine under Paired machines, and the old one stays there until
+  someone revokes it. A Mascope server older than the `instrument-agent`
+  name refuses to pair under it, and setup prints the server's reason.
 - `AgentSettings` holds the keys of the `[file-agent]` section of the File
   Agent's `config.toml`, so a configuration written by the program is read as
   it is. `AgentSettings(host=..., access_token=..., source=..., instrument=...)`

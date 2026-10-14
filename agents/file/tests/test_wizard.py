@@ -136,7 +136,24 @@ def test_run_setup_wizard_happy_path(monkeypatch, tmp_path, capsys):
     assert settings["timeout"] == 3
     assert settings["instrument"] == "Orbi-Lab2"
     assert settings["filename_prefix"] == ""
+    assert settings["paired_as"] == "file-agent"
     assert "accepted the access token" in capsys.readouterr().out
+
+
+def test_setup_records_the_service_the_machine_was_paired_as(monkeypatch, tmp_path):
+    """Kept beside the token, which the server accepts under that name only."""
+    identity("instrument-agent")
+    source = tmp_path / "watched"
+    source.mkdir()
+    answers = iter(["mascope.example.com", "", str(source), "", "", "Orbi-Lab2", ""])
+    monkeypatch.setattr("builtins.input", lambda prompt: next(answers))
+    monkeypatch.setattr(wizard, "run_pairing", _pairing_stub())
+    _connection_ok(monkeypatch)
+
+    settings = wizard.run_setup_wizard({"paired_as": "file-agent"})
+
+    assert settings["access_token"] == "paired-token"
+    assert settings["paired_as"] == "instrument-agent"
 
 
 def test_run_setup_wizard_enables_subfolder_watching(monkeypatch, tmp_path):
@@ -867,6 +884,7 @@ def test_cancelling_pairing_keeps_the_answers_given_before_it(monkeypatch, tmp_p
     assert kept["recursive"] is True
     assert kept["mask"] == "*.h5"
     assert kept["instrument"] == "Orbi-Lab2"
+    assert "paired_as" not in kept  # nothing was paired, nor before
     # Still a KeyboardInterrupt, so every existing handler treats it as the
     # cancellation it is.
     assert isinstance(excinfo.value, KeyboardInterrupt)

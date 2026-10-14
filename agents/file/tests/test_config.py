@@ -161,6 +161,43 @@ def test_write_and_load_user_config_roundtrip(tmp_path):
     assert config.load_user_config(config_path) == settings
 
 
+def test_the_service_a_credential_was_paired_as_is_kept_beside_it(tmp_path):
+    config_path = os.path.join(tmp_path, config.CONFIG_FILENAME)
+    settings = config.merge_settings(
+        {
+            "host": "mascope.example.com",
+            "access_token": "secret-token",
+            "source": r"C:\Xcalibur\Data",
+            "paired_as": "instrument-agent",
+        }
+    )
+
+    config.write_user_config(config_path, settings)
+
+    assert config.load_user_config(config_path)["paired_as"] == "instrument-agent"
+
+
+def test_a_credential_with_no_recorded_service_gets_no_line_for_it(tmp_path):
+    """Every config.toml from before the name was recorded reads this way.
+
+    No commented-out line either: the name is written by pairing, and a line
+    offering to fill it in would invite a hand edit that costs the machine
+    its credential.
+    """
+    config_path = os.path.join(tmp_path, config.CONFIG_FILENAME)
+    settings = config.merge_settings(
+        {"host": "example.com", "access_token": "tok", "source": r"C:\data"}
+    )
+
+    config.write_user_config(config_path, settings)
+
+    with open(config_path, encoding="utf-8") as handle:
+        written = [line for line in handle if not line.startswith("#   ")]
+    assert not [line for line in written if "paired_as" in line]
+    assert config.load_user_config(config_path)["paired_as"] == ""
+    assert "paired_as" in _header_entry("paired_as")
+
+
 def test_load_user_config_invalid_toml_raises_config_error(tmp_path):
     config_path = os.path.join(tmp_path, config.CONFIG_FILENAME)
     with open(config_path, "w", encoding="utf-8") as f:

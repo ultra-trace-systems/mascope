@@ -791,4 +791,10 @@ def run_setup_wizard(settings: dict) -> dict:
         )
     answers["filename_prefix"] = filename_prefix
 
-    return {**answers, "access_token": access_token}
+    # The name the token was paired under, which is the only one the server
+    # accepts it under; recorded so that a program can name it again.
+    return {
+        **answers,
+        "access_token": access_token,
+        "paired_as": mascope_sdk.SERVICE_NAME,
+    }
