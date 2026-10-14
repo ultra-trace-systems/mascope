@@ -6,6 +6,8 @@ raw file. Asked of a TOF sample, both went on to the reader, which raised
 ``NotImplementedError``, and answered 500: an error report for every such
 request, though nothing on the server had failed. They are now refused with
 422 before anything is read, and logged at INFO like any other client error.
+So is an Orbitrap sample whose raw file is not kept: the reader has nothing to
+open there either.
 
 The sample rows and the file classification are stood in; the refusal itself
 goes through the real controllers and their ``@api_controller`` handling.
@@ -24,9 +26,20 @@ from mascope_backend.api.lib.exceptions.api_exceptions import ApiException
 from mascope_runtime.logging import _SENTRY_LEVELS
 
 
+#: How the filestore would classify each stand-in filename, by its prefix: a
+#: TOF file, an Orbitrap file whose raw file is not kept, and an Orbitrap file
+#: with its raw file.
+_FILE_TYPES = {"TOF-1": "tof_h5", "ORBI-0": "orbi_zarr", "ORBI-1": "orbi_raw"}
+
+#: The two kinds of sample file neither read can serve.
+_WITHOUT_RAW_FILE = pytest.mark.parametrize(
+    "filename", ["TOF-1_b", "ORBI-0_b"], ids=["tof", "orbitrap-raw-not-kept"]
+)
+
+
 def _file_type(filename: str) -> str:
     """Classify a stand-in filename the way the filestore would."""
-    return "tof_h5" if filename.startswith("TOF") else "orbi_raw"
+    return _FILE_TYPES[filename.split("_", 1)[0]]
 
 
 def _reported(records) -> list:
@@ -80,24 +93,29 @@ class TestPerScanCentroids:
                 return refused, extract, records
         return result, extract, records
 
+    @_WITHOUT_RAW_FILE
     @pytest.mark.asyncio
-    async def test_a_tof_sample_is_refused_before_anything_is_read(self):
+    async def test_a_sample_without_a_raw_file_is_refused_before_anything_is_read(
+        self, filename
+    ):
         refused, extract, records = await self._request(
-            [_sample("orbi-item", "ORBI-1_a"), _sample("tof-item", "TOF-1_b")]
+            [_sample("orbi-item", "ORBI-1_a"), _sample("refused-item", filename)]
         )
 
         assert isinstance(refused, ApiException)
         assert refused.status_code == 422
         assert isinstance(refused.__cause__, HTTPException)
         assert "Orbitrap raw files" in refused.user_message
-        assert "tof-item" in refused.user_message
+        assert "refused-item" in refused.user_message
         assert "orbi-item" not in refused.user_message
         extract.assert_not_called()
 
+    @_WITHOUT_RAW_FILE
     @pytest.mark.asyncio
-    async def test_the_refusal_is_not_reported_as_a_fault(self):
-        _, _, records = await self._request([_sample("tof-item", "TOF-1_b")])
+    async def test_the_refusal_is_not_reported_as_a_fault(self, filename):
+        refused, _, records = await self._request([_sample("refused-item", filename)])
 
+        assert isinstance(refused, ApiException)
         assert _reported(records) == []
 
     @pytest.mark.asyncio
@@ -139,14 +157,17 @@ class TestSampleFileMetadata:
                 return refused, read, records
         return result, read, records
 
+    @_WITHOUT_RAW_FILE
     @pytest.mark.asyncio
-    async def test_a_tof_file_is_refused_before_anything_is_read(self):
-        refused, read, records = await self._request("TOF-1_b")
+    async def test_a_file_without_a_raw_file_is_refused_before_anything_is_read(
+        self, filename
+    ):
+        refused, read, records = await self._request(filename)
 
         assert isinstance(refused, ApiException)
         assert refused.status_code == 422
         assert "Orbitrap raw file" in refused.user_message
-        assert "TOF-1_b" in refused.user_message
+        assert filename in refused.user_message
         read.assert_not_called()
         assert _reported(records) == []
 
