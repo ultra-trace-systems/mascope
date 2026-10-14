@@ -2724,10 +2724,13 @@ Needed before any rung can be provisional or park.
      request asks before it claims the file. Re-processing asks for each such
      file just before it claims it, in the loop that rebuilds the batch, and
      not with the checks in front of the batch: every file ahead of it that
-     its record, its token or a person's choice binds teaches its method's
-     binding as it is bound, and one that shows the key a chemistry it has
-     not been seen with makes the key ambiguous, so an answer from before
-     the batch started can be out of date by the file's turn. Where the rung
+     its record or its token binds teaches its method's binding as it is
+     bound - a person's choice travels as kept modes, which teach nothing -
+     and one that shows the key a chemistry it has not been seen with makes
+     the key ambiguous, so an answer from before the batch started can be
+     out of date by the file's turn. The files are taken in the order the
+     request names them, so which are ahead of a file is the request's to
+     say, not the database's. Where the rung
      is off, such a file is refused, and with the rung on or off so is a
      file with samples and an ambiguous name, which the rung never answers:
      each says at once why the run would park the file, and leaves it as it

@@ -368,11 +368,19 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   with no mode - and so does one whose samples could not be read, and a run
   clears a file's samples and resets its calibration before the method is
   asked: where the method could not place the file, it parked with its
-  samples gone. Only a file with no samples is left to the method now. One
-  that has samples no mode binds is refused before anything of it is
-  touched, with a reason that says so, and choosing its chemistry in Raw
-  files rebuilds it. Servers that do not route on method bindings, the
-  default, were not affected.
+  samples gone. Only a file with no samples is left to the method unasked
+  now. For one that has samples no mode binds, re-processing asks the
+  file's acquisition method first, as the pipeline asks it, just before it
+  starts on that file: a file the method binds is rebuilt under the
+  chemistry its method was seen running, and one it declines is left as it
+  is, with the method's own reason and remedy. So is one whose samples
+  could not be read, or whose method could not be asked. The method is
+  asked that late because the files ahead of it in the selection can change
+  its answer as they are bound, and the files are taken in the order the
+  request lists them. A method that stops binding a file between that
+  question and the file's run parks it with its samples cleared, as a token
+  changed while the selection waits does. Servers that do not route on
+  method bindings, the default, were not affected.
 - **Processing one file on request no longer clears the samples of a file
   whose ionization mode was deleted.** `POST /api/sample/files/{id}/process`
   processes a file with no mode's token in its name under the modes its
@@ -397,26 +405,6 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   server routes on method bindings. The route is reached only with a
   signed-in session, and the web app does not call it: Re-process in Raw
   files goes through re-processing.
-- **Re-process rebuilds a file whose ionization mode was deleted when its
-  acquisition method binds it.** On a server that routes on method bindings
-  (`backend.method_binding = "route"`), Re-process in Raw files refused every
-  file with samples that no mode's token, and no mode its samples were made
-  under, binds any longer - a mode deleted since leaves the samples with
-  none - because it clears a file's samples before the pipeline asks the
-  file's acquisition method. A site that deleted a mode and then chose a
-  chemistry for one file of a method, as the reason "Choose a chemistry for
-  one file of this method and the rest will follow it" asks, could not have
-  the rest rebuilt from the web app. Re-process now asks the method for such
-  a file first, as the pipeline asks it, just before it starts on the file,
-  so the files ahead of it in the selection, whose runs can change what a
-  method says, are counted. A file the method binds is rebuilt under the
-  chemistry its method was seen running; one it declines is left as it is,
-  with the method's own reason and remedy, which is the only way such a file
-  is refused with the rung on now. A method that stops binding a file
-  between that question and the file's run parks it with its samples
-  cleared, as a token changed while the selection waits does. Processing one
-  file on request already asked the method. Servers that do not route on
-  method bindings, the default, are not affected.
 - **A processing run that cannot bind a file no longer clears its samples
   first.** A run removed the samples an earlier run had made for a file,
   and reset the m/z calibration of a file given a chemistry in Raw files,
