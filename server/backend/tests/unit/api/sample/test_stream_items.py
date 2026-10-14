@@ -272,15 +272,21 @@ _create = sample_items_controller.create_sample_items.__wrapped__
 
 
 async def _created(
-    items, stream_rows=(), item_streams=None, sample_tic=None, insert_errors=()
+    items,
+    stream_rows=(),
+    item_streams=None,
+    sample_tic=None,
+    insert_errors=(),
+    wider_tic=None,
 ):
     """Run the bulk create; return the session and how the file was read.
 
     ``item_streams`` is the row an item made by hand reads, by polarity, as
     ``read_item_streams`` finds it - the error that read raises, or a list
     of what one read after another finds; ``sample_tic`` what the read of
-    the sample's TIC raises instead of answering; ``insert_errors`` what one
-    insert after another raises.
+    the sample's TIC raises instead of answering; ``wider_tic`` what the read
+    of every scan type of the polarity raises, which follows a sample TIC that
+    found no scans; ``insert_errors`` what one insert after another raises.
     """
     session = _Session(stream_rows, insert_errors)
     rows_read = AsyncMock(return_value=item_streams or {})
@@ -308,6 +314,7 @@ async def _created(
             sample_items_controller.m_compute,
             "get_tic_per_scan",
             return_value=(None, [4.0, 5.0]),
+            side_effect=wider_tic,
         ) as pooled_tic,
         patch.object(
             sample_items_controller.m_compute,
@@ -391,10 +398,16 @@ async def test_a_store_labelled_in_part_gives_an_item_its_polaritys_pooled_tic()
 
 @pytest.mark.asyncio
 async def test_a_file_with_no_scan_of_the_polarity_is_refused_as_that():
+    """No MS1 scan of the polarity, and no scan of any other type either: an
+    acquisition of fragmentation scans alone is read over those instead."""
     plain = SampleItemCreate(sample_item_name="x", sample_item_type="UNKNOWN", **COMMON)
 
     with pytest.raises(NotFoundException, match="No scans with 'negative' polarity"):
-        await _created([plain], sample_tic=NoScansFoundError("none of it"))
+        await _created(
+            [plain],
+            sample_tic=NoScansFoundError("none of it"),
+            wider_tic=NoScansFoundError("none of any type"),
+        )
 
 
 @pytest.mark.asyncio

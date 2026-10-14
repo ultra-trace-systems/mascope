@@ -198,7 +198,7 @@ re-processed long after it was acquired is listed too.
 | Status | Meaning |
 |---|---|
 | Converted, Queued, Bound, Calibrated | Still being processed: the file was read (or processing was asked for again, and waits its turn), its samples exist, and its m/z axis was calibrated. |
-| Done | Every sample of the file was matched, or it is a blank measurement with nothing to match. The detail says when the file was not calibrated, and why. |
+| Done | Every sample of the file was matched, or it has nothing to match: a blank measurement, or an acquisition of fragmentation (MS2) scans alone, which has no MS1 peaks. The detail says when the file was not calibrated, and why. |
 | Needs a chemistry | The file's name binds it to no ionization mode - it carries no mode's token, tokens of two modes of one polarity, or, for a file of both polarities, a token for only one of them - so it was not processed. A new file has no samples yet; a file processed before keeps the samples it had, and the detail says so. Choose its chemistry (below), or fix the tokens and re-process it. |
 | Calibration failed | An m/z calibration failed or is below the quality bar, so some or all of the samples were not matched. A TOF file is matched only on a verified m/z calibration, so one whose ionization mode has no calibration collection ends here too, and the detail names the missing collection. |
 | Failed | Processing stopped on an error, or was interrupted by a server restart. Re-process the file. |
@@ -243,6 +243,43 @@ calibration rather than having it reset under that sample. If the mode you
 pick calibrates the file, the new calibration marks that batch for
 re-matching, as any new calibration of the file does. Re-processing still
 refuses such a file.
+
+### Fragmentation (MS2) acquisitions
+
+Mascope detects peaks in a file's MS1 scans. Its fragmentation scans are not
+turned into peaks: they are read as they were recorded, through any sample of
+the file, grouped by precursor and by activation - so an acquisition that
+steps the collision energy comes back one spectrum per step. In Python:
+
+```python
+from mascope_sdk import MascopeClient
+
+mascope = MascopeClient(workspace="Acquisitions <instrument>")
+batches = mascope.batches.list(dataset="2026")
+samples = mascope.samples.list(batch="2026-09-07 MS2 acquisition")
+
+ms2 = mascope.samples.ms2(samples["sample_item_id"].iloc[0])
+for group in ms2.get_summary()["groups"]:
+    print(group["parent_peak_mz"], group["activation"], group["scan_count"])
+spectra = ms2.get_averaged_centroids(by_activation=True)
+```
+
+Which sample that is depends on whether the file records MS1 scans:
+
+- **A file with MS1 scans** gets its sample when it is bound to an
+  ionization mode - by its token, its acquisition method or a choice - in
+  the mode's daily batch, and its MS2 data is read through that sample. Until
+  then it waits as **Needs a chemistry** with no sample, and so does its MS2
+  data. A manual fragmentation experiment, recorded in the instrument's
+  tuning software with no method loaded, names no method to be recognised
+  by: give it a filename token, or choose its chemistry.
+- **A file with no MS1 scans at all** is imported too. It has no peaks, so
+  nothing is calibrated, matched or assigned, and its spectrum is empty - and
+  so it needs no chemistry. When a token or its method binds it, it gets its
+  sample in the mode's daily batch. Otherwise it is filed as an **MS2
+  sample** with no ionization mode, in the daily batch
+  `<date> MS2 acquisition` of the instrument's year dataset, and ends
+  **Done**.
 
 !!! tip "Finding files after upload"
     The table shows one time window at a time (default: the last 24 hours). Use
@@ -333,6 +370,11 @@ batch has samples, you can go straight to analysis:
   modes. A file whose chemistry was chosen by hand keeps it, whatever its name
   says, and a file whose name matches no token keeps the modes its samples
   have. This is only available for files not tied to a batch you created.
+- **A fragmentation (MS2) file shows no MS2 data.** Its sample was made
+  before v1.8.0, when a sample's time window ended with its last MS1 scan
+  and so before fragment scans recorded after them. Re-process the file, or
+  ask your administrator to run `db script run fix_acquisition_window`,
+  which widens every such window on the server.
 - **Uploads from the File Agent keep failing.** See the File Agent's
   [troubleshooting section](../instruments/index.md#troubleshooting-uploads) —
   it covers rejected tokens, HTTP 404s, and the 100 MB size limit.

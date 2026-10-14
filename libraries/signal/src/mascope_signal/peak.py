@@ -5,6 +5,7 @@ import threading
 from abc import ABC, abstractmethod
 from collections.abc import Callable
 from concurrent.futures import ProcessPoolExecutor
+from typing import Literal
 
 import dask
 import dask.array as da
@@ -996,13 +997,26 @@ def _restore_decision(filename: str, props: dict) -> None:
         m_io.write_props(filename, now)
 
 
-def write_empty_peak_timeseries(filename: str) -> None:
-    """Write an empty peak_timeseries.zarr for blank measurements.
+def write_empty_peak_timeseries(
+    filename: str, scan_type: Literal["Ms", "Ms2"] | None = "Ms"
+) -> None:
+    """Write a peak_timeseries.zarr that holds no peaks.
+
+    For a file peak detection is not run on: a blank measurement, and an
+    Orbitrap acquisition that recorded no MS1 scans. The store still carries a
+    scan axis, so that it reads as every other store does - the axis of the
+    scans peaks would have been detected in, which for an acquisition of
+    fragmentation scans alone has to be asked for, as there is no MS1 scan to
+    take it from.
 
     :param filename: Filename of the sample file.
     :type filename: str
+    :param scan_type: The scans whose times the store keeps; see
+        :func:`mascope_signal.compute.get_scan_timestamps`. None for an
+        acquisition with no MS1 scans, whose scans are all of another type.
+    :type scan_type: Literal['Ms', 'Ms2'] | None, optional
     """
-    time_coord = m_compute.get_scan_timestamps(filename)
+    time_coord = m_compute.get_scan_timestamps(filename, scan_type=scan_type)
     empty_dataset = xarray.Dataset(
         data_vars={
             "peak_areas": (

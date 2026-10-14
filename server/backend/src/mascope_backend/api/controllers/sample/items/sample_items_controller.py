@@ -73,6 +73,40 @@ from mascope_backend.socket.records.service import (
     emit_record_updated,
 )
 from mascope_file.name import get_instrument_type
+from mascope_thermo.thermo import NoScansFoundError
+
+
+async def _sample_item_tic(filename: str, polarity: str | None) -> float:
+    """The summed TIC of the scans a new sample item's signal is made of.
+
+    Those are the MS1 scans of its polarity, as its sample reads them
+    (:func:`_polarity_tic_per_scan`). A polarity that recorded none - an
+    acquisition of fragmentation scans alone - has no MS1 TIC to report, so
+    its TIC is that of the scans it does have. The two are not comparable, and
+    nothing compares them: a sample with no MS1 scans has no peaks, so it is
+    never matched, and it says so itself by its file's scan census.
+
+    The raw reader raises ``NoScansFoundError`` when a selection finds no
+    scans rather than handing back an empty one, under either backend. Only
+    that error gets the wider read: a polarity the file does not carry at all
+    then raises it again, as it did before, and the caller reports it.
+
+    :param filename: The sample file's stored name.
+    :param polarity: The item's polarity.
+    :return: The summed TIC.
+    """
+    try:
+        _, tic_values = await asyncio.to_thread(
+            _polarity_tic_per_scan, base_filename=filename, polarity=polarity
+        )
+    except NoScansFoundError:
+        _, tic_values = await asyncio.to_thread(
+            m_compute.get_tic_per_scan,
+            base_filename=filename,
+            polarity=polarity,
+            scan_type=None,
+        )
+    return float(np.sum(tic_values))
 
 
 @api_controller()
@@ -359,15 +393,13 @@ async def create_sample_items(
             computed_tic = computed_t0 = computed_t1 = None
             if tic_computation_needed:
                 try:
-                    # kwargs, not a lambda: sample_file is an attached ORM
-                    # instance inside a live session, so its attributes must
-                    # be read here on the loop, not in the worker thread.
-                    _, tic_values = await asyncio.to_thread(
-                        _polarity_tic_per_scan,
-                        base_filename=sample_file.filename,
+                    # The file's name is read here on the loop: sample_file
+                    # is an attached ORM instance inside a live session, so
+                    # its attributes must not be read in the worker thread.
+                    computed_tic = await _sample_item_tic(
+                        filename=sample_file.filename,
                         polarity=sample_item.polarity,  # sample_item polarity (+ or -)
                     )
-                    computed_tic = float(np.sum(tic_values))
                     # The window spans every scan type, not just the MS1 scans
                     # the TIC is taken over: an acquisition that records its
                     # MS2 scans as a block after the MS1 ones would otherwise

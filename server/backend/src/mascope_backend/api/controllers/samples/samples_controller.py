@@ -34,6 +34,7 @@ from mascope_backend.runtime import runtime
 from mascope_file.io import load_coord, load_peak_data
 from mascope_file.name import get_sample_file_type
 from mascope_signal.peak import get_peaks
+from mascope_thermo.thermo import NoScansFoundError
 
 
 # How many samples a refusal names before it counts the rest.
@@ -740,9 +741,19 @@ async def get_sample_spectrum(
         # mean of the same stream, over the store's own scans - which can
         # hold a first scan the window leaves out - so it sits on the
         # profile it was detected in.
-        spectrum = m_compute.get_sample_sum_signal(
-            filename, polarity, t_min_eff, t_max_eff, average=True
-        )
+        try:
+            spectrum = m_compute.get_sample_sum_signal(
+                filename, polarity, t_min_eff, t_max_eff, average=True
+            )
+        except NoScansFoundError:
+            # A raw Orbitrap reader raises for a selection that holds no scans
+            # where the other readers hand back nothing, and both mean the
+            # answer below: there is no spectrum to show. It is the ordinary
+            # state of an acquisition of fragmentation scans alone, whose
+            # sample has no MS1 scan in any window, so it is answered as an
+            # empty spectrum rather than failed - a browser opening such a
+            # sample would otherwise be told its request was at fault.
+            return None
         if spectrum is None:
             return None
         if mz_min is not None and mz_max is not None:

@@ -293,3 +293,95 @@ class TestGetAcquisitionWindow:
         )
 
         assert m_compute.get_acquisition_window("sample") == (0.5, 2.5)
+
+
+class TestScanTypeOfARawFile:
+    """The scan type reaches the raw reader, and only the raw reader.
+
+    A raw Orbitrap file is the one kind that records more than one type of
+    scan, and both reads default to MS1: the axis peaks are detected and timed
+    on, and the scans a sample's TIC is taken over. An acquisition of
+    fragmentation scans alone has no MS1 scan, so its sample's TIC and its
+    empty peak store are read over every scan instead - which only works if
+    the type a caller names is the type the reader is asked for.
+    """
+
+    @pytest.fixture
+    def raw_reads(self, monkeypatch):
+        """Record what the Thermo reader is asked, for a raw Orbitrap file."""
+        asked = {}
+
+        def fake_scan_timestamps(datafile_path, *args, **kwargs):
+            asked["timestamps"] = (args, kwargs)
+            return np.array([1.0, 2.0], dtype=np.float64)
+
+        def fake_tic_per_scan(datafile_path, *args, **kwargs):
+            asked["tic"] = (args, kwargs)
+            return np.array([1.0, 2.0]), np.array([10.0, 20.0])
+
+        monkeypatch.setattr(
+            m_compute.m_name, "get_sample_file_type", lambda _: "orbi_raw"
+        )
+        monkeypatch.setattr(
+            m_compute.m_name, "parse_path_from_item_filename", lambda _: "sample"
+        )
+        monkeypatch.setattr(
+            m_compute.m_name, "filename_to_datafile_path", lambda _: "data.raw"
+        )
+        monkeypatch.setattr(
+            m_compute.m_thermo, "get_scan_timestamps", fake_scan_timestamps
+        )
+        monkeypatch.setattr(m_compute.m_thermo, "get_tic_per_scan", fake_tic_per_scan)
+        return asked
+
+    def test_the_time_axis_is_ms1_unless_asked(self, raw_reads):
+        m_compute.get_scan_timestamps("sample", 0.0, 9.0, "+")
+
+        assert raw_reads["timestamps"] == (
+            (0.0, 9.0, "+"),
+            {"scan_type": "Ms", "stream": None},
+        )
+
+    @pytest.mark.parametrize("scan_type", [None, "Ms2"])
+    def test_the_time_axis_is_read_for_the_type_named(self, raw_reads, scan_type):
+        m_compute.get_scan_timestamps("sample", polarity="-", scan_type=scan_type)
+
+        assert raw_reads["timestamps"] == (
+            (None, None, "-"),
+            {"scan_type": scan_type, "stream": None},
+        )
+
+    def test_the_tic_is_ms1_unless_asked(self, raw_reads):
+        m_compute.get_tic_per_scan("sample", polarity="+")
+
+        assert raw_reads["tic"] == ((None, "+"), {"scan_type": "Ms", "stream": None})
+
+    @pytest.mark.parametrize("scan_type", [None, "Ms2"])
+    def test_the_tic_is_read_for_the_type_named(self, raw_reads, scan_type):
+        _, tic = m_compute.get_tic_per_scan("sample", polarity="+", scan_type=scan_type)
+
+        assert raw_reads["tic"] == (
+            (None, "+"),
+            {"scan_type": scan_type, "stream": None},
+        )
+        np.testing.assert_array_equal(tic, [10.0, 20.0])
+
+    def test_a_tof_file_is_not_asked_for_a_scan_type(self, monkeypatch):
+        """It records one kind of scan, and its reader takes no such filter."""
+        asked = {}
+
+        def fake_tic_per_scan(datafile_path, timestamps):
+            asked["tic"] = (datafile_path, timestamps)
+            return np.array([1.0]), np.array([5.0])
+
+        monkeypatch.setattr(
+            m_compute.m_name, "get_sample_file_type", lambda _: "tof_h5"
+        )
+        monkeypatch.setattr(
+            m_compute.m_name, "filename_to_datafile_path", lambda _: "data.h5"
+        )
+        monkeypatch.setattr(m_compute.m_tofwerk, "get_tic_per_scan", fake_tic_per_scan)
+
+        m_compute.get_tic_per_scan("sample", scan_type=None)
+
+        assert asked["tic"] == ("data.h5", None)

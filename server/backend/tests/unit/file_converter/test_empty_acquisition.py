@@ -7,10 +7,10 @@ exception: the Thermo path raised the reader's ``NoScansFoundError`` and the
 TOF path an ``IndexError`` off the end of an empty array, both reaching error
 monitoring with a traceback as if Mascope itself had broken.
 
-A file that recorded only fragmentation scans is the same kind of outcome
-reached a different way: every property the extraction reads is answerable
-from the MS2 scans, so it used to survive extraction and fail deep inside the
-instrument-function fit - as a traceback, on a message naming a scan filter.
+A file that recorded only fragmentation scans is not one of these. It has
+data, and is stored without peaks rather than refused
+(``test_ms2_only_acquisition.py``); what stays here is that a file with no
+scans at all is never taken for one.
 
 Two things this must not over-reach on, both covered below. A pre-allocated
 BufTimes array means an aborted TOF run ends in unwritten rows of zeros, so
@@ -42,7 +42,6 @@ from test_utils import captured_logs
 from mascope_backend.file_converter.base_processor import BaseFileProcessor
 from mascope_backend.file_converter.errors import (
     EMPTY_ACQUISITION_MESSAGE,
-    NO_MS1_SCANS_MESSAGE,
     SINGLE_SCAN_MESSAGE,
     UNFINISHED_ACQUISITION_MESSAGE,
     UNUSABLE_SCAN_TIMES_MESSAGE,
@@ -178,110 +177,25 @@ class TestThermoEmptyAcquisition:
         assert any(r["exception"] is not None for r in records) is False
 
 
-class _Ms2OnlyRawFile:
-    """Reader stand-in for a .raw whose scans are all fragmentation scans.
+class TestAScanlessFileIsNotAFragmentationOnlyOne:
+    """Both have no MS1 scan, and only one of them has anything to store.
 
-    Unlike the scanless stand-in, every call the property walk makes answers -
-    which is the point: an MS2-only file passes extraction, so the walk cannot
-    be what catches it.
+    A file of fragmentation scans alone is imported without peaks, on the
+    strength of "it recorded no MS1 scan". A file with no scans at all answers
+    that question the same way, so the two are told apart by the scan count -
+    at the extraction, which refuses the empty one before anything asks, and
+    again where the question is asked.
     """
 
-    def scan_indices(self, polarity=None, t_min=None, t_max=None, ms_type=None):  # noqa: ARG002
-        if ms_type == "Ms":
-            raise NoScansFoundError(
-                "No scans found matching the specified filters: polarity='None', "
-                "time_range=(None, None), ms_type='Ms'"
-            )
-        return [1, 2, 3]
-
-    def num_scans(self):
-        return 3
-
-    def scan_times(self, ms_type=None):  # noqa: ARG002
-        return np.array([0.0, 1.5, 3.0])
-
-    def mass_range(self):
-        return (40.0, 160.0)
-
-    def acquisition_parameters(self, max_scans=None):  # noqa: ARG002
-        # Already guarded in the processor: the real backend selects
-        # ms_type="Ms" here, so an MS2-only file raises exactly as a scanless
-        # one does and the property degrades to {}.
-        raise NoScansFoundError(
-            "No scans found matching the specified filters: polarity='None', "
-            "time_range=(None, None), ms_type='Ms'"
-        )
-
-    def created(self):
-        from datetime import datetime, timezone
-
-        return datetime(2026, 9, 4, 16, 12, tzinfo=timezone.utc)
-
-    def method_file(self):
-        return ""
-
-
-class TestThermoMs1LessAcquisition:
-    """A file whose scans are all MS2 fails as data, before the fit.
-
-    Peak detection and the instrument-function fit both read MS1, so such a
-    file has nothing for them to run on. It used to reach the fit and die
-    there on the reader's own error, which reads as a fault in Mascope: a
-    traceback at the level error monitoring subscribes to, and a notification
-    quoting a scan filter at the operator.
-    """
-
-    def test_extraction_names_the_missing_ms1_scans(self):
-        with pytest.raises(EmptyAcquisitionError, match="contains no MS1 scans"):
-            _thermo(_Ms2OnlyRawFile())._get_sample_file_props()
-
-    def test_it_is_reported_as_data_not_as_a_fault(self):
-        assert is_routine_file_failure(EmptyAcquisitionError(NO_MS1_SCANS_MESSAGE))
-
-    def test_the_scan_properties_all_answer_and_report_no_fault(self):
-        """This is what makes the refusal necessary rather than incidental.
-
-        Every property that asks the reader for scans answers for an MS1-less
-        file - the MS2 scans satisfy all of them - so extraction cannot be what
-        catches such a file, and none of them makes monitoring noise on the way
-        to answering. The scanless case is the contrast: there the same
-        properties raise, which is what ``_get_sample_file_props`` converts.
-        """
-        from mascope_runtime.logging import _SENTRY_LEVELS
-
-        processor = _thermo(_Ms2OnlyRawFile())
-        answered = {}
-
-        def _read():
-            for name in ("length", "interval", "acquisition_params", "range"):
-                answered[name] = getattr(processor, name)
-
-        records = _captured(_read)
-        assert set(answered) == {"length", "interval", "acquisition_params", "range"}
-        assert answered["length"] > 0
-        assert [r for r in records if r["level"].name in _SENTRY_LEVELS] == []
-
-    def test_a_scanless_file_is_still_named_the_empty_acquisition_it_is(self):
-        # A file with no scans at all has no MS1 scans either, so the guard
-        # tells the two apart by the scan count and re-raises for this one
-        # rather than reporting the narrower condition.
+    def test_extraction_refuses_it_before_anything_asks(self):
         with pytest.raises(EmptyAcquisitionError, match="contains no scans"):
             _thermo(_ScanlessRawFile())._get_sample_file_props()
 
-    def test_a_file_with_ms1_scans_is_not_refused(self):
-        # The guard must not stand between an ordinary acquisition and its
-        # properties; reaching the walk at all is what this pins.
-        class _WithMs1(_Ms2OnlyRawFile):
-            def scan_indices(self, polarity=None, t_min=None, t_max=None, ms_type=None):  # noqa: ARG002
-                return [1, 2, 3]
-
-        processor = _thermo(_WithMs1())
-        assert processor._records_ms1_scans is True
-
-    def test_the_message_reaches_the_user_as_written(self):
-        assert describe_exception(EmptyAcquisitionError(NO_MS1_SCANS_MESSAGE)) == (
-            NO_MS1_SCANS_MESSAGE
-        )
+    def test_asked_whether_it_has_survey_scans_it_raises(self):
+        # Not False: False is what sends a file down the path that stores it
+        # without peaks, and an empty file has nothing to store.
+        with pytest.raises(NoScansFoundError):
+            _thermo(_ScanlessRawFile())._records_survey_scans
 
 
 def _unfinished_raw(tmp_path):

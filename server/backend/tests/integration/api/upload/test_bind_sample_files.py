@@ -616,10 +616,27 @@ async def test_reprocessing_keeps_the_modes_a_file_was_bound_to(
     assert pipeline.await_args.kwargs["ionization_mode_ids"] == [setup["negative"]]
 
 
+def _census(*ms_orders):
+    """A negative file's scan-stream census, one stream per MS order."""
+    return [
+        {
+            "key": f"FTMS - p NSI Full ms{order}",
+            "signature": {"ms_order": order, "polarity": "-"},
+        }
+        for order in ms_orders
+    ]
+
+
 @pytest.mark.asyncio
+@pytest.mark.parametrize("census", [None, [], _census(1), _census(1, 2)])
 async def test_reprocessing_refuses_a_file_nothing_binds(
-    async_session_factory, setup, pipeline
+    async_session_factory, setup, pipeline, monkeypatch, census
 ):
+    """Whatever scans it holds, so long as one of them is an MS1 scan - or
+    nothing says otherwise: it would only park again."""
+    monkeypatch.setattr(
+        process_service, "read_scan_streams", AsyncMock(return_value=census)
+    )
     parked = await _file(async_session_factory, "parked", "-")
 
     with pytest.raises(Exception, match="(?i)ionization mode tokens"):
@@ -649,6 +666,29 @@ async def test_reprocessing_lets_the_rung_answer_for_a_parked_file(
     pipeline.assert_awaited_once()
     # No modes of its own: by_token stays true, the token rule raises, and the
     # pipeline consults the binding.
+    assert pipeline.await_args.kwargs["ionization_mode_ids"] is None
+    assert pipeline.await_args.kwargs["kept_provenance"] is None
+
+
+@pytest.mark.asyncio
+async def test_reprocessing_lets_a_file_of_fragmentation_scans_alone_through(
+    async_session_factory, setup, pipeline, monkeypatch
+):
+    """It needs no chemistry, so having none to keep is no reason to refuse it.
+
+    The pipeline files it without one, as it did the first time: its earlier
+    MS2 sample has no mode for re-processing to keep, and the rebuild clears
+    it before the run files it again.
+    """
+    monkeypatch.setattr(
+        process_service, "read_scan_streams", AsyncMock(return_value=_census(2))
+    )
+    filed = await _file(async_session_factory, "ms2-only", "-")
+
+    result = await process_service.re_process_sample_files(sample_file_ids=[filed])
+
+    assert "Successfully re-processed 1" in result["message"]
+    pipeline.assert_awaited_once()
     assert pipeline.await_args.kwargs["ionization_mode_ids"] is None
     assert pipeline.await_args.kwargs["kept_provenance"] is None
 
