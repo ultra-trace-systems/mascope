@@ -17,6 +17,7 @@ Fixtures used:
 """
 
 import asyncio
+import gc
 import json
 import threading
 from pathlib import Path
@@ -494,6 +495,23 @@ async def test_a_read_that_fails_part_way_leaves_the_json_unclosed_and_is_logged
     assert record["exception"].type is _ScanReadError
 
 
+@pytest.fixture
+def no_cyclic_collector():
+    """Keep the cyclic garbage collector from running inside the test.
+
+    A generator left suspended in a reference cycle is closed by the
+    collector whenever it next runs, so a reader the response failed to close
+    would be closed anyway - in some runs. With the collector kept out, only
+    what the code itself closes is closed, and the test fails every time the
+    code does not.
+    """
+    was_enabled = gc.isenabled()
+    gc.disable()
+    yield
+    if was_enabled:
+        gc.enable()
+
+
 def _counted_readers(monkeypatch) -> dict:
     """Count the OpenTFRaw readers opened and closed inside the test."""
     readers = {"opened": 0, "closed": 0}
@@ -535,8 +553,9 @@ def _metadata_scope(client, path: str, spec_version: str) -> dict:
 @pytest.mark.parametrize(
     "spec_version",
     [
-        # The server says the client is gone when the app next listens, and
-        # the response is cancelled: the way the reader was left open.
+        # uvicorn's way: it says the client is gone when the app next
+        # listens, drops whatever is sent after that, and the response is
+        # cancelled. The way the reader was left open.
         pytest.param("2.3", id="disconnect-received"),
         # The server fails the app's next send. That closed the reader before
         # the response closed it itself, and is held so that it goes on to.
@@ -544,7 +563,12 @@ def _metadata_scope(client, path: str, spec_version: str) -> dict:
     ],
 )
 async def test_a_client_that_hangs_up_leaves_no_reader_open(
-    guest_client, sample_file, alpha_item, monkeypatch, spec_version
+    guest_client,
+    sample_file,
+    alpha_item,
+    monkeypatch,
+    no_cyclic_collector,
+    spec_version,
 ):
     # Starlette stops asking the body for pieces and leaves its generator
     # suspended inside the reader's `with`. Nothing closes such a generator
@@ -567,6 +591,10 @@ async def test_a_client_that_hangs_up_leaves_no_reader_open(
         if message["type"] != "http.response.body":
             return
         if gone.is_set():
+            if spec_version == "2.3":
+                # As uvicorn does: a failed send would close the reader by
+                # itself, and hide whether the response closes it.
+                return
             raise OSError("the client has gone")
         bodies.append(message)
         # The client goes away once the first scan's centroids have arrived.
@@ -583,6 +611,45 @@ async def test_a_client_that_hangs_up_leaves_no_reader_open(
     # It was a hang-up: the document was not sent to its end.
     sent = b"".join(message.get("body", b"") for message in bodies)
     assert sent and not sent.endswith(b"}}}")
+    assert readers["opened"] > 0
+    assert readers["closed"] == readers["opened"]
+
+
+@pytest.mark.asyncio
+async def test_a_response_cancelled_from_outside_leaves_no_reader_open(
+    guest_client, sample_file, alpha_item, monkeypatch, no_cyclic_collector
+):
+    # Cancelled by the server rather than by its client - a shutdown, say -
+    # with the client still there. This is why the reader is closed in a
+    # finally around the response, and not after it or in a background task,
+    # which a cancelled response never reaches.
+    readers = _counted_readers(monkeypatch)
+    path = f"/api/sample/files/{sample_file}/metadata"
+    second = asyncio.Event()
+    bodies = []
+    asked = 0
+
+    async def receive():
+        nonlocal asked
+        asked += 1
+        if asked == 1:
+            return {"type": "http.request", "body": b"", "more_body": False}
+        await asyncio.Event().wait()  # the client stays
+
+    async def send(message):
+        if message["type"] == "http.response.body":
+            bodies.append(message)
+            if len(bodies) == 2:
+                second.set()
+
+    task = asyncio.create_task(
+        fast(_metadata_scope(guest_client, path, "2.3"), receive, send)
+    )
+    await second.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
     assert readers["opened"] > 0
     assert readers["closed"] == readers["opened"]
 
