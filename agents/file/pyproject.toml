@@ -1,6 +1,6 @@
 [project]
 name = "mascope_file_agent"
-version = "2026.10.9"
+version = "2026.10.14"
 description = "Mascope's File Agent: watches a folder on an instrument machine and uploads new data files to a Mascope server."
 classifiers = [
     "Topic :: Scientific/Engineering :: Atmospheric Science",
