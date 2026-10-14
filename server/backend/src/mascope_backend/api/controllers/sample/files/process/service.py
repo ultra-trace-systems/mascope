@@ -2431,9 +2431,12 @@ async def modes_to_rebind(sample_file_id: str) -> KeptModes | None:
             "it. Choose its chemistry in Raw files to rebuild it."
         )
     else:
+        # The two ways out the run's own park offers such a name: its
+        # tokens, and a chemistry chosen by hand, which stands ahead of it.
         reason = (
-            f"{str(ambiguous).rstrip('.')}. It was left as it is: processing "
-            "a file clears its samples before anything binds it."
+            f"{str(ambiguous).rstrip('.')}. {CHOOSE_CHEMISTRY} It was left as "
+            "it is: processing a file clears its samples before anything "
+            "binds it."
         )
     raise ApiException(
         user_message=_beside_the_declaration(undeclared, reason),
