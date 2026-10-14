@@ -18,6 +18,7 @@ Fixtures used:
 
 import asyncio
 import json
+import threading
 from pathlib import Path
 
 import pytest
@@ -92,6 +93,20 @@ def _client(headers: dict | None = None) -> AsyncClient:
 def _as_json(value):
     """``value`` as a client reads it back: int keys are text, tuples lists."""
     return json.loads(json.dumps(value, allow_nan=False))
+
+
+def _unreadable(monkeypatch, missing: Path) -> None:
+    """Make every raw file fail to open with the error that names its path.
+
+    OpenTFRaw's error for a file it cannot open names no path, so with it a
+    check that the path stays out of the response could not fail. The Thermo
+    backend's does: this is its text.
+    """
+
+    def unreadable(*_args, **_kwargs):
+        raise FileNotFoundError(f"Could not open raw file: {missing}")
+
+    monkeypatch.setattr(m_thermo, "open_backend", unreadable)
 
 
 def _document(include_centroids: bool = True) -> dict:
@@ -237,6 +252,7 @@ async def test_a_time_window_of_one_instant_takes_the_scan_that_starts_then(
     "query",
     [
         "first_scan=0",
+        "last_scan=0",
         "first_scan=2&last_scan=1",
         "t_min=10&t_max=5",
         "t_min=-1",
@@ -269,10 +285,7 @@ async def test_a_file_with_no_raw_orbitrap_data_has_no_scan_table(
 async def test_a_file_that_cannot_be_read_is_a_server_error_without_its_path(
     guest_client, sample_file, alpha_item, monkeypatch, tmp_path
 ):
-    missing = tmp_path / "private-filestore" / "data.raw"
-    monkeypatch.setattr(
-        m_name, "filename_to_datafile_path", lambda _filename: str(missing)
-    )
+    _unreadable(monkeypatch, tmp_path / "private-filestore" / "data.raw")
 
     resp = await guest_client.get(f"/api/sample/files/{sample_file}/scans")
 
@@ -419,10 +432,7 @@ async def test_metadata_of_a_file_that_cannot_be_read_is_an_error_status(
 ):
     # The scan table is read before the first byte is sent, so a file that
     # cannot be read is still answered with a status and a message.
-    missing = tmp_path / "private-filestore" / "data.raw"
-    monkeypatch.setattr(
-        m_name, "filename_to_datafile_path", lambda _filename: str(missing)
-    )
+    _unreadable(monkeypatch, tmp_path / "private-filestore" / "data.raw")
 
     resp = await guest_client.get(f"/api/sample/files/{sample_file}/metadata")
 
@@ -588,6 +598,32 @@ async def test_metadata_sent_to_its_end_leaves_no_reader_open(
     assert resp.status_code == 200
     assert readers["opened"] > 0
     assert readers["closed"] == readers["opened"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "route", ["scans", "metadata?include_centroids=false", "metadata"]
+)
+async def test_the_file_is_read_off_the_event_loop(
+    guest_client, sample_file, alpha_item, monkeypatch, route
+):
+    # A raw file read on the event loop stalls every other request of the
+    # worker for as long as it takes, and nothing fails when it happens.
+    loop_thread = threading.current_thread()
+    opened_on = []
+    real = m_thermo.open_backend
+
+    def recording(path):
+        opened_on.append(threading.current_thread())
+        return real(path)
+
+    monkeypatch.setattr(m_thermo, "open_backend", recording)
+
+    resp = await guest_client.get(f"/api/sample/files/{sample_file}/{route}")
+
+    assert resp.status_code == 200, resp.text
+    assert opened_on, "the raw file was never opened"
+    assert all(thread is not loop_thread for thread in opened_on)
 
 
 @pytest.mark.asyncio
