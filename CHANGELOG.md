@@ -335,8 +335,10 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   chemistry", says the samples are an earlier run's; one that binds it
   clears what an earlier run left, and resets the calibration, before it
   makes any sample, on every attempt as before (the reset once per run).
-  Re-processing still clears a file before its run, so a file it parks has
-  no samples. Raw files and the digest of files that need a chemistry now
+  Samples an earlier attempt of the same run made before it failed are its
+  own, not an earlier run's, and a retry that parks the file clears them,
+  as before. Re-processing still clears a file before its run, so a file it
+  parks has no samples. Raw files and the digest of files that need a chemistry now
   say such a file was not processed, rather than that it has no samples.
 - **A re-processing report no longer repeats an internal error's text.**
   Where an unexpected error stopped a file - reading its acquisition record

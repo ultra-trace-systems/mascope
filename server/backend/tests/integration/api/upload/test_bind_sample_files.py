@@ -28,6 +28,7 @@ last ones run the pipeline itself as far as its binding: a run binds a file
 before it clears anything of it, so a file it parks keeps its samples.
 """
 
+import asyncio
 from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock
 from uuid import uuid4
@@ -40,6 +41,7 @@ from mascope_backend.api.controllers.sample.files.process import (
     service as process_service,
 )
 from mascope_backend.api.controllers.sample.files.process import status
+from mascope_backend.api.lib.exceptions.api_exceptions import ApiException
 from mascope_backend.api.models.sample.files.config import STALLED_AFTER
 from mascope_backend.api.routes.sample.files import sample_files_routes
 from mascope_backend.db import (
@@ -838,10 +840,13 @@ def binding(setup, monkeypatch) -> dict[str, AsyncMock]:
 
     async def as_far_as_the_binding(sample_file_id, **started_with):
         try:
+            # Re-processing has cleared the file already, so the wrapper's
+            # clearing step has nothing to do here.
             await process_service._auto_process_sample_file(
                 sample_file_id=sample_file_id,
                 ionization_mode_ids=started_with["ionization_mode_ids"],
                 kept_provenance=started_with["kept_provenance"],
+                clear_earlier_run=AsyncMock(),
             )
         except _SeenEnough:
             pass
@@ -2170,11 +2175,73 @@ async def test_a_run_that_binds_a_file_clears_it_before_making_samples(
 
     monkeypatch.setattr(process_service, "create_acquisition_batches_and_items", create)
 
-    with pytest.raises(Exception):
-        await process_service.auto_process_sample_file(
+    # Undecorated: the background-task decorator re-raises anything but an
+    # ApiException as one, so _SeenEnough would not reach this test through it.
+    with pytest.raises(_SeenEnough):
+        await process_service.auto_process_sample_file.__wrapped__(
             sample_file_id=bound,
             ionization_mode_ids=[setup["negative"]],
             reset_calibration=True,
         )
 
     assert seen == {"samples": 0, "resets": 1}
+
+
+@pytest.mark.asyncio
+async def test_a_retry_that_cannot_bind_a_file_clears_what_its_own_run_made(
+    async_session_factory, setup, run_to_the_binding, mode_with_token, monkeypatch
+):
+    """The first attempt binds the file, clears the earlier run's sample,
+    makes its own and fails on a busy database. The chosen mode is deleted
+    while it waits, and the retry cannot bind the file. The sample left is
+    the first attempt's, never calibrated or matched, and no earlier run's:
+    the park clears it, as a retry that bound the file would have, and says
+    nothing of kept samples."""
+    chosen, _token = await mode_with_token("-")
+    bound = await _file(
+        async_session_factory,
+        "retried-into-a-park",
+        "-",
+        sample_under=(setup["batch"], setup["negative"]),
+    )
+    attempts = []
+
+    async def create(**_):
+        attempts.append(await _samples_of(async_session_factory, bound))
+        async with async_session_factory() as session:
+            session.add(
+                SampleItem(
+                    sample_item_id=gen_id(),
+                    sample_batch_id=setup["batch"],
+                    sample_file_id=bound,
+                    sample_item_name="2026-09-01 12:00:00",
+                    sample_item_type="ACQUISITION",
+                    sample_item_attributes={},
+                    polarity="-",
+                    sample_item_utc_created=_NOW,
+                )
+            )
+            await session.execute(
+                delete(IonizationMode).where(
+                    IonizationMode.ionization_mode_id == chosen
+                )
+            )
+            await session.commit()
+        raise ApiException("busy", {}, 503)
+
+    monkeypatch.setattr(process_service, "create_acquisition_batches_and_items", create)
+    monkeypatch.setattr(process_service, "_AUTO_PROCESS_RETRY_DELAYS_S", (0, 0, 0))
+    monkeypatch.setattr(process_service, "_shutdown", asyncio.Event())
+
+    result = await process_service.auto_process_sample_file(
+        sample_file_id=bound, ionization_mode_ids=[chosen]
+    )
+
+    assert result["status"] == "parked"
+    # The earlier run's sample was gone before the first attempt made its own.
+    assert attempts == [0]
+    assert await _samples_of(async_session_factory, bound) == 0
+    assert await _status(async_session_factory, bound) == "needs_chemistry"
+    detail = await _detail(async_session_factory, bound)
+    assert f"No ionization mode has the id {chosen}" in detail
+    assert "earlier run" not in detail

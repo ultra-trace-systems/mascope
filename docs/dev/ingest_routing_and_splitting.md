@@ -2547,7 +2547,9 @@ Steps 6 and 7 of the setup-simplification proposal:
     chosen for it deleted, or a token changed, while the run waited behind
     the ingest gate. Its status is `needs_chemistry` all the same - it
     needs one, and choosing it rebuilds the file - and its detail adds that
-    its samples are an earlier run's. Re-processing keeps its own order
+    its samples are an earlier run's. Not samples an earlier attempt of the
+    same run made before it failed: those are partial, and a retry that
+    parks the file clears them. Re-processing keeps its own order
     (item 3 of phase 2 and step 8 of phase 3 say why), so a file it parks
     has no samples;
 - the upload capability flag. Shipped in #2168: `GET /api/version`
