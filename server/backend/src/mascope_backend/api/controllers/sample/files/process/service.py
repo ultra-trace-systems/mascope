@@ -2596,8 +2596,9 @@ async def modes_to_rebind(sample_file_id: str) -> KeptModes | None:
     is asked (:func:`_chosen_by_a_person`). The other is a file that neither
     its record nor a token binds, which has nothing to bind it again.
 
-    None leaves the binding to the run: the record or a token binds the
-    file, or the run finds that neither does and parks it. The record is
+    None leaves the binding to the run: the record, a token or, where that
+    rung is on, the acquisition method binds the file, or the run finds that
+    none does and parks it. The record is
     asked before the name, as the run asks it, so a file its record binds is
     not rebuilt under whatever it or a token bound it to before. A record
     that cannot be read fails the request, which has claimed nothing yet,
@@ -2608,33 +2609,41 @@ async def modes_to_rebind(sample_file_id: str) -> KeptModes | None:
     deleted - which is why what comes back carries each mode's own
     provenance rather than being treated as a choice.
 
-    **A file with samples that no mode binds any longer is refused.** No
-    modes to keep is what a parked file with no samples says, and that one
-    is the run's to bind or park again. A file whose samples no longer give
-    a mode per polarity says it too - a mode deleted since leaves them with
-    none, the column being ``ON DELETE SET NULL`` - and started with no
-    modes, a run would park it unless its acquisition method binds it. A
-    parked run keeps the file's samples, since a run binds a file before it
-    clears anything of it (:func:`_delete_partial_acquisition_items`), but
-    the request says why at once and leaves the file's status as it was.
-    So the samples are counted beside the modes, as re-processing counts
-    them, and the file is refused here, where nothing of it is claimed yet.
-    Samples that cannot be counted fail the request too, and are not taken
-    for none.
+    **A file with samples that nothing could bind is refused.** No modes to
+    keep is what a parked file with no samples says, and that one is the
+    run's to bind or park again. A file whose samples no longer give a mode
+    per polarity says it too - a mode deleted since leaves them with none,
+    the column being ``ON DELETE SET NULL``. Where the deployment routes on
+    method bindings, that file is the run's as well: its acquisition method
+    may bind it, and only the run can ask, since the rung reads the file's
+    scan-stream census there. A run binds a file before it clears anything
+    of it (:func:`_delete_partial_acquisition_items`), so one the method
+    cannot place parks with its samples as they were. Where the rung is
+    off, the run could only park the file, so the request says why at once
+    and leaves the file's status as it was: the samples are counted beside
+    the modes, as re-processing counts them, and the file is refused here,
+    where nothing of it is claimed yet. Samples that cannot be counted fail
+    the request too, and are not taken for none.
+
+    Re-processing refuses such a file with the rung on as well. It clears a
+    file's samples before its run, so there the method could only be asked
+    at the cost of them.
 
     Not refused: a file of fragmentation scans alone with no token. Its
     sample is the MS2 part its run filed without a chemistry, and the run
     files that again (``process/ms2_parts.py``).
 
     A name whose tokens match, but not one mode per polarity, is refused on
-    the same terms. It is a configuration to fix, which no earlier binding
-    stands in for, so the modes the file's samples have are not kept: the
-    run would park the file on its name.
+    the same terms, with the rung on or off. It is a configuration to fix,
+    which no earlier binding stands in for and the method is never asked
+    about, so the modes the file's samples have are not kept: the run would
+    park the file on its name.
 
     :param sample_file_id: The file.
-    :raises ApiException: 422 when the file has samples and the run would
-        bind it to nothing: its record does not bind it, and its name has
-        no token while its samples give no modes, or has ambiguous tokens.
+    :raises ApiException: 422 when the file has samples and the run could
+        only park it: its record does not bind it, and its name has no
+        token while its samples give no modes and the method rung is off,
+        or has ambiguous tokens.
     :return: The modes its samples have with how each was bound, or None.
     """
     sample_file = await fetch_sample_file(sample_file_id=sample_file_id)
@@ -2664,6 +2673,10 @@ async def modes_to_rebind(sample_file_id: str) -> KeptModes | None:
         # no mode, and the run files it again after clearing it. Nothing of
         # it waits for a chemistry, so nothing is lost, as it is in
         # re-processing (filed_alone).
+        return None
+    if no_token is not None and routes_on_method_binding():
+        # The method's turn, which only the run can give it. Its samples
+        # are not counted: the run keeps them unless it binds the file.
         return None
     if not await _pipeline_item_count(sample_file_id):
         return None

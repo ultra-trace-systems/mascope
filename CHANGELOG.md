@@ -116,6 +116,20 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 ### Changed
 
+- **Processing one file on request lets the acquisition method bind a file
+  whose samples no mode binds, on a server that routes on method bindings.**
+  `POST /api/sample/files/{id}/process` refused a file with samples that no
+  mode binds any longer - its mode deleted, say - whether or not the server
+  routes on method bindings, because a run cleared a file's samples before
+  the method was asked. A run now binds a file before it clears anything of
+  it, so with `backend.method_binding = "route"` such a file is started with
+  no modes of its own and its acquisition method gets its turn: the file is
+  rebuilt under the chemistry its method was seen running, or parked as
+  needing a chemistry with its samples as they were. Without the rung, the
+  default, and for a name whose tokens match ambiguously, which the method
+  is never asked about, the request is refused as before. Re-processing
+  still refuses such a file: it clears a file's samples before its run.
+
 - **A file bound by its acquisition record goes on saying so once it is
   processed.** Its status in Raw files read "Bound to ... by its acquisition
   record." only until the next stage replaced it, so a processed file said
