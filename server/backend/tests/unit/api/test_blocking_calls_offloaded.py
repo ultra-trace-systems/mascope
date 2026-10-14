@@ -293,7 +293,7 @@ class _StubCalibrationHandler:
     Subclassing the real base would drag in a sample file and its stores; what
     is under test is the exclusion around ``_apply_sync``, so the body is
     replaced by an already-applied guard plus a concurrency counter, and the
-    lock path is a plain temp directory.
+    lock paths are in a plain temp directory.
     """
 
     def __init__(self, sample_dir):
@@ -307,6 +307,7 @@ class _StubCalibrationHandler:
     _calibration_lock_path = lambda self: os.path.join(
         self._sample_dir, "mz_calibration"
     )
+    _detection_lock_path = lambda self: os.path.join(self._sample_dir, "detection")
     _guarded_apply = BaseCalibrationHandler._guarded_apply
 
     async def apply(self, fit):
@@ -382,6 +383,14 @@ class TestCalibrationApplyIsOneUnit:
         assert "self._calibration_lock_path()" in guarded
         named = inspect.getsource(mod.BaseCalibrationHandler._calibration_lock_path)
         assert "m_io.mz_calibration_lock_path(self.filename)" in named
+        # A detection of the file's peaks is kept out by the lock it holds,
+        # named by the file library too, and taken before the calibration
+        # lock: a detection takes that one inside its own.
+        assert guarded.index("self._detection_lock_path()") < guarded.index(
+            "self._calibration_lock_path()"
+        )
+        detected = inspect.getsource(mod.BaseCalibrationHandler._detection_lock_path)
+        assert "m_io.peak_detection_lock_path(self.filename)" in detected
 
     @pytest.mark.asyncio
     async def test_two_applies_for_one_sample_do_not_overlap(self, tmp_path):

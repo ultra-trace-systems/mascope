@@ -157,6 +157,10 @@ def mz_calibration_lock_path(base_filename: str) -> str:
     lets go the two can disagree, so whoever needs them to agree waits for
     it here.
 
+    An apply holds the file's detection lock as well, and takes that one
+    first (:func:`peak_detection_lock_path`). Nothing that holds this lock
+    may wait for that one.
+
     :param base_filename: Sample file filename
     :type base_filename: str
     :return: The path the lock is named by
@@ -182,6 +186,25 @@ def peak_detection_lock_path(base_filename: str) -> str:
     same decision, so two detections of one file may not overlap: the later
     one has to read what the earlier one recorded, or the store one of them
     writes is not the one the record describes.
+
+    The calibration a file records is read with that decision, and its peaks
+    are placed by it, so an m/z calibration of the file is applied under
+    this lock too: one that landed between a detection's read and its write
+    would leave the new store on the old calibration under the new record.
+    An apply takes this lock first and the calibration lock
+    (:func:`mz_calibration_lock_path`) inside it, and a detection that
+    caches a sum signal takes the calibration lock inside this one as well,
+    briefly. That is the one order the two are taken in. Whoever holds the
+    calibration lock and waited for this one would wait for a detection that
+    may be waiting for it.
+
+    It is the apply that takes this lock, rather than a detection the
+    calibration lock, because a detection is long and an apply short: held
+    across a detection, the calibration lock would make everyone who waits
+    for an apply - a sum signal of the file being cached for a reader of its
+    spectrum, a fill of its peak store that met a rewritten axis - wait for
+    a whole detection as well. As it is, the one that waits for a detection
+    is an apply.
 
     :param base_filename: Sample file filename
     :type base_filename: str

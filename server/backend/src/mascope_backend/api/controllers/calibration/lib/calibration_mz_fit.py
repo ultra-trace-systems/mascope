@@ -159,6 +159,35 @@ class BaseCalibrationHandler:
         """
         return m_io.mz_calibration_lock_path(self.filename)
 
+    def _detection_lock_path(self) -> str:
+        """Path naming the lock a detection of this sample's peaks holds.
+
+        A detection reads the calibration the file records when it begins,
+        places its peaks by it - a stream's by the stream's factor - and
+        holds this lock until the store it built is written
+        (``mascope_signal.peak.compute_peaks``). An apply that landed in
+        between would move the store the detection is about to replace and
+        record its calibration over it, and the new store would sit on the
+        old calibration under the new record: every read and match of the
+        file after it off by the factor. So an apply holds this lock as
+        well, and a detection and an apply of one file never overlap.
+
+        It is taken before the calibration lock, never after it
+        (``mascope_file.io.peak_detection_lock_path`` says why), and it is
+        the first thing an apply takes, so an apply that gives up waiting
+        for it has written nothing.
+
+        How long it waits is how long a detection runs: from seconds to
+        minutes for a large file. Where another process detects - the file
+        converter, or another backend worker - the wait is bounded by
+        ``mascope_file.io.ZARR_PROCESS_LOCK_TIMEOUT``, and an apply that
+        reaches it fails with a TimeoutError and is applied again once the
+        peaks are in. Where a thread of this process detects, the wait is
+        for the thread lock, and lasts until the detection ends. Either way
+        it is a background task's wait, not a request's.
+        """
+        return m_io.peak_detection_lock_path(self.filename)
+
     def _guarded_apply(self, fit: dict):
         """Run ``_apply_sync`` under a lock covering the whole recalibration.
 
@@ -178,8 +207,14 @@ class BaseCalibrationHandler:
         sample and held across the lot, and being the same inter-process lock
         the writes use, it also excludes a sibling worker or the file
         converter - which the event loop never did.
+
+        A detection of the file's peaks is kept out too, by the lock it
+        holds (:meth:`_detection_lock_path`), taken first.
         """
-        with m_io.zarr_write_lock(self._calibration_lock_path()):
+        with (
+            m_io.zarr_write_lock(self._detection_lock_path()),
+            m_io.zarr_write_lock(self._calibration_lock_path()),
+        ):
             # The signal library caches a sum signal under this same lock, so
             # that one made across an apply is not kept on the axis the apply
             # is replacing. This thread makes some itself, and says it holds
