@@ -689,8 +689,10 @@ async def test_reprocessing_lets_a_file_of_fragmentation_scans_alone_through(
     The pipeline files it without one, as it did the first time: its earlier
     MS2 sample has no mode for re-processing to keep, and the rebuild clears
     it before the run files it again. With the method rung on, a file whose
-    samples have no mode is refused, because its run would park it with them
-    gone - not this one, which its run files again.
+    samples have no mode goes on only if its method binds it, because its
+    run would park it with them gone - not this one, which its run files
+    again, and whose method is not asked: this file's reports no name, and
+    asked, it would decline.
     """
     monkeypatch.setattr(process_service, "routes_on_method_binding", lambda: by_method)
     monkeypatch.setattr(
@@ -711,32 +713,132 @@ async def test_reprocessing_lets_a_file_of_fragmentation_scans_alone_through(
     assert pipeline.await_args.kwargs["kept_provenance"] is None
 
 
-@pytest.mark.asyncio
-async def test_reprocessing_does_not_leave_a_file_with_samples_to_the_rung(
-    async_session_factory, setup, pipeline, monkeypatch
-):
-    """A file bound once, whose mode was deleted since, where the rung is on.
+def _asked_in(steps: "_Steps", rung: AsyncMock) -> None:
+    """Note in ``steps`` when the method rung's stand-in is asked."""
+    answer = rung.return_value
 
-    Its samples are still there, with no mode, so it has no modes to keep -
-    which is what a parked file with no samples says too, and only that one
-    is the rung's to answer for. Re-processing clears a file's samples before
-    the pipeline asks the method, so this file would park with its samples gone
-    if the method could not place it, where with the rung off it is refused
-    untouched.
+    def asked(*_args):
+        steps.done.append("asked its method")
+        return answer
+
+    rung.side_effect = asked
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "under", [None, "positive"], ids=["mode deleted", "mode of another polarity"]
+)
+async def test_reprocessing_leaves_a_file_with_samples_its_method_binds_to_the_run(
+    async_session_factory, setup, pipeline, steps, monkeypatch, under
+):
+    """A file bound once, whose samples no longer give a mode per polarity,
+    where the rung is on: a mode deleted since leaves them with none, and one
+    whose polarity was changed since is no mode of the file's.
+
+    It has no modes to keep, which is what a parked file with no samples says
+    too, but its samples are still there, and re-processing clears them
+    before the pipeline asks the method. So the method is asked first, as the
+    run asks it, on the file's scan-stream census, and a file it binds is
+    sent on with no modes of its own. It is asked in the loop that rebuilds
+    the files, just before the file is claimed, and not with the checks in
+    front of the batch: the files ahead of it are bound by then, and teach
+    the bindings as they are.
     """
     monkeypatch.setattr(process_service, "routes_on_method_binding", lambda: True)
+    rung, census = _method_binds(monkeypatch, setup)
+    _asked_in(steps, rung)
     orphaned = await _file(
         async_session_factory,
-        "mode-deleted-rung-on",
+        "mode-deleted-bound-by-its-method",
         "-",
-        sample_under=(setup["batch"], None),
+        sample_under=(setup["batch"], setup[under] if under else None),
+    )
+
+    result = await process_service.re_process_sample_files(sample_file_ids=[orphaned])
+
+    assert "Successfully re-processed 1" in result["message"]
+    asked_for, streams = rung.await_args.args
+    assert asked_for.sample_file_id == orphaned
+    assert streams is census
+    assert steps.done == [
+        "decided",
+        "asked its method",
+        "reset the calibration",
+        "detected per stream",
+        "cleared the samples",
+        "ran the pipeline",
+    ]
+    assert pipeline.await_args.kwargs["sample_file_id"] == orphaned
+    assert pipeline.await_args.kwargs["ionization_mode_ids"] is None
+    assert pipeline.await_args.kwargs["kept_provenance"] is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "under", [None, "positive"], ids=["mode deleted", "mode of another polarity"]
+)
+async def test_reprocessing_refuses_a_file_with_samples_its_method_does_not_bind(
+    async_session_factory, setup, steps, monkeypatch, under
+):
+    """The same file, where the method does not bind it either: its run could
+    only park it, with its samples gone. It is left as it is, with the
+    method's own reason and remedy, as processing it on request refuses it.
+    The rung itself is asked: this file's method reports no name, which is
+    one of the ways it declines."""
+    monkeypatch.setattr(process_service, "routes_on_method_binding", lambda: True)
+    monkeypatch.setattr(
+        process_service, "read_scan_streams", AsyncMock(return_value=[])
+    )
+    rung = AsyncMock(wraps=process_service.resolve_modes_by_method_binding)
+    monkeypatch.setattr(process_service, "resolve_modes_by_method_binding", rung)
+    orphaned = await _file(
+        async_session_factory,
+        "mode-deleted-declined-by-its-method",
+        "-",
+        sample_under=(setup["batch"], setup[under] if under else None),
     )
 
     with pytest.raises(Exception, match="no longer bind it") as refused:
         await process_service.re_process_sample_files(sample_file_ids=[orphaned])
 
-    assert "ionization mode tokens" in str(refused.value).lower()
-    pipeline.assert_not_called()
+    reason = _report(refused)
+    assert "ionization mode tokens" in reason.lower()
+    assert "does not say either: its acquisition method reports no name" in reason
+    assert "Files of this instrument need a filename token" in reason
+    assert "It was left as it is." in reason
+    rung.assert_awaited_once()
+    assert steps.done == ["decided"]
+    assert await _samples_of(async_session_factory, orphaned) == 1
+    assert await _status(async_session_factory, orphaned) == "done"
+
+
+@pytest.mark.asyncio
+async def test_reprocessing_leaves_a_file_as_it_is_when_its_method_cannot_be_asked(
+    async_session_factory, setup, steps, monkeypatch
+):
+    """A method that cannot be asked is not taken for one that binds the file
+    or for one that declines it. The file is left as it is, and the report
+    says that the method could not be asked, not what the error said."""
+    monkeypatch.setattr(process_service, "routes_on_method_binding", lambda: True)
+    monkeypatch.setattr(
+        process_service,
+        "resolve_modes_by_method_binding",
+        AsyncMock(side_effect=RuntimeError("the database went away")),
+    )
+    orphaned = await _file(
+        async_session_factory,
+        "mode-deleted-method-unasked",
+        "-",
+        sample_under=(setup["batch"], None),
+    )
+
+    with pytest.raises(
+        Exception, match="Failed to ask its acquisition method"
+    ) as refused:
+        await process_service.re_process_sample_files(sample_file_ids=[orphaned])
+
+    assert "the database went away" not in _report(refused)
+    assert steps.done == ["decided"]
     assert await _samples_of(async_session_factory, orphaned) == 1
     assert await _status(async_session_factory, orphaned) == "done"
 

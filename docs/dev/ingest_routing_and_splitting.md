@@ -2707,27 +2707,40 @@ Needed before any rung can be provisional or park.
      every acquisition. Bulk re-processing
      reaches the rung too: a parked file with no samples goes through
      to the pipeline rather than being refused on its name, which is what
-     selecting the parked files and pressing Re-process does. Only a file
-     with no samples, though: re-processing resets a file's calibration,
-     detects its peaks again where it must, and clears every sample item
-     of the file before the pipeline asks the rung, so a file whose samples
-     are still there under modes that no longer bind it - a mode deleted
-     since leaves them with none - is refused untouched, as it is where the
-     rung is off, and so is one whose samples could not be read. Processing
-     one file on request (`POST /api/sample/files/{id}/process`) asks the
-     rung for such a file where it is on, as the run asks it, on the file's
-     scan-stream census: a file its method binds is started with no modes of
-     its own, and the run asks again and rebuilds it. One the method
-     declines is refused with the method's reason and remedy, and so is the
-     file where the rung is off, and with the rung on or off a file with
-     samples and an ambiguous name, which the rung never answers: the
-     request says at once why the run would park the file, and leaves it as
-     it is; samples it cannot read fail the request. The run binds a file
-     before it clears anything of it (phase 1), so a run that parks a file
-     after these checks - started behind the ingest gate, with a mode
+     selecting the parked files and pressing Re-process does, and its method
+     is not asked first, since such a file has nothing a run could cost it.
+     A file whose samples are still there under modes that no longer bind
+     it - a mode deleted since leaves them with none - has: re-processing
+     resets a file's calibration, detects its peaks again where it must, and
+     clears every sample item of the file before the pipeline asks the rung.
+     So where the rung is on, both re-processing and processing one file on
+     request (`POST /api/sample/files/{id}/process`) ask the rung for such a
+     file first, as the run asks it, on the file's scan-stream census: a
+     file its method binds is started with no modes of its own, and the run
+     asks again and rebuilds it; one the method declines is refused with the
+     method's reason and remedy, and left as it is. That is how a site that
+     chose a chemistry for one file of a method, as the remedy for a method
+     never seen says, has the rest rebuilt from Raw files. Processing on
+     request asks before it claims the file. Re-processing asks for each such
+     file just before it claims it, in the loop that rebuilds the batch, and
+     not with the checks in front of the batch: every file ahead of it that
+     its record, its token or a person's choice binds teaches its method's
+     binding as it is bound, and one that shows the key a chemistry it has
+     not been seen with makes the key ambiguous, so an answer from before
+     the batch started can be out of date by the file's turn. Where the rung
+     is off, such a file is refused, and with the rung on or off so is a
+     file with samples and an ambiguous name, which the rung never answers:
+     each says at once why the run would park the file, and leaves it as it
+     is. Samples that cannot be read, and a method that cannot be asked,
+     leave a re-processed file as it is and fail a request. The run binds a
+     file before it clears anything of it (phase 1), so a run that parks a
+     file after these checks - started behind the ingest gate, with a mode
      deleted, a token changed or the binding moved in between - keeps its
      samples. A file re-processing parks that way has been cleared by
-     re-processing already, between its check and its run. A file bound
+     re-processing already, between its check and its run; for a file whose
+     method was asked, that is the time its own reset, peak detection and
+     clearing take, the window re-processing leaves a token or a kept mode
+     for the whole wait of its batch. A file bound
      this way teaches its binding nothing, and its items record
      `method_binding_id`, which is checked against the table as the item is
      created rather than trusted from the earlier read: `ON DELETE SET NULL`
