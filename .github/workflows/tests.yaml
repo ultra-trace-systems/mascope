@@ -29,7 +29,7 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
         with:
-          version: "0.11.2"
+          version: "0.13.1"
 
       - name: Check the lockfile is in sync with pyproject.toml
         run: uv lock --check
@@ -100,7 +100,7 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
         with:
-          version: "0.11.2"
+          version: "0.13.1"
 
       - name: Install every dependency group
         # uv.lock records no licence metadata at all, so the Python half reads
@@ -135,7 +135,7 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
         with:
-          version: "0.11.2"
+          version: "0.13.1"
 
       - name: Install every dependency group of the File Agent
         # As for the root lockfile: what is not installed cannot be read, and
@@ -172,7 +172,7 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
         with:
-          version: "0.11.2"
+          version: "0.13.1"
 
       - name: Build the user docs (strict)
         # Mirrors the docs-build stage in the frontend image: --strict fails on
@@ -234,7 +234,7 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
         with:
-          version: "0.11.2"
+          version: "0.13.1"
 
       - name: Install dependencies
         run: uv sync --group dev
@@ -261,7 +261,7 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
         with:
-          version: "0.11.2"
+          version: "0.13.1"
 
       - name: Install dependencies
         run: uv sync --group dev
@@ -297,7 +297,7 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
         with:
-          version: "0.11.2"
+          version: "0.13.1"
 
       - name: Run File Agent tests
         # Hermetic: no runtime, no server, no network. Not only logic, though:
@@ -330,7 +330,7 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
         with:
-          version: "0.11.2"
+          version: "0.13.1"
 
       - name: Run File Agent tests
         working-directory: agents/file
@@ -349,7 +349,7 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
         with:
-          version: "0.11.2"
+          version: "0.13.1"
 
       - name: Install dependencies
         run: uv sync --group dev
@@ -374,7 +374,7 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
         with:
-          version: "0.11.2"
+          version: "0.13.1"
 
       - name: Build the CLI and runtime wheels
         id: wheels
@@ -437,7 +437,7 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
         with:
-          version: "0.11.2"
+          version: "0.13.1"
 
       - name: Build application images from this PR
         run: |
@@ -585,7 +585,7 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
         with:
-          version: "0.11.2"
+          version: "0.13.1"
 
       - name: Set up environment
         run: |
