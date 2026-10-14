@@ -1,5 +1,5 @@
 import inspect
-from collections.abc import Iterator
+from collections.abc import Generator
 from functools import wraps
 from typing import Any, Callable
 
@@ -80,10 +80,13 @@ class ClosingStreamingResponse(StreamingResponse):
     from outside. By then no piece is being read: Starlette reads each in a
     worker thread and waits for it to return even when it is cancelled.
 
-    :param content: The body's pieces, as a generator.
+    :param content: The body's pieces, as a generator: a synchronous one,
+        whose ``close()`` is what this calls. Another iterator, or an async
+        generator, has no ``close()`` and would fail once the response has
+        gone out.
     """
 
-    def __init__(self, content: Iterator, **kwargs) -> None:
+    def __init__(self, content: Generator, **kwargs) -> None:
         super().__init__(content, **kwargs)
         self._content = content
 
