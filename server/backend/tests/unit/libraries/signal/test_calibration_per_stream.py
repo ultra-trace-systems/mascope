@@ -1302,6 +1302,9 @@ def test_the_fit_as_a_whole_is_judged_as_before():
 #
 # With one stream fitted on calibrants of its own, the file's calibrants are
 # that stream's: the file's block is the stream's, and so are its issues.
+# A file's block that reads otherwise than its one stream's is none a fit
+# makes; the tests that hand it one hold that what the stream does not say
+# is kept all the same.
 
 
 def test_the_issue_of_a_file_of_one_fitted_stream_is_said_once_by_the_stream():
