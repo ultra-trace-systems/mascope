@@ -324,6 +324,25 @@ describe('acquisition store: all instruments', () => {
     expect(dropped()).toEqual(new Set())
   })
 
+  // The list names every instrument and marks the ones the user has no access
+  // to; the server refuses their rooms, so asking only earns a refusal.
+  it('holds no room for an instrument the user has no access to', async () => {
+    instrumentStore.state.list = [...INSTRUMENTS, { instrument: 'Raw-3', disabled: true }]
+    await watching(useAcquisition())
+    await showAll()
+
+    expect(rooms()).toEqual(new Set(['Orbi-1', 'Tof-2']))
+  })
+
+  it('holds no room for a focused instrument the user has no access to', async () => {
+    instrumentStore.state.focused = { instrument: 'Raw-3', disabled: true }
+    const store = useAcquisition()
+    store.setWatching(true)
+    await nextTick()
+
+    expect(rooms()).toEqual(new Set())
+  })
+
   it('takes a room for an instrument that appears later', async () => {
     await watching(useAcquisition())
     await showAll()

@@ -122,6 +122,13 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   read, naming the samples that have no raw file to read. A request for
   Orbitrap samples is answered as before.
 
+- **Raw files no longer asks for the updates of instruments the user cannot
+  open.** The instrument list includes, disabled, the instruments a user
+  has no access to, and with all instruments shown Raw files joined the
+  update channel of every one. The server refused those, and logged a
+  warning for each refusal every time the list was opened. Raw files now
+  joins only the instruments the user can open.
+
 - **An Orbitrap acquisition that was never finished fails as one.** An
   acquisition that is aborted before it records a scan leaves a small raw
   file holding the instrument method and no index of scans. The reader
