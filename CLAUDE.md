@@ -100,6 +100,37 @@ It comes preloaded with the published demo dataset and login `demo@mascope.app` 
 - Unit tests live in `server/frontend/tests/unit/`, mirroring `src/` paths
   (`tests/unit/lib/chem.spec.js` covers `src/lib/chem.js`).
 
+## Where work is tracked
+
+Roadmap work is planned in Linear (the Mascope team, key `MAS`); defects and
+findings live here as GitHub issues. The split:
+
+- **A bug or a review finding goes to a GitHub issue.** It is the public,
+  code-anchored record: the repro, the file paths, and the PR that closes it
+  with `Fixes #N`. Review agents file here.
+- **A step of a plan is a Linear issue** in the plan's project, written as a
+  self-contained brief (Context, Task with file paths, Where, Verify, Size).
+  If the step also fixes a filed GitHub issue, the brief opens with the GitHub
+  link and the PR says both `Fixes #N` and `Fixes MAS-N`, so both close on
+  merge.
+- **A GitHub issue a plan will close is attached to the Linear project, not
+  copied.** It carries the `linear` label here, so `is:open -label:linear` is
+  the backlog no plan owns.
+- **A decision the owner must make is a Linear issue** labelled *Decision*, in
+  the project it blocks. A line marked *call for the plan owner* in a brief is
+  such a decision, not a task.
+- **A plan starts as a design note in `docs/dev`** and a Linear project that
+  links it. The note stays the record; Linear tracks the work and its
+  progress.
+- **Branch names and PR bodies link the two.** A branch named from the Linear
+  issue (`mas-NN-...`) or `Fixes MAS-NN` in the PR body moves the Linear issue
+  by itself. GitHub Issues Sync and the bulk importer stay off.
+
+GitHub labels are areas (`backend`, `frontend`, `library`, `cli`, `agent`,
+`sdk`, `security`, `docs`, `ci`, `ops`) and flags (`matching`, `perf`,
+`debt`, `design`, `test`, `blocked`, `linear`); the issue type (Bug, Task,
+Feature) carries the kind. Milestones are not used.
+
 ## Conventions
 
 - Conventional Commits (`type(scope): description`); ASCII-only commit messages,
