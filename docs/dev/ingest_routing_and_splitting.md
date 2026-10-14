@@ -2829,7 +2829,9 @@ unchanged.
      ions. The dialog fits at its own settings and the badge reads the
      record, so where the two read otherwise - the pipeline applies a fit
      at a wider m/z error tolerance after a warning - the dialog lists the
-     ranges of both. Still open: the instrument function per segment;
+     ranges of both. A range below the quality bar (its issue names it
+     under `segment`) says why on its own line and is named nowhere else
+     in the dialog. Still open: the instrument function per segment;
   8. **Step 8, re-process.** ~~A re-process rebuilds a file's store under
      the current rule, so a site's composite batches can be
      re-processed~~ - built in #2328: a re-processing

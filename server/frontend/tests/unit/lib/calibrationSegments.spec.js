@@ -3,7 +3,9 @@ import { describe, it, expect } from 'vitest'
 import {
   calibrationSegments,
   carriedSegmentsText,
-  segmentCalibrationText
+  segmentCalibrationText,
+  segmentListItems,
+  splitQualityIssues
 } from '@/lib/calibrationSegments'
 
 // The scan ranges of a stitched sample as the backend lists them: a reagent
@@ -114,6 +116,96 @@ describe('segmentCalibrationText', () => {
         '(0.00 ppm)'
       )
     }
+  })
+})
+
+// A range's issue as the backend words it: opened with the range's label
+const issue = (segment, code = 'points') => ({
+  code,
+  message: `${segment.label}: Fitted on 1 calibration point but moves the m/z axis.`,
+  segment: segment.key
+})
+
+describe('segmentListItems', () => {
+  it('lists each range once, with why it misses the bar on its line', () => {
+    const items = segmentListItems({
+      ...record(FITTED, ACROSS, AS_IT_IS),
+      quality_issues: [issue(FITTED)]
+    })
+
+    expect(items.map((item) => item.key)).toEqual([FITTED.key, ACROSS.key, AS_IT_IS.key])
+    // A fit on too few points says what it was fitted on and how far it moves
+    // the axis, so it stands in for the range's own sentence
+    expect(items[0].text).toBe('m/z 40-138: fitted on 1 calibration point but moves the m/z axis.')
+    // Below the bar, or unchanged from another range: flagged. Across an
+    // overlap: not
+    expect(items.map((item) => item.flagged)).toEqual([true, false, true])
+  })
+
+  it('adds any other reason after what the range was fitted on', () => {
+    const items = segmentListItems({
+      ...record(FITTED),
+      quality_issues: [issue(FITTED, 'residual')]
+    })
+
+    expect(items[0].text).toBe(
+      'm/z 40-138: fitted on 2 calibrants (-11.93 ppm). Fitted on 1 calibration point but ' +
+        'moves the m/z axis.'
+    )
+  })
+
+  it('says a range with both kinds of reason once, and the second after it', () => {
+    const residual = {
+      code: 'residual',
+      message: 'm/z 40-138: Mean m/z error after calibration is 1.20 ppm (limit 1 ppm).',
+      segment: FITTED.key
+    }
+    const items = segmentListItems({
+      ...record(FITTED),
+      quality_issues: [residual, issue(FITTED)]
+    })
+
+    expect(items[0].text).toBe(
+      'm/z 40-138: fitted on 1 calibration point but moves the m/z axis. Mean m/z error ' +
+        'after calibration is 1.20 ppm (limit 1 ppm).'
+    )
+  })
+
+  it('keeps a reason whole that does not open with the range', () => {
+    const items = segmentListItems({
+      ...record(FITTED),
+      quality_issues: [{ code: 'x', message: 'Something else.', segment: FITTED.key }]
+    })
+
+    expect(items[0].text).toBe('m/z 40-138: fitted on 2 calibrants (-11.93 ppm). Something else.')
+  })
+
+  it('flags nothing a range has no issue with', () => {
+    expect(segmentListItems(record(FITTED, ACROSS)).map((item) => item.flagged)).toEqual([
+      false,
+      false
+    ])
+    expect(segmentListItems(null)).toEqual([])
+  })
+})
+
+describe('splitQualityIssues', () => {
+  it('leaves the warning what is the fit’s own, and counts the ranges below the bar', () => {
+    const own = { code: 'residual', message: 'Mean m/z error is 1.2 ppm.' }
+    // An issue that names a range the fit does not list stays in the warning
+    const elsewhere = { ...issue(FITTED), segment: 'no such range' }
+    const split = splitQualityIssues({
+      ...record(FITTED, ACROSS),
+      quality_issues: [issue(FITTED), issue(FITTED, 'residual'), own, elsewhere]
+    })
+
+    expect(split.own).toEqual([own, elsewhere])
+    expect(split.ranges).toBe(1)
+  })
+
+  it('has nothing to split without issues', () => {
+    expect(splitQualityIssues(record(FITTED))).toEqual({ own: [], ranges: 0 })
+    expect(splitQualityIssues(null)).toEqual({ own: [], ranges: 0 })
   })
 })
 

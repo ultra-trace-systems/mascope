@@ -31,6 +31,8 @@ import { num } from '@/lib/formatters'
 
 const signedPpm = (value) => `${num.mzCorrection.format(value)} ppm`
 
+const lowerFirst = (text) => `${text.charAt(0).toLowerCase()}${text.slice(1)}`
+
 // "not fitted on calibrants of its own", with the reason the fit recorded
 // where it recorded one: the backend's sentence, as part of this one. A note
 // can go on after a `;` to say what the range's own fit did next ("skipping
@@ -38,7 +40,7 @@ const signedPpm = (value) => `${num.mzCorrection.format(value)} ppm`
 // took instead.
 const notFitted = (segment) => {
   const note = (segment.note ?? '').split(';')[0].trim().replace(/\.$/, '')
-  const reason = note ? ` (${note.charAt(0).toLowerCase()}${note.slice(1)})` : ''
+  const reason = note ? ` (${lowerFirst(note)})` : ''
   return `not fitted on calibrants of its own${reason}`
 }
 
@@ -79,6 +81,82 @@ export function segmentCalibrationText(segment) {
   const fitted =
     points == null ? 'its own calibrants' : `${points} calibrant${points === 1 ? '' : 's'}`
   return `${segment.label}: fitted on ${fitted} (${correction}).`
+}
+
+// The quality issues of a fit or record that are its scan ranges' (an issue
+// names its range under `segment`), by range key
+const issuesByRange = (mzCalibration) => {
+  const keys = new Set(calibrationSegments(mzCalibration).map((segment) => segment.key))
+  const byRange = new Map()
+  for (const issue of mzCalibration?.quality_issues ?? []) {
+    if (issue.segment == null || !keys.has(issue.segment)) continue
+    byRange.set(issue.segment, [...(byRange.get(issue.segment) ?? []), issue])
+  }
+  return byRange
+}
+
+// An issue's message as its range's line says it: the backend opens it with
+// the range's label, which the line already starts with
+const withoutLabel = (message, label) =>
+  message.startsWith(`${label}: `) ? message.slice(label.length + 2) : message
+
+// The issue whose sentence says what the range's own does - on how many
+// calibration points it was fitted and how far that moves its axis - and so
+// stands in its place
+const SAYS_THE_FIT = 'points'
+
+/**
+ * The scan ranges of a fit or record as the calibration dialog lists them.
+ *
+ * Each line is the range's sentence, followed by why the range misses the
+ * quality bar where it does, so that a range is named once, on its own line,
+ * and not again in the warning above the list. A fit on too few points to
+ * vouch for its correction is said by the issue alone, which names both. A
+ * line is flagged - set in
+ * the warning colour - for a range below the bar, and for one that took
+ * another range's calibration unchanged, which nothing the range measured
+ * checked. One that took it across an overlap was put on the m/z of the ions
+ * both ranges measure, and is not.
+ *
+ * @param {object|null|undefined} mzCalibration - a fit, or `sample.mz_calibration`
+ * @returns {{key: string, text: string, flagged: boolean}[]} empty for a
+ *   sample that is not stitched
+ */
+export function segmentListItems(mzCalibration) {
+  const byRange = issuesByRange(mzCalibration)
+  return calibrationSegments(mzCalibration).map((segment) => {
+    const issues = byRange.get(segment.key) ?? []
+    const fit = issues.find((issue) => issue.code === SAYS_THE_FIT)
+    const said = fit
+      ? `${segment.label}: ${lowerFirst(withoutLabel(fit.message, segment.label))}`
+      : segmentCalibrationText(segment)
+    const others = issues
+      .filter((issue) => issue !== fit)
+      .map((issue) => withoutLabel(issue.message, segment.label))
+    return {
+      key: segment.key,
+      text: [said, ...others].join(' '),
+      flagged: segment.source === 'borrowed' || issues.length > 0
+    }
+  })
+}
+
+/**
+ * A fit's or record's quality issues, split by where the dialog shows them.
+ *
+ * @param {object|null|undefined} mzCalibration - a fit, or `sample.mz_calibration`
+ * @returns {{own: object[], ranges: number}} `own`: the issues of the fit as a
+ *   whole, and any that name a range the fit does not list, for the warning;
+ *   `ranges`: how many listed ranges miss the bar, whose issues are on their
+ *   lines (`segmentListItems`)
+ */
+export function splitQualityIssues(mzCalibration) {
+  const byRange = issuesByRange(mzCalibration)
+  const onLines = new Set([...byRange.values()].flat())
+  return {
+    own: (mzCalibration?.quality_issues ?? []).filter((issue) => !onLines.has(issue)),
+    ranges: byRange.size
+  }
 }
 
 /**
