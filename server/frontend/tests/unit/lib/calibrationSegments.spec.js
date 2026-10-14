@@ -8,7 +8,8 @@ import {
 
 // The scan ranges of a stitched sample as the backend lists them: a reagent
 // scan fitted on its own calibrants, a window that took the scan's
-// calibration across their overlap, and one that took it as it is.
+// calibration across their overlap, and one that took it as it is - the
+// scan's factor, unchanged.
 const FITTED = {
   key: 'FTMS - p NSI Full ms [40.0000-138.0000] R=120000',
   label: 'm/z 40-138',
@@ -35,7 +36,7 @@ const AS_IT_IS = {
   label: 'm/z 132-460',
   source: 'borrowed',
   origin: 'm/z 40-138',
-  calibration_factor: 1 + 0.004e-6,
+  calibration_factor: 1 - 11.934e-6,
   shift_ppm: null,
   shared_ions: null,
   note: 'No suitable subset of calibration peaks found; skipping calibration.',
@@ -79,11 +80,12 @@ describe('segmentCalibrationText', () => {
   })
 
   it('says whose calibration a range took unchanged, and the reason recorded for it', () => {
-    // Calibrants it does hold, which disagreed: the range is not short of them
+    // Calibrants it does hold, which disagreed: the range is not short of them.
+    // What the note goes on to say its own fit did next, "skipping
+    // calibration", is not quoted: the range took another's instead.
     expect(segmentCalibrationText(AS_IT_IS)).toBe(
       'm/z 132-460: not fitted on calibrants of its own (no suitable subset of calibration ' +
-        'peaks found; skipping calibration); takes the calibration of m/z 40-138 unchanged ' +
-        '(+0.00 ppm).'
+        'peaks found); takes the calibration of m/z 40-138 unchanged (-11.93 ppm).'
     )
   })
 
@@ -94,7 +96,7 @@ describe('segmentCalibrationText', () => {
     )
     expect(segmentCalibrationText({ ...AS_IT_IS, note: undefined })).toBe(
       'm/z 132-460: not fitted on calibrants of its own; takes the calibration of ' +
-        'm/z 40-138 unchanged (+0.00 ppm).'
+        'm/z 40-138 unchanged (-11.93 ppm).'
     )
   })
 
@@ -102,6 +104,16 @@ describe('segmentCalibrationText', () => {
     expect(segmentCalibrationText({ ...FITTED, calibration_factor: 1 + 20.402e-6 })).toContain(
       '(+20.40 ppm)'
     )
+  })
+
+  it('signs no correction that rounds to nothing', () => {
+    // A range the fit left where the instrument recorded it, to a hundredth
+    // of a ppm, either way
+    for (const off of [0.004e-6, -0.004e-6, 0]) {
+      expect(segmentCalibrationText({ ...FITTED, calibration_factor: 1 + off })).toContain(
+        '(0.00 ppm)'
+      )
+    }
   })
 })
 

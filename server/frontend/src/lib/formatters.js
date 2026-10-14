@@ -9,6 +9,13 @@ export const num = {
     minimumFractionDigits: 2,
     maximumFractionDigits: 2
   }),
+  // A correction in ppm, signed: -11.93, +20.40, and 0.00 for one that rounds
+  // to nothing either way
+  mzCorrection: new Intl.NumberFormat('en-US', {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+    signDisplay: 'exceptZero'
+  }),
   peakIntensity: new Intl.NumberFormat('en-US', {
     notation: 'scientific',
     minimumSignificantDigits: 4,

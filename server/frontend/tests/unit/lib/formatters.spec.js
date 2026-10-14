@@ -14,6 +14,13 @@ describe('num formatters', () => {
     expect(num.mzError.format(-0.5)).toBe('-0.50')
   })
 
+  it('mzCorrection signs a correction, and none that rounds to zero', () => {
+    expect(num.mzCorrection.format(-11.934)).toBe('-11.93')
+    expect(num.mzCorrection.format(20.402)).toBe('+20.40')
+    expect(num.mzCorrection.format(-0.004)).toBe('0.00')
+    expect(num.mzCorrection.format(0.004)).toBe('0.00')
+  })
+
   it('peakIntensity uses scientific notation with four significant digits', () => {
     expect(num.peakIntensity.format(123456)).toBe('1.235E5')
     expect(num.peakIntensity.format(0.000123)).toBe('1.230E-4')

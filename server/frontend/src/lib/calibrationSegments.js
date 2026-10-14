@@ -27,12 +27,17 @@
  * anything about it.
  */
 
-const signedPpm = (value) => `${value < 0 ? '-' : '+'}${Math.abs(value).toFixed(2)} ppm`
+import { num } from '@/lib/formatters'
+
+const signedPpm = (value) => `${num.mzCorrection.format(value)} ppm`
 
 // "not fitted on calibrants of its own", with the reason the fit recorded
-// where it recorded one: the backend's sentence, as part of this one
+// where it recorded one: the backend's sentence, as part of this one. A note
+// can go on after a `;` to say what the range's own fit did next ("skipping
+// calibration"), which this sentence says in its own words: what the range
+// took instead.
 const notFitted = (segment) => {
-  const note = (segment.note ?? '').trim().replace(/\.$/, '')
+  const note = (segment.note ?? '').split(';')[0].trim().replace(/\.$/, '')
   const reason = note ? ` (${note.charAt(0).toLowerCase()}${note.slice(1)})` : ''
   return `not fitted on calibrants of its own${reason}`
 }
@@ -83,7 +88,8 @@ export function segmentCalibrationText(segment) {
  * @returns {string} A sentence with a leading space, or an empty string when
  *   every range was fitted on its own calibrants or the sample is not stitched.
  *   It does not say why a range has no fit of its own: the calibration dialog
- *   lists each range with the reason recorded for it.
+ *   lists the ranges of the record with the reason recorded for each, and
+ *   those of the fit it previews beside them where the two differ.
  */
 export function carriedSegmentsText(mzCalibration) {
   const carried = calibrationSegments(mzCalibration).filter(

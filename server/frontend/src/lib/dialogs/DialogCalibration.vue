@@ -88,9 +88,37 @@ const title = computed(() =>
 // Why the previewed fit misses the quality bar (empty when it clears it). The
 // backend judges again on apply; this is what the operator is shown first.
 const qualityIssues = computed(() => mzFit.current?.quality_issues ?? [])
+
 // The scan ranges of a stitched sample, each with how it came by its
-// calibration. Empty for a sample that is not stitched.
-const segments = computed(() => calibrationSegments(mzFit.current))
+// calibration, as lists to show: of the calibration the sample runs on, which
+// its record lists and its badge names, and of the fit previewed here. The two
+// read the same where this fit repeats the one applied. They differ where that
+// one was made at other settings - the pipeline widens the m/z error tolerance
+// when a fit ends in a warning - and then both are shown, each under its own
+// heading, so the reasons the badge points to are here too. A range that took
+// another's calibration unchanged stands out: nothing it measured checked it,
+// where one that took it across an overlap was put on the m/z of the ions both
+// ranges measure. Empty for a sample that is not stitched.
+const segmentLists = computed(() => {
+  const listed = (mzCalibration) =>
+    calibrationSegments(mzCalibration).map((segment) => ({
+      key: segment.key,
+      text: segmentCalibrationText(segment),
+      borrowed: segment.source === 'borrowed'
+    }))
+  const sample = batch.value ? previewSample.value : original.value
+  const applied = listed(sample?.mz_calibration)
+  const fitted = listed(mzFit.current)
+  const same =
+    applied.length === fitted.length && applied.every((range, at) => range.text === fitted[at].text)
+  if (applied.length === 0 || same) {
+    return fitted.length > 0 ? [{ heading: null, ranges: fitted }] : []
+  }
+  return [
+    { heading: 'Applied:', ranges: applied },
+    ...(fitted.length > 0 ? [{ heading: 'This fit:', ranges: fitted }] : [])
+  ]
+})
 // Whether the deployment keeps a below-bar fit out of matching ("enforce"),
 // which is the only case saving one needs an explicit acceptance.
 const gateEnforced = computed(() => mzFit.current?.quality_gate === 'enforce')
@@ -298,15 +326,6 @@ const formatter = new Intl.NumberFormat('en-US', {
         >
           {{ qualityIssuesSummary }}
         </Message>
-        <ul v-if="segments.length > 0" class="segment-list" data-testid="calibration-segments">
-          <li
-            v-for="segment in segments"
-            :key="segment.key"
-            :class="{ carried: segment.source !== 'anchors' }"
-          >
-            {{ segmentCalibrationText(segment) }}
-          </li>
-        </ul>
         <h3>Calibration Results</h3>
         <div class="content-wrapper" :class="{ 'batch-layout': !!samples }">
           <div v-if="samples" class="list-wrapper">
@@ -320,6 +339,24 @@ const formatter = new Intl.NumberFormat('en-US', {
             />
           </div>
           <div class="table-wrapper">
+            <div
+              v-if="segmentLists.length > 0"
+              class="segment-lists"
+              data-testid="calibration-segments"
+            >
+              <template v-for="list in segmentLists" :key="list.heading">
+                <p v-if="list.heading" class="segment-heading">{{ list.heading }}</p>
+                <ul class="segment-list">
+                  <li
+                    v-for="range in list.ranges"
+                    :key="range.key"
+                    :class="{ borrowed: range.borrowed }"
+                  >
+                    {{ range.text }}
+                  </li>
+                </ul>
+              </template>
+            </div>
             <DataTable
               v-if="calibration.rows.length > 0"
               :key="calibration.key"
@@ -470,16 +507,29 @@ const formatter = new Intl.NumberFormat('en-US', {
   flex-shrink: 0;
 }
 
-.segment-list {
+.segment-lists {
   flex-shrink: 0;
-  margin: 0 0 0.5rem;
-  padding-inline-start: 1.2rem;
+  margin-bottom: 0.5rem;
   font-size: 0.85rem;
-  color: var(--text-color-secondary, #a0a7b4);
+  color: var(--p-text-muted-color);
 }
 
-.segment-list .carried {
-  color: var(--p-message-warn-color, #eab308);
+.segment-heading {
+  margin: 0;
+  font-weight: 600;
+}
+
+.segment-list + .segment-heading {
+  margin-top: 0.3rem;
+}
+
+.segment-list {
+  margin: 0;
+  padding-inline-start: 1.2rem;
+}
+
+.segment-list .borrowed {
+  color: var(--state-warning);
 }
 
 .message-container {

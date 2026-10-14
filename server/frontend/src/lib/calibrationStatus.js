@@ -27,7 +27,8 @@
  *
  * A stitched sample's record lists its scan ranges in `quality.segments`
  * (`@/lib/calibrationSegments`); the badge of an applied fit names the ranges
- * that hold no calibrant and run on a neighbouring range's calibration.
+ * that were not fitted on calibrants of their own and take a neighbouring
+ * range's calibration.
  */
 
 import { carriedSegmentsText } from '@/lib/calibrationSegments'
