@@ -1,4 +1,5 @@
 import inspect
+from collections.abc import Iterator
 from functools import wraps
 from typing import Any, Callable
 
@@ -58,6 +59,39 @@ class NanSafeJSONResponse(JSONResponse):
             "which JSON cannot carry; they were sent as null"
         )
         return body
+
+
+class ClosingStreamingResponse(StreamingResponse):
+    """
+    A streamed response that closes the generator it sends from when the
+    response ends, however it ends: sent in full, failed, or cut off by a
+    client that hangs up.
+
+    Starlette stops asking a body for pieces when its client goes away and
+    leaves the generator suspended where it last yielded. Nothing else closes
+    it. It is unreachable but sits in a reference cycle, so it is not freed
+    with the request, and whatever it holds open inside a ``with`` - a raw
+    file's reader - stays open until the cyclic collector next runs. A
+    download of hundreds of megabytes is the request a client is likeliest to
+    cancel.
+
+    Closed in a ``finally`` around the whole response rather than in a
+    background task, which Starlette skips when the response is cancelled
+    from outside. By then no piece is being read: Starlette reads each in a
+    worker thread and waits for it to return even when it is cancelled.
+
+    :param content: The body's pieces, as a generator.
+    """
+
+    def __init__(self, content: Iterator, **kwargs) -> None:
+        super().__init__(content, **kwargs)
+        self._content = content
+
+    async def __call__(self, scope, receive, send) -> None:
+        try:
+            await super().__call__(scope, receive, send)
+        finally:
+            self._content.close()
 
 
 def _json_response(

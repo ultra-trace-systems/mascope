@@ -8,7 +8,6 @@ from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
 from fastapi import BackgroundTasks, HTTPException, UploadFile
-from fastapi.responses import StreamingResponse
 from sqlalchemy import (
     exists,
     func,
@@ -33,6 +32,7 @@ from mascope_backend.api.controllers.sample.lib.fetch_affected_sample_data impor
 )
 from mascope_backend.api.controllers.samples.samples_controller import get_samples
 from mascope_backend.api.lib.api_features import (
+    ClosingStreamingResponse,
     api_controller,
     api_controller_background_task,
 )
@@ -1888,7 +1888,7 @@ def _metadata_body(
 @api_controller()
 async def get_sample_file_metadata(
     sample_file_id: str, include_centroids: bool = True
-) -> dict | StreamingResponse:
+) -> dict | ClosingStreamingResponse:
     """
     Retrieves metadata for a specific sample file.
 
@@ -1908,7 +1908,7 @@ async def get_sample_file_metadata(
         to read the metadata from.
     :return: Dictionary containing the sample file metadata, or the streamed
         response that carries the same document with its centroids.
-    :rtype: dict | StreamingResponse
+    :rtype: dict | ClosingStreamingResponse
     """
     # Step 1: Fetch sample file info from the database
     sample_file_data = await get_sample_file(sample_file_id)
@@ -1950,7 +1950,9 @@ async def get_sample_file_metadata(
     message = f"Metadata for sample file '{filename}' retrieved successfully."
     if not include_centroids:
         return {"message": message, "data": metadata_dict}
-    return StreamingResponse(
+    # Started here, so it has to be closed even when its response never
+    # reads it to the end (ClosingStreamingResponse).
+    return ClosingStreamingResponse(
         _metadata_body(message, head, pieces, filename),
         media_type="application/json",
     )

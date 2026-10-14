@@ -16,6 +16,7 @@ Fixtures used:
 - ``orphan_sample_file`` - no sample item references
 """
 
+import asyncio
 import json
 from pathlib import Path
 
@@ -32,6 +33,7 @@ from mascope_backend.api.routes.sample.files import sample_files_routes
 from mascope_backend.app.fast import fast
 from mascope_backend.db import AccessToken
 from mascope_backend.db.id import gen_id
+from mascope_thermo.backend import OpenTFRawBackend
 
 
 _REPO_ROOT = Path(__file__).resolve().parents[6]
@@ -464,6 +466,112 @@ async def test_a_read_that_fails_part_way_cuts_the_body_short_and_is_logged(
     [record] = [r for r in records if "cut short" in r["message"]]
     assert record["exception"] is not None
     assert record["exception"].type is _ScanReadError
+
+
+def _counted_readers(monkeypatch) -> dict:
+    """Count the OpenTFRaw readers opened and closed inside the test."""
+    readers = {"opened": 0, "closed": 0}
+    enter, leave = OpenTFRawBackend.__enter__, OpenTFRawBackend.__exit__
+
+    def counting_enter(self):
+        readers["opened"] += 1
+        return enter(self)
+
+    def counting_exit(self, *exc):
+        readers["closed"] += 1
+        return leave(self, *exc)
+
+    monkeypatch.setattr(OpenTFRawBackend, "__enter__", counting_enter)
+    monkeypatch.setattr(OpenTFRawBackend, "__exit__", counting_exit)
+    return readers
+
+
+def _metadata_scope(client, path: str, spec_version: str) -> dict:
+    """A bare ASGI request for ``path``, signed in as ``client`` is."""
+    cookie = "; ".join(f"{k}={v}" for k, v in client.cookies.items())
+    return {
+        "type": "http",
+        "asgi": {"version": "3.0", "spec_version": spec_version},
+        "http_version": "1.1",
+        "method": "GET",
+        "scheme": "http",
+        "path": path,
+        "raw_path": path.encode(),
+        "query_string": b"",
+        "root_path": "",
+        "headers": [(b"host", b"test"), (b"cookie", cookie.encode())],
+        "client": ("127.0.0.1", 1),
+        "server": ("test", 80),
+    }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "spec_version",
+    [
+        # The server says the client is gone when the app next listens, and
+        # the response is cancelled: the way the reader was left open.
+        pytest.param("2.3", id="disconnect-received"),
+        # The server fails the app's next send. That closed the reader before
+        # the response closed it itself, and is held so that it goes on to.
+        pytest.param("2.4", id="send-refused"),
+    ],
+)
+async def test_a_client_that_hangs_up_leaves_no_reader_open(
+    guest_client, sample_file, alpha_item, monkeypatch, spec_version
+):
+    # Starlette stops asking the body for pieces and leaves its generator
+    # suspended inside the reader's `with`. Nothing closes such a generator
+    # but the response itself, and until it does the raw file stays open.
+    readers = _counted_readers(monkeypatch)
+    path = f"/api/sample/files/{sample_file}/metadata"
+    gone = asyncio.Event()
+    bodies = []
+    asked = 0
+
+    async def receive():
+        nonlocal asked
+        asked += 1
+        if asked == 1:
+            return {"type": "http.request", "body": b"", "more_body": False}
+        await gone.wait()
+        return {"type": "http.disconnect"}
+
+    async def send(message):
+        if message["type"] != "http.response.body":
+            return
+        if gone.is_set():
+            raise OSError("the client has gone")
+        bodies.append(message)
+        # The client goes away once the first scan's centroids have arrived.
+        if len(bodies) == 2:
+            gone.set()
+
+    try:
+        await fast(_metadata_scope(guest_client, path, spec_version), receive, send)
+    except Exception:
+        # How the server is told of a refused send is its own business; the
+        # reader is this test's.
+        pass
+
+    # It was a hang-up: the document was not sent to its end.
+    sent = b"".join(message.get("body", b"") for message in bodies)
+    assert sent and not sent.endswith(b"}}}")
+    assert readers["opened"] > 0
+    assert readers["closed"] == readers["opened"]
+
+
+@pytest.mark.asyncio
+async def test_metadata_sent_to_its_end_leaves_no_reader_open(
+    guest_client, sample_file, alpha_item, monkeypatch
+):
+    readers = _counted_readers(monkeypatch)
+
+    resp = await guest_client.get(f"/api/sample/files/{sample_file}/metadata")
+
+    assert resp.status_code == 200
+    assert readers["opened"] > 0
+    assert readers["closed"] == readers["opened"]
 
 
 @pytest.mark.asyncio
