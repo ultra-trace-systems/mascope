@@ -772,7 +772,7 @@ def test_start_pairing_unsupported_server(monkeypatch, capsys):
 
 
 def test_pairing_asks_for_the_service_the_process_said_it_is(monkeypatch):
-    """A program that embeds the agent pairs under the name it gave identity().
+    """A program that embeds the agent pairs as who it said it is in identity().
 
     Every later request reports that name, and the server accepts a device
     token under its own service only: paired under any other, the machine
@@ -784,6 +784,8 @@ def test_pairing_asks_for_the_service_the_process_said_it_is(monkeypatch):
     wizard.start_pairing("mascope.example.com")
 
     assert calls[0]["json"]["service_name"] == "instrument-agent"
+    # The program's version, which Paired machines shows, not the library's.
+    assert calls[0]["json"]["agent_version"] == "6.0.0"
     # The name the paired credential is then presented under.
     assert mascope_sdk.agent_headers("paired-token")["X-Service-Name"] == (
         "instrument-agent"
@@ -825,7 +827,7 @@ def test_a_long_agent_version_is_clipped_before_pairing(monkeypatch):
     # refuse: pairing is the only way a machine gets a credential, so failing
     # it over a version label would leave the machine unusable.
     monkeypatch.setattr(wizard.time, "sleep", lambda seconds: None)
-    monkeypatch.setattr(wizard, "__version__", "v2026.09.01-9b9e54d-394-g7e674438e")
+    identity(version="v2026.09.01-9b9e54d-394-g7e674438e")
     calls = _post_sequence(monkeypatch, [_started()])
 
     wizard.start_pairing("mascope.example.com")

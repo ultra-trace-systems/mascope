@@ -545,10 +545,13 @@ def start_pairing(
         "service_name": mascope_sdk.SERVICE_NAME,
         "machine_name": machine_name,
         # Stored on the paired machine by a server that knows these fields
-        # and shown to the approver; an older server drops them. Clipped the
-        # way machine_name is: a build stamped by `git describe` can run past
-        # what the server stores, and pairing must not fail over a label.
-        "agent_version": __version__[:AGENT_VERSION_MAX_LENGTH],
+        # and shown to the approver; an older server drops them. The version
+        # identity() set, as every later request reports it. Clipped the way
+        # machine_name is: a build stamped by `git describe` can run past what
+        # the server stores, and pairing must not fail over a label.
+        "agent_version": (mascope_sdk.AGENT_VERSION or __version__)[
+            :AGENT_VERSION_MAX_LENGTH
+        ],
     }
     if instrument:
         payload["instrument"] = instrument
