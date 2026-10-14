@@ -10,9 +10,12 @@ that never finished loading, and the MS2 notebook toolkit, which reads the
 precursor's intensity from the MS1 centroids and handles an empty answer, met
 an exception instead.
 
-Both now answer what is true of the sample: there is no MS1 spectrum. What
-must not follow is that every error becomes an empty answer - a window that is
-the wrong way round is still the request's fault.
+These reads now answer what is true of the sample: there is no MS1
+spectrum, no MS1 centroid and no peak timeseries. They answer so for that
+sample alone, as its file's scan census says (``process/census.py``). What
+must not follow is that every error becomes an empty answer: a window that
+is the wrong way round is still the request's fault, and so is a selection
+of an MS1 sample that holds no scans.
 """
 
 from types import SimpleNamespace
@@ -46,22 +49,42 @@ _NO_MS1 = NoScansFoundError(
 )
 
 
-async def _spectrum(sum_signal):
+def _census(ms2_only: bool):
+    """Stand in for what the file's scan census says."""
+    return AsyncMock(return_value=ms2_only)
+
+
+async def _spectrum(sum_signal, ms2_only=True):
     """The spectrum route's answer when the reader behaves as ``sum_signal``."""
     with (
         patch(f"{_SAMPLES}.fetch_sample", AsyncMock(return_value=SAMPLE)),
         patch(f"{_SAMPLES}.m_compute.get_sample_sum_signal", sum_signal),
+        patch(f"{_SAMPLES}.holds_only_fragmentation_scans", _census(ms2_only)),
     ):
         return await samples_controller.get_sample_spectrum("si-1")
 
 
-async def _ms1_centroids(centroids):
+async def _ms1_centroids(centroids, ms2_only=True):
     """The MS1 centroid route's answer when the reader behaves as ``centroids``."""
     with (
         patch(f"{_MS2}.fetch_sample", AsyncMock(return_value=SAMPLE)),
         patch(f"{_MS2}.m_compute.get_orbi_centroids", centroids),
+        patch(f"{_MS2}.holds_only_fragmentation_scans", _census(ms2_only)),
     ):
         return await ms2_service.get_ms1_averaged_centroids("si-1")
+
+
+async def _timeseries(scan_timestamps, ms2_only=True):
+    """The peak timeseries route's answer, for an m/z, when the reader's MS1
+    scan times behave as ``scan_timestamps``."""
+    with (
+        patch(f"{_SAMPLES}.fetch_sample", AsyncMock(return_value=SAMPLE)),
+        patch(f"{_SAMPLES}.m_compute.get_scan_timestamps", scan_timestamps),
+        patch(f"{_SAMPLES}.holds_only_fragmentation_scans", _census(ms2_only)),
+    ):
+        return await samples_controller.get_sample_peak_timeseries(
+            "si-1", peak_mz=137.096
+        )
 
 
 def _raises(error):
@@ -86,6 +109,16 @@ async def test_the_empty_spectrum_says_why_and_quotes_no_scan_filter():
 
     assert "No spectrum data found" in result["message"]
     assert "ms_type" not in result["message"]
+
+
+@pytest.mark.asyncio
+async def test_an_ms1_sample_whose_selection_holds_no_scans_still_fails():
+    """Its census shows MS1 scans, so finding none is the request's: the
+    answer is the 400 it always was, not an empty spectrum."""
+    with pytest.raises(ApiException) as failed:
+        await _spectrum(_raises(_NO_MS1), ms2_only=False)
+
+    assert failed.value.status_code == 400
 
 
 @pytest.mark.asyncio
@@ -125,6 +158,14 @@ async def test_its_ms1_centroids_are_empty():
 
 
 @pytest.mark.asyncio
+async def test_the_ms1_centroids_of_an_ms1_sample_that_finds_none_still_fail():
+    with pytest.raises(ApiException) as failed:
+        await _ms1_centroids(AsyncMock(side_effect=_NO_MS1), ms2_only=False)
+
+    assert failed.value.status_code == 400
+
+
+@pytest.mark.asyncio
 async def test_an_ms1_centroid_request_that_is_wrong_still_fails():
     with pytest.raises(ApiException) as failed:
         await _ms1_centroids(AsyncMock(side_effect=InvalidRangeError("Invalid ppm")))
@@ -141,3 +182,22 @@ async def test_a_sample_with_ms1_scans_keeps_its_centroids():
 
     assert result["data"]["mz"] == [137.096, 138.099]
     assert len(result["data"]["signal_to_noise"]) == 2
+
+
+@pytest.mark.asyncio
+async def test_its_peak_timeseries_is_empty():
+    """It has no peaks, so an m/z asked of it has no timeseries: answered as
+    a time range with no scans is, before any peak is looked up."""
+    result = await _timeseries(_raises(_NO_MS1))
+
+    assert result["results"] == 0
+    assert result["data"] == {"peak_id": None, "mz": None, "height": [], "time": []}
+    assert "ms_type" not in result["message"]
+
+
+@pytest.mark.asyncio
+async def test_the_timeseries_of_an_ms1_sample_that_finds_no_scans_still_fails():
+    with pytest.raises(ApiException) as failed:
+        await _timeseries(_raises(_NO_MS1), ms2_only=False)
+
+    assert failed.value.status_code == 400

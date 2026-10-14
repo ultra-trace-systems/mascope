@@ -385,3 +385,63 @@ class TestScanTypeOfARawFile:
         m_compute.get_tic_per_scan("sample", scan_type=None)
 
         assert asked["tic"] == ("data.h5", None)
+
+
+class TestTheStoredTicOfAnAcquisitionWithNoMs1Scans:
+    """A store with no MS1 scan under it is read back on the axis it holds.
+
+    The per-sample export pairs a store's scans with a fresh read of the file
+    by position (``get_stored_tic_per_scan``). The store of an acquisition of
+    fragmentation scans alone is written on every scan the file has, since
+    there is no MS1 scan to take an axis from, so the read that pairs with it
+    is of every scan too: its MS1 read finds nothing, and used to end the
+    export there.
+    """
+
+    @pytest.fixture
+    def reads(self, monkeypatch):
+        """Record the scan type of each read, answering as ``answers`` says."""
+        asked = []
+        answers = {}
+
+        def fake_tic_per_scan(base_filename, scan_type="Ms", **_):
+            asked.append(scan_type)
+            answer = answers[scan_type]
+            if isinstance(answer, Exception):
+                raise answer
+            return np.array([1.0, 2.0]), np.asarray(answer, dtype=float)
+
+        monkeypatch.setattr(m_compute, "_peak_store_metadata", lambda _: ([], None))
+        monkeypatch.setattr(m_compute, "get_tic_per_scan", fake_tic_per_scan)
+        return asked, answers
+
+    def test_it_is_read_on_every_scan(self, reads):
+        asked, answers = reads
+        answers.update({"Ms": m_compute.m_thermo.NoScansFoundError("no MS1")})
+        answers[None] = [4.0, 5.0]
+
+        _, tic = m_compute.get_stored_tic_per_scan("sample")
+
+        assert asked == ["Ms", None]
+        np.testing.assert_array_equal(tic, [4.0, 5.0])
+
+    def test_a_store_on_ms1_scans_is_read_on_them_alone(self, reads):
+        asked, answers = reads
+        answers.update({"Ms": [10.0, 20.0], None: [99.0, 99.0]})
+
+        _, tic = m_compute.get_stored_tic_per_scan("sample")
+
+        assert asked == ["Ms"]
+        np.testing.assert_array_equal(tic, [10.0, 20.0])
+
+    def test_a_file_with_no_scans_at_all_still_raises(self, reads):
+        asked, answers = reads
+        answers.update(
+            {
+                "Ms": m_compute.m_thermo.NoScansFoundError("no MS1"),
+                None: m_compute.m_thermo.NoScansFoundError("no scans"),
+            }
+        )
+
+        with pytest.raises(m_compute.m_thermo.NoScansFoundError, match="no scans"):
+            m_compute.get_stored_tic_per_scan("sample")

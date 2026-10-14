@@ -2701,7 +2701,7 @@ def _census(*ms_orders, polarity="-"):
 _MS2_PART = {"sample_item_id": "si-ms2", "sample_batch_id": "batch-ms2"}
 _MS2_BATCH = {
     "sample_batch_id": "batch-ms2",
-    "sample_batch_name": "2025-09-20 MS2 acquisition",
+    "sample_batch_name": "2025-09-20 MS2 acquisition (no chemistry)",
     "polarity": "-",
 }
 _NO_TOKEN = (
@@ -2709,7 +2709,8 @@ _NO_TOKEN = (
     "Configure tokens in ionization settings."
 )
 _FILED = (
-    "Filed as an MS2 sample in '2025-09-20 MS2 acquisition' (-). It records "
+    "Filed as an MS2 sample in '2025-09-20 MS2 acquisition (no chemistry)' (-). "
+    "It records "
     "no MS1 scans, so no peaks were detected and there is nothing to "
     "calibrate, match or assign."
 )
@@ -2840,32 +2841,45 @@ async def test_only_the_polarities_that_fragment_are_filed(status):
         _filer().assert_awaited_once_with(sample_file, "ds-001", ["-"])
 
 
+def _chosen_mode_gone(sample_file):
+    """What choosing a mode that no longer fits says, for this file.
+
+    The run's own words, read from the rule it uses, so that the test pins
+    where they go rather than what they are.
+    """
+    from mascope_backend.api.controllers.sample.files.process import service
+
+    with pytest.raises(ValueError) as gone:
+        service.choose_ionization_modes(sample_file, [_make_ionization_mode()])
+    return f"{str(gone.value).rstrip('.')}."
+
+
 @pytest.mark.asyncio
-@pytest.mark.parametrize(
-    "way", ["no token", "method declined", "ambiguous name", "chosen mode gone"]
-)
+@pytest.mark.parametrize("way", ["no token", "method declined", "chosen mode gone"])
 async def test_every_way_of_binding_nothing_files_them(status, way):
     """Each run clears the file's own items first, an earlier MS2 part included.
 
     So a way of binding nothing that did not file again would cost the file
     the MS2 sample it had - re-processing it, say, with its chemistry chosen
     by hand and the mode deleted since.
+
+    Why nothing bound it is not news for such a file, and is left out of its
+    status - most carry no token. A chemistry chosen for it that binds it no
+    longer is kept, as something a person may want to fix.
     """
     mocks, sample_file = _ms2_only()
     status.census.return_value = _census(2)
     kwargs = {}
     rung_on = way == "method declined"
     declined = ([], Declined("it reports no method name", "Use a filename token."))
+    expected = _FILED
     if way in ("no token", "method declined"):
         mocks["resolve"].side_effect = _no_token()
-    elif way == "ambiguous name":
-        mocks["resolve"].side_effect = ValueError(
-            "Ionization mode tokens must match exactly one mode per polarity"
-        )
     else:
         sample_file.polarity = "+-"
         kwargs = {"ionization_mode_ids": ["im-001"]}
         status.census.return_value += _census(2, polarity="+")
+        expected = f"{_FILED} {_chosen_mode_gone(sample_file)}"
 
     with (
         patch(f"{_SVC}.routes_on_method_binding", return_value=rung_on),
@@ -2885,8 +2899,45 @@ async def test_every_way_of_binding_nothing_files_them(status, way):
         _filer().assert_awaited_once()
 
     assert "status" not in result
-    ((state, detail),) = _recorded(status)
-    assert (state, detail) == ("done", _FILED)
+    assert _recorded(status) == [("done", expected)]
+
+
+@pytest.mark.asyncio
+async def test_a_filed_file_still_says_what_its_record_named(status):
+    """A record naming a chemistry no mode here answers to is a configuration
+    somebody fixes, whether or not the file needed a chemistry - the status
+    the file ends on says so, as a bound file's does."""
+    status.declares.return_value = ([], UNANSWERED)
+    mocks, _ = _ms2_only()
+    mocks["resolve"].side_effect = _no_token()
+    status.census.return_value = _census(2)
+
+    with _filing():
+        await _run_pipeline()
+
+    assert _recorded(status) == [("done", f"{_FILED} {UNANSWERED}.")]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("census", ["MS2 only", "MS1 too"])
+async def test_an_ambiguous_name_parks_the_file_whatever_it_holds(status, census):
+    """Tokens of two modes of one polarity are a configuration to fix, which
+    no binding stands in for - and filing a file without a chemistry would.
+    Re-processing and processing on request refuse such a name before they
+    ask what the file holds, so a file filed on it once could not be
+    processed again until its tokens were fixed, with a status that never
+    named them. It parks, as any file does, and says why."""
+    ambiguous = "Ionization mode tokens must match exactly one mode per polarity"
+    mocks, _ = _ms2_only()
+    mocks["resolve"].side_effect = ValueError(ambiguous)
+    status.census.return_value = _census(2) if census == "MS2 only" else _census(1, 2)
+
+    with _filing():
+        result = await _run_pipeline()
+        _filer().assert_not_awaited()
+
+    assert result["status"] == "parked"
+    assert _recorded(status) == [("needs_chemistry", f"{ambiguous}.")]
 
 
 @pytest.mark.asyncio
@@ -2936,6 +2987,33 @@ async def test_a_transient_error_while_filing_is_left_to_the_retry(status):
     assert [call.args for call in clear.await_args_list] == [("sf-001",), ("sf-001",)]
     assert _recorded(status) == [("done", _FILED)]
     assert result["_notification_data"]["affected_sample_item_ids"] == ["si-ms2"]
+
+
+@pytest.mark.asyncio
+async def test_filing_clears_what_an_earlier_run_left_first(status):
+    """A run clears a file only once it knows what the file gets, and filing
+    is that as binding is. The MS2 part an earlier run filed is cleared
+    before the new one is made - item creation never looks for one - so a
+    file filed again has one part, not two."""
+    mocks, _ = _ms2_only()
+    mocks["resolve"].side_effect = _no_token()
+    status.census.return_value = _census(2)
+    order = []
+
+    async def clear(sample_file_id):
+        order.append(("clear", sample_file_id))
+
+    async def file(sample_file, dataset_id, polarities):
+        order.append(("file", sample_file.sample_file_id))
+        return [_MS2_PART], [_MS2_BATCH]
+
+    with (
+        patch(f"{_SVC}._delete_partial_acquisition_items", side_effect=clear),
+        _filing(filer=file),
+    ):
+        await _run_pipeline()
+
+    assert order == [("clear", "sf-001"), ("file", "sf-001")]
 
 
 @pytest.mark.asyncio

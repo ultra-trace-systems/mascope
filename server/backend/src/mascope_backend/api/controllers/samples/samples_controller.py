@@ -7,6 +7,9 @@ from fastapi import HTTPException
 from sqlalchemy import Float, Integer, and_, cast, func, select
 
 import mascope_signal.compute as m_compute
+from mascope_backend.api.controllers.sample.files.process.census import (
+    holds_only_fragmentation_scans,
+)
 from mascope_backend.api.controllers.samples.lib.samples_fetch import fetch_sample
 from mascope_backend.api.controllers.samples.lib.samples_segments import (
     read_sample_segments,
@@ -541,13 +544,22 @@ async def get_sample_peak_timeseries(
     )
 
     # Step 3: Get filtered scan timestamps using sample's polarity and time range (adjusted values)
-    time_array = await asyncio.to_thread(
-        m_compute.get_scan_timestamps,
-        base_filename=sample.filename,
-        t_min=t_min_eff,
-        t_max=t_max_eff,
-        polarity=sample.polarity,
-    )
+    try:
+        time_array = await asyncio.to_thread(
+            m_compute.get_scan_timestamps,
+            base_filename=sample.filename,
+            t_min=t_min_eff,
+            t_max=t_max_eff,
+            polarity=sample.polarity,
+        )
+    except NoScansFoundError:
+        # The scans asked for are MS1 scans. An acquisition of fragmentation
+        # scans alone has none, and so no peak with a timeseries: answered
+        # as no scans in the range are, below, as the spectrum is. A
+        # selection of an MS1 sample that holds nothing still fails.
+        if not await holds_only_fragmentation_scans(sample.filename):
+            raise
+        time_array = []
 
     if len(time_array) == 0:
         return {
@@ -741,19 +753,9 @@ async def get_sample_spectrum(
         # mean of the same stream, over the store's own scans - which can
         # hold a first scan the window leaves out - so it sits on the
         # profile it was detected in.
-        try:
-            spectrum = m_compute.get_sample_sum_signal(
-                filename, polarity, t_min_eff, t_max_eff, average=True
-            )
-        except NoScansFoundError:
-            # A raw Orbitrap reader raises for a selection that holds no scans
-            # where the other readers hand back nothing, and both mean the
-            # answer below: there is no spectrum to show. It is the ordinary
-            # state of an acquisition of fragmentation scans alone, whose
-            # sample has no MS1 scan in any window, so it is answered as an
-            # empty spectrum rather than failed - a browser opening such a
-            # sample would otherwise be told its request was at fault.
-            return None
+        spectrum = m_compute.get_sample_sum_signal(
+            filename, polarity, t_min_eff, t_max_eff, average=True
+        )
         if spectrum is None:
             return None
         if mz_min is not None and mz_max is not None:
@@ -773,7 +775,18 @@ async def get_sample_spectrum(
         )
         return spectrum.mz.values.tolist(), spectrum.values.tolist(), segments, runs
 
-    spectrum_arrays = await asyncio.to_thread(_spectrum_arrays)
+    try:
+        spectrum_arrays = await asyncio.to_thread(_spectrum_arrays)
+    except NoScansFoundError:
+        # A raw Orbitrap reader raises for a selection that holds no scans.
+        # For the sample of an acquisition of fragmentation scans alone, which
+        # has no MS1 scan in any window, that is the answer below: there is
+        # no spectrum to show, and a browser opening such a sample is not
+        # told its request was at fault. A selection of an MS1 sample that
+        # holds nothing still is.
+        if not await holds_only_fragmentation_scans(filename):
+            raise
+        spectrum_arrays = None
 
     # Check if spectrum computation returned None (no data found)
     if spectrum_arrays is None:

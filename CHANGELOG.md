@@ -79,10 +79,16 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   matched under. So when nothing binds it - no filename token, no method
   binding - it does not wait as **Needs a chemistry** with no samples: each
   polarity that holds fragmentation scans gets an acquisition sample with no
-  ionization mode, in the daily batch `<date> MS2 acquisition` of the
-  instrument's year dataset, and the file ends **Done**. A file a token or a
-  method does bind gets its sample in its mode's daily batch, as any file
-  does. A file that records MS1 scans too still waits for its chemistry, MS2
+  ionization mode, in the daily batch `<date> MS2 acquisition (no chemistry)`
+  of the instrument's year dataset, and the file ends **Done**. That name
+  cannot be a chemistry's daily batch, whatever the chemistry is called. Its
+  status still says what a person may want to fix: an acquisition record
+  naming a chemistry no mode answers to, or a chemistry chosen for it that
+  binds it no longer. Processing it again, by Re-process or on request,
+  files it again. A file a token or a method does bind gets its sample in
+  its mode's daily batch, as any file does. A file whose name is ambiguous -
+  tokens of two modes of one polarity - waits as **Needs a chemistry** as
+  any such file does, and so does a file that records MS1 scans too, MS2
   scans or not. Which scans a file records is read from the scan census
   stored with it, so a file converted before the census existed waits as
   before.
@@ -93,14 +99,17 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   comparable only among such samples. A file with no scans at all is still
   refused as the empty acquisition it is.
 
-  Its MS1 reads answer empty rather than failing: the sample's spectrum and
-  the MS1 centroids of the MS2 routes return no points for a sample with no
-  MS1 scans, where the raw reader's "no scans found" used to come back as a
-  400 quoting a scan filter. The browser therefore shows such a sample with
-  an empty spectrum and no peaks instead of an error and a chart that never
-  finishes loading, and a client that reads the precursor's intensity from
-  the MS1 centroids - the MS2 notebook toolkit does - gets the empty answer
-  it already handles. A request that is itself wrong still fails as before.
+  Its MS1 reads answer empty rather than failing: the sample's spectrum, its
+  peak timeseries and the MS1 centroids of the MS2 routes return no points,
+  and its per-sample peak export has no rows, where the raw reader's "no
+  scans found" used to come back as a 400 quoting a scan filter, or end the
+  export. The browser therefore shows such a sample with an empty spectrum
+  and no peaks instead of an error and a chart that never finishes
+  loading, and a client that reads the precursor's intensity from the MS1
+  centroids - the MS2 notebook toolkit does - gets the empty answer it
+  already handles. Only such a sample answers so, as its scan census says:
+  a selection of a sample with MS1 scans that holds none, and a request
+  that is itself wrong, still fail as before.
   Nothing in the browser shows the fragmentation scans yet; they are read
   with the SDK. The import guide gains a section on fragmentation
   acquisitions, with the SDK calls that read them.

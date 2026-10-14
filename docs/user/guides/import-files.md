@@ -256,7 +256,7 @@ from mascope_sdk import MascopeClient
 
 mascope = MascopeClient(workspace="Acquisitions <instrument>")
 batches = mascope.batches.list(dataset="2026")
-samples = mascope.samples.list(batch="2026-09-07 MS2 acquisition")
+samples = mascope.samples.list(batch="2026-09-07 MS2 acquisition (no chemistry)")
 
 ms2 = mascope.samples.ms2(samples["sample_item_id"].iloc[0])
 for group in ms2.get_summary()["groups"]:
@@ -278,7 +278,8 @@ Which sample that is depends on whether the file records MS1 scans:
   so it needs no chemistry. When a token or its method binds it, it gets its
   sample in the mode's daily batch. Otherwise it is filed as an **MS2
   sample** with no ionization mode, in the daily batch
-  `<date> MS2 acquisition` of the instrument's year dataset, and ends
+  `<date> MS2 acquisition (no chemistry)` of the instrument's year
+  dataset, and ends
   **Done**.
 
 !!! tip "Finding files after upload"

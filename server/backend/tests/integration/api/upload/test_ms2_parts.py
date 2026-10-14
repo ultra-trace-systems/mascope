@@ -248,7 +248,7 @@ async def test_the_file_gets_an_ms2_part_in_the_days_ms2_batch(
 
     (batch,) = await _ms2_batches(async_session_factory, setup)
     assert (batch.sample_batch_name, batch.polarity, batch.sample_batch_type) == (
-        "2026-09-07 MS2 acquisition",
+        "2026-09-07 MS2 acquisition (no chemistry)",
         "+",
         "ACQUISITION",
     )
@@ -293,7 +293,8 @@ async def test_the_file_is_done(async_session_factory, setup):
     row = await _row(async_session_factory, sample_file.sample_file_id)
     assert row.processing_status == "done"
     assert row.processing_detail == (
-        "Filed as an MS2 sample in '2026-09-07 MS2 acquisition' (+). It records "
+        "Filed as an MS2 sample in '2026-09-07 MS2 acquisition (no chemistry)' "
+        "(+). It records "
         "no MS1 scans, so no peaks were detected and there is nothing to "
         "calibrate, match or assign."
     )
@@ -326,8 +327,8 @@ async def test_each_polarity_that_fragments_has_its_own_batch(
 
     batches = await _ms2_batches(async_session_factory, setup)
     assert [(b.sample_batch_name, b.polarity) for b in batches] == [
-        ("2026-09-07 MS2 acquisition", "+"),
-        ("2026-09-07 MS2 acquisition", "-"),
+        ("2026-09-07 MS2 acquisition (no chemistry)", "+"),
+        ("2026-09-07 MS2 acquisition (no chemistry)", "-"),
     ]
     items = await _items(async_session_factory, sample_file.sample_file_id)
     assert sorted(item.polarity for item in items) == ["+", "-"]

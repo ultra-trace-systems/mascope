@@ -22,13 +22,20 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from mascope_backend.api.controllers.sample.files.process import census
+from mascope_backend.api.controllers.sample.files.process.census import (
+    fragmentation_polarities,
+    holds_only_fragmentation_scans,
+    records_ms1_scans,
+    records_only_fragmentation_scans,
+)
 from mascope_backend.api.controllers.sample.files.process.ms2_parts import (
     file_fragmentation_scans,
     filed_sentence,
-    fragmentation_polarities,
     ms2_batch_name,
-    records_ms1_scans,
-    records_only_fragmentation_scans,
+)
+from mascope_backend.api.controllers.sample.files.process.service import (
+    acquisition_batch_name,
 )
 from mascope_backend.api.models.sample.items.sample_item_pydantic_model import (
     AcquisitionItemCreate,
@@ -151,7 +158,32 @@ def _sample_file():
 
 def test_the_batch_is_named_for_the_files_own_day():
     """Dated off the instrument-local time, as a bound item's batch is."""
-    assert ms2_batch_name(_sample_file()) == "2026-09-07 MS2 acquisition"
+    assert ms2_batch_name(_sample_file()) == (
+        "2026-09-07 MS2 acquisition (no chemistry)"
+    )
+
+
+@pytest.mark.parametrize(
+    "mode_name",
+    [
+        "MS2",
+        "MS2 acquisition (no chemistry)",
+        "MS2 acquisition",
+        "",
+        "(no chemistry)",
+    ],
+)
+def test_no_chemistry_shares_the_batch_of_ms2_parts(mode_name):
+    """A mode's name is free text, and a batch is found by its name.
+
+    Sharing it, a day's bound samples and MS2 parts would share a batch, and
+    whichever came first would set its target collections - leaving the
+    bound samples nothing to be matched against. No mode name can make a
+    bound batch's name, which ends in " acquisition", the MS2 batch's.
+    """
+    sample_file = _sample_file()
+
+    assert acquisition_batch_name(sample_file, mode_name) != ms2_batch_name(sample_file)
 
 
 async def _filed(polarities):
@@ -189,8 +221,8 @@ async def test_each_polarity_is_filed_in_the_days_ms2_batch_of_its_polarity():
         (b.dataset_id, b.sample_batch_name, b.polarity, b.sample_batch_type)
         for b in asked
     ] == [
-        ("ds-001", "2026-09-07 MS2 acquisition", "+", "ACQUISITION"),
-        ("ds-001", "2026-09-07 MS2 acquisition", "-", "ACQUISITION"),
+        ("ds-001", "2026-09-07 MS2 acquisition (no chemistry)", "+", "ACQUISITION"),
+        ("ds-001", "2026-09-07 MS2 acquisition (no chemistry)", "-", "ACQUISITION"),
     ]
     assert [batch["sample_batch_id"] for batch in batches] == ["sb-+", "sb--"]
 
@@ -244,24 +276,67 @@ async def test_what_was_made_is_handed_back():
     samples, batches, _, _ = await _filed(["+"])
 
     assert samples == [{"sample_item_id": "si-001"}]
-    assert batches[0]["sample_batch_name"] == "2026-09-07 MS2 acquisition"
+    assert (
+        batches[0]["sample_batch_name"] == "2026-09-07 MS2 acquisition (no chemistry)"
+    )
 
 
 def test_the_sentence_names_the_batch_and_its_polarity():
-    batches = [{"sample_batch_name": "2026-09-07 MS2 acquisition", "polarity": "+"}]
+    batches = [
+        {
+            "sample_batch_name": "2026-09-07 MS2 acquisition (no chemistry)",
+            "polarity": "+",
+        }
+    ]
 
     assert filed_sentence(batches) == (
-        "filed as an MS2 sample in '2026-09-07 MS2 acquisition' (+)"
+        "filed as an MS2 sample in '2026-09-07 MS2 acquisition (no chemistry)' (+)"
     )
 
 
 def test_the_sentence_names_both_batches_of_a_two_polarity_file():
     batches = [
-        {"sample_batch_name": "2026-09-07 MS2 acquisition", "polarity": "+"},
-        {"sample_batch_name": "2026-09-07 MS2 acquisition", "polarity": "-"},
+        {
+            "sample_batch_name": "2026-09-07 MS2 acquisition (no chemistry)",
+            "polarity": "+",
+        },
+        {
+            "sample_batch_name": "2026-09-07 MS2 acquisition (no chemistry)",
+            "polarity": "-",
+        },
     ]
 
     assert filed_sentence(batches) == (
-        "filed as MS2 samples in '2026-09-07 MS2 acquisition' (+) and "
-        "'2026-09-07 MS2 acquisition' (-)"
+        "filed as MS2 samples in '2026-09-07 MS2 acquisition (no chemistry)' "
+        "(+) and '2026-09-07 MS2 acquisition (no chemistry)' (-)"
     )
+
+
+# ---------------------------------------------------------------------------
+# Reading a stored file's census
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("stored", "only"),
+    [
+        ([_stream(2)], True),
+        ([_stream(1), _stream(2)], False),
+        ([], False),
+        (None, False),
+    ],
+    ids=["MS2 only", "MS1 too", "no census", "unreadable props"],
+)
+async def test_a_stored_file_is_read_off_its_census(stored, only):
+    """What the MS1 reads of a sample ask before answering it empty.
+
+    An unreadable ``.props`` reads as None, and is no more a file with no
+    MS1 scans than one with no census is.
+    """
+    with patch.object(
+        census, "read_scan_streams", AsyncMock(return_value=stored)
+    ) as read:
+        assert await holds_only_fragmentation_scans("instrument-A_file") is only
+
+    read.assert_awaited_once_with("instrument-A_file")

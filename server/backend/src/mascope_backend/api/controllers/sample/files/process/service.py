@@ -37,11 +37,13 @@ from mascope_backend.api.controllers.sample.files.process.bindings import (
     resolve_modes_by_method_binding,
     routes_on_method_binding,
 )
+from mascope_backend.api.controllers.sample.files.process.census import (
+    fragmentation_polarities,
+    records_only_fragmentation_scans,
+)
 from mascope_backend.api.controllers.sample.files.process.ms2_parts import (
     file_fragmentation_scans,
     filed_sentence,
-    fragmentation_polarities,
-    records_only_fragmentation_scans,
 )
 from mascope_backend.api.controllers.sample.files.process.peaks import (
     redetect_peaks,
@@ -702,6 +704,7 @@ async def _file_without_chemistry(
     dataset_id: str,
     polarities: list[str],
     streams_note: str | None,
+    note: str | None = None,
 ) -> dict:
     """File an acquisition of fragmentation scans alone, which nothing binds.
 
@@ -712,8 +715,19 @@ async def _file_without_chemistry(
     an MS2 sample in the day's MS2 batch (``process/ms2_parts.py``), which its
     MS2 data is read through, and the file is ``done``.
 
-    A file with MS1 scans never comes here. It waits for its chemistry with no
-    samples (:func:`_park_needing_chemistry`), MS2 scans or not.
+    A file with MS1 scans never comes here. It waits for its chemistry
+    (:func:`_park_needing_chemistry`), MS2 scans or not. Nor does a
+    file whose name is ambiguous - tokens of two modes of one polarity, or
+    of one polarity of a file that holds both: that is a configuration to
+    fix, and the file parks on it as any file does.
+
+    Why nothing bound it is not news for such a file - most carry no token -
+    and is left out of its status. What is kept is what a person may still
+    want to fix although the file needs nothing from them: an acquisition
+    record that names a chemistry no mode here answers to, or a chemistry
+    chosen for the file that binds it no longer. It follows the sentence
+    that says where the file was filed, as such a note follows what bound a
+    bound file.
 
     The caller clears what an earlier run left before it files, as a run that
     binds a file clears it before making its samples (``clear_earlier_run``):
@@ -726,6 +740,7 @@ async def _file_without_chemistry(
     :param polarities: The polarities to file, from
         :func:`fragmentation_polarities`.
     :param streams_note: The file's pooled-streams note, if any.
+    :param note: What a person may want to fix about the file, if anything.
     :return: The run's result.
     """
     ms2_parts, ms2_batches = await file_fragmentation_scans(
@@ -739,7 +754,9 @@ async def _file_without_chemistry(
     await record_processing_status(
         sample_file.sample_file_id,
         ProcessingStatus.DONE,
-        compose_detail(detail, streams_note),
+        compose_detail(
+            detail, None if note is None else f"{note.rstrip('.')}.", streams_note
+        ),
     )
     # INFO: what the acquisition recorded, not a fault
     runtime.logger.info(
@@ -1296,11 +1313,12 @@ async def _auto_process_sample_file(
         )
     ).get("data")
 
-    async def unbound(reason: str) -> dict:
+    async def unbound(reason: str, note: str | None) -> dict:
         """End the run of a file no rung binds.
 
         A file of fragmentation scans alone needs no chemistry, and is filed
-        without one; any other file waits for its chemistry.
+        without one, its status carrying ``note``; any other file waits for
+        its chemistry, its status saying ``reason``.
         """
         polarities = (
             fragmentation_polarities(scan_streams, sample_file.polarity)
@@ -1317,6 +1335,7 @@ async def _auto_process_sample_file(
                 acquisition_dataset.get("dataset_id"),
                 polarities,
                 streams_note,
+                note,
             )
         return await _park_needing_chemistry(
             sample_file, reason, streams_note, cleared_by_this_run
@@ -1353,7 +1372,9 @@ async def _auto_process_sample_file(
             # because a configuration to fix is not something a binding
             # stands in for (section 5.3).
             if not routes_on_method_binding():
-                return await unbound(_beside_the_declaration(undeclared, str(no_token)))
+                return await unbound(
+                    _beside_the_declaration(undeclared, str(no_token)), undeclared
+                )
             routed_by_method, declined = await resolve_modes_by_method_binding(
                 sample_file, scan_streams
             )
@@ -1373,11 +1394,21 @@ async def _auto_process_sample_file(
                         f"{str(no_token).rstrip('.')}. Its acquisition method "
                         f"does not say either: {declined.reason}. "
                         f"{declined.remedy}",
-                    )
+                    ),
+                    undeclared,
                 )
             bound_modes = [routing.mode for routing in routed_by_method]
         except ValueError as e:
-            return await unbound(_beside_the_declaration(undeclared, str(e)))
+            # Every file parks on it, one of fragmentation scans alone
+            # included: filed without a chemistry, it would be done with its
+            # tokens unfixed, and re-processing and processing on request
+            # refuse an ambiguous name before they ask what the file holds.
+            return await _park_needing_chemistry(
+                sample_file,
+                _beside_the_declaration(undeclared, str(e)),
+                streams_note,
+                cleared_by_this_run,
+            )
     else:
         try:
             bound_modes = choose_ionization_modes(
@@ -1386,7 +1417,7 @@ async def _auto_process_sample_file(
         except ValueError as e:
             # A chosen mode was deleted, or changed, while the file waited:
             # it needs a chemistry again, and can be given one.
-            return await unbound(str(e))
+            return await unbound(str(e), str(e))
 
     # How each item will say its chemistry was decided, and what the file's
     # method may be taught from it. The three ways in here are not equal. A
@@ -2591,6 +2622,10 @@ async def modes_to_rebind(sample_file_id: str) -> KeptModes | None:
     Samples that cannot be counted fail the request too, and are not taken
     for none.
 
+    Not refused: a file of fragmentation scans alone with no token. Its
+    sample is the MS2 part its run filed without a chemistry, and the run
+    files that again (``process/ms2_parts.py``).
+
     A name whose tokens match, but not one mode per polarity, is refused on
     the same terms. It is a configuration to fix, which no earlier binding
     stands in for, so the modes the file's samples have are not kept: the
@@ -2621,6 +2656,15 @@ async def modes_to_rebind(sample_file_id: str) -> KeptModes | None:
         return None
     if no_token is not None and kept is not None:
         return kept
+    if no_token is not None and records_only_fragmentation_scans(
+        await read_scan_streams(sample_file.filename)
+    ):
+        # An acquisition of fragmentation scans alone, which its run files
+        # without a chemistry: the sample it has is its MS2 part, which has
+        # no mode, and the run files it again after clearing it. Nothing of
+        # it waits for a chemistry, so nothing is lost, as it is in
+        # re-processing (filed_alone).
+        return None
     if not await _pipeline_item_count(sample_file_id):
         return None
     if no_token is not None:
@@ -2771,6 +2815,23 @@ async def _with_live_bindings(
     }
 
 
+def acquisition_batch_name(sample_file: SampleFile, mode_name: str) -> str:
+    """The name of the daily batch of a file's samples bound to a mode.
+
+    ``"<date> <mode name> acquisition"``, dated off the file's
+    instrument-local time. A mode's name is free text, so the batch of MS2
+    samples filed without a chemistry is named to end otherwise
+    (``process/ms2_parts.py``, ``MS2_BATCH_SUFFIX``). The batch's natural key
+    is its dataset, name and polarity, not its mode, so the two must never
+    share a name.
+
+    :param sample_file: The file.
+    :param mode_name: The name of the mode its samples are bound to.
+    :return: The batch name.
+    """
+    return f"{sample_file.datetime.strftime('%Y-%m-%d')} {mode_name} acquisition"
+
+
 async def create_acquisition_batches_and_items(
     sample_file: SampleFile,
     dataset_id: str,
@@ -2825,9 +2886,7 @@ async def create_acquisition_batches_and_items(
     for ionization_mode in ionization_modes:
         # --- Generate daily ACQUISITION batch name for this ionization mode ---
         ion_mode_name = ionization_mode.ionization_mode_name
-        batch_name = (
-            f"{sample_file.datetime.strftime('%Y-%m-%d')} {ion_mode_name} acquisition"
-        )
+        batch_name = acquisition_batch_name(sample_file, ion_mode_name)
 
         # --- Get or create daily ACQUISITION batch for this ionization mode ---
         # Get DIAGNOSTICS and CALIBRATION target collections for ACQUISITION

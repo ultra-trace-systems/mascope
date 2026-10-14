@@ -1522,6 +1522,11 @@ def get_stored_tic_per_scan(base_filename: str) -> tuple[np.ndarray, np.ndarray]
     paired with it, a sound store is refused as stale, and no rebuild
     answers that.
 
+    A raw Orbitrap file with no MS1 scan at all - an acquisition of
+    fragmentation scans alone - has a store with no peaks, written on the
+    axis of every scan it has (``mascope_signal.peak.write_empty_peak_timeseries``),
+    and is read back on that axis: its MS1 read finds nothing.
+
     :param base_filename: Sample file filename
     :type base_filename: str
     :raises ValueError: If the store carries only part of what a per-stream
@@ -1536,7 +1541,10 @@ def get_stored_tic_per_scan(base_filename: str) -> tuple[np.ndarray, np.ndarray]
     except FileNotFoundError:
         keys = []
     if not keys:
-        return get_tic_per_scan(base_filename)
+        try:
+            return get_tic_per_scan(base_filename)
+        except m_thermo.NoScansFoundError:
+            return get_tic_per_scan(base_filename, scan_type=None)
     return _tic_of_streams(base_filename, keys)
 
 
