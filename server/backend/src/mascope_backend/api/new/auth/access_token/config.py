@@ -16,8 +16,8 @@ class AccessTokenConfig(BaseModel):
     ALLOWED_SERVICES: List[str] = [
         "mascope_sdk",  # for Jupyter notebooks API library
         "file-converter",  # for file converter service
-        "tof-agent",  # for TOF instrument agent
-        "file-agent",  # for File instrument agent
+        "tof-agent",  # for the TOF agent
+        "file-agent",  # for the File Agent
         "export-agent",  # for CSV Export Agent
         "instrument-agent",  # for the File Agent inside an instrument control program
     ]

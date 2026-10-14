@@ -2,9 +2,9 @@
 
 The services that can pair are one list (``pairing_settings``), the services a
 token can be scoped to another, and minting a token by hand names the agents a
-third time to decide the role it takes. A pairable service missing from that
-check would be minted for anyone signed in, so each check is asserted for
-every pairable service rather than for the ones there are today.
+third time to decide the role it takes. So each check is asserted for every
+pairable service rather than for the ones there are today, and a service the
+role check does not name is refused rather than minted for anyone signed in.
 """
 
 import pytest
@@ -60,6 +60,30 @@ async def test_a_guest_cannot_mint_a_token_for_a_pairable_service(minted, servic
     with pytest.raises(ForbiddenAccessException):
         await access_token_regenerate_route(
             AccessTokenRequest(service_name=service), user=_User("guest")
+        )
+
+    assert minted == []
+
+
+@pytest.mark.asyncio
+async def test_a_token_service_without_a_role_rule_is_minted_for_nobody(
+    minted, monkeypatch
+):
+    """A service the request accepts but the role check does not name.
+
+    Added to ``ALLOWED_SERVICES`` alone, it would match none of the role
+    check's arms; it is refused even for an owner rather than minted for
+    anyone signed in.
+    """
+    monkeypatch.setattr(
+        auth_settings.access_token,
+        "ALLOWED_SERVICES",
+        [*auth_settings.access_token.ALLOWED_SERVICES, "unruled-agent"],
+    )
+
+    with pytest.raises(ForbiddenAccessException):
+        await access_token_regenerate_route(
+            AccessTokenRequest(service_name="unruled-agent"), user=_User("owner")
         )
 
     assert minted == []
