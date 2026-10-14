@@ -338,12 +338,15 @@ is read:
   that counts only where the method rung is on.
 - A record that binds nothing leaves the file to its name and its samples,
   as a file with no record: a token in the name binds it; with none, it is
-  rebuilt under the modes its samples have; with neither, Re-process
-  refuses it, says what its record named, and touches nothing. It is not
-  sent to the pipeline to find out, because a run clears a file's samples
-  and resets its calibration before it asks. Processing on request refuses
-  it the same way where it has samples, and sends one with none on to the
-  pipeline, which has nothing of it to clear and parks it again. A record
+  rebuilt under the modes its samples have. With neither, a file that has
+  samples is refused, by Re-process and by processing on request alike,
+  with what its record named and nothing of it touched. It is not sent to
+  the pipeline to find out, because a run clears a file's samples before
+  it asks, and a re-processing resets its calibration too. A file with no
+  samples has nothing a run could clear. Processing on request sends it
+  on to the pipeline, which binds it by its acquisition method where the
+  method rung is on, and parks it again otherwise; Re-process sends it on
+  where the rung is on, and refuses it where the rung is off. A record
   that cannot be read is not taken for one that binds nothing either:
   Re-process refuses the file untouched and says so, and processing on
   request fails.
