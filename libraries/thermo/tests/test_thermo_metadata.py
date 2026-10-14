@@ -11,6 +11,7 @@ import json
 import math
 
 import numpy as np
+import opentfraw
 import pandas as pd
 import pytest
 from thermo_test_support import POS_ORBI_FILE_PATH
@@ -275,6 +276,12 @@ class TestRawFileMetadataLegacy:
         )
         assert [time_s for _, time_s, _ in scans] == cm["time"]
         assert [data for _, _, data in scans] == cm["data"]
+        # centroids_meta is built from the same iterator, so the times are
+        # held against the scans' own start times, which are in minutes.
+        rows = m_thermo.get_scan_table(POS_ORBI_FILE_PATH)["stats_per_scan"]
+        assert [time_s for _, time_s, _ in scans] == [
+            rows[scan]["StartTime"] * 60 for scan, _, _ in scans
+        ]
 
     def test_iter_json_is_the_to_dict_document(self):
         # What the API streams must parse to what it used to send whole.
@@ -289,6 +296,41 @@ class TestRawFileMetadataLegacy:
         assert json.loads(pieces[0] + "]}}") == json.loads(
             json.dumps({**light, "centroids_meta": {"data": []}})
         )
+
+    def test_iter_json_reads_a_scans_centroids_from_the_reader_one_at_a_time(
+        self, backend, monkeypatch
+    ):
+        # The scan-by-scan read through the real reader: a document built
+        # whole and then cut into pieces gives the same pieces, so only the
+        # reader can tell. The OpenTFRaw reader is counted; the Thermo
+        # library's scans are handed over together whatever is done here.
+        if backend != "opentfraw":
+            pytest.skip("counts the OpenTFRaw reader's centroid reads")
+        read = []
+        real = opentfraw.RawFile
+
+        class Counting:
+            """The reader, counting the scans whose centroids it is asked for."""
+
+            def __init__(self, path):
+                self._raw = real(path)
+
+            def __getattr__(self, name):
+                return getattr(self._raw, name)
+
+            def centroid_labels(self, scan_number):
+                read.append(scan_number)
+                return self._raw.centroid_labels(scan_number)
+
+        monkeypatch.setattr(opentfraw, "RawFile", Counting)
+
+        pieces = m_thermo.RawFileMetadataLegacy(POS_ORBI_FILE_PATH).iter_json()
+        next(pieces)
+        assert read == []
+        next(pieces)
+        assert read == [1]
+        next(pieces)
+        assert read == [1, 2]
 
     def test_iter_json_reads_a_scan_when_its_piece_is_asked_for(self):
         # Crafted reader output, no file read. The caller sends each piece on
