@@ -77,6 +77,7 @@ dataset's sets G to J, the chemist's reading of 2026-09-24 (decision 21).
 | 5.5 - the TOF signal-to-noise column: verify it tracks height, fix the picker or fall back to counting statistics | - | planned; verify first, before 3.4e and 3.4f read the TOF sets |
 | 5.6 - the import contract: a verdict on batch rows, the engine tier where the user looks | - | planned; between rounds |
 | 5.7 - experiment: the file's own locks as calibrants, read against the calibration node's residuals | - | planned; after 3.5; feeds 4.3 and the axis-fingerprint project's calibration milestone |
+| 5.8 - an identification level in Mascope's own vocabulary | - | planned 2026-10-14 (decision 30 taken); after 3.7, revisited at the stage-4 gate |
 
 ## Purpose
 
@@ -3148,6 +3149,36 @@ under its milestone 5.
   steps and trend, with their agreement; the call recorded.
 - **Size.** S-M. After 3.5.
 
+### 5.8 An identification level in Mascope's own vocabulary
+
+- **What.** A Schymanski-style identification level on every committed
+  row, derived from the facts the engine already records: the tier reasons
+  (a second channel, a second line, a list, the mass gate, candidate
+  density, the absent-line and unresolved-peak rules once 3.4e and 3.4f
+  land) and, after stage 4, the batch's series and time-series
+  corroboration. Defined once in the layered confidence design
+  (`assignment_confidence.md`), shown in the inspector, the ledgers and the
+  exports, and carried by the import contract beside the engine's own claim
+  (5.6). The tier stays what the fold and the UI read first; the level says
+  what a reader may state of the row.
+- **Why.** Decision 30, taken 2026-10-14: a community-standard confidence
+  scale is the target, and the reference's scale is not ported while it
+  moves (two revisions inside its pre-release, three quarters of its top
+  level resting on one lock on its labelled-nitrate run, a TOF not
+  assessed). Built on Mascope's facts after they stop moving, it is a
+  mapping and a surface, not a new engine.
+- **Where.** `tiering.py` (the mapping from reasons to a level, beside the
+  tier), `assignment_confidence.md`, the inspector and ledger panes, the
+  exports, `sdk_peak_assignment.md`, the how-it-works page.
+- **Verify.** Every committed row carries a level; the level never
+  contradicts the tier (an assigned row holds at least the level a second
+  observation earns); on the cylinder sets every certified component
+  reaches the identified level through its right reading; the reference's
+  claim, imported, is read beside the level on the sets it published, the
+  differences explained by one side's facts.
+- **Size.** M. After the stage-3 gate (3.7); the mapping is revisited at
+  the stage-4 gate, when batch corroboration can lift a level.
+
 ### Riders written into planned steps
 
 - **3.4e.** An artifact confirms no line and refutes none: a window only
@@ -3212,14 +3243,15 @@ under its milestone 5.
 
 ### Not taken
 
-- **The evidence scale and the claims.** The reference now carries, beside
-  its tier, a level (3c, 4a, 4b, 5a, 5b on a CIMS-adapted Schymanski scale)
-  and a claim (identified, neutral, ion, tentative), with the rule that a
-  level-3 unlock must be evidence carrying formula-specific information. It
-  is its vocabulary for what a reader may say of a row, and the charter
-  leaves the narrative to it. Mascope's tier stays assigned, candidate and
-  below assignability, with reasons; an imported run shows its engine's own
-  words through 5.6 and does not adopt them. Proposed as decision 30.
+- **The evidence scale and the claims, as an implementation.** The
+  reference now carries, beside its tier, a level (3c, 4a, 4b, 5a, 5b on a
+  CIMS-adapted Schymanski scale) and a claim (identified, neutral, ion,
+  tentative), with the rule that a level-3 unlock must be evidence carrying
+  formula-specific information. The premise is taken (a community-standard
+  confidence scale is the target, step 5.8); the implementation is not,
+  while it moves. Mascope's tier stays assigned, candidate and below
+  assignability, with reasons; an imported run shows its engine's own words
+  through 5.6 and does not adopt them. Decision 30, taken 2026-10-14.
 - Its merge vote, its trace-first and rolling-centre estimators (inert on
   both classes so far, experimental by its own label), its scorecard,
   level-ledger and A/B scripts as scripts (their method is 5.2's), its
@@ -3227,13 +3259,16 @@ under its milestone 5.
 - Its known-species registry and certified-neutral passes (the note's
   "Not in this plan").
 
-### Decisions proposed to the plan owner
+### Decisions proposed to the plan owner (30 taken 2026-10-14)
 
 29. **The reference is pinned at a release, and each peaky minor gets a
     boundary review** (step 5.1).
-30. **Tiers are Mascope's vocabulary; the reference's levels and claims are
-    not ported.** An imported run shows its engine's tier beside the derived
-    one (5.6); the derived tier stays what the fold and the UI read.
+30. **A Schymanski-style identification level is the target, built in
+    Mascope's own vocabulary; the reference's scale is not ported while it
+    moves** (taken 2026-10-14 by the plan owner). The level is derived from
+    the facts the engine records, after the stage-3 gate (step 5.8); an
+    imported run shows its engine's tier and claim beside it (5.6); the
+    derived tier stays what the fold and the UI read.
 31. **The decoy arms join the gate without a target** until two gates have
     read them; then a target is set from those readings, not from the
     reference's numbers.
