@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { mount } from '@vue/test-utils'
+import { mount, flushPromises } from '@vue/test-utils'
 import { reactive } from 'vue'
 
 import PrimeVue from 'primevue/config'
@@ -7,7 +7,9 @@ import PrimeVue from 'primevue/config'
 // A stitched sample is calibrated scan range by scan range, and the fit the
 // dialog previews says how each range came by its calibration. The dialog
 // lists the ranges above the calibrants, and the calibrants say which range
-// each was found in. A sample that is not stitched shows neither.
+// each was found in. The record the sample carries lists its ranges too, and
+// where they read otherwise than the fit's - an applied fit made at other
+// settings - the dialog lists both. A sample that is not stitched shows none.
 
 const mocks = vi.hoisted(() => ({ fit: null }))
 
@@ -26,6 +28,7 @@ vi.mock('@/lib/panes', () => ({
 vi.mock('@/lib/permissions', () => ({ canCalibrateInstruments: () => true }))
 vi.mock('primevue/useconfirm', () => ({ useConfirm: () => ({ require: vi.fn() }) }))
 
+import { api } from '@/api'
 import DialogCalibration from '@/lib/dialogs/DialogCalibration.vue'
 
 // Only the dialog's own logic is under test; PrimeVue's pieces are reduced to
@@ -119,13 +122,23 @@ const fitted = (quality, stats) =>
     loadInstrumentDefaults: vi.fn()
   })
 
-const mountDialog = () =>
+const mountDialog = (context = SAMPLE) =>
   mount(DialogCalibration, {
-    props: { visible: true, context: SAMPLE },
+    props: { visible: true, context },
     global: { plugins: [PrimeVue], stubs }
   })
 
+// The record a sample carries once a fit is applied
+const record = (segments) => ({ status: 'ok', verified: true, quality: { n_points: 2, segments } })
+
 const ranges = (wrapper) => wrapper.findAll('[data-testid="calibration-segments"] li')
+const lists = (wrapper) =>
+  wrapper.findAll('[data-testid="calibration-segments"] ul').map((list) => ({
+    heading: list.element.previousElementSibling?.classList.contains('segment-heading')
+      ? list.element.previousElementSibling.textContent
+      : null,
+    ranges: list.findAll('li').map((item) => item.text())
+  }))
 const headers = (wrapper) =>
   wrapper.findAllComponents({ name: 'Column' }).map((column) => column.props('header'))
 
@@ -140,7 +153,8 @@ describe('DialogCalibration', () => {
       SUMMARY
     ])
 
-    const listed = ranges(mountDialog())
+    const wrapper = mountDialog()
+    const listed = ranges(wrapper)
 
     expect(listed.map((item) => item.text())).toEqual([
       'm/z 40-138: fitted on 2 calibrants (-11.93 ppm).',
@@ -149,8 +163,66 @@ describe('DialogCalibration', () => {
       'm/z 132-460: not fitted on calibrants of its own; takes the calibration of ' +
         'm/z 40-138 unchanged (-11.93 ppm).'
     ])
-    // The ranges that run on another range's calibration stand out
-    expect(listed.map((item) => item.classes('carried'))).toEqual([false, true, true])
+    // The range that took another's calibration unchanged stands out; the one
+    // that took it across an overlap was checked against the ions it measures
+    expect(listed.map((item) => item.classes('borrowed'))).toEqual([false, false, true])
+    // A sample with no record of its ranges shows the fit's alone, unheaded
+    expect(lists(wrapper).map((list) => list.heading)).toEqual([null])
+  })
+
+  it('lists the ranges once where the fit repeats the one applied', () => {
+    mocks.fit = fitted({ n_points: 2, segments: SEGMENTS }, [point(), SUMMARY])
+
+    const wrapper = mountDialog({ ...SAMPLE, mz_calibration: record(SEGMENTS) })
+
+    expect(lists(wrapper)).toHaveLength(1)
+    expect(lists(wrapper)[0].heading).toBe(null)
+    expect(lists(wrapper)[0].ranges).toHaveLength(3)
+  })
+
+  it('lists the ranges applied beside those of a fit that reads them otherwise', () => {
+    // The pipeline fitted the reagent scan at a wider tolerance than the
+    // dialog fits at, and found more calibrants there
+    const applied = [{ ...SEGMENTS[0], quality: { n_points: 5 } }, ...SEGMENTS.slice(1)]
+    mocks.fit = fitted({ n_points: 2, segments: SEGMENTS }, [point(), SUMMARY])
+
+    const shown = lists(mountDialog({ ...SAMPLE, mz_calibration: record(applied) }))
+
+    expect(shown.map((list) => list.heading)).toEqual(['Applied:', 'This fit:'])
+    expect(shown[0].ranges[0]).toBe('m/z 40-138: fitted on 5 calibrants (-11.93 ppm).')
+    expect(shown[1].ranges[0]).toBe('m/z 40-138: fitted on 2 calibrants (-11.93 ppm).')
+  })
+
+  it('lists the ranges applied where the fit here finds none', () => {
+    // No range found calibrants at the dialog's settings: the fit ends in a
+    // warning and lists no ranges, while the sample runs on a fit made at
+    // wider ones, whose carried ranges its badge names
+    mocks.fit = fitted({ n_points: 0 }, null)
+    mocks.fit.status = 'warning'
+    mocks.fit.error = 'No calibration peaks found'
+
+    const shown = lists(mountDialog({ ...SAMPLE, mz_calibration: record(SEGMENTS) }))
+
+    expect(shown).toHaveLength(1)
+    expect(shown[0].heading).toBe('Applied:')
+    expect(shown[0].ranges[1]).toContain('m/z 66-124: not fitted on calibrants of its own')
+  })
+
+  it('lists the ranges of the sample picked in a batch beside the batch list', async () => {
+    const picked = { ...SAMPLE, mz_calibration: record(SEGMENTS) }
+    api.http.get.mockResolvedValueOnce([picked])
+    mocks.fit = fitted(null, null)
+    mocks.fit.current = null
+
+    const wrapper = mountDialog({ sample_batch_id: 'sb-1', sample_batch_name: 'composite' })
+    await flushPromises()
+
+    // In the column of the picked sample's results, not above the batch list
+    expect(wrapper.find('.table-wrapper [data-testid="calibration-segments"]').exists()).toBe(true)
+    expect(wrapper.find('.list-wrapper').exists()).toBe(true)
+    // While the fit is under way, the ranges the sample runs on
+    expect(lists(wrapper).map((list) => list.heading)).toEqual(['Applied:'])
+    expect(lists(wrapper)[0].ranges).toHaveLength(3)
   })
 
   it('says which scan range each calibrant was found in', () => {
