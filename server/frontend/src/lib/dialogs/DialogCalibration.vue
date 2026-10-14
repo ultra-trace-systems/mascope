@@ -403,8 +403,14 @@ const formatter = new Intl.NumberFormat('en-US', {
                 justify-content: center;
               "
             >
-              <ProgressSpinner v-if="!(mzFit.status == 'error')" />
-              <Message v-else severity="error" style="inline-size: 400px; overflow-wrap: anywhere">
+              <!-- A fit that warns before it has calibrants has no rows either:
+                   it is done, and the warning above says why -->
+              <ProgressSpinner v-if="mzFit.status !== 'error' && mzFit.status !== 'warning'" />
+              <Message
+                v-else-if="mzFit.status === 'error'"
+                severity="error"
+                style="inline-size: 400px; overflow-wrap: anywhere"
+              >
                 {{ mzFit.error ?? 'Calibration failed due to an unknown error.' }}
               </Message>
             </div>
