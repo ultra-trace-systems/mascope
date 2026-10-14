@@ -14,7 +14,9 @@ against what the metadata document holds for the same scans, through each
 backend available.
 """
 
+import contextlib
 import json
+import math
 from types import SimpleNamespace
 
 import pytest
@@ -45,9 +47,15 @@ def _scan(text, tic=1e6, resolution=120000):
 class _ScriptedOpenTFRaw:
     """The slice of ``opentfraw.RawFile`` the scan table reads."""
 
+    instrument_model = "Scripted"
+
     def __init__(self, scans):
         self._scans = scans
         self.trailer_reads = []
+
+    @property
+    def num_scans(self):
+        return len(self._scans)
 
     def scan_table(self):
         numbers = list(range(1, len(self._scans) + 1))
@@ -239,6 +247,25 @@ def test_a_polarity_that_is_none_is_refused(scripted):
 def test_a_range_that_ends_before_it_starts_is_refused(scripted, window):
     with pytest.raises(InvalidRangeError):
         scripted(ACQUISITION).scan_rows(**window)
+
+
+def test_a_float_json_cannot_carry_is_none_in_the_table(monkeypatch):
+    # No committed file holds one, so a scripted scan does: a NaN statistic
+    # and an infinite trailer value, beside a scan that has neither.
+    reader = _opentfraw(
+        [_scan(NEG, tic=math.nan, resolution=math.inf), _scan(NEG, tic=2e6)]
+    )
+    monkeypatch.setattr(
+        m_thermo, "open_backend", lambda _path: contextlib.nullcontext(reader)
+    )
+
+    table = m_thermo.get_scan_table("scripted.raw")
+
+    json.dumps(table, allow_nan=False)
+    assert table["stats_per_scan"][1]["TIC"] is None
+    assert table["stats_per_scan"][1]["FT Resolution:"] is None
+    assert table["stats_per_scan"][2]["TIC"] == 2e6
+    assert table["stats_per_scan"][2]["FT Resolution:"] == 120000
 
 
 # ---- the committed sample files, through each backend available ----
