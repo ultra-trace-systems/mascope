@@ -2903,18 +2903,30 @@ async def test_every_way_of_binding_nothing_files_them(status, way):
 
 
 @pytest.mark.asyncio
-async def test_a_filed_file_still_says_what_its_record_named(status):
+@pytest.mark.parametrize("rung_on", [False, True], ids=["no token", "method declined"])
+async def test_a_filed_file_still_says_what_its_record_named(status, rung_on):
     """A record naming a chemistry no mode here answers to is a configuration
     somebody fixes, whether or not the file needed a chemistry - the status
-    the file ends on says so, as a bound file's does."""
+    the file ends on says so, as a bound file's does. On each road that
+    binds nothing by the name: no token, and the method declining after it."""
     status.declares.return_value = ([], UNANSWERED)
     mocks, _ = _ms2_only()
     mocks["resolve"].side_effect = _no_token()
     status.census.return_value = _census(2)
+    declined = ([], Declined("it reports no method name", "Use a filename token."))
 
-    with _filing():
+    with (
+        patch(f"{_SVC}.routes_on_method_binding", return_value=rung_on),
+        patch(
+            f"{_SVC}.resolve_modes_by_method_binding",
+            new_callable=AsyncMock,
+            return_value=declined,
+        ) as asked,
+        _filing(),
+    ):
         await _run_pipeline()
 
+    assert asked.await_count == (1 if rung_on else 0)
     assert _recorded(status) == [("done", f"{_FILED} {UNANSWERED}.")]
 
 
