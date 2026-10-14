@@ -453,6 +453,15 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   the search waits until some are picked in the pane, rather than being sent
   with none and refused.
 
+- **A mode can be renamed when another mode's batches only end in its
+  name.** Changing an ionization mode is refused while acquisition batches
+  are named for it, and that check took any acquisition batch whose name
+  contained the mode's name followed by "acquisition": a mode named `A` was
+  held back by the batches of a mode named `BA`, and a mode named `MS2` by
+  every batch of MS2 samples filed without a chemistry
+  (`<date> MS2 acquisition (no chemistry)`). It now reads a batch's whole
+  name, `<date> <mode name> acquisition`.
+
 ## [1.11.0] - 2026.10.09
 
 ### Added
