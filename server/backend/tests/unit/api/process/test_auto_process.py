@@ -186,7 +186,9 @@ def status():
     the database, and the reading of the file's acquisition record, which
     would query it: these files have none unless a test says so through
     ``status.declares``, and the rung that reads it is covered in
-    test_auto_process_declared.py. Request the fixture by name to read what
+    test_auto_process_declared.py. So is the count of the samples an earlier
+    run made, which a park reads: none, unless ``status.samples`` says
+    otherwise. Request the fixture by name to read what
     was recorded:
     ``[(status, detail), ...]`` in order via :func:`_recorded`.
     """
@@ -201,6 +203,9 @@ def status():
             new_callable=AsyncMock,
             return_value=([], None),
         ) as declares,
+        patch(
+            f"{_SVC}._pipeline_item_count", new_callable=AsyncMock, return_value=0
+        ) as samples,
     ):
         census.return_value = []
         stitched.return_value = []
@@ -210,6 +215,7 @@ def status():
         record.census = census
         record.stitched = stitched
         record.learn = learn
+        record.samples = samples
         yield record
 
 
@@ -936,6 +942,28 @@ async def test_return_structure():
     assert "si-ret" in notif["affected_sample_item_ids"]
 
 
+def _attempts(*steps):
+    """Stand in for the pipeline body, attempt by attempt.
+
+    Each step is ``(binds, outcome)``: whether the attempt bound the file,
+    and so awaited the wrapper's ``clear_earlier_run`` as the body does once
+    bound, and what it then raised or returned.
+    """
+    remaining = list(steps)
+
+    async def attempt(**kwargs):
+        binds, outcome = remaining.pop(0)
+        if binds:
+            await kwargs["clear_earlier_run"](
+                _make_sample_file(sample_file_id=kwargs["sample_file_id"])
+            )
+        if isinstance(outcome, BaseException):
+            raise outcome
+        return outcome
+
+    return AsyncMock(side_effect=attempt)
+
+
 @pytest.mark.asyncio
 async def test_retries_recoverable_error_then_succeeds():
     """A 503 (pool starvation) attempt is retried and the retry's result returned."""
@@ -943,9 +971,7 @@ async def test_retries_recoverable_error_then_succeeds():
     from mascope_backend.api.lib.exceptions.api_exceptions import ApiException
 
     ok = {"message": "done", "_notification_data": {}}
-    body = AsyncMock(
-        side_effect=[ApiException("busy", {}, 503), ok],
-    )
+    body = _attempts((True, ApiException("busy", {}, 503)), (True, ok))
     cleanup = AsyncMock()
 
     with (
@@ -961,8 +987,9 @@ async def test_retries_recoverable_error_then_succeeds():
 
     assert result == ok
     assert body.call_count == 2
-    # Partial sample items are cleared before every attempt, the first included:
-    # the file may carry items from an earlier pipeline a restart cut short.
+    # Partial sample items are cleared by every attempt that binds the file,
+    # the first included: the file may carry items from an earlier pipeline
+    # a restart cut short.
     assert cleanup.call_count == 2
     assert all(call.args == ("sf-retry",) for call in cleanup.call_args_list)
 
@@ -1028,7 +1055,7 @@ async def test_does_not_retry_non_recoverable_error():
     from mascope_backend.api.controllers.sample.files.process import service
     from mascope_backend.api.lib.exceptions.api_exceptions import ApiException
 
-    body = AsyncMock(side_effect=ApiException("corrupt", {}, 400))
+    body = _attempts((True, ApiException("corrupt", {}, 400)))
     cleanup = AsyncMock()
 
     with (
@@ -1545,6 +1572,30 @@ async def test_a_file_that_binds_to_nothing_waits_for_a_chemistry(status):
     assert call.args[1].status == "warning"
     assert call.args[1].message == f"{message}. Or choose its chemistry in Raw files."
     assert result["_notification_data"]["instrument"] == "Orbion"
+
+
+@pytest.mark.asyncio
+async def test_a_parked_file_with_samples_says_they_are_an_earlier_runs(status):
+    """A run binds a file before it clears anything of it, so a file it parks
+    keeps the samples an earlier run made - and ``needs_chemistry`` alone
+    reads as a file with none."""
+    mocks, _ = _start_single()
+    message = (
+        "No ionization mode tokens found for file 2025.09.20_test_file.raw. "
+        "Configure tokens in ionization settings"
+    )
+    mocks["resolve"].side_effect = ValueError(message)
+    status.samples.return_value = 2
+    kept = "Its samples, from an earlier run, were left as they were."
+
+    result = await _run_pipeline()
+
+    status.samples.assert_awaited_once_with("sf-001")
+    assert _recorded(status) == [("needs_chemistry", f"{message}. {kept}")]
+    assert result["message"] == (
+        f"{message}. Or choose its chemistry in Raw files. {kept}"
+    )
+    mocks["create_batches"].assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -2399,13 +2450,21 @@ async def test_a_failure_that_cannot_be_recorded_in_time_is_logged(status):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(("asked", "resets"), [(True, 1), (False, 0)])
-async def test_a_rebuild_resets_the_calibration_once_before_it_starts(asked, resets):
-    """As re-processing does, and not again on a retry."""
+@pytest.mark.parametrize(
+    "first_binds", [True, False], ids=["first binds", "first stops before binding"]
+)
+async def test_a_rebuild_resets_the_calibration_once_it_has_bound_the_file(
+    asked, resets, first_binds
+):
+    """As re-processing does, and not again on a retry. The reset is owed to
+    the first attempt that binds the file, which need not be the first."""
     from mascope_backend.api.controllers.sample.files.process import service
     from mascope_backend.api.lib.exceptions.api_exceptions import ApiException
 
     reset = AsyncMock()
-    body = AsyncMock(side_effect=[ApiException("busy", {}, 503), {"message": "ok"}])
+    body = _attempts(
+        (first_binds, ApiException("busy", {}, 503)), (True, {"message": "ok"})
+    )
     with (
         patch(f"{_SVC}._reset_calibration", reset),
         patch(f"{_SVC}._auto_process_sample_file", body),
@@ -2422,3 +2481,32 @@ async def test_a_rebuild_resets_the_calibration_once_before_it_starts(asked, res
 
     assert body.await_count == 2
     assert reset.await_count == resets
+    if resets:
+        # The attempt's own row, which the reset updates in place.
+        assert reset.await_args.args[0].sample_file_id == "sf-rebind"
+
+
+@pytest.mark.asyncio
+async def test_a_run_that_parks_the_file_clears_and_resets_nothing():
+    """A run binds a file before it clears anything of it, so one it binds
+    to nothing keeps its samples and the calibration they were matched on."""
+    from mascope_backend.api.controllers.sample.files.process import service
+
+    reset, cleanup = AsyncMock(), AsyncMock()
+    parked = {"status": "parked", "message": "m", "_notification_data": {}}
+    with (
+        patch(f"{_SVC}._reset_calibration", reset),
+        patch(f"{_SVC}._auto_process_sample_file", _attempts((False, parked))),
+        patch(f"{_SVC}._delete_partial_acquisition_items", cleanup),
+        patch(f"{_FEATURES}.handle_notifications", new_callable=AsyncMock),
+        patch(f"{_FEATURES}.handle_reloads", new_callable=AsyncMock),
+    ):
+        result = await service.auto_process_sample_file(
+            sample_file_id="sf-parked",
+            independent_transaction=True,
+            reset_calibration=True,
+        )
+
+    assert result["status"] == "parked"
+    reset.assert_not_awaited()
+    cleanup.assert_not_awaited()

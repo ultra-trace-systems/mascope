@@ -282,7 +282,7 @@ async def test_later_files_join_the_open_digest(
     assert row.count == 2
     assert row.message == (
         f"2 files from {INSTRUMENT} need a chemistry: no ionization mode could be "
-        "bound, so they have no samples."
+        "bound, so they were not processed."
     )
     assert row.payload["status"] == "needs_chemistry"
     assert [f["filename"] for f in row.payload["files"]] == [

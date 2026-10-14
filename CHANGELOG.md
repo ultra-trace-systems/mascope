@@ -322,6 +322,22 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   what the tokens matched. The route is reached only with a signed-in
   session, and the web app does not call it: Re-process in Raw files goes
   through re-processing.
+- **A processing run that cannot bind a file no longer clears its samples
+  first.** A run removed the samples an earlier run had made for a file,
+  and reset the m/z calibration of a file given a chemistry in Raw files,
+  before it bound the file, so a file it then bound to nothing parked as
+  needing a chemistry with its samples gone. The checks in front of
+  re-processing and of processing a file on request refuse such files, but
+  a run starts after them, once the files ahead of it are done, and a mode
+  chosen for the file can be deleted, or a token changed, in that time. A
+  run now binds the file first. One that parks it leaves it its samples and
+  the calibration they were matched on, and its status, still "Needs a
+  chemistry", says the samples are an earlier run's; one that binds it
+  clears what an earlier run left, and resets the calibration, before it
+  makes any sample, on every attempt as before (the reset once per run).
+  Re-processing still clears a file before its run, so a file it parks has
+  no samples. Raw files and the digest of files that need a chemistry now
+  say such a file was not processed, rather than that it has no samples.
 - **A re-processing report no longer repeats an internal error's text.**
   Where an unexpected error stopped a file - reading its acquisition record
   or the modes its samples have, resolving its name's tokens, or claiming

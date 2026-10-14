@@ -21,7 +21,9 @@ class ProcessingStatus(StrEnum):
     BOUND = "bound"
     #: The m/z calibration was fitted and verified. Matching follows.
     CALIBRATED = "calibrated"
-    #: No ionization mode could be bound to the file, so it has no samples.
+    #: No ionization mode could be bound to the file, so it was not processed:
+    #: it has no samples, or keeps the ones an earlier run made, which its
+    #: detail then says.
     NEEDS_CHEMISTRY = "needs_chemistry"
     #: An m/z calibration failed, fell below the quality bar, or could not be
     #: made, so some or all of the file's samples were not matched.

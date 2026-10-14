@@ -11,9 +11,8 @@ sample a person made from it keeps its calibration, and one the chosen modes
 do not fit is refused. Re-processing, and processing a file on request, keep
 the modes a file was bound to that way, whatever its name and its acquisition
 record say, until somebody chooses again. A file whose samples no mode binds
-any longer is started on neither road: a run clears a file's samples before
-it binds the file. Only the pipeline's own samples are replaced, wherever a
-person's sample is.
+any longer is started on neither road: the run would park it. Only the
+pipeline's own samples are replaced, wherever a person's sample is.
 
 For a file nobody chose the chemistry of, its acquisition record is asked
 first on both of those roads, as the pipeline asks it: a file its record
@@ -24,7 +23,9 @@ answer to act on, and neither are samples that cannot be.
 
 The pipeline itself is stubbed: what is pinned is which files start, under
 which modes, and what is refused. One test runs the pipeline's own binding
-behind the check, so that the two are held together and not only apart.
+behind the check, so that the two are held together and not only apart. The
+last ones run the pipeline itself as far as its binding: a run binds a file
+before it clears anything of it, so a file it parks keeps its samples.
 """
 
 from datetime import datetime, timedelta, timezone
@@ -658,8 +659,8 @@ async def test_reprocessing_does_not_leave_a_file_with_samples_to_the_rung(
 
     Its samples are still there, with no mode, so it has no modes to keep -
     which is what a parked file with no samples says too, and only that one
-    is the rung's to answer for. A run clears a file's samples before the
-    pipeline asks the method, so this file would park with its samples gone
+    is the rung's to answer for. Re-processing clears a file's samples before
+    the pipeline asks the method, so this file would park with its samples gone
     if the method could not place it, where with the rung off it is refused
     untouched.
     """
@@ -1674,11 +1675,9 @@ async def test_processing_on_request_leaves_a_file_no_mode_binds_its_samples(
     """A file bound once, whose samples no longer give a mode per polarity:
     a mode deleted since leaves them with none, and one whose polarity was
     changed since is no mode of the file's. It has no modes to keep, which
-    is what a parked file with no samples says too - but a run clears a
-    file's samples before it binds the file, so this one would park with
-    its samples gone. It is refused before it is claimed, and with the
-    method rung on as with it off: the samples are cleared before the
-    method is asked, too."""
+    is what a parked file with no samples says too - but this one has
+    samples, and a run would only park it. It is refused before it is
+    claimed, with the method rung on as with it off, and keeps its status."""
     monkeypatch.setattr(process_service, "routes_on_method_binding", lambda: by_method)
     orphaned = await _file(
         async_session_factory,
@@ -1767,11 +1766,10 @@ async def test_processing_on_request_leaves_an_ambiguous_name_its_samples(
     async_session_factory, setup, admin_client, mode_with_token, monkeypatch
 ):
     """A name two tokens of one polarity match is a configuration to fix,
-    which no earlier binding stands in for: the run binds the file to
-    nothing and parks it, after clearing the sample it has. Refused before
-    it is claimed, with what the tokens matched and the two ways out its
-    park would have offered. The same name on a file with no samples has
-    nothing to lose, and its run says why it parks."""
+    which no earlier binding stands in for: the run would bind the file to
+    nothing and park it. Refused before it is claimed, with what the tokens
+    matched and the two ways out its park would have offered. The same name
+    on a file with no samples is left to its run, which says why it parks."""
     _one, token_one = await mode_with_token("-")
     _two, token_two = await mode_with_token("-")
     bound = await _file(
@@ -2082,3 +2080,101 @@ async def test_a_rerun_clears_only_the_pipelines_own_samples(
             )
         )
     assert left == {mine}
+
+
+# ---------------------------------------------------------------------------
+# A run binds a file before it clears what an earlier run left
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def run_to_the_binding(setup, monkeypatch) -> AsyncMock:
+    """Let the pipeline itself run, on the rows, as far as its binding.
+
+    The checks above stand in front of a run, and the run can start minutes
+    after them: behind the ingest gate, or behind the files a re-processing
+    batch takes first. This is the run. What reads the filestore is stood
+    in for, and so is the m/z reset, which gives whether it ran.
+    """
+    reset = AsyncMock()
+    for name, stand_in in {
+        "read_scan_streams": AsyncMock(return_value=[]),
+        "read_store_stream_keys": AsyncMock(return_value=[]),
+        "get_acquisition_dataset": AsyncMock(
+            return_value={"data": {"dataset_id": setup["dataset"]}}
+        ),
+        "learn_method_bindings": AsyncMock(),
+        "reset_mz_calibration": reset,
+    }.items():
+        monkeypatch.setattr(process_service, name, stand_in)
+    return reset
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("chosen", "by_method"),
+    [(True, False), (False, False), (False, True)],
+    ids=["a chosen mode deleted", "no modes, no token", "no modes, rung declines"],
+)
+async def test_a_run_that_cannot_bind_a_file_leaves_it_its_samples(
+    async_session_factory, setup, run_to_the_binding, monkeypatch, chosen, by_method
+):
+    """A mode chosen for the file was deleted while the run waited, or the
+    run was started with no modes for a file whose name and record bind it
+    to nothing. The run parks it, and the sample an earlier run made, and
+    the calibration it was matched on, are as they were. The status says the
+    file needs a chemistry, and that its samples were kept."""
+    monkeypatch.setattr(process_service, "routes_on_method_binding", lambda: by_method)
+    bound = await _file(
+        async_session_factory,
+        "kept-by-a-parked-run",
+        "-",
+        sample_under=(setup["batch"], setup["negative"]),
+        bound_by="explicit",
+    )
+
+    result = await process_service.auto_process_sample_file(
+        sample_file_id=bound,
+        ionization_mode_ids=[gen_id(16)] if chosen else None,
+        reset_calibration=True,
+    )
+
+    assert result["status"] == "parked"
+    assert await _samples_of(async_session_factory, bound) == 1
+    run_to_the_binding.assert_not_awaited()
+    assert await _status(async_session_factory, bound) == "needs_chemistry"
+    assert "Its samples, from an earlier run, were left as they were." in (
+        await _detail(async_session_factory, bound)
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_run_that_binds_a_file_clears_it_before_making_samples(
+    async_session_factory, setup, run_to_the_binding, monkeypatch
+):
+    """The other half. A bound file's samples are still replaced, and gone
+    before the new ones are made: create_acquisition_batches_and_items does
+    not look for existing ones. Its calibration is reset by then too."""
+    bound = await _file(
+        async_session_factory,
+        "replaced-by-a-bound-run",
+        "-",
+        sample_under=(setup["batch"], setup["negative"]),
+    )
+    seen = {}
+
+    async def create(**_):
+        seen["samples"] = await _samples_of(async_session_factory, bound)
+        seen["resets"] = run_to_the_binding.await_count
+        raise _SeenEnough
+
+    monkeypatch.setattr(process_service, "create_acquisition_batches_and_items", create)
+
+    with pytest.raises(Exception):
+        await process_service.auto_process_sample_file(
+            sample_file_id=bound,
+            ionization_mode_ids=[setup["negative"]],
+            reset_calibration=True,
+        )
+
+    assert seen == {"samples": 0, "resets": 1}

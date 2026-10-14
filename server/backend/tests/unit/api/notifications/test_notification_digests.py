@@ -52,9 +52,9 @@ def test_kept_notifications_read_like_live_ones():
         (
             NotificationKind.NEEDS_CHEMISTRY,
             "1 file from Orbi needs a chemistry: no ionization mode could be "
-            "bound, so it has no samples.",
+            "bound, so it was not processed.",
             "3 files from Orbi need a chemistry: no ionization mode could be "
-            "bound, so they have no samples.",
+            "bound, so they were not processed.",
         ),
         (
             NotificationKind.CALIBRATION_FAILED,

@@ -2537,6 +2537,19 @@ Steps 6 and 7 of the setup-simplification proposal:
     items of ACQUISITION batches in ACQUISITION datasets of system
     workspaces. A file with a person's sample keeps its calibration when it
     is bound, and re-processing still refuses it;
+  - a run binds a file before it clears anything of it.
+    `auto_process_sample_file` clears what an earlier run left - and, for a
+    rebuild under chosen modes, resets the m/z calibration, once per run -
+    only once an attempt has bound the file, still on every attempt and
+    ahead of every item, since `create_acquisition_batches_and_items` does
+    not look for existing ones. A run that parks a file therefore leaves it
+    the samples it has and the calibration they were matched on: a mode
+    chosen for it deleted, or a token changed, while the run waited behind
+    the ingest gate. Its status is `needs_chemistry` all the same - it
+    needs one, and choosing it rebuilds the file - and its detail adds that
+    its samples are an earlier run's. Re-processing keeps its own order
+    (item 3 of phase 2 and step 8 of phase 3 say why), so a file it parks
+    has no samples;
 - the upload capability flag. Shipped in #2168: `GET /api/version`
   and the pairing start response carry the server's capabilities
   (`mascope_backend/capabilities.py`), and the browser lets a token-less name
@@ -2590,15 +2603,21 @@ Needed before any rung can be provisional or park.
      reaches the rung too: a parked file with no samples goes through
      to the pipeline rather than being refused on its name, which is what
      selecting the parked files and pressing Re-process does. Only a file
-     with no samples, though: a run clears a file's samples before the
-     pipeline asks the rung, so a file whose samples are still there under
-     modes that no longer bind it - a mode deleted since leaves them with
-     none - is refused untouched, as it is where the rung is off, and so is
-     one whose samples could not be read. Processing one file on request
-     (`POST /api/sample/files/{id}/process`) refuses such a file too, with
-     the rung on or off, since its run clears the samples before anything
-     binds the file; samples it cannot read fail the request. It refuses a
-     file with samples and an ambiguous name on the same ground. A file bound
+     with no samples, though: re-processing resets a file's calibration,
+     detects its peaks again where it must, and clears every sample item
+     of the file before the pipeline asks the rung, so a file whose samples
+     are still there under modes that no longer bind it - a mode deleted
+     since leaves them with none - is refused untouched, as it is where the
+     rung is off, and so is one whose samples could not be read. Processing
+     one file on request (`POST /api/sample/files/{id}/process`) refuses
+     such a file too, with the rung on or off, and a file with samples and
+     an ambiguous name: the request says at once why the run would park the
+     file, and leaves it as it is; samples it cannot read fail the request.
+     The run itself binds a file before it clears anything of it (phase 1),
+     so a file it parks keeps its samples where a check like these could
+     not see it coming: the run starts after them, behind the ingest gate.
+     A file re-processing parks that way has been cleared by re-processing
+     already, between its check and its run. A file bound
      this way teaches its binding nothing, and its items record
      `method_binding_id`, which is checked against the table as the item is
      created rather than trusted from the earlier read: `ON DELETE SET NULL`
