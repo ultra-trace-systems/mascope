@@ -32,6 +32,7 @@ from mascope_backend.api.controllers.sample.batches.sample_batches_controller im
     get_or_create_acquisition_batch,
 )
 from mascope_backend.api.controllers.sample.files.process.bindings import (
+    Declined,
     MethodRouting,
     learn_method_bindings,
     resolve_modes_by_method_binding,
@@ -593,6 +594,24 @@ def _beside_the_declaration(undeclared: str | None, reason: str) -> str:
     if undeclared is None:
         return reason
     return f"{undeclared.rstrip('.')}. {reason}"
+
+
+def _declined_with_its_samples(no_token: NoTokenMatchError, declined: Declined) -> str:
+    """Why a file with samples that its name and its method leave unbound is
+    left as it is, before :func:`_beside_the_declaration`.
+
+    The token rule's reason, then the method's, with the remedy of the guard
+    that declined: it differs per guard, as it does in the run's own park.
+
+    :param no_token: What the token rule found in the file's name.
+    :param declined: What the method rung said.
+    """
+    return (
+        f"{str(no_token).rstrip('.')}. The ionization modes its samples "
+        "were made under no longer bind it, and its acquisition method "
+        f"does not say either: {declined.reason}. {declined.remedy} "
+        "It was left as it is."
+    )
 
 
 def _bound_detail(ionization_modes: list[IonizationMode], rung: str) -> str:
@@ -2054,9 +2073,11 @@ async def re_process_sample_files(
 
     Steps:
     - Validate all sample files exist and have no user-created samples
-    - For each file: detect its peaks again where the deployment's scan-stream
-      setting can give it another peak store than it has, delete its existing
-      ACQUISITION sample items, and run the auto-process pipeline
+    - For each file: ask the acquisition method of one whose samples nothing
+      else binds, where the method rung is on, and leave it as it is if the
+      method declines; detect its peaks again where the deployment's
+      scan-stream setting can give it another peak store than it has, delete
+      its existing ACQUISITION sample items, and run the auto-process pipeline
     - Return aggregated results
 
     :param sample_file_ids: List of IDs of the sample files to re-process
@@ -2143,6 +2164,10 @@ async def re_process_sample_files(
     # Files a person chose the chemistry of, and files nothing binds now,
     # re-processed under the modes their samples have.
     kept_modes: dict[str, KeptModes] = {}
+    # Files with samples whose name and samples bind them no longer, where the
+    # method rung is on: what their name and their record said, for the
+    # reason their method's refusal gives.
+    ask_its_method: dict[str, tuple[NoTokenMatchError, str | None]] = {}
 
     for sample_file in sample_files:
         # Check for user-created samples
@@ -2268,8 +2293,9 @@ async def re_process_sample_files(
             # one whose samples no longer give a mode per polarity - a mode
             # deleted since leaves them with none, the column being ON DELETE
             # SET NULL - and one whose samples could not be read. Where the
-            # method rung is on, only the first may go on to the pipeline, so
-            # the samples are counted beside the modes.
+            # method rung is on, the first goes on to the pipeline, the second
+            # only once its method has been asked, and the third not at all,
+            # so the samples are counted beside the modes.
             #
             # A file of fragmentation scans alone says it too, and goes on
             # whatever the rung: the pipeline files it without a chemistry, so
@@ -2320,27 +2346,16 @@ async def re_process_sample_files(
                 continue
             if kept is None and unbound_samples and not filed_alone:
                 # Samples, and no modes to keep from them. Not left to the
-                # method as the file below is: a run clears a file's samples
-                # and resets its calibration before the pipeline asks the
-                # rung, so one the method cannot place would park with its
-                # samples gone. Refused untouched, as it is with the rung off.
-                failed_files.append(
-                    {
-                        "sample_file_id": sample_file.sample_file_id,
-                        "filename": sample_file.filename,
-                        "message": _beside_the_declaration(
-                            undeclared,
-                            f"{str(no_token).rstrip('.')}. The ionization modes "
-                            "its samples were made under no longer bind it "
-                            "either, so it was left as it is: re-processing "
-                            "clears a file's samples before its acquisition "
-                            "method is asked. Choose its chemistry in Raw files "
-                            "to rebuild it.",
-                        ),
-                    }
-                )
-                continue
-            if kept is None:
+                # method unasked as the file below is: a run clears a file's
+                # samples and resets its calibration before the pipeline asks
+                # the rung, so one the method cannot place would park with
+                # its samples gone. Its method is asked first, as the run
+                # asks it, just before the file is claimed below rather than
+                # here: the files ahead of it in this batch teach the
+                # bindings as they are bound, and one of them can make the
+                # method's answer for this file another by then.
+                ask_its_method[sample_file.sample_file_id] = (no_token, undeclared)
+            elif kept is None:
                 # No token, and no samples to keep - but the pipeline can
                 # still place the file: this deployment lets an acquisition
                 # method bind it, or the file records fragmentation scans
@@ -2409,6 +2424,51 @@ async def re_process_sample_files(
                     }
                 )
                 continue
+            # The method of a file with samples that nothing else binds, asked
+            # as the run asks it and as late as nothing of the file is touched
+            # yet: what the files ahead of it taught is in the answer. A file
+            # it binds goes on with no modes of its own, and its run asks
+            # again; one it declines is left as it is, with the method's
+            # reason. A binding that moves between here and the run parks the
+            # file with its samples cleared, as a token or a kept mode removed
+            # meanwhile does.
+            if sample_file.sample_file_id in ask_its_method:
+                no_token, undeclared = ask_its_method[sample_file.sample_file_id]
+                try:
+                    _routed, declined = await resolve_modes_by_method_binding(
+                        sample_file, await read_scan_streams(sample_file.filename)
+                    )
+                except Exception:  # noqa: BLE001 - one file's failure
+                    # Not taken for a binding or for a refusal: the file is
+                    # left as it is, and its fault's text to the log, as the
+                    # reads above leave theirs.
+                    runtime.logger.exception(
+                        "Unexpected error asking the acquisition method of "
+                        f"sample file {sample_file.filename}"
+                    )
+                    failed_files.append(
+                        {
+                            "sample_file_id": sample_file.sample_file_id,
+                            "filename": sample_file.filename,
+                            "message": (
+                                "Failed to ask its acquisition method, so it "
+                                "was left as it is. Re-process it again."
+                            ),
+                        }
+                    )
+                    continue
+                if declined is not None:
+                    failed_files.append(
+                        {
+                            "sample_file_id": sample_file.sample_file_id,
+                            "filename": sample_file.filename,
+                            "message": _beside_the_declaration(
+                                undeclared,
+                                _declined_with_its_samples(no_token, declined),
+                            ),
+                        }
+                    )
+                    continue
             # Before anything of the file is destroyed: until the rebuild
             # records its own stages, the row would still say how the last run
             # ended - `done` on a file with no samples, if a restart cut in -
@@ -2501,9 +2561,10 @@ async def re_process_sample_files(
                 # token in its name, or the one its record names - was removed
                 # while the batch waited; or neither bound it and this
                 # deployment routes on method bindings, which is the file the
-                # validation lets through on purpose. Either way it needs a
-                # chemistry and was not re-processed, and the pipeline's own
-                # message says which.
+                # validation lets through on purpose: one with no samples, or
+                # one whose method bound it before its claim and no longer
+                # did by its run. Either way it needs a chemistry and was not
+                # re-processed, and the pipeline's own message says which.
                 failed_files.append(
                     {
                         "sample_file_id": sample_file.sample_file_id,
@@ -2631,9 +2692,12 @@ async def modes_to_rebind(sample_file_id: str) -> KeptModes | None:
     as they were. Samples that cannot be counted fail the request too, and
     are not taken for none.
 
-    Re-processing refuses such a file with the rung on as well, unasked. It
-    clears a file's samples before its run, so a file whose method stopped
-    binding it in between would park with its samples gone.
+    Re-processing asks the method of such a file too, and refuses one it
+    declines on the same terms. It asks just before it claims the file
+    rather than before its batch starts: it clears a file's samples before
+    its run, so a file whose method stops binding it in between parks with
+    its samples gone, and the files ahead of it in the batch teach the
+    bindings as they are bound.
 
     Not refused: a file of fragmentation scans alone with no token. Its
     sample is the MS2 part its run filed without a chemistry, and the run
@@ -2691,12 +2755,7 @@ async def modes_to_rebind(sample_file_id: str) -> KeptModes | None:
         _routed, declined = await resolve_modes_by_method_binding(sample_file, streams)
         if declined is None:
             return None
-        reason = (
-            f"{str(no_token).rstrip('.')}. The ionization modes its samples "
-            "were made under no longer bind it, and its acquisition method "
-            f"does not say either: {declined.reason}. {declined.remedy} "
-            "It was left as it is."
-        )
+        reason = _declined_with_its_samples(no_token, declined)
     elif no_token is not None:
         reason = (
             f"{str(no_token).rstrip('.')}. The ionization modes its samples "
