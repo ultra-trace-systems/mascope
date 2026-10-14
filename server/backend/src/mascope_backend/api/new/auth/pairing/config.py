@@ -9,7 +9,15 @@ class PairingConfig(BaseModel):
     # Services that may obtain a token via pairing: the on-instrument agents.
     # Deliberately excludes mascope_sdk (interactive users copy their token
     # from the web app) and internal services like file-converter.
-    ALLOWED_SERVICES: tuple[str, ...] = ("tof-agent", "file-agent", "export-agent")
+    # instrument-agent is the File Agent embedded in a program that controls
+    # the instrument; it pairs and uploads exactly as file-agent does, under a
+    # name of its own so a paired machine says which of the two it runs.
+    ALLOWED_SERVICES: tuple[str, ...] = (
+        "tof-agent",
+        "file-agent",
+        "export-agent",
+        "instrument-agent",
+    )
 
     # User-facing code: 6 chars from an alphabet without ambiguous characters
     # (no 0/O, 1/I/L, A/E/U to avoid accidental words). 28^6 ~ 4.8e8

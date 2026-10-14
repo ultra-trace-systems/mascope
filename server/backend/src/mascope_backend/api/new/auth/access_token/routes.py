@@ -30,6 +30,8 @@ async def access_token_regenerate_route(
     - tof-agent: editor or higher - for TOF agent access
     - file-agent: editor or higher - for File agent access
     - export-agent: editor or higher - for Export agent access
+    - instrument-agent: editor or higher - for the File Agent inside an
+      instrument control program
     - file-converter: internal service, managed automatically
 
     An account with a second factor must have presented a code recently. The
@@ -44,7 +46,7 @@ async def access_token_regenerate_route(
     match service_name:
         case "mascope_sdk":
             await role_based_access(user, "guest")
-        case "tof-agent" | "file-agent" | "export-agent":
+        case "tof-agent" | "file-agent" | "export-agent" | "instrument-agent":
             await role_based_access(user, "editor")
         case "file-converter":
             raise InternalServiceAccessException()

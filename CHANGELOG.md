@@ -48,6 +48,14 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   writes nothing, so no backup is taken before it. It is what the choice
   of which range should own an overlap is to be made on.
 
+- **A machine can pair as the File Agent inside a program that controls
+  the instrument.** Pairing takes a second agent service, `instrument-agent`,
+  beside `file-agent`: the same agent, pairing, renewal and uploads, under a
+  name of its own, so Paired machines lists such a machine as an Instrument
+  Agent rather than a File Agent. `require_device_tokens` covers it as it
+  covers the File Agent, and like the File Agent it is not offered a token
+  by hand in Settings.
+
 ### Changed
 
 - **A file bound by its acquisition record goes on saying so once it is
