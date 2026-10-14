@@ -2104,7 +2104,7 @@ def run_to_the_binding(setup, monkeypatch) -> AsyncMock:
     reset = AsyncMock()
     for name, stand_in in {
         "read_scan_streams": AsyncMock(return_value=[]),
-        "read_store_stream_keys": AsyncMock(return_value=[]),
+        "read_store_stitch": AsyncMock(return_value=status.StoreStitch()),
         "get_acquisition_dataset": AsyncMock(
             return_value={"data": {"dataset_id": setup["dataset"]}}
         ),
