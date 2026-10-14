@@ -389,6 +389,52 @@ class GetSpectrumQueryParams(CommonValidators, QueryParamsModel):
         return self
 
 
+class GetSampleFileScansQueryParams(CommonValidators, QueryParamsModel):
+    """
+    Query parameters for a sample file's scan table: which scans to describe,
+    and which entries of each. Polarity and time range validation is inherited
+    from CommonValidators.
+    """
+
+    fields: list[str] | None = Field(
+        None,
+        description=(
+            "Keep only these entries of every scan: statistics fields "
+            "('ScanType') and trailer labels ('FT Resolution:'), spelled as "
+            "the scans spell them. 'ScanNumber' is always kept. Repeat the "
+            "parameter for several; every entry is returned when it is left out."
+        ),
+    )
+    first_scan: Annotated[int, Field(ge=1)] | None = Field(
+        None, description="Only the scans from this scan number on"
+    )
+    last_scan: Annotated[int, Field(ge=1)] | None = Field(
+        None, description="Only the scans up to this scan number"
+    )
+    t_min: Annotated[float, Field(ge=0)] | None = Field(
+        None, description="Only the scans starting at this time [s] or later"
+    )
+    # From 0, where a spectrum's range starts above it: a scan can be
+    # recorded with a start time of 0, and t_max=0 is how those are found.
+    t_max: Annotated[float, Field(ge=0)] | None = Field(
+        None, description="Only the scans starting at this time [s] or earlier"
+    )
+    polarity: str | None = Field(
+        None, description="Only the scans of this polarity, '+' or '-'"
+    )
+
+    @model_validator(mode="after")
+    def validate_scan_range(self):
+        """A scan range may hold one scan, but not end before it starts."""
+        if (
+            self.first_scan is not None
+            and self.last_scan is not None
+            and self.last_scan < self.first_scan
+        ):
+            raise ValueError("last_scan must not be less than first_scan")
+        return self
+
+
 class DeleteSampleFilesBody(RequestBodyModel):
     sample_file_ids: list[str] | None = Field(
         None, description="List of sample file IDs to delete", min_length=1

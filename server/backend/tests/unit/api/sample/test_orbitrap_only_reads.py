@@ -18,6 +18,7 @@ from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 from fastapi import HTTPException
+from fastapi.responses import StreamingResponse
 from test_utils import captured_logs
 
 from mascope_backend.api.controllers.sample.files import sample_files_controller
@@ -140,8 +141,14 @@ class TestPerScanCentroids:
 
 class TestSampleFileMetadata:
     @staticmethod
-    async def _request(filename: str):
-        read = Mock(return_value=SimpleNamespace(to_dict=lambda: {"Model": "x"}))
+    async def _request(filename: str, include_centroids: bool = True):
+        # The document whole, and in pieces: with its centroids it is streamed.
+        read = Mock(
+            return_value=SimpleNamespace(
+                to_dict=lambda include_centroids=True: {"Model": "x"},
+                iter_json=lambda: iter(['{"Model":"x"', "}"]),
+            )
+        )
         stored = AsyncMock(return_value={"data": {"filename": filename}})
         with (
             patch.object(sample_files_controller, "get_sample_file", stored),
@@ -151,7 +158,7 @@ class TestSampleFileMetadata:
         ):
             try:
                 result = await sample_files_controller.get_sample_file_metadata(
-                    "file-id"
+                    "file-id", include_centroids
                 )
             except ApiException as refused:
                 return refused, read, records
@@ -173,7 +180,14 @@ class TestSampleFileMetadata:
 
     @pytest.mark.asyncio
     async def test_an_orbitrap_file_is_still_read(self):
-        result, read, _ = await self._request("ORBI-1_a")
+        result, read, _ = await self._request("ORBI-1_a", include_centroids=False)
 
         assert result["data"] == {"Model": "x"}
+        read.assert_called_once_with("ORBI-1_a")
+
+    @pytest.mark.asyncio
+    async def test_an_orbitrap_file_is_still_streamed_with_its_centroids(self):
+        result, read, _ = await self._request("ORBI-1_a")
+
+        assert isinstance(result, StreamingResponse)
         read.assert_called_once_with("ORBI-1_a")

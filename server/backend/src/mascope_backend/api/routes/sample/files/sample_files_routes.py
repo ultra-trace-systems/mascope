@@ -46,6 +46,7 @@ from mascope_backend.api.controllers.sample.files.sample_files_controller import
     get_sample_file_metadata,
     get_sample_file_peak_timeseries,
     get_sample_file_peaks,
+    get_sample_file_scans,
     get_sample_file_spectrum,
     get_sample_files,
     reported_instrument_or_none,
@@ -60,6 +61,7 @@ from mascope_backend.api.models.sample.files.sample_file_pydantic_model import (
     GetRecentSampleFilesQueryParams,
     GetSampleFilePeaksQueryParams,
     GetSampleFilePeakTimeseriesBody,
+    GetSampleFileScansQueryParams,
     GetSampleFilesQueryParams,
     GetSpectrumQueryParams,
     ReprocessSampleFilesBody,
@@ -374,17 +376,60 @@ async def get_sample_file_spectrum_route(
 @api_route(token_access=True)
 async def get_sample_file_metadata_route(
     sample_file_id: str,
+    include_centroids: bool = Query(
+        True,
+        description=(
+            "Include `centroids_meta`, every centroid of every scan. It is "
+            "nearly all of the response - hundreds of megabytes for a long "
+            "acquisition - and is written one scan at a time. Without it the "
+            "response is the scans' statistics and trailers alone."
+        ),
+    ),
     user=Depends(current_active_user),
 ):
     """
     Retrieve metadata for a specific sample file.
 
+    The statistics and trailer of each MS1 scan a selection would take, the
+    file's own statistics and, unless `include_centroids` is false, every
+    centroid of every scan. `GET /api/sample/files/{sample_file_id}/scans`
+    serves the scans alone, of every MS order, and can narrow them.
+
     :param sample_file_id: ID of the sample file.
+    :param include_centroids: Whether to include every scan's centroids.
     :param user: Authenticated user.
     :return: Metadata for the sample file.
     """
     await check_sample_file_instrument_access(sample_file_id, user, "guest")
-    return await get_sample_file_metadata(sample_file_id)
+    return await get_sample_file_metadata(sample_file_id, include_centroids)
+
+
+@sample_files_router.get("/{sample_file_id}/scans")
+@api_route(token_access=True)
+async def get_sample_file_scans_route(
+    sample_file_id: str,
+    query_params: GetSampleFileScansQueryParams = Query(),
+    user=Depends(current_active_user),
+):
+    """
+    Retrieve the scan table of a sample file: every scan's statistics and
+    trailer, without its centroids.
+
+    `stats_per_scan` holds one row per scan under its scan number, with the
+    scan's statistics and its trailer under the instrument's own labels
+    (`FT Resolution:`, `Conversion Parameter B:`), and `stats_per_file` the
+    file's statistics, both as `/metadata` gives them. The rows describe the
+    file: scans of every MS order are included (`MsType` says which), and
+    none is left out. No peak is read, so the response stays small and quick
+    for a file whose centroids run to hundreds of megabytes.
+
+    :param sample_file_id: ID of the sample file.
+    :param query_params: Which scans to describe, and which entries of each.
+    :param user: Authenticated user.
+    :return: The scan table of the sample file.
+    """
+    await check_sample_file_instrument_access(sample_file_id, user, "guest")
+    return await get_sample_file_scans(sample_file_id, **query_params.model_dump())
 
 
 @sample_files_router.post("/{sample_file_id}/process")

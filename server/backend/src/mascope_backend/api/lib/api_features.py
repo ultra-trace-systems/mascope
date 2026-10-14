@@ -4,7 +4,7 @@ from typing import Any, Callable
 
 from fastapi import params
 from fastapi.encoders import jsonable_encoder
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from rich.pretty import pretty_repr
 
 from mascope_backend.api.lib.exceptions.api_exceptions import (
@@ -179,7 +179,8 @@ def api_route(
     The handler's result, or the ApiException it raises, is rendered as a
     ``NanSafeJSONResponse``: a non-finite float is sent as ``null`` with a
     WARNING naming the route, and a body that cannot be rendered at all is
-    answered 500 and logged at ERROR.
+    answered 500 and logged at ERROR. A handler that returns a file or a
+    streamed response has rendered its own, and that is returned as it is.
 
     By default, all routes require authentication via auth user dependency injection.
     Routes must either:
@@ -259,8 +260,8 @@ def api_route(
                 # --- Execute the route handler
                 result = await func(*args, **kwargs)
 
-                # --- If result is file, return as-is ---
-                if isinstance(result, FileResponse):
+                # --- A file or a streamed body is a response already ---
+                if isinstance(result, (FileResponse, StreamingResponse)):
                     return result
 
                 # --- Prepare response headers ---
