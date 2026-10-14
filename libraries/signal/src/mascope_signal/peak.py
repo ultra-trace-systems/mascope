@@ -949,12 +949,18 @@ def compute_peaks(
         changes what was decided for it.
     :type per_stream: bool | None
     :raises TimeoutError: If another process was detecting the same file's
-        peaks for longer than ``mascope_file.io.ZARR_PROCESS_LOCK_TIMEOUT``
+        peaks, or applying an m/z calibration to it, for longer than
+        ``mascope_file.io.ZARR_PROCESS_LOCK_TIMEOUT``
     """
     # One detection of a file at a time, in whichever process: the detector
     # reads the recorded decision when it is made, and a rebuild that read it
     # before an explicit decision was recorded would write the store the old
-    # record describes over the one the new record does.
+    # record describes over the one the new record does. It reads the
+    # recorded m/z calibration then as well, and places every peak by it, so
+    # an apply of a calibration to the file waits for this lock too
+    # (mascope_file.io.peak_detection_lock_path). The detection does not take
+    # the calibration lock across it: it caches sum signals under that one,
+    # inside this, as anyone does.
     with m_io.zarr_write_lock(m_io.peak_detection_lock_path(filename)):
         peak_detector = get_peak_detector(filename, instrument_functions, per_stream)
         asyncio.run(peak_detector.detect_peaks(progress_callback=progress_callback))
