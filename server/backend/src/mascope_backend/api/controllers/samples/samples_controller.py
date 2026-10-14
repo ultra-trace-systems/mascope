@@ -3,6 +3,7 @@ from dataclasses import dataclass
 from datetime import datetime
 
 import numpy as np
+from fastapi import HTTPException
 from sqlalchemy import Float, Integer, and_, cast, func, select
 
 import mascope_signal.compute as m_compute
@@ -31,7 +32,12 @@ from mascope_backend.db import (
 from mascope_backend.db.views import Sample
 from mascope_backend.runtime import runtime
 from mascope_file.io import load_coord, load_peak_data
+from mascope_file.name import get_sample_file_type
 from mascope_signal.peak import get_peaks
+
+
+# How many samples a refusal names before it counts the rest.
+_MAX_NAMED_SAMPLES = 10
 
 
 def _nearest_listed_mz(filename: str, peak_mz: float) -> float:
@@ -828,6 +834,8 @@ async def get_samples_centroids(
     :type process_id: str | None, optional
     :param parent_id: Parent process identifier for tracking background operations, defaults to None.
     :type parent_id: str | None, optional
+    :raises HTTPException: 422 when any of the samples has no Orbitrap raw
+        file to read per-scan centroids from.
     :return: A dictionary containing the extracted centroids for each sample item ID.
     :rtype: dict
     """
@@ -847,6 +855,30 @@ async def get_samples_centroids(
         stmt = stmt.where(Sample.sample_item_id.in_(sample_item_ids))
         result = await session.execute(stmt)
         sample_items = result.scalars().all()
+
+    # Per-scan centroids are read from an Orbitrap raw file. A request naming
+    # any sample without one - a TOF sample, or one whose raw file is not
+    # kept - is refused before anything is extracted, as the request it is
+    # rather than as a fault here.
+    files = [(sample.sample_item_id, sample.filename) for sample in sample_items]
+    without_raw = await asyncio.to_thread(
+        lambda: [
+            item_id
+            for item_id, filename in files
+            if get_sample_file_type(filename) != "orbi_raw"
+        ]
+    )
+    if without_raw:
+        named = ", ".join(without_raw[:_MAX_NAMED_SAMPLES])
+        if len(without_raw) > _MAX_NAMED_SAMPLES:
+            named += f" and {len(without_raw) - _MAX_NAMED_SAMPLES} more"
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "Per-scan centroids are read from Orbitrap raw files, and "
+                f"these samples have none: {named}"
+            ),
+        )
 
     # Step 2: Extract centroids for each sample item
     centroids = dict()
