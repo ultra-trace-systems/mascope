@@ -1998,8 +1998,9 @@ async def get_sample_file_scans(
     :type t_max: float | None, optional
     :param polarity: Only the scans of this polarity, optional.
     :type polarity: str | None, optional
-    :raises NotFoundException: If the sample file is not found, or holds no
-        raw Orbitrap data to read scans from.
+    :raises NotFoundException: If the sample file is not found.
+    :raises HTTPException: 422 when the sample file has no Orbitrap raw file
+        to read the scans from.
     :return: A dictionary with the number of scans returned and the scan table.
     :rtype: dict
     """
@@ -2007,7 +2008,17 @@ async def get_sample_file_scans(
     sample_file_data = await get_sample_file(sample_file_id)
     filename = sample_file_data.get("data").get("filename")
 
-    # Step 2: Read the scan table
+    # Step 2: Read the scan table. It is read from an Orbitrap raw file, so
+    # asking it of any other sample file is refused as the request it is,
+    # before anything is read, as /metadata and the per-scan centroids are.
+    if await asyncio.to_thread(get_sample_file_type, filename) != "orbi_raw":
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "Scans are read from an Orbitrap raw file, and sample file "
+                f"'{filename}' has none"
+            ),
+        )
     try:
         table = await asyncio.to_thread(
             m_metadata.scan_table,
@@ -2019,10 +2030,6 @@ async def get_sample_file_scans(
             last_scan=last_scan,
             fields=fields,
         )
-    except NotImplementedError as e:
-        raise NotFoundException(
-            f"Sample file '{filename}' holds no raw Orbitrap data to read scans from."
-        ) from e
     except Exception as e:
         # str(e) can carry internal file paths; the cause is logged server-side
         # (with traceback) by the @api_controller error handling.

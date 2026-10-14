@@ -271,15 +271,23 @@ async def test_a_window_that_cannot_be_is_refused(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("sample_type", ["tof_h5", "tof_zarr", "orbi_zarr"])
-async def test_a_file_with_no_raw_orbitrap_data_has_no_scan_table(
+async def test_a_file_with_no_orbitrap_raw_file_is_refused_as_a_request(
     guest_client, sample_file, alpha_item, monkeypatch, sample_type
 ):
-    monkeypatch.setattr(m_name, "get_sample_file_type", lambda _filename: sample_type)
+    # As the other Orbitrap-only reads are: a 422, before anything is read.
+    monkeypatch.setattr(
+        sample_files_controller, "get_sample_file_type", lambda _filename: sample_type
+    )
+
+    def no_read(*_args, **_kwargs):
+        raise AssertionError("a file with no Orbitrap raw file was read")
+
+    monkeypatch.setattr(m_thermo, "open_backend", no_read)
 
     resp = await guest_client.get(f"/api/sample/files/{sample_file}/scans")
 
-    assert resp.status_code == 404, resp.text
-    assert "no raw Orbitrap data" in resp.json()["error"]
+    assert resp.status_code == 422, resp.text
+    assert "Orbitrap raw file" in resp.json()["error"]
 
 
 @pytest.mark.asyncio
