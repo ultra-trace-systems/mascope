@@ -446,7 +446,8 @@ mascope test run libraries -m tools
 Tests run automatically on GitHub Actions on each PR to the `develop` branch. The workflow
 (`.github/workflows/tests.yaml`) starts a `postgres:16-alpine` service container before the
 test job runs, with credentials matching `POSTGRES_TEST_PASSWORD` in the test step env block.
-The container is destroyed when the job completes.
+The container is destroyed when the job completes. A PR that changes only `docs/` and
+Markdown files skips this job, so no test here may read a doc.
 
 ### Recommended testing workflow 📋
 

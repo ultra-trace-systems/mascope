@@ -2937,7 +2937,9 @@ Frontend tests come in two layers under `server/frontend/tests/`:
   seeded demo dataset + `demo@mascope.app` login). Authentication happens once via the
   REST API (`tests/e2e/setup/auth.setup.js`) and is shared as storage state; the `api`
   and `scratch` fixtures seed state through the API so the UI is only used for the
-  behavior under test. Both suites run in CI on every PR.
+  behavior under test. Both suites run in CI on every PR, except that a PR
+  changing only `docs/` and Markdown files skips the e2e suite (and backend
+  pytest); every other job still runs.
 
 #### Running the tests
 

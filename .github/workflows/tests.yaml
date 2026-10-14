@@ -16,6 +16,41 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  changes:
+    # Whether the PR touches anything but documentation. The two slow jobs,
+    # backend pytest and the demo-stack e2e, read no Markdown and nothing under
+    # docs/, so a PR confined to those - a design doc in docs/dev, say - skips
+    # them. Every other job still runs: they take about a minute each, side by
+    # side, and some do read docs (the CLI tests read docs/maintaining.md, and
+    # "Docs strict build" builds docs/user the way the frontend image does).
+    name: Changed paths
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      code: ${{ steps.diff.outputs.code }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # The PR's merge commit and its first parent, the base branch tip
+          fetch-depth: 2
+          persist-credentials: false
+
+      - name: Classify the changed paths
+        id: diff
+        run: |
+          # From the base tip to the merge commit is exactly what merging the
+          # PR changes. --no-renames lists a moved file under both of its
+          # names, so moving code into docs/ cannot pass as a docs change.
+          files=$(git diff --name-only --no-renames HEAD^1 HEAD)
+          echo "$files"
+          if [ -n "$files" ] && ! grep -qvE '^docs/|\.md$' <<< "$files"; then
+            echo "code=false" >> "$GITHUB_OUTPUT"
+            echo "Docs-only change: backend tests and the e2e suite are skipped." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "code=true" >> "$GITHUB_OUTPUT"
+          fi
+
   checks:
     name: Lint and format
     runs-on: ubuntu-latest
@@ -426,6 +461,11 @@ jobs:
 
   e2e:
     name: End-to-end tests (demo stack)
+    needs: changes
+    # Skipped only on a positive "docs only" from the job above. A skipped job
+    # passes its required check, so a classification that failed (and left
+    # the output empty) runs the job rather than skipping it.
+    if: ${{ !cancelled() && needs.changes.outputs.code != 'false' }}
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
@@ -553,6 +593,9 @@ jobs:
           retention-days: 7
 
   test:
+    needs: changes
+    # As for e2e: skipped only on a positive "docs only".
+    if: ${{ !cancelled() && needs.changes.outputs.code != 'false' }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     strategy:
