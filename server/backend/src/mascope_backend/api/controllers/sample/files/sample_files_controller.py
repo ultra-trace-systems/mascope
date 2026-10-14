@@ -2033,9 +2033,11 @@ async def get_sample_file_scans(
     # Step 3: Return the scans. The table is built whole and encoded on the
     # event loop, like any other route's body. With every entry of a row (92
     # on the largest measured) that costs about 1.2 s of jsonable_encoder per
-    # 10,000 scans, and near 170,000 scans its json.dumps passes the 5 s that
-    # get a worker killed (see get_sample_file_metadata). The longest file
-    # measured has 1,486 scans, and `fields` keeps a long one far below both.
+    # 10,000 scans, and near 170,000 scans its json.dumps, one call that no
+    # other thread of the worker runs beside, passes 5 s: the supervisor
+    # kills a worker that misses its 5 s health check, as it killed the ones
+    # rendering /metadata whole. The longest file measured has 1,486 scans,
+    # and `fields` keeps a long one far below both.
     results = len(table["stats_per_scan"])
     return {
         "message": f"Retrieved {results} scans of sample file '{filename}'.",
