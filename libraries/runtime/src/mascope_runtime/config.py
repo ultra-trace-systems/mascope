@@ -438,10 +438,11 @@ class BackendConfig(ModuleConfig):
     # not depend on the backend's role table.
     mfa_required_min_role: Optional[str] = None
     # Refuse bearer tokens for the pairable agent services (file-agent,
-    # tof-agent, export-agent) unless the token is bound to a registered
-    # device. Off by default: tokens issued before the device registry keep
-    # working until the deployment has (re-)paired every agent machine and
-    # turns this on. Pairing binds new tokens to a device automatically.
+    # instrument-agent, tof-agent, export-agent) unless the token is bound to
+    # a registered device. Off by default: tokens issued before the device
+    # registry keep working until the deployment has (re-)paired every agent
+    # machine and turns this on. Pairing binds new tokens to a device
+    # automatically.
     require_device_tokens: bool = False
     # What an m/z calibration below the quality bar does. "warn" (the
     # default) stores it verified with its reasons, so matching and peak

@@ -19,6 +19,7 @@ class AccessTokenConfig(BaseModel):
         "tof-agent",  # for TOF instrument agent
         "file-agent",  # for File instrument agent
         "export-agent",  # for CSV Export Agent
+        "instrument-agent",  # for the File Agent inside an instrument control program
     ]
     # Access token-based authentication settings for Jupyter library API access
     ACCESS_TOKEN_EXPIRATION_SECONDS: int = (

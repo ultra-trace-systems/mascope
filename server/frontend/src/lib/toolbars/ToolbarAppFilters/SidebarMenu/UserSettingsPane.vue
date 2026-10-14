@@ -73,6 +73,15 @@ const SERVICE_CONFIGS = [
     id: 'export-agent',
     label: 'CSV Export Agent',
     minRole: 200 // editor role_id
+  },
+  {
+    id: 'instrument-agent',
+    // The File Agent inside a program that controls the instrument. It pairs
+    // through the File Agent's own setup, so like the File Agent it has no use
+    // for a token minted here; the entry labels its paired machines.
+    pairedOnly: true,
+    label: 'Instrument Agent',
+    minRole: 200 // editor role_id
   }
 ]
 
