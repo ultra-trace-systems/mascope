@@ -16,7 +16,8 @@ import { useApp } from '@/stores'
 import { useMzFit } from '@/lib/mzFit'
 import { PaneSettingsCalibration } from '@/lib/panes'
 import { canCalibrateInstruments } from '@/lib/permissions'
-import { calibrationSegments, segmentCalibrationText } from '@/lib/calibrationSegments'
+import { segmentListItems, splitQualityIssues } from '@/lib/calibrationSegments'
+import { calibrationSettingsText } from '@/lib/calibrationSettings'
 
 const mzFit = useMzFit()
 const confirm = useConfirm()
@@ -95,20 +96,14 @@ const qualityIssues = computed(() => mzFit.current?.quality_issues ?? [])
 // read the same where this fit repeats the one applied. They differ where that
 // one was made at other settings - the pipeline widens the m/z error tolerance
 // when a fit ends in a warning - and then both are shown, each under its own
-// heading, so the reasons the badge points to are here too. A range that took
-// another's calibration unchanged stands out: nothing it measured checked it,
-// where one that took it across an overlap was put on the m/z of the ions both
-// ranges measure. Empty for a sample that is not stitched.
+// heading, so the reasons the badge points to are here too. A range below the
+// quality bar says why on its own line, and stands out, as does one that took
+// another's calibration unchanged (`segmentListItems`). Empty for a sample
+// that is not stitched.
 const segmentLists = computed(() => {
-  const listed = (mzCalibration) =>
-    calibrationSegments(mzCalibration).map((segment) => ({
-      key: segment.key,
-      text: segmentCalibrationText(segment),
-      borrowed: segment.source === 'borrowed'
-    }))
   const sample = batch.value ? previewSample.value : original.value
-  const applied = listed(sample?.mz_calibration)
-  const fitted = listed(mzFit.current)
+  const applied = segmentListItems(sample?.mz_calibration)
+  const fitted = segmentListItems(mzFit.current)
   const same =
     applied.length === fitted.length && applied.every((range, at) => range.text === fitted[at].text)
   if (applied.length === 0 || same) {
@@ -131,9 +126,21 @@ const qualityIssuesSummary = computed(() => {
     : batch.value
       ? 'this sample would be calibrated but excluded from matching'
       : 'saving accepts it, and matching will use it'
-  const reasons = qualityIssues.value.map((issue) => issue.message).join(' ')
-  return `Below the calibration quality bar – ${consequence}. ${reasons}`
+  // A scan range's issues are on its line in the list below, not repeated here
+  const { own, ranges } = splitQualityIssues(mzFit.current)
+  const reasons = own.map((issue) => ` ${issue.message}`).join('')
+  const marked =
+    ranges === 0
+      ? ''
+      : ` ${ranges === 1 ? 'One scan range misses it' : `${ranges} scan ranges miss it`}, marked below.`
+  return `Below the calibration quality bar – ${consequence}.${reasons}${marked}`
 })
+
+// The settings take room the calibrants' table needs, and are seldom changed:
+// folded, they are named in one line. They stay as they were left while the
+// dialog stays mounted.
+const settingsOpen = ref(false)
+const settingsSummary = computed(() => calibrationSettingsText(mzFit.mzCalibrationParams))
 
 const confirmMessage = computed(() => {
   if (batch.value) {
@@ -260,7 +267,7 @@ const calibration = computed(() => ({
   columns: [
     // A stitched sample's calibrants say which scan range each was found in
     ...((mzFit.stats ?? []).some((row) => row.segment_label)
-      ? [{ field: 'segment_label', label: 'Scan range' }]
+      ? [{ field: 'segment_label', label: 'Scan range [m/z]' }]
       : []),
     { field: 'mz', label: 'Isotope m/z' },
     { field: 'sample_peak_mz', label: 'Observed m/z' },
@@ -285,7 +292,9 @@ const calibration = computed(() => ({
 }))
 
 const columnFormatters = computed(() => ({
-  segment_label: { format: (label) => label },
+  // Without the unit the header carries, and on one line (`.range-cell`):
+  // wrapped, a label made each row three lines tall
+  segment_label: { format: (label) => label.replace(/^m\/z /, '') },
   mz: num.mz,
   sample_peak_mz: num.mz,
   calibration_mz: num.mz,
@@ -310,8 +319,32 @@ const formatter = new Intl.NumberFormat('en-US', {
   >
     <div class="dialog-content">
       <section class="settings-section">
-        <h3>Calibration Settings</h3>
-        <PaneSettingsCalibration v-model:mzCalibrationParams="mzFit.mzCalibrationParams" />
+        <div class="settings-heading">
+          <h3>
+            <button
+              type="button"
+              class="settings-toggle"
+              data-testid="calibration-settings-toggle"
+              :aria-expanded="settingsOpen"
+              @click="settingsOpen = !settingsOpen"
+            >
+              <span :class="['pi', settingsOpen ? 'pi-chevron-down' : 'pi-chevron-right']" />
+              Calibration Settings
+            </button>
+          </h3>
+          <span
+            v-if="!settingsOpen"
+            class="settings-summary"
+            data-testid="calibration-settings-summary"
+            :title="settingsSummary"
+          >
+            {{ settingsSummary }}
+          </span>
+        </div>
+        <PaneSettingsCalibration
+          v-show="settingsOpen"
+          v-model:mzCalibrationParams="mzFit.mzCalibrationParams"
+        />
       </section>
       <section class="results-section">
         <div class="message-container">
@@ -356,7 +389,7 @@ const formatter = new Intl.NumberFormat('en-US', {
                   <li
                     v-for="range in list.ranges"
                     :key="range.key"
-                    :class="{ borrowed: range.borrowed }"
+                    :class="{ flagged: range.flagged }"
                   >
                     {{ range.text }}
                   </li>
@@ -385,7 +418,10 @@ const formatter = new Intl.NumberFormat('en-US', {
               >
                 <template #body="{ data }">
                   <span
-                    :class="data.type == 'summary' ? 'summary-cell' : ''"
+                    :class="[
+                      data.type == 'summary' ? 'summary-cell' : '',
+                      col.field === 'segment_label' ? 'range-cell' : ''
+                    ]"
                     v-if="data[col.field] !== null && data[col.field] !== undefined"
                     >{{
                       columnFormatters[col.field]
@@ -508,6 +544,46 @@ const formatter = new Intl.NumberFormat('en-US', {
   font-weight: bold;
 }
 
+.calibration-table :deep(.range-cell) {
+  white-space: nowrap;
+}
+
+.settings-heading {
+  display: flex;
+  align-items: baseline;
+  gap: 1rem;
+  min-width: 0;
+}
+
+.settings-heading h3 {
+  flex-shrink: 0;
+}
+
+.settings-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  white-space: nowrap;
+  padding: 0;
+  border: none;
+  background: none;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+.settings-toggle .pi {
+  font-size: 0.75rem;
+}
+
+.settings-summary {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.85rem;
+  color: var(--p-text-muted-color);
+}
+
 .dialog-actions {
   display: flex;
   justify-content: flex-end;
@@ -539,7 +615,7 @@ const formatter = new Intl.NumberFormat('en-US', {
   padding-inline-start: 1.2rem;
 }
 
-.segment-list .borrowed {
+.segment-list .flagged {
   color: var(--state-warning);
 }
 

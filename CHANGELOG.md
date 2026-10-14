@@ -135,9 +135,12 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   calibration it took and over how many shared ions, with the reason the
   fit recorded for it and how far that moves the range. Where the
   calibration applied reads otherwise than the fit the dialog previews, as
-  one the pipeline made at a wider tolerance does, it lists both. The
-  calibrants say which range each was found in, and the badge names the
-  ranges that were not fitted on calibrants of their own.
+  one the pipeline made at a wider tolerance does, it lists both. A range
+  below the quality bar says why on its own line, in the warning colour,
+  rather than again in the warning above the list. The calibrants say which
+  range each was found in, and the badge names the ranges that were not
+  fitted on calibrants of their own. To leave the calibrants' table more
+  room, the dialog folds its settings into one line until they are opened.
 
 - **A sample stitched from several scan ranges shows where they meet.**
   With `composite_scan_streams` on, the spectrum of such a sample is one

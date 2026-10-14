@@ -180,7 +180,7 @@ describe('DialogCalibration', () => {
     ])
     // The range that took another's calibration unchanged stands out; the one
     // that took it across an overlap was checked against the ions it measures
-    expect(listed.map((item) => item.classes('borrowed'))).toEqual([false, false, true])
+    expect(listed.map((item) => item.classes('flagged'))).toEqual([false, false, true])
     // A sample with no record of its ranges shows the fit's alone, unheaded
     expect(lists(wrapper).map((list) => list.heading)).toEqual([null])
   })
@@ -248,12 +248,66 @@ describe('DialogCalibration', () => {
 
     const wrapper = mountDialog()
 
-    expect(headers(wrapper)[0]).toBe('Scan range')
+    expect(headers(wrapper)[0]).toBe('Scan range [m/z]')
     expect(headers(wrapper)).toHaveLength(8)
     // The range is shown by its name, and the summary row has none
     const table = wrapper.findComponent({ name: 'DataTable' }).text()
-    expect(table).toContain('m/z 40-138')
+    // without the unit the header carries, on one line
+    expect(table).toContain('40-138')
+    expect(table).not.toContain('m/z 40-138')
+    expect(wrapper.find('.range-cell').text()).toBe('40-138')
     expect(table).not.toContain('NaN')
+  })
+
+  it('names a scan range below the quality bar once, on its own line', () => {
+    mocks.fit = fitted({ n_points: 2, segments: SEGMENTS }, [point(), SUMMARY])
+    mocks.fit.current.quality_issues = [
+      {
+        code: 'points',
+        message:
+          'm/z 40-138: Fitted on 1 calibration point but moves the m/z axis 11.93 ppm from ' +
+          'the acquisition axis; a fit nothing corroborates is trusted with a correction of ' +
+          'at most 10 ppm.',
+        segment: SEGMENTS[0].key
+      },
+      { code: 'residual', message: 'Mean m/z error after calibration is 1.20 ppm (limit 1 ppm).' }
+    ]
+
+    const wrapper = mountDialog()
+    const warning = wrapper.find('[data-testid="calibration-quality-issues"]').text()
+    const listed = ranges(wrapper)
+
+    // The range's reason is its line, named once, and the line stands out
+    expect(listed[0].text()).toBe(
+      'm/z 40-138: fitted on 1 calibration point but moves the m/z axis 11.93 ppm from the ' +
+        'acquisition axis; a fit nothing corroborates is trusted with a correction of at most ' +
+        '10 ppm.'
+    )
+    expect(listed.map((item) => item.classes('flagged'))).toEqual([true, false, true])
+    // The warning keeps what is the fit's own, and points to the list
+    expect(warning).toContain('Mean m/z error after calibration is 1.20 ppm (limit 1 ppm).')
+    expect(warning).toContain('One scan range misses it, marked below.')
+    expect(warning).not.toContain('m/z 40-138')
+  })
+
+  it('folds the settings, named in one line, until they are asked for', async () => {
+    mocks.fit = fitted({ n_points: 1 }, [point(), SUMMARY])
+    mocks.fit.mzCalibrationParams = { match_score_min: 0, refine_window: 50 }
+
+    const wrapper = mountDialog()
+    const toggle = wrapper.find('[data-testid="calibration-settings-toggle"]')
+    const pane = () => wrapper.findComponent({ name: 'PaneSettingsCalibration' })
+    const summary = () => wrapper.find('[data-testid="calibration-settings-summary"]')
+
+    expect(toggle.attributes('aria-expanded')).toBe('false')
+    expect(pane().element.style.display).toBe('none')
+    expect(summary().text()).toContain('Min. match score 0 · Refine window 50 ppm')
+
+    await toggle.trigger('click')
+
+    expect(toggle.attributes('aria-expanded')).toBe('true')
+    expect(pane().element.style.display).toBe('')
+    expect(summary().exists()).toBe(false)
   })
 
   it('shows a sample that is not stitched as before', () => {
