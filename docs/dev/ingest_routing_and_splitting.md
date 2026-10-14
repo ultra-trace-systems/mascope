@@ -1630,7 +1630,9 @@ for the whole store. What step 6 still holds is listed in section 10.
     that reading from another stream. "Enough" is what a file needs, one
     calibrant for an Orbitrap, and each fitted stream is judged by the
     file's quality bar on its own block, so a stream anchored to a wrong
-    peak is an issue of the file that names the stream. A stream fitted on
+    peak is an issue of the file that names the stream. With one stream
+    fitted, the file's block is over that stream's calibrants alone, so an
+    issue of both is reported once, as the stream's. A stream fitted on
     too few calibrants to vouch for its own correction - one point, or
     isotopes of one ion - is vouched for by another stream of the file
     that can (calibrants of several ions, clearing the bar on its own)

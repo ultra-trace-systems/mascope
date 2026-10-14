@@ -1787,6 +1787,10 @@ def calibration_quality_issues(quality: dict | None, filename: str) -> list[dict
     factor from a neighbour has no fit to judge; how it came by the factor
     is in the block.
 
+    With one stream fitted on calibrants of its own, the file's calibrants
+    are that stream's, so an issue of the file that the stream has too is
+    reported once, as the stream's.
+
     A stream fitted on too few calibrants to vouch for its own correction -
     one point, or isotopes of one ion - is vouched for by another stream of
     the file that can: one fitted on calibrants of several ions that clears
@@ -1822,7 +1826,12 @@ def calibration_quality_issues(quality: dict | None, filename: str) -> list[dict
         vouched = correction is not None and any(
             abs(correction - other) <= limit for other in vouching
         )
-        for issue in _quality_block_issues(block, filename, vouched=vouched):
+        own = _quality_block_issues(block, filename, vouched=vouched)
+        if len(fitted) == 1:
+            # The file's block is then over this stream's rows alone, so
+            # what both say is said where the stream is named
+            issues = [issue for issue in issues if issue not in own]
+        for issue in own:
             issues.append(
                 {
                     "code": issue["code"],
