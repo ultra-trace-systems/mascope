@@ -129,6 +129,18 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   peak marks the file's calibration as below the bar, naming the range.
   Files that are not stitched are calibrated exactly as before.
 
+- **A scan range calibrated on a single calibrant is backed by the other
+  ranges of its file.** Each range of a stitched file is held to the
+  quality bar on its own calibrants, and a fit on one calibrant is trusted
+  to move the axis at most 10 ppm. On an instrument whose axis is further
+  off than that, every file with such a range was marked below the bar,
+  though the range read the same offset as the file's other ranges, within
+  a ppm. Such a range now clears the bar where another range of the file,
+  fitted on calibrants of two or more ions and clearing the bar itself,
+  makes a correction within 2 ppm of its own, and the file shows the drift
+  badge it showed when fitted as one. A file calibrated already keeps its
+  badge until it is calibrated again.
+
 - **The calibration dialog and the sample's calibration badge say how each
   scan range of a stitched sample was calibrated.** The dialog lists the
   ranges above the calibrants: fitted on how many calibrants, or whose

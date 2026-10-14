@@ -1630,8 +1630,16 @@ for the whole store. What step 6 still holds is listed in section 10.
     that reading from another stream. "Enough" is what a file needs, one
     calibrant for an Orbitrap, and each fitted stream is judged by the
     file's quality bar on its own block, so a stream anchored to a wrong
-    peak is an issue of the file that names the stream. A stream that
-    yields no fit takes a factor from one that has:
+    peak is an issue of the file that names the stream. A stream fitted on
+    too few calibrants to vouch for its own correction - one point, or
+    isotopes of one ion - is vouched for by another stream of the file
+    that can (calibrants of several ions, clearing the bar on its own)
+    when their corrections lie within `STREAM_CORROBORATION_PPM`, 2 ppm:
+    both then read the instrument's offset. Without it, an instrument
+    22 ppm off turned every such file from the drift badge to the
+    warning badge, though its one-calibrant ranges read 0.1 to 0.8 ppm
+    from the others. A stream that yields no fit takes a factor from one
+    that has:
     - across an overlap that shares at least five ions
       (`OVERLAP_SHIFT_MIN_SHARED`; the median of fewer is too much one
       pair's), everything the fitted streams reach by one overlap first,
