@@ -279,10 +279,15 @@ a batch — sample count, date range, ionization mode, associated collections,
 match status. It is the model's orientation tool and must stay cheap enough to
 call freely.
 
-`max_rows` replaces `confirm_above` (which the toolkit always disables): the
-toolkit estimates result size from sample counts before loading, and exceeding
-the cap raises with the actual count so the model narrows the query itself.
-Loads never prompt.
+`max_rows` replaces `confirm_above` (which the toolkit always disables). Sample
+counts give only an estimate: samples carry different numbers of peaks,
+`matches=True` multiplies rows, and the peak endpoint has no row limit of its
+own. So the cap is enforced during the load, not before it: the toolkit
+estimates from sample counts first and refuses an obviously oversized query
+outright; otherwise it loads sample by sample through the SDK's concurrent
+fetch, keeps a running row count, and stops at the cap, raising with the count
+reached and the samples left unloaded so the model narrows the query itself.
+A Frame above the cap is never materialised. Loads never prompt.
 
 ### 3.3 Tool surface: the oracle
 
@@ -450,6 +455,15 @@ apply(plan_id: str, confirm_token: str) -> Receipt
 
 - `apply` is the sole mutating function: one audit point, one approval point,
   one place to stamp the service name.
+- **Approval is consumed, and `apply` is idempotent.** Before any write, the
+  plan's stored state moves from pending to applying by a compare-and-set, so
+  two overlapping calls cannot both pass: the first to win writes, the other
+  waits for its Receipt. A later `apply` with the same plan and token returns
+  the existing Receipt without writing again, so a retry after a lost response
+  is safe. A plan that fails part-way records in its Receipt which changes
+  applied and is not re-appliable; the operator plans again from the new
+  state. Both transports inherit this from the toolkit, so neither can repeat
+  a write.
 - **The confirm token is minted by the transport, never the model.** Near-term
   the MCP `apply` tool renders the plan and the Claude Code permission prompt
   is the human gate; the token binds the approval to the specific plan
