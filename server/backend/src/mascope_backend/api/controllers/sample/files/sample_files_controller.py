@@ -1873,13 +1873,19 @@ def _metadata_body(
     try:
         yield from centroids
     except Exception:
-        # The status line left with the first piece, so the client can only
-        # be told by a body that ends short: raising drops the connection
-        # without closing the body. Logged here because nothing else will -
-        # no handler is left to report an error after the response started.
+        # The status line left with the first piece, so a 200 it stays. What
+        # tells the client is the document: it stops inside centroids_meta,
+        # unclosed, and no parser reads it as complete. The response itself
+        # is finished properly all the same - the app's http middleware keeps
+        # the error, ends the body with its final chunk and only then raises
+        # it again - so a client that saves the body without parsing it, the
+        # proxy and the access log all see a success. Logged here because
+        # nothing else will: no handler is left to answer an error once the
+        # response has started.
         runtime.logger.exception(
             f"Reading the centroids of sample file '{filename}' failed part "
-            "way through its metadata response; the response was cut short"
+            "way through its metadata response; the response went out as a "
+            "200 whose JSON stops there"
         )
         raise
     yield "}"
