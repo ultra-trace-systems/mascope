@@ -1804,6 +1804,34 @@ async def test_processing_on_request_leaves_an_ambiguous_name_its_samples(
 
 
 @pytest.mark.asyncio
+async def test_processing_on_request_keeps_a_choice_for_an_ambiguous_name(
+    async_session_factory, setup, admin_client, mode_with_token, monkeypatch
+):
+    """Choosing its chemistry is the way out the refusal above offers, so
+    the file it was chosen for is started under that choice, ahead of the
+    name, as re-processing starts it."""
+    _one, token_one = await mode_with_token("-")
+    _two, token_two = await mode_with_token("-")
+    chosen = await _file(
+        async_session_factory,
+        f"{token_one}_{token_two}_chosen",
+        "-",
+        sample_under=(setup["batch"], setup["negative"]),
+        bound_by="explicit",
+    )
+    spawn = AsyncMock()
+    monkeypatch.setattr(sample_files_routes, "spawn_auto_process_sample_file", spawn)
+
+    resp = await admin_client.post(f"/api/sample/files/{chosen}/process")
+
+    assert resp.status_code == 202, resp.text
+    assert spawn.await_args.kwargs["ionization_mode_ids"] == [setup["negative"]]
+    assert spawn.await_args.kwargs["kept_provenance"] == {
+        setup["negative"]: process_service.ItemProvenance("explicit")
+    }
+
+
+@pytest.mark.asyncio
 async def test_processing_on_request_fails_when_its_samples_cannot_be_counted(
     async_session_factory, setup, admin_client, monkeypatch
 ):
