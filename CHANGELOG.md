@@ -54,7 +54,11 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   name of its own, so Paired machines lists such a machine as an Instrument
   Agent rather than a File Agent. `require_device_tokens` covers it as it
   covers the File Agent, and like the File Agent it is not offered a token
-  by hand in Settings.
+  by hand in Settings. In `mascope-file-agent`, setup pairs under the
+  service the process named in `identity()`, where it asked for
+  `file-agent` whatever the name; and when the server refuses to pair, it
+  prints the server's reason, which from a server older than
+  `instrument-agent` names the service.
 
 ### Changed
 

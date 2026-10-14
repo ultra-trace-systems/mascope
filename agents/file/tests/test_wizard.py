@@ -13,7 +13,8 @@ import time
 
 import pytest
 
-from mascope_file_agent import __version__, wizard
+import mascope_sdk
+from mascope_file_agent import __version__, identity, wizard
 
 
 class FakeResponse:
@@ -768,6 +769,54 @@ def test_start_pairing_unsupported_server(monkeypatch, capsys):
     _post_sequence(monkeypatch, [FakeJsonResponse(404)])
     assert wizard.start_pairing("mascope.example.com") is None
     assert "does not support pairing" in capsys.readouterr().out
+
+
+def test_pairing_asks_for_the_service_the_process_said_it_is(monkeypatch):
+    """A program that embeds the agent pairs under the name it gave identity().
+
+    Every later request reports that name, and the server accepts a device
+    token under its own service only: paired under any other, the machine
+    would hold a credential none of its requests could use.
+    """
+    identity("instrument-agent", version="6.0.0")
+    calls = _post_sequence(monkeypatch, [_started()])
+
+    wizard.start_pairing("mascope.example.com")
+
+    assert calls[0]["json"]["service_name"] == "instrument-agent"
+    # The name the paired credential is then presented under.
+    assert mascope_sdk.agent_headers("paired-token")["X-Service-Name"] == (
+        "instrument-agent"
+    )
+
+
+def test_a_refused_pairing_says_why(monkeypatch, capsys):
+    # What a server older than the service a process pairs as answers.
+    reason = (
+        "Validation error on route POST /api/auth/pairing/start. Value error, "
+        "Service 'instrument-agent' cannot be paired."
+    )
+    identity("instrument-agent")
+    _post_sequence(
+        monkeypatch, [FakeJsonResponse(422, {"error": reason, "detail": {}})]
+    )
+
+    assert wizard.start_pairing("mascope.example.com") is None
+    assert f"The server refused to pair this machine: {reason}" in (
+        capsys.readouterr().out
+    )
+
+
+@pytest.mark.parametrize(
+    "body", [{"detail": {"error_id": "abc"}}, {"error": "  "}, ["not", "an", "object"]]
+)
+def test_a_refusal_without_a_reason_is_reported_by_its_status(
+    monkeypatch, capsys, body
+):
+    _post_sequence(monkeypatch, [FakeJsonResponse(422, body)])
+
+    assert wizard.start_pairing("mascope.example.com") is None
+    assert "Unexpected response from the server (HTTP 422)" in capsys.readouterr().out
 
 
 def test_a_long_agent_version_is_clipped_before_pairing(monkeypatch):

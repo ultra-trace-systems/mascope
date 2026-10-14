@@ -39,6 +39,12 @@ agent.start()  # returns; the agent runs on threads of its own
 agent.stop(timeout=30)
 ```
 
+- `identity()` names the service the machine pairs and uploads as.
+  `file-agent` is the File Agent's own; a program that controls the
+  instrument passes `instrument-agent`, so that Mascope lists its machines
+  apart from standalone File Agents. A Mascope server older than the
+  `instrument-agent` name refuses to pair under it, and the setup prints the
+  server's reason.
 - `AgentSettings` holds the keys of the `[file-agent]` section of the File
   Agent's `config.toml`, so a configuration written by the program is read as
   it is. `AgentSettings(host=..., access_token=..., source=..., instrument=...)`
