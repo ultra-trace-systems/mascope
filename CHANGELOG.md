@@ -106,6 +106,12 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 ### Fixed
 
+- **Ion focus draws a sample that has no detected peaks.** Opening ion
+  focus on a sample whose peak list is empty, such as a TOF file in which
+  peak detection found nothing, failed with an unexpected error instead of
+  drawing the sample's spectrum. The main isotope now takes its height from
+  the spectrum, as it already did when no peak lay near it.
+
 - **An Orbitrap acquisition that was never finished fails as one.** An
   acquisition that is aborted before it records a scan leaves a small raw
   file holding the instrument method and no index of scans. The reader

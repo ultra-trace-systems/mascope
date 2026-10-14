@@ -408,18 +408,26 @@ def _process_isotope(
         averaged_spec_mz = isotope_averaged_spec.mz.values.astype(np.float32)
         averaged_spec_y = isotope_averaged_spec.values.astype(np.float32)
         if ctx.index == 0:
-            # Main isotope: determine main isotope height
-            try:
-                filtered_isotope_peak_heights = filter_peaks(
-                    isotope_peak_heights, intensity=ctx.peak_min_intensity
-                )
-                peak = filtered_isotope_peak_heights.sel(mz=iso.mz, method="nearest")
-                isotope_result.main_isotope_height = peak.item()
-            except KeyError:
-                # Fall-back if no peak is found. The height goes into a trace
+            # Main isotope: its height is the nearest detected peak's.
+            main_isotope_height = None
+            if isotope_peak_heights is not None:
+                try:
+                    filtered_isotope_peak_heights = filter_peaks(
+                        isotope_peak_heights, intensity=ctx.peak_min_intensity
+                    )
+                    peak = filtered_isotope_peak_heights.sel(
+                        mz=iso.mz, method="nearest"
+                    )
+                    main_isotope_height = peak.item()
+                except KeyError:
+                    pass
+            if main_isotope_height is None:
+                # Fall-back when no peak is found near it, or when the sample
+                # has no detected peaks at all. The height goes into a trace
                 # as a bare number, and the JSON encoder takes a float but
                 # not the numpy float32 the profile is held in.
-                isotope_result.main_isotope_height = float(np.max(averaged_spec_y))
+                main_isotope_height = float(np.max(averaged_spec_y))
+            isotope_result.main_isotope_height = main_isotope_height
 
         # Calculate expected height based on relative abundance
         isotope_expected_height = isotope_result.main_isotope_height * (
