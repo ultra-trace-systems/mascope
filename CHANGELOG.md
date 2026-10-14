@@ -426,6 +426,15 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   new fit started, which waits on fetching that sample's settings; if the
   fetch failed, it stayed. It now shows no fit until the sample's own.
 
+- **The composition search no longer fails on a sample with no ionization
+  mode.** Opening a sample in the Sample tab reads the mechanisms of its
+  ionization mode for the peak search, and that read assumed every sample has
+  a mode the browser holds. One that does not - its mode has been deleted,
+  or it is an MS2 sample filed without a chemistry - threw an error in the
+  pane instead. Such a sample now simply has no mechanisms to search under:
+  the search waits until some are picked in the pane, rather than being sent
+  with none and refused.
+
 ## [1.11.0] - 2026.10.09
 
 ### Added
