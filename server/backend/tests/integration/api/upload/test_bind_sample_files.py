@@ -32,14 +32,26 @@ before it clears anything of it, so a file it parks keeps its samples.
 """
 
 import asyncio
+import json
+import os
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 from uuid import uuid4
 
+import numpy as np
 import pytest
 import pytest_asyncio
+import xarray as xr
 from sqlalchemy import delete, select
 
+import mascope_file.io as m_io
+import mascope_file.name as m_name
+from mascope_backend.api.controllers.calibration import calibration_controller
+from mascope_backend.api.controllers.calibration.lib.calibration_mz_fit import (
+    OrbiCalibrationHandler,
+)
+from mascope_backend.api.controllers.sample.files import sample_files_controller
 from mascope_backend.api.controllers.sample.files.process import (
     service as process_service,
 )
@@ -53,14 +65,20 @@ from mascope_backend.api.models.sample.files.config import STALLED_AFTER
 from mascope_backend.api.routes.sample.files import sample_files_routes
 from mascope_backend.db import (
     Dataset,
+    IonizationMechanism,
     IonizationMode,
+    MatchIsotope,
     SampleBatch,
     SampleFile,
     SampleItem,
+    TargetCompound,
+    TargetIon,
+    TargetIsotope,
     Workspace,
     WorkspaceMember,
 )
 from mascope_backend.db.id import gen_id
+from mascope_file.runtime import runtime as file_runtime
 
 
 INSTRUMENT = "bind-orbi"
@@ -1870,6 +1888,313 @@ async def test_one_files_failed_detection_does_not_stop_the_files_after_it(
     assert await _samples_of(async_session_factory, failed_for[0]) == 1
     assert await _status(async_session_factory, failed_for[0]) == "failed"
     assert await _status(async_session_factory, other) == "queued"
+
+
+# ---------------------------------------------------------------------------
+# ...and keeps the calibration its samples were matched on
+# ---------------------------------------------------------------------------
+
+#: The one peak of the calibrated file, on its acquisition axis, and the
+#: factor its samples were matched on: large enough that a store left on the
+#: acquisition axis is far off every match.
+_PEAK_MZ = 300.0
+_FACTOR = 1 + 50e-6
+_SCAN_TIMES = np.arange(6, dtype=float)
+
+
+@pytest.fixture
+def filestore(tmp_path, monkeypatch):
+    """Resolve sample file paths inside an empty temporary filestore."""
+    monkeypatch.setattr(
+        file_runtime, "filestore", lambda *parts: os.path.join(tmp_path, *parts)
+    )
+    # Its row is updated as a calibration updates it, which tells browsers
+    monkeypatch.setattr(sample_files_controller, "emit_record_updated", AsyncMock())
+    return tmp_path
+
+
+async def _calibrated_file(async_session_factory, setup, name: str) -> SimpleNamespace:
+    """A file with a sample, calibrated, whose sample's peak is matched.
+
+    Its stores are an orbi_zarr file's - a stored signal and a peak store of
+    one peak - written on the acquisition axis and calibrated by the
+    handler, as the pipeline calibrates a file. Its database record is the
+    fit with its quality verdict beside it, and the match records the peak's
+    m/z on the calibrated axis.
+    """
+    sample_file_id = await _file(
+        async_session_factory,
+        name,
+        "-",
+        sample_under=(setup["batch"], setup["negative"]),
+    )
+    filename = f"{INSTRUMENT}_{name}.raw"
+    sample_dir = m_name.parse_path_from_item_filename(filename)
+    os.makedirs(sample_dir)
+    with open(os.path.join(sample_dir, ".props"), "w") as f:
+        json.dump({"instrument_type": "orbi", "mz_calibration": None}, f)
+    axis = np.round(np.linspace(_PEAK_MZ - 0.01, _PEAK_MZ + 0.01, 21), 6)
+    profile = 1e6 * np.exp(-0.5 * ((axis - _PEAK_MZ) / 0.002) ** 2)
+    xr.Dataset(
+        {"signal": (("mz", "time"), np.repeat(profile[:, None], _SCAN_TIMES.size, 1))},
+        coords={"mz": axis, "time": _SCAN_TIMES},
+    ).to_zarr(os.path.join(sample_dir, "signal.zarr"))
+    heights = np.full((1, _SCAN_TIMES.size), 1e6)
+    xr.Dataset(
+        data_vars={
+            "is_satellite": ("mz", [False]),
+            "is_weak": ("mz", [False]),
+            "is_timeseries_computed": ("mz", [True]),
+            "sparsity": ("mz", [0.0]),
+            "peak_areas": (("mz", "time"), heights),
+            "peak_heights": (("mz", "time"), heights),
+            "sum_peak_areas": ("mz", heights.sum(axis=1)),
+            "sum_peak_heights": ("mz", heights.sum(axis=1)),
+            "signal_to_noise": ("mz", [1000.0]),
+            "polarity": ("mz", np.array(["-"], dtype="<U1")),
+        },
+        coords={
+            "mz": [_PEAK_MZ],
+            "time": _SCAN_TIMES,
+            "tof": ("mz", [0.0]),
+            "peak_id": ("mz", ["peak_0000"]),
+        },
+    ).to_zarr(os.path.join(sample_dir, "peak_timeseries.zarr"))
+    await OrbiCalibrationHandler(filename).apply(
+        {
+            "mode": "one-point",
+            "par": {
+                "old_factor": 1.0,
+                "old_factor_scaling": _FACTOR,
+                "calibration_factor": _FACTOR,
+            },
+        }
+    )
+    stored = m_io.read_props(filename)["mz_calibration"]
+    recorded = {**stored, "status": "ok", "verified": True, "quality_gate": "warn"}
+    calibrated_mz = float(m_io.load_peak_data(filename).mz.values[0])
+
+    ids = SimpleNamespace(
+        mechanism=gen_id(16), compound=gen_id(16), ion=gen_id(16), isotope=gen_id(16)
+    )
+    async with async_session_factory() as session:
+        row = await session.get(SampleFile, sample_file_id)
+        row.mz_calibration = recorded
+        sample_item_id = await session.scalar(
+            select(SampleItem.sample_item_id).where(
+                SampleItem.sample_file_id == sample_file_id
+            )
+        )
+        session.add(
+            IonizationMechanism(
+                ionization_mechanism_id=ids.mechanism,
+                ionization_mechanism_polarity="-",
+                ionization_mechanism=f"[M-H]- {ids.mechanism}",
+            )
+        )
+        session.add(
+            TargetCompound(
+                target_compound_id=ids.compound,
+                target_compound_name=f"Bind matched {ids.compound}",
+                target_compound_formula="C6H12O6",
+            )
+        )
+        await session.flush()
+        session.add(
+            TargetIon(
+                target_ion_id=ids.ion,
+                target_compound_id=ids.compound,
+                ionization_mechanism_id=ids.mechanism,
+                target_ion_formula="C6H11O6-",
+            )
+        )
+        await session.flush()
+        session.add(
+            TargetIsotope(
+                target_isotope_id=ids.isotope,
+                target_ion_id=ids.ion,
+                target_isotope_formula="C6H11O6-",
+                mz=calibrated_mz,
+                relative_abundance=1.0,
+                resolution="HIGH",
+            )
+        )
+        await session.flush()
+        session.add(
+            MatchIsotope(
+                match_isotope_id=gen_id(32),
+                target_isotope_id=ids.isotope,
+                sample_item_id=sample_item_id,
+                sample_peak_id="peak_0000",
+                sample_peak_mz=calibrated_mz,
+                sample_peak_intensity=6e6,
+                sample_peak_intensity_relative=1.0,
+                sample_peak_tof=0.0,
+                match_abundance_error=0.0,
+                match_mz_error=0.0,
+                match_score=1.0,
+                match_isotope_utc_created=_NOW,
+            )
+        )
+        await session.commit()
+    return SimpleNamespace(
+        sample_file_id=sample_file_id,
+        filename=filename,
+        stored=stored,
+        recorded=recorded,
+        targets=ids,
+    )
+
+
+async def _delete_targets(async_session_factory, ids: SimpleNamespace) -> None:
+    """Delete the target rows :func:`_calibrated_file` seeded; its matches go
+    with them."""
+    async with async_session_factory() as session:
+        await session.execute(
+            delete(TargetCompound).where(
+                TargetCompound.target_compound_id == ids.compound
+            )
+        )
+        await session.execute(
+            delete(IonizationMechanism).where(
+                IonizationMechanism.ionization_mechanism_id == ids.mechanism
+            )
+        )
+        await session.commit()
+
+
+async def _kept_matches(async_session_factory, sample_file_id: str) -> list:
+    """The peak id and m/z of each isotope match of the file's samples."""
+    async with async_session_factory() as session:
+        return (
+            await session.execute(
+                select(MatchIsotope.sample_peak_id, MatchIsotope.sample_peak_mz)
+                .join(
+                    SampleItem, SampleItem.sample_item_id == MatchIsotope.sample_item_id
+                )
+                .where(SampleItem.sample_file_id == sample_file_id)
+            )
+        ).all()
+
+
+async def _recorded_calibration(async_session_factory, sample_file_id: str):
+    async with async_session_factory() as session:
+        return await session.scalar(
+            select(SampleFile.mz_calibration).where(
+                SampleFile.sample_file_id == sample_file_id
+            )
+        )
+
+
+@pytest.mark.asyncio
+async def test_a_file_whose_peaks_cannot_be_detected_again_keeps_its_calibration(
+    async_session_factory, setup, steps, filestore, monkeypatch
+):
+    """Its samples were matched on the calibration the re-processing reset
+    ahead of the detection, and a detection that fails leaves the peak store
+    as it was: on the acquisition axis the reset left. The calibration goes
+    back on, so that the store, both of the file's records and the matches
+    of the samples it keeps agree - as a parked file keeps the calibration
+    its samples were matched on."""
+    file = await _calibrated_file(
+        async_session_factory, setup, f"2026.09.01_12h00m00s_{uuid4().hex[:8]}"
+    )
+    try:
+        # The reset itself, not the stand-in: it is what moves the axis
+        monkeypatch.setattr(
+            process_service,
+            "reset_mz_calibration",
+            calibration_controller.reset_mz_calibration,
+        )
+        steps.detection_error = OSError("/srv/filestore/site/file: No space left")
+
+        with pytest.raises(Exception, match="could not be detected again") as failed:
+            await process_service.re_process_sample_files(
+                sample_file_ids=[file.sample_file_id]
+            )
+
+        assert "could not be put back" not in _report(failed)
+        assert await _status(async_session_factory, file.sample_file_id) == "failed"
+        # Both records as they were
+        assert m_io.read_props(file.filename)["mz_calibration"] == file.stored
+        assert (
+            await _recorded_calibration(async_session_factory, file.sample_file_id)
+            == file.recorded
+        )
+        # The store on the factor they name, and the kept matches on the store
+        store_mz = m_io.load_peak_data(file.filename).mz.values
+        assert store_mz == pytest.approx([_PEAK_MZ * _FACTOR], rel=1e-12)
+        matches = await _kept_matches(async_session_factory, file.sample_file_id)
+        assert [peak_id for peak_id, _ in matches] == ["peak_0000"]
+        assert [mz for _, mz in matches] == pytest.approx(store_mz.tolist(), rel=1e-12)
+    finally:
+        await _delete_targets(async_session_factory, file.targets)
+
+
+@pytest.mark.asyncio
+async def test_a_calibration_that_cannot_be_put_back_is_reported_and_not_raised(
+    async_session_factory, setup, steps, monkeypatch
+):
+    """The file's status and the report both say so, and the files after it
+    in the batch are re-processed: one file's failure, as the detection's
+    own is. The restore's own error stays in the log."""
+    first = await _file(
+        async_session_factory,
+        "unrestored",
+        "-",
+        sample_under=(setup["batch"], setup["negative"]),
+    )
+    second = await _file(
+        async_session_factory,
+        "after-it",
+        "-",
+        sample_under=(setup["batch"], setup["negative"]),
+    )
+    failed_for: list[str] = []
+    cleared = calibration_controller.ClearedMzCalibration(
+        stored={"mode": "one-point", "par": {"calibration_factor": _FACTOR}},
+        recorded={"mode": "one-point", "par": {"calibration_factor": _FACTOR}},
+    )
+
+    async def reset(sample_file):
+        steps.done.append("reset the calibration")
+        return cleared
+
+    async def detect(sample_file, per_stream):
+        if not failed_for:
+            failed_for.append(sample_file.sample_file_id)
+            raise OSError("No space left")
+        steps.done.append("detected per stream")
+
+    restore = AsyncMock(side_effect=OSError("/srv/filestore/site/file: read-only"))
+    warned: list[str] = []
+    warn = process_service.raise_api_warning
+
+    def reported(message, *args, **kwargs):
+        warned.append(message)
+        warn(message, *args, **kwargs)
+
+    monkeypatch.setattr(process_service, "reset_mz_calibration", reset)
+    monkeypatch.setattr(process_service, "redetect_peaks", detect)
+    monkeypatch.setattr(process_service, "restore_mz_calibration", restore)
+    monkeypatch.setattr(process_service, "raise_api_warning", reported)
+
+    # A partial result is a warning, which the task reports and does not raise
+    await process_service.re_process_sample_files(sample_file_ids=[first, second])
+
+    restore.assert_awaited_once()
+    assert restore.await_args.args[1] is cleared
+    assert steps.done.count("ran the pipeline") == 1
+    other = second if failed_for == [first] else first
+    assert await _status(async_session_factory, other) == "queued"
+    assert await _status(async_session_factory, failed_for[0]) == "failed"
+    detail = await _detail(async_session_factory, failed_for[0])
+    assert "could not be detected again" in detail
+    assert "could not be put back" in detail
+    assert "/srv/filestore" not in detail
+    assert len(warned) == 1
+    assert "could not be put back" in warned[0]
+    assert "/srv/filestore" not in warned[0]
 
 
 # ---------------------------------------------------------------------------

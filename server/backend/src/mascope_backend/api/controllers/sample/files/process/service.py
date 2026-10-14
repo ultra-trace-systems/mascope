@@ -14,9 +14,11 @@ from sqlalchemy.exc import TimeoutError as SQLAlchemyTimeoutError
 
 from mascope_backend.acquisition_record import declared_ionization
 from mascope_backend.api.controllers.calibration.calibration_controller import (
+    ClearedMzCalibration,
     calibration_mz_calibrate_sample,
     is_unfitted_record,
     reset_mz_calibration,
+    restore_mz_calibration,
 )
 from mascope_backend.api.controllers.calibration.lib.calibration_mz_fit import (
     calibration_params_factory,
@@ -2026,6 +2028,40 @@ _PEAKS_NOT_REDETECTED = (
     "were left as they were."
 )
 
+#: What it adds where the m/z calibration those samples were matched on,
+#: which the re-processing had reset, could not be put back either.
+_CALIBRATION_NOT_RESTORED = (
+    "Its m/z calibration could not be put back, so its samples no longer "
+    "agree with its peaks. Re-process it again."
+)
+
+
+async def _restore_calibration(
+    sample_file: SampleFile, cleared: ClearedMzCalibration
+) -> bool:
+    """Put back the calibration a re-processing reset, on a file it stopped at.
+
+    A file whose peaks could not be detected again keeps its samples, and
+    they were matched on the calibration the reset cleared: without it, the
+    m/z each match records is off the file's axis by the factor.
+
+    :param sample_file: The file, as the reset left it.
+    :param cleared: What the reset cleared.
+    :return: Whether it was put back. A restore that fails is logged here,
+        with its error, and not raised: it is one file's, and the run goes
+        on to the files after it.
+    """
+    try:
+        await restore_mz_calibration(sample_file, cleared)
+    except Exception:  # noqa: BLE001 - one file's failure
+        runtime.logger.exception(
+            "Could not put back the m/z calibration of sample file "
+            f"{sample_file.filename} after its peaks could not be detected "
+            "again; its samples no longer agree with its peaks"
+        )
+        return False
+    return True
+
 
 def _compose_reprocess_failure_message(failed_files: list[dict], header: str) -> str:
     """
@@ -2503,8 +2539,9 @@ async def re_process_sample_files(
             # keeps its previous calibration. A failed reset keeps the old
             # calibration; the file still re-processes, so log instead of
             # failing the whole request.
+            cleared = None
             try:
-                await reset_mz_calibration(sample_file)
+                cleared = await reset_mz_calibration(sample_file)
             except Exception:  # noqa: BLE001 - reset is best-effort per file
                 runtime.logger.exception(
                     "Failed to reset m/z calibration for "
@@ -2524,13 +2561,24 @@ async def re_process_sample_files(
                         "Could not detect the peaks of sample file "
                         f"{sample_file.filename} again for its re-processing"
                     )
+                    # A detection that fails leaves the peak store as it was,
+                    # on the acquisition axis the reset left. The samples
+                    # kept were matched on the calibration the reset cleared,
+                    # so it goes back on, as a parked file keeps the
+                    # calibration its samples were matched on.
+                    unrestored = ""
+                    if cleared is not None and not await _restore_calibration(
+                        sample_file, cleared
+                    ):
+                        unrestored = f" {_CALIBRATION_NOT_RESTORED}"
                     # No pipeline runs for the file after this, and the
                     # pipeline is what records how a run ended. The error's
                     # own text can hold a path, so the status names the stage,
                     # and the report adds only the kind of failure, in the
                     # words a failed file's status uses.
                     await _record_failed(
-                        sample_file.sample_file_id, ValueError(_PEAKS_NOT_REDETECTED)
+                        sample_file.sample_file_id,
+                        ValueError(f"{_PEAKS_NOT_REDETECTED}{unrestored}"),
                     )
                     failed_files.append(
                         {
@@ -2538,6 +2586,7 @@ async def re_process_sample_files(
                             "filename": sample_file.filename,
                             "message": (
                                 f"{_PEAKS_NOT_REDETECTED} {_failure_detail(e)}"
+                                f"{unrestored}"
                             ),
                         }
                     )

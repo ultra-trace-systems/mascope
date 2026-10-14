@@ -311,6 +311,44 @@ async def test_resetting_the_calibration_takes_every_stream_back(composite):
     )
 
 
+async def _reset_and_restore(sample_file):
+    """Reset a file's calibration and put it back, as a re-processing does to
+    a file whose peaks it then cannot detect again."""
+    with (
+        patch.object(calibration_controller, "update_sample_file", AsyncMock()),
+        patch.object(calibration_controller, "SampleFileUpdate", lambda **kw: kw),
+    ):
+        cleared = await calibration_controller.reset_mz_calibration(sample_file)
+        assert _record() is None
+        await calibration_controller.restore_mz_calibration(sample_file, cleared)
+
+
+@pytest.mark.asyncio
+async def test_restoring_a_reset_calibration_puts_every_stream_back(composite):
+    """Each stream on its own factor again, each row where it was - where
+    the samples kept were matched - and the record as it was."""
+    await asyncio.to_thread(_apply, _fit())
+    m_compute.get_sum_signal(SAMPLE_FILENAME, stream=KEYS[LOW])
+    calibrated, record = store_rows(), _record()
+    recorded = {**record, "status": "ok", "verified": True}
+    sample_file = SimpleNamespace(
+        sample_file_id="sf-1",
+        filename=SAMPLE_FILENAME,
+        mz_calibration=recorded,
+        to_dict=lambda: {},
+    )
+
+    await _reset_and_restore(sample_file)
+    after = store_rows()
+
+    assert after.mz == pytest.approx(calibrated.mz, rel=1e-15)
+    assert after.peak_id.tolist() == calibrated.peak_id.tolist()
+    assert _record() == record
+    assert sample_file.mz_calibration == recorded
+    by_tag = {str(signal.stream): signal for signal in cached_sum_signals().values()}
+    assert by_tag[KEYS[LOW]].mz[0] == pytest.approx(66.0 * FACTORS[LOW], rel=1e-15)
+
+
 def test_the_files_cached_signals_move_each_by_whose_it_is(composite):
     """The four streams' signals, cached as the stitched one was made from
     them; the stitched one; the polarity's pooled one; and the full one."""
@@ -456,6 +494,38 @@ async def test_a_reset_takes_such_a_files_stream_signals_back_too(
     by_tag = {str(signal.stream): signal for signal in cached_sum_signals().values()}
     for index, lower in ((REAGENT, 40.0), (LOW, 66.0), (MID, 132.0), (HIGH, 440.0)):
         assert by_tag[KEYS[index]].mz[0] == pytest.approx(lower, rel=1e-15)
+
+
+@pytest.mark.asyncio
+async def test_restoring_such_a_files_calibration_puts_it_on_the_files_factor(
+    since_detected_whole,
+):
+    """Its store is detected whole, so its peaks go back on the file's factor,
+    where they were. The record keeps the file's factor and names no stream,
+    as an apply of one factor leaves it, and each stream's cached signal sits
+    where such a record says it reads."""
+
+    def store_mz():
+        # A whole store labels no streams, which store_rows reads
+        return m_io.load_array(SAMPLE_FILENAME, "peak_timeseries").mz.values
+
+    before = store_mz()
+    sample_file = SimpleNamespace(
+        sample_file_id="sf-1",
+        filename=SAMPLE_FILENAME,
+        mz_calibration=_record(),
+        to_dict=lambda: {},
+    )
+
+    await _reset_and_restore(sample_file)
+
+    assert store_mz() == pytest.approx(before, rel=1e-15)
+    assert _record() == {"mode": "one-point", "par": {"calibration_factor": FILE}}
+    by_tag = {str(signal.stream): signal for signal in cached_sum_signals().values()}
+    for index, lower in ((REAGENT, 40.0), (LOW, 66.0), (MID, 132.0), (HIGH, 440.0)):
+        assert by_tag[KEYS[index]].mz[0] == pytest.approx(lower * FILE, rel=1e-15)
+    low = m_compute.get_sum_signal(SAMPLE_FILENAME, stream=KEYS[LOW])
+    assert low.mz.values[0] == pytest.approx(66.0 * FILE, rel=1e-15)
 
 
 def test_a_file_never_calibrated_by_stream_keeps_every_cached_signal(
