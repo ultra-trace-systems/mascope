@@ -27,6 +27,7 @@ from mascope_backend.api.controllers.sample.files.process.service import (
 )
 
 # Module path prefix for patching
+from mascope_backend.api.controllers.sample.files.process.status import StoreStitch
 from mascope_backend.api.controllers.sample.files.process.streams import (
     StoreStreams,
     StreamRows,
@@ -193,13 +194,9 @@ def status():
     with (
         patch(f"{_SVC}.record_processing_status", new_callable=AsyncMock) as record,
         patch(f"{_SVC}.read_scan_streams", new_callable=AsyncMock) as census,
-        patch(f"{_SVC}.read_store_stream_keys", new_callable=AsyncMock) as stitched,
+        patch(f"{_SVC}.read_store_stitch", new_callable=AsyncMock) as stitched,
         patch(f"{_SVC}.pooled_streams_note") as note,
-        patch(
-            f"{_SVC}.read_overlap_readings_note",
-            new_callable=AsyncMock,
-            return_value=None,
-        ) as overlaps,
+        patch(f"{_SVC}.overlap_readings_note", return_value=None) as overlaps,
         patch(f"{_SVC}.learn_method_bindings", new_callable=AsyncMock) as learn,
         patch(
             f"{_SVC}._modes_its_record_declares",
@@ -208,7 +205,7 @@ def status():
         ) as declares,
     ):
         census.return_value = []
-        stitched.return_value = []
+        stitched.return_value = StoreStitch()
         note.return_value = None
         record.note = note
         record.overlaps = overlaps
@@ -1879,12 +1876,16 @@ async def test_the_note_is_told_which_streams_the_store_stitched(status):
     pooled: the note is given the census and the store's streams."""
     census = [{"key": "A", "signature": {"polarity": "-", "ms_order": 1}}]
     status.census.return_value = census
-    status.stitched.return_value = ["A", "B"]
+    readings = [{"streams": [0, 1], "shared": 26}]
+    status.stitched.return_value = StoreStitch(["A", "B"], readings)
     _start_single()
 
     await _run_pipeline()
 
     status.note.assert_called_once_with(census, ["A", "B"])
+    # and the readings are read against the same keys, off the same read
+    status.overlaps.assert_called_once_with(["A", "B"], readings)
+    status.stitched.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -2131,10 +2132,10 @@ async def test_a_file_that_is_not_stitched_says_nothing_of_overlaps(status):
 
 @pytest.mark.asyncio
 async def test_done_names_the_ranges_that_run_on_a_neighbours_calibration(status):
-    """A stitched file is calibrated range by range, and a range that holds
-    no calibrant of the collection is matched on a neighbour's calibration:
-    the file says which, so that a collection that falls short of a window
-    is seen."""
+    """A stitched file is calibrated range by range, and a range with no fit
+    of its own is matched on a neighbour's calibration: the file says which,
+    and quotes the reason the fit recorded for the range - no calibrant of
+    the collection in it, or ones the fit turned down."""
     mocks, sample_file = _start_single()
 
     async def calibrate(**_):

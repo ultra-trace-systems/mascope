@@ -827,7 +827,7 @@ def binding(setup, monkeypatch) -> dict[str, AsyncMock]:
         "create_acquisition_batches_and_items": create,
         "reset_mz_calibration": AsyncMock(),
         "read_scan_streams": AsyncMock(return_value=[]),
-        "read_store_stream_keys": AsyncMock(return_value=[]),
+        "read_store_stitch": AsyncMock(return_value=status.StoreStitch()),
         "learn_method_bindings": learn,
         "get_acquisition_dataset": AsyncMock(
             return_value={"data": {"dataset_id": setup["dataset"]}}

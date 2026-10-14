@@ -185,7 +185,10 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   neighbouring range's calibration, with the reason the fit recorded - no
   calibrant of the collection found in the window, or ones that could not
   be fitted. The detail names a stitched file's ranges by their scan range
-  ("m/z 66-124") where it used to print each one's full scan filter.
+  ("m/z 66-124") where it used to print each one's full scan filter, and
+  for a file stitched in both polarities says which polarity's ranges read
+  what. A processing detail may now run to 2,000 characters, where 1,000
+  cut off the end of what such a file has to say.
 
 - **A sample stitched from several scan ranges shows where they meet.**
   With `composite_scan_streams` on, the spectrum of such a sample is one

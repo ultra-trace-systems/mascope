@@ -44,10 +44,10 @@ from mascope_backend.api.controllers.sample.files.process.status import (
     carried_calibration_note,
     claim_for_processing,
     compose_detail,
+    overlap_readings_note,
     pooled_streams_note,
-    read_overlap_readings_note,
     read_scan_streams,
-    read_store_stream_keys,
+    read_store_stitch,
     record_processing_status,
 )
 from mascope_backend.api.controllers.sample.files.process.streams import (
@@ -1135,11 +1135,10 @@ async def _auto_process_sample_file(
     # Describes the file rather than a stage, so every status this run
     # records carries it.
     scan_streams = await read_scan_streams(sample_file.filename)
+    stitch = await read_store_stitch(sample_file.filename)
     streams_note = compose_detail(
-        pooled_streams_note(
-            scan_streams or [], await read_store_stream_keys(sample_file.filename)
-        ),
-        await read_overlap_readings_note(sample_file.filename),
+        pooled_streams_note(scan_streams or [], stitch.keys),
+        overlap_readings_note(stitch.keys, stitch.overlaps),
     )
 
     # --- Get ACQUISITION dataset for the instrument --- #
