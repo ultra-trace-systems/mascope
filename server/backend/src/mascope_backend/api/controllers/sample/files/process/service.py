@@ -5,6 +5,7 @@ Handles automated creation of ACQUISITION datasets, batches, and sample items, a
 """
 
 import asyncio
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
 from sqlalchemy import and_, delete, func, select
@@ -617,16 +618,27 @@ def _bound_detail(ionization_modes: list[IonizationMode], rung: str) -> str:
     return f"Bound by file-name {tokens} to {names}."
 
 
+#: What the status of a parked file says when an earlier run made samples
+#: for it: ``needs_chemistry`` alone reads as a file with none.
+_SAMPLES_KEPT = "Its samples, from an earlier run, were left as they were."
+
+
 async def _park_needing_chemistry(
     sample_file: SampleFile, reason: str, streams_note: str | None
 ) -> dict:
     """Leave a file that binds to no ionization mode waiting for a chemistry.
 
     Nothing has failed: the file is converted and stored, and only a person
-    can say which chemistry it was acquired under. It gets no samples until
-    then. Its status says so, which keeps it for the people answerable for
-    the instrument (``api/new/notifications``), and the run reports a warning
-    rather than an error.
+    can say which chemistry it was acquired under. It gets no new samples
+    until then. Its status says so, which keeps it for the people answerable
+    for the instrument (``api/new/notifications``), and the run reports a
+    warning rather than an error.
+
+    A run binds a file before it clears anything of it, so a file an earlier
+    run made samples for keeps them, and the m/z calibration they were
+    matched on. Its status is ``needs_chemistry`` all the same - the file
+    needs one, and choosing it rebuilds the file - and says beside the
+    reason that the samples it has are the earlier run's.
 
     :param sample_file: The file.
     :param reason: What the routing found.
@@ -634,12 +646,17 @@ async def _park_needing_chemistry(
     :return: The run's result.
     """
     reason = reason.strip().rstrip(".") + "."
+    kept = (
+        _SAMPLES_KEPT
+        if await _pipeline_item_count(sample_file.sample_file_id)
+        else None
+    )
     # The detail is the file's own reason; Raw files, where it is read, says
     # what to do about it.
     await record_processing_status(
         sample_file.sample_file_id,
         ProcessingStatus.NEEDS_CHEMISTRY,
-        compose_detail(reason, streams_note),
+        compose_detail(reason, kept, streams_note),
     )
     # INFO: a data condition a person resolves, not a fault
     runtime.logger.info(
@@ -647,7 +664,7 @@ async def _park_needing_chemistry(
     )
     return {
         "status": "parked",
-        "message": f"{reason} {CHOOSE_CHEMISTRY}",
+        "message": " ".join(filter(None, (reason, CHOOSE_CHEMISTRY, kept))),
         "_notification_data": {
             "affected_sample_batch_ids": [],
             "affected_sample_item_ids": [],
@@ -724,13 +741,16 @@ async def _delete_partial_acquisition_items(sample_file_id: str) -> None:
     any run that stopped after that point leaves them in place: a failed
     attempt, a run a restart cancelled, a worker killed outright.
 
-    Runs before every attempt, the first included. A re-triggered pipeline
+    Runs on every attempt, the first included, once the attempt has bound the
+    file and before it makes any item. A re-triggered pipeline
     (``POST /{sample_file_id}/process``) starts at attempt 0, and
     :func:`create_acquisition_batches_and_items` never looks for existing items
     before creating them - so without this, re-processing a file whose first
     run was cut short gives it a duplicate ACQUISITION item per ionization
     mode. For a file processed for the first time the delete matches nothing
-    and costs one statement.
+    and costs one statement. Not before the binding: a run that binds the
+    file to nothing parks it (:func:`_park_needing_chemistry`), and the file
+    keeps the samples it has.
 
     Only the pipeline's own items are removed (:func:`_pipeline_item`) - a
     sample a person made from the file is never touched, whatever its type.
@@ -750,20 +770,22 @@ async def _delete_partial_acquisition_items(sample_file_id: str) -> None:
         )
 
 
-async def _reset_calibration(sample_file_id: str) -> None:
+async def _reset_calibration(sample_file: SampleFile) -> None:
     """Restore a file's acquisition m/z axis before it is rebuilt.
 
     Best effort, as in re-processing: a reset that fails leaves the previous
     calibration in effect, and the file is rebuilt all the same.
+
+    :param sample_file: The run's own row of the file, which the reset
+        updates in place: the run goes on to judge the record it carries.
     """
     try:
-        await reset_mz_calibration(
-            await fetch_sample_file(sample_file_id=sample_file_id)
-        )
+        await reset_mz_calibration(sample_file)
     except Exception:  # noqa: BLE001 - the rebuild matters more than the reset
         runtime.logger.info(
-            f"Could not reset the m/z calibration of sample file {sample_file_id} "
-            "before rebuilding it; its previous calibration remains in effect"
+            "Could not reset the m/z calibration of sample file "
+            f"{sample_file.sample_file_id} before rebuilding it; its previous "
+            "calibration remains in effect"
         )
         runtime.logger.opt(exception=True).warning(
             "Could not reset a sample file's m/z calibration before rebuilding it"
@@ -865,9 +887,10 @@ async def auto_process_sample_file(
         forward and the file's method learns nothing, because copying a
         decision forward is not a new observation of anything.
     :type kept_provenance: dict[str, ItemProvenance] | None, optional
-    :param reset_calibration: Restore the file's acquisition m/z axis before
-        the first attempt, as re-processing does, for a file rebuilt under
-        other modes.
+    :param reset_calibration: Restore the file's acquisition m/z axis once
+        the run has bound the file, before its samples are rebuilt, as
+        re-processing does, for a file rebuilt under other modes. Once per
+        run: a retry does not reset it again.
     :type reset_calibration: bool, optional
     :return: Processing results with affected IDs
     """
@@ -876,17 +899,27 @@ async def auto_process_sample_file(
     # be learned in between, and a guard that only compared with whatever the
     # row last saw would let the retry count again.
     recorded_bindings: set[str] = set()
+    # Shared by every attempt too: the reset is owed to the first attempt
+    # that binds the file, which need not be the first attempt.
+    reset_owed = reset_calibration
+
+    async def clear_earlier_run(sample_file: SampleFile) -> None:
+        """Clear what an earlier run left, once an attempt has bound the file.
+
+        Any earlier run - a failed attempt, or a whole earlier pipeline a
+        restart cut short - may have committed sample items before dying in
+        calibration/matching. Every attempt clears them, the first included,
+        so neither a retry nor a re-triggered pipeline can duplicate them.
+        """
+        nonlocal reset_owed
+        if reset_owed:
+            reset_owed = False
+            await _reset_calibration(sample_file)
+        await _delete_partial_acquisition_items(sample_file.sample_file_id)
+
     for attempt in range(_AUTO_PROCESS_RETRIES + 1):
         try:
             async with _auto_process_gate:
-                if reset_calibration and attempt == 0:
-                    await _reset_calibration(sample_file_id)
-                # Any earlier run - a failed attempt, or a whole earlier
-                # pipeline a restart cut short - may have committed sample
-                # items before dying in calibration/matching. Clear them on
-                # every attempt, the first included, so neither a retry nor a
-                # re-triggered pipeline can duplicate them.
-                await _delete_partial_acquisition_items(sample_file_id)
                 return await _auto_process_sample_file(
                     sample_file_id=sample_file_id,
                     independent_transaction=independent_transaction,
@@ -896,6 +929,7 @@ async def auto_process_sample_file(
                     ionization_mode_ids=ionization_mode_ids,
                     kept_provenance=kept_provenance,
                     recorded_bindings=recorded_bindings,
+                    clear_earlier_run=clear_earlier_run,
                 )
         except asyncio.CancelledError:
             # CancelledError is a BaseException, so every `except Exception` in
@@ -1120,12 +1154,17 @@ async def _auto_process_sample_file(
     ionization_mode_ids: list[str] | None = None,
     kept_provenance: dict[str, ItemProvenance] | None = None,
     recorded_bindings: set[str] | None = None,
+    clear_earlier_run: Callable[[SampleFile], Awaitable[None]] | None = None,
 ) -> dict:
     """Gated body of ``auto_process_sample_file`` - see the public wrapper.
 
     ``recorded_bindings`` is shared by every attempt of one run, so a file
     whose later stages fail and retry teaches its method once rather than
     once per attempt.
+
+    ``clear_earlier_run`` is the wrapper's, and is awaited once the file is
+    bound, before any of its samples is made. Without it the pipeline's own
+    items are cleared there, and the m/z calibration is left as it is.
     """
     # Initialize collector for affected sample items
     all_affected_sample_item_ids = set()
@@ -1310,6 +1349,16 @@ async def _auto_process_sample_file(
             streams=scan_streams,
             recorded=recorded_bindings,
         )
+
+    # --- Clear what an earlier run left, now that the file is bound --- #
+    # Here and not before the binding: a file the binding above parks keeps
+    # the samples it has, and the m/z calibration they were matched on. Still
+    # on every attempt and ahead of every item, because
+    # create_acquisition_batches_and_items does not look for existing ones.
+    if clear_earlier_run is None:
+        await _delete_partial_acquisition_items(sample_file_id)
+    else:
+        await clear_earlier_run(sample_file)
 
     # --- Create ACQUISITION batches and sample items for each ionization mode --- #
     (
@@ -1656,7 +1705,9 @@ async def bind_sample_files(
     created, calibrated and matched - in a detached pipeline per file, behind
     the same ingest gate as every upload. A file that has samples already is
     rebuilt under the chosen modes, as re-processing rebuilds one: its m/z
-    calibration is reset, and the pipeline replaces its samples.
+    calibration is reset, and the pipeline replaces its samples - both once
+    the run has bound it, so a file whose chosen mode is deleted before its
+    run starts parks with its samples and calibration as they were.
     Re-processing keeps the modes a file bound here has. Neither its
     acquisition record nor its name is asked then, whatever they say:
     choosing here is how a record or a name that says the wrong chemistry is
@@ -2392,19 +2443,20 @@ async def modes_to_rebind(sample_file_id: str) -> KeptModes | None:
     modes to keep is what a parked file with no samples says, and that one
     is the run's to bind or park again. A file whose samples no longer give
     a mode per polarity says it too - a mode deleted since leaves them with
-    none, the column being ``ON DELETE SET NULL`` - and a run clears a
-    file's samples before it binds the file
-    (:func:`_delete_partial_acquisition_items`): started with no modes, it
-    would park that file with its samples gone. So the samples are counted
-    beside the modes, as re-processing counts them, and the file is refused
-    here, where nothing of it is claimed or cleared yet. Samples that
-    cannot be counted fail the request too, and are not taken for none.
+    none, the column being ``ON DELETE SET NULL`` - and started with no
+    modes, a run would park it unless its acquisition method binds it. A
+    parked run keeps the file's samples, since a run binds a file before it
+    clears anything of it (:func:`_delete_partial_acquisition_items`), but
+    the request says why at once and leaves the file's status as it was.
+    So the samples are counted beside the modes, as re-processing counts
+    them, and the file is refused here, where nothing of it is claimed yet.
+    Samples that cannot be counted fail the request too, and are not taken
+    for none.
 
     A name whose tokens match, but not one mode per polarity, is refused on
     the same terms. It is a configuration to fix, which no earlier binding
     stands in for, so the modes the file's samples have are not kept: the
-    run parks the file on its name, and with samples it would park it with
-    them gone.
+    run would park the file on its name.
 
     :param sample_file_id: The file.
     :raises ApiException: 422 when the file has samples and the run would
@@ -2437,16 +2489,13 @@ async def modes_to_rebind(sample_file_id: str) -> KeptModes | None:
         reason = (
             f"{str(no_token).rstrip('.')}. The ionization modes its samples "
             "were made under no longer bind it either, so it was left as it "
-            "is: processing a file clears its samples before anything binds "
-            "it. Choose its chemistry in Raw files to rebuild it."
+            "is. Choose its chemistry in Raw files to rebuild it."
         )
     else:
         # The two ways out the run's own park offers such a name: its
         # tokens, and a chemistry chosen by hand, which stands ahead of it.
         reason = (
-            f"{str(ambiguous).rstrip('.')}. {CHOOSE_CHEMISTRY} It was left as "
-            "it is: processing a file clears its samples before anything "
-            "binds it."
+            f"{str(ambiguous).rstrip('.')}. {CHOOSE_CHEMISTRY} It was left as it is."
         )
     raise ApiException(
         user_message=_beside_the_declaration(undeclared, reason),

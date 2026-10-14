@@ -134,7 +134,7 @@ def digest_message(kind: NotificationKind, count: int, instrument: str) -> str:
         return (
             f"{_files(count)} from {instrument} {'needs' if one else 'need'} a "
             "chemistry: no ionization mode could be bound, so "
-            f"{'it has' if one else 'they have'} no samples."
+            f"{'it was' if one else 'they were'} not processed."
         )
     if kind is NotificationKind.CALIBRATION_FAILED:
         return (

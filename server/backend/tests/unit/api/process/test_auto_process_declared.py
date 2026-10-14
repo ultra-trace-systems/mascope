@@ -78,6 +78,8 @@ def pipeline():
             f"{_SVC}.create_acquisition_batches_and_items", new_callable=AsyncMock
         ) as create,
         patch(f"{_SVC}.record_processing_status", new_callable=AsyncMock) as status,
+        patch(f"{_SVC}._delete_partial_acquisition_items", new_callable=AsyncMock),
+        patch(f"{_SVC}._pipeline_item_count", new_callable=AsyncMock, return_value=0),
     ):
         fetch.return_value = _sample_file()
         census.return_value = []
