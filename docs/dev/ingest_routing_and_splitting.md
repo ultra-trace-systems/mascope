@@ -2920,11 +2920,18 @@ unchanged.
      (`process.status.overlap_readings_note`). The detail names a stitched
      file's ranges by scan range, as the views do, where it printed each
      stream's whole key: four keys took a quarter of the detail's bound,
-     and what is said of the ranges comes after them. It reports and judges
-     nothing. Still open: a warning when a file's reading leaves what its
-     layout usually reads, which needs the layout's history and a bound
-     nobody has measured yet; and the layout override, which waits for a
-     layout that needs one (decision 17).
+     and what is said of the ranges comes after them. A reading pairs two
+     streams of one polarity, so a file stitched in both polarities names
+     the polarity of each sentence of readings, which the ranges' names do
+     not tell apart. The keys and the readings are read off the store's
+     metadata in one read (`process.status.read_store_stitch`), as every
+     registration and run of every file reads them. The detail's bound is
+     2,000 characters: what a four-range layout can have to say comes to
+     more than the 1,000 it had, and the readings, said last, were cut. It
+     reports and judges nothing. Still open: a warning when a file's
+     reading leaves what its layout usually reads, which needs the layout's
+     history and a bound nobody has measured yet; and the layout override,
+     which waits for a layout that needs one (decision 17).
 - **The scope object.** A scan scope (stream, t0, t1), the stream a
   composite where the file holds one, replaces the bare polarity in:
   - reader selection;
