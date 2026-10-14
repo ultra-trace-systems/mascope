@@ -671,19 +671,31 @@ async def test_reprocessing_lets_the_rung_answer_for_a_parked_file(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("by_method", [False, True], ids=["rung off", "rung on"])
+@pytest.mark.parametrize(
+    "has_its_part", [False, True], ids=["no sample yet", "with its MS2 part"]
+)
 async def test_reprocessing_lets_a_file_of_fragmentation_scans_alone_through(
-    async_session_factory, setup, pipeline, monkeypatch
+    async_session_factory, setup, pipeline, monkeypatch, by_method, has_its_part
 ):
     """It needs no chemistry, so having none to keep is no reason to refuse it.
 
     The pipeline files it without one, as it did the first time: its earlier
     MS2 sample has no mode for re-processing to keep, and the rebuild clears
-    it before the run files it again.
+    it before the run files it again. With the method rung on, a file whose
+    samples have no mode is refused, because its run would park it with them
+    gone - not this one, which its run files again.
     """
+    monkeypatch.setattr(process_service, "routes_on_method_binding", lambda: by_method)
     monkeypatch.setattr(
         process_service, "read_scan_streams", AsyncMock(return_value=_census(2))
     )
-    filed = await _file(async_session_factory, "ms2-only", "-")
+    filed = await _file(
+        async_session_factory,
+        "ms2-only",
+        "-",
+        sample_under=(setup["batch"], None) if has_its_part else None,
+    )
 
     result = await process_service.re_process_sample_files(sample_file_ids=[filed])
 
@@ -1743,6 +1755,36 @@ async def test_processing_on_request_leaves_a_file_no_mode_binds_its_samples(
     spawn.assert_not_called()
     assert await _samples_of(async_session_factory, orphaned) == 1
     assert await _status(async_session_factory, orphaned) == "done"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("by_method", [False, True], ids=["rung off", "rung on"])
+async def test_processing_on_request_files_a_file_of_fragmentation_scans_again(
+    async_session_factory, setup, admin_client, monkeypatch, by_method
+):
+    """The file above, but its census holds no MS1 scan: its one sample is
+    the MS2 part its run filed without a chemistry, with no mode, and the
+    run files it again after clearing it. Nothing of it waits for a
+    chemistry, so it is started with no modes of its own, as re-processing
+    starts it."""
+    monkeypatch.setattr(process_service, "routes_on_method_binding", lambda: by_method)
+    monkeypatch.setattr(
+        process_service, "read_scan_streams", AsyncMock(return_value=_census(2))
+    )
+    filed = await _file(
+        async_session_factory,
+        "on-request-ms2-only",
+        "-",
+        sample_under=(setup["batch"], None),
+    )
+    spawn = AsyncMock()
+    monkeypatch.setattr(sample_files_routes, "spawn_auto_process_sample_file", spawn)
+
+    resp = await admin_client.post(f"/api/sample/files/{filed}/process")
+
+    assert resp.status_code == 202, resp.text
+    spawn.assert_awaited_once()
+    assert spawn.await_args.kwargs["ionization_mode_ids"] is None
 
 
 @pytest.mark.asyncio

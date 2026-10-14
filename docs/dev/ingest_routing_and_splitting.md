@@ -677,31 +677,56 @@ for one of two reasons, and they are not handled alike:
   and its census, which holds no MS1 stream, is what tells it from a blank.
   It needs no chemistry: a chemistry is what MS1 peaks are calibrated,
   matched and assigned under, and it has none. So where nothing binds it, it
-  does not park. It is filed as an MS2 part (below), and is `done`.
+  does not park. It is filed as an MS2 part (below), and is `done`. An
+  ambiguous name - tokens of two modes of one polarity - is not "nothing
+  binds it" but a configuration to fix, which no binding stands in for
+  (5.3): such a file parks as any file does, since re-processing and
+  processing on request refuse that name before they ask what a file holds.
 - **Nothing binds its MS1 scans.** A manual acquisition names no method, so
   no method binding can ever be learned for it (5.3), and without a filename
-  token it parks. It stays parked with no item, MS2 scans or not, until a
-  token or a person gives it the chemistry its MS1 peaks need - which only a
-  person can say - and its MS2 data is read through the bound item from then
-  on. Decided 2026-10-14: no part is filed for such a file meanwhile, and
+  token it parks, MS2 scans or not, until a token or a person gives it the
+  chemistry its MS1 peaks need - which only a person can say - and its MS2
+  data is read through the bound item from then on. Decided 2026-10-14: no part is filed for such a file meanwhile, and
   neither rule is a setting.
 
 An MS2 part is one ACQUISITION item per polarity that holds fragmentation
 scans, with no ionization mode and no rung, in the day's
-`"<date> MS2 acquisition"` batch of the instrument's acquisition dataset. The
-item covers the whole acquisition in its polarity, so today's MS2 routes read
-every (precursor, activation) group through it, and the SDK finds it as it
-finds any sample.
+`"<date> MS2 acquisition (no chemistry)"` batch of the instrument's
+acquisition dataset. The item covers the whole acquisition in its polarity,
+so today's MS2 routes read every (precursor, activation) group through it,
+and the SDK finds it as it finds any sample.
 
-- **Replaced, not kept.** The part is the pipeline's own. Re-processing the
-  file once a token or a method binds it replaces it with the bound item. A
+- **A name no chemistry's batch can have.** A bound batch is named
+  `"<date> <mode name> acquisition"`, mode names are free text, and the
+  batch's natural key is its dataset, name and polarity. Sharing a name, a
+  day's bound samples and MS2 parts would share a batch, and whichever came
+  first would set its target collections. Every bound batch's name ends in
+  " acquisition"; the MS2 batch's does not.
+- **Its status.** Why nothing bound the file is left out - most such files
+  carry no token - but what a person may want to fix is kept: an
+  acquisition record naming a chemistry no mode answers to, or a chosen
+  chemistry that binds the file no longer.
+- **Processed again** by Re-process or on request, it goes through with no
+  modes of its own and is filed again, the method rung on or off: its one
+  sample has no mode, which is otherwise what refuses a file there.
+
+- **Replaced, not kept.** The part is the pipeline's own, and a run clears
+  what an earlier run left before it files, as it does before it makes a
+  bound file's samples (`clear_earlier_run`): filing again replaces the
+  part, and re-processing the file once a token or a method binds it
+  replaces it with the bound item. A
   file bound from the start is not filed at all: it gets its mode's item,
   which skips calibration, matching and assignment for having no peaks.
 - **TIC.** An item's TIC is that of its MS1 scans. One with no MS1 scan takes
   the TIC of the scans it has, which says how much signal it holds and is
   comparable only among such items.
-- **Read from the census, never from the file.** A file with no census says
-  nothing either way, and parks as before.
+- **Read from the census, never from the file** (`process/census.py`). A
+  file with no census says nothing either way, and parks as before. The
+  MS1 reads of a sample - its spectrum, its peak timeseries, the MS1
+  centroids - answer empty on the census too, so that only such a sample
+  does: a selection of an MS1 sample that holds no scans still fails. Its
+  per-sample export reads its store back on the axis it was written on,
+  every scan.
 
 **Still open** (decision 6): whether each (precursor, activation) stream
 becomes an item of its own, so that a stepped-energy acquisition is a batch
@@ -3551,7 +3576,7 @@ Function names are the stable reference; line numbers drift.
 | Chemistry surface | `server/frontend/src/lib/panes/PaneIonizationMode.vue`, `lib/dialogs/DialogChooseChemistry.vue`, `stores/data/modules/ionization/mode.js` | 8 |
 | Daily batches | `api/controllers/sample/batches/sample_batches_controller.py` `get_or_create_acquisition_batch` | 4 |
 | MS2 | `api/new/ms2/` | 4 |
-| MS2 parts | `api/controllers/sample/files/process/ms2_parts.py` (`fragmentation_polarities`, `file_fragmentation_scans`); `process/service.py` `_file_without_chemistry`; `file_converter/base_processor.py` `_process_without_survey_scans`; `libraries/thermo/src/mascope_thermo/processor.py` `RawProcessor._records_survey_scans`; `api/controllers/sample/items/sample_items_controller.py` `_sample_item_tic`; `libraries/signal/src/mascope_signal/peak.py` `write_empty_peak_timeseries` | 7 |
+| MS2 parts | `api/controllers/sample/files/process/ms2_parts.py` (`ms2_batch_name`, `file_fragmentation_scans`); `process/census.py` (`fragmentation_polarities`, `holds_only_fragmentation_scans`); `process/service.py` `_file_without_chemistry`, `modes_to_rebind`; `file_converter/base_processor.py` `_process_without_survey_scans`; `libraries/thermo/src/mascope_thermo/processor.py` `RawProcessor._records_survey_scans`; `api/controllers/sample/items/sample_items_controller.py` `_sample_item_tic`; `libraries/signal/src/mascope_signal/peak.py` `write_empty_peak_timeseries` | 7 |
 | Notifications | `socket/notifications/service.py`; the background-task decorator in `api/lib/api_features.py` | 0, 1 |
 | Models | `db/models.py` (`SampleFile`, `SampleItem`, `IonizationMode`); new `AcquisitionStream`, `MethodBinding`, `IngestRecipe`, `Notification` | 1-6 |
 | Reagent libraries (on `develop`) | `libraries/tools/src/mascope_tools/composition/reagents.py` (`REAGENT_CLUSTERS`, `match_reagent_clusters`, `detect_channels`); `profiles.py` | 5, 8 |

@@ -24,11 +24,11 @@ The item is the pipeline's own, like every ACQUISITION item of an ACQUISITION
 batch, so re-processing the file - after a token is added for it, say -
 replaces it rather than leaving a second sample of the file beside it.
 
-**Read from the census, never from the file.** Which polarities hold
-fragmentation scans is what the converter recorded in ``.props``
-(``SampleFileProps.scan_streams``). A file with no census - converted before
-the census existed, or by a reader that takes none - says nothing either way,
-and waits for a chemistry as it always did.
+**Read from the census, never from the file** (``process/census.py``).
+Which polarities hold fragmentation scans is what the converter recorded in
+``.props``. A file with no census - converted before the census existed, or
+by a reader that takes none - says nothing either way, and waits for a
+chemistry as it always did.
 """
 
 from mascope_backend.api.controllers.sample.batches.sample_batches_controller import (
@@ -46,67 +46,18 @@ from mascope_backend.api.models.sample.items.sample_item_pydantic_model import (
 from mascope_backend.db import SampleFile
 
 
-#: What the day's batch of MS2 parts is called, where a bound item's batch
-#: names its ionization mode: ``"<date> MS2 acquisition"``.
-MS2_BATCH_LABEL = "MS2"
-
-
-def _ms_order(stream: dict) -> int | None:
-    """A census stream's MS order, or None when it is not a whole number."""
-    order = stream["signature"].get("ms_order")
-    # bool is an int, and True would read as MS1.
-    return order if isinstance(order, int) and not isinstance(order, bool) else None
-
-
-def records_ms1_scans(streams: list[dict] | None) -> bool:
-    """Whether the census shows any MS1 scan.
-
-    :param streams: The file's scan-stream census, as
-        :func:`~...process.status.read_scan_streams` returns it.
-    :return: True when a stream of MS order 1 is recorded. False for a file
-        with no census too, so read :func:`records_only_fragmentation_scans`
-        where "no census" must not be taken for "no MS1 scans".
-    :rtype: bool
-    """
-    return any(_ms_order(stream) == 1 for stream in streams or [])
-
-
-def records_only_fragmentation_scans(streams: list[dict] | None) -> bool:
-    """Whether the census shows scans, and no MS1 scan among them.
-
-    What tells an acquisition of fragmentation scans alone from a blank
-    measurement. Both are stored with no peaks and no instrument config, and
-    only the first has data that peaks are simply not detected in.
-
-    :param streams: The file's scan-stream census.
-    :return: True when it holds streams and none is of MS order 1.
-    :rtype: bool
-    """
-    return bool(streams) and not records_ms1_scans(streams)
-
-
-def fragmentation_polarities(
-    streams: list[dict] | None, polarities: str | None
-) -> list[str]:
-    """The polarities of a file whose scans include fragmentation scans.
-
-    :param streams: The file's scan-stream census.
-    :param polarities: ``sample_file.polarity``: the polarities the file
-        holds, which also gives the order the answer comes in. A polarity the
-        census names and the file does not is left out, because an item is
-        made per polarity of the file.
-    :return: Those of the file's polarities that hold a stream of MS order 2
-        or higher; empty when there is no census.
-    :rtype: list[str]
-    """
-    # Compared as text, one stream at a time: a census whose polarity is not a
-    # string names no polarity of the file, and must not fail the file either.
-    fragmented = [
-        stream["signature"].get("polarity")
-        for stream in streams or []
-        if (_ms_order(stream) or 0) > 1
-    ]
-    return [polarity for polarity in polarities or "" if polarity in fragmented]
+#: The end of the name of the day's batch of MS2 parts:
+#: ``"<date> MS2 acquisition (no chemistry)"``.
+#:
+#: A bound item's batch is named ``"<date> <mode name> acquisition"``
+#: (``process/service.py`` ``acquisition_batch_name``), and a mode's name is
+#: free text. Sharing a name, the two would share a batch - its natural key
+#: is dataset, name and polarity - and whichever was filed first would set
+#: the batch's target collections: a day's bound samples could be matched
+#: against none, or MS2 parts filed into a mode's batch. Every bound batch's
+#: name ends in " acquisition", and this one does not, whatever a mode is
+#: called.
+MS2_BATCH_SUFFIX = "MS2 acquisition (no chemistry)"
 
 
 def ms2_batch_name(sample_file: SampleFile) -> str:
@@ -115,7 +66,7 @@ def ms2_batch_name(sample_file: SampleFile) -> str:
     Dated off the file's instrument-local time, as the batches of bound items
     are, so one day's MS2 parts and bound samples carry the same date.
     """
-    return f"{sample_file.datetime.strftime('%Y-%m-%d')} {MS2_BATCH_LABEL} acquisition"
+    return f"{sample_file.datetime.strftime('%Y-%m-%d')} {MS2_BATCH_SUFFIX}"
 
 
 async def file_fragmentation_scans(
