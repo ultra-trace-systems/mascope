@@ -78,7 +78,6 @@ def pipeline():
             f"{_SVC}.create_acquisition_batches_and_items", new_callable=AsyncMock
         ) as create,
         patch(f"{_SVC}.record_processing_status", new_callable=AsyncMock) as status,
-        patch(f"{_SVC}._delete_partial_acquisition_items", new_callable=AsyncMock),
         patch(f"{_SVC}._pipeline_item_count", new_callable=AsyncMock, return_value=0),
     ):
         fetch.return_value = _sample_file()
@@ -97,7 +96,9 @@ def pipeline():
 
 
 async def _run(**arguments):
-    return await service._auto_process_sample_file(sample_file_id="sf-001", **arguments)
+    return await service._auto_process_sample_file(
+        sample_file_id="sf-001", clear_earlier_run=AsyncMock(), **arguments
+    )
 
 
 @pytest.mark.asyncio

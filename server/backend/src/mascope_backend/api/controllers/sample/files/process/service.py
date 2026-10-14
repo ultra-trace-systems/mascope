@@ -624,7 +624,10 @@ _SAMPLES_KEPT = "Its samples, from an earlier run, were left as they were."
 
 
 async def _park_needing_chemistry(
-    sample_file: SampleFile, reason: str, streams_note: str | None
+    sample_file: SampleFile,
+    reason: str,
+    streams_note: str | None,
+    cleared_by_this_run: bool,
 ) -> dict:
     """Leave a file that binds to no ionization mode waiting for a chemistry.
 
@@ -640,17 +643,31 @@ async def _park_needing_chemistry(
     needs one, and choosing it rebuilds the file - and says beside the
     reason that the samples it has are the earlier run's.
 
+    Not the samples an earlier attempt of this same run made. That attempt
+    bound the file, cleared it, made its samples and failed on a retryable
+    error before they were calibrated and matched; this one finds the file
+    bound to nothing - a chosen mode deleted, or a token renamed, during the
+    backoff. Those samples are partial, nobody's earlier run, so they are
+    cleared here as the next attempt that bound the file would have cleared
+    them, and nothing is said of them.
+
     :param sample_file: The file.
     :param reason: What the routing found.
     :param streams_note: The file's pooled-streams note, if any.
+    :param cleared_by_this_run: An earlier attempt of this run cleared the
+        file, so the samples it has are that attempt's.
     :return: The run's result.
     """
     reason = reason.strip().rstrip(".") + "."
-    kept = (
-        _SAMPLES_KEPT
-        if await _pipeline_item_count(sample_file.sample_file_id)
-        else None
-    )
+    if cleared_by_this_run:
+        await _delete_partial_acquisition_items(sample_file.sample_file_id)
+        kept = None
+    else:
+        kept = (
+            _SAMPLES_KEPT
+            if await _pipeline_item_count(sample_file.sample_file_id)
+            else None
+        )
     # The detail is the file's own reason; Raw files, where it is read, says
     # what to do about it.
     await record_processing_status(
@@ -750,7 +767,8 @@ async def _delete_partial_acquisition_items(sample_file_id: str) -> None:
     mode. For a file processed for the first time the delete matches nothing
     and costs one statement. Not before the binding: a run that binds the
     file to nothing parks it (:func:`_park_needing_chemistry`), and the file
-    keeps the samples it has.
+    keeps the samples an earlier run made. Samples an earlier attempt of the
+    same run made are partial, and the park clears them with this.
 
     Only the pipeline's own items are removed (:func:`_pipeline_item`) - a
     sample a person made from the file is never touched, whatever its type.
@@ -902,6 +920,10 @@ async def auto_process_sample_file(
     # Shared by every attempt too: the reset is owed to the first attempt
     # that binds the file, which need not be the first attempt.
     reset_owed = reset_calibration
+    # Whether an attempt of this run has cleared the file. The samples it has
+    # are then that attempt's own and partial, not an earlier run's, and an
+    # attempt that parks it clears them (_park_needing_chemistry).
+    cleared = False
 
     async def clear_earlier_run(sample_file: SampleFile) -> None:
         """Clear what an earlier run left, once an attempt has bound the file.
@@ -911,11 +933,12 @@ async def auto_process_sample_file(
         calibration/matching. Every attempt clears them, the first included,
         so neither a retry nor a re-triggered pipeline can duplicate them.
         """
-        nonlocal reset_owed
+        nonlocal reset_owed, cleared
         if reset_owed:
             reset_owed = False
             await _reset_calibration(sample_file)
         await _delete_partial_acquisition_items(sample_file.sample_file_id)
+        cleared = True
 
     for attempt in range(_AUTO_PROCESS_RETRIES + 1):
         try:
@@ -930,6 +953,7 @@ async def auto_process_sample_file(
                     kept_provenance=kept_provenance,
                     recorded_bindings=recorded_bindings,
                     clear_earlier_run=clear_earlier_run,
+                    cleared_by_this_run=cleared,
                 )
         except asyncio.CancelledError:
             # CancelledError is a BaseException, so every `except Exception` in
@@ -1154,7 +1178,9 @@ async def _auto_process_sample_file(
     ionization_mode_ids: list[str] | None = None,
     kept_provenance: dict[str, ItemProvenance] | None = None,
     recorded_bindings: set[str] | None = None,
-    clear_earlier_run: Callable[[SampleFile], Awaitable[None]] | None = None,
+    *,
+    clear_earlier_run: Callable[[SampleFile], Awaitable[None]],
+    cleared_by_this_run: bool = False,
 ) -> dict:
     """Gated body of ``auto_process_sample_file`` - see the public wrapper.
 
@@ -1163,8 +1189,11 @@ async def _auto_process_sample_file(
     once per attempt.
 
     ``clear_earlier_run`` is the wrapper's, and is awaited once the file is
-    bound, before any of its samples is made. Without it the pipeline's own
-    items are cleared there, and the m/z calibration is left as it is.
+    bound, before any of its samples is made: it clears what an earlier run
+    left, and resets the m/z calibration where the run owes that. Required,
+    so that no caller makes samples without clearing first.
+    ``cleared_by_this_run`` says an earlier attempt of this run has cleared
+    the file already, so a park clears that attempt's samples.
     """
     # Initialize collector for affected sample items
     all_affected_sample_item_ids = set()
@@ -1232,6 +1261,7 @@ async def _auto_process_sample_file(
                     sample_file,
                     _beside_the_declaration(undeclared, str(no_token)),
                     streams_note,
+                    cleared_by_this_run,
                 )
             routed_by_method, declined = await resolve_modes_by_method_binding(
                 sample_file, scan_streams
@@ -1255,11 +1285,15 @@ async def _auto_process_sample_file(
                         f"{declined.remedy}",
                     ),
                     streams_note,
+                    cleared_by_this_run,
                 )
             bound_modes = [routing.mode for routing in routed_by_method]
         except ValueError as e:
             return await _park_needing_chemistry(
-                sample_file, _beside_the_declaration(undeclared, str(e)), streams_note
+                sample_file,
+                _beside_the_declaration(undeclared, str(e)),
+                streams_note,
+                cleared_by_this_run,
             )
     else:
         try:
@@ -1269,7 +1303,9 @@ async def _auto_process_sample_file(
         except ValueError as e:
             # A chosen mode was deleted, or changed, while the file waited:
             # it needs a chemistry again, and can be given one.
-            return await _park_needing_chemistry(sample_file, str(e), streams_note)
+            return await _park_needing_chemistry(
+                sample_file, str(e), streams_note, cleared_by_this_run
+            )
 
     # How each item will say its chemistry was decided, and what the file's
     # method may be taught from it. The three ways in here are not equal. A
@@ -1355,10 +1391,7 @@ async def _auto_process_sample_file(
     # the samples it has, and the m/z calibration they were matched on. Still
     # on every attempt and ahead of every item, because
     # create_acquisition_batches_and_items does not look for existing ones.
-    if clear_earlier_run is None:
-        await _delete_partial_acquisition_items(sample_file_id)
-    else:
-        await clear_earlier_run(sample_file)
+    await clear_earlier_run(sample_file)
 
     # --- Create ACQUISITION batches and sample items for each ionization mode --- #
     (

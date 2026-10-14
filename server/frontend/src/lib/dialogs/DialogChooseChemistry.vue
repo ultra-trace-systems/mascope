@@ -3,7 +3,8 @@
  * Choose the chemistry of raw files.
  *
  * A file whose name carries no token of a configured ionization mode waits in
- * Raw files as "Needs a chemistry", with no samples. Choosing a mode for each
+ * Raw files as "Needs a chemistry", with no samples unless an earlier run made
+ * them. Choosing a mode for each
  * polarity the selected files hold processes them under those modes, as a
  * token would have had them processed (`POST /sample/files/bind`); a file
  * that has samples already, bound wrongly, is rebuilt under them, and one a

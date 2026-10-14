@@ -2647,3 +2647,36 @@ async def test_a_run_that_parks_the_file_clears_and_resets_nothing():
     assert result["status"] == "parked"
     reset.assert_not_awaited()
     cleanup.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_retry_is_told_when_its_run_has_cleared_the_file():
+    """An attempt that bound and cleared the file and then failed leaves its
+    own partial samples, and a retry that parks the file has to know they
+    are this run's and not an earlier run's: it clears them."""
+    from mascope_backend.api.controllers.sample.files.process import service
+    from mascope_backend.api.lib.exceptions.api_exceptions import ApiException
+
+    parked = {"status": "parked", "message": "m", "_notification_data": {}}
+    body = _attempts(
+        (False, ApiException("busy", {}, 503)),
+        (True, ApiException("busy", {}, 503)),
+        (False, parked),
+    )
+    with (
+        patch(f"{_SVC}._auto_process_sample_file", body),
+        patch(f"{_SVC}._delete_partial_acquisition_items", AsyncMock()),
+        patch.object(service, "_AUTO_PROCESS_RETRY_DELAYS_S", (0, 0, 0)),
+        patch(f"{_FEATURES}.handle_notifications", new_callable=AsyncMock),
+        patch(f"{_FEATURES}.handle_reloads", new_callable=AsyncMock),
+    ):
+        await service.auto_process_sample_file(
+            sample_file_id="sf-retried", independent_transaction=True
+        )
+
+    # The first attempt stopped before binding, so only the third is told.
+    assert [call.kwargs["cleared_by_this_run"] for call in body.call_args_list] == [
+        False,
+        False,
+        True,
+    ]

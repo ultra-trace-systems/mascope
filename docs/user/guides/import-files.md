@@ -199,7 +199,7 @@ re-processed long after it was acquired is listed too.
 |---|---|
 | Converted, Queued, Bound, Calibrated | Still being processed: the file was read (or processing was asked for again, and waits its turn), its samples exist, and its m/z axis was calibrated. |
 | Done | Every sample of the file was matched, or it is a blank measurement with nothing to match. The detail says when the file was not calibrated, and why. |
-| Needs a chemistry | The file's name binds it to no ionization mode - it carries no mode's token, tokens of two modes of one polarity, or, for a file of both polarities, a token for only one of them - so it has no samples yet. Choose its chemistry (below), or fix the tokens and re-process it. |
+| Needs a chemistry | The file's name binds it to no ionization mode - it carries no mode's token, tokens of two modes of one polarity, or, for a file of both polarities, a token for only one of them - so it was not processed. A new file has no samples yet; a file processed before keeps the samples it had, and the detail says so. Choose its chemistry (below), or fix the tokens and re-process it. |
 | Calibration failed | An m/z calibration failed or is below the quality bar, so some or all of the samples were not matched. A TOF file is matched only on a verified m/z calibration, so one whose ionization mode has no calibration collection ends here too, and the detail names the missing collection. |
 | Failed | Processing stopped on an error, or was interrupted by a server restart. Re-process the file. |
 
