@@ -112,6 +112,16 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   drawing the sample's spectrum. The main isotope now takes its height from
   the spectrum, as it already did when no peak lay near it.
 
+- **An Orbitrap-only read of another sample is refused as a request, not
+  reported as a fault.** Per-scan centroids (`GET /api/samples/centroids`,
+  the SDK's `get_centroids`) and a sample file's metadata
+  (`GET /api/sample/files/{id}/metadata`) are read from an Orbitrap raw
+  file. Asked of a TOF sample, or of one whose raw file is not kept, both
+  answered 500 with an unexpected error, and every such request was
+  reported to error monitoring. They now answer 422 before anything is
+  read, naming the samples that have no raw file to read. A request for
+  Orbitrap samples is answered as before.
+
 - **An Orbitrap acquisition that was never finished fails as one.** An
   acquisition that is aborted before it records a scan leaves a small raw
   file holding the instrument method and no index of scans. The reader

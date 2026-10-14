@@ -75,6 +75,7 @@ from mascope_file.io import load_peak_data
 from mascope_file.name import (
     forget_instrument_type,
     get_instrument_name,
+    get_sample_file_type,
     parse_path_from_item_filename,
     validate_instrument_name,
 )
@@ -1860,6 +1861,8 @@ async def get_sample_file_metadata(sample_file_id: str) -> dict:
     :param sample_file_id: Unique identifier for the sample file.
     :type sample_file_id: str
     :raises NotFoundException: If the sample file or its metadata is not found.
+    :raises HTTPException: 422 when the sample file has no Orbitrap raw file
+        to read the metadata from.
     :return: Dictionary containing the sample file metadata.
     :rtype: dict
     """
@@ -1867,7 +1870,17 @@ async def get_sample_file_metadata(sample_file_id: str) -> dict:
     sample_file_data = await get_sample_file(sample_file_id)
     filename = sample_file_data.get("data").get("filename")
 
-    # Step 2: Get metadata
+    # Step 2: Get metadata. It is read from an Orbitrap raw file, so asking it
+    # of any other sample file - a TOF file, or one whose raw file is not
+    # kept - is refused as the request it is, not reported as a fault here.
+    if await asyncio.to_thread(get_sample_file_type, filename) != "orbi_raw":
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "Metadata is read from an Orbitrap raw file, and sample file "
+                f"'{filename}' has none"
+            ),
+        )
     try:
         metadata = m_compute.get_metadata(filename)
     except Exception as e:
