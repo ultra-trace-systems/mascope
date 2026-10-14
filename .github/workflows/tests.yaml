@@ -42,13 +42,27 @@ jobs:
           # From the base tip to the merge commit is exactly what merging the
           # PR changes. --no-renames lists a moved file under both of its
           # names, so moving code into docs/ cannot pass as a docs change.
-          files=$(git diff --name-only --no-renames HEAD^1 HEAD)
-          echo "$files"
-          if [ -n "$files" ] && ! grep -qvE '^docs/|\.md$' <<< "$files"; then
-            echo "code=false" >> "$GITHUB_OUTPUT"
+          # -z writes each path as it is, NUL-terminated: without it git
+          # quotes a path with non-ASCII or special characters
+          # ("docs/dev/caf\303\251.md"), which then matches neither pattern.
+          git diff --name-only --no-renames -z HEAD^1 HEAD > "$RUNNER_TEMP/changed-paths"
+          code=false
+          count=0
+          while IFS= read -r -d '' path; do
+            count=$((count + 1))
+            echo "$path"
+            case "$path" in
+              docs/* | *.md) ;;
+              *) code=true ;;
+            esac
+          done < "$RUNNER_TEMP/changed-paths"
+          # An empty diff shows nothing to be docs-only
+          if [ "$count" -eq 0 ]; then
+            code=true
+          fi
+          echo "code=$code" >> "$GITHUB_OUTPUT"
+          if [ "$code" = false ]; then
             echo "Docs-only change: backend tests and the e2e suite are skipped." >> "$GITHUB_STEP_SUMMARY"
-          else
-            echo "code=true" >> "$GITHUB_OUTPUT"
           fi
 
   checks:
