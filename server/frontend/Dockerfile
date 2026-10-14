@@ -28,7 +28,7 @@ RUN npm run build
 FROM python:3.12-alpine AS docs-build
 
 # Same uv version as CI (.github/workflows/tests.yaml).
-COPY --from=ghcr.io/astral-sh/uv:0.11.2 /uv /usr/local/bin/uv
+COPY --from=ghcr.io/astral-sh/uv:0.13.1 /uv /usr/local/bin/uv
 
 WORKDIR /docs-src
 
@@ -71,7 +71,7 @@ FROM python:3.12-slim-bookworm AS openapi-build
 
 # Same uv version as CI (.github/workflows/tests.yaml), on the image's own
 # Python rather than one uv would download.
-COPY --from=ghcr.io/astral-sh/uv:0.11.2 /uv /usr/local/bin/uv
+COPY --from=ghcr.io/astral-sh/uv:0.13.1 /uv /usr/local/bin/uv
 ENV UV_PYTHON_DOWNLOADS=never
 
 WORKDIR /src
