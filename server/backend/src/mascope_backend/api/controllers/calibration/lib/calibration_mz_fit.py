@@ -1801,8 +1801,10 @@ def calibration_quality_issues(quality: dict | None, filename: str) -> list[dict
 
     :param quality: The fit's ``quality`` block (see :func:`fit_quality`).
     :param filename: Sample filename, selects the instrument-class bounds.
-    :return: One ``{"code", "message"}`` dict per failed criterion; empty when
-        the fit clears the bar.
+    :return: One ``{"code", "message"}`` dict per criterion the file or a
+        fitted stream fails, a stream's with its key under ``segment``; a
+        criterion the file fails as its one fitted stream does comes once,
+        as the stream's. Empty when the fit clears the bar.
     """
     issues = _quality_block_issues(quality, filename)
     fitted = [

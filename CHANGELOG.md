@@ -163,6 +163,15 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   badge it showed when fitted as one. A file calibrated already keeps its
   badge until it is calibrated again.
 
+- **A stitched file with one scan range fitted on calibrants of its own
+  gives each reason it misses the quality bar once.** The calibrants of
+  such a file are all that range's, so the file's fit and the range's are
+  one fit. A reason that holds for both is given once, naming the range -
+  in the processing detail, in the calibration dialog and in the badge's
+  tooltip - and the file is still marked below the bar. A file with two or
+  more ranges fitted also gives the reasons of its fit as a whole, which
+  is over the calibrants of all of them.
+
 - **The calibration dialog and the sample's calibration badge say how each
   scan range of a stitched sample was calibrated.** The dialog lists the
   ranges above the calibrants: fitted on how many calibrants, or whose
@@ -387,17 +396,6 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   showed the fit of the one before under the new sample's name until the
   new fit started, which waits on fetching that sample's settings; if the
   fetch failed, it stayed. It now shows no fit until the sample's own.
-
-- **A stitched file with one scan range fitted on calibrants of its own
-  gives each calibration issue once.** With `composite_scan_streams` on,
-  the calibrants of such a file are all that range's, so a fit below the
-  quality bar gave the same reason twice, once for the file and once
-  naming the range: in the processing detail, in the calibration dialog's
-  warning and on the range's line, and in the badge's tooltip. The reason
-  is now given once, naming the range, and the file is still marked below
-  the bar. A file with two or more ranges fitted keeps the file's own
-  reasons, which are over the calibrants of all of them. A file calibrated
-  already keeps its list until it is calibrated again.
 
 ## [1.11.0] - 2026.10.09
 
