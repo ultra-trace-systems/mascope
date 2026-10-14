@@ -20,6 +20,10 @@ from urllib.parse import urlsplit
 
 CONFIG_FILENAME = "config.toml"
 
+#: The service a File Agent pairs and uploads as, and the one a credential
+#: paired before ``paired_as`` was recorded belongs to.
+SERVICE_NAME = "file-agent"
+
 #: What the server accepts as an instrument name: letters, digits and hyphens,
 #: at most 64 of them. The name is the first underscore-separated segment of
 #: an uploaded file name, so an underscore would end it early.
@@ -52,6 +56,10 @@ DEFAULT_SETTINGS = {
     "instrument": "",
     "filename_prefix": "",
     "filename_suffix": "",
+    # The service the access token was paired as, written by pairing: the
+    # server accepts the token under that name only. Empty for a token paired
+    # before the name was recorded, which is a File Agent's.
+    "paired_as": "",
 }
 
 USER_CONFIG_HEADER = """\
@@ -64,6 +72,10 @@ USER_CONFIG_HEADER = """\
 #                  credential expired while the agent was offline) just
 #                  start the agent - it checks with the server and offers
 #                  to pair when the credential is no longer accepted.
+#   paired_as    - the service the credential was paired as, written by
+#                  pairing; absent, it is "file-agent". Do not edit it by
+#                  hand: the server accepts the credential under that name
+#                  only
 #   source       - full path of the folder to watch for new data files
 #   mask         - pattern of the files to upload, e.g. "*.raw"
 #   recursive    - true to also watch subfolders of source (the agent's own
@@ -257,6 +269,12 @@ def write_user_config(config_path: str, settings: dict) -> None:
         "[file-agent]",
         f"host = {toml_str(settings['host'])}",
         f"access_token = {toml_str(settings['access_token'])}",
+    ]
+    # Beside the credential it belongs to, and with no commented-out line
+    # when there is none: it is written by pairing, not set by hand.
+    if settings.get("paired_as"):
+        lines.append(f"paired_as = {toml_str(settings['paired_as'])}")
+    lines += [
         f"source = {toml_str(settings['source'])}",
         f"mask = {toml_str(settings['mask'])}",
         f"recursive = {'true' if settings['recursive'] else 'false'}",
