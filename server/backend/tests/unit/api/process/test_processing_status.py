@@ -550,11 +550,13 @@ def test_the_reason_the_fit_recorded_for_a_range_is_quoted():
         )
     )
 
+    # What the note goes on to say the range's own fit did next, "skipping
+    # calibration", is not quoted: the range was given another's instead
     assert note == (
         "m/z 66-124 has no fit of its own (no calibration peaks found): calibrated "
         "from m/z 40-138 across the 26 ions both measure. m/z 132-460 has no fit of "
-        "its own (no suitable subset of calibration peaks found; skipping "
-        "calibration): given the calibration of m/z 40-138 as it is."
+        "its own (no suitable subset of calibration peaks found): given the "
+        "calibration of m/z 40-138 as it is."
     )
 
 
