@@ -4,6 +4,8 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 ## [Unreleased]
 
+## [1.12.0] - 2026.10.14
+
 ### Added
 
 - **A sample file's scans can be read without their centroids.**
@@ -295,6 +297,7 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   its scans, so nothing in it can be read.", as an empty acquisition does
   and without an error report. A file that is damaged or was cut short in
   transfer is still reported as before.
+
 - **The metadata of a long Orbitrap acquisition can be downloaded.**
   `GET /api/sample/files/{id}/metadata` built its whole response, every
   centroid of every scan, before sending the first byte, and for a large file
@@ -339,6 +342,7 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   does, where it used to end the program with a traceback, and a credential
   the server refuses in that moment is logged and not asked about. Ctrl+C
   at the offer to pair the machine again still only declines the offer.
+
 - **The demo bundle download survives a transfer that is cut short.** A
   download host that closed the connection early left `mascope demo fetch`
   with a short file and no error, so the first thing to notice was the
@@ -357,6 +361,7 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   decides: a file of the full length that fails it is downloaded once more
   from the start, with a warning, and a second mismatch is reported as
   before.
+
 - **Re-processing no longer clears the samples of a file whose ionization
   mode was deleted, on a server that binds files by their acquisition
   method.** A file with no mode's token in its name is re-processed under
@@ -381,6 +386,7 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   question and the file's run parks it with its samples cleared, as a token
   changed while the selection waits does. Servers that do not route on
   method bindings, the default, were not affected.
+
 - **Processing one file on request no longer clears the samples of a file
   whose ionization mode was deleted.** `POST /api/sample/files/{id}/process`
   processes a file with no mode's token in its name under the modes its
@@ -405,6 +411,7 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   server routes on method bindings. The route is reached only with a
   signed-in session, and the web app does not call it: Re-process in Raw
   files goes through re-processing.
+
 - **A processing run that cannot bind a file no longer clears its samples
   first.** A run removed the samples an earlier run had made for a file,
   and reset the m/z calibration of a file given a chemistry in Raw files,
@@ -423,6 +430,7 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   as before. Re-processing still clears a file before its run, so a file it
   parks has no samples. Raw files and the digest of files that need a chemistry now
   say such a file was not processed, rather than that it has no samples.
+
 - **A re-processing report no longer repeats an internal error's text.**
   Where an unexpected error stopped a file - reading its acquisition record
   or the modes its samples have, resolving its name's tokens, or claiming
