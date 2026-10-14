@@ -52,9 +52,10 @@ class SampleFilesResource(BaseResource):
         of megabytes.
 
         Only a file whose raw Orbitrap data is stored has a scan table; any
-        other raises :class:`~mascope_sdk.exceptions.NotFoundError`. So does a
-        server older than the route, which answers any path it does not know
-        with a 404: the message tells the two apart.
+        other is refused, as the other Orbitrap-only reads are, with
+        :class:`~mascope_sdk.exceptions.ValidationError`. A server older than
+        the route answers any path it does not know with a 404, raised as
+        :class:`~mascope_sdk.exceptions.NotFoundError`.
 
         :param sample_file_id: The ID of the sample file.
         :type sample_file_id: str
@@ -79,8 +80,8 @@ class SampleFilesResource(BaseResource):
                  ``df.attrs["stats_per_file"]`` the file's own statistics
                  (instrument model and name among them).
         :rtype: pd.DataFrame | None
-        :raises NotFoundError: If the file holds no raw Orbitrap data, or the
-            server predates the scan table.
+        :raises ValidationError: If the file holds no raw Orbitrap data.
+        :raises NotFoundError: If the server predates the scan table.
         :raises AuthenticationError: If authentication fails.
         :raises MascopeAPIError: If the API request fails.
 

@@ -1,8 +1,8 @@
 """An Orbitrap-only read asked of another sample file is refused as a request.
 
-Per-scan centroids (``GET /api/samples/centroids``) and a sample file's
-metadata (``GET /api/sample/files/{id}/metadata``) are read from an Orbitrap
-raw file. Asked of a TOF sample, both went on to the reader, which raised
+Per-scan centroids (``GET /api/samples/centroids``), a sample file's metadata
+(``GET /api/sample/files/{id}/metadata``) and its scan table
+(``GET /api/sample/files/{id}/scans``) are read from an Orbitrap raw file. Asked of a TOF sample, both went on to the reader, which raised
 ``NotImplementedError``, and answered 500: an error report for every such
 request, though nothing on the server had failed. They are now refused with
 422 before anything is read, and logged at INFO like any other client error.
@@ -191,3 +191,43 @@ class TestSampleFileMetadata:
 
         assert isinstance(result, StreamingResponse)
         read.assert_called_once_with("ORBI-1_a")
+
+
+class TestScanTable:
+    @staticmethod
+    async def _request(filename: str):
+        table = {"num_of_scans": 1, "stats_per_scan": {1: {"ScanNumber": 1}}}
+        read = Mock(return_value=table)
+        stored = AsyncMock(return_value={"data": {"filename": filename}})
+        with (
+            patch.object(sample_files_controller, "get_sample_file", stored),
+            patch.object(sample_files_controller, "get_sample_file_type", _file_type),
+            patch.object(sample_files_controller.m_metadata, "scan_table", read),
+            captured_logs() as records,
+        ):
+            try:
+                result = await sample_files_controller.get_sample_file_scans("file-id")
+            except ApiException as refused:
+                return refused, read, records
+        return result, read, records
+
+    @_WITHOUT_RAW_FILE
+    @pytest.mark.asyncio
+    async def test_a_file_without_a_raw_file_is_refused_before_anything_is_read(
+        self, filename
+    ):
+        refused, read, records = await self._request(filename)
+
+        assert isinstance(refused, ApiException)
+        assert refused.status_code == 422
+        assert "Orbitrap raw file" in refused.user_message
+        assert filename in refused.user_message
+        read.assert_not_called()
+        assert _reported(records) == []
+
+    @pytest.mark.asyncio
+    async def test_an_orbitrap_file_is_still_read(self):
+        result, read, _ = await self._request("ORBI-1_a")
+
+        assert result["results"] == 1
+        assert read.call_args.args == ("ORBI-1_a",)

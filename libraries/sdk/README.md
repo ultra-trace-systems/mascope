@@ -642,7 +642,7 @@ scans = mascope.sample_files.get_scans(
 )
 ```
 
-`fields` keeps the named columns (`ScanNumber` always comes with them); `first_scan` / `last_scan`, `t_min` / `t_max` (seconds) and `polarity` narrow the scans. The number of scans in the file and the file's own statistics ride on `df.attrs["num_of_scans"]` and `df.attrs["stats_per_file"]`. Only a file whose raw Orbitrap data is stored has a scan table.
+`fields` keeps the named columns (`ScanNumber` always comes with them); `first_scan` / `last_scan`, `t_min` / `t_max` (seconds) and `polarity` narrow the scans. The number of scans in the file and the file's own statistics ride on `df.attrs["num_of_scans"]` and `df.attrs["stats_per_file"]`. Only a file whose raw Orbitrap data is stored has a scan table; any other is refused with a `ValidationError`.
 
 #### `mascope.matching`
 
