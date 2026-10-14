@@ -457,7 +457,6 @@ const formatter = new Intl.NumberFormat('en-US', {
   margin-top: 0;
   margin-bottom: 0.3rem;
   font-weight: 600;
-  color: var(--text-color, #fff);
 }
 
 .content-wrapper {
@@ -476,7 +475,7 @@ const formatter = new Intl.NumberFormat('en-US', {
 .list-wrapper {
   width: 280px;
   flex-shrink: 0;
-  border: 1px solid var(--surface-border, #3c434d);
+  border: 1px solid var(--p-content-border-color);
   border-radius: 6px;
   overflow: hidden;
 }
@@ -503,7 +502,7 @@ const formatter = new Intl.NumberFormat('en-US', {
   gap: 1rem;
   margin-top: 1rem;
   padding-top: 1rem;
-  border-top: 1px solid var(--surface-border, #3c434d);
+  border-top: 1px solid var(--p-content-border-color);
   flex-shrink: 0;
 }
 

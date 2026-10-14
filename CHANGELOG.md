@@ -264,6 +264,11 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   first scan. The export now reads the scans the way the peak data holds
   them.
 
+- **The calibration dialog's headings show on the light theme.**
+  "Calibration Settings" and "Calibration Results" were white on the white
+  dialog, and its borders the dark theme's grey: both read colours the app
+  does not define, and fell back to fixed ones. They now follow the theme.
+
 ## [1.11.0] - 2026.10.09
 
 ### Added
