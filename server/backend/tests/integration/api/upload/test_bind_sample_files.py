@@ -1769,8 +1769,9 @@ async def test_processing_on_request_leaves_an_ambiguous_name_its_samples(
     """A name two tokens of one polarity match is a configuration to fix,
     which no earlier binding stands in for: the run binds the file to
     nothing and parks it, after clearing the sample it has. Refused before
-    it is claimed, with what the tokens matched. The same name on a file
-    with no samples has nothing to lose, and its run says why it parks."""
+    it is claimed, with what the tokens matched and the two ways out its
+    park would have offered. The same name on a file with no samples has
+    nothing to lose, and its run says why it parks."""
     _one, token_one = await mode_with_token("-")
     _two, token_two = await mode_with_token("-")
     bound = await _file(
@@ -1788,6 +1789,8 @@ async def test_processing_on_request_leaves_an_ambiguous_name_its_samples(
     assert resp.status_code == 422, resp.text
     reason = resp.json()["error"]
     assert "2 modes match polarity -" in reason
+    assert "Configure tokens in ionization settings" in reason
+    assert "Or choose its chemistry in Raw files" in reason
     assert "left as it is" in reason
     spawn.assert_not_called()
     assert await _samples_of(async_session_factory, bound) == 1
