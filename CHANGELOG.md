@@ -288,6 +288,12 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   dialog, and its borders the dark theme's grey: both read colours the app
   does not define, and fell back to fixed ones. They now follow the theme.
 
+- **The calibration dialog stops waiting on a fit that found no
+  calibrants.** Such a fit ends in a warning, "No calibration peaks found",
+  and has no calibrants to list; the dialog showed the warning and kept a
+  spinner turning below it as though the fit were still running. It now
+  shows the warning alone.
+
 ## [1.11.0] - 2026.10.09
 
 ### Added

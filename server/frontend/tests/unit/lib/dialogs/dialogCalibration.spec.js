@@ -251,6 +251,24 @@ describe('DialogCalibration', () => {
     expect(headers(wrapper)[0]).toBe('Isotope m/z')
   })
 
+  it('waits on a fit under way, and on none that warned before it had calibrants', () => {
+    mocks.fit = fitted(null, null)
+    mocks.fit.current = null
+    const spinning = () => mountDialog().findComponent({ name: 'ProgressSpinner' }).exists()
+
+    for (const status of [null, 'pending']) {
+      mocks.fit.status = status
+      expect(spinning()).toBe(true)
+    }
+    // A fit that found no calibrants ends in a warning with no rows: it is
+    // done, and the warning says why
+    mocks.fit.status = 'warning'
+    mocks.fit.error = 'No calibration peaks found'
+    expect(spinning()).toBe(false)
+    mocks.fit.status = 'error'
+    expect(spinning()).toBe(false)
+  })
+
   it('lists nothing while there is no fit', () => {
     mocks.fit = fitted(null, null)
     mocks.fit.current = null
