@@ -436,13 +436,15 @@ class _ScanReadError(RuntimeError):
 
 
 @pytest.mark.asyncio
-async def test_a_read_that_fails_part_way_cuts_the_body_short_and_is_logged(
+async def test_a_read_that_fails_part_way_leaves_the_json_unclosed_and_is_logged(
     guest_client, sample_file, alpha_item, monkeypatch
 ):
-    # Once the first piece has gone out there is no status left to send. The
-    # body must then end short, so a client's JSON parser fails instead of
-    # reading a document that silently lacks scans - and the server must say
-    # why, since no error handler runs after the response has started.
+    # Once the first piece has gone out there is no status left to send, and
+    # the app's http middleware finishes the response properly before the
+    # error reaches anything outside it: the client gets a complete 200. The
+    # document is what tells it, which must stop unclosed so that a parser
+    # fails rather than reading one that silently lacks scans - and the
+    # server must say why, since no error handler runs once it has started.
     def one_scan_then_fail(_self):
         yield (
             1,
@@ -460,10 +462,24 @@ async def test_a_read_that_fails_part_way_cuts_the_body_short_and_is_logged(
         m_thermo.RawFileMetadataLegacy, "iter_centroids_meta", one_scan_then_fail
     )
 
-    with captured_logs("ERROR") as records, pytest.raises(_ScanReadError):
-        await guest_client.get(f"/api/sample/files/{sample_file}/metadata")
+    # As a client receives it: the test transport would otherwise raise the
+    # app's error again once the response is done, and the test would never
+    # look at what was sent.
+    transport = ASGITransport(app=fast, raise_app_exceptions=False)
+    with captured_logs("ERROR") as records:
+        async with AsyncClient(
+            transport=transport,
+            base_url="http://test",
+            cookies=dict(guest_client.cookies),
+        ) as client:
+            resp = await client.get(f"/api/sample/files/{sample_file}/metadata")
 
-    [record] = [r for r in records if "cut short" in r["message"]]
+    assert resp.status_code == 200
+    # It stops right after the one scan that was read.
+    assert resp.text.endswith('"noises":[1.0]}')
+    with pytest.raises(ValueError):
+        json.loads(resp.text)
+    [record] = [r for r in records if "failed part way" in r["message"]]
     assert record["exception"] is not None
     assert record["exception"].type is _ScanReadError
 

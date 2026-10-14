@@ -175,9 +175,10 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   than 1.6 GB. It is the same JSON
   document, with the two members of `centroids_meta` in the order `data`,
   `time`, and it is sent without a `Content-Length`. A file that cannot be
-  read is still answered with an error status; a read that fails part way
-  ends the response short rather than completing it without the missing
-  scans.
+  read is still answered with an error status. A read that fails part way
+  leaves the JSON unclosed, so no parser takes it for a document without the
+  missing scans, and the server logs why; the response itself still ends as
+  a 200, so a client that saves the body without parsing it sees a success.
 
 - **A Ctrl+C can no longer leave the File Agent hung.** Python raises an
   interrupt on the main thread at whichever instruction that thread has
