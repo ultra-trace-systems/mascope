@@ -285,7 +285,10 @@ def carried_calibration_note(mz_calibration: dict | None) -> str | None:
     collection, or hold ones too weak for the fit, or ones that disagree,
     and only the first is a collection that falls short of the window. The
     sentence says the range has no fit of its own and nothing it does not
-    know.
+    know. A note can go on after a ``;`` to say what the range's own fit did
+    next ("skipping calibration"), which the sentence says in its own words -
+    what the range was given instead - so it is quoted up to there, as the
+    calibration dialog quotes it.
 
     :param mz_calibration: The file's calibration record.
     :return: One sentence per range that was not fitted on calibrants of its
@@ -300,7 +303,7 @@ def carried_calibration_note(mz_calibration: dict | None) -> str | None:
             segment.get("label"),
             segment.get("origin"),
         )
-        note = (segment.get("note") or "").strip().rstrip(".")
+        note = (segment.get("note") or "").split(";")[0].strip().rstrip(".")
         unfitted = f"{label} has no fit of its own" + (
             f" ({note[0].lower()}{note[1:]})" if note else ""
         )
