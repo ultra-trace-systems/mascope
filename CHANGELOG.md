@@ -116,20 +116,6 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 ### Changed
 
-- **Processing one file on request lets the acquisition method bind a file
-  whose samples no mode binds, on a server that routes on method bindings.**
-  `POST /api/sample/files/{id}/process` refused a file with samples that no
-  mode binds any longer - its mode deleted, say - whether or not the server
-  routes on method bindings, because a run cleared a file's samples before
-  the method was asked. A run now binds a file before it clears anything of
-  it, so with `backend.method_binding = "route"` such a file is started with
-  no modes of its own and its acquisition method gets its turn: the file is
-  rebuilt under the chemistry its method was seen running, or parked as
-  needing a chemistry with its samples as they were. Without the rung, the
-  default, and for a name whose tokens match ambiguously, which the method
-  is never asked about, the request is refused as before. Re-processing
-  still refuses such a file: it clears a file's samples before its run.
-
 - **A file bound by its acquisition record goes on saying so once it is
   processed.** Its status in Raw files read "Bound to ... by its acquisition
   record." only until the next stage replaced it, so a processed file said
@@ -398,14 +384,19 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   whether or not the server routes on method bindings. The request is now
   refused (422) before anything of the file is claimed or cleared, with a
   reason that says the modes its samples were made under no longer bind it,
-  and choosing its chemistry in Raw files rebuilds it. A file with no
-  samples is started as before, and samples that cannot be read fail the
-  request. A file with samples whose name matches tokens ambiguously - two
-  modes of one polarity, say, after a token was added - lost them the same
-  way, since its run parks it on its name, and is refused the same way with
-  what the tokens matched. The route is reached only with a signed-in
-  session, and the web app does not call it: Re-process in Raw files goes
-  through re-processing.
+  and choosing its chemistry in Raw files rebuilds it. On a server that
+  routes on method bindings (`backend.method_binding = "route"`), the
+  file's acquisition method is asked first, as the run asks it: a file the
+  method binds is started, and rebuilt under the chemistry its method was
+  seen running, and one it declines is refused with the method's own reason
+  and remedy. A file with no samples is started as before, and samples that
+  cannot be read fail the request. A file with samples whose name matches
+  tokens ambiguously - two modes of one polarity, say, after a token was
+  added - lost them the same way, since its run parks it on its name, and
+  is refused the same way with what the tokens matched, whether or not the
+  server routes on method bindings. The route is reached only with a
+  signed-in session, and the web app does not call it: Re-process in Raw
+  files goes through re-processing.
 - **A processing run that cannot bind a file no longer clears its samples
   first.** A run removed the samples an earlier run had made for a file,
   and reset the m/z calibration of a file given a chemistry in Raw files,

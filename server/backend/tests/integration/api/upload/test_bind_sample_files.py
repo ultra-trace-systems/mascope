@@ -12,9 +12,10 @@ do not fit is refused. Re-processing, and processing a file on request, keep
 the modes a file was bound to that way, whatever its name and its acquisition
 record say, until somebody chooses again. A file whose samples no mode binds
 any longer is started on neither road, since the run would park it - but on
-request, where the method rung is on, it is left to the run: its acquisition
-method may bind it, and a run that parks it keeps its samples. Only the
-pipeline's own samples are replaced, wherever a person's sample is.
+request, where the method rung is on and the file's acquisition method binds
+it, it is left to the run, which binds a file before it clears anything of
+it. Only the pipeline's own samples are replaced, wherever a person's sample
+is.
 
 For a file nobody chose the chemistry of, its acquisition record is asked
 first on both of those roads, as the pipeline asks it: a file its record
@@ -43,6 +44,9 @@ from mascope_backend.api.controllers.sample.files.process import (
     service as process_service,
 )
 from mascope_backend.api.controllers.sample.files.process import status
+from mascope_backend.api.controllers.sample.files.process.bindings import (
+    MethodRouting,
+)
 from mascope_backend.api.lib.exceptions.api_exceptions import ApiException
 from mascope_backend.api.models.sample.files.config import STALLED_AFTER
 from mascope_backend.api.routes.sample.files import sample_files_routes
@@ -655,8 +659,8 @@ async def test_reprocessing_lets_the_rung_answer_for_a_parked_file(
 
     Selecting them in Raw files and pressing Re-process calls this, so
     refusing a file on its name here would report "no tokens" for exactly the
-    files a routing deployment can now bind. Only the pipeline can ask the
-    rung - it needs the file's scan-stream census - so the file goes through
+    files a routing deployment can now bind. The method is not asked first: a
+    file with no samples has nothing a run could cost it, so it goes through
     with no modes of its own, and parks again if the method cannot place it.
     """
     monkeypatch.setattr(process_service, "routes_on_method_binding", lambda: True)
@@ -1757,24 +1761,48 @@ async def test_processing_on_request_leaves_a_file_no_mode_binds_its_samples(
     assert await _status(async_session_factory, orphaned) == "done"
 
 
+def _method_binds(monkeypatch, setup) -> tuple[AsyncMock, list[dict]]:
+    """Have the method rung bind a file, and give the file a census to read.
+
+    :return: The rung's stand-in, and the census it should be handed.
+    """
+    census = _census(1)
+    monkeypatch.setattr(
+        process_service, "read_scan_streams", AsyncMock(return_value=census)
+    )
+    rung = AsyncMock(
+        return_value=(
+            [
+                MethodRouting(
+                    mode=IonizationMode(ionization_mode_id=setup["negative"]),
+                    binding_id=gen_id(),
+                )
+            ],
+            None,
+        )
+    )
+    monkeypatch.setattr(process_service, "resolve_modes_by_method_binding", rung)
+    return rung, census
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "under", [None, "positive"], ids=["mode deleted", "mode of another polarity"]
 )
-async def test_processing_on_request_lets_the_rung_answer_for_a_file_with_samples(
+async def test_processing_on_request_leaves_a_file_its_method_binds_to_the_run(
     async_session_factory, setup, admin_client, monkeypatch, under
 ):
-    """The same file where the server routes on method bindings. Its
-    acquisition method may bind it, and only the run can ask, so it starts
-    with no modes of its own. A run binds a file before it clears anything
-    of it: the method rebuilds it, or it parks with its samples as they
-    were. Its samples are not even counted."""
+    """The same file where the server routes on method bindings, and its
+    acquisition method binds it. The method is asked as the run asks it, on
+    the file's scan-stream census, and the file starts with no modes of its
+    own. The run asks again and rebuilds it under that chemistry; a run
+    binds a file before it clears anything of it, so one whose method no
+    longer binds it by then parks with its samples as they were."""
     monkeypatch.setattr(process_service, "routes_on_method_binding", lambda: True)
-    counted = AsyncMock()
-    monkeypatch.setattr(process_service, "_pipeline_item_count", counted)
+    rung, census = _method_binds(monkeypatch, setup)
     orphaned = await _file(
         async_session_factory,
-        "on-request-left-to-the-rung",
+        "on-request-bound-by-its-method",
         "-",
         sample_under=(setup["batch"], setup[under] if under else None),
     )
@@ -1784,12 +1812,52 @@ async def test_processing_on_request_lets_the_rung_answer_for_a_file_with_sample
     resp = await admin_client.post(f"/api/sample/files/{orphaned}/process")
 
     assert resp.status_code == 202, resp.text
+    asked_for, streams = rung.await_args.args
+    assert asked_for.sample_file_id == orphaned
+    assert streams is census
     assert spawn.await_args.kwargs["sample_file_id"] == orphaned
     assert spawn.await_args.kwargs["ionization_mode_ids"] is None
     assert spawn.await_args.kwargs["kept_provenance"] is None
-    counted.assert_not_awaited()
     assert await _samples_of(async_session_factory, orphaned) == 1
     assert await _status(async_session_factory, orphaned) == "queued"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "under", [None, "positive"], ids=["mode deleted", "mode of another polarity"]
+)
+async def test_processing_on_request_refuses_a_file_its_method_does_not_bind(
+    async_session_factory, setup, admin_client, monkeypatch, under
+):
+    """The same file, where the method does not bind it either: a run could
+    only park it. It is refused before it is claimed, with the method's own
+    reason and remedy, and keeps its status. The rung itself is asked: this
+    file's method reports no name, which is one of the ways it declines."""
+    monkeypatch.setattr(process_service, "routes_on_method_binding", lambda: True)
+    monkeypatch.setattr(
+        process_service, "read_scan_streams", AsyncMock(return_value=[])
+    )
+    orphaned = await _file(
+        async_session_factory,
+        "on-request-declined-by-its-method",
+        "-",
+        sample_under=(setup["batch"], setup[under] if under else None),
+    )
+    spawn = AsyncMock()
+    monkeypatch.setattr(sample_files_routes, "spawn_auto_process_sample_file", spawn)
+
+    resp = await admin_client.post(f"/api/sample/files/{orphaned}/process")
+
+    assert resp.status_code == 422, resp.text
+    reason = resp.json()["error"]
+    assert "ionization mode tokens" in reason.lower()
+    assert "no longer bind it" in reason
+    assert "does not say either: its acquisition method reports no name" in reason
+    assert "Files of this instrument need a filename token" in reason
+    assert "It was left as it is." in reason
+    spawn.assert_not_called()
+    assert await _samples_of(async_session_factory, orphaned) == 1
+    assert await _status(async_session_factory, orphaned) == "done"
 
 
 @pytest.mark.asyncio
@@ -1829,8 +1897,9 @@ async def test_processing_on_request_asks_the_record_of_a_file_no_mode_binds(
     """The record is asked before the samples are counted. A file its record
     binds starts with no modes of its own though its samples have none: the
     run binds it by the record, and rebuilds it. One whose record names a
-    chemistry nothing here answers to is refused, and the reason says what
-    the record named."""
+    chemistry nothing here answers to is refused where the method rung is
+    off, and the reason says what the record named."""
+    monkeypatch.setattr(process_service, "routes_on_method_binding", lambda: False)
     _mode_id, token = await mode_with_token("-")
     declared = await _file(
         async_session_factory,
@@ -1867,11 +1936,63 @@ async def test_processing_on_request_asks_the_record_of_a_file_no_mode_binds(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "binds", [True, False], ids=["method binds", "method declines"]
+)
+async def test_processing_on_request_asks_the_method_after_an_unanswered_record(
+    async_session_factory, setup, admin_client, monkeypatch, binds
+):
+    """A record that names a chemistry nothing here answers to binds nothing,
+    so where the method rung is on, the file's acquisition method is asked
+    next, as the run asks it. A file its method binds is left to the run. One
+    it does not bind is refused, and the reason says what the record named
+    and why the method did not answer: this file's method reports no name."""
+    monkeypatch.setattr(process_service, "routes_on_method_binding", lambda: True)
+    if binds:
+        _method_binds(monkeypatch, setup)
+    else:
+        monkeypatch.setattr(
+            process_service, "read_scan_streams", AsyncMock(return_value=[])
+        )
+    unanswered = await _file(
+        async_session_factory,
+        "on-request-record-unanswered-rung-on",
+        "-",
+        sample_under=(setup["batch"], None),
+        declaring="T-no-mode-has",
+    )
+    spawn = AsyncMock()
+    monkeypatch.setattr(sample_files_routes, "spawn_auto_process_sample_file", spawn)
+
+    resp = await admin_client.post(f"/api/sample/files/{unanswered}/process")
+
+    if binds:
+        assert resp.status_code == 202, resp.text
+        assert spawn.await_args.kwargs["ionization_mode_ids"] is None
+        assert await _status(async_session_factory, unanswered) == "queued"
+    else:
+        assert resp.status_code == 422, resp.text
+        reason = resp.json()["error"]
+        assert "names the chemistry 'T-no-mode-has', but no ionization mode" in reason
+        assert "does not say either: its acquisition method reports no name" in reason
+        spawn.assert_not_called()
+        assert await _status(async_session_factory, unanswered) == "done"
+    assert await _samples_of(async_session_factory, unanswered) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("by_method", [False, True], ids=["rung off", "rung on"])
 async def test_processing_a_parked_file_on_request_leaves_it_to_the_run(
-    async_session_factory, setup, admin_client, monkeypatch
+    async_session_factory, setup, admin_client, monkeypatch, by_method
 ):
     """No samples, so nothing a run could cost it: it starts with no modes
-    of its own, and the run binds it or parks it again."""
+    of its own, and the run binds it or parks it again. Where the method
+    rung is on, the method is not asked first: this file's method reports
+    no name, and asked here it would decline."""
+    monkeypatch.setattr(process_service, "routes_on_method_binding", lambda: by_method)
+    monkeypatch.setattr(
+        process_service, "read_scan_streams", AsyncMock(return_value=[])
+    )
     parked = await _file(async_session_factory, "on-request-parked", "-")
     spawn = AsyncMock()
     monkeypatch.setattr(sample_files_routes, "spawn_auto_process_sample_file", spawn)

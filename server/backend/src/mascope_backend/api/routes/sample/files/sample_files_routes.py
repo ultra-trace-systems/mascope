@@ -458,9 +458,9 @@ async def process_sample_item_route(
     # keep the modes their own samples hold, and how each of them was bound
     # - which is not necessarily anybody's choice: a token that has since
     # been renamed bound some of them. A file with samples that nothing
-    # could bind - no mode any longer, and no method rung to ask - or with
-    # samples and an ambiguous name, is refused here with nothing of it
-    # claimed: the run could only park the file.
+    # binds - no mode any longer, and no acquisition method that answers
+    # for it - or with samples and an ambiguous name, is refused here with
+    # nothing of it claimed: the run could only park the file.
     kept = await modes_to_rebind(sample_file_id)
     # The run clears what an earlier run left once it has bound the file,
     # and until it records its own stages the row would still say how that
@@ -497,8 +497,9 @@ async def bind_sample_files_route(
 
     For files whose names carry no token of a configured mode. Each is bound
     to the chosen mode of each polarity it holds and processed as a token
-    would have had it processed. Only files without samples are bound, so
-    nothing is rebuilt here, and an editor may choose.
+    would have had it processed. A file that has samples already is rebuilt
+    under the chosen modes, as re-processing rebuilds one, and a sample a
+    person made from it is left as it is. An editor may choose.
 
     :param body: The files, and the modes chosen for them.
     :param user: The current authenticated user with editor permissions.
