@@ -59,7 +59,8 @@ def identity(
     agent starts; nothing sets it on import. Every call sets all three: one
     that leaves an argument out sets its default.
 
-    :param service_name: The service the machine is paired as
+    :param service_name: The service the machine is paired as: ``file-agent``,
+        or ``instrument-agent`` for a program that controls the instrument
     :type service_name: str
     :param version: The version to report; None for this package's own
     :type version: str | None

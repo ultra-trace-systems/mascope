@@ -15,6 +15,7 @@ import time
 import requests
 import urllib3
 
+import mascope_sdk
 from mascope_file_agent import __version__
 from mascope_file_agent.config import base_url, is_valid_instrument, normalize_host
 from mascope_sdk import agent_headers
@@ -96,7 +97,7 @@ def check_credential(
 ) -> tuple[str, str]:
     """Ask the server whether it still accepts this machine's credential.
 
-    Calls a cheap authenticated endpoint with the file-agent service headers,
+    Calls a cheap authenticated endpoint with the agent's service headers,
     exactly as uploads will.
 
     :param host: Normalized server host
@@ -502,10 +503,31 @@ def _offer_filename_prefix(
     return current_prefix
 
 
+def _refusal_reason(resp: requests.Response) -> str | None:
+    """What the server wrote for a person about why it refused a request.
+
+    :param resp: The refusal
+    :type resp: requests.Response
+    :return: The server's ``error`` text, or None when the body has none
+    :rtype: str | None
+    """
+    try:
+        reason = resp.json().get("error")
+    except (ValueError, AttributeError):
+        return None
+    if not isinstance(reason, str) or not reason.strip():
+        return None
+    return reason.strip()
+
+
 def start_pairing(
     host: str, verify: bool = True, instrument: str | None = None
 ) -> dict | None:
     """Request a pairing code from the server.
+
+    The machine is paired as the service the process named in ``identity()``,
+    the name every later request reports, since a device token is accepted
+    under its own service name only.
 
     :param host: Normalized server host
     :type host: str
@@ -520,7 +542,7 @@ def start_pairing(
     """
     machine_name = platform.node()[:64] or None
     payload = {
-        "service_name": "file-agent",
+        "service_name": mascope_sdk.SERVICE_NAME,
         "machine_name": machine_name,
         # Stored on the paired machine by a server that knows these fields
         # and shown to the approver; an older server drops them. Clipped the
@@ -543,6 +565,13 @@ def start_pairing(
         return None
     if resp.status_code == 404:
         print("This Mascope server does not support pairing (older version).")
+        return None
+    reason = _refusal_reason(resp) if resp.status_code == 422 else None
+    if reason:
+        # The server could not accept what the request reported, and says
+        # which part: a server older than the service this process pairs as
+        # names the service.
+        print(f"The server refused to pair this machine: {reason}")
         return None
     if resp.status_code != 200 or "json" not in resp.headers.get("content-type", ""):
         print(f"Unexpected response from the server (HTTP {resp.status_code}).")
