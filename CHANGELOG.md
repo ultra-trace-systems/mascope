@@ -6,6 +6,24 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 ### Added
 
+- **A sample file's scans can be read without their centroids.**
+  `GET /api/sample/files/{id}/scans` returns the scan table of a raw Orbitrap
+  file: one row per scan with its statistics and its trailer under the
+  instrument's own labels (`FT Resolution:`, `Conversion Parameter B:`, the
+  lock-mass fields), and the file's statistics, as
+  `GET /api/sample/files/{id}/metadata` gives them. Until now those came only
+  with every centroid of every scan, which is 99.9 % of that response: a
+  file whose metadata is 294 MB has a scan table of 0.4 MB, answered in a
+  fifth of a second, since no peak is read for it. The table describes the
+  file, so scans of every MS order are in it (`MsType` says which) and none
+  is left out. `fields` keeps the named entries of each row (repeat it for
+  several; `ScanNumber` always stays), and `first_scan` / `last_scan`,
+  `t_min` / `t_max` in seconds and `polarity` narrow the scans. The route
+  takes an API token, and the SDK reads it as a DataFrame with
+  `mascope.sample_files.get_scans(sample_file_id, fields=..., ...)`.
+  `/metadata` itself takes `include_centroids=false` for the same rows of
+  the scans it has always listed; the default is unchanged.
+
 - **What bound a sample's chemistry is readable through the API.** A sample
   item records which rung of the binding ladder auto-processing bound it by
   (`bound_by`: `declared`, `explicit`, `token` or `method`) and, for a method
@@ -141,6 +159,25 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   its scans, so nothing in it can be read.", as an empty acquisition does
   and without an error report. A file that is damaged or was cut short in
   transfer is still reported as before.
+- **The metadata of a long Orbitrap acquisition can be downloaded.**
+  `GET /api/sample/files/{id}/metadata` built its whole response, every
+  centroid of every scan, before sending the first byte, and for a large file
+  the request ended in a 502 on every attempt. The cause was not a proxy
+  limit: encoding the finished body as JSON is one uninterrupted step, the
+  server's supervisor asks each of its worker processes for a sign of life
+  and stops one that has not answered within five seconds, and a worker in
+  the middle of that step cannot answer. On the server where it was found a
+  response of about 270 MB got through and one of about 290 MB never did,
+  and a stopped worker takes the other requests it is serving with it. The
+  response is now written one scan at a time: the first byte leaves in a
+  fraction of a second, a 294 MB response that took 20 seconds where it was
+  served at all takes 8, and the server holds one scan's centroids rather
+  than 1.6 GB. It is the same JSON
+  document, with the two members of `centroids_meta` in the order `data`,
+  `time`, and it is sent without a `Content-Length`. A file that cannot be
+  read is still answered with an error status; a read that fails part way
+  ends the response short rather than completing it without the missing
+  scans.
 
 - **A Ctrl+C can no longer leave the File Agent hung.** Python raises an
   interrupt on the main thread at whichever instruction that thread has

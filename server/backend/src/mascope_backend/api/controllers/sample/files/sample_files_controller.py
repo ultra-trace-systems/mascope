@@ -1,11 +1,14 @@
 import asyncio
+import json
 import math
 import os
 import shutil
+from collections.abc import Iterator
 from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
 from fastapi import BackgroundTasks, HTTPException, UploadFile
+from fastapi.responses import StreamingResponse
 from sqlalchemy import (
     exists,
     func,
@@ -16,6 +19,7 @@ from sqlalchemy.exc import DBAPIError
 from sqlalchemy.orm import undefer
 
 import mascope_signal.compute as m_compute
+import mascope_signal.metadata as m_metadata
 from mascope_backend.acquisition_record import record_ids
 from mascope_backend.api.controllers.dataset.acquisition.service import (
     create_acquisition_datasets,
@@ -1848,23 +1852,63 @@ async def get_sample_file_spectrum(
 # ---------------------
 
 
+def _metadata_body(
+    message: str, head: str, centroids: Iterator[str], filename: str
+) -> Iterator[str]:
+    """The metadata response with its centroids, as JSON text in pieces.
+
+    The envelope every route answers in, around the document ``head`` opens
+    and ``centroids`` completes one scan at a time. Starlette takes each piece
+    in a worker thread and sends it before asking for the next, so no more
+    than one scan's centroids is held, and none of it is read on the event
+    loop.
+
+    :param message: The response's message.
+    :param head: The document's first piece: everything but the centroids.
+    :param centroids: The rest of the document, a scan's centroids per piece.
+    :param filename: The sample file's name, for the log.
+    :return: The pieces of the response body.
+    """
+    yield '{"message":' + json.dumps(message, ensure_ascii=False) + ',"data":' + head
+    try:
+        yield from centroids
+    except Exception:
+        # The status line left with the first piece, so the client can only
+        # be told by a body that ends short: raising drops the connection
+        # without closing the body. Logged here because nothing else will -
+        # no handler is left to report an error after the response started.
+        runtime.logger.exception(
+            f"Reading the centroids of sample file '{filename}' failed part "
+            "way through its metadata response; the response was cut short"
+        )
+        raise
+    yield "}"
+
+
 @api_controller()
-async def get_sample_file_metadata(sample_file_id: str) -> dict:
+async def get_sample_file_metadata(
+    sample_file_id: str, include_centroids: bool = True
+) -> dict | StreamingResponse:
     """
     Retrieves metadata for a specific sample file.
 
     Steps:
     1. Fetch the sample file details using the provided ID.
     2. Extract metadata from the file.
-    3. Return the metadata as a dictionary.
+    3. Return the metadata: as a dictionary without the centroids, and with
+       them as a response that is written one scan at a time.
 
     :param sample_file_id: Unique identifier for the sample file.
     :type sample_file_id: str
+    :param include_centroids: Whether to include ``centroids_meta``, every
+        centroid of every scan.
+    :type include_centroids: bool, optional
     :raises NotFoundException: If the sample file or its metadata is not found.
     :raises HTTPException: 422 when the sample file has no Orbitrap raw file
         to read the metadata from.
-    :return: Dictionary containing the sample file metadata.
-    :rtype: dict
+    :return: Dictionary containing the sample file metadata, or the streamed
+        response that carries the same document with its centroids.
+    :rtype: dict | StreamingResponse
     """
     # Step 1: Fetch sample file info from the database
     sample_file_data = await get_sample_file(sample_file_id)
@@ -1881,8 +1925,20 @@ async def get_sample_file_metadata(sample_file_id: str) -> dict:
                 f"'{filename}' has none"
             ),
         )
+    # With the centroids the document runs to hundreds of megabytes, so it is
+    # never built whole: only its first piece is taken here. That piece is the
+    # only one the scan table and the trailers are read for, so a file that
+    # cannot be read is still answered with an error status rather than a
+    # body cut short.
     try:
         metadata = m_compute.get_metadata(filename)
+        if include_centroids:
+            pieces = metadata.iter_json()
+            head = await asyncio.to_thread(next, pieces)
+        else:
+            metadata_dict = await asyncio.to_thread(
+                metadata.to_dict, include_centroids=False
+            )
     except Exception as e:
         # str(e) can carry internal file paths; the cause is logged server-side
         # (with traceback) by the @api_controller error handling.
@@ -1890,10 +1946,86 @@ async def get_sample_file_metadata(sample_file_id: str) -> dict:
             status_code=500, detail="Could not read metadata from the sample file."
         ) from e
 
-    # Step 3: Convert metadata to dict
-    metadata_dict = await asyncio.to_thread(metadata.to_dict)
+    # Step 3: Return the metadata
+    message = f"Metadata for sample file '{filename}' retrieved successfully."
+    if not include_centroids:
+        return {"message": message, "data": metadata_dict}
+    return StreamingResponse(
+        _metadata_body(message, head, pieces, filename),
+        media_type="application/json",
+    )
 
+
+@api_controller()
+async def get_sample_file_scans(
+    sample_file_id: str,
+    fields: list[str] | None = None,
+    first_scan: int | None = None,
+    last_scan: int | None = None,
+    t_min: float | None = None,
+    t_max: float | None = None,
+    polarity: str | None = None,
+) -> dict:
+    """
+    Retrieves the scan table of a sample file: every scan's statistics and
+    trailer, without its centroids.
+
+    Steps:
+    1. Fetch the sample file details using the provided ID.
+    2. Read the scans asked for from the file's scan table. No peak is read.
+    3. Return the scans with the file's statistics.
+
+    :param sample_file_id: Unique identifier for the sample file.
+    :type sample_file_id: str
+    :param fields: The entries to keep of every scan, optional; every entry
+        when None. ``ScanNumber`` is always kept.
+    :type fields: list[str] | None, optional
+    :param first_scan: Only the scans from this scan number on, optional.
+    :type first_scan: int | None, optional
+    :param last_scan: Only the scans up to this scan number, optional.
+    :type last_scan: int | None, optional
+    :param t_min: Only the scans starting at this time [s] or later, optional.
+    :type t_min: float | None, optional
+    :param t_max: Only the scans starting at this time [s] or earlier, optional.
+    :type t_max: float | None, optional
+    :param polarity: Only the scans of this polarity, optional.
+    :type polarity: str | None, optional
+    :raises NotFoundException: If the sample file is not found, or holds no
+        raw Orbitrap data to read scans from.
+    :return: A dictionary with the number of scans returned and the scan table.
+    :rtype: dict
+    """
+    # Step 1: Fetch sample file info from the database
+    sample_file_data = await get_sample_file(sample_file_id)
+    filename = sample_file_data.get("data").get("filename")
+
+    # Step 2: Read the scan table
+    try:
+        table = await asyncio.to_thread(
+            m_metadata.scan_table,
+            filename,
+            polarity=polarity,
+            t_min=t_min,
+            t_max=t_max,
+            first_scan=first_scan,
+            last_scan=last_scan,
+            fields=fields,
+        )
+    except NotImplementedError as e:
+        raise NotFoundException(
+            f"Sample file '{filename}' holds no raw Orbitrap data to read scans from."
+        ) from e
+    except Exception as e:
+        # str(e) can carry internal file paths; the cause is logged server-side
+        # (with traceback) by the @api_controller error handling.
+        raise HTTPException(
+            status_code=500, detail="Could not read the scans of the sample file."
+        ) from e
+
+    # Step 3: Return the scans
+    results = len(table["stats_per_scan"])
     return {
-        "message": f"Metadata for sample file '{filename}' retrieved successfully.",
-        "data": metadata_dict,
+        "message": f"Retrieved {results} scans of sample file '{filename}'.",
+        "results": results,
+        "data": table,
     }
