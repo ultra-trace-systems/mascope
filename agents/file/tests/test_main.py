@@ -159,7 +159,13 @@ def test_a_production_run_saves_a_new_token_to_config_toml(run, tmp_path):
     agent.credentials.persist("renewed-token")
 
     saved = config.load_user_config(str(config_path))
-    assert saved == {**in_the_file, "access_token": "renewed-token"}
+    # With the name the program paired and renewed it as, which a file from
+    # before the name was recorded gains at its first renewal.
+    assert saved == {
+        **in_the_file,
+        "access_token": "renewed-token",
+        "paired_as": "file-agent",
+    }
     # While the agent itself watches the folder the runtime resolved.
     assert agent.settings.source == str(tmp_path)
 

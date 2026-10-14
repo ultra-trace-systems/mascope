@@ -40,14 +40,14 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   service and reports the version the process named in `identity()`, where
   it asked for `file-agent` and gave the library's version whatever they
   were, and when the server refuses to pair, it prints the server's reason,
-  which from a server older than `instrument-agent` names the service. Setup
-  records the name a machine was paired as in `config.toml` (`paired_as`),
-  and `AgentSettings.service_name()` gives it back: a token paired before it
-  was recorded is a File Agent's, so a program that pairs new machines as
-  `instrument-agent` keeps every machine it already has, a File Agent
-  configuration it took over among them, under the name the server knows.
-  Nothing changes for an agent already paired: updating the server or the
-  agent leaves every credential valid.
+  which from a server older than `instrument-agent` names the service. The
+  agent saves with every token the name it was paired as, in `config.toml`
+  (`paired_as`), and `AgentSettings.service_name()` gives it back: a token
+  saved before the name was recorded is a File Agent's, so a program that
+  pairs new machines as `instrument-agent` keeps every machine it already
+  has, a File Agent configuration it took over among them, under the name
+  the server knows. Nothing changes for an agent already paired: updating
+  the server or the agent leaves every credential valid.
 
 ### Changed
 
