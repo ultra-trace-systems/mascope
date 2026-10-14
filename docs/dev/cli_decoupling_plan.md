@@ -277,7 +277,7 @@ own.
 
 - **#1735** (worktree instances apply the main checkout's alembic chain):
   fixed by #1854, which added `checkout.backend_path()`; the regression
-  tests are in `tests/test_dev_migrate.py`. The issue can be closed.
+  tests are in `tests/test_dev_migrate.py`. Closed on 2026-10-14.
 - **#1858** (`prod update --check` reports up to date when a newer release
   exists): partly fixed. The revert after a reboot it also describes is gone
   since #1862 (`_align_checkout`). The main defect stands: `--check`
