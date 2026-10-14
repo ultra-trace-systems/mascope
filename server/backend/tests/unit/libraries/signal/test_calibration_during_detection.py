@@ -84,7 +84,8 @@ class _ApplyElsewhere:
         self.said: list[str] = []
         self._over = False
         self._lines: queue.Queue = queue.Queue()
-        threading.Thread(target=self._read, daemon=True).start()
+        self._reader = threading.Thread(target=self._read, daemon=True)
+        self._reader.start()
 
     def _read(self) -> None:
         for line in self.process.stdout:
@@ -117,6 +118,26 @@ class _ApplyElsewhere:
         assert self.process.returncode == 0, output
         assert "APPLIED" in self.said, output
 
+    def stop(self) -> None:
+        """Make sure it is over, killed if it is not, and let go of its pipe."""
+        if self.process.poll() is None:
+            self.process.kill()
+        self.process.wait(timeout=WAIT)
+        # Its end closes the pipe, which ends the reader
+        self._reader.join(timeout=WAIT)
+        self.process.stdout.close()
+
+
+@pytest.fixture
+def elsewhere():
+    """The applies a test starts in other processes, each stopped however the
+    test ends: one left running would go on writing to the filestore the
+    next test's sample is made in."""
+    started: list[_ApplyElsewhere] = []
+    yield started
+    for apply in started:
+        apply.stop()
+
 
 def _store_mz():
     return m_io.load_peak_data(
@@ -126,7 +147,7 @@ def _store_mz():
 
 @pytest.mark.parametrize("per_stream", [False, True], ids=["whole", "per-stream"])
 def test_a_calibration_applied_during_a_detection_moves_the_store_it_writes(
-    acquire, instrument_functions, temp_filestore, monkeypatch, per_stream
+    acquire, instrument_functions, temp_filestore, elsewhere, monkeypatch, per_stream
 ):
     """The file's peaks rebuilt while a calibration is applied to it from
     another process, which asks to apply it after the rebuild has read the
@@ -138,7 +159,6 @@ def test_a_calibration_applied_during_a_detection_moves_the_store_it_writes(
     before = _store_mz()
     detection = m_io.peak_detection_lock_path(SAMPLE_FILENAME)
     write_peaks = m_io.write_peaks
-    elsewhere = []
 
     async def writing(*args, **kwargs):
         # The rebuild has read the record and placed its peaks by it
