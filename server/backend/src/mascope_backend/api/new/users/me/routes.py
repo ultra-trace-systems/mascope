@@ -19,7 +19,11 @@ from mascope_backend.api.new.users.me.schemas import (
     UserUpdateMe,
     UserUpdateMeCredentials,
 )
-from mascope_backend.api.new.users.service import get_user, update_user
+from mascope_backend.api.new.users.service import (
+    get_user,
+    sign_out_everywhere,
+    update_user,
+)
 from mascope_backend.api.new.users.user_manager.dependencies import get_user_manager
 from mascope_backend.api.new.users.user_manager.service import UserManager
 from mascope_backend.db import User
@@ -77,6 +81,29 @@ async def update_me_route(
         user_update=user_update,
         user_manager=user_manager,
     )
+
+
+# POST, not GET: it changes state, and the SameSite=lax auth cookie rides on
+# cross-site top-level GET navigations - as a GET, a crafted link could sign a
+# user out of every browser.
+@me_router.post("/sign-out-everywhere")
+@api_route()
+async def sign_out_everywhere_route(
+    user: User = Depends(guest_user),
+):
+    """
+    Sign the current user out of every browser, this one included.
+
+    For a person who signed in somewhere they no longer control, or suspects
+    someone else holds their session. Ends web sessions only; API access tokens
+    are separate credentials, revoked from the token settings.
+
+    :param user: The current authenticated user.
+    :type user: User
+    :return: A success message.
+    :rtype: dict
+    """
+    return await sign_out_everywhere(user_id=user.id)
 
 
 @me_router.patch(

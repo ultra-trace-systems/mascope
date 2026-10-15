@@ -2,7 +2,8 @@
 Socket.IO session management with Redis storage.
 
 Stores authentication sessions in Redis for cross-worker access.
-Each session contains user_id, username, and role_id for RBAC checks.
+Each session contains user_id, username, and role_id for RBAC checks, and for
+a web session the issued_at of the token it was authenticated with.
 
 Sessions persist for a configurable TTL (default 24 hours) as a safety net.
 Primary cleanup occurs on socket disconnect. TTL is refreshed on each
@@ -11,7 +12,7 @@ access to keep active users authenticated indefinitely.
 
 import json
 import os
-from typing import Any
+from typing import Any, Optional
 
 from mascope_backend.db import User
 from mascope_backend.runtime import runtime
@@ -20,7 +21,9 @@ from mascope_backend.socket.storage.config import storage_config
 from mascope_backend.socket.storage.exceptions import SocketSessionError
 
 
-async def save_user_session(sid: str, user: User, namespace: str = "/") -> None:
+async def save_user_session(
+    sid: str, user: User, namespace: str = "/", issued_at: Optional[int] = None
+) -> None:
     """
     Save authenticated user session to Redis.
 
@@ -35,6 +38,11 @@ async def save_user_session(sid: str, user: User, namespace: str = "/") -> None:
     :type user: User
     :param namespace: Socket.IO namespace
     :type namespace: str
+    :param issued_at: The ``iat`` of the web session token the socket was
+        authenticated with, compared with the account's session cutoff on
+        subscribe. ``None`` for a service token or a web token minted before
+        tokens carried one.
+    :type issued_at: Optional[int]
     :raises SocketSessionError: If session cannot be saved to Redis
     """
     try:
@@ -43,6 +51,7 @@ async def save_user_session(sid: str, user: User, namespace: str = "/") -> None:
             "user_id": user.id,
             "username": user.username,
             "role_id": user.role_id,
+            "issued_at": issued_at,
         }
 
         # Store in Redis with configured TTL

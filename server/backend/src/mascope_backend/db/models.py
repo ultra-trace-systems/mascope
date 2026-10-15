@@ -246,6 +246,14 @@ class User(SQLAlchemyBaseUserTable[int], Base):
     password_changed_at: Mapped[Optional[dt]] = mapped_column(
         TIMESTAMP(timezone=True), nullable=True
     )
+    # Web sessions issued before this moment are refused. Stamped by an account
+    # disable, the forced-password-change sweep and sign-out-everywhere; a
+    # password change ends sessions through password_changed_at instead, and the
+    # later of the two is the cutoff (see api/new/auth/sessions.py). NULL means
+    # nothing has revoked this account's sessions.
+    sessions_revoked_at: Mapped[Optional[dt]] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=True
+    )
 
     # TOTP seed, encrypted at rest with the deployment's MFA key (see
     # api/new/auth/mfa/secrets.py). NULL when the account has never begun

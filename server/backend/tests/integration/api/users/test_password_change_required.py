@@ -372,6 +372,8 @@ async def test_owner_requires_a_change_for_every_account(
         # Nobody is exempt, the acting owner included.
         assert all(user.must_change_password for user in rows)
         assert all(user.password_change_reason == "policy" for user in rows)
+        # And every open web session is ended with it.
+        assert all(user.sessions_revoked_at is not None for user in rows)
 
     # Idempotent: a second call reports nothing new to do. The owner is now
     # behind the gate, so this goes through the helper rather than the route.

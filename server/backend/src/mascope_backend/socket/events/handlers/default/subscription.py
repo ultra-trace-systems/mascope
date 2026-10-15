@@ -32,6 +32,12 @@ async def subscribe(sid, room):
     open for the same reason: refusing it would leave the SPA with no channel
     at all, and nothing to receive the release on.
 
+    A socket whose web session has been ended since it authenticated - the
+    account's session cutoff has moved past the token's issue time, the same
+    comparison the cookie strategy makes - is held to the same room, and so is
+    a disabled account. The tab hears there that its session is over, and its
+    next REST request is refused.
+
     Performs dual registration on success:
     - Socket.IO room (for event routing via AsyncRedisManager)
     - Redis tracking (for cross-worker membership queries)
@@ -43,6 +49,8 @@ async def subscribe(sid, room):
     """
     # Imported lazily: the workspace ACL pulls in the auth/user-manager stack,
     # which imports socket.auth - a module-level import here would be circular.
+    # The session cutoff lives in the same package, so the same holds for it.
+    from mascope_backend.api.new.auth.sessions import session_revoked
     from mascope_backend.api.new.workspaces.dependencies import (
         user_can_subscribe_to_room,
     )
@@ -64,12 +72,19 @@ async def subscribe(sid, room):
 
     # Checked after the ACL so the log says which boundary refused, and using
     # the user already loaded above rather than a second query.
-    if user.must_change_password and room != f"user-{user_id}":
-        runtime.logger.warning(
-            f"Denied room subscription: user {user_id} owes a password change "
-            f"-> room '{room}'"
-        )
-        return
+    if room != f"user-{user_id}":
+        if user.must_change_password:
+            runtime.logger.warning(
+                f"Denied room subscription: user {user_id} owes a password change "
+                f"-> room '{room}'"
+            )
+            return
+        if not user.is_active or session_revoked(user, session.get("issued_at")):
+            runtime.logger.warning(
+                f"Denied room subscription: user {user_id}'s session has ended "
+                f"-> room '{room}'"
+            )
+            return
 
     # Socket.IO room (AsyncRedisManager handles pub/sub routing)
     await sio.enter_room(sid, room)
