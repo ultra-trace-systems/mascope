@@ -123,7 +123,7 @@ def test_each_polarity_says_what_was_done_with_its_own_streams():
     assert "Polarity + pools 2 MS1 scan streams into one peak list" in note
 
 
-def _store(keys, stitched=True, overlaps=None):
+def _store(keys, stitched=True, overlaps=None, functions=None):
     """A peak store's header, as the signal library reads it off the store's
     metadata, with these keys."""
     from mascope_signal.compute import PeakStoreHeader
@@ -133,6 +133,8 @@ def _store(keys, stitched=True, overlaps=None):
         attrs["stitch_map"] = {"rule": 1}
     if overlaps is not None:
         attrs["stitch_overlaps"] = overlaps
+    if functions is not None:
+        attrs["instrument_functions"] = functions
     header = PeakStoreHeader(keys, attrs, has_composite=bool(keys) and stitched)
     return patch.object(status.m_compute, "read_peak_store_header", return_value=header)
 
@@ -642,6 +644,7 @@ def test_a_stitched_files_whole_detail_fits_the_bound():
                 _overlap(2, 3, 33, 0.611, 1.25),
             ],
         ),
+        status.stream_widths_note(STORE_KEYS, _widths(thin={HIGH_KEY: MID_KEY})),
     )
 
     # The file's residual, the reagent scan's, and the lone point's
@@ -654,7 +657,8 @@ def test_a_stitched_files_whole_detail_fits_the_bound():
     assert len(detail) > 1000
     assert len(detail) < status._DETAIL_LIMIT
     assert not detail.endswith("...")
-    assert detail.endswith("0.61 ppm higher, at 1.25 times the intensity.")
+    assert "0.61 ppm higher, at 1.25 times the intensity." in detail
+    assert detail.endswith("The fit over the whole file reads 120,000.")
     assert (
         "Polarity - stitches 4 MS1 scan streams into one spectrum: m/z 40-138; "
         "m/z 66-124; m/z 132-460; m/z 440-1200."
@@ -676,3 +680,110 @@ def test_a_stitched_files_whole_detail_fits_the_bound():
 )
 def test_a_file_whose_ranges_all_hold_calibrants_has_nothing_to_say(record):
     assert status.carried_calibration_note(record) is None
+
+
+# -- how wide each range's peaks are -------------------------------------------------
+
+
+#: The coefficient of an Orbitrap resolution function that reads ``r`` at
+#: m/z 200: r = a / sqrt(200)
+def _a(resolution):
+    return resolution * 200**0.5
+
+
+def _widths(thin=None, file=120_000, resolutions=None):
+    """A store's record of its instrument functions: each range fitted at
+    its own resolution, those in ``thin`` given another's."""
+    resolutions = resolutions or {
+        REAGENT_KEY: 141_000,
+        LOW_KEY: 132_000,
+        MID_KEY: 118_500,
+        HIGH_KEY: 101_000,
+    }
+    thin = thin or {}
+    streams = {}
+    for key, resolution in resolutions.items():
+        origin = thin.get(key, key)
+        streams[key] = {
+            "resolution_function": [_a(resolutions.get(origin, file))],
+            "peakshape": {"x": [0.0], "y": [1.0]},
+            "source": "fitted"
+            if key not in thin
+            else ("file" if origin is None else "sibling"),
+            "origin": None if key not in thin else origin,
+            "peaks": None if key in thin else 40,
+            "note": "Not enough quality peaks to evaluate instrument functions"
+            if key in thin
+            else None,
+        }
+    for key, origin in thin.items():
+        if origin is None:
+            streams[key]["resolution_function"] = [_a(file)]
+    return {"file": {"resolution_function": [_a(file)]}, "streams": streams}
+
+
+def test_each_ranges_width_is_said_as_its_resolution_at_mz_200():
+    note = status.stream_widths_note(STORE_KEYS, _widths())
+
+    assert note == (
+        "Peak widths per scan range, as the resolution at m/z 200: "
+        "m/z 40-138 reads 141,000; m/z 66-124 reads 132,000; "
+        "m/z 132-460 reads 118,500; m/z 440-1200 reads 101,000. "
+        "The fit over the whole file reads 120,000."
+    )
+
+
+def test_a_range_too_thin_to_fit_says_whose_function_it_takes_and_why():
+    note = status.stream_widths_note(
+        STORE_KEYS, _widths(thin={HIGH_KEY: MID_KEY, LOW_KEY: None})
+    )
+
+    assert (
+        "m/z 66-124 has no fit of its own (not enough quality peaks to evaluate "
+        "instrument functions) and takes the whole file's, 120,000"
+    ) in note
+    assert (
+        "m/z 440-1200 has no fit of its own (not enough quality peaks to "
+        "evaluate instrument functions) and takes that of m/z 132-460, 118,500"
+    ) in note
+
+
+def test_a_file_stitched_in_both_polarities_says_whose_widths_are_whose():
+    positive = REAGENT_KEY.replace("FTMS - p", "FTMS + p")
+    keys = [REAGENT_KEY, positive]
+    record = _widths(resolutions={REAGENT_KEY: 141_000, positive: 139_000})
+
+    note = status.stream_widths_note(keys, record)
+
+    assert "Peak widths per scan range of polarity -, " in note
+    assert "Peak widths per scan range of polarity +, " in note
+
+
+@pytest.mark.parametrize(
+    "record",
+    [
+        {},
+        {"streams": {}},
+        # A TOF's function has no resolution at m/z 200 to state
+        {"streams": {REAGENT_KEY: {"resolution_function": [1e-5, 1.0]}}},
+    ],
+)
+def test_a_store_with_no_orbitrap_function_per_range_says_nothing(record):
+    assert status.stream_widths_note(STORE_KEYS, record) is None
+
+
+@pytest.mark.asyncio
+async def test_the_widths_are_read_off_the_store_into_the_detail():
+    record = _widths()
+    streams = [_stream(key, "-") for key in STORE_KEYS]
+    with (
+        _store(STORE_KEYS, functions=record),
+        patch.object(status, "read_scan_streams", AsyncMock(return_value=streams)),
+    ):
+        assert (await status.read_store_stitch("x.raw")).instrument_functions == (
+            record
+        )
+        note = await status.read_pooled_streams_note("x.raw")
+
+    assert note.endswith("The fit over the whole file reads 120,000.")
+    assert "m/z 40-138 reads 141,000" in note

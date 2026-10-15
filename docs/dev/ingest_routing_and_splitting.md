@@ -84,8 +84,8 @@ request for this work updates the table below and ticks its item on #2098.
 | 1 | Per-file processing state, persistent notifications, "needs a chemistry" | shipped (#2164, #2166-#2169) |
 | 2 | Method bindings: routing without tokens | learned in shadow on every server (#2193, #2196, #2206, #2226), measured (5.7), item provenance (#2254), the row-following learner (#2255), the rung (#2264) and the disagreement report (#2267) shipped; the backfill re-run and the per-site switch remain, section 10 lists them |
 | 8 | Chemistry profiles as the unit: complete the seeded profiles, ship the standard methods and their catalogue, list the profiles, a profile-first surface, batches named after the profile | open; follows the stream first cut, or runs beside it when there are hands for both (decided 2026-10-05) |
-| 3 | The part contract: stream and window honoured by every consumer | **in progress**: the composite cut, for files whose method measures more than one thing in a polarity (4.5), leads the work after phase 2 (decided 2026-10-05; a stitch, not a split, since 2026-10-06). The census keys streams on the method's experiments (#2273), the reader selects one stream's scans (#2278), and peak detection and the peak store follow a stream behind `composite_scan_streams` (#2279), and the store is stitched - the map, the per-peak mask, the overlap readings and the stitched sum signal (#2297); the stream table is in the schema with its composite column (#2282) and written for every file, each polarity's item pointing at its composite or its one stream (#2283), and the readers of the peak list take the composite's rows, each averaged over its own stream's scans (#2307); a re-processing detects a file's peaks again under the setting as it is then, so files converted before it was switched can be stitched (#2328); the item TIC and the per-scan export read the scans the store holds, an item made by hand reads the row the pipeline's item reads, and a spectrum that meets a stale store asks for its rebuild (#2329); the spectrum and the peak listing name each segment, and the sample's views draw the scan ranges apart (#2330); each segment is calibrated by a factor of its own, fitted on the calibrants it holds or taken from a neighbour (#2332), and the calibration dialog and the sample's badge say which (#2333); a stitched file's processing detail says what its ranges read where they overlap and which have no fit of their own (#2334); the instrument function per segment follows, and section 10 lists it |
-| 4 | Per-stream state: calibration and instrument function per segment, MS2 | open; its per-segment calibration is built with the composite cut (#2332) and shown with it (#2333); follows 3 on the same track; no rebuild script (4.5, 9.1) |
+| 3 | The part contract: stream and window honoured by every consumer | **in progress**: the composite cut, for files whose method measures more than one thing in a polarity (4.5), leads the work after phase 2 (decided 2026-10-05; a stitch, not a split, since 2026-10-06). The census keys streams on the method's experiments (#2273), the reader selects one stream's scans (#2278), and peak detection and the peak store follow a stream behind `composite_scan_streams` (#2279), and the store is stitched - the map, the per-peak mask, the overlap readings and the stitched sum signal (#2297); the stream table is in the schema with its composite column (#2282) and written for every file, each polarity's item pointing at its composite or its one stream (#2283), and the readers of the peak list take the composite's rows, each averaged over its own stream's scans (#2307); a re-processing detects a file's peaks again under the setting as it is then, so files converted before it was switched can be stitched (#2328); the item TIC and the per-scan export read the scans the store holds, an item made by hand reads the row the pipeline's item reads, and a spectrum that meets a stale store asks for its rebuild (#2329); the spectrum and the peak listing name each segment, and the sample's views draw the scan ranges apart (#2330); each segment is calibrated by a factor of its own, fitted on the calibrants it holds or taken from a neighbour (#2332), and the calibration dialog and the sample's badge say which (#2333); a stitched file's processing detail says what its ranges read where they overlap and which have no fit of their own (#2334); each segment is fitted an instrument function of its own, which its peaks are read under and the detail states (4.3) |
+| 4 | Per-stream state: calibration and instrument function per segment, MS2 | open; its per-segment calibration is built with the composite cut (#2332) and shown with it (#2333), and so is its instrument function per segment; follows 3 on the same track; no rebuild script (4.5, 9.1) |
 | 5 | Chemistry detection: audit first, then provisional binding | deferred behind phases 3, 4 and 8 (decision 3); its reagent libraries are on `develop` |
 | 6 | Recipes: time and trace windows, preview and apply | open |
 | 7 | Declarations from the instrument side, MS2-only parts, manual acquisitions | open; its first declaration channel is built: a record of the whole file that the control program writes and the File Agent sends, which binds the file at rung 0 ([acquisition_sidecar.md](acquisition_sidecar.md)); MS2 parts: first cut built (4.2) - a file with no MS1 scans is stored and, where nothing binds it, filed as an MS2 part |
@@ -1091,9 +1091,46 @@ throughout, because nothing here cuts a file into items, and it writes no
     they hold - the one route that passes a client's m/z resolves it on the
     listed peaks first (#2307) - and step 6 is where they start asking by
     stream.
-- **What stays per file for now:** the instrument function, which step 7
-  moves to the segment as it moved the m/z calibration (#2332), and the
-  `tof` coordinate, which only orders peaks along the axis.
+- **What stays per file for now:** the `tof` coordinate, which only
+  orders peaks along the axis. ~~The instrument function~~ - moved to the
+  segment by step 7, as the m/z calibration was (#2332):
+  - **As built** (`mascope_signal.instrument_func.streams`). A file
+    detected per stream is fitted once per stream as well, when its peaks
+    are detected, on the stream's own summed signal and at the settings
+    the file's fit is made at; the file's own fit is still made at
+    conversion and keeps its row, which is what a store detected whole
+    reads, and a file's blank check goes by. A stream's peaks have their
+    areas integrated under its own peak shape (the Orbitrap reader reports
+    each centroid's resolution, so the shape is what detection takes of
+    the fit). A stream with too few quality peaks to fit takes the fit of
+    a stream of the same analyzer and resolution setting - of its own
+    polarity first, then the nearest in m/z - else the file's, and its
+    record says which and quotes the reason.
+  - **Where it is kept.** In the peak store's attributes, beside the
+    stitch map and keyed by stream as the calibration's factors are
+    (`instrument_functions`): each stream's resolution coefficients and
+    peak shape, how it came by them, and the file's coefficients. Detected
+    and stored together, a rebuild of the store fits them again with it,
+    and no row of the database changes: the instrument config listing
+    still lists the file's fit. A store detected before them carries none,
+    and is read by the file's function until the file is processed again.
+  - **Who reads it.** `read_instrument_functions` takes the polarity or
+    the stream of the peaks it is asked for: one stream's peaks go by that
+    stream's function; a stitched polarity's by the function of the stream
+    that owns each m/z under the map, its run placed on the file's axis by
+    that stream's calibration factor (`SegmentResolution`); a read that
+    names neither, and any store that cannot say, by the file's. The
+    calibration's overlap filter asks by stream, the batch alignment, the
+    batch peaks and the mass gate of peak assignment by the sample's
+    polarity. The file's processing detail states each range's resolution
+    at m/z 200 beside the whole file's
+    (`process.status.stream_widths_note`).
+  - **Measured** 2026-10-15 on two four-range files of the test set, one
+    of each chemistry: every range fitted on its own, on 11 to 49 peaks.
+    The ranges read 120,700 to 123,000 at m/z 200 where the whole file's
+    fit reads 120,800 (nitrate), and 119,900 to 124,900 where it reads
+    121,200 (uronium): a few per cent, the reagent scan and the low window
+    the sharpest in the uronium file.
 
 ### 4.4 `acquisition_stream`
 
@@ -3023,7 +3060,9 @@ unchanged.
      which of its ranges have no fit of their own, with the reason
      recorded, and whose calibration each was given, across how many
      shared ions or as it is (`process.status.carried_calibration_note`).
-     Still open: the instrument function per segment;
+     ~~Still open: the instrument function per segment~~ - built: each
+     segment is fitted one of its own (4.3), and the detail states each
+     range's resolution at m/z 200 (`process.status.stream_widths_note`);
   8. **Step 8, re-process.** ~~A re-process rebuilds a file's store under
      the current rule, so a site's composite batches can be
      re-processed~~ - built in #2328: a re-processing
@@ -3593,7 +3632,7 @@ Function names are the stable reference; line numbers drift.
 | Matching | `libraries/match/src/mascope_match/compute/isotopes.py` `compute_match_isotopes`; `api/controllers/match/lib/match_compute.py` | 3 |
 | Assignment peak loading | `api/new/peak_assignments/service.py` | 3 |
 | Item creation | `api/controllers/sample/items/sample_items_controller.py` `create_sample_items` | 3 |
-| Instrument function | `libraries/signal/src/mascope_signal/instrument_func/fit.py` (`fit_instrument_functions`, on the stream's summed signal); `file_converter/base_processor.py`; `db/models.py` `InstrumentFunction` (identity gains the stream key) | 3, 4 |
+| Instrument function | `libraries/signal/src/mascope_signal/instrument_func/fit.py` (`fit_instrument_functions`, on the stream's summed signal); `instrument_func/streams.py` (a stream's fit, kept in the peak store, and the reader by stream); `api/new/instrument_configs/lib.py` (`read_instrument_functions` by polarity or stream). `db/models.py` `InstrumentFunction` keeps the file's fit; its identity did not need the stream key (4.3) | 3, 4 |
 | Calibration | `api/controllers/calibration/lib/calibration_mz_fit.py` (`_apply_sync`, `_apply_per_stream`, `_fit_per_stream`, `_resolve_calibration_isotopes`); `calibration_controller.py` `calibration_mz_apply`; `libraries/signal/src/mascope_signal/mz_factor.py` (the factor of a stream, and carrying one to a stream with no calibrant) | 0 (ordering, shipped in #2153), 3 (per segment, #2332), 4 |
 | Pipeline and routing | `api/controllers/sample/files/process/service.py` (`_auto_process_sample_file`, `create_acquisition_batches_and_items`, `calibrate_with_retry`); `api/new/ionization/modes/util.py` (`resolve_ionization_modes_by_tokens`, `resolve_ionization_modes_by_peaks`) | 0, 1, 2, 5 |
 | Provenance on items | `create_acquisition_batches_and_items` above; `db/models.py` `SampleItem` | 2 |
