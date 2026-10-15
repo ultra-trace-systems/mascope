@@ -69,18 +69,20 @@ async def authenticate_socket_connection(
         await clear_user_session(sid=sid, namespace=namespace)
 
         # --- Validate provided authentication token ---
+        issued_at = None
         if service_name:
             # Service authentication (e.g., file-agent)
             user = await validate_service_access_token(token, service_name)
         else:
-            # Frontend user authentication
-            user = await validate_jwt_token(token)
+            # Frontend user authentication. The token's issue time is kept so
+            # subscribe can tell when the account's session cutoff passes it.
+            user, issued_at = await validate_jwt_token(token)
 
         # --- Verify role permissions ---
         await verify_role_permission(user, minimum_role)
 
         # --- Save user session to Redis for cross-worker access ---
-        await save_user_session(sid, user, namespace=namespace)
+        await save_user_session(sid, user, namespace=namespace, issued_at=issued_at)
         runtime.logger.debug(
             f"{service_name.title() if service_name else 'User'} socket session {sid} "
             f"authenticated by user '{user.username}'"

@@ -279,10 +279,20 @@ class UserManager(IntegerIDMixin, BaseUserManager[User, int]):
         The flag rides in the same update as the hash, so the two can never
         disagree.
 
+        Disabling an account also ends its web sessions, in the same update:
+        the cookie of a disabled account is refused anyway, but its socket is
+        not, and the cutoff is what holds the socket to its personal room.
+        Re-enabling the account does not bring those sessions back.
+
         :param user: The user being updated.
         :param update_dict: The fields to write; a ``password`` key is plaintext.
         :return: The updated user.
         """
+        if update_dict.get("is_active") is False and user.is_active:
+            update_dict = {
+                **update_dict,
+                "sessions_revoked_at": datetime.now(timezone.utc),
+            }
         if update_dict.get("password") is None:
             return await super()._update(user, update_dict)
         return await super()._update(

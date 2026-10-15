@@ -17,6 +17,7 @@ from mascope_backend.api.new.users.schemas import (
 from mascope_backend.api.new.users.service import (
     delete_user,
     register_user,
+    sign_out_everywhere,
     update_user,
 )
 from mascope_backend.api.new.users.user_manager.dependencies import get_user_manager
@@ -90,8 +91,9 @@ async def owner_require_password_change_route(
     Puts every account through the current password policy, for whatever reason
     the owner has - a tightened rule, a periodic refresh, a concern about
     exposed credentials. Nobody is excluded, the calling owner included.
-    Everyone keeps signing in with their existing password and is held at a
-    mandatory password screen until they replace it.
+    Every open web session is signed out; everyone keeps signing in with their
+    existing password and is held at a mandatory password screen until they
+    replace it.
 
     There is no counterpart to undo this over HTTP - withdrawing the
     requirement is a maintenance script run on the server.
@@ -130,7 +132,8 @@ async def owner_require_password_change_route(
         "message": (
             f"{data['flagged_count']} of {data['total_users']} user accounts must "
             "now set a new password - including your own. Everyone keeps signing "
-            "in with their current password until they change it. Changing it "
+            "in with their current password until they change it, and every "
+            "open session is signed out. Changing it "
             "revokes that user's API access tokens (SDK, notebooks), which must "
             "be regenerated. Instrument agents registered as paired machines "
             "authenticate as their own machine accounts and are not affected; an "
@@ -254,6 +257,36 @@ async def owner_reset_user_mfa(
 
     # Step 2: Clear the factor
     return await reset_user_mfa(user_id=user_id)
+
+
+# POST, not GET, for the same reason as the routes around it: it changes state.
+@owner_router.post("/{user_id}/sign-out-everywhere")
+@api_route()
+async def owner_sign_out_user_everywhere(
+    user_id: int = Path(..., description="ID of the user to sign out"),
+    user=Depends(owner_user),
+):
+    """
+    Sign a user out of every browser. Owners can do this for any account,
+    their own included.
+
+    For an account whose session may be in someone else's hands. The account
+    can sign in again straight away; to keep it out, disable it, which ends its
+    sessions as well. API access tokens are left alone - revoke them with
+    ``DELETE /{user_id}/access-tokens``.
+
+    :param user_id: The account whose sessions to end.
+    :param user: The currently authenticated owner user.
+    :return: A success message.
+    """
+    result = await sign_out_everywhere(user_id=user_id)
+    # WARNING, as for the deployment-wide sweep: a security action taken on
+    # someone else's account should reach error tracking and name who took it.
+    runtime.logger.warning(
+        f"Owner '{user.username}' (id {user.id}) signed out every web session "
+        f"of user {user_id}"
+    )
+    return result
 
 
 @owner_router.delete("/{user_id}/access-tokens")

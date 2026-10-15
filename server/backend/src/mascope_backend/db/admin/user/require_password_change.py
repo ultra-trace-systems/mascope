@@ -13,6 +13,7 @@ Entry Points: `require_password_change_for_all_users()` and
 maintenance scripts await them directly.
 """
 
+from datetime import datetime, timezone
 from typing import Optional, Sequence
 
 from sqlalchemy import func, select, update
@@ -43,7 +44,11 @@ async def require_password_change_for_all_users() -> dict:
 
     Only accounts that do not already owe a change are touched, which makes the
     operation idempotent and the reported count honest. ``password_changed_at``
-    is deliberately left alone - no password was written.
+    is deliberately left alone - no password was written. The web sessions of
+    every account it arms are ended (``sessions_revoked_at``): a session open
+    before the sweep could be a stolen one, and the sweep is what an owner
+    reaches for when credentials may be exposed. The account signs in again
+    with its current password and meets the password screen.
 
     :return: Operation results with the counts needed to report and to notify.
     :rtype: dict
@@ -64,6 +69,7 @@ async def require_password_change_for_all_users() -> dict:
             .values(
                 must_change_password=True,
                 password_change_reason=POLICY_REASON,
+                sessions_revoked_at=datetime.now(timezone.utc),
             )
             .returning(User.id, User.is_active)
             # The session is committed and discarded immediately below, so there

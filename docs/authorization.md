@@ -138,7 +138,35 @@ Passwords must be at least **12 characters**. There are no character-class rules
 
 A password an administrator issues is **temporary**. Resetting another user's password, and creating a new account, both leave that account required to choose its own password the next time it signs in — so only its holder ever knows the password in use. The account signs in with the issued password as normal and is then held at a password screen until it sets a new one.
 
-An owner can require the same of **every** account at once, from **Manage users**. It puts every account through the current policy, whatever the reason for asking — a tightened rule, a periodic refresh, or a concern about credentials. It is not a lockout: everyone keeps signing in with their existing password until they replace it. See [maintaining.md](maintaining.md#user-accounts) for the operator's view, including how to undo it.
+An owner can require the same of **every** account at once, from **Manage users**. It puts every account through the current policy, whatever the reason for asking — a tightened rule, a periodic refresh, or a concern about credentials. It is not a lockout: every open session is signed out, but everyone keeps signing in with their existing password until they replace it. See [maintaining.md](maintaining.md#user-accounts) for the operator's view, including how to undo it.
+
+## Sessions
+
+Signing in to the web app starts a **session** that lasts seven days. It ends
+early when any of these happens, and the browser is sent back to the sign-in
+screen on its next request:
+
+- **Signing out** in that browser.
+- **A password change**, by the account holder or by an administrator's reset.
+  Every session the account had is ended, not just the others.
+- **Disabling the account.** Enabling it again does not bring old sessions
+  back.
+- **An owner requiring a new password of every account** (see Passwords).
+  Everyone signs in again with their existing password and is then held at the
+  password screen.
+- **Signing out everywhere.** Anyone can do this for their own account
+  (`POST /api/users/me/sign-out-everywhere`), and an owner for any account
+  (`POST /api/users/owner/{id}/sign-out-everywhere`) - for a session left open
+  on a machine someone else now uses, or one that may have been stolen. The
+  account can sign in again straight away; to keep someone out, disable the
+  account as well.
+
+A session started in the minute before one of these may survive it: the
+servers allow that much for their clocks to disagree.
+
+None of this touches **access tokens** (below), which are separate credentials
+with their own revocation - except a password change, which also revokes the
+account's tokens.
 
 ## Access tokens
 

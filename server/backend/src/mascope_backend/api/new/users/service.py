@@ -16,6 +16,7 @@ from mascope_backend.api.lib.exceptions.api_exceptions import NotFoundException
 from mascope_backend.api.lib.sorting import order_by_column, sortable_columns
 from mascope_backend.api.new.auth.config import auth_settings
 from mascope_backend.api.new.auth.exceptions import ForbiddenAccessException
+from mascope_backend.api.new.auth.sessions import revoke_user_sessions
 from mascope_backend.api.new.roles.exceptions import InvalidRoleException
 from mascope_backend.api.new.users.first_owner.util import (
     check_last_owner_deletion,
@@ -40,6 +41,8 @@ from mascope_backend.api.new.users.user_manager.service import UserManager
 from mascope_backend.api.new.users.util import check_username_exists
 from mascope_backend.api.new.workspaces.system import add_to_system_workspaces
 from mascope_backend.db import Role, User, async_session
+from mascope_backend.runtime import runtime
+from mascope_backend.socket.records.service import emit_record_updated
 
 
 @api_controller()
@@ -368,3 +371,40 @@ async def delete_user(user_id: int, user_manager: UserManager) -> dict:
     await user_manager.delete(user)
 
     return {"message": f"User '{user.username}' deleted successfully."}
+
+
+@api_controller()
+async def sign_out_everywhere(user_id: int) -> dict:
+    """
+    End every web session of an account.
+
+    Moves the account's session cutoff to now (see
+    :mod:`mascope_backend.api.new.auth.sessions`), so every browser signed in
+    as it is refused on its next request, the caller's own included when it is
+    the same account. API access tokens are separate credentials and are left
+    alone; the account can sign in again straight away.
+
+    :param user_id: The account whose sessions to end.
+    :raises NotFoundException: If the user does not exist.
+    :return: A success message.
+    :rtype: dict
+    """
+    if await revoke_user_sessions(user_id) is None:
+        raise NotFoundException(f"User with ID '{user_id}' not found.")
+
+    # Open tabs re-fetch the current user on this event, which is how they find
+    # out their session is over without waiting for the next click. The auth
+    # store ignores the payload, so the id is enough.
+    await emit_record_updated(
+        record_type="user_me",
+        record_id=str(user_id),
+        record={"id": user_id},
+        room=f"user-{user_id}",
+    )
+    runtime.logger.info(f"Web sessions of user {user_id} were signed out")
+    return {
+        "message": (
+            "Every web session of this account has been signed out. API access "
+            "tokens are not affected."
+        )
+    }
