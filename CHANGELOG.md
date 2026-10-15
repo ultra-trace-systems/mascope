@@ -4,20 +4,6 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 ## [Unreleased]
 
-### Fixed
-
-- **An m/z calibration applied while a file's peaks are detected moves the
-  peaks it should.** A detection places a file's peaks by the calibration
-  the file records when it begins, and writes them when it ends. A
-  calibration applied to the file in between, by hand while its peaks were
-  rebuilt or re-processed, recorded the new calibration and left the
-  detected peaks on the old one, so every later read and match of the file
-  was off by the difference. An apply now waits for a detection of the file
-  in progress, and a detection for an apply, so the peaks always sit on the
-  calibration the file records. Where the detection runs in another process
-  and takes longer than five minutes, the apply fails without changing
-  anything, and the calibration can be applied again once the peaks are in.
-
 ## [1.12.0] - 2026.10.14
 
 ### Added
@@ -461,6 +447,18 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   the scans its peak data holds per experiment, and the two differ by that
   first scan. The export now reads the scans the way the peak data holds
   them.
+
+- **An m/z calibration applied while a file's peaks are detected moves the
+  peaks it should.** A detection places a file's peaks by the calibration
+  the file records when it begins, and writes them when it ends. A
+  calibration applied to the file in between, by hand while its peaks were
+  rebuilt or re-processed, recorded the new calibration and left the
+  detected peaks on the old one, so every later read and match of the file
+  was off by the difference. An apply now waits for a detection of the file
+  in progress, and a detection for an apply, so the peaks always sit on the
+  calibration the file records. Where the detection runs in another process
+  and takes longer than five minutes, the apply fails without changing
+  anything, and the calibration can be applied again once the peaks are in.
 
 - **The calibration dialog's headings show on the light theme.**
   "Calibration Settings" and "Calibration Results" were white on the white
