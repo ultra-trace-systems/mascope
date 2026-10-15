@@ -1435,3 +1435,31 @@ def test_an_issue_of_the_file_that_reads_otherwise_than_its_streams_is_kept():
         "Mean m/z error after calibration is 2.50 ppm (limit 1 ppm).",
         f"{LABELS[LOW]}: Mean m/z error after calibration is 1.27 ppm (limit 1 ppm).",
     ]
+
+
+@pytest.mark.asyncio
+async def test_each_streams_candidates_are_set_apart_by_its_own_peak_widths(
+    monkeypatch,
+):
+    """Two candidates closer than a peak's width are dropped as overlapping;
+    a stream's candidates are as wide as its own instrument function says,
+    and those of the polarity as the stream each came from."""
+    asked = []
+
+    async def spy(filename, polarity=None, stream=None):
+        asked.append((filename, polarity, stream))
+        return None, lambda mz: np.full_like(mz, 1e5)
+
+    monkeypatch.setattr(calibration_mz_fit, "read_instrument_functions", spy)
+    params = CalibrationFitParams(
+        calibration_collection_id="tc-1",
+        ionization_mechanism_ids=["im-1"],
+        polarity="-",
+        **OrbiCalibrationParams().model_dump(),
+    )
+    handler = OrbiCalibrationHandler(SAMPLE_FILENAME, params)
+
+    await handler._filter_overlapping_peaks(np.array([100.0, 200.0]), KEYS[1])
+    await handler._filter_overlapping_peaks(np.array([100.0, 200.0]))
+
+    assert asked == [(SAMPLE_FILENAME, "-", KEYS[1]), (SAMPLE_FILENAME, "-", None)]

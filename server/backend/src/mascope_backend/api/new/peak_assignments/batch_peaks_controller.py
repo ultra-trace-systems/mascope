@@ -250,7 +250,9 @@ async def fold_sample_into_batch_peaks(
         mu_factor = 1.0 - mu_ppm / 1e6
 
         try:
-            _, resolution_func = await read_instrument_functions(filename)
+            _, resolution_func = await read_instrument_functions(
+                filename, polarity=sample.polarity
+            )
         except Exception as exc:  # noqa: BLE001 - resolution is best-effort
             runtime.logger.debug(
                 f"No resolution function for '{filename}' ({exc}); "

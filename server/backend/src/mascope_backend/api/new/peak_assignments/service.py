@@ -1992,7 +1992,9 @@ async def _resolution_of(sample) -> Callable[[float], float] | None:
     :return: The resolution function, or None.
     """
     try:
-        _, resolution = await read_instrument_functions(sample.filename)
+        _, resolution = await read_instrument_functions(
+            sample.filename, polarity=sample.polarity
+        )
     except Exception as exc:  # noqa: BLE001 - the lines are read without it
         runtime.logger.info(
             f"No resolution function for sample '{sample.sample_item_name}' "

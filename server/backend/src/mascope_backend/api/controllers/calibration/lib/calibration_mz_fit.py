@@ -454,7 +454,7 @@ class BaseCalibrationHandler:
             self._sync_load_and_filter_peaks, np.asarray(target_mzs), stream
         )
         # Stays on the loop: it awaits the instrument config.
-        candidate_mzs = await self._filter_overlapping_peaks(candidate_mzs)
+        candidate_mzs = await self._filter_overlapping_peaks(candidate_mzs, stream)
 
         peak_timeseries = await self._load_peak_timeseries(candidate_mzs, stream=stream)
         peak_timeseries = await asyncio.to_thread(
@@ -593,11 +593,20 @@ class BaseCalibrationHandler:
         )
         return peak_mzs[mz_mask]
 
-    async def _filter_overlapping_peaks(self, peak_mzs: np.ndarray) -> np.ndarray:
-        """Filter out peaks that are too close to each other based on the instrument resolution."""
+    async def _filter_overlapping_peaks(
+        self, peak_mzs: np.ndarray, stream: str | None = None
+    ) -> np.ndarray:
+        """Filter out peaks that are too close to each other based on the instrument resolution.
+
+        :param stream: The one scan stream the peaks are of, whose own
+            instrument function then says how wide they are; None for the
+            peaks of the polarity, each as wide as the stream it came from.
+        """
         if peak_mzs.size <= 1:
             return peak_mzs
-        _, resolution_function = await read_instrument_functions(self.filename)
+        _, resolution_function = await read_instrument_functions(
+            self.filename, polarity=self.params.polarity, stream=stream
+        )
         return self._remove_overlapping_mzs(peak_mzs, resolution_function)
 
     @staticmethod
