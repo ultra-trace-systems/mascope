@@ -20,6 +20,7 @@ import mascope_file.io as m_io
 import mascope_file.name as m_name
 import mascope_signal.compute as m_compute
 import mascope_signal.fitting as m_fitting
+import mascope_signal.instrument_func.streams as m_stream_functions
 import mascope_signal.mz_factor as m_factor
 import mascope_signal.stitch as m_stitch
 from mascope_backend.db.id import gen_id
@@ -185,6 +186,9 @@ class BasePeakDetector(ABC):
         # them; empty for a file detected whole, which is every file but a
         # raw Orbitrap one its detector takes stream by stream.
         self._streams: list[dict] = []
+        # The instrument function of each of those streams, as the store
+        # records them (mascope_signal.instrument_func.streams)
+        self._stream_functions: dict = {}
 
     @property
     def peak_timeseries(self) -> xarray.Dataset:
@@ -394,6 +398,9 @@ class OrbiPeakDetector(BasePeakDetector):
         self._flag_satellite_peaks()
         if self._streams:
             self._stitch()
+            self._peak_timeseries.attrs[
+                m_stream_functions.INSTRUMENT_FUNCTIONS_ATTR
+            ] = self._stream_functions
         progress_callback(100)
 
     def _stitch(self) -> None:
@@ -485,12 +492,20 @@ class OrbiPeakDetector(BasePeakDetector):
         # the composite is drawn by it (_stitch). A calibration applied to
         # the file meanwhile is then no part of what the store keeps as read.
         calibration = self._sample_file_props.get("mz_calibration")
+        # Each stream's peaks are read under its own instrument function,
+        # fitted on its own summed signal, and the store keeps them all
+        functions, self._stream_functions = m_stream_functions.fit_stream_functions(
+            self._filename,
+            self._streams,
+            (self._peak_shape, self._resolution_function),
+        )
         datasets = []
         for index, stream in enumerate(self._streams):
             peaks = await self._extract_peaks_for_polarity(
                 stream["signature"]["polarity"],
                 stream=stream["key"],
                 calibration=calibration,
+                peak_shape=functions[index][0],
             )
             datasets.append(
                 peaks.assign(
@@ -531,6 +546,7 @@ class OrbiPeakDetector(BasePeakDetector):
         polarity: str,
         stream: str | None = None,
         calibration: dict | None | object = m_compute.RECORD_ON_FILE,
+        peak_shape: dict | None = None,
     ) -> xarray.Dataset:
         """A workaround to extract peaks for a given polarity from Thermo Orbitrap files.
 
@@ -539,7 +555,11 @@ class OrbiPeakDetector(BasePeakDetector):
         :param calibration: The record to put the centroids on the file's
             axis by, from a caller that holds one; left out, they go by the
             record the file holds when they are read.
+        :param peak_shape: The peak shape the peaks' areas are integrated
+            under: a stream's own; None for the file's.
         """
+        if peak_shape is None:
+            peak_shape = self._peak_shape
         (
             peak_mzs,
             peak_heights,
@@ -557,7 +577,7 @@ class OrbiPeakDetector(BasePeakDetector):
             [
                 m_fitting.calculate_peak_area(
                     None,
-                    self._peak_shape,
+                    peak_shape,
                     (peak_mzs[i], peak_heights[i], resolutions[i]),
                     sample_interval=None,
                 )

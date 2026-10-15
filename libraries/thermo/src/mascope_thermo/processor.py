@@ -17,6 +17,7 @@ from mascope_backend.file_converter.errors import (
     UNFINISHED_ACQUISITION_MESSAGE,
     EmptyAcquisitionError,
 )
+from mascope_signal.instrument_func.fit import ORBI_FIT_DMZ
 from mascope_thermo.backend import open_backend
 from mascope_thermo.streams import pooled_ms1_streams, scan_streams
 from mascope_thermo.thermo import (
@@ -415,7 +416,9 @@ class RawProcessor(BaseFileProcessor):
         self, sample_file_props: SampleFileProps
     ) -> tuple[any, any, any, any]:
         """Fit instrument functions"""
-        dmz = 0.01
+        # The settings a scan stream's own fit is made at as well
+        # (mascope_signal.instrument_func.streams)
+        dmz = ORBI_FIT_DMZ
         fit_params = InstrumentConfigFitParams()
         (
             peakshape_numpy,
