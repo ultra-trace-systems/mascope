@@ -11,8 +11,10 @@ import os
 from dataclasses import asdict, dataclass, fields
 from typing import Callable, Mapping
 
+import mascope_sdk
 from mascope_file_agent.config import (
     DEFAULT_SETTINGS,
+    SERVICE_NAME,
     ConfigError,
     is_valid_instrument,
     load_user_config,
@@ -52,6 +54,9 @@ class AgentSettings:
     filename_prefix: str = DEFAULT_SETTINGS["filename_prefix"]
     #: Text added behind each file name's stem on upload.
     filename_suffix: str = DEFAULT_SETTINGS["filename_suffix"]
+    #: The service ``access_token`` was paired as, saved with every token;
+    #: empty for a token saved before it was recorded. See :meth:`service_name`.
+    paired_as: str = DEFAULT_SETTINGS["paired_as"]
 
     @classmethod
     def from_mapping(cls, settings: Mapping) -> "AgentSettings":
@@ -81,6 +86,27 @@ class AgentSettings:
         """
         return cls.from_mapping(load_user_config(config_path))
 
+    def service_name(self, unpaired: str = SERVICE_NAME) -> str:
+        """The service name to give ``identity()`` for this machine.
+
+        The server accepts a token under the service it was paired as and no
+        other, so a machine that holds one stays that service, whatever a
+        program would pair a new machine as: the name pairing recorded, or
+        ``file-agent`` for a token paired before the name was recorded (a
+        File Agent's own, or one a program took over from it). Only a machine
+        with no token yet pairs as ``unpaired``.
+
+        :param unpaired: The service to pair as when there is no token yet
+        :type unpaired: str
+        :return: The service name
+        :rtype: str
+        """
+        if self.paired_as:
+            return self.paired_as
+        if self.access_token:
+            return SERVICE_NAME
+        return unpaired
+
     def validate(self) -> None:
         """Refuse settings an agent cannot run on.
 
@@ -99,6 +125,12 @@ class AgentSettings:
         from these settings, so it belongs to a file that holds nothing but
         the ``[file-agent]`` section.
 
+        Each token is saved with the service name ``identity()`` set, as
+        ``paired_as``: the agent obtains a token only under that name, by a
+        renewal the server grants under the name the token was paired as or
+        by a re-pair under it. So a re-pair under a name other than the one
+        recorded at the start is recorded as what it is.
+
         :param config_path: Full path of the file
         :type config_path: str
         :return: Writes the file with the token it is given
@@ -108,6 +140,7 @@ class AgentSettings:
 
         def write(token: str) -> None:
             values["access_token"] = token
+            values["paired_as"] = mascope_sdk.SERVICE_NAME
             write_user_config(config_path, values)
 
         return write

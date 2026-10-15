@@ -53,7 +53,7 @@ export const PROCESSING_STATUSES = {
     label: 'Needs a chemistry',
     severity: 'warn',
     icon: 'ph ph-flask',
-    description: 'No ionization mode could be bound to the file, so it has no samples yet.',
+    description: 'No ionization mode could be bound to the file, so it was not processed.',
     // Shown under the file's own reason too, which the detail carries.
     action:
       'Right-click it and choose its chemistry, or fix the ionization mode tokens ' +

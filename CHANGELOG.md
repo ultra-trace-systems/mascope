@@ -4,6 +4,497 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 ## [Unreleased]
 
+## [1.12.0] - 2026.10.14
+
+### Added
+
+- **A sample file's scans can be read without their centroids.**
+  `GET /api/sample/files/{id}/scans` returns the scan table of a raw Orbitrap
+  file: one row per scan with its statistics and its trailer under the
+  instrument's own labels (`FT Resolution:`, `Conversion Parameter B:`, the
+  lock-mass fields), and the file's statistics, as
+  `GET /api/sample/files/{id}/metadata` gives them. Until now those came only
+  with every centroid of every scan, which is 99.9 % of that response: a
+  file whose metadata is 294 MB has a scan table of 0.4 MB, answered in a
+  fifth of a second, since no peak is read for it. The table describes the
+  file, so scans of every MS order are in it (`MsType` says which) and none
+  is left out. `fields` keeps the named entries of each row (repeat it for
+  several; `ScanNumber` always stays), and `first_scan` / `last_scan`,
+  `t_min` / `t_max` in seconds and `polarity` narrow the scans. The route
+  takes an API token, and the SDK reads it as a DataFrame with
+  `mascope.sample_files.get_scans(sample_file_id, fields=..., ...)`.
+  `/metadata` itself takes `include_centroids=false` for the same rows of
+  the scans it has always listed; the default is unchanged.
+
+- **What bound a sample's chemistry is readable through the API.** A sample
+  item records which rung of the binding ladder auto-processing bound it by
+  (`bound_by`: `declared`, `explicit`, `token` or `method`) and, for a method
+  binding, which one (`method_binding_id`), and until now only SQL could read
+  either. Both are returned with every sample item: by
+  `GET /api/sample/items` and `GET /api/sample/items/{id}`, and through the
+  sample view, so by `GET /api/samples`, which the web app and the SDK list
+  samples with. A sample of a file its acquisition record bound reads
+  `"bound_by": "declared"`; an item nothing routed reads null. The fields are
+  output only: a request that sends them is read as if it had not, so none
+  can claim a rung for an item nobody routed. Changing an item's ionization
+  mode clears them, as before (`docs/dev/acquisition_sidecar.md`).
+
+- **A report of what a stitched file's scan ranges read where two of them
+  overlap**: `db script run report_stitch_overlaps`. For servers that run
+  `composite_scan_streams`. It reads the newest raw Orbitrap files, newest
+  first (`STITCH_REPORT_FILES`, 5,000 by default), and says for each
+  layout and each pair of ranges that overlap: which range owns the
+  overlap, how many ions both hold and how the second reads them against
+  the first, how many peaks each holds there that the other does not, and
+  which ions most of the files read very differently in the two. It
+  writes nothing, so no backup is taken before it. It is what the choice
+  of which range should own an overlap is to be made on.
+
+- **A machine can pair as the File Agent inside a program that controls
+  the instrument.** Pairing takes a second agent service, `instrument-agent`,
+  beside `file-agent`: the same agent, pairing, renewal and uploads, under a
+  name of its own, so Paired machines lists such a machine as an Instrument
+  Agent rather than a File Agent. `require_device_tokens` covers it as it
+  covers the File Agent, and like the File Agent it is not offered a token
+  by hand in Settings. In `mascope-file-agent`, setup pairs under the
+  service and reports the version the process named in `identity()`, where
+  it asked for `file-agent` and gave the library's version whatever they
+  were, and when the server refuses to pair, it prints the server's reason,
+  which from a server older than `instrument-agent` names the service. The
+  agent saves with every token the name it was paired as, in `config.toml`
+  (`paired_as`), and `AgentSettings.service_name()` gives it back: a token
+  saved before the name was recorded is a File Agent's, so a program that
+  pairs new machines as `instrument-agent` keeps every machine it already
+  has, a File Agent configuration it took over among them, under the name
+  the server knows. Nothing changes for an agent already paired: updating
+  the server or the agent leaves every credential valid.
+
+- **An Orbitrap acquisition that records only fragmentation (MS2) scans is now
+  imported** instead of being refused with "contains no MS1 scans" (#2068).
+  Mascope detects peaks in MS1, so such a file has none: it is stored the way
+  a blank measurement is - no peaks, no instrument config - and skips m/z
+  calibration, matching and peak assignment for the same reason. It is not a
+  blank, though, and no longer reads as one: its Raw files status says it
+  records no MS1 scans, where a blank's says blank measurement.
+
+  It needs no chemistry either, since a chemistry is what MS1 peaks are
+  matched under. So when nothing binds it - no filename token, no method
+  binding - it does not wait as **Needs a chemistry** with no samples: each
+  polarity that holds fragmentation scans gets an acquisition sample with no
+  ionization mode, in the daily batch `<date> MS2 acquisition (no chemistry)`
+  of the instrument's year dataset, and the file ends **Done**. That name
+  cannot be a chemistry's daily batch, whatever the chemistry is called. Its
+  status still says what a person may want to fix: an acquisition record
+  naming a chemistry no mode answers to, or a chemistry chosen for it that
+  binds it no longer. Processing it again, by Re-process or on request,
+  files it again. A file a token or a method does bind gets its sample in
+  its mode's daily batch, as any file does. A file whose name is ambiguous -
+  tokens of two modes of one polarity - waits as **Needs a chemistry** as
+  any such file does, and so does a file that records MS1 scans too, MS2
+  scans or not. Which scans a file records is read from the scan census
+  stored with it, so a file converted before the census existed waits as
+  before.
+
+  Its fragmentation scans are read through its sample like any other file's,
+  by the MS2 routes and `mascope.samples.ms2(...)` in the SDK. The sample's
+  TIC is that of the scans it has, since there is no MS1 TIC to report; it is
+  comparable only among such samples. A file with no scans at all is still
+  refused as the empty acquisition it is.
+
+  Its MS1 reads answer empty rather than failing: the sample's spectrum, its
+  peak timeseries and the MS1 centroids of the MS2 routes return no points,
+  and its per-sample peak export has no rows, where the raw reader's "no
+  scans found" used to come back as a 400 quoting a scan filter, or end the
+  export. The browser therefore shows such a sample with an empty spectrum
+  and no peaks instead of an error and a chart that never finishes
+  loading, and a client that reads the precursor's intensity from the MS1
+  centroids - the MS2 notebook toolkit does - gets the empty answer it
+  already handles. Only such a sample answers so, as its scan census says:
+  a selection of a sample with MS1 scans that holds none, and a request
+  that is itself wrong, still fail as before.
+  Nothing in the browser shows the fragmentation scans yet; they are read
+  with the SDK. The import guide gains a section on fragmentation
+  acquisitions, with the SDK calls that read them.
+
+### Changed
+
+- **A file bound by its acquisition record goes on saying so once it is
+  processed.** Its status in Raw files read "Bound to ... by its acquisition
+  record." only until the next stage replaced it, so a processed file said
+  "Matched 1 sample." like any other and nothing showed that its record had
+  bound it. The sentence is now kept in every status from the binding on,
+  the last included: "Matched 1 sample. Bound to 'Nitrate' (-) by its
+  acquisition record." Files bound by a token or a method end on the status
+  they did before.
+
+- **A chemistry chosen by hand outlasts a re-process, whatever the file's
+  name says.** Choose chemistry in Raw files binds a file to the ionization
+  modes a person picks, and re-processing kept that choice only for a file
+  with no ionization mode token in its name. A file whose name carried a
+  token went back through the binding ladder, so its acquisition record, or
+  that token, bound it again: the choice was undone, and the run reported
+  nothing but success. A record cannot be corrected once it is stored, so
+  for a file named with a token there was no lasting way to overrule a
+  record that named the wrong chemistry. Re-process, and processing one
+  file on request, now keep a person's choice ahead of the record and of
+  the name alike, until somebody chooses again; a name that matches two
+  modes of one polarity no longer refuses such a file. To put a file back
+  under the mode its record or its name would bind it to, choose that mode:
+  fixing the tokens and re-processing no longer moves a file somebody chose
+  the chemistry of. Its status says "Bound to ... as chosen by hand." and
+  goes on saying it once the file is processed ("Matched 1 sample. Bound to
+  'Nitrate' (-) as chosen by hand."), where it read "Bound to ... without a
+  file-name token." and only while the file was bound. Files bound by a
+  record, a token or a method, and ones given a chemistry before samples
+  recorded how they were bound, are re-processed as before
+  (`docs/dev/acquisition_sidecar.md`).
+
+- **Re-processing a file detects its peaks again under the server's
+  `composite_scan_streams` setting as it is then.** Whether the peaks of a
+  raw Orbitrap file are detected per experiment was decided once, when the
+  file was converted, and every rebuild and re-processing after that went
+  by it, so switching the setting on reached only the files converted
+  afterwards. Re-processing a file from Raw files now decides again. With
+  the setting on, a file whose method measures more than one thing in a
+  polarity has its peaks detected per experiment and stitched before its
+  samples are made; with it off, a stitched file is pooled again. A file
+  with one experiment in each polarity - nearly every file - keeps its
+  peak data as it is. A file whose scan streams cannot be read is refused
+  with nothing of it changed. The backend reads the setting when it starts,
+  so restart it as well as the file converter after changing the setting,
+  which is still off by default and not yet for production.
+
+- **A sample's spectrum that cannot be read until its file's peak data is
+  rebuilt asks for the rebuild.** Opening such a sample answered that peak
+  detection has to be run again, and nothing ran it until somebody
+  refreshed the batch's matches. The spectrum now queues the detection
+  itself, for an editor of the sample's workspace whose global role is
+  editor or above, and says so; the sample's matches are recomputed when it
+  finishes. Asked for several samples at once (`GET /api/samples/spectra`),
+  the spectra of the other samples are returned: a sample whose file is
+  being rebuilt has an empty spectrum in its place, is listed under `stale`
+  and is named in the response's `warnings`, where the whole request failed
+  before. The SDK's `get_spectra` logs that warning, from the SDK released
+  with v1.11.0 on; the frame it returns holds no rows for such a sample,
+  and an older SDK is given that frame with no word of it. A workspace
+  editor whose global role is guest has no rebuild queued, by a spectrum or
+  by a refresh of a batch's matches, and the server no longer logs that as
+  an error.
+
+- **With `composite_scan_streams` on, a sample of a stitched file counts
+  the scans its peaks were detected over.** Its TIC is summed over the
+  scans of each experiment as that experiment selects them, which keeps a
+  first reagent scan that a read of the whole polarity leaves out, and a
+  sample made by hand from such a file reads the same stitched spectrum
+  row as the sample the pipeline made. Files with one experiment in each
+  polarity are read as before.
+
+- **With `composite_scan_streams` on, each scan range of a stitched file
+  is m/z calibrated on its own.** Two ranges of one file read an ion up to
+  a ppm apart, and one factor for the file left every range but one off by
+  that much. A range is now fitted on the calibrants it holds itself; one
+  that holds none takes a neighbouring range's calibration, shifted by what
+  the two read in their overlap where they share at least five ions, and as
+  it is where they do not. The calibration's quality record lists each
+  range with how it came by its calibration, and a range fitted on a wrong
+  peak marks the file's calibration as below the bar, naming the range.
+  Files that are not stitched are calibrated exactly as before.
+
+- **A scan range calibrated on a single calibrant is backed by the other
+  ranges of its file.** Each range of a stitched file is held to the
+  quality bar on its own calibrants, and a fit on one calibrant is trusted
+  to move the axis at most 10 ppm. On an instrument whose axis is further
+  off than that, every file with such a range was marked below the bar,
+  though the range read the same offset as the file's other ranges, within
+  a ppm. Such a range now clears the bar where another range of the file,
+  fitted on calibrants of two or more ions and clearing the bar itself,
+  makes a correction within 2 ppm of its own, and the file shows the drift
+  badge it showed when fitted as one. A file calibrated already keeps its
+  badge until it is calibrated again.
+
+- **A stitched file with one scan range fitted on calibrants of its own
+  gives each reason it misses the quality bar once.** The calibrants of
+  such a file are all that range's, so the file's fit and the range's are
+  one fit. A reason that holds for both is given once, naming the range -
+  in the processing detail, in the calibration dialog and in the badge's
+  tooltip - and the file is still marked below the bar. A file with two or
+  more ranges fitted also gives the reasons of its fit as a whole, which
+  is over the calibrants of all of them.
+
+- **The calibration dialog and the sample's calibration badge say how each
+  scan range of a stitched sample was calibrated.** The dialog lists the
+  ranges above the calibrants: fitted on how many calibrants, or whose
+  calibration it took and over how many shared ions, with the reason the
+  fit recorded for it and how far that moves the range. Where the
+  calibration applied reads otherwise than the fit the dialog previews, as
+  one the pipeline made at a wider tolerance does, it lists both. A range
+  below the quality bar says why on its own line, in the warning colour,
+  rather than again in the warning above the list. The calibrants say which
+  range each was found in, and the badge names the ranges that were not
+  fitted on calibrants of their own. To leave the calibrants' table more
+  room, the dialog folds its settings into one line until they are opened.
+
+- **A stitched file's processing detail says what its scan ranges read
+  where they overlap, and which ranges have no calibration fit of their
+  own.** For each pair of ranges that share an ion: how far apart in ppm
+  the two read the shared ions and at how many times the intensity, so
+  that a file whose ranges have drifted apart shows in Raw files. And once
+  the file is calibrated and matched, which of its ranges were given a
+  neighbouring range's calibration, with the reason the fit recorded - no
+  calibrant of the collection found in the window, or ones that could not
+  be fitted. The detail names a stitched file's ranges by their scan range
+  ("m/z 66-124") where it used to print each one's full scan filter, and
+  for a file stitched in both polarities says which polarity's ranges read
+  what. A processing detail may now run to 2,000 characters, where 1,000
+  cut off the end of what such a file has to say.
+
+- **A sample stitched from several scan ranges shows where they meet.**
+  With `composite_scan_streams` on, the spectrum of such a sample is one
+  range after another with nothing rescaled between them, so the signal can
+  step at a boundary and a peak's intensity is what its own range measured.
+  The sum spectrum now draws each range in its own shade with a dotted line
+  where two meet, each drawn up to that line along the baseline, so the
+  signal is missing only over m/z that no range covers. The peak table has
+  a segment column naming the range each peak came from; hovering the
+  signal or a peak names it too, with its scan and microscan counts. The
+  spectrum and peak-listing routes return the segments (`segments`, `runs`,
+  and a `segment` per peak), null for every sample of one range.
+
+### Fixed
+
+- **Ion focus draws a sample that has no detected peaks.** Opening ion
+  focus on a sample whose peak list is empty, such as a TOF file in which
+  peak detection found nothing, failed with an unexpected error instead of
+  drawing the sample's spectrum. The main isotope now takes its height from
+  the spectrum, as it already did when no peak lay near it.
+
+- **An Orbitrap-only read of another sample is refused as a request, not
+  reported as a fault.** Per-scan centroids (`GET /api/samples/centroids`,
+  the SDK's `get_centroids`) and a sample file's metadata
+  (`GET /api/sample/files/{id}/metadata`) are read from an Orbitrap raw
+  file. Asked of a TOF sample, or of one whose raw file is not kept, both
+  answered 500 with an unexpected error, and every such request was
+  reported to error monitoring. They now answer 422 before anything is
+  read, naming the samples that have no raw file to read. A request for
+  Orbitrap samples is answered as before.
+
+- **Raw files no longer asks for the updates of instruments the user cannot
+  open.** The instrument list includes, disabled, the instruments a user
+  has no access to, and with all instruments shown Raw files joined the
+  update channel of every one. The server refused those, and logged a
+  warning for each refusal every time the list was opened. Raw files now
+  joins only the instruments the user can open.
+
+- **An Orbitrap acquisition that was never finished fails as one.** An
+  acquisition that is aborted before it records a scan leaves a small raw
+  file holding the instrument method and no index of scans. The reader
+  could not open such a file and did not say why: the upload failed with
+  "I/O error: Invalid argument (os error 22)" or with "unexpected end of
+  file at offset 0x2700000026 (needed 4 bytes)", the offset another for
+  every method, and each one was reported to error monitoring as a fault in
+  Mascope. The file is now recognised by what it lacks, and the upload
+  fails with "The acquisition was never finished: the file has no index of
+  its scans, so nothing in it can be read.", as an empty acquisition does
+  and without an error report. A file that is damaged or was cut short in
+  transfer is still reported as before.
+
+- **The metadata of a long Orbitrap acquisition can be downloaded.**
+  `GET /api/sample/files/{id}/metadata` built its whole response, every
+  centroid of every scan, before sending the first byte, and for a large file
+  the request ended in a 502 on every attempt. The cause was not a proxy
+  limit: encoding the finished body as JSON is one uninterrupted step, the
+  server's supervisor asks each of its worker processes for a sign of life
+  and stops one that has not answered within five seconds, and a worker in
+  the middle of that step cannot answer. On the server where it was found a
+  response of about 270 MB got through and one of about 290 MB never did,
+  and a stopped worker takes the other requests it is serving with it. The
+  response is now written one scan at a time: the first byte leaves in a
+  fraction of a second, a 294 MB response that took 20 seconds where it was
+  served at all takes 8, and the server holds one scan's centroids rather
+  than 1.6 GB. It is the same JSON
+  document, with the two members of `centroids_meta` in the order `data`,
+  `time`, and it is sent without a `Content-Length`. A file that cannot be
+  read is still answered with an error status. A read that fails part way
+  leaves the JSON unclosed, so no parser takes it for a document without the
+  missing scans, and the server logs why; the response itself still ends as
+  a 200, so a client that saves the body without parsing it sees a success.
+
+- **A Ctrl+C can no longer leave the File Agent hung.** Python raises an
+  interrupt on the main thread at whichever instruction that thread has
+  reached, and the agent's main thread spends its time in events and queues,
+  which Python builds around a lock. An interrupt that landed in the instant
+  after such a lock was taken, and before the code that releases it was
+  under way, left the lock held: the agent logged "Shutdown requested by
+  user." and then waited for its own lock for ever, deaf to any further
+  Ctrl+C, until its window was closed. It was rare in use, and common enough
+  in the agent's own console tests, whose interrupts fall just as the upload
+  loop wakes, to hang a few runs in a hundred on Windows. While
+  `Agent.run_until_complete()` runs on the main thread, interrupts are now
+  counted instead of raised, and the agent acts on each itself between two
+  of its waits, within a second or so and with no lock in hand. What the
+  three of them do is unchanged: the first stops the agent and waits for the
+  uploads under way, a second keeps it waiting, a third stops it without
+  them. Python's own handling of Ctrl+C is put back when the agent returns;
+  a handler a program has set itself and a process started with interrupts
+  ignored are left as they are, and an agent run on any other thread
+  replaces nothing. An interrupt that arrives while the agent asks the
+  server about its credential at start now stops the agent as any other
+  does, where it used to end the program with a traceback, and a credential
+  the server refuses in that moment is logged and not asked about. Ctrl+C
+  at the offer to pair the machine again still only declines the offer.
+
+- **The demo bundle download survives a transfer that is cut short.** A
+  download host that closed the connection early left `mascope demo fetch`
+  with a short file and no error, so the first thing to notice was the
+  archive's checksum: the demo stack, the end-to-end job and the
+  reproducibility check failed with "Archive checksum mismatch" and a
+  different wrong checksum each time. The download now counts what arrives
+  against the length the server announced, and an attempt that falls short,
+  stalls for 60 seconds or is refused for now (a server error, or a 429
+  from a rate limit) is made again, up to five attempts with a growing
+  pause between them. A server that says how long to stay away
+  (`Retry-After`) is given that long where it is longer, up to 60 seconds.
+  A retry asks only for the bytes still missing and appends them where the
+  host honors a `Range` request, and starts the file over where it does
+  not; when the attempts run out, the error says how many bytes of how many
+  arrived, or what the server answered. The archive's checksum still
+  decides: a file of the full length that fails it is downloaded once more
+  from the start, with a warning, and a second mismatch is reported as
+  before.
+
+- **Re-processing no longer clears the samples of a file whose ionization
+  mode was deleted, on a server that binds files by their acquisition
+  method.** A file with no mode's token in its name is re-processed under
+  the modes its samples have, and one with no such modes is refused
+  untouched. With `backend.method_binding = "route"` it was sent on to the
+  pipeline instead, for its acquisition method to bind, on the reading that
+  a file with no modes to keep is a parked file with no samples. A file
+  whose mode was deleted since says the same - its samples are still there,
+  with no mode - and so does one whose samples could not be read, and a run
+  clears a file's samples and resets its calibration before the method is
+  asked: where the method could not place the file, it parked with its
+  samples gone. Only a file with no samples is left to the method unasked
+  now. For one that has samples no mode binds, re-processing asks the
+  file's acquisition method first, as the pipeline asks it, just before it
+  starts on that file: a file the method binds is rebuilt under the
+  chemistry its method was seen running, and one it declines is left as it
+  is, with the method's own reason and remedy. So is one whose samples
+  could not be read, or whose method could not be asked. The method is
+  asked that late because the files ahead of it in the selection can change
+  its answer as they are bound, and the files are taken in the order the
+  request lists them. A method that stops binding a file between that
+  question and the file's run parks it with its samples cleared, as a token
+  changed while the selection waits does. Servers that do not route on
+  method bindings, the default, were not affected.
+
+- **Processing one file on request no longer clears the samples of a file
+  whose ionization mode was deleted.** `POST /api/sample/files/{id}/process`
+  processes a file with no mode's token in its name under the modes its
+  samples have. A file whose samples no longer give those modes - a mode
+  deleted since leaves them with none - was started with no modes at all,
+  as a parked file with no samples is, and a run clears a file's samples
+  before it binds the file: nothing bound this one, so it parked as needing
+  a chemistry with its samples gone. Unlike re-processing, that happened
+  whether or not the server routes on method bindings. The request is now
+  refused (422) before anything of the file is claimed or cleared, with a
+  reason that says the modes its samples were made under no longer bind it,
+  and choosing its chemistry in Raw files rebuilds it. On a server that
+  routes on method bindings (`backend.method_binding = "route"`), the
+  file's acquisition method is asked first, as the run asks it: a file the
+  method binds is started, and rebuilt under the chemistry its method was
+  seen running, and one it declines is refused with the method's own reason
+  and remedy. A file with no samples is started as before, and samples that
+  cannot be read fail the request. A file with samples whose name matches
+  tokens ambiguously - two modes of one polarity, say, after a token was
+  added - lost them the same way, since its run parks it on its name, and
+  is refused the same way with what the tokens matched, whether or not the
+  server routes on method bindings. The route is reached only with a
+  signed-in session, and the web app does not call it: Re-process in Raw
+  files goes through re-processing.
+
+- **A processing run that cannot bind a file no longer clears its samples
+  first.** A run removed the samples an earlier run had made for a file,
+  and reset the m/z calibration of a file given a chemistry in Raw files,
+  before it bound the file, so a file it then bound to nothing parked as
+  needing a chemistry with its samples gone. The checks in front of
+  re-processing and of processing a file on request refuse such files, but
+  a run starts after them, once the files ahead of it are done, and a mode
+  chosen for the file can be deleted, or a token changed, in that time. A
+  run now binds the file first. One that parks it leaves it its samples and
+  the calibration they were matched on, and its status, still "Needs a
+  chemistry", says the samples are an earlier run's; one that binds it
+  clears what an earlier run left, and resets the calibration, before it
+  makes any sample, on every attempt as before (the reset once per run).
+  Samples an earlier attempt of the same run made before it failed are its
+  own, not an earlier run's, and a retry that parks the file clears them,
+  as before. Re-processing still clears a file before its run, so a file it
+  parks has no samples. Raw files and the digest of files that need a chemistry now
+  say such a file was not processed, rather than that it has no samples.
+
+- **A re-processing report no longer repeats an internal error's text.**
+  Where an unexpected error stopped a file - reading its acquisition record
+  or the modes its samples have, resolving its name's tokens, or claiming
+  and clearing it before its run - the report named the file with the
+  error's own words, which for a database error can be the statement and
+  its values. The report now says what failed and that the file was left as
+  it is, or names the kind of failure in the words a failed file's status
+  uses. What the error said is in the server's log.
+
+- **Exporting a sample's peaks per scan no longer refuses a stitched
+  file.** With `composite_scan_streams` on, a file that opens with a
+  reagent scan was refused with "Re-run peak detection", which did not
+  help: the export compared the file's scans, read as one polarity, with
+  the scans its peak data holds per experiment, and the two differ by that
+  first scan. The export now reads the scans the way the peak data holds
+  them.
+
+- **An m/z calibration applied while a file's peaks are detected moves the
+  peaks it should.** A detection places a file's peaks by the calibration
+  the file records when it begins, and writes them when it ends. A
+  calibration applied to the file in between, by hand while its peaks were
+  rebuilt or re-processed, recorded the new calibration and left the
+  detected peaks on the old one, so every later read and match of the file
+  was off by the difference. An apply now waits for a detection of the file
+  in progress, and a detection for an apply, so the peaks always sit on the
+  calibration the file records. Where the detection runs in another process
+  and takes longer than five minutes, the apply fails without changing
+  anything, and the calibration can be applied again once the peaks are in.
+
+- **The calibration dialog's headings show on the light theme.**
+  "Calibration Settings" and "Calibration Results" were white on the white
+  dialog, and its borders the dark theme's grey: both read colours the app
+  does not define, and fell back to fixed ones. They now follow the theme.
+
+- **The calibration dialog stops waiting on a fit that found no
+  calibrants.** Such a fit ends in a warning, "No calibration peaks found",
+  and has no calibrants to list; the dialog showed the warning and kept a
+  spinner turning below it as though the fit were still running. It now
+  shows the warning alone.
+
+- **The calibration dialog shows no earlier sample's fit.** Opened on one
+  sample after another, or with another sample picked in a batch, it
+  showed the fit of the one before under the new sample's name until the
+  new fit started, which waits on fetching that sample's settings; if the
+  fetch failed, it stayed. It now shows no fit until the sample's own.
+
+- **The composition search no longer fails on a sample with no ionization
+  mode.** Opening a sample in the Sample tab reads the mechanisms of its
+  ionization mode for the peak search, and that read assumed every sample has
+  a mode the browser holds. One that does not - its mode has been deleted,
+  or it is an MS2 sample filed without a chemistry - threw an error in the
+  pane instead. Such a sample now simply has no mechanisms to search under:
+  the search waits until some are picked in the pane, rather than being sent
+  with none and refused.
+
+- **A mode can be renamed when another mode's batches only end in its
+  name.** Changing an ionization mode is refused while acquisition batches
+  are named for it, and that check took any acquisition batch whose name
+  contained the mode's name followed by "acquisition": a mode named `A` was
+  held back by the batches of a mode named `BA`, and a mode named `MS2` by
+  every batch of MS2 samples filed without a chemistry
+  (`<date> MS2 acquisition (no chemistry)`). It now reads a batch's whole
+  name, `<date> <mode name> acquisition`.
+
 ## [1.11.0] - 2026.10.09
 
 ### Added

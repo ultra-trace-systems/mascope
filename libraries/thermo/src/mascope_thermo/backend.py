@@ -27,11 +27,13 @@ import importlib.metadata
 import math
 import os
 import re
+from collections.abc import Callable, Iterable, Iterator
 from datetime import datetime
 from typing import Literal, Protocol, runtime_checkable
 
 import numpy as np
 
+from mascope_thermo.run_header import records_no_run_header
 from mascope_thermo.scan_filter import parse_scan_filter
 
 
@@ -263,6 +265,30 @@ class ReaderBackend(Protocol):
         """
         ...
 
+    def scan_rows(
+        self,
+        polarity: Polarity | None = None,
+        t_min: float | None = None,
+        t_max: float | None = None,
+        first_scan: int | None = None,
+        last_scan: int | None = None,
+    ) -> dict[int, dict]:
+        """Every scan's statistics and trailer as one row, keyed by its
+        1-based scan number.
+
+        A row is the scan's entry of :meth:`scan_statistics` followed by its
+        trailer under the trailer's own labels, and every row carries every
+        label (:func:`_scan_rows`). No peak data is read.
+
+        Like :meth:`scan_filters`, this describes the file rather than
+        selecting from it: scans of every MS order are included and no scan
+        is left out, not even an outlier first scan. The arguments narrow
+        which scans are described: by polarity, by start time [s] and by scan
+        number, both ends of a range included. Scans that match nothing are
+        an empty dict, not a :class:`mascope_thermo.thermo.NoScansFoundError`.
+        """
+        ...
+
     def scan_indices(
         self,
         polarity: Polarity | None = None,
@@ -304,6 +330,16 @@ class ReaderBackend(Protocol):
     def centroids_meta(self) -> dict:
         """All-scan centroid arrays for legacy metadata: ``{"time": [...],
         "data": [{"mzs", "intensities", "resolutions", "noises"}]}``."""
+        ...
+
+    def iter_centroids_meta(self) -> Iterator[tuple[int, float, dict]]:
+        """:meth:`centroids_meta` one scan at a time, in scan order:
+        ``(scan_number, time_s, data)``, where ``time_s`` and ``data`` are
+        the scan's entries of its ``"time"`` and ``"data"``.
+
+        A scan's centroids are decoded when its turn comes, so a caller that
+        hands each scan on before asking for the next never holds more than
+        one scan's arrays."""
         ...
 
     def mass_range(self) -> tuple[float, float]:
@@ -663,6 +699,83 @@ def _trailer_table(trailers: dict[int, dict]) -> dict:
     return {"header_labels": header_labels, "settings": settings}
 
 
+def _scan_rows(statistics: dict[int, dict], trailers: dict[int, dict]) -> dict:
+    """Per-scan statistics and trailers as one row per scan, in the shape
+    ``scan_rows`` returns.
+
+    A row is the scan's statistics followed by its trailer under the
+    trailer's labels, aligned by :func:`_trailer_table` so that every row
+    carries every label. It is the row
+    :meth:`mascope_thermo.thermo.RawFileMetadataLegacy.to_dict` builds from
+    ``scan_statistics`` and ``scan_acquisition_settings``.
+
+    :param statistics: ``{scan_number: {field: value}}``, in scan order.
+    :param trailers: ``{scan_number: {label: value}}`` for the same scans.
+    :return: ``{scan_number: {field or label: value}}``
+    :rtype: dict
+    """
+    table = _trailer_table(trailers)
+    labels = table["header_labels"]
+    return {
+        scan: {**stats, **dict(zip(labels, table["settings"][scan]))}
+        for scan, stats in statistics.items()
+    }
+
+
+def _scan_window(
+    polarity: Polarity | None,
+    t_min: float | None,
+    t_max: float | None,
+    first_scan: int | None,
+    last_scan: int | None,
+) -> Callable[[int, float, str | None], bool]:
+    """The test ``scan_rows`` narrows the scans it describes by.
+
+    One function for every backend, so that a window names the same scans
+    whichever backend read the file.
+
+    :raises PolarityError: ``polarity`` is neither ``"+"`` nor ``"-"``.
+    :raises InvalidRangeError: A range ends before it starts.
+    :return: ``holds(scan_number, start_time_s, polarity)``, true for a scan
+        inside every bound given. Both ends of a range are inside it.
+    """
+    from mascope_thermo.thermo import InvalidRangeError, PolarityError
+
+    if polarity and polarity not in ("-", "+"):
+        raise PolarityError(
+            f"Invalid polarity '{polarity}' provided. Polarity must be '+' or '-'."
+        )
+    if t_min is not None and t_max is not None and t_min > t_max:
+        raise InvalidRangeError(
+            f"Invalid time range: t_min={t_min} s > t_max={t_max} s"
+        )
+    if first_scan is not None and last_scan is not None and first_scan > last_scan:
+        raise InvalidRangeError(
+            f"Invalid scan range: first_scan={first_scan} > last_scan={last_scan}"
+        )
+
+    def holds(scan_number: int, start_time_s: float, scan_polarity: str | None):
+        return (
+            (not polarity or scan_polarity == polarity)
+            and (t_min is None or start_time_s >= t_min)
+            and (t_max is None or start_time_s <= t_max)
+            and (first_scan is None or scan_number >= first_scan)
+            and (last_scan is None or scan_number <= last_scan)
+        )
+
+    return holds
+
+
+def _centroids_meta(scans: Iterable[tuple[int, float, dict]]) -> dict:
+    """``iter_centroids_meta``'s scans gathered into the dict ``centroids_meta``
+    returns: ``{"time": [...], "data": [...]}``."""
+    result = {"time": [], "data": []}
+    for _, time_s, data in scans:
+        result["time"].append(time_s)
+        result["data"].append(data)
+    return result
+
+
 # Output grid resolution (constant ppm) for average_profile. Fine enough to
 # sample per-peak FWHM (~4-8 ppm on Orbitrap) at many points while collapsing
 # the between-scan jitter duplicates into one cell per native position.
@@ -783,6 +896,31 @@ def _ppm_bin(
     return binned_mz, isum, binned_extras, counts.astype(np.float64), members
 
 
+def _raise_if_unfinished(datafile_path: str, cause: BaseException) -> None:
+    """Name a failure to open as an unfinished acquisition, when it is one.
+
+    Neither reader reports a file written without a run header as what it is.
+    OpenTFRaw fails on an address it read from the wrong place, the Thermo
+    library on a file with no MS controller to select, and both look like any
+    other failure to open. So the file itself is asked
+    (:func:`mascope_thermo.run_header.records_no_run_header`), and only once
+    a reader has already failed on it: the question costs a file that opens
+    nothing, and cannot be why one does not.
+
+    :param datafile_path: Path to the raw file the reader could not open.
+    :param cause: The reader's own error, kept as the cause.
+    :raises UnfinishedAcquisitionError: When the file records no run header.
+    """
+    if not records_no_run_header(datafile_path):
+        return
+    from mascope_thermo.thermo import UnfinishedAcquisitionError
+
+    raise UnfinishedAcquisitionError(
+        "No scans found: the file records no run header, so the acquisition "
+        "was never finished."
+    ) from cause
+
+
 class ThermoBackend:
     """:class:`ReaderBackend` backed by Thermo RawFileReader via pythonnet.
 
@@ -800,7 +938,15 @@ class ThermoBackend:
         from mascope_thermo.thermo import RawFileManager
 
         self._mgr = RawFileManager(self.datafile_path)
-        self._raw = self._mgr.__enter__()
+        try:
+            self._raw = self._mgr.__enter__()
+        except Exception as e:
+            # The library opens such a file and fails selecting its MS
+            # controller, so the handle it took has to be given back here.
+            self._mgr.__exit__(None, None, None)
+            self._mgr = None
+            _raise_if_unfinished(self.datafile_path, e)
+            raise
         return self
 
     def __exit__(self, *exc) -> None:
@@ -975,6 +1121,39 @@ class ThermoBackend:
             for scan_index in selector.scan_indices_1based
         }
 
+    def scan_rows(
+        self,
+        polarity: Polarity | None = None,
+        t_min: float | None = None,
+        t_max: float | None = None,
+        first_scan: int | None = None,
+        last_scan: int | None = None,
+    ) -> dict[int, dict]:
+        holds = _scan_window(polarity, t_min, t_max, first_scan, last_scan)
+        # The selector is asked for nothing but the file's own scan list, as
+        # in scan_filters(): its selection would drop an outlier first scan.
+        selector = self._selector(ms_type=None)
+        statistics: dict[int, dict] = {}
+        for scan_number, scan_filter, stats in zip(
+            selector.all_scan_indices,
+            selector.raw_scan_filters,
+            selector.raw_scan_stats,
+        ):
+            scan_polarity = {"Positive": "+", "Negative": "-"}.get(
+                scan_filter.Polarity.ToString()
+            )
+            if not holds(
+                scan_number, stats.StartTime * _SECONDS_PER_MINUTE, scan_polarity
+            ):
+                continue
+            statistics[scan_number] = {
+                **{name: getattr(stats, name) for name in SCAN_STAT_FIELDS},
+                "MsType": scan_filter.MSOrder.ToString(),
+            }
+        return _scan_rows(
+            statistics, {scan: self.scan_trailer(scan) for scan in statistics}
+        )
+
     def scan_indices(
         self,
         polarity: Polarity | None = None,
@@ -1032,9 +1211,16 @@ class ThermoBackend:
         )
 
     def centroids_meta(self) -> dict:
-        result = {"time": [], "data": []}
+        return _centroids_meta(self.iter_centroids_meta())
+
+    def iter_centroids_meta(self) -> Iterator[tuple[int, float, dict]]:
+        # The Thermo library hands over the scans of a selection together
+        # (selector.scans), so here only their conversion to lists - most of
+        # what a scan costs in Python - waits for the scan's turn.
         selector = self._selector(ms_type=None)
-        for timestamp, scan in zip(selector.scan_times, selector.scans):
+        for scan_number, timestamp, scan in zip(
+            selector.scan_indices_1based, selector.scan_times, selector.scans
+        ):
             centroid_scan = scan.CentroidScan
             if centroid_scan is not None and centroid_scan.Length > 0:
                 mzs = np.frombuffer(centroid_scan.Masses)
@@ -1057,16 +1243,16 @@ class ThermoBackend:
                 intensities = []
                 resolutions = []
                 noises = []
-            result["time"].append(timestamp)
-            result["data"].append(
+            yield (
+                scan_number,
+                timestamp,
                 {
                     "intensities": intensities,
                     "mzs": mzs,
                     "resolutions": resolutions,
                     "noises": noises,
-                }
+                },
             )
-        return result
 
     def mass_range(self) -> tuple[float, float]:
         header = self._raw.RunHeaderEx
@@ -1290,7 +1476,11 @@ class OpenTFRawBackend:
     def __enter__(self) -> OpenTFRawBackend:
         import opentfraw
 
-        self._raw = opentfraw.RawFile(self.datafile_path)
+        try:
+            self._raw = opentfraw.RawFile(self.datafile_path)
+        except OSError as e:
+            _raise_if_unfinished(self.datafile_path, e)
+            raise
         return self
 
     def __exit__(self, *exc) -> None:
@@ -1615,35 +1805,59 @@ class OpenTFRawBackend:
         # MS scans (MS_SCAN_DETECTOR_STATS), and the fields opentfraw does not
         # expose are None, not faked (OPENTFRAW_UNAVAILABLE_SCAN_STATS). MsType
         # mirrors Thermo's MSOrder.ToString() ("Ms" / "Ms2").
-        stats: dict[int, dict] = {}
-        for s in self._selected(polarity, t_min, t_max, ms_type, stream):
-            scan_number = int(s["scan_number"])
-            scan_filter = s["filter_string"] or None
-            data_type = parse_scan_filter(scan_filter).data_type
-            scan_event = int(s["scan_event"])
-            segment = int(s["scan_segment"])
-            stats[scan_number] = {
-                **dict.fromkeys(SCAN_STAT_FIELDS),
-                **MS_SCAN_DETECTOR_STATS,
-                "TIC": float(s["total_ion_current"]),
-                "StartTime": float(s["retention_time"]),
-                "BasePeakMass": float(s["base_peak_mz"]),
-                "BasePeakIntensity": float(s["base_peak_intensity"]),
-                "LowMass": float(s["low_mz"]),
-                "HighMass": float(s["high_mz"]),
-                "ScanNumber": scan_number,
-                "PacketCount": int(s["data_size"]),
-                "ScanEventNumber": -1
-                if scan_event == _SCAN_INDEX_UNSET
-                else scan_event,
-                "SegmentNumber": 0 if segment == _SCAN_INDEX_UNSET else segment,
-                "ScanType": scan_filter,
-                "IsCentroidScan": None if data_type is None else data_type == "c",
-                "MsType": "Ms"
-                if int(s["ms_level"]) == 1
-                else f"Ms{int(s['ms_level'])}",
-            }
-        return stats
+        return {
+            int(s["scan_number"]): self._scan_stats(s)
+            for s in self._selected(polarity, t_min, t_max, ms_type, stream)
+        }
+
+    @staticmethod
+    def _scan_stats(s: dict) -> dict:
+        """One scan's entry of :meth:`scan_statistics`, from its scan-table row."""
+        scan_filter = s["filter_string"] or None
+        data_type = parse_scan_filter(scan_filter).data_type
+        scan_event = int(s["scan_event"])
+        segment = int(s["scan_segment"])
+        return {
+            **dict.fromkeys(SCAN_STAT_FIELDS),
+            **MS_SCAN_DETECTOR_STATS,
+            "TIC": float(s["total_ion_current"]),
+            "StartTime": float(s["retention_time"]),
+            "BasePeakMass": float(s["base_peak_mz"]),
+            "BasePeakIntensity": float(s["base_peak_intensity"]),
+            "LowMass": float(s["low_mz"]),
+            "HighMass": float(s["high_mz"]),
+            "ScanNumber": int(s["scan_number"]),
+            "PacketCount": int(s["data_size"]),
+            "ScanEventNumber": -1 if scan_event == _SCAN_INDEX_UNSET else scan_event,
+            "SegmentNumber": 0 if segment == _SCAN_INDEX_UNSET else segment,
+            "ScanType": scan_filter,
+            "IsCentroidScan": None if data_type is None else data_type == "c",
+            "MsType": "Ms" if int(s["ms_level"]) == 1 else f"Ms{int(s['ms_level'])}",
+        }
+
+    def scan_rows(
+        self,
+        polarity: Polarity | None = None,
+        t_min: float | None = None,
+        t_max: float | None = None,
+        first_scan: int | None = None,
+        last_scan: int | None = None,
+    ) -> dict[int, dict]:
+        holds = _scan_window(polarity, t_min, t_max, first_scan, last_scan)
+        # Straight from the scan table rather than through _selected(), which
+        # would drop an outlier first scan and raise on an empty selection.
+        statistics = {
+            int(s["scan_number"]): self._scan_stats(s)
+            for s in self._all_scans()
+            if holds(
+                int(s["scan_number"]),
+                s["retention_time"] * _SECONDS_PER_MINUTE,
+                s["polarity"],
+            )
+        }
+        return _scan_rows(
+            statistics, {scan: self.scan_trailer(scan) for scan in statistics}
+        )
 
     def _validate_mz_range(
         self, mz_min: float | None, mz_max: float | None
@@ -2048,9 +2262,12 @@ class OpenTFRawBackend:
         return out
 
     def centroids_meta(self) -> dict:
-        result = {"time": [], "data": []}
+        return _centroids_meta(self.iter_centroids_meta())
+
+    def iter_centroids_meta(self) -> Iterator[tuple[int, float, dict]]:
         for s in self._all_scans():
-            labels = self._raw.centroid_labels(int(s["scan_number"]))
+            scan_number = int(s["scan_number"])
+            labels = self._raw.centroid_labels(scan_number)
             mzs = np.asarray(labels["mz"], dtype=np.float64)
             intensities = np.asarray(labels["intensity"], dtype=np.float64)
             resolutions = np.asarray(labels["resolution"], dtype=np.float64)
@@ -2062,16 +2279,16 @@ class OpenTFRawBackend:
                 & np.isfinite(intensities)
                 & (intensities > 0)
             )
-            result["time"].append(s["retention_time"] * _SECONDS_PER_MINUTE)
-            result["data"].append(
+            yield (
+                scan_number,
+                s["retention_time"] * _SECONDS_PER_MINUTE,
                 {
                     "intensities": intensities[valid].tolist(),
                     "mzs": mzs[valid].tolist(),
                     "resolutions": resolutions[valid].tolist(),
                     "noises": noises[valid].tolist(),
-                }
+                },
             )
-        return result
 
     def profile_per_scan(
         self,

@@ -929,10 +929,12 @@ agent.stop(timeout=30)
 
 The two calls are `identity()` and the `Agent`'s `start()`:
 
-- `identity(service_name, version, verify_tls)` sets what every request the process makes reports to the server. The SDK keeps these for the whole process (`mascope_sdk.SERVICE_NAME`, `AGENT_VERSION`, `VERIFY_TLS`), so the process that runs an agent sets them, once, before it pairs or starts one. Importing the package sets none of them, and an `Agent` refuses to start in a process that has not made the call.
+- `identity(service_name, version, verify_tls)` sets what every request the process makes reports to the server. The SDK keeps these for the whole process (`mascope_sdk.SERVICE_NAME`, `AGENT_VERSION`, `VERIFY_TLS`), so the process that runs an agent sets them, once, before it pairs or starts one. Importing the package sets none of them, and an `Agent` refuses to start in a process that has not made the call. The service name is `file-agent`, or `instrument-agent` for a program that controls the instrument: the server pairs both and takes uploads from both alike (`pairing_settings.ALLOWED_SERVICES`), and the name only tells their paired machines apart. A device token is accepted under its own service name only, so the setup pairs under the name the process gave, and every token the agent saves is saved with that name, in `config.toml` as `paired_as` (`AgentSettings.token_writer`; a program with a `persist_token` of its own saves `mascope_sdk.SERVICE_NAME` with each token likewise). `AgentSettings.service_name(unpaired)` is the name to give `identity()`: the recorded one, `file-agent` for a token saved before names were recorded (a File Agent configuration an embedding program takes over among them), and `unpaired` only for a machine with no token yet. A program that pairs new machines as `instrument-agent` thus leaves every machine it already has as it was paired, and changing a server or a library version changes no machine's name.
 - `Agent(settings, url=None, logger=None, repair=None, persist_token=None)` owns the folder watcher, the uploader and its workers, the token renewal, the status follower and the one event that stops them. `start()` runs it on threads of its own and returns; `run_until_complete()` runs it on the calling thread until interrupted, which is what the console entry does; `stop(timeout)` waits for the uploads under way, abandons the rest when the time runs out and returns whether everything ended. An agent runs once.
 
 The modules behind it hold no state of their own: `settings.py` (`AgentSettings`, the keys of `config.toml`'s `[file-agent]` section), `watcher.py` (`FileSystemWatcher`, which reports a file once nothing is writing it), `uploader.py` (`FileUploader`: the wait until a file has been left alone, the retry policy and `failed_uploads`), `credentials.py` (`Credentials`: the live token, the check at start, the renewal, and the `Repair` that decides what a refused credential leads to - `ConsoleRepair` asks at the console, the base class only logs), `capabilities.py` (`ServerCapabilities`: what the server announces it can do, asked once for the whole agent and again after an hour; a server that asks for another try has not answered), `provenance.py` (`UploadProvenance`: what goes with an upload to say where the file came from), `status.py` and `agent.py`. `Agent.on_ready(callback)` adds a step that is called with each complete file before the uploader has it.
+
+**Interrupts.** Python raises `KeyboardInterrupt` on the main thread at whichever instruction that thread has reached, and `Event`, `Condition` and `Queue` are written in Python around a lock: raised once the lock is taken and before the `with` block that releases it is entered, the interrupt leaves the lock held, and the agent then waits for it for ever. So `run_until_complete()` on the main thread replaces Python's handler for SIGINT with one that only counts (`_threads.Interrupts`), and puts Python's back before it returns. The upload loop and the waits of `stop()` raise each counted interrupt themselves, between two waits, which is where the three answers to Ctrl+C come from: stop and wait for the uploads under way, keep waiting, stop without them. A handler the program has set is left in place, a process that ignores interrupts goes on ignoring them, and off the main thread nothing is replaced. The one step that hears Ctrl+C as Python delivers it is a `Repair` offered at the start, which is a prompt at the console; it is not offered at all when an interrupt is already counted (`interrupts.pending`), since a prompt would not hear that one. Code added to the main thread's path must not count on being cut short by an interrupt: a wait there is a wait in slices (`_threads.wait_for`), and a loop asks `interrupts.raise_pending()` once every time round.
 
 **The acquisition record.** A program that controls the instrument can say what each file is: which step of which run acquired it, in which mode, under which chemistry. It writes that as a JSON document beside the file, `<file>.mascope.json`, and the agent sends the document with the file's upload, together with the file's SHA-256, to a server that announces it keeps them (`files_accept_acquisition_metadata`). An embedding program writes the sidecar in an `on_ready` step; a program beside a standalone agent writes it before the file has been left alone for the agent's `timeout`. The schema is `mascope-acquisition/1`, defined by `mascope_sdk.acquisition`, and [acquisition_sidecar.md](acquisition_sidecar.md) is its reference: the fields, how the record travels, and what the agent does when a sidecar cannot be used or a server does not keep one. Neither the record nor the hash may cost a file its upload.
 
@@ -2935,7 +2937,9 @@ Frontend tests come in two layers under `server/frontend/tests/`:
   seeded demo dataset + `demo@mascope.app` login). Authentication happens once via the
   REST API (`tests/e2e/setup/auth.setup.js`) and is shared as storage state; the `api`
   and `scratch` fixtures seed state through the API so the UI is only used for the
-  behavior under test. Both suites run in CI on every PR.
+  behavior under test. Both suites run in CI on every PR, except that a PR
+  changing only `docs/` and Markdown files skips the e2e suite (and backend
+  pytest); every other job still runs.
 
 #### Running the tests
 
@@ -2956,6 +2960,13 @@ Or via the CLI: `mascope test run frontend` (unit) and
 The e2e environment is configured via `MASCOPE_E2E_BASE_URL`, `MASCOPE_E2E_API_URL`,
 `MASCOPE_E2E_EMAIL` and `MASCOPE_E2E_PASSWORD` (see `tests/e2e/fixtures/env.js`);
 `MASCOPE_E2E_STACK=demo` lets Playwright bring the demo stack up itself.
+
+In CI the e2e job, like every job that starts the demo stack, does not download
+the demo bundle on each run: it restores it from the GitHub Actions cache and
+starts the stack with a compose file of CI's own beside
+`docker-compose.demo.yaml`. `demo_init` still verifies what it is given and
+downloads when there is nothing, or nothing good - see
+[The bundle in CI](../demo_dataset.md#the-bundle-in-ci).
 
 #### Test conventions
 

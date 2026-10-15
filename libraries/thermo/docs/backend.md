@@ -16,6 +16,22 @@ Backends are resolved through the `open_backend(datafile_path)` function.
 It selects the implementation based on the `MASCOPE_THERMO_BACKEND` environment variable.
 Public functions in `mascope_thermo` are backend-agnostic, interacting only with the resolved instance via a standardized protocol.
 
+### A file written without a run header
+
+An acquisition that ends before it records anything leaves a raw file that holds its front (file header, sequence row, raw file info) and the instrument method, and no run header.
+The run header is the index to a controller's scans, so nothing in such a file can be read, including whatever scans an acquisition cut off later had already written.
+
+Neither reader reports the condition.
+OpenTFRaw finds every run header address zero and reads a run header at offset zero instead, which puts the stream addresses it then follows among the bytes of the instrument method.
+An address larger than the filesystem lets a file be has the seek refused, `I/O error: Invalid argument (os error 22)`; a smaller one is sought to and the read finds nothing there, `unexpected end of file at offset 0x2700000026 (needed 4 bytes)`.
+Which of the two a file earns turns on where its method happens to lie, and the second carries the address in its text, so it reads differently for every method.
+The Thermo library opens the file and fails selecting an MS controller it does not have.
+
+Both backends therefore ask the file itself once their reader has failed to open it (`mascope_thermo.run_header.records_no_run_header`), and raise `UnfinishedAcquisitionError` when every run header address in its raw file info is zero.
+It is a `NoScansFoundError`, so callers built on the scanless-file handling need no arm of their own, and the file converter reports it as a property of the data rather than a fault.
+The question is only asked of a file that already failed to open, and answers no for anything it cannot follow: a file cut short, a file that is not a raw file, a format version other than 64 and 66.
+Those keep failing with the reader's own error.
+
 ## API Contract: `ReaderBackend`
 
 All implementations must satisfy the `ReaderBackend` protocol, which defines a capability interface rather than emulating specific .NET objects.
@@ -63,6 +79,7 @@ Scan selection reads metadata only. The OpenTFRaw backend builds it from `scan_t
 - **`scan_statistics(polarity, t_min, t_max, ms_type, stream)`**: Returns the selected scans' metrics (e.g., BasePeakIntensity, ScanType) defined in `SCAN_STAT_FIELDS`, plus `MsType`, with the same keys from both backends.
 - **`scan_acquisition_settings(polarity, t_min, t_max, ms_type, stream)`**: Returns the selected scans' trailers as one table: `header_labels`, the trailer's labels, and `settings`, each scan's values in label order. A file defines its trailer's labels once for all of its scans. OpenTFRaw fills each row by label, so a scan whose trailer lacks a label, or that has no trailer record, gets `None` there and the table keeps a single label list.
 - **`scan_filters()`**: Returns every scan's number, start time in seconds, filter text and experiment, in acquisition order, with no scan left out. The experiment is the method segment and the scan event that produced the scan: a method numbers its scan events within each of its segments, so the pair is what names one. Both are read from the scan index and counted from 1, as the method and the trailer's `Scan Segment:` and `Scan Event:` count them, and both are `None` where the file records no event. `scan_statistics()` reports the same two index words as the Thermo library does, from 0 with `-1` for an unset event; `_method_scan_event` is the one bridge between the conventions.
+- **`scan_rows(polarity, t_min, t_max, first_scan, last_scan)`**: Returns the file's scan table: one row per scan under its scan number, the scan's `scan_statistics()` entry followed by its trailer under the trailer's labels, every row carrying every label. Like `scan_filters()` it describes the file rather than selecting from it, so scans of every MS order are in it and none is left out, not even an outlier first scan. The arguments narrow which scans are described, both ends of a range included, and scans that match nothing are an empty table rather than an error. No peak is read: this is what `GET /api/sample/files/{id}/scans` serves.
 - **`scan_trailer(scan_number)`**: Returns one scan's trailer, the instrument's own `{label: value}` table. Values are text from the Thermo backend and typed scalars from OpenTFRaw.
 - **`acquisition_parameters(max_scans, scan_numbers)`**: Summarises the trailers of up to `max_scans` scans, sampled evenly from `scan_numbers` (every MS1 scan by default), into the values constant across them and the names of those that vary.
 - **`scan_indices(polarity, t_min, t_max, ms_type, stream)`**: Returns the 1-based numbers of the selected scans.
@@ -73,6 +90,7 @@ Scan selection reads metadata only. The OpenTFRaw backend builds it from `scan_t
 - **`profile_per_scan(polarity, t_min, t_max, ms_type, mz_min, mz_max, stream)`**: Retrieves the raw profile m/z and intensity arrays of each selected scan, with the scan times.
 - **`centroids_per_scan(polarity, t_min, t_max, ms_type, mz_min, mz_max, stream)`**: Retrieves the centroided peaks (m/z, intensity, resolution, S/N) of each selected scan.
 - **`centroids_meta()`**: Returns every scan's centroid m/z, intensity, resolution and noise, decoded from its centroid labels.
+- **`iter_centroids_meta()`**: The same, one scan at a time and in scan order: `(scan_number, time_s, data)`. A scan is decoded when its turn comes, so a caller that hands each scan on before taking the next holds one scan's arrays instead of the file's. `RawFileMetadataLegacy.iter_json()` writes the metadata document this way, which is how `GET /api/sample/files/{id}/metadata` sends a body of hundreds of megabytes without building it.
 - **`average_profile(scan_indices, ppm, average)`**: Averages the selected scans' profiles in the frequency domain, where an ion's peak lines up across scans, and converts the result back to m/z, each peak on the intensity-weighted mean of the scans' calibrations. The result is the measured signal, which is also what the spectrum views draw.
 - **`average_centroids(scan_indices, ppm, average)`**: Returns an approximation of centroids derived from an averaged profile.
 - **`xic(mzs, ppm, polarity, t_min, t_max, ms_type, stream)`**: Generates an Extracted Ion Chromatogram within `ppm` of each target m/z across the selected scans.

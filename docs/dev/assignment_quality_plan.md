@@ -57,19 +57,27 @@ dataset's sets G to J, the chemist's reading of 2026-09-24 (decision 21).
 | 3.4b - one peak is not enough | #2212 | measured 2026-09-25 (pass 9, develop `ecbceb593`, rule set 9): G12 at 0 on every set, and every assigned row from the search names a second channel, a second line or a list. What the rule took, as assigned rows per file and as intensity of the rows that fell, of the set's monoisotopic total: G without reagent ion 324 to 232 and 1.7%, with reagent ion 116 to 87 and 0.8%, I+ 36 to 31 and 0.4%, I- 3 to 0 and 10.6% (14 of its 16 assigned rows, the nitrogen-rich C2 formulas through the bare sign on one line each, the one set outside the 5% line and 3.6's first target), K 60 to 54 and 0.5%, K3 27 to 21 and 0.1%, L 119 to 113 and 0.1%, C 121 to 73 and 4.9%, C2 52 to 28 and 4.8%; J reported: 108 to 61 per file and 30.2 to 28.7% of intensity at assigned, the trigger row at m/z 455.0 now candidate in both files that had it assigned. G2 read on C: the reference's unconfirmed share of assigned rows 13.1 to 8.8%; on C2 19.8 to 4.8%. Eight rows on G without reagent ion lost their monoisotopic row to a neighbour's claim under the lone-neighbour allowance. The untracked-line reading cost 11 rows across every set (5, 1, 2, 2, 1 on G, G with reagent ion, J, K, L) against some 9,000 rows with no line at all, so the call the build raised is moot |
 | 3.4c - measure an alternative before committing | - | planned, from the plan owner's reading of 2026-09-25: a close alternative from the batch ledger shows no fit, plausibility or tier before "use this" pins it |
 | 3.4d - the columns of a tiering still in progress | #2223 | built and merged 2026-09-26 (develop `85162ac4f`), the two calls decided as built, plus *group by formula* from the plan owner's request during the build; read in the browser on the testbed once a batch ledger is rebuilt, pass 11 reads the rest. Built: the listed-as column in both ledgers, the probability hidden while its curve is provisional, the provisional mark on the tier surfaces, and the batch ledger reading a reagent anchor by majority of its members (3.3c's follow-up) |
-| 3.4e - an expected line that is absent | - | planned, from the plan owner's notes of 2026-09-26 reading develop `85162ac4f` on the testbed: a row whose predicted envelope holds a line the spectrum should have shown and does not is capped at candidate, no second channel lifting it; the inspector and the chart show the absent lines; gate G13 |
-| 3.4f - a peak that is not separated | - | planned, from the same notes: a row whose peak the instrument did not separate from a neighbour is capped at candidate unless a separated partner channel commits the neutral; gate G14; the TOF sets |
+| 3.4e - an expected line that is absent | - | planned, from the plan owner's notes of 2026-09-26 reading develop `85162ac4f` on the testbed: a row whose predicted envelope holds a line the spectrum should have shown and does not is capped at candidate, no second channel lifting it; the inspector and the chart show the absent lines; gate G13; three riders from the reference's 0.10 line (an artifact confirms no line and refutes none; the file's own detection curve; the TOF's M+2 form), see the review section |
+| 3.4f - a peak that is not separated | - | planned, from the same notes: a row whose peak the instrument did not separate from a neighbour is capped at candidate unless a separated partner channel commits the neutral; gate G14; the TOF sets; the threshold is the bimodality criterion the reference's 0.10 line corrected, not a flat width count (the review section) |
 | 3.4g - the chart draws each peak in the trace's unit, and a lone M0 | - | planned, from the same notes: the TOF sticks overshoot the trace, and a focused peak with no isotopologue row gets no theoretical position drawn |
 | 3.4h - the inspector links the other channels, and the listing column folds | - | planned, from the same notes: the corroboration badge links the peaks of the other channels; the listed-as column folds to a mark with a switch for the full column |
 | 3.5 - calibrants below the brightest lines, an offset term, and the low-mass bend (calibration node) | - | planned |
 | 3.5b - the envelope's tolerance, fitted per run | - | planned, from the plan owner's reading of 2026-09-25 and the pass-9 ledgers: the fit allows a clean isotope line 5% of its predicted share, the Orbitrap misses by a median 7% and a tenth of committed envelopes by 27% or more, and a row with three lines, two channels and a list sits below assignability on a fit of 41% |
-| 3.6 - priors and the dataset's context | - | planned |
+| 3.6 - priors and the dataset's context | - | planned; two riders from the reference's 0.10 line (the organonitrate skeleton on nitrate Orbitrap runs with its tier cap; the halogen-twin re-read), see the review section |
 | 3.7 - stage 3 gate, engine 0.6.0 | - | planned; read against the literature and chemical reasoning, not the reference engine's formulas (decision 27) |
 | 4.1 - series detection on the batch ledger | - | planned |
-| 4.2 - time-series coherence | - | planned |
+| 4.2 - time-series coherence | - | planned; riders from the reference's 0.10 line (merged isotopologue rows, the batch isotope checks as positive facts, known species decided once per batch, the merge window from the batch's scatter, the measured reagent-ion water ladder), see the review section |
 | 4.3 - calibration from verdicts, per profile | - | planned |
 | 4.4 - gate automation | - | planned |
 | 4.5 - profiles as versioned rows, routing by detection | - | planned |
+| 5.1 - the reference pinned at a release, a boundary review per peaky release | - | planned 2026-10-13; the first review is the section below (peaky 0.9.0 to its main of 2026-10-10) |
+| 5.2 - decoy arms in the gate: a shifted axis and swapped adducts through the in-app engine | - | planned; no target until two gates have read them |
+| 5.3 - measure the minor-line response: isotope lines by height and by area against expected S/N | - | planned; before 3.5b, which fits what it finds |
+| 5.4 - the side lobe's signatures: width-scaled offset and narrowness in the sidelobe flag | - | planned; after 3.5b and 3.5 |
+| 5.5 - the TOF signal-to-noise column: verify it tracks height, fix the picker or fall back to counting statistics | - | planned; verify first, before 3.4e and 3.4f read the TOF sets |
+| 5.6 - the import contract: a verdict on batch rows, the engine tier where the user looks | - | planned; between rounds |
+| 5.7 - experiment: the file's own locks as calibrants, read against the calibration node's residuals | - | planned; after 3.5; feeds 4.3 and the axis-fingerprint project's calibration milestone |
+| 5.8 - an identification level in Mascope's own vocabulary | - | planned 2026-10-14 (decision 30 taken); after 3.7, revisited at the stage-4 gate |
 
 ## Purpose
 
@@ -205,6 +213,15 @@ justify.
   in public form, which is what step 4.4 can run in CI. A stage gate is
   judged on the whole set; a chemistry that regresses blocks the stage even
   when the pooled number improves.
+- **The reference moves; the gate reads it at releases.** peaky's main takes
+  several PRs a week, so the gate's reference runs are re-published only at
+  a tagged peaky release, never at a pre-release or a main commit, with the
+  tag recorded in the status table (step 2.7a did this on 0.8.0; the next is
+  0.10.0 when it is cut). Each peaky minor gets one boundary review: its
+  changelog and docs read once, every behaviour binned as parity, rider,
+  new step, not ours or an ask of Mascope, written into this note as a dated
+  section and into the steps it rides with (step 5.1). The first review is
+  the section after stage 4.
 - **Regression guards.** With the identity profile (`none`) and today's
   config a run must reproduce today's ledger content for content (ids and
   timestamps excluded); the scoring goldens in `tooling/score_eval` do not
@@ -2900,6 +2917,377 @@ Corroboration that only a batch can give, on the batch ledger.
   `[M+H]+`, purity 0.98, no opportunistic channels on a labelled run; peaky
   #30); the first, EasyIC, moved forward to step 3.1.
 - **Size.** L. Decision D5.
+
+## The reference's 0.10 line, reviewed (2026-10-13)
+
+The reference engine did not stand still while stage 3 was built. peaky
+released 0.9.0 on 2026-09-30 (the v2 fit on the library Mascope 1.10
+publishes, the standard notation, the abstraction and solvent-cluster
+channels), cut the 0.10.0b1 pre-release on 2026-10-07 (twelve stacked PRs:
+an evidence scale beside its tier, batch isotope checks, a merge vote ranked
+by evidence before file count, side channels declared per reagent, TOF
+gates, and the measurement scripts it now validates every release with), and
+put four more PRs on its main by 2026-10-10 (a batch m/z axis measured and
+corrected before assignment, precision stages keyed on the instrument class,
+isotope lines read by area against the file's own minor-line response, a
+resolvability fix). 316 commits, 296 files, 86,000 lines; its test suite
+went from 256 to 2,615 tests. Its 0.10.0 is not cut: "open items can still
+move results", one PR is open (its #77, a false axis step on 15N-labelled
+batches) and its experimental flags stay off.
+
+This section is the first boundary review (step 5.1): what of that Mascope
+takes, what it folds into steps already planned, what it has already, and
+what is peaky's own. The reference is read, not targeted (decisions 18, 20,
+27): nothing below tunes a rule toward agreement with peaky, and its numbers
+are quoted as what it measured on its own engine, on its own batches (a
+labelled-nitrate Orbitrap batch, a uronium Orbitrap batch, a bromide/nitrate
+TOF batch, and for the later work a nitrate Orbitrap batch checked against
+raw profiles and an independent expert assignment). The Linear project
+"Assignment quality plan" (team Mascope) carries the same steps as issues
+under its milestone 5.
+
+### How each behaviour was binned
+
+| bin | meaning | count |
+|---|---|---|
+| parity | Mascope has it, by construction or by an earlier step; verify only | the composed reagent profile (1.1), the m/z-dependent scoring centre (2.2b, Mascope first), opportunistic channels opened by fingerprint rather than by the server's list (1.2), the element budget on the grid (1.1, 2.5b), the FT artifact role (1.5), the shipped electron-transfer mechanisms (3.3e), peak areas and signal-to-noise on the peaks endpoint (2.1b) |
+| rider | folds into a planned step; written into that step's issue and named in its status row | 3.4e (three), 3.4f (one), 3.6 (two), 3.3d (one), 4.2 (five) |
+| new step | its own step under milestone 5 | 5.1 to 5.7 below |
+| not ours | the reference's strategy, exploration or narrative, by the charter's boundary | its evidence scale and claims as a vocabulary, its merge vote, trace-first and the rolling centre, its scorecard and A/B scripts as scripts, its report and workbook, its MCP tools |
+| ask of Mascope | a server, library or contract gap the reference worked around | the batch import's missing verdict (5.6), the TOF signal-to-noise column (5.5), the Orbitrap axis (5.7 and the axis-fingerprint project), the censored minor lines (5.3), a per-line centre in the library's score (3.5b), the mechanism catalogue read as a configuration (5.6's docs line) |
+
+### 5.1 The reference pinned at a release, and a boundary review per peaky release
+
+- **What.** Two standing rules, now in "How the work runs": the gate's 43
+  reference runs are re-published only at a tagged peaky release, with the
+  tag and the published version string in the status table and G1 and G2
+  re-read as readings; and every peaky minor gets one review in this form,
+  landed as a dated section here and as issues, its decisions raised for the
+  plan owner rather than taken.
+- **Why.** Chasing peaky's main would re-base every set each week; ignoring
+  it would let the engines drift apart unmeasured. A release is the unit the
+  two repositories already share (step 2.7, the epic merged at the Mascope
+  release that published the library).
+- **Verify.** The status table names the reference's tag for every set; a
+  review section exists for every peaky minor since 0.9.0.
+- **Size.** S per release. Next: 0.10.0 when it is cut; until peaky's #77
+  merges, no reference run on a labelled set uses its axis correction.
+
+### 5.2 Decoy arms in the gate
+
+- **What.** The in-app engine re-run on the gate sets with the m/z axis
+  shifted (9 ppm either way on an Orbitrap, 0.35 Da on a TOF, a shift inside
+  the file's own window skipped) and with the adducts swapped for ones the
+  profile does not declare, every arm at the control's calibration; the share
+  of the control's assigned rows and intensity the decoy still holds at
+  assigned, below and above m/z 350, reported per set by `compare_runs.py`.
+  A `decoy` block on the run config, recorded in the snapshot and marked on
+  the run row, so a decoy run is never read by the fold, the consensus or the
+  calibration from verdicts.
+- **Why.** G1 to G14 count agreement, plausibility and rule outcomes; none
+  estimates what a sample would still get if its chemistry were wrong. The
+  reference's own arms are the argument: a 9 ppm shift kept 7.7% of a
+  labelled-nitrate batch's Assigned rows and 1.1% of a uronium batch's; the
+  wrong-adduct arm kept 74% on uronium ("the ion is pinned by mass, the
+  neutral/adduct split is not") and, before its TOF gates, 183% of the
+  control on a TOF.
+- **Where.** `config.py`, `service.py`, `engine.py` (the swap through the
+  channel table), the fold's and the calibration store's exclusion,
+  `tooling/assignment_compare/compare_runs.py`.
+- **Verify.** On set A the shifted arm holds under 5% of the control's
+  assigned rows; the TOF sets are reported, not gated; a control run is
+  identical with the block absent.
+- **Size.** M. Independent; beside 3.5b and 3.5, read in pass 11; the
+  stage-3 gate reports the arms with no target until two gates have read
+  them.
+
+### 5.3 Measure the minor-line response
+
+- **What.** On the pass-9 ledgers' committed envelopes, the ratio observed
+  over predicted of every tracking 13C and 18O line, by height and by area,
+  binned by the line's expected signal-to-noise (the anchor's times the
+  predicted share): the median and the 20th percentile per bin and set, the
+  share of lines under 0.9 and under 0.5, whether area sits above height at
+  low expected S/N and whether either overshoots at mid S/N; the reagent
+  rows' lines beside them. Then the call for the plan owner: whether 3.5b
+  fits a centre and a width as written, or a response curve against expected
+  S/N read by area on Orbitrap-class runs, or one form per instrument class.
+- **Why.** 3.5b measured the Orbitrap lines reading low against the anchor
+  by a median 7% with a sign. The reference's 0.10 line explains the sign:
+  an Orbitrap scan keeps a line only where it clears that scan's detection
+  floor, and the whole-file peak list sums the scans, so a minor line near
+  the floor is censored scan by scan and reads about 0.3x its share by area
+  where its expected S/N in the summed list is about 20 on 1-microscan
+  files, 0.9 to 1.0x once it clears every scan, and lower still by height.
+  Its fix (lines by area, a per-file response fitted on the 13C lines of
+  committed CHO and CHON rows, a line matched anywhere between the 20th
+  percentile at its S/N and its natural share) moved its same-formula
+  agreement with an expert set from 390 to 421 on 1-microscan files and
+  took Assigned N3+ formulas on deuterium-labelled files from 14 to 3; its
+  known limits are a dim over-claim no longer cleared by its 13C line and
+  mid-S/N lines reading 7 to 13% high by area on one instrument. The
+  censoring is a property of Mascope's own summed peak list, so the
+  measurement is ours to make before the fit is chosen.
+- **Where.** A measurement over the run ledgers and the peaks endpoint; the
+  result into 3.5b's section; no engine change.
+- **Verify.** The table per set with line counts; the call recorded on 3.5b
+  before its PR opens.
+- **Size.** S. Blocks 3.5b.
+
+### 5.4 The side lobe's signatures
+
+- **What.** Measure, on the gate's Orbitrap sets, the peaks the sidelobe
+  flag and the artifact pass take against the peaks a width-scaled rule
+  takes (a weak entry one to five line widths beside a line at least 50x
+  brighter, in units of the parent's own observed width, with an artifact
+  signature: narrower than 0.7x a line, at the negative-lobe offset of
+  -2.6 to -2.1 FWHM, or mirrored; exempt the isotope fine-structure lines
+  and a candidate at an isotopologue offset of any brighter line within
+  1 ppm), ten disagreements per set read against the raw profile; where the
+  signatures catch lobes the ratio test misses, add them to
+  `flag_satellite_peaks` as a second pass keyed on the peak's width and
+  area, with the exemptions, the artifact pass reading the same function.
+- **Why.** Our test asks how much weaker than a base within 100 ppm; the
+  reference's asks where, in the parent's own width, and how wide. They
+  disagree on lobes of mid-height peaks and on real weak peaks near a bright
+  one. The reference measured a wider 0.3 FWHM exemption and rejected it
+  (all eight peaks it spared were lobes).
+- **Where.** `mascope_tools.alignment.utils`, the picker's call,
+  `artifact_pass.py`; a picker change moves the reproducibility goldens and
+  ships with their refresh.
+- **Verify.** Every peak the new signatures flag and the engine had assigned
+  is a lobe by the raw profile; no isotopologue of a bright line is flagged;
+  G6 and G8 unchanged.
+- **Size.** M. After 3.5b and 3.5; before 3.7.
+
+### 5.5 The TOF signal-to-noise column
+
+- **What.** Verify on the testbed's TOF files (sets E, F, J) and two
+  Orbitrap sets as controls that `signal_to_noise` tracks height (Spearman
+  per file over the picked peaks); read the TOF path of the picker against
+  the Orbitrap path. If the column is wrong on a TOF, fix the picker with a
+  library test pinning the correlation on a TOF fixture and re-detect the
+  TOF sets before the next pass; if it cannot be a per-peak S/N on a
+  counting detector, give the library the counting-statistics fallback (the
+  height over the root of the height plus the squared detection edge),
+  keyed on the instrument class, and have the engine use it on TOF-class
+  runs. Either way the run records which S/N it scored on.
+- **Why.** The v2 fit reads the column in three places (the absent-line
+  charge, the matched-line tolerance, the centroiding width), and step 2.1
+  made the engine score on "the file's own per-peak signal-to-noise". The
+  reference measured the column on its bromide/nitrate TOF batch and found it
+  does not track height (Spearman -0.07 to 0.17 in 28 of 28 files; a
+  478-count peak carrying 1.1, a 2-count peak 12) where every Orbitrap file
+  gives 0.99 to 1.00; with its fallback 155 of 1,622 per-file Assigned rows
+  fell under its Good bar, 89 of them bromide adducts with no 81Br child.
+  Sets E, F and J have been read on that column since 2.1.
+- **Where.** `mascope_signal.peak` (the TOF branch of the S/N), the
+  library's score module, the scoring snapshot.
+- **Verify.** Spearman at or above 0.9 on every TOF file after the fix, or
+  the fallback recorded on every TOF run; the TOF rows whose fit changes,
+  read by hand; Orbitrap sets identical.
+- **Size.** S to verify, M to fix. Before 3.4e and 3.4f; can go now.
+
+### 5.6 The import contract
+
+- **What.** The batch import row takes an optional engine tier (the sample
+  import's vocabulary since its `engine_tier` column) and an optional engine
+  claim as free text; the batch ledger stores them, shows the engine tier
+  beside the derived one and offers the disagreement filter the sample
+  ledger has; the tier strip and roll-ups gain an engine-tier view, a switch
+  off by default. Rows without the fields import as today; the SDK wrapper
+  and `sdk_peak_assignment.md` document them and the contract version bumps.
+  In the SDK and import docs: the mechanism table is a catalogue of what a
+  deployment can name, not a configuration of what an engine should open.
+- **Why.** "A batch import row carries the m/z, the neutral and ion formulas
+  and the mechanism id but no verdict, so every merged Candidate landed in
+  Mascope's batch ledger indistinguishable from an Assigned reading"; the
+  reference now sends Assigned rows only (878, 360 and 2,181 rows held back
+  on its three batches). And "Mascope's tier column, tier strip, tier filter
+  and roll-ups read the tier it derives, not peaky's", which it counts as
+  thousands of rows per batch. Decision 20 stands: the derived tier is
+  Mascope's; the ask is visibility. The reference also found its runs
+  opening every channel the server listed (Mascope 1.10 lists them all);
+  our engine opens channels by profile and fingerprint, so the gap is in
+  what the docs say the table is. The electron-attachment mechanism it
+  publishes with a null id, `[M]-.`, is shipped since 3.3e (v1.11.0) as the
+  charge-transfer profile's negative mechanism; the map is the reference's
+  to update.
+- **Where.** `batch_import.py`, `import_validation.py`, the batch-peak
+  records and migration, the SDK's assignment resource, the two ledger
+  panes, the docs.
+- **Verify.** A batch import with the engine tier on every row shows it and
+  the filter; one without is unchanged; no run or gate number moves.
+- **Size.** S-M. Between rounds.
+
+### 5.7 Experiment: the file's own locks against the calibration node
+
+- **What.** Run the reference's lock model offline on the gate's Orbitrap
+  sets (never on a labelled set until its #77 merges) and read the axis it
+  proposes per file (spline, segments, steps) against the calibration node's
+  residual after its fit (2.2b's lines) and, on Q Exactive files, the axis
+  fingerprint's band steps. Then the call: whether the node takes self-found
+  locks as a calibrant source beside the list (4.3's anchors without
+  verdicts) with a trend model, or whether the band table covers what the
+  locks see and the rest is the bright-peak shift 3.5 caps.
+- **Why.** On a nitrate Orbitrap batch whose axis read 0 ppm at m/z 62,
+  +2.4 near 200 and +0.2 at 308 in every file, the reference's uncorrected
+  run held 307 ions with P, S and Cl formulas on CHON ions; corrected by its
+  reference ions it held 641 and its same-formula agreement with a
+  hand-curated set rose from 171 to 573; its calibration-free locks (about
+  480 recurring peaks whose window holds one closed-shell formula once their
+  own isotope lines strike the rivals, a spline, then a walk modelling the
+  steps an Orbitrap axis takes, -2.6 ppm between adjacent peaks) took it to
+  693 and put held-out locks 0.11 ppm from the model against 1.6 raw. It
+  refuses a correction above 4 ppm as "a calibration to fix at the
+  instrument" and cannot publish the correction. The plan owner's rule is
+  to calibrate before assigning (decision 20): what a file's own peaks can
+  say of its axis belongs in the node.
+- **Where.** The LAN agent host and the corpus; the result into this section
+  and the axis-fingerprint project's calibration milestone.
+- **Verify.** A table per file: node residual, fingerprint steps, lock-model
+  steps and trend, with their agreement; the call recorded.
+- **Size.** S-M. After 3.5.
+
+### 5.8 An identification level in Mascope's own vocabulary
+
+- **What.** A Schymanski-style identification level on every committed
+  row, derived from the facts the engine already records: the tier reasons
+  (a second channel, a second line, a list, the mass gate, candidate
+  density, the absent-line and unresolved-peak rules once 3.4e and 3.4f
+  land) and, after stage 4, the batch's series and time-series
+  corroboration. Defined once in the layered confidence design
+  (`assignment_confidence.md`), shown in the inspector, the ledgers and the
+  exports, and carried by the import contract beside the engine's own claim
+  (5.6). The tier stays what the fold and the UI read first; the level says
+  what a reader may state of the row.
+- **Why.** Decision 30, taken 2026-10-14: a community-standard confidence
+  scale is the target, and the reference's scale is not ported while it
+  moves (two revisions inside its pre-release, three quarters of its top
+  level resting on one lock on its labelled-nitrate run, a TOF not
+  assessed). Built on Mascope's facts after they stop moving, it is a
+  mapping and a surface, not a new engine.
+- **Where.** `tiering.py` (the mapping from reasons to a level, beside the
+  tier), `assignment_confidence.md`, the inspector and ledger panes, the
+  exports, `sdk_peak_assignment.md`, the how-it-works page.
+- **Verify.** Every committed row carries a level; the level never
+  contradicts the tier (an assigned row holds at least the level a second
+  observation earns); on the cylinder sets every certified component
+  reaches the identified level through its right reading; the reference's
+  claim, imported, is read beside the level on the sets it published, the
+  differences explained by one side's facts.
+- **Size.** M. After the stage-3 gate (3.7); the mapping is revisited at
+  the stage-4 gate, when batch corroboration can lift a level.
+
+### Riders written into planned steps
+
+- **3.4e.** An artifact confirms no line and refutes none: a window only
+  artifact rows hold is untestable, never absent, and the probe takes the
+  tallest other peak. The absent-line share is the detection curve the file
+  itself shows, self-calibrated on the 13C and 18O lines of committed CHON
+  rows, a picked line under the share a sighting needs reported as low, not
+  absent. On a TOF, bromine and chlorine are judged by the ion's own M+2
+  line, and an assigned reading must show it.
+- **3.4f.** The threshold is the bimodality criterion (the separation at
+  which two Gaussians of a given height ratio turn bimodal), height-ratio
+  aware, not a flat width count; the reference's own table was 1.39x too
+  wide until 2026-10-08 (equal heights at 2.36 HWHM where the value is 1.70;
+  a 1:50 pair at 2.29 FWHM where it is 1.65), so E, F and J are read by hand
+  against the corrected criterion before it is fixed.
+- **3.6.** The carbon skeleton of organonitrates on nitrate Orbitrap runs:
+  an -ONO2 or -NO2 group adds N, 2 O and one DBE, so dinitrates, trinitrates
+  and nitroaromatics fail windows written for CHO skeletons; the context
+  reads up to three groups' skeletons and a row whose outcome the skeleton
+  changed is candidate, never assigned (59 such rows on the reference's
+  NOx-chemistry batch, all judged right). The halogen-twin re-read: on a
+  15N-nitrate run chlorine and C2H-4 15N are 0.044 mDa apart, so a
+  chlorinated deprotonated ion is mass-identical to a labelled nitrate
+  reading with two more carbons; a committed halogen-free row whose 37Cl or
+  81Br twin sits unexplained at the exact M+2 offset is re-read as the
+  halogen formula where it passes every gate (its labelled-nitrate batch:
+  merged Assigned 498 to 519).
+- **3.3d.** The nitric-acid dimer core as rung zero of the reagent-water
+  ladder on any instrument class.
+- **4.2.** Merged isotopologue rows read spectrum by spectrum against every
+  merged ion's lines by area (median ratio 0.4 to 1.4 over three or more
+  spectra, under a tenth above 2x) and stripped to the parent; the batch
+  isotope checks as positive facts (the exact-spacing halogen lock, where a
+  29Si line decides a chlorine lock's silicon; the 15N twin test; the
+  uronium pair); known species decided once by pooled evidence; the merge
+  window sized by the batch's own mass scatter (an Orbitrap stays at 6 ppm,
+  a TOF merges at 12); the reagent-ion water ladder measured per acquisition
+  segment on the batch series, a rung passing on presence, a decoy margin
+  and, on a TOF, a carbon-free M+1 (181 rungs and the unexplained share of
+  signal from 17 to 6% on its five-day TOF batch; none on an Orbitrap).
+
+### What the reference asks of Mascope, and where each lands
+
+- A verdict and a claim on batch import rows, and the engine tier shown
+  where the user looks: 5.6.
+- The TOF signal-to-noise column: 5.5.
+- The Orbitrap axis (a trend a constant plus 1/mz cannot absorb, steps
+  between adjacent peaks, a correction it cannot publish): 5.7, step 3.5,
+  the axis-fingerprint project.
+- Minor isotope lines censored in the summed peak list: 5.3, then 3.5b.
+- A per-line centre in the library's pattern score (it pre-subtracts a
+  trend's centre before calling `score_pattern_v2` and reports a
+  mass-free ion score): 3.5b's library change takes it, or the trend of
+  2.2b is applied before scoring, which is the same thing.
+- The scorer's isotopologue label convention (lines counted from the mono
+  line, the most abundant isotopologue committed): read explicitly on its
+  side; documented on ours with the library's envelope prediction.
+- Isotopologues attached to the committed ion, not the compound: 3.3c
+  already keys reagent lines on the ion; the envelope claim keys on the row.
+- The electron-attachment mechanism: shipped since 3.3e.
+- Peak areas in the peaks endpoint and the batch time series: served.
+
+### Not taken
+
+- **The evidence scale and the claims, as an implementation.** The
+  reference now carries, beside its tier, a level (3c, 4a, 4b, 5a, 5b on a
+  CIMS-adapted Schymanski scale) and a claim (identified, neutral, ion,
+  tentative), with the rule that a level-3 unlock must be evidence carrying
+  formula-specific information. The premise is taken (a community-standard
+  confidence scale is the target, step 5.8); the implementation is not,
+  while it moves. Mascope's tier stays assigned, candidate and below
+  assignability, with reasons; an imported run shows its engine's own words
+  through 5.6 and does not adopt them. Decision 30, taken 2026-10-14.
+- Its merge vote, its trace-first and rolling-centre estimators (inert on
+  both classes so far, experimental by its own label), its scorecard,
+  level-ledger and A/B scripts as scripts (their method is 5.2's), its
+  report, workbook and MCP tools.
+- Its known-species registry and certified-neutral passes (the note's
+  "Not in this plan").
+
+### Decisions proposed to the plan owner (30 taken 2026-10-14)
+
+29. **The reference is pinned at a release, and each peaky minor gets a
+    boundary review** (step 5.1).
+30. **A Schymanski-style identification level is the target, built in
+    Mascope's own vocabulary; the reference's scale is not ported while it
+    moves** (taken 2026-10-14 by the plan owner). The level is derived from
+    the facts the engine records, after the stage-3 gate (step 5.8); an
+    imported run shows its engine's tier and claim beside it (5.6); the
+    derived tier stays what the fold and the UI read.
+31. **The decoy arms join the gate without a target** until two gates have
+    read them; then a target is set from those readings, not from the
+    reference's numbers.
+
+### Worth watching
+
+- peaky's #77: its axis correction builds a false -1.5 ppm step on
+  15N-labelled batches until the lock space carries the label; no reference
+  run on sets C, C2 or G uses it before the fix is released.
+- "A peak list holding two axis states (every ion twice, 3 to 6 ppm apart)"
+  defeats its lock model: a file whose scans straddle a recalibration is a
+  converter-side shape to recognise.
+- Very bright Orbitrap ions sitting +0.6 to +1.0 ppm off their formula's
+  mass while their own isotope lines sit on centre, so the pattern score
+  commits nothing for them: the bright-peak shift 3.5's cap is for, seen
+  from the other engine.
+- Its TOF picker finding: weak satellites beside a bright line at about a
+  tenth of its height, 1 to 1.5 FWHM below and 0.5 to 1 above, which its
+  water-ladder decoys had to step around.
 
 ## Metrics and targets
 
@@ -8396,3 +8784,5 @@ reagent axis' eventual move into `IonizationSetup`
 - [reference_data_authoring.md](reference_data_authoring.md) and the
   reference-database seed proposal (2026-09-07) - step 2.5.
 - `tooling/assignment_compare/README.md` - the measurement.
+- The Linear project "Assignment quality plan" (team Mascope): the steps
+  of stages 3 to 5 as issues with their order, read beside this note.

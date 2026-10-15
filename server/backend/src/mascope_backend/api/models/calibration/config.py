@@ -55,6 +55,17 @@ class CalibrationConfig(BaseModel):
     # ions corroborate each other and are judged on their residual alone.
     MIN_VERIFIED_CALIBRATION_POINTS: int = 3
     LOW_POINT_MAX_AXIS_CORRECTION_PPM: float = 10.0
+    # A stream of a stitched file fitted on too few calibrants to vouch for
+    # its own correction (one point, or isotopes of one ion) is vouched for
+    # by another stream of the file that can - calibrants from several ions,
+    # clearing the bar on its own - when their corrections lie within this
+    # of each other. Both then read the instrument's offset from the
+    # acquisition axis in two scan ranges, which differ by about a ppm (0.1
+    # to 0.8 ppm between the one-point and the several-point ranges of the
+    # stitched files on an internal test deployment); twice the Orbitrap
+    # residual bound leaves room for the error of both fits. A stream
+    # anchored to a wrong peak lands tens of ppm from the others.
+    STREAM_CORROBORATION_PPM: float = 2.0
     # A fit on MIN_VERIFIED_CALIBRATION_POINTS or more must also draw them
     # from this many ions, or it is one ion's isotopes agreeing with each
     # other.

@@ -100,6 +100,104 @@ const load = async () => {
 const counterpartCalls = () =>
   get.mock.calls.filter(([url]) => url === '/batch-peaks/records/counterpart')
 
+describe('peak store: the segments of a stitched sample', () => {
+  const segments = [
+    { index: 0, key: 'reagent', label: 'm/z 40-138' },
+    { index: 2, key: 'mid', label: 'm/z 132-460' }
+  ]
+
+  it('gives each peak its segment and keeps the segments of the sample beside them', async () => {
+    await load()
+    get.mockResolvedValue({ ...peaksOf('p-a', 'p-b'), segment: [0, 2], segments })
+    sample.focusedId = 's-1'
+    await vi.waitFor(() => expect(store.list).toHaveLength(2), WAIT)
+
+    expect(store.list.map((peak) => peak.segment)).toEqual([0, 2])
+    expect(store.segments).toEqual(segments)
+  })
+
+  it('names none for a sample whose spectrum is not stitched', async () => {
+    await load()
+    get.mockResolvedValue({ ...peaksOf('p-a'), segment: null, segments: null })
+    sample.focusedId = 's-1'
+    await vi.waitFor(() => expect(store.list).toHaveLength(1), WAIT)
+
+    expect(store.list[0].segment).toBeNull()
+    expect(store.segments).toBeNull()
+  })
+
+  it('reads a server that names no segments as one that has none', async () => {
+    await load()
+    await switchTo('s-1', ['p-a'])
+
+    expect(store.list[0].segment).toBeNull()
+    expect(store.segments).toBeNull()
+  })
+
+  it('forgets the segments of the last sample with its peaks', async () => {
+    await load()
+    get.mockResolvedValue({ ...peaksOf('p-a'), segment: [0], segments })
+    sample.focusedId = 's-1'
+    await vi.waitFor(() => expect(store.segments).toEqual(segments), WAIT)
+
+    await switchTo('s-2', ['p-b'])
+
+    expect(store.segments).toBeNull()
+  })
+
+  /** Answer each sample's peaks only when the test says so. */
+  const answeredByHand = () => {
+    const pending = {}
+    get.mockImplementation((url) => {
+      const sampleItemId = url.match(/^\/samples\/([^/]+)\/peaks$/)?.[1]
+      if (!sampleItemId) return Promise.resolve([])
+      return new Promise((resolve) => {
+        pending[sampleItemId] = resolve
+      })
+    })
+    return pending
+  }
+
+  it('keeps the segments of the sample shown when an older answer comes last', async () => {
+    const other = [{ index: 1, key: 'low', label: 'm/z 66-124' }]
+    await load()
+    const pending = answeredByHand()
+
+    sample.focusedId = 's-1'
+    await vi.waitFor(() => expect(pending['s-1']).toBeDefined(), WAIT)
+    sample.focusedId = 's-2'
+    await vi.waitFor(() => expect(pending['s-2']).toBeDefined(), WAIT)
+
+    // The sample now shown answers first, the one left behind after it
+    pending['s-2']({ ...peaksOf('p-b'), segment: [1], segments: other })
+    await vi.waitFor(() => expect(store.list.map((peak) => peak.peak_id)).toEqual(['p-b']), WAIT)
+    pending['s-1']({ ...peaksOf('p-a'), segment: [0], segments })
+    await nextTick()
+    await nextTick()
+
+    expect(store.list.map((peak) => peak.peak_id)).toEqual(['p-b'])
+    expect(store.segments).toEqual(other)
+  })
+
+  it('does not lose them to an older answer that names none', async () => {
+    await load()
+    const pending = answeredByHand()
+
+    sample.focusedId = 's-1'
+    await vi.waitFor(() => expect(pending['s-1']).toBeDefined(), WAIT)
+    sample.focusedId = 's-2'
+    await vi.waitFor(() => expect(pending['s-2']).toBeDefined(), WAIT)
+
+    pending['s-2']({ ...peaksOf('p-b'), segment: [0], segments })
+    await vi.waitFor(() => expect(store.segments).toEqual(segments), WAIT)
+    pending['s-1'](null)
+    await nextTick()
+    await nextTick()
+
+    expect(store.segments).toEqual(segments)
+  })
+})
+
 describe('peak store: focus follows the sample switch', () => {
   it('asks for the counterpart of the focused peak and focuses it', async () => {
     await load()

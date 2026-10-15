@@ -295,6 +295,32 @@ class TestStampQualityVerdict:
         assert fit["verified"] is False
         assert fit["quality_issues"] == issues
 
+    def test_a_stitched_file_whose_one_fitted_range_is_below_the_bar_is_poor(
+        self, enforce
+    ):
+        # The file's block is over that range's calibrants alone: the issue
+        # is the range's, said once where the range is named.
+        fitted = {"key": "a", "label": "m/z 40-138", "source": "anchors"}
+        carried = {"key": "b", "label": "m/z 66-124", "source": "overlap"}
+        fit = {
+            "quality": {
+                **POOR,
+                "segments": [
+                    {**fitted, "quality": dict(POOR)},
+                    {**carried, "quality": None},
+                ],
+            }
+        }
+
+        issues = stamp_quality_verdict(fit, ORBI_FILE, sealed=True)
+
+        assert [(issue["code"], issue.get("segment")) for issue in issues] == [
+            ("points", "a")
+        ]
+        assert issues[0]["message"].startswith("m/z 40-138: Fitted on 1 calibration")
+        assert fit["status"] == "poor"
+        assert fit["verified"] is False
+
     def test_an_accepted_fit_is_verified_but_keeps_its_issues(self, enforce):
         fit = {"quality": dict(POOR)}
 

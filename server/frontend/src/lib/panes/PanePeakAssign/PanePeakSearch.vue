@@ -21,6 +21,7 @@ import { peakAssignmentEnabled } from '@/lib/features'
 import { fetchProfilePreview, isFormulaRange, usePeakAssignParams } from '@/lib/peakAssignParams'
 
 import { usePreview } from './preview.js'
+import { mechanismsOfSample } from './sampleMechanisms.js'
 import { canCurateHit, curationBodyForHit, hitKey, readLineOfHit } from './searchHit.js'
 
 // On-demand composition search for the focused peak. Lives in the Sample view's
@@ -339,13 +340,10 @@ watch(
 watchEffect(() => {
   if (!store.loaded) return
   if (!app.data.sample.focused) return
-  const ionMode = app.data.ionization.mode.list.find(
-    (im) => im.ionization_mode_id === app.data.sample.focused.ionization_mode_id
-  )
-  ionMechs.value = ionMode.ionization_mechanism_ids.map((id) =>
-    app.data.ionization.mechanism.list.find(
-      ({ ionization_mechanism_id }) => id === ionization_mechanism_id
-    )
+  ionMechs.value = mechanismsOfSample(
+    app.data.sample.focused,
+    app.data.ionization.mode.list,
+    app.data.ionization.mechanism.list
   )
 })
 
@@ -364,7 +362,16 @@ watchDebounced(
     }
   },
   async (deps) => {
-    if (!store.loaded || !deps.peakFocused || !deps.mzPrecision || !deps.formulaRange) {
+    // No mechanisms is nothing to search under: a sample with no ionization
+    // mode has none until some are picked by hand, and the search would only
+    // come back refused.
+    if (
+      !store.loaded ||
+      !deps.peakFocused ||
+      !deps.mzPrecision ||
+      !deps.formulaRange ||
+      !deps.ionMechanismIds
+    ) {
       searchRequest++
       supersedePending()
       results.value = []

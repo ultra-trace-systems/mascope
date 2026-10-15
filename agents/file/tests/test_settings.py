@@ -8,7 +8,7 @@ import os
 
 import pytest
 
-from mascope_file_agent import AgentSettings, config, main
+from mascope_file_agent import AgentSettings, config, identity, main
 
 
 def _write_config(tmp_path, **overrides):
@@ -96,6 +96,90 @@ def test_settings_are_read_from_a_config_toml(tmp_path):
     assert settings.mask == config.DEFAULT_SETTINGS["mask"]
     assert settings.verify_tls is True
     settings.validate()
+
+
+@pytest.mark.parametrize(
+    "access_token, paired_as, expected",
+    [
+        ("tok", "instrument-agent", "instrument-agent"),
+        ("tok", "file-agent", "file-agent"),
+        # Paired before the name was recorded: a File Agent's credential.
+        ("tok", "", "file-agent"),
+        # Not paired yet: whatever the program pairs a new machine as.
+        ("", "", "instrument-agent"),
+    ],
+)
+def test_a_paired_machine_stays_the_service_it_was_paired_as(
+    access_token, paired_as, expected
+):
+    settings = AgentSettings(
+        host="mascope.example.com",
+        access_token=access_token,
+        source="C:/data",
+        paired_as=paired_as,
+    )
+
+    assert settings.service_name(unpaired="instrument-agent") == expected
+
+
+def test_a_file_agent_configuration_taken_over_stays_a_file_agent(tmp_path):
+    """A File Agent's config.toml, as a program that embeds the agent adopts it.
+
+    Written before the name was recorded, it has a credential and no
+    ``paired_as``; the credential is a File Agent's, and is refused under any
+    other name.
+    """
+    _write_config(tmp_path, instrument="Orbi-Lab2")
+
+    settings = AgentSettings.from_file(os.path.join(tmp_path, config.CONFIG_FILENAME))
+
+    assert settings.paired_as == ""
+    assert settings.service_name(unpaired="instrument-agent") == "file-agent"
+
+
+def test_a_renewed_token_keeps_the_service_it_was_paired_as(tmp_path):
+    # A renewal is granted only under the name the token was paired as.
+    identity("instrument-agent")
+    path = os.path.join(tmp_path, config.CONFIG_FILENAME)
+    _write_config(tmp_path, instrument="Orbi-Lab2", paired_as="instrument-agent")
+
+    AgentSettings.from_file(path).token_writer(path)("renewed-token")
+
+    reread = AgentSettings.from_file(path)
+    assert reread.access_token == "renewed-token"
+    assert reread.paired_as == "instrument-agent"
+
+
+@pytest.mark.parametrize(
+    "recorded, process, expected_on_file",
+    [
+        # A taken-over File Agent configuration, moved by a program that
+        # names instrument-agent and lets the refusal re-pair the machine.
+        ("", "instrument-agent", "instrument-agent"),
+        # A standalone File Agent re-pairing on a file a program wrote.
+        ("instrument-agent", "file-agent", "file-agent"),
+    ],
+)
+def test_a_token_re_paired_under_another_name_is_saved_with_that_name(
+    tmp_path, recorded, process, expected_on_file
+):
+    """The running agent re-pairs under the process's name, not the file's.
+
+    Saved with the name read at the start, the new token would be named
+    wrongly: the next start would present it under the old name, be refused,
+    and pair back, leaving another machine under Paired machines each round.
+    """
+    path = os.path.join(tmp_path, config.CONFIG_FILENAME)
+    _write_config(tmp_path, instrument="Orbi-Lab2", paired_as=recorded)
+    writer = AgentSettings.from_file(path).token_writer(path)
+    identity(process)
+
+    writer("re-paired-token")
+
+    reread = AgentSettings.from_file(path)
+    assert reread.access_token == "re-paired-token"
+    assert reread.paired_as == expected_on_file
+    assert reread.service_name(unpaired="instrument-agent") == expected_on_file
 
 
 def test_settings_from_a_broken_config_toml_say_so(tmp_path):

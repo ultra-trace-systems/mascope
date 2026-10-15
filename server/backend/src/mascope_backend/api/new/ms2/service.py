@@ -13,9 +13,13 @@ import asyncio
 from typing import Literal
 
 import mascope_signal.compute as m_compute
+from mascope_backend.api.controllers.sample.files.process.census import (
+    holds_only_fragmentation_scans,
+)
 from mascope_backend.api.controllers.samples.lib.samples_fetch import fetch_sample
 from mascope_backend.api.lib.api_features import api_controller
 from mascope_backend.api.lib.exceptions.api_exceptions import ApiException
+from mascope_thermo.thermo import NoScansFoundError
 
 
 DEFAULT_TIMEOUT = 120  # seconds
@@ -160,6 +164,13 @@ async def get_ms1_averaged_centroids(
     Uses Thermo's native scan averaging with ppm-based binning to compute
     averaged centroided MS1 spectrum over the sample's time range.
 
+    A sample with no MS1 scans - an acquisition of fragmentation scans alone,
+    as its file's scan census says - answers with empty arrays: it has no MS1
+    centroids, which is a fact about the acquisition rather than a fault in
+    the request. A client that reads
+    the precursor's intensity from here can then tell "no MS1 spectrum" from
+    a failed read, as the MS2 notebook toolkit already does.
+
     :param sample_item_id: Unique identifier for the sample.
     :param ppm: Mass tolerance in ppm for centroid binning.
     :param timeout: Maximum seconds to wait for the computation.
@@ -190,6 +201,24 @@ async def get_ms1_averaged_centroids(
             f"asyncio.TimeoutError in get_ms1_averaged_centroids (timeout={timeout}s)",
             504,
         )
+    except NoScansFoundError:
+        # Only the sample of an acquisition of fragmentation scans alone has
+        # no MS1 scan to centroid; a selection of an MS1 sample that holds
+        # nothing is the request's, and fails as it did.
+        if not await holds_only_fragmentation_scans(sample.filename):
+            raise
+        return {
+            "message": (
+                f"Sample '{sample.sample_item_name}' has no MS1 scans, so it "
+                "has no MS1 centroids."
+            ),
+            "data": {
+                "mz": [],
+                "intensity": [],
+                "resolution": [],
+                "signal_to_noise": [],
+            },
+        }
 
     return {
         "message": f"Averaged MS1 centroids for sample '{sample.sample_item_name}'.",

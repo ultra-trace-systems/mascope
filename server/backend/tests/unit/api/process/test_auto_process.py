@@ -27,6 +27,7 @@ from mascope_backend.api.controllers.sample.files.process.service import (
 )
 
 # Module path prefix for patching
+from mascope_backend.api.controllers.sample.files.process.status import StoreStitch
 from mascope_backend.api.controllers.sample.files.process.streams import (
     StoreStreams,
     StreamRows,
@@ -186,30 +187,38 @@ def status():
     the database, and the reading of the file's acquisition record, which
     would query it: these files have none unless a test says so through
     ``status.declares``, and the rung that reads it is covered in
-    test_auto_process_declared.py. Request the fixture by name to read what
+    test_auto_process_declared.py. So is the count of the samples an earlier
+    run made, which a park reads: none, unless ``status.samples`` says
+    otherwise. Request the fixture by name to read what
     was recorded:
     ``[(status, detail), ...]`` in order via :func:`_recorded`.
     """
     with (
         patch(f"{_SVC}.record_processing_status", new_callable=AsyncMock) as record,
         patch(f"{_SVC}.read_scan_streams", new_callable=AsyncMock) as census,
-        patch(f"{_SVC}.read_store_stream_keys", new_callable=AsyncMock) as stitched,
+        patch(f"{_SVC}.read_store_stitch", new_callable=AsyncMock) as stitched,
         patch(f"{_SVC}.pooled_streams_note") as note,
+        patch(f"{_SVC}.overlap_readings_note", return_value=None) as overlaps,
         patch(f"{_SVC}.learn_method_bindings", new_callable=AsyncMock) as learn,
         patch(
             f"{_SVC}._modes_its_record_declares",
             new_callable=AsyncMock,
             return_value=([], None),
         ) as declares,
+        patch(
+            f"{_SVC}._pipeline_item_count", new_callable=AsyncMock, return_value=0
+        ) as samples,
     ):
         census.return_value = []
-        stitched.return_value = []
+        stitched.return_value = StoreStitch()
         note.return_value = None
         record.note = note
+        record.overlaps = overlaps
         record.declares = declares
         record.census = census
         record.stitched = stitched
         record.learn = learn
+        record.samples = samples
         yield record
 
 
@@ -936,6 +945,28 @@ async def test_return_structure():
     assert "si-ret" in notif["affected_sample_item_ids"]
 
 
+def _attempts(*steps):
+    """Stand in for the pipeline body, attempt by attempt.
+
+    Each step is ``(binds, outcome)``: whether the attempt bound the file,
+    and so awaited the wrapper's ``clear_earlier_run`` as the body does once
+    bound, and what it then raised or returned.
+    """
+    remaining = list(steps)
+
+    async def attempt(**kwargs):
+        binds, outcome = remaining.pop(0)
+        if binds:
+            await kwargs["clear_earlier_run"](
+                _make_sample_file(sample_file_id=kwargs["sample_file_id"])
+            )
+        if isinstance(outcome, BaseException):
+            raise outcome
+        return outcome
+
+    return AsyncMock(side_effect=attempt)
+
+
 @pytest.mark.asyncio
 async def test_retries_recoverable_error_then_succeeds():
     """A 503 (pool starvation) attempt is retried and the retry's result returned."""
@@ -943,9 +974,7 @@ async def test_retries_recoverable_error_then_succeeds():
     from mascope_backend.api.lib.exceptions.api_exceptions import ApiException
 
     ok = {"message": "done", "_notification_data": {}}
-    body = AsyncMock(
-        side_effect=[ApiException("busy", {}, 503), ok],
-    )
+    body = _attempts((True, ApiException("busy", {}, 503)), (True, ok))
     cleanup = AsyncMock()
 
     with (
@@ -961,8 +990,9 @@ async def test_retries_recoverable_error_then_succeeds():
 
     assert result == ok
     assert body.call_count == 2
-    # Partial sample items are cleared before every attempt, the first included:
-    # the file may carry items from an earlier pipeline a restart cut short.
+    # Partial sample items are cleared by every attempt that binds the file,
+    # the first included: the file may carry items from an earlier pipeline
+    # a restart cut short.
     assert cleanup.call_count == 2
     assert all(call.args == ("sf-retry",) for call in cleanup.call_args_list)
 
@@ -1028,7 +1058,7 @@ async def test_does_not_retry_non_recoverable_error():
     from mascope_backend.api.controllers.sample.files.process import service
     from mascope_backend.api.lib.exceptions.api_exceptions import ApiException
 
-    body = AsyncMock(side_effect=ApiException("corrupt", {}, 400))
+    body = _attempts((True, ApiException("corrupt", {}, 400)))
     cleanup = AsyncMock()
 
     with (
@@ -1422,6 +1452,9 @@ async def test_the_rung_binds_a_token_less_file_to_its_method(status):
     assert _recorded(status)[0][1] == (
         "Bound to 'Bromide RI' (-) by its acquisition method."
     )
+    # Said at the binding and not carried to the end: only a record's rung
+    # and a person's choice are.
+    assert _recorded(status)[-1][1] == "Matched 1 sample."
     assert _recorded_provenance(mocks) == {
         "im-001": ItemProvenance("method", "mb-000000000001")
     }
@@ -1542,6 +1575,30 @@ async def test_a_file_that_binds_to_nothing_waits_for_a_chemistry(status):
     assert call.args[1].status == "warning"
     assert call.args[1].message == f"{message}. Or choose its chemistry in Raw files."
     assert result["_notification_data"]["instrument"] == "Orbion"
+
+
+@pytest.mark.asyncio
+async def test_a_parked_file_with_samples_says_they_are_an_earlier_runs(status):
+    """A run binds a file before it clears anything of it, so a file it parks
+    keeps the samples an earlier run made - and ``needs_chemistry`` alone
+    reads as a file with none."""
+    mocks, _ = _start_single()
+    message = (
+        "No ionization mode tokens found for file 2025.09.20_test_file.raw. "
+        "Configure tokens in ionization settings"
+    )
+    mocks["resolve"].side_effect = ValueError(message)
+    status.samples.return_value = 2
+    kept = "Its samples, from an earlier run, were left as they were."
+
+    result = await _run_pipeline()
+
+    status.samples.assert_awaited_once_with("sf-001")
+    assert _recorded(status) == [("needs_chemistry", f"{message}. {kept}")]
+    assert result["message"] == (
+        f"{message}. Or choose its chemistry in Raw files. {kept}"
+    )
+    mocks["create_batches"].assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -1799,6 +1856,56 @@ async def test_a_kept_mode_from_before_the_columns_invents_no_rung(status):
     status.learn.assert_not_awaited()
 
 
+#: What a file a person chose the chemistry of says of it, in every status
+#: from the binding on.
+CHOSEN_BY_HAND = "Bound to 'Nitrate' (-) as chosen by hand."
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "bound_by, bound, done",
+    [
+        ("explicit", CHOSEN_BY_HAND, f"Matched 1 sample. {CHOSEN_BY_HAND}"),
+        (
+            "token",
+            "Bound to 'Nitrate' (-) without a file-name token.",
+            "Matched 1 sample.",
+        ),
+        (
+            None,
+            "Bound to 'Nitrate' (-) without a file-name token.",
+            "Matched 1 sample.",
+        ),
+    ],
+    ids=["a person chose", "a token since renamed", "nothing recorded"],
+)
+async def test_a_kept_choice_says_so_and_teaches_nothing(status, bound_by, bound, done):
+    """A choice kept across a re-process is still somebody's choice.
+
+    It stands ahead of a token in the file's name, so the status the run
+    ends on is what tells whoever fixed the tokens and re-processed why this
+    file did not follow them. It reads as it did on the run the choice was
+    made for. The method learns nothing all the same: that run taught it. A
+    mode nobody chose says only that no file name chose it, and only while
+    the file is bound.
+    """
+    mocks, _ = _start_single()
+    chosen = _make_ionization_mode(ionization_mode_name="Nitrate")
+    kept = {"im-001": ItemProvenance(bound_by)}
+
+    with patch(
+        f"{_SVC}.fetch_ionization_modes",
+        new_callable=AsyncMock,
+        return_value=[chosen],
+    ):
+        await _run_pipeline(ionization_mode_ids=["im-001"], kept_provenance=kept)
+
+    assert _recorded(status)[0] == ("bound", bound)
+    assert _recorded(status)[-1] == ("done", done)
+    assert _recorded_provenance(mocks) == kept
+    status.learn.assert_not_awaited()
+
+
 @pytest.mark.asyncio
 async def test_a_mode_missing_from_the_kept_provenance_records_nothing(status):
     """A mode whose own item predates the columns is not given a rung."""
@@ -1820,12 +1927,16 @@ async def test_the_note_is_told_which_streams_the_store_stitched(status):
     pooled: the note is given the census and the store's streams."""
     census = [{"key": "A", "signature": {"polarity": "-", "ms_order": 1}}]
     status.census.return_value = census
-    status.stitched.return_value = ["A", "B"]
+    readings = [{"streams": [0, 1], "shared": 26}]
+    status.stitched.return_value = StoreStitch(["A", "B"], readings)
     _start_single()
 
     await _run_pipeline()
 
     status.note.assert_called_once_with(census, ["A", "B"])
+    # and the readings are read against the same keys, off the same read
+    status.overlaps.assert_called_once_with(["A", "B"], readings)
+    status.stitched.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -1954,6 +2065,78 @@ async def test_what_the_record_named_comes_before_what_the_streams_say(status):
     )
 
 
+#: What a file its acquisition record bound says of it, in every status from
+#: the binding on.
+BY_ITS_RECORD = "Bound to 'Bromide RI' (-) by its acquisition record."
+
+
+def _start_declared(status, **kwargs):
+    """A one-polarity file whose acquisition record names its mode."""
+    mocks, sample_file = _start_single(**kwargs)
+    status.declares.return_value = (list(mocks["resolve"].return_value), None)
+    return mocks, sample_file
+
+
+@pytest.mark.asyncio
+async def test_a_file_its_record_bound_goes_on_saying_so_when_done(status):
+    """Nothing else Raw files shows of a file says that its record bound it,
+    and the status a person reads is the one its run ended on. The sentence
+    is said once in each status, the first included."""
+    mocks, _ = _start_declared(status)
+
+    await _run_pipeline()
+
+    mocks["resolve"].assert_not_called()
+    assert _recorded(status) == [
+        ("bound", BY_ITS_RECORD),
+        ("calibrated", BY_ITS_RECORD),
+        ("done", f"Matched 1 sample. {BY_ITS_RECORD}"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_a_failed_calibration_says_the_record_bound_the_file_as_well(status):
+    mocks, _ = _start_declared(status)
+    mocks["calibrate"].return_value = _outcome(
+        False, "The m/z calibration failed: No calibration peaks found."
+    )
+
+    await _run_pipeline()
+
+    assert _recorded(status)[-1] == (
+        "calibration_failed",
+        "The m/z calibration failed: No calibration peaks found. Matching and "
+        f"peak assignment were skipped. {BY_ITS_RECORD}",
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_blank_file_says_its_record_bound_it_as_well(status):
+    _start_declared(status, instrument_function_id=None)
+
+    await _run_pipeline()
+
+    assert _recorded(status)[-1] == (
+        "done",
+        f"Blank measurement: no peaks to calibrate, match or assign. {BY_ITS_RECORD}",
+    )
+
+
+@pytest.mark.asyncio
+async def test_what_bound_the_file_comes_before_what_the_streams_say(status):
+    note = "Polarity - pools 2 MS1 scan streams into one peak list: A; B."
+    status.note.return_value = note
+    _start_declared(status)
+
+    await _run_pipeline()
+
+    assert _recorded(status) == [
+        ("bound", f"{BY_ITS_RECORD} {note}"),
+        ("calibrated", f"{BY_ITS_RECORD} {note}"),
+        ("done", f"Matched 1 sample. {BY_ITS_RECORD} {note}"),
+    ]
+
+
 @pytest.mark.asyncio
 async def test_every_status_carries_the_pooled_streams_note(status):
     """The note describes the file, so no stage may drop it."""
@@ -1967,6 +2150,136 @@ async def test_every_status_carries_the_pooled_streams_note(status):
     assert [state for state, _ in recorded] == ["bound", "calibrated", "done"]
     assert all(detail.endswith(note) for _, detail in recorded)
     assert recorded[1][1] == note
+
+
+@pytest.mark.asyncio
+async def test_every_status_says_what_a_stitched_files_ranges_read(status):
+    """Beside the streams themselves: it is as much a fact about the file."""
+    streams = "Polarity - stitches 2 MS1 scan streams into one spectrum: A; B."
+    overlaps = "Where two scan ranges overlap: B reads the 26 ions it shares with A."
+    status.note.return_value = streams
+    status.overlaps.return_value = overlaps
+    _start_single()
+
+    await _run_pipeline()
+
+    recorded = _recorded(status)
+    assert [state for state, _ in recorded] == ["bound", "calibrated", "done"]
+    assert all(detail.endswith(f"{streams} {overlaps}") for _, detail in recorded)
+
+
+@pytest.mark.asyncio
+async def test_a_file_that_is_not_stitched_says_nothing_of_overlaps(status):
+    status.note.return_value = "Polarity - pools 2 MS1 scan streams: A; B."
+    _start_single()
+
+    await _run_pipeline()
+
+    assert _recorded(status)[-1] == (
+        "done",
+        "Matched 1 sample. Polarity - pools 2 MS1 scan streams: A; B.",
+    )
+
+
+@pytest.mark.asyncio
+async def test_done_names_the_ranges_that_run_on_a_neighbours_calibration(status):
+    """A stitched file is calibrated range by range, and a range with no fit
+    of its own is matched on a neighbour's calibration: the file says which,
+    and quotes the reason the fit recorded for the range - no calibrant of
+    the collection in it, or ones the fit turned down."""
+    mocks, sample_file = _start_single()
+
+    async def calibrate(**_):
+        sample_file.mz_calibration = {
+            "status": "ok",
+            "verified": True,
+            "quality": {
+                "segments": [
+                    {"label": "m/z 40-138", "source": "anchors"},
+                    {
+                        "label": "m/z 132-460",
+                        "source": "borrowed",
+                        "origin": "m/z 40-138",
+                    },
+                ]
+            },
+        }
+        return _outcome(True)
+
+    mocks["calibrate"].side_effect = calibrate
+
+    await _run_pipeline()
+
+    assert _recorded(status)[-1] == (
+        "done",
+        "Matched 1 sample. m/z 132-460 has no fit of its own: given the "
+        "calibration of m/z 40-138 as it is.",
+    )
+
+
+@pytest.mark.asyncio
+async def test_done_names_them_after_what_the_calibration_fell_short_of(status):
+    mocks, sample_file = _start_single()
+
+    async def calibrate(**_):
+        sample_file.mz_calibration = {
+            "status": "poor",
+            "verified": True,
+            "quality_issues": [{"message": "Mean error 4.1 ppm."}],
+            "quality": {
+                "segments": [
+                    {
+                        "label": "m/z 66-124",
+                        "source": "overlap",
+                        "origin": "m/z 40-138",
+                        "shared_ions": 26,
+                    }
+                ]
+            },
+        }
+        return _outcome(True)
+
+    mocks["calibrate"].side_effect = calibrate
+
+    await _run_pipeline()
+
+    assert _recorded(status)[-1] == (
+        "done",
+        "Matched 1 sample. The m/z calibration is below the quality bar: "
+        "Mean error 4.1 ppm. m/z 66-124 has no fit of its own: calibrated from "
+        "m/z 40-138 across the 26 ions both measure.",
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_file_held_back_from_matching_does_not_name_them(status):
+    """Its samples were not matched on any calibration, which is what it says."""
+    mocks, sample_file = _start_single()
+
+    async def calibrate(**_):
+        sample_file.mz_calibration = {
+            "status": "poor",
+            "verified": False,
+            "quality_issues": [{"message": "Mean error 4.1 ppm."}],
+            "quality": {
+                "segments": [
+                    {
+                        "label": "m/z 132-460",
+                        "source": "borrowed",
+                        "origin": "m/z 40-138",
+                    }
+                ]
+            },
+        }
+        return _outcome(False)
+
+    mocks["calibrate"].side_effect = calibrate
+
+    await _run_pipeline()
+
+    state, detail = _recorded(status)[-1]
+    assert state == "calibration_failed"
+    assert "has no fit of its own" not in detail
 
 
 @pytest.mark.asyncio
@@ -2144,11 +2457,10 @@ async def test_modes_chosen_for_a_file_bind_it_without_its_tokens(status):
     fetch.assert_awaited_once_with(["im-001"])
     mocks["resolve"].assert_not_called()
     assert mocks["create_batches"].call_args.kwargs["ionization_modes"] == [chosen]
-    assert _recorded(status)[0] == (
-        "bound",
-        "Bound to 'Nitrate' (-) without a file-name token.",
-    )
-    assert _recorded(status)[-1][0] == "done"
+    assert _recorded(status)[0] == ("bound", CHOSEN_BY_HAND)
+    # Carried to the end, as a record's rung is: nothing else Raw files shows
+    # says a person chose, and the name beside it may say otherwise.
+    assert _recorded(status)[-1] == ("done", f"Matched 1 sample. {CHOSEN_BY_HAND}")
 
 
 @pytest.mark.asyncio
@@ -2275,13 +2587,21 @@ async def test_a_failure_that_cannot_be_recorded_in_time_is_logged(status):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(("asked", "resets"), [(True, 1), (False, 0)])
-async def test_a_rebuild_resets_the_calibration_once_before_it_starts(asked, resets):
-    """As re-processing does, and not again on a retry."""
+@pytest.mark.parametrize(
+    "first_binds", [True, False], ids=["first binds", "first stops before binding"]
+)
+async def test_a_rebuild_resets_the_calibration_once_it_has_bound_the_file(
+    asked, resets, first_binds
+):
+    """As re-processing does, and not again on a retry. The reset is owed to
+    the first attempt that binds the file, which need not be the first."""
     from mascope_backend.api.controllers.sample.files.process import service
     from mascope_backend.api.lib.exceptions.api_exceptions import ApiException
 
     reset = AsyncMock()
-    body = AsyncMock(side_effect=[ApiException("busy", {}, 503), {"message": "ok"}])
+    body = _attempts(
+        (first_binds, ApiException("busy", {}, 503)), (True, {"message": "ok"})
+    )
     with (
         patch(f"{_SVC}._reset_calibration", reset),
         patch(f"{_SVC}._auto_process_sample_file", body),
@@ -2298,3 +2618,458 @@ async def test_a_rebuild_resets_the_calibration_once_before_it_starts(asked, res
 
     assert body.await_count == 2
     assert reset.await_count == resets
+    if resets:
+        # The attempt's own row, which the reset updates in place.
+        assert reset.await_args.args[0].sample_file_id == "sf-rebind"
+
+
+@pytest.mark.asyncio
+async def test_a_run_that_parks_the_file_clears_and_resets_nothing():
+    """A run binds a file before it clears anything of it, so one it binds
+    to nothing keeps its samples and the calibration they were matched on."""
+    from mascope_backend.api.controllers.sample.files.process import service
+
+    reset, cleanup = AsyncMock(), AsyncMock()
+    parked = {"status": "parked", "message": "m", "_notification_data": {}}
+    with (
+        patch(f"{_SVC}._reset_calibration", reset),
+        patch(f"{_SVC}._auto_process_sample_file", _attempts((False, parked))),
+        patch(f"{_SVC}._delete_partial_acquisition_items", cleanup),
+        patch(f"{_FEATURES}.handle_notifications", new_callable=AsyncMock),
+        patch(f"{_FEATURES}.handle_reloads", new_callable=AsyncMock),
+    ):
+        result = await service.auto_process_sample_file(
+            sample_file_id="sf-parked",
+            independent_transaction=True,
+            reset_calibration=True,
+        )
+
+    assert result["status"] == "parked"
+    reset.assert_not_awaited()
+    cleanup.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_retry_is_told_when_its_run_has_cleared_the_file():
+    """An attempt that bound and cleared the file and then failed leaves its
+    own partial samples, and a retry that parks the file has to know they
+    are this run's and not an earlier run's: it clears them."""
+    from mascope_backend.api.controllers.sample.files.process import service
+    from mascope_backend.api.lib.exceptions.api_exceptions import ApiException
+
+    parked = {"status": "parked", "message": "m", "_notification_data": {}}
+    body = _attempts(
+        (False, ApiException("busy", {}, 503)),
+        (True, ApiException("busy", {}, 503)),
+        (False, parked),
+    )
+    with (
+        patch(f"{_SVC}._auto_process_sample_file", body),
+        patch(f"{_SVC}._delete_partial_acquisition_items", AsyncMock()),
+        patch.object(service, "_AUTO_PROCESS_RETRY_DELAYS_S", (0, 0, 0)),
+        patch(f"{_FEATURES}.handle_notifications", new_callable=AsyncMock),
+        patch(f"{_FEATURES}.handle_reloads", new_callable=AsyncMock),
+    ):
+        await service.auto_process_sample_file(
+            sample_file_id="sf-retried", independent_transaction=True
+        )
+
+    # The first attempt stopped before binding, so only the third is told.
+    assert [call.kwargs["cleared_by_this_run"] for call in body.call_args_list] == [
+        False,
+        False,
+        True,
+    ]
+
+
+# ---------------------------------------------------------------------------
+# MS2 parts: a file of fragmentation scans alone, which nothing binds
+# ---------------------------------------------------------------------------
+
+
+def _census(*ms_orders, polarity="-"):
+    """A scan-stream census holding one stream of each of these MS orders."""
+    return [
+        {
+            "key": f"FTMS {polarity} p NSI Full ms{order}",
+            "signature": {"ms_order": order, "polarity": polarity},
+        }
+        for order in ms_orders
+    ]
+
+
+_MS2_PART = {"sample_item_id": "si-ms2", "sample_batch_id": "batch-ms2"}
+_MS2_BATCH = {
+    "sample_batch_id": "batch-ms2",
+    "sample_batch_name": "2025-09-20 MS2 acquisition (no chemistry)",
+    "polarity": "-",
+}
+_NO_TOKEN = (
+    "No ionization mode tokens found for file 2025.09.20_test_file.raw. "
+    "Configure tokens in ionization settings."
+)
+_FILED = (
+    "Filed as an MS2 sample in '2025-09-20 MS2 acquisition (no chemistry)' (-). "
+    "It records "
+    "no MS1 scans, so no peaks were detected and there is nothing to "
+    "calibrate, match or assign."
+)
+
+
+def _filing(filer=None):
+    """Patch the filer of MS2 parts.
+
+    :param filer: The filer's side effect; by default it files one part.
+    :return: The context manager. The filer's mock is read with ``_filer``.
+    """
+    return patch(
+        f"{_SVC}.file_fragmentation_scans",
+        new_callable=AsyncMock,
+        side_effect=filer,
+        return_value=([_MS2_PART], [_MS2_BATCH]),
+    )
+
+
+def _filer():
+    """The filer's mock, read back from the patched service module."""
+    from mascope_backend.api.controllers.sample.files.process import service
+
+    return service.file_fragmentation_scans
+
+
+def _ms2_only():
+    """Start the base patches for a file of fragmentation scans alone.
+
+    Stored as the converter stores one: no instrument config, as a blank is.
+    """
+    return _start_single(instrument_function_id=None)
+
+
+@pytest.mark.asyncio
+async def test_a_file_of_fragmentation_scans_alone_is_filed_and_done(status):
+    """Nothing a chemistry would add, so it does not wait for one.
+
+    No MS1 scan means no peaks were detected: under any mode there is nothing
+    to calibrate, match or assign. Left as ``needs_chemistry`` it would ask
+    the instrument's owners for a decision that changes nothing, and its MS2
+    data would have no sample to be read through meanwhile.
+    """
+    mocks, sample_file = _ms2_only()
+    mocks["resolve"].side_effect = _no_token()
+    status.census.return_value = _census(2)
+
+    with patch(f"{_FEATURES}.handle_notifications", new_callable=AsyncMock) as notify:
+        with _filing():
+            result = await _run_pipeline()
+            _filer().assert_awaited_once_with(sample_file, "ds-001", ["-"])
+
+    assert _recorded(status) == [("done", _FILED)]
+    # A finished run, reported as one - not a file waiting on a person.
+    assert "status" not in result
+    assert result["data"] == [_MS2_PART]
+    assert notify.call_args.args[1].status == "success"
+    # No bound items are made for it, and nothing is matched.
+    mocks["create_batches"].assert_not_called()
+    mocks["match"].assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_the_filed_parts_are_what_the_browser_reloads(status):
+    """The batch the part went into is new to anyone looking at the dataset."""
+    mocks, _ = _ms2_only()
+    mocks["resolve"].side_effect = _no_token()
+    status.census.return_value = _census(2)
+
+    with _filing():
+        result = await _run_pipeline()
+
+    assert result["_notification_data"] == {
+        "affected_sample_batch_ids": ["batch-ms2"],
+        "affected_sample_item_ids": ["si-ms2"],
+        "instrument": "Orbion",
+        "sample_file_id": "sf-001",
+    }
+
+
+@pytest.mark.asyncio
+async def test_a_file_with_ms1_scans_waits_for_its_chemistry_with_no_samples(status):
+    """Fragmentation scans or not, its MS1 peaks are matched under a chemistry.
+
+    Only a person can say which one, so it parks exactly as any file nothing
+    binds does, and no MS2 sample is made for it meanwhile.
+    """
+    mocks, _ = _start_single()
+    mocks["resolve"].side_effect = _no_token()
+    status.census.return_value = _census(1, 2)
+
+    with _filing():
+        result = await _run_pipeline()
+        _filer().assert_not_awaited()
+
+    assert _recorded(status) == [("needs_chemistry", _NO_TOKEN)]
+    assert result["status"] == "parked"
+    assert result["_notification_data"]["affected_sample_item_ids"] == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("census", [[], None])
+async def test_a_file_with_no_census_waits_for_its_chemistry(status, census):
+    """No census says nothing about the file's scans, so it is not taken to
+    have no MS1 scans: a blank converted before the census existed is stored
+    with no peaks just the same."""
+    mocks, _ = _ms2_only()
+    mocks["resolve"].side_effect = _no_token()
+    status.census.return_value = census
+
+    with _filing():
+        result = await _run_pipeline()
+        _filer().assert_not_awaited()
+
+    assert _recorded(status) == [("needs_chemistry", _NO_TOKEN)]
+    assert result["status"] == "parked"
+
+
+@pytest.mark.asyncio
+async def test_only_the_polarities_that_fragment_are_filed(status):
+    mocks, sample_file = _ms2_only()
+    sample_file.polarity = "+-"
+    mocks["resolve"].side_effect = _no_token()
+    status.census.return_value = _census(2)
+
+    with _filing():
+        await _run_pipeline()
+        _filer().assert_awaited_once_with(sample_file, "ds-001", ["-"])
+
+
+def _chosen_mode_gone(sample_file):
+    """What choosing a mode that no longer fits says, for this file.
+
+    The run's own words, read from the rule it uses, so that the test pins
+    where they go rather than what they are.
+    """
+    from mascope_backend.api.controllers.sample.files.process import service
+
+    with pytest.raises(ValueError) as gone:
+        service.choose_ionization_modes(sample_file, [_make_ionization_mode()])
+    return f"{str(gone.value).rstrip('.')}."
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("way", ["no token", "method declined", "chosen mode gone"])
+async def test_every_way_of_binding_nothing_files_them(status, way):
+    """Each run clears the file's own items first, an earlier MS2 part included.
+
+    So a way of binding nothing that did not file again would cost the file
+    the MS2 sample it had - re-processing it, say, with its chemistry chosen
+    by hand and the mode deleted since.
+
+    Why nothing bound it is not news for such a file, and is left out of its
+    status - most carry no token. A chemistry chosen for it that binds it no
+    longer is kept, as something a person may want to fix.
+    """
+    mocks, sample_file = _ms2_only()
+    status.census.return_value = _census(2)
+    kwargs = {}
+    rung_on = way == "method declined"
+    declined = ([], Declined("it reports no method name", "Use a filename token."))
+    expected = _FILED
+    if way in ("no token", "method declined"):
+        mocks["resolve"].side_effect = _no_token()
+    else:
+        sample_file.polarity = "+-"
+        kwargs = {"ionization_mode_ids": ["im-001"]}
+        status.census.return_value += _census(2, polarity="+")
+        expected = f"{_FILED} {_chosen_mode_gone(sample_file)}"
+
+    with (
+        patch(f"{_SVC}.routes_on_method_binding", return_value=rung_on),
+        patch(
+            f"{_SVC}.resolve_modes_by_method_binding",
+            new_callable=AsyncMock,
+            return_value=declined,
+        ),
+        patch(
+            f"{_SVC}.fetch_ionization_modes",
+            new_callable=AsyncMock,
+            return_value=[_make_ionization_mode()],
+        ),
+        _filing(),
+    ):
+        result = await _run_pipeline(**kwargs)
+        _filer().assert_awaited_once()
+
+    assert "status" not in result
+    assert _recorded(status) == [("done", expected)]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("rung_on", [False, True], ids=["no token", "method declined"])
+async def test_a_filed_file_still_says_what_its_record_named(status, rung_on):
+    """A record naming a chemistry no mode here answers to is a configuration
+    somebody fixes, whether or not the file needed a chemistry - the status
+    the file ends on says so, as a bound file's does. On each road that
+    binds nothing by the name: no token, and the method declining after it."""
+    status.declares.return_value = ([], UNANSWERED)
+    mocks, _ = _ms2_only()
+    mocks["resolve"].side_effect = _no_token()
+    status.census.return_value = _census(2)
+    declined = ([], Declined("it reports no method name", "Use a filename token."))
+
+    with (
+        patch(f"{_SVC}.routes_on_method_binding", return_value=rung_on),
+        patch(
+            f"{_SVC}.resolve_modes_by_method_binding",
+            new_callable=AsyncMock,
+            return_value=declined,
+        ) as asked,
+        _filing(),
+    ):
+        await _run_pipeline()
+
+    assert asked.await_count == (1 if rung_on else 0)
+    assert _recorded(status) == [("done", f"{_FILED} {UNANSWERED}.")]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("census", ["MS2 only", "MS1 too"])
+async def test_an_ambiguous_name_parks_the_file_whatever_it_holds(status, census):
+    """Tokens of two modes of one polarity are a configuration to fix, which
+    no binding stands in for - and filing a file without a chemistry would.
+    Re-processing and processing on request refuse such a name before they
+    ask what the file holds, so a file filed on it once could not be
+    processed again until its tokens were fixed, with a status that never
+    named them. It parks, as any file does, and says why."""
+    ambiguous = "Ionization mode tokens must match exactly one mode per polarity"
+    mocks, _ = _ms2_only()
+    mocks["resolve"].side_effect = ValueError(ambiguous)
+    status.census.return_value = _census(2) if census == "MS2 only" else _census(1, 2)
+
+    with _filing():
+        result = await _run_pipeline()
+        _filer().assert_not_awaited()
+
+    assert result["status"] == "parked"
+    assert _recorded(status) == [("needs_chemistry", f"{ambiguous}.")]
+
+
+@pytest.mark.asyncio
+async def test_a_fault_while_filing_fails_the_run(status):
+    """Filing is all the run does for such a file, so a fault in it is the
+    run's: reported as failed, where a person can re-process the file."""
+    mocks, _ = _ms2_only()
+    mocks["resolve"].side_effect = _no_token()
+    status.census.return_value = _census(2)
+
+    with (
+        patch(f"{_FEATURES}.handle_notifications", new_callable=AsyncMock),
+        patch(f"{_FEATURES}.handle_reloads", new_callable=AsyncMock),
+        _filing(filer=ValueError("the reader could not open the file")),
+    ):
+        await _run_pipeline()
+
+    assert _recorded(status) == [("failed", "the reader could not open the file")]
+
+
+@pytest.mark.asyncio
+async def test_a_transient_error_while_filing_is_left_to_the_retry(status):
+    """A starved pool clears on the pipeline's retry.
+
+    Item creation commits its rows before it reads them back, so the failed
+    attempt may have filed a part already; the retry clears it before it
+    files again, as every attempt clears what an earlier one left.
+    """
+    from mascope_backend.api.controllers.sample.files.process import service
+    from mascope_backend.api.lib.exceptions.api_exceptions import ApiException
+
+    mocks, _ = _ms2_only()
+    mocks["resolve"].side_effect = _no_token()
+    status.census.return_value = _census(2)
+    outcomes = [ApiException("busy", {}, 503), ([_MS2_PART], [_MS2_BATCH])]
+
+    with (
+        patch.object(service, "_AUTO_PROCESS_RETRY_DELAYS_S", (0, 0, 0)),
+        patch(
+            f"{_SVC}._delete_partial_acquisition_items", new_callable=AsyncMock
+        ) as clear,
+        _filing(filer=outcomes),
+    ):
+        result = await _run_pipeline()
+        assert _filer().await_count == 2
+
+    assert [call.args for call in clear.await_args_list] == [("sf-001",), ("sf-001",)]
+    assert _recorded(status) == [("done", _FILED)]
+    assert result["_notification_data"]["affected_sample_item_ids"] == ["si-ms2"]
+
+
+@pytest.mark.asyncio
+async def test_filing_clears_what_an_earlier_run_left_first(status):
+    """A run clears a file only once it knows what the file gets, and filing
+    is that as binding is. The MS2 part an earlier run filed is cleared
+    before the new one is made - item creation never looks for one - so a
+    file filed again has one part, not two."""
+    mocks, _ = _ms2_only()
+    mocks["resolve"].side_effect = _no_token()
+    status.census.return_value = _census(2)
+    order = []
+
+    async def clear(sample_file_id):
+        order.append(("clear", sample_file_id))
+
+    async def file(sample_file, dataset_id, polarities):
+        order.append(("file", sample_file.sample_file_id))
+        return [_MS2_PART], [_MS2_BATCH]
+
+    with (
+        patch(f"{_SVC}._delete_partial_acquisition_items", side_effect=clear),
+        _filing(filer=file),
+    ):
+        await _run_pipeline()
+
+    assert order == [("clear", "sf-001"), ("file", "sf-001")]
+
+
+@pytest.mark.asyncio
+async def test_a_bound_file_with_no_ms1_scans_is_not_called_a_blank(status):
+    """It has no peaks for another reason, and its sample is worth opening.
+
+    A token or a person can bind such a file like any other. It is stored
+    without an instrument config, as a blank is, so it skips the same three
+    stages - but a blank was measured and showed nothing, and this file holds
+    fragmentation scans that are read through the sample just made.
+    """
+    mocks, _ = _ms2_only()
+    status.census.return_value = _census(2)
+
+    with _filing():
+        await _run_pipeline()
+        _filer().assert_not_awaited()
+
+    mocks["calibrate"].assert_not_called()
+    mocks["match"].assert_not_called()
+    mocks["assign"].assert_not_called()
+    assert _recorded(status) == [
+        ("bound", "Bound by file-name token to 'Bromide RI' (-)."),
+        (
+            "done",
+            "It records no MS1 scans, so no peaks were detected and there is "
+            "nothing to calibrate, match or assign. Its fragmentation scans "
+            "are read through its samples.",
+        ),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_a_blank_whose_file_also_fragments_is_still_a_blank(status):
+    """MS1 scans too weak to fit an instrument function, beside MS2 scans.
+
+    The census holds an MS1 stream, so the missing peaks are the blank kind.
+    """
+    _start_single(instrument_function_id=None)
+    status.census.return_value = _census(1, 2)
+
+    await _run_pipeline()
+
+    assert _recorded(status)[-1] == (
+        "done",
+        "Blank measurement: no peaks to calibrate, match or assign.",
+    )

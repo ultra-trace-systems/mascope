@@ -16,7 +16,8 @@ import { useMfaReauth } from './useMfaReauth'
 const SERVICE_LABELS = {
   'tof-agent': 'TOF Agent',
   'file-agent': 'File Agent',
-  'export-agent': 'CSV Export Agent'
+  'export-agent': 'CSV Export Agent',
+  'instrument-agent': 'Instrument Agent'
 }
 
 const visible = defineModel('visible')

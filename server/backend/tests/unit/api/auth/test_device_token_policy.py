@@ -47,6 +47,16 @@ def test_unbound_agent_token_allowed_when_not_strict(strict_mode):
     validation.ensure_device_bound(AGENT_SERVICE, device_id=None)
 
 
+@pytest.mark.parametrize("service", ["file-agent", "instrument-agent"])
+def test_the_file_agent_is_gated_under_either_name(strict_mode, service):
+    # On its own the File Agent pairs as file-agent, inside a program that
+    # controls the instrument as instrument-agent: the same credential in
+    # plaintext on the same kind of machine, under the same rule.
+    strict_mode(True)
+    with pytest.raises(InvalidTokenException):
+        validation.ensure_device_bound(service, device_id=None)
+
+
 @pytest.mark.parametrize("service", ["mascope_sdk", "file-converter"])
 def test_non_agent_services_are_never_gated(strict_mode, service):
     # Personal and internal tokens have no device concept, so the flag must not

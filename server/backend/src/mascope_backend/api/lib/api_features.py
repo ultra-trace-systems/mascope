@@ -1,10 +1,11 @@
 import inspect
+from collections.abc import Generator
 from functools import wraps
 from typing import Any, Callable
 
 from fastapi import params
 from fastapi.encoders import jsonable_encoder
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from rich.pretty import pretty_repr
 
 from mascope_backend.api.lib.exceptions.api_exceptions import (
@@ -58,6 +59,42 @@ class NanSafeJSONResponse(JSONResponse):
             "which JSON cannot carry; they were sent as null"
         )
         return body
+
+
+class ClosingStreamingResponse(StreamingResponse):
+    """
+    A streamed response that closes the generator it sends from when the
+    response ends, however it ends: sent in full, failed, or cut off by a
+    client that hangs up.
+
+    Starlette stops asking a body for pieces when its client goes away and
+    leaves the generator suspended where it last yielded. Nothing else closes
+    it. It is unreachable but sits in a reference cycle, so it is not freed
+    with the request, and whatever it holds open inside a ``with`` - a raw
+    file's reader - stays open until the cyclic collector next runs. A
+    download of hundreds of megabytes is the request a client is likeliest to
+    cancel.
+
+    Closed in a ``finally`` around the whole response rather than in a
+    background task, which Starlette skips when the response is cancelled
+    from outside. By then no piece is being read: Starlette reads each in a
+    worker thread and waits for it to return even when it is cancelled.
+
+    :param content: The body's pieces, as a generator: a synchronous one,
+        whose ``close()`` is what this calls. Another iterator, or an async
+        generator, has no ``close()`` and would fail once the response has
+        gone out.
+    """
+
+    def __init__(self, content: Generator, **kwargs) -> None:
+        super().__init__(content, **kwargs)
+        self._content = content
+
+    async def __call__(self, scope, receive, send) -> None:
+        try:
+            await super().__call__(scope, receive, send)
+        finally:
+            self._content.close()
 
 
 def _json_response(
@@ -179,7 +216,8 @@ def api_route(
     The handler's result, or the ApiException it raises, is rendered as a
     ``NanSafeJSONResponse``: a non-finite float is sent as ``null`` with a
     WARNING naming the route, and a body that cannot be rendered at all is
-    answered 500 and logged at ERROR.
+    answered 500 and logged at ERROR. A handler that returns a file or a
+    streamed response has rendered its own, and that is returned as it is.
 
     By default, all routes require authentication via auth user dependency injection.
     Routes must either:
@@ -259,8 +297,8 @@ def api_route(
                 # --- Execute the route handler
                 result = await func(*args, **kwargs)
 
-                # --- If result is file, return as-is ---
-                if isinstance(result, FileResponse):
+                # --- A file or a streamed body is a response already ---
+                if isinstance(result, (FileResponse, StreamingResponse)):
                     return result
 
                 # --- Prepare response headers ---

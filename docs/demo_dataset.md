@@ -13,6 +13,7 @@ one command: `mascope demo`.
 - [The demo bundle](#the-demo-bundle)
 - [Where it lives](#where-it-lives-zenodo)
 - [The `mascope demo` command](#the-mascope-demo-command)
+- [The bundle in CI](#the-bundle-in-ci)
 - [End-to-end reproducibility test](#end-to-end-reproducibility-test)
 - [De-identification](#de-identification)
 - [Step-by-step: create, load, and update](#step-by-step-create-load-and-update)
@@ -81,6 +82,21 @@ assert a checksum and trust it indefinitely. The download URL, archive MD5, and
 DOI are recorded in the bundle registry
 (`tooling/cli/src/mascope_cli/cmd/demo/bundles.py`) and consumed by
 `mascope demo fetch`.
+
+The download is made to survive a bad hour at the host. A transfer that stalls
+for 60 seconds, ends short of the length the server announced, or is refused
+for now (a server error, or a 429 from the host's rate limit) is attempted
+again, up to five attempts with a growing pause between them: 5, 10, 20 and 40
+seconds, or as long as the server's `Retry-After` asks where that is longer, up
+to 60 seconds. A retry asks only for the bytes still missing (an HTTP `Range`
+request) where the host allows it. The archive MD5 has the last word either
+way: a file of the full length that fails it is downloaded once more from the
+start, and a second mismatch is an error - at that point suspect the registry
+entry, not the transfer.
+
+None of this outlasts a host that refuses for longer than a few minutes. The
+command then fails saying what the server answered, and running it again later
+is the remedy.
 
 ## The `mascope demo` command
 
@@ -203,6 +219,62 @@ daemon.
 
 `check_raw_coverage` refuses goldens from a short run, so a collision costs a
 rebuild rather than a corrupted bundle.
+
+## The bundle in CI
+
+CI does not download the bundle for every run: a job that depends on the host
+answering fails whenever it refuses or stalls, for as long as it does. Each job
+that starts the demo stack first restores the extracted bundle from the GitHub
+Actions cache into the checkout's `.runtime/demo`
+(`.github/actions/demo-bundle-cache`), then starts the stack with a second
+compose file that mounts that directory into `demo_init` in place of its
+`demo_cache` volume:
+
+```sh
+docker compose -f docker-compose.demo.yaml -f .github/docker-compose.demo.ci.yaml up -d
+```
+
+`docker-compose.demo.yaml` on its own is unchanged and remains the demo; the
+second file is for CI.
+
+**The fetch has the last word, not the cache.** `demo_init` runs the same fetch
+either way. It uses a copy that is already there only when every checksum in
+its manifest verifies; with no copy, or one that fails, it downloads the
+archive and checks it as it does any download. A cache that is missing, stale
+or damaged therefore costs a download and cannot put the wrong data under a
+test. The manifest lists the raw files, both dumps and the goldens. The
+snapshot's filestore tree is not in it: that tree is covered by the archive MD5
+when it is downloaded, and a cached copy of it is what a job saved after such
+a download.
+
+- **Key.** The default bundle's version and archive MD5, read from the
+  registry. Registering a new bundle ([D](#d-publish-to-zenodo-versioning)) is
+  all it takes to stop reading the old one: the first run after it misses,
+  downloads, and saves under the new key.
+- **A miss.** Nothing but `demo_init` downloads, as without the cache. The
+  directory is saved when the job has succeeded, which it cannot have done
+  without getting past `demo_init`, so only a bundle the fetch verified is
+  saved.
+- **Who can read a saved copy.** GitHub's rule: a run reads caches saved on its
+  own ref, on the default branch and, for a pull request, on its base branch.
+  What a pull request saves is readable by that pull request alone, so
+  `.github/workflows/demo-bundle-cache.yaml` fills the cache on every push to
+  `develop` and `master`, where every pull request into them reads it. Its
+  runs are also what puts the cache back after GitHub evicts it (least recent
+  use once the repository is over its quota, or a week unread).
+- **One copy per job.** `.runtime/demo` is where the CLI's fetch keeps the
+  bundle for a checkout, so a step that fetches on the runner - the
+  reproducibility test does - finds the copy `demo_init` used instead of
+  downloading a second one, and the e2e job takes the raw file for its upload
+  spec from the same place.
+
+Each job prints what `demo_init` did for the bundle right after it starts the
+stack: `Demo bundle '<version>' already cached` for a restored copy that
+verified, `Downloading ...` otherwise. A job that prints
+`Cached bundle '<version>' failed verification; re-fetching` on every run is
+reading a bad cache entry it cannot replace. Delete it
+(`gh cache list --key demo-bundle-`, then `gh cache delete <id>`) and the next
+push to `develop` saves a good one.
 
 ## End-to-end reproducibility test
 

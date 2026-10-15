@@ -5,17 +5,20 @@ Handles automated creation of ACQUISITION datasets, batches, and sample items, a
 """
 
 import asyncio
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
-from sqlalchemy import and_, delete, select
+from sqlalchemy import and_, delete, func, select
 from sqlalchemy.exc import InterfaceError, OperationalError, SQLAlchemyError
 from sqlalchemy.exc import TimeoutError as SQLAlchemyTimeoutError
 
 from mascope_backend.acquisition_record import declared_ionization
 from mascope_backend.api.controllers.calibration.calibration_controller import (
+    ClearedMzCalibration,
     calibration_mz_calibrate_sample,
     is_unfitted_record,
     reset_mz_calibration,
+    restore_mz_calibration,
 )
 from mascope_backend.api.controllers.calibration.lib.calibration_mz_fit import (
     calibration_params_factory,
@@ -31,17 +34,32 @@ from mascope_backend.api.controllers.sample.batches.sample_batches_controller im
     get_or_create_acquisition_batch,
 )
 from mascope_backend.api.controllers.sample.files.process.bindings import (
+    Declined,
     MethodRouting,
     learn_method_bindings,
     resolve_modes_by_method_binding,
     routes_on_method_binding,
 )
+from mascope_backend.api.controllers.sample.files.process.census import (
+    fragmentation_polarities,
+    records_only_fragmentation_scans,
+)
+from mascope_backend.api.controllers.sample.files.process.ms2_parts import (
+    file_fragmentation_scans,
+    filed_sentence,
+)
+from mascope_backend.api.controllers.sample.files.process.peaks import (
+    redetect_peaks,
+    redetection_decision,
+)
 from mascope_backend.api.controllers.sample.files.process.status import (
+    carried_calibration_note,
     claim_for_processing,
     compose_detail,
+    overlap_readings_note,
     pooled_streams_note,
     read_scan_streams,
-    read_store_stream_keys,
+    read_store_stitch,
     record_processing_status,
 )
 from mascope_backend.api.controllers.sample.files.process.streams import (
@@ -363,10 +381,11 @@ class ItemProvenance:
 class KeptModes:
     """The modes a file's own samples hold, to re-process it under them.
 
-    A file no token binds keeps the modes its samples were made under - and
-    with them how each was bound, because copying a mode forward is nobody's
-    decision. The rung stays the one that decided it in the first place: a
-    token, a person, or nothing at all.
+    A file no token binds keeps the modes its samples were made under, and
+    so does one a person chose the chemistry of, whatever binds it
+    (:func:`_chosen_by_a_person`) - and with them how each was bound, because
+    copying a mode forward is nobody's decision. The rung stays the one that
+    decided it in the first place: a token, a person, or nothing at all.
     """
 
     mode_ids: list[str]
@@ -404,6 +423,27 @@ async def _acquisition_item_provenance(
     for mode_id, bound_by, method_binding_id in items:
         held.setdefault(mode_id, ItemProvenance(bound_by, method_binding_id))
     return held
+
+
+async def _pipeline_item_count(sample_file_id: str) -> int:
+    """How many samples auto-processing made for a file, whatever their mode.
+
+    Asked beside :func:`_acquisition_item_provenance`, which leaves out an
+    item with no mode. ``sample_item.ionization_mode_id`` is ``ON DELETE SET
+    NULL``, so a file whose mode was deleted since still has its samples and
+    none of them answers there: it reads as a file with no samples, and is
+    not one where the question is what a run would clear.
+    """
+    async with async_session() as session:
+        count = await session.scalar(
+            select(func.count())
+            .select_from(SampleItem)
+            .where(
+                SampleItem.sample_file_id == sample_file_id,
+                _pipeline_item(),
+            )
+        )
+    return count or 0
 
 
 def _failure_detail(exc: BaseException) -> str:
@@ -515,45 +555,35 @@ async def _modes_its_record_declares(
     )
 
 
-async def _declared_before_a_run(
-    sample_file: SampleFile,
-) -> tuple[list[IonizationMode], str | None]:
-    """What a file's record declares, for the checks that come before a run.
+def _chosen_by_a_person(kept: KeptModes | None) -> bool:
+    """Whether the modes a file's samples have are a person's choice.
 
     Re-processing, and processing on request, decide what a run is started
-    with before anything of the file is cleared, and the pipeline asks the
-    record before it reads the name. So they ask it first too, or they would
-    judge a file by a name the pipeline never reads, and by samples it is
-    about to replace.
+    with before anything of the file is cleared. A file a person chose the
+    chemistry of starts with what they chose, ahead of everything the
+    pipeline would ask: neither its acquisition record nor its name is read.
 
-    **Not where a person chose the file's chemistry.** A record is stored as
-    it was sent and cannot be corrected, so choosing by hand is the one way
-    to overrule a record that names the wrong chemistry, and the choice has
-    to outlast the next re-process. A file whose samples all carry a
-    person's choice is not asked for its record: it is left to its name,
-    and with no token there, to the modes its samples have. Samples the
-    record itself bound, or a token since renamed, are nobody's choice, and
-    the record is asked again.
+    **Why ahead of both.** A record is stored as it was sent and cannot be
+    corrected, so choosing by hand is the one way to overrule a record that
+    names the wrong chemistry, and the choice has to outlast the next
+    re-process. That does not depend on the file's name. Left to a name that
+    carries a token, the file goes back through the pipeline's ladder, where
+    the record is asked first: the choice is undone one step later than the
+    check that stepped aside for it, and nothing says so. So the choice
+    stands until a person chooses again (:func:`bind_sample_files`), which
+    is also the way back to what the record or the name would bind.
 
-    **A reading that fails is raised, not taken for a record that binds
-    nothing.** Acted on, that guess rebuilds a file under the modes it has
-    while its record names others, or refuses one that waited for its record
-    as if it had none. The caller refuses the file, or fails the request,
-    with nothing of the file touched.
+    **Every kept mode has to be a choice.** Samples the record itself bound,
+    a token since renamed, and ones older than the record of how they were
+    bound are nobody's choice, and such a file is asked for its record and
+    its name again. So is a file whose chosen mode was deleted since:
+    :func:`_kept_modes` gives none for it.
 
-    :param sample_file: The file.
-    :return: As :func:`_modes_its_record_declares`; no modes and None for a
-        file a person chose the chemistry of.
-    :rtype: tuple[list[IonizationMode], str | None]
+    :param kept: What :func:`_kept_modes` gives for the file.
     """
-    if getattr(sample_file, "acquisition_id", None) is None:
-        return [], None
-    kept = await _kept_modes(sample_file)
-    if kept is not None and all(
+    return kept is not None and all(
         held.bound_by == "explicit" for held in kept.provenance.values()
-    ):
-        return [], None
-    return await _modes_its_record_declares(sample_file)
+    )
 
 
 def _beside_the_declaration(undeclared: str | None, reason: str) -> str:
@@ -568,14 +598,34 @@ def _beside_the_declaration(undeclared: str | None, reason: str) -> str:
     return f"{undeclared.rstrip('.')}. {reason}"
 
 
+def _declined_with_its_samples(no_token: NoTokenMatchError, declined: Declined) -> str:
+    """Why a file with samples that its name and its method leave unbound is
+    left as it is, before :func:`_beside_the_declaration`.
+
+    The token rule's reason, then the method's, with the remedy of the guard
+    that declined: it differs per guard, as it does in the run's own park.
+
+    :param no_token: What the token rule found in the file's name.
+    :param declined: What the method rung said.
+    """
+    return (
+        f"{str(no_token).rstrip('.')}. The ionization modes its samples "
+        "were made under no longer bind it, and its acquisition method "
+        f"does not say either: {declined.reason}. {declined.remedy} "
+        "It was left as it is."
+    )
+
+
 def _bound_detail(ionization_modes: list[IonizationMode], rung: str) -> str:
     """Name the modes a file was bound to, and what bound it.
 
     Read by whoever is looking at the file in Raw files, so it says which rung
-    answered. ``"declared"``, ``"token"`` and ``"method"`` each get their
-    own sentence; a person's choice and a mode kept from the file's own
-    samples share one, because what a reader needs there is that no file name
-    chose it.
+    answered. Each gets its own sentence. A person's choice has to: it stands
+    ahead of a token in the file's name, so the sentence is what tells
+    someone who fixed the tokens and re-processed why this file did not
+    follow them, and the run carries it to the status it ends on. A mode
+    kept from the file's own samples that nobody chose says only that no
+    file name chose it.
 
     :param ionization_modes: The modes it bound to, one per polarity.
     :param rung: What bound it this run - "declared", "token", "method",
@@ -589,35 +639,70 @@ def _bound_detail(ionization_modes: list[IonizationMode], rung: str) -> str:
         return f"Bound to {names} by its acquisition record."
     if rung == "method":
         return f"Bound to {names} by its acquisition method."
+    if rung == "explicit":
+        return f"Bound to {names} as chosen by hand."
     if rung != "token":
         return f"Bound to {names} without a file-name token."
     tokens = "token" if len(ionization_modes) == 1 else "tokens"
     return f"Bound by file-name {tokens} to {names}."
 
 
+#: What the status of a parked file says when an earlier run made samples
+#: for it: ``needs_chemistry`` alone reads as a file with none.
+_SAMPLES_KEPT = "Its samples, from an earlier run, were left as they were."
+
+
 async def _park_needing_chemistry(
-    sample_file: SampleFile, reason: str, streams_note: str | None
+    sample_file: SampleFile,
+    reason: str,
+    streams_note: str | None,
+    cleared_by_this_run: bool,
 ) -> dict:
     """Leave a file that binds to no ionization mode waiting for a chemistry.
 
     Nothing has failed: the file is converted and stored, and only a person
-    can say which chemistry it was acquired under. It gets no samples until
-    then. Its status says so, which keeps it for the people answerable for
-    the instrument (``api/new/notifications``), and the run reports a warning
-    rather than an error.
+    can say which chemistry it was acquired under. It gets no new samples
+    until then. Its status says so, which keeps it for the people answerable
+    for the instrument (``api/new/notifications``), and the run reports a
+    warning rather than an error.
+
+    A run binds a file before it clears anything of it, so a file an earlier
+    run made samples for keeps them, and the m/z calibration they were
+    matched on. Its status is ``needs_chemistry`` all the same - the file
+    needs one, and choosing it rebuilds the file - and says beside the
+    reason that the samples it has are the earlier run's.
+
+    Not the samples an earlier attempt of this same run made. That attempt
+    bound the file, cleared it, made its samples and failed on a retryable
+    error before they were calibrated and matched; this one finds the file
+    bound to nothing - a chosen mode deleted, or a token renamed, during the
+    backoff. Those samples are partial, nobody's earlier run, so they are
+    cleared here as the next attempt that bound the file would have cleared
+    them, and nothing is said of them.
 
     :param sample_file: The file.
     :param reason: What the routing found.
     :param streams_note: The file's pooled-streams note, if any.
+    :param cleared_by_this_run: An earlier attempt of this run cleared the
+        file, so the samples it has are that attempt's.
     :return: The run's result.
     """
     reason = reason.strip().rstrip(".") + "."
+    if cleared_by_this_run:
+        await _delete_partial_acquisition_items(sample_file.sample_file_id)
+        kept = None
+    else:
+        kept = (
+            _SAMPLES_KEPT
+            if await _pipeline_item_count(sample_file.sample_file_id)
+            else None
+        )
     # The detail is the file's own reason; Raw files, where it is read, says
     # what to do about it.
     await record_processing_status(
         sample_file.sample_file_id,
         ProcessingStatus.NEEDS_CHEMISTRY,
-        compose_detail(reason, streams_note),
+        compose_detail(reason, kept, streams_note),
     )
     # INFO: a data condition a person resolves, not a fault
     runtime.logger.info(
@@ -625,10 +710,88 @@ async def _park_needing_chemistry(
     )
     return {
         "status": "parked",
-        "message": f"{reason} {CHOOSE_CHEMISTRY}",
+        "message": " ".join(filter(None, (reason, CHOOSE_CHEMISTRY, kept))),
         "_notification_data": {
             "affected_sample_batch_ids": [],
             "affected_sample_item_ids": [],
+            "instrument": sample_file.instrument,
+            "sample_file_id": sample_file.sample_file_id,
+        },
+    }
+
+
+async def _file_without_chemistry(
+    sample_file: SampleFile,
+    dataset_id: str,
+    polarities: list[str],
+    streams_note: str | None,
+    note: str | None = None,
+) -> dict:
+    """File an acquisition of fragmentation scans alone, which nothing binds.
+
+    Such a file needs no chemistry. A chemistry is what a file's MS1 peaks are
+    calibrated, matched and assigned under, and this one records no MS1 scans,
+    so no peaks were detected and there is nothing to do under any mode. So it
+    does not wait for one: each polarity that holds fragmentation scans gets
+    an MS2 sample in the day's MS2 batch (``process/ms2_parts.py``), which its
+    MS2 data is read through, and the file is ``done``.
+
+    A file with MS1 scans never comes here. It waits for its chemistry
+    (:func:`_park_needing_chemistry`), MS2 scans or not. Nor does a
+    file whose name is ambiguous - tokens of two modes of one polarity, or
+    of one polarity of a file that holds both: that is a configuration to
+    fix, and the file parks on it as any file does.
+
+    Why nothing bound it is not news for such a file - most carry no token -
+    and is left out of its status. What is kept is what a person may still
+    want to fix although the file needs nothing from them: an acquisition
+    record that names a chemistry no mode here answers to, or a chemistry
+    chosen for the file that binds it no longer. It follows the sentence
+    that says where the file was filed, as such a note follows what bound a
+    bound file.
+
+    The caller clears what an earlier run left before it files, as a run that
+    binds a file clears it before making its samples (``clear_earlier_run``):
+    an MS2 part an earlier run filed is replaced, not doubled. A fault while
+    filing ends the run as a fault in any other stage does, and the
+    pipeline retries a transient one, whose attempt clears again first.
+
+    :param sample_file: The file.
+    :param dataset_id: Its instrument's ACQUISITION dataset.
+    :param polarities: The polarities to file, from
+        :func:`fragmentation_polarities`.
+    :param streams_note: The file's pooled-streams note, if any.
+    :param note: What a person may want to fix about the file, if anything.
+    :return: The run's result.
+    """
+    ms2_parts, ms2_batches = await file_fragmentation_scans(
+        sample_file, dataset_id, polarities
+    )
+    filed = filed_sentence(ms2_batches)
+    detail = (
+        f"{filed[0].upper()}{filed[1:]}. It records no MS1 scans, so no peaks "
+        "were detected and there is nothing to calibrate, match or assign."
+    )
+    await record_processing_status(
+        sample_file.sample_file_id,
+        ProcessingStatus.DONE,
+        compose_detail(
+            detail, None if note is None else f"{note.rstrip('.')}.", streams_note
+        ),
+    )
+    # INFO: what the acquisition recorded, not a fault
+    runtime.logger.info(
+        f"Sample file '{sample_file.filename}' holds fragmentation scans "
+        f"only: {filed} without a chemistry"
+    )
+    return {
+        "message": f"{sample_file.filename} was {filed} without a chemistry.",
+        "data": ms2_parts,
+        "_notification_data": {
+            "affected_sample_batch_ids": [
+                batch.get("sample_batch_id") for batch in ms2_batches
+            ],
+            "affected_sample_item_ids": [part["sample_item_id"] for part in ms2_parts],
             "instrument": sample_file.instrument,
             "sample_file_id": sample_file.sample_file_id,
         },
@@ -702,13 +865,17 @@ async def _delete_partial_acquisition_items(sample_file_id: str) -> None:
     any run that stopped after that point leaves them in place: a failed
     attempt, a run a restart cancelled, a worker killed outright.
 
-    Runs before every attempt, the first included. A re-triggered pipeline
+    Runs on every attempt, the first included, once the attempt has bound the
+    file and before it makes any item. A re-triggered pipeline
     (``POST /{sample_file_id}/process``) starts at attempt 0, and
     :func:`create_acquisition_batches_and_items` never looks for existing items
     before creating them - so without this, re-processing a file whose first
     run was cut short gives it a duplicate ACQUISITION item per ionization
     mode. For a file processed for the first time the delete matches nothing
-    and costs one statement.
+    and costs one statement. Not before the binding: a run that binds the
+    file to nothing parks it (:func:`_park_needing_chemistry`), and the file
+    keeps the samples an earlier run made. Samples an earlier attempt of the
+    same run made are partial, and the park clears them with this.
 
     Only the pipeline's own items are removed (:func:`_pipeline_item`) - a
     sample a person made from the file is never touched, whatever its type.
@@ -728,20 +895,22 @@ async def _delete_partial_acquisition_items(sample_file_id: str) -> None:
         )
 
 
-async def _reset_calibration(sample_file_id: str) -> None:
+async def _reset_calibration(sample_file: SampleFile) -> None:
     """Restore a file's acquisition m/z axis before it is rebuilt.
 
     Best effort, as in re-processing: a reset that fails leaves the previous
     calibration in effect, and the file is rebuilt all the same.
+
+    :param sample_file: The run's own row of the file, which the reset
+        updates in place: the run goes on to judge the record it carries.
     """
     try:
-        await reset_mz_calibration(
-            await fetch_sample_file(sample_file_id=sample_file_id)
-        )
+        await reset_mz_calibration(sample_file)
     except Exception:  # noqa: BLE001 - the rebuild matters more than the reset
         runtime.logger.info(
-            f"Could not reset the m/z calibration of sample file {sample_file_id} "
-            "before rebuilding it; its previous calibration remains in effect"
+            "Could not reset the m/z calibration of sample file "
+            f"{sample_file.sample_file_id} before rebuilding it; its previous "
+            "calibration remains in effect"
         )
         runtime.logger.opt(exception=True).warning(
             "Could not reset a sample file's m/z calibration before rebuilding it"
@@ -843,9 +1012,10 @@ async def auto_process_sample_file(
         forward and the file's method learns nothing, because copying a
         decision forward is not a new observation of anything.
     :type kept_provenance: dict[str, ItemProvenance] | None, optional
-    :param reset_calibration: Restore the file's acquisition m/z axis before
-        the first attempt, as re-processing does, for a file rebuilt under
-        other modes.
+    :param reset_calibration: Restore the file's acquisition m/z axis once
+        the run has bound the file, before its samples are rebuilt, as
+        re-processing does, for a file rebuilt under other modes. Once per
+        run: a retry does not reset it again.
     :type reset_calibration: bool, optional
     :return: Processing results with affected IDs
     """
@@ -854,17 +1024,32 @@ async def auto_process_sample_file(
     # be learned in between, and a guard that only compared with whatever the
     # row last saw would let the retry count again.
     recorded_bindings: set[str] = set()
+    # Shared by every attempt too: the reset is owed to the first attempt
+    # that binds the file, which need not be the first attempt.
+    reset_owed = reset_calibration
+    # Whether an attempt of this run has cleared the file. The samples it has
+    # are then that attempt's own and partial, not an earlier run's, and an
+    # attempt that parks it clears them (_park_needing_chemistry).
+    cleared = False
+
+    async def clear_earlier_run(sample_file: SampleFile) -> None:
+        """Clear what an earlier run left, once an attempt has bound the file.
+
+        Any earlier run - a failed attempt, or a whole earlier pipeline a
+        restart cut short - may have committed sample items before dying in
+        calibration/matching. Every attempt clears them, the first included,
+        so neither a retry nor a re-triggered pipeline can duplicate them.
+        """
+        nonlocal reset_owed, cleared
+        if reset_owed:
+            reset_owed = False
+            await _reset_calibration(sample_file)
+        await _delete_partial_acquisition_items(sample_file.sample_file_id)
+        cleared = True
+
     for attempt in range(_AUTO_PROCESS_RETRIES + 1):
         try:
             async with _auto_process_gate:
-                if reset_calibration and attempt == 0:
-                    await _reset_calibration(sample_file_id)
-                # Any earlier run - a failed attempt, or a whole earlier
-                # pipeline a restart cut short - may have committed sample
-                # items before dying in calibration/matching. Clear them on
-                # every attempt, the first included, so neither a retry nor a
-                # re-triggered pipeline can duplicate them.
-                await _delete_partial_acquisition_items(sample_file_id)
                 return await _auto_process_sample_file(
                     sample_file_id=sample_file_id,
                     independent_transaction=independent_transaction,
@@ -874,6 +1059,8 @@ async def auto_process_sample_file(
                     ionization_mode_ids=ionization_mode_ids,
                     kept_provenance=kept_provenance,
                     recorded_bindings=recorded_bindings,
+                    clear_earlier_run=clear_earlier_run,
+                    cleared_by_this_run=cleared,
                 )
         except asyncio.CancelledError:
             # CancelledError is a BaseException, so every `except Exception` in
@@ -1098,12 +1285,22 @@ async def _auto_process_sample_file(
     ionization_mode_ids: list[str] | None = None,
     kept_provenance: dict[str, ItemProvenance] | None = None,
     recorded_bindings: set[str] | None = None,
+    *,
+    clear_earlier_run: Callable[[SampleFile], Awaitable[None]],
+    cleared_by_this_run: bool = False,
 ) -> dict:
     """Gated body of ``auto_process_sample_file`` - see the public wrapper.
 
     ``recorded_bindings`` is shared by every attempt of one run, so a file
     whose later stages fail and retry teaches its method once rather than
     once per attempt.
+
+    ``clear_earlier_run`` is the wrapper's, and is awaited once the file is
+    bound, before any of its samples is made: it clears what an earlier run
+    left, and resets the m/z calibration where the run owes that. Required,
+    so that no caller makes samples without clearing first.
+    ``cleared_by_this_run`` says an earlier attempt of this run has cleared
+    the file already, so a park clears that attempt's samples.
     """
     # Initialize collector for affected sample items
     all_affected_sample_item_ids = set()
@@ -1113,8 +1310,10 @@ async def _auto_process_sample_file(
     # Describes the file rather than a stage, so every status this run
     # records carries it.
     scan_streams = await read_scan_streams(sample_file.filename)
-    streams_note = pooled_streams_note(
-        scan_streams or [], await read_store_stream_keys(sample_file.filename)
+    stitch = await read_store_stitch(sample_file.filename)
+    streams_note = compose_detail(
+        pooled_streams_note(scan_streams or [], stitch.keys),
+        overlap_readings_note(stitch.keys, stitch.overlaps),
     )
 
     # --- Get ACQUISITION dataset for the instrument --- #
@@ -1135,9 +1334,38 @@ async def _auto_process_sample_file(
         )
     ).get("data")
 
+    async def unbound(reason: str, note: str | None) -> dict:
+        """End the run of a file no rung binds.
+
+        A file of fragmentation scans alone needs no chemistry, and is filed
+        without one, its status carrying ``note``; any other file waits for
+        its chemistry, its status saying ``reason``.
+        """
+        polarities = (
+            fragmentation_polarities(scan_streams, sample_file.polarity)
+            if records_only_fragmentation_scans(scan_streams)
+            else []
+        )
+        if polarities:
+            # Filing makes samples, so what an earlier run left is cleared
+            # first, as it is once a file is bound: the MS2 part an earlier
+            # run filed included, which filing again would otherwise double.
+            await clear_earlier_run(sample_file)
+            return await _file_without_chemistry(
+                sample_file,
+                acquisition_dataset.get("dataset_id"),
+                polarities,
+                streams_note,
+                note,
+            )
+        return await _park_needing_chemistry(
+            sample_file, reason, streams_note, cleared_by_this_run
+        )
+
     # --- Bind the file to its ionization modes --- #
     # After the dataset on purpose: a file that binds to nothing still gets
-    # its instrument's workspace, which is where its modes are configured.
+    # its instrument's workspace, which is where its modes are configured -
+    # and where a file of fragmentation scans alone is filed.
     by_token = ionization_mode_ids is None
     routed_by_method: list[MethodRouting] = []
     # Rung 0, for a file nobody chose modes for: what its acquisition record
@@ -1165,10 +1393,8 @@ async def _auto_process_sample_file(
             # because a configuration to fix is not something a binding
             # stands in for (section 5.3).
             if not routes_on_method_binding():
-                return await _park_needing_chemistry(
-                    sample_file,
-                    _beside_the_declaration(undeclared, str(no_token)),
-                    streams_note,
+                return await unbound(
+                    _beside_the_declaration(undeclared, str(no_token)), undeclared
                 )
             routed_by_method, declined = await resolve_modes_by_method_binding(
                 sample_file, scan_streams
@@ -1183,20 +1409,26 @@ async def _auto_process_sample_file(
                 # rstrip: the token rule's message ends without a full stop,
                 # and _park_needing_chemistry only normalises the end of the
                 # whole detail, so the first two would run together.
-                return await _park_needing_chemistry(
-                    sample_file,
+                return await unbound(
                     _beside_the_declaration(
                         undeclared,
                         f"{str(no_token).rstrip('.')}. Its acquisition method "
                         f"does not say either: {declined.reason}. "
                         f"{declined.remedy}",
                     ),
-                    streams_note,
+                    undeclared,
                 )
             bound_modes = [routing.mode for routing in routed_by_method]
         except ValueError as e:
+            # Every file parks on it, one of fragmentation scans alone
+            # included: filed without a chemistry, it would be done with its
+            # tokens unfixed, and re-processing and processing on request
+            # refuse an ambiguous name before they ask what the file holds.
             return await _park_needing_chemistry(
-                sample_file, _beside_the_declaration(undeclared, str(e)), streams_note
+                sample_file,
+                _beside_the_declaration(undeclared, str(e)),
+                streams_note,
+                cleared_by_this_run,
             )
     else:
         try:
@@ -1206,7 +1438,7 @@ async def _auto_process_sample_file(
         except ValueError as e:
             # A chosen mode was deleted, or changed, while the file waited:
             # it needs a chemistry again, and can be given one.
-            return await _park_needing_chemistry(sample_file, str(e), streams_note)
+            return await unbound(str(e), str(e))
 
     # How each item will say its chemistry was decided, and what the file's
     # method may be taught from it. The three ways in here are not equal. A
@@ -1259,7 +1491,14 @@ async def _auto_process_sample_file(
             for mode in bound_modes
         }
         teaches = None
-        rung = "kept"
+        # A choice kept is still somebody's choice, and the status says so,
+        # as it did on the run the choice was made for. It teaches nothing
+        # all the same: that run did the teaching.
+        rung = (
+            "explicit"
+            if all(held.bound_by == "explicit" for held in provenance.values())
+            else "kept"
+        )
     else:
         provenance = {
             mode.ionization_mode_id: ItemProvenance("explicit") for mode in bound_modes
@@ -1279,6 +1518,13 @@ async def _auto_process_sample_file(
             streams=scan_streams,
             recorded=recorded_bindings,
         )
+
+    # --- Clear what an earlier run left, now that the file is bound --- #
+    # Here and not before the binding: a file the binding above parks keeps
+    # the samples it has, and the m/z calibration they were matched on. Still
+    # on every attempt and ahead of every item, because
+    # create_acquisition_batches_and_items does not look for existing ones.
+    await clear_earlier_run(sample_file)
 
     # --- Create ACQUISITION batches and sample items for each ionization mode --- #
     (
@@ -1304,11 +1550,27 @@ async def _auto_process_sample_file(
         stale_store_note(found_streams),
         kept_rows_note(stream_rows),
     )
+    bound_detail = _bound_detail(bound_modes, rung)
     await record_processing_status(
         sample_file_id,
         ProcessingStatus.BOUND,
-        compose_detail(_bound_detail(bound_modes, rung), file_note),
+        compose_detail(bound_detail, file_note),
     )
+    # What bound the file is the news of this one stage, for a token and a
+    # method. A token is in the file's name, which Raw files shows beside
+    # the status, and nearly every file is bound by one: said again at the
+    # end it would lengthen every status with what the row already shows. A
+    # record is shown nowhere else, so a file its record bound goes on
+    # saying so in every status this run records, as a record that bound
+    # nothing does through the note above. The two never meet: a record
+    # either bound the file or it did not.
+    #
+    # A person's choice is shown nowhere else either, and it stands ahead of
+    # the name: the row may show a token that did not bind the file. Whoever
+    # fixed the tokens and re-processed reads the status the run ended on,
+    # and that is where it says why this file did not follow them.
+    if rung in ("declared", "explicit"):
+        file_note = compose_detail(bound_detail, file_note)
 
     # Extract batch and sample IDs for notifications
     affected_sample_batch_ids = [
@@ -1319,8 +1581,13 @@ async def _auto_process_sample_file(
     )
 
     # Blank files are stored without an instrument config and have no peaks:
-    # they skip calibration, matching and peak assignment.
+    # they skip calibration, matching and peak assignment. So is an
+    # acquisition of fragmentation scans alone, which skips them for the same
+    # reason and is not a blank: its census says which of the two it is.
     is_blank_sample_file = sample_file.instrument_function_id is None
+    holds_ms2_only = is_blank_sample_file and records_only_fragmentation_scans(
+        scan_streams
+    )
 
     # --- Calibrate every ACQUISITION sample of the file before matching any --- #
     # The m/z calibration belongs to the FILE, not the sample item: applying a
@@ -1416,9 +1683,10 @@ async def _auto_process_sample_file(
             # match_compute_sample refuses a blank with a raised warning, which
             # would end the whole run and report a routine file to the
             # instrument room as a warning.
+            kind = "a file with no MS1 scans" if holds_ms2_only else "blank file"
             runtime.logger.info(
                 "Skipping m/z calibration, matching and peak assignment for "
-                f"blank file '{sample['sample_item_name']}': it has no peaks."
+                f"{kind} '{sample['sample_item_name']}': it has no peaks."
             )
             continue
         elif not shared_calibration:
@@ -1462,6 +1730,12 @@ async def _auto_process_sample_file(
                 if is_unfitted_record(mz_calibration) and not_calibrated_reason
                 else _calibration_failure_detail(mz_calibration)
             )
+    elif holds_ms2_only:
+        calibration_note = (
+            "It records no MS1 scans, so no peaks were detected and there is "
+            "nothing to calibrate, match or assign. Its fragmentation scans "
+            "are read through its samples."
+        )
     elif is_blank_sample_file:
         calibration_note = "Blank measurement: no peaks to calibrate, match or assign."
     elif not_calibrated_reason:
@@ -1476,6 +1750,12 @@ async def _auto_process_sample_file(
     elif mz_calibration is not None and mz_calibration.get("status") == "poor":
         # Verified under a gate that only warns, and matched on.
         calibration_note = _calibration_failure_detail(mz_calibration)
+    # A file matched on its calibration says which of its scan ranges that
+    # calibration reached only through a neighbour. One held back from
+    # matching says why instead, and this note is not part of that.
+    calibration_note = compose_detail(
+        calibration_note, carried_calibration_note(mz_calibration)
+    )
 
     # --- Match and assign the samples --- #
     for sample in acquisition_samples:
@@ -1603,11 +1883,14 @@ async def bind_sample_files(
     created, calibrated and matched - in a detached pipeline per file, behind
     the same ingest gate as every upload. A file that has samples already is
     rebuilt under the chosen modes, as re-processing rebuilds one: its m/z
-    calibration is reset, and the pipeline replaces its samples.
-    Re-processing keeps the modes a file bound here has where no token in
-    its name binds it again. Its acquisition record is not asked then:
-    choosing here is how a record that names the wrong chemistry is
-    overruled, and the choice outlasts a re-process.
+    calibration is reset, and the pipeline replaces its samples - both once
+    the run has bound it, so a file whose chosen mode is deleted before its
+    run starts parks with its samples and calibration as they were.
+    Re-processing keeps the modes a file bound here has. Neither its
+    acquisition record nor its name is asked then, whatever they say:
+    choosing here is how a record or a name that says the wrong chemistry is
+    overruled, and the choice stands until somebody chooses here again
+    (:func:`_chosen_by_a_person`).
 
     A sample a person made from the file is never touched: the pipeline
     replaces only its own. Such a file - one processed by hand into someone's
@@ -1737,6 +2020,49 @@ async def bind_sample_files(
 MAX_LISTED_REPROCESS_FAILURES = 10
 
 
+#: What the status of a file says when a re-processing stopped at detecting
+#: its peaks again: the stage, and that its samples are still the ones of its
+#: last run.
+_PEAKS_NOT_REDETECTED = (
+    "Its peaks could not be detected again for re-processing, so its samples "
+    "were left as they were."
+)
+
+#: What it adds where the m/z calibration those samples were matched on,
+#: which the re-processing had reset, could not be put back either.
+_CALIBRATION_NOT_RESTORED = (
+    "Its m/z calibration could not be put back, so its samples no longer "
+    "agree with its peaks. Re-process it again."
+)
+
+
+async def _restore_calibration(
+    sample_file: SampleFile, cleared: ClearedMzCalibration
+) -> bool:
+    """Put back the calibration a re-processing reset, on a file it stopped at.
+
+    A file whose peaks could not be detected again keeps its samples, and
+    they were matched on the calibration the reset cleared: without it, the
+    m/z each match records is off the file's axis by the factor.
+
+    :param sample_file: The file, as the reset left it.
+    :param cleared: What the reset cleared.
+    :return: Whether it was put back. A restore that fails is logged here,
+        with its error, and not raised: it is one file's, and the run goes
+        on to the files after it.
+    """
+    try:
+        await restore_mz_calibration(sample_file, cleared)
+    except Exception:  # noqa: BLE001 - one file's failure
+        runtime.logger.exception(
+            "Could not put back the m/z calibration of sample file "
+            f"{sample_file.filename} after its peaks could not be detected "
+            "again; its samples no longer agree with its peaks"
+        )
+        return False
+    return True
+
+
 def _compose_reprocess_failure_message(failed_files: list[dict], header: str) -> str:
     """
     Summarise a re-processing run's failures, naming the files.
@@ -1783,8 +2109,11 @@ async def re_process_sample_files(
 
     Steps:
     - Validate all sample files exist and have no user-created samples
-    - Delete existing ACQUISITION sample items for all files
-    - Run auto-process pipeline for each file
+    - For each file: ask the acquisition method of one whose samples nothing
+      else binds, where the method rung is on, and leave it as it is if the
+      method declines; detect its peaks again where the deployment's
+      scan-stream setting can give it another peak store than it has, delete
+      its existing ACQUISITION sample items, and run the auto-process pipeline
     - Return aggregated results
 
     :param sample_file_ids: List of IDs of the sample files to re-process
@@ -1808,7 +2137,17 @@ async def re_process_sample_files(
         result = await session.execute(
             select(SampleFile).where(SampleFile.sample_file_id.in_(sample_file_ids))
         )
-        sample_files = result.scalars().all()
+        # In the order the request names them, not in the order the rows come
+        # back: a file's acquisition method is asked just before its turn, and
+        # the files ahead of it can change the answer, so which files are
+        # ahead of it is the request's to say.
+        position = {
+            sample_file_id: i
+            for i, sample_file_id in enumerate(dict.fromkeys(sample_file_ids))
+        }
+        sample_files = sorted(
+            result.scalars().all(), key=lambda sf: position[sf.sample_file_id]
+        )
 
     found_ids = {sf.sample_file_id for sf in sample_files}
     missing_ids = set(sample_file_ids) - found_ids
@@ -1845,6 +2184,21 @@ async def re_process_sample_files(
         )
         user_created_samples = result.all()
 
+        # The files with a sample a person chose the chemistry of. One query
+        # for the run, so that the modes of a file's samples are read ahead
+        # of its record and its name only where there may be a choice to
+        # keep, and not for every file selected.
+        result = await session.execute(
+            select(SampleItem.sample_file_id)
+            .where(
+                SampleItem.sample_file_id.in_(found_ids),
+                _pipeline_item(),
+                SampleItem.bound_by == "explicit",
+            )
+            .distinct()
+        )
+        hand_chosen = {sample_file_id for (sample_file_id,) in result.all()}
+
     # Map sample_file_id → (sample_item, batch) for fast lookup
     user_samples_dict = {
         sample_item.sample_file_id: (sample_item, batch)
@@ -1853,8 +2207,13 @@ async def re_process_sample_files(
 
     # --- Validate each file --- #
     valid_sample_files = []
-    # Files no token binds, re-processed under the modes their samples have.
+    # Files a person chose the chemistry of, and files nothing binds now,
+    # re-processed under the modes their samples have.
     kept_modes: dict[str, KeptModes] = {}
+    # Files with samples whose name and samples bind them no longer, where the
+    # method rung is on: what their name and their record said, for the
+    # reason their method's refusal gives.
+    ask_its_method: dict[str, tuple[NoTokenMatchError, str | None]] = {}
 
     for sample_file in sample_files:
         # Check for user-created samples
@@ -1872,11 +2231,16 @@ async def re_process_sample_files(
             )
             continue
 
-        # Rung 0 first, as the pipeline has it. A record that binds the file
+        # What a person chose first: the file goes through under the modes
+        # they chose, and neither its record nor its name is asked
+        # (:func:`_chosen_by_a_person`). Sent to the pipeline with no modes
+        # of its own it would be bound by its record or its name again, and
+        # the choice would be undone with nothing to say so.
+        #
+        # Then rung 0, as the pipeline has it. A record that binds the file
         # is read there ahead of the name, so nothing below is asked: the
         # file goes through with no modes of its own, whatever its name says
-        # and whatever its record or a token bound it to before. A file a
-        # person chose the chemistry of is not asked for its record at all.
+        # and whatever its record or a token bound it to before.
         #
         # Asked here and not left to the pipeline, because by the time the
         # pipeline asks, the file's samples are cleared and its calibration
@@ -1884,11 +2248,29 @@ async def re_process_sample_files(
         # such a file is judged below as one with no record is, and what its
         # record named goes into the reason if it is refused.
         try:
-            declared, undeclared = await _declared_before_a_run(sample_file)
-        except Exception as e:
-            # Not judged by its name and its samples instead: that would be
-            # acting on a guess about what its record says. Refused with
-            # nothing touched, and asked again when Re-process is.
+            modes_it_has = (
+                await _kept_modes(sample_file)
+                if sample_file.sample_file_id in hand_chosen
+                else None
+            )
+            if _chosen_by_a_person(modes_it_has):
+                kept_modes[sample_file.sample_file_id] = modes_it_has
+                valid_sample_files.append(sample_file)
+                continue
+            declared, undeclared = await _modes_its_record_declares(sample_file)
+        except Exception:
+            # A reading that fails is not taken for "nobody chose" or for a
+            # record that binds nothing. Judging the file by its name and
+            # its samples instead would be acting on a guess: it undoes a
+            # choice, or rebuilds a file under the modes it has while its
+            # record names others. Refused with nothing touched, and asked
+            # again when Re-process is.
+            #
+            # The report says which read failed and not what the error said.
+            # It goes to whoever pressed Re-process, and a fault's own text
+            # can hold SQL with its bound parameters (:func:`_failure_detail`),
+            # so that text is left to the log below - here and in the
+            # refusals like this one further down.
             failed_files.append(
                 {
                     "sample_file_id": sample_file.sample_file_id,
@@ -1896,7 +2278,8 @@ async def re_process_sample_files(
                     # Either read: the modes its samples have come first.
                     "message": (
                         "Failed to read its acquisition record, or the modes "
-                        f"its samples have: {str(e)}"
+                        "its samples have, so it was left as it is. "
+                        "Re-process it again."
                     ),
                 }
             )
@@ -1926,13 +2309,16 @@ async def re_process_sample_files(
                 }
             )
             continue
-        except Exception as e:
+        except Exception:
             # Other unexpected errors
             failed_files.append(
                 {
                     "sample_file_id": sample_file.sample_file_id,
                     "filename": sample_file.filename,
-                    "message": f"Failed to resolve ionization modes: {str(e)}",
+                    "message": (
+                        "Failed to resolve ionization modes, so it was left "
+                        "as it is. Re-process it again."
+                    ),
                 }
             )
             runtime.logger.exception(
@@ -1942,20 +2328,60 @@ async def re_process_sample_files(
             continue
 
         if no_token is not None:
-            # A file bound without a token - its chemistry chosen by hand -
-            # has no token to bind it again, so it keeps the modes its
+            # A file nothing binds now - the token that bound it was renamed,
+            # its record's token was taken off the mode, or it was given a
+            # chemistry before samples recorded how - keeps the modes its
             # samples were created under. Read before they are cleared, and
             # outside the except clause, where an error would escape the
             # handlers that keep one file's failure its own.
+            #
+            # No modes to keep is what three files say: one with no samples,
+            # one whose samples no longer give a mode per polarity - a mode
+            # deleted since leaves them with none, the column being ON DELETE
+            # SET NULL - and one whose samples could not be read. Where the
+            # method rung is on, the first goes on to the pipeline, the second
+            # only once its method has been asked, and the third not at all,
+            # so the samples are counted beside the modes.
+            #
+            # A file of fragmentation scans alone says it too, and goes on
+            # whatever the rung: the pipeline files it without a chemistry, so
+            # it never waits for one, and the MS2 sample a run clears is filed
+            # again by that run. Read off its census, once its samples were
+            # read: a file whose samples could not be read is left as it is.
+            by_method = routes_on_method_binding()
             try:
                 kept = await _kept_modes(sample_file)
+                unbound_samples = (
+                    await _pipeline_item_count(sample_file.sample_file_id)
+                    if kept is None and by_method
+                    else 0
+                )
+                filed_alone = kept is None and records_only_fragmentation_scans(
+                    await read_scan_streams(sample_file.filename)
+                )
             except Exception as e:  # noqa: BLE001 - one file's failure
                 runtime.logger.info(
                     f"Could not read the modes of sample file {sample_file.filename}'s "
                     f"samples: {e}"
                 )
-                kept = None
-            if kept is None and not routes_on_method_binding():
+                if by_method:
+                    # Not taken for a file with no samples: that one is sent
+                    # on to be cleared and rebuilt, and this one may have
+                    # samples, with modes that still bind it. The error's
+                    # own text stays in the log above, as for the record.
+                    failed_files.append(
+                        {
+                            "sample_file_id": sample_file.sample_file_id,
+                            "filename": sample_file.filename,
+                            "message": (
+                                "Failed to read the modes its samples have, so "
+                                "it was left as it is. Re-process it again."
+                            ),
+                        }
+                    )
+                    continue
+                kept, unbound_samples, filed_alone = None, 0, False
+            if kept is None and not (by_method or filed_alone):
                 failed_files.append(
                     {
                         "sample_file_id": sample_file.sample_file_id,
@@ -1964,12 +2390,28 @@ async def re_process_sample_files(
                     }
                 )
                 continue
-            if kept is None:
-                # No token, and no samples to keep - but this deployment lets
-                # an acquisition method bind a file, and only the pipeline can
-                # ask it: the rung needs the file's scan-stream census, which
-                # is read there. So the file goes through with no modes of its
-                # own and the pipeline decides.
+            if kept is None and unbound_samples and not filed_alone:
+                # Samples, and no modes to keep from them. Not left to the
+                # method unasked as the file below is: a run clears a file's
+                # samples and resets its calibration before the pipeline asks
+                # the rung, so one the method cannot place would park with
+                # its samples gone. Its method is asked first, as the run
+                # asks it, just before the file is claimed below rather than
+                # here: a file ahead of it in this batch that its record or a
+                # token binds teaches its method's binding as it is bound,
+                # and can make the method's answer for this file another by
+                # then.
+                ask_its_method[sample_file.sample_file_id] = (no_token, undeclared)
+            elif kept is None:
+                # No token, and no samples to keep - but the pipeline can
+                # still place the file: this deployment lets an acquisition
+                # method bind it, or the file records fragmentation scans
+                # alone, which are filed without a chemistry (its MS2 sample,
+                # which the rebuild clears, is filed again). So it goes
+                # through with no modes of its own and the pipeline decides.
+                # The method is not asked here first: such a file has no
+                # samples a run could cost it, or only an MS2 part its run
+                # files again.
                 #
                 # It parks again if the method cannot place it, which is where
                 # it already is, with a detail naming both reasons instead of
@@ -1979,7 +2421,8 @@ async def re_process_sample_files(
                 # for files the pipeline would have bound.
                 runtime.logger.debug(
                     f"{sample_file.filename} has no token and no samples to "
-                    "keep; its acquisition method may still bind it"
+                    "keep; its acquisition method may still bind it, or its "
+                    "fragmentation scans be filed without a chemistry"
                 )
             else:
                 kept_modes[sample_file.sample_file_id] = kept
@@ -1997,6 +2440,84 @@ async def re_process_sample_files(
     # meant to repair.
     for sample_file in valid_sample_files:
         try:
+            # What the file's peaks are to be detected by, as the deployment
+            # is set now: a re-processing is the one run that decides it
+            # again. Read before the file is claimed, while refusing it costs
+            # it nothing: a file whose streams cannot be read cannot be told
+            # from one whose peaks have to be detected apart, so it keeps the
+            # status of its last run and all of its samples.
+            try:
+                per_stream = await redetection_decision(sample_file)
+            except Exception:  # noqa: BLE001 - one file's failure
+                # The report says which read failed and not what the error
+                # said, as the refusals above do: here that text can hold a
+                # path of the filestore. INFO, with the error: a file that
+                # cannot be read is that file's condition, and whoever asked
+                # is told of it in the result.
+                runtime.logger.opt(exception=True).info(
+                    "Could not read how the peaks of sample file "
+                    f"{sample_file.filename} are to be detected for its "
+                    "re-processing"
+                )
+                failed_files.append(
+                    {
+                        "sample_file_id": sample_file.sample_file_id,
+                        "filename": sample_file.filename,
+                        "message": (
+                            "Could not read its scan streams or its peak "
+                            "store, which say how its peaks are to be "
+                            "detected, so nothing of it was changed."
+                        ),
+                    }
+                )
+                continue
+            # The method of a file with samples that nothing else binds, asked
+            # as the run asks it and as late as nothing of the file is touched
+            # yet: what the files ahead of it taught is in the answer. A file
+            # it binds goes on with no modes of its own, and its run asks
+            # again; one it declines is left as it is, with the method's
+            # reason. A binding that moves between here and the run parks the
+            # file with its samples cleared, as a token or a kept mode removed
+            # meanwhile does.
+            if sample_file.sample_file_id in ask_its_method:
+                no_token, undeclared = ask_its_method[sample_file.sample_file_id]
+                try:
+                    _routed, declined = await resolve_modes_by_method_binding(
+                        sample_file, await read_scan_streams(sample_file.filename)
+                    )
+                except Exception:  # noqa: BLE001 - one file's failure
+                    # Not taken for a binding or for a refusal: the file is
+                    # left as it is. INFO, with the error, as the read of its
+                    # peaks' detection above: one file of the batch, which
+                    # whoever asked is told of in the result, and whose
+                    # fault's text stays in the log.
+                    runtime.logger.opt(exception=True).info(
+                        "Could not ask the acquisition method of sample file "
+                        f"{sample_file.filename} for its re-processing"
+                    )
+                    failed_files.append(
+                        {
+                            "sample_file_id": sample_file.sample_file_id,
+                            "filename": sample_file.filename,
+                            "message": (
+                                "Failed to ask its acquisition method, so it "
+                                "was left as it is. Re-process it again."
+                            ),
+                        }
+                    )
+                    continue
+                if declined is not None:
+                    failed_files.append(
+                        {
+                            "sample_file_id": sample_file.sample_file_id,
+                            "filename": sample_file.filename,
+                            "message": _beside_the_declaration(
+                                undeclared,
+                                _declined_with_its_samples(no_token, declined),
+                            ),
+                        }
+                    )
+                    continue
             # Before anything of the file is destroyed: until the rebuild
             # records its own stages, the row would still say how the last run
             # ended - `done` on a file with no samples, if a restart cut in -
@@ -2018,14 +2539,58 @@ async def re_process_sample_files(
             # keeps its previous calibration. A failed reset keeps the old
             # calibration; the file still re-processes, so log instead of
             # failing the whole request.
+            cleared = None
             try:
-                await reset_mz_calibration(sample_file)
+                cleared = await reset_mz_calibration(sample_file)
             except Exception:  # noqa: BLE001 - reset is best-effort per file
                 runtime.logger.exception(
                     "Failed to reset m/z calibration for "
                     f"'{sample_file.filename}' before re-processing; the "
                     "previous calibration remains in effect."
                 )
+
+            if per_stream is not None:
+                # After the reset, so that the peaks are detected on the
+                # acquisition axis, as a first conversion detects them; and
+                # before the samples are cleared, so that a file whose peaks
+                # could not be detected keeps them.
+                try:
+                    await redetect_peaks(sample_file, per_stream)
+                except Exception as e:  # noqa: BLE001 - one file's failure
+                    runtime.logger.exception(
+                        "Could not detect the peaks of sample file "
+                        f"{sample_file.filename} again for its re-processing"
+                    )
+                    # A detection that fails leaves the peak store as it was,
+                    # on the acquisition axis the reset left. The samples
+                    # kept were matched on the calibration the reset cleared,
+                    # so it goes back on, as a parked file keeps the
+                    # calibration its samples were matched on.
+                    unrestored = ""
+                    if cleared is not None and not await _restore_calibration(
+                        sample_file, cleared
+                    ):
+                        unrestored = f" {_CALIBRATION_NOT_RESTORED}"
+                    # No pipeline runs for the file after this, and the
+                    # pipeline is what records how a run ended. The error's
+                    # own text can hold a path, so the status names the stage,
+                    # and the report adds only the kind of failure, in the
+                    # words a failed file's status uses.
+                    await _record_failed(
+                        sample_file.sample_file_id,
+                        ValueError(f"{_PEAKS_NOT_REDETECTED}{unrestored}"),
+                    )
+                    failed_files.append(
+                        {
+                            "sample_file_id": sample_file.sample_file_id,
+                            "filename": sample_file.filename,
+                            "message": (
+                                f"{_PEAKS_NOT_REDETECTED} {_failure_detail(e)}"
+                                f"{unrestored}"
+                            ),
+                        }
+                    )
+                    continue
 
             try:
                 cleared_batch_ids = await _clear_sample_items_for_reprocessing(
@@ -2040,8 +2605,9 @@ async def re_process_sample_files(
                 raise
             affected_sample_batch_ids.update(cleared_batch_ids)
 
-            # Set only for a file no token binds: it is re-processed under
-            # the modes its own samples held, carrying their provenance.
+            # Set for a file a person chose the chemistry of, and for one
+            # nothing binds now: it is re-processed under the modes its own
+            # samples held, carrying their provenance.
             kept = kept_modes.get(sample_file.sample_file_id)
             result = await auto_process_sample_file(
                 sample_file_id=sample_file.sample_file_id,
@@ -2057,9 +2623,10 @@ async def re_process_sample_files(
                 # token in its name, or the one its record names - was removed
                 # while the batch waited; or neither bound it and this
                 # deployment routes on method bindings, which is the file the
-                # validation lets through on purpose. Either way it needs a
-                # chemistry and was not re-processed, and the pipeline's own
-                # message says which.
+                # validation lets through on purpose: one with no samples, or
+                # one whose method bound it before its claim and no longer
+                # did by its run. Either way it needs a chemistry and was not
+                # re-processed, and the pipeline's own message says which.
                 failed_files.append(
                     {
                         "sample_file_id": sample_file.sample_file_id,
@@ -2086,11 +2653,19 @@ async def re_process_sample_files(
                 }
             )
         except Exception as e:
+            # Not the pipeline's: whatever it raises reaches this loop as an
+            # ApiException, logged where it was raised and worded for a
+            # person. This is the claim or the clearing failing, a fault
+            # nothing else logs, so it is logged here and the report names
+            # only its kind, in the words a failed file's status uses.
+            runtime.logger.exception(
+                f"Unexpected error re-processing sample file {sample_file.filename}"
+            )
             failed_files.append(
                 {
                     "sample_file_id": sample_file.sample_file_id,
                     "filename": sample_file.filename,
-                    "message": f"Processing failed: {str(e)}",
+                    "message": f"Processing failed: {_failure_detail(e)}",
                 }
             )
 
@@ -2138,36 +2713,128 @@ async def re_process_sample_files(
 
 
 async def modes_to_rebind(sample_file_id: str) -> KeptModes | None:
-    """The modes to process a file under again, when nothing binds it now.
+    """The modes to process a file under again, when its samples decide them.
 
-    A file that neither its acquisition record nor a token binds has nothing
-    to bind it again, so it keeps the modes its samples were made under, as
-    re-processing keeps them. None leaves the binding to the run: the record
-    or a token binds the file, or the run finds that neither does and parks
-    it. The record is asked first, as the run asks it, so a file its record
-    binds is not rebuilt under whatever it or a token bound it to before;
-    what a person chose is kept (:func:`_declared_before_a_run`). A record
-    that cannot be read fails the request, which has claimed nothing yet.
+    Two files keep the modes their samples were made under, as re-processing
+    keeps them. One is a file a person chose the chemistry of: what they
+    chose stands ahead of its acquisition record and of its name, and neither
+    is asked (:func:`_chosen_by_a_person`). The other is a file that neither
+    its record nor a token binds, which has nothing to bind it again.
+
+    None leaves the binding to the run: the record, a token or, where that
+    rung is on, the acquisition method binds the file, or the run finds that
+    none does and parks it. The record is asked before the name, as the run
+    asks it, so a file its record binds is not rebuilt under whatever it or
+    a token bound it to before. A record that cannot be read fails the
+    request, which has claimed nothing yet, and so do the modes of the
+    file's samples: neither is guessed at.
 
     Not only a file somebody chose a chemistry for. A file a token bound
     months ago reaches this too, once that token has been renamed or
     deleted - which is why what comes back carries each mode's own
     provenance rather than being treated as a choice.
 
+    **A file with samples that nothing binds is refused.** No modes to keep
+    is what a parked file with no samples says, and that one is the run's to
+    bind or park again. A file whose samples no longer give a mode per
+    polarity says it too - a mode deleted since leaves them with none, the
+    column being ``ON DELETE SET NULL`` - and started with no modes, a run
+    would park it unless its acquisition method binds it. So the samples are
+    counted beside the modes, as re-processing counts them. Where the
+    deployment routes on method bindings, the method is asked here as the
+    run asks it (:func:`resolve_modes_by_method_binding`, on the file's
+    scan-stream census), and a file it binds is left to the run, which asks
+    again and rebuilds the file under that chemistry. A file nothing binds -
+    the method declines, or the rung is off - is refused here, where nothing
+    of it is claimed yet: the request says why at once, with the method's
+    own reason where it was asked, and leaves the file's status as it was.
+    A run binds a file before it clears anything of it
+    (:func:`_delete_partial_acquisition_items`), so a file whose method
+    stops binding it between this check and its run parks with its samples
+    as they were. Samples that cannot be counted fail the request too, and
+    are not taken for none.
+
+    Re-processing asks the method of such a file too, and refuses one it
+    declines on the same terms. It asks just before it claims the file
+    rather than before its batch starts: it clears a file's samples before
+    its run, so a file whose method stops binding it in between parks with
+    its samples gone, and a file ahead of it in the batch that its record or
+    a token binds teaches its method's binding as it is bound.
+
+    Not refused: a file of fragmentation scans alone with no token. Its
+    sample is the MS2 part its run filed without a chemistry, and the run
+    files that again (``process/ms2_parts.py``).
+
+    A name whose tokens match, but not one mode per polarity, is refused on
+    the same terms, with the rung on or off. It is a configuration to fix,
+    which no earlier binding stands in for and the method is never asked
+    about, so the modes the file's samples have are not kept: the run would
+    park the file on its name.
+
     :param sample_file_id: The file.
+    :raises ApiException: 422 when the file has samples and the run could
+        only park it: its record does not bind it, and its name has no
+        token while its samples give no modes and the method does not bind
+        it either, or has ambiguous tokens.
     :return: The modes its samples have with how each was bound, or None.
     """
     sample_file = await fetch_sample_file(sample_file_id=sample_file_id)
-    declared, _undeclared = await _declared_before_a_run(sample_file)
+    kept = await _kept_modes(sample_file)
+    if _chosen_by_a_person(kept):
+        return kept
+    declared, undeclared = await _modes_its_record_declares(sample_file)
     if declared:
         return None
+    no_token: NoTokenMatchError | None = None
+    ambiguous: ValueError | None = None
     try:
         await resolve_ionization_modes_by_tokens(sample_file)
-    except NoTokenMatchError:
-        return await _kept_modes(sample_file)
-    except ValueError:
+    except NoTokenMatchError as e:
+        no_token = e
+    except ValueError as e:
+        ambiguous = e
+    if no_token is None and ambiguous is None:
         return None
-    return None
+    if no_token is not None and kept is not None:
+        return kept
+    # Read once: it says whether the file holds fragmentation scans alone,
+    # and it is what the method rung reads.
+    streams = (
+        await read_scan_streams(sample_file.filename) if no_token is not None else None
+    )
+    if no_token is not None and records_only_fragmentation_scans(streams):
+        # An acquisition of fragmentation scans alone, which its run files
+        # without a chemistry: the sample it has is its MS2 part, which has
+        # no mode, and the run files it again after clearing it. Nothing of
+        # it waits for a chemistry, so nothing is lost, as it is in
+        # re-processing (filed_alone).
+        return None
+    if not await _pipeline_item_count(sample_file_id):
+        return None
+    if no_token is not None and routes_on_method_binding():
+        # Asked as the run asks it. The run asks again, so the answer here
+        # only decides whether the file is refused before it is claimed.
+        _routed, declined = await resolve_modes_by_method_binding(sample_file, streams)
+        if declined is None:
+            return None
+        reason = _declined_with_its_samples(no_token, declined)
+    elif no_token is not None:
+        reason = (
+            f"{str(no_token).rstrip('.')}. The ionization modes its samples "
+            "were made under no longer bind it either, so it was left as it "
+            "is. Choose its chemistry in Raw files to rebuild it."
+        )
+    else:
+        # The two ways out the run's own park offers such a name: its
+        # tokens, and a chemistry chosen by hand, which stands ahead of it.
+        reason = (
+            f"{str(ambiguous).rstrip('.')}. {CHOOSE_CHEMISTRY} It was left as it is."
+        )
+    raise ApiException(
+        user_message=_beside_the_declaration(undeclared, reason),
+        tech_message={},
+        status_code=422,
+    )
 
 
 async def _kept_modes(sample_file: SampleFile) -> KeptModes | None:
@@ -2299,6 +2966,23 @@ async def _with_live_bindings(
     }
 
 
+def acquisition_batch_name(sample_file: SampleFile, mode_name: str) -> str:
+    """The name of the daily batch of a file's samples bound to a mode.
+
+    ``"<date> <mode name> acquisition"``, dated off the file's
+    instrument-local time. A mode's name is free text, so the batch of MS2
+    samples filed without a chemistry is named to end otherwise
+    (``process/ms2_parts.py``, ``MS2_BATCH_SUFFIX``). The batch's natural key
+    is its dataset, name and polarity, not its mode, so the two must never
+    share a name.
+
+    :param sample_file: The file.
+    :param mode_name: The name of the mode its samples are bound to.
+    :return: The batch name.
+    """
+    return f"{sample_file.datetime.strftime('%Y-%m-%d')} {mode_name} acquisition"
+
+
 async def create_acquisition_batches_and_items(
     sample_file: SampleFile,
     dataset_id: str,
@@ -2353,9 +3037,7 @@ async def create_acquisition_batches_and_items(
     for ionization_mode in ionization_modes:
         # --- Generate daily ACQUISITION batch name for this ionization mode ---
         ion_mode_name = ionization_mode.ionization_mode_name
-        batch_name = (
-            f"{sample_file.datetime.strftime('%Y-%m-%d')} {ion_mode_name} acquisition"
-        )
+        batch_name = acquisition_batch_name(sample_file, ion_mode_name)
 
         # --- Get or create daily ACQUISITION batch for this ionization mode ---
         # Get DIAGNOSTICS and CALIBRATION target collections for ACQUISITION

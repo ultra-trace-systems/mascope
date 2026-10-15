@@ -102,6 +102,70 @@ class TestWritePeaks:
         shutil.rmtree(peak_timeseries_zarr_path)
 
     @pytest.mark.asyncio
+    async def test_an_overwrite_that_fails_keeps_the_store_that_was_there(
+        self,
+        create_peak_timeseries_dataset,
+        peak_timeseries_zarr_path,
+        monkeypatch,
+    ):
+        """A file's peaks are detected again over a store its samples read.
+        A write that fails part-way, on a full disk say, leaves that store
+        as it was and nothing of the new one beside it."""
+        await write_peaks(
+            create_peak_timeseries_dataset(fill_with_nan=True),
+            TEST_FILENAME,
+            overwrite=True,
+        )
+        original_mz = zarr.open(peak_timeseries_zarr_path, mode="r")["mz"][:]
+        replacement = create_peak_timeseries_dataset(
+            mz_values=np.linspace(200.0, 600.0, TEST_MZ_SIZE), fill_with_nan=True
+        )
+        staged_path = peak_timeseries_zarr_path + ".staged"
+
+        def out_of_space(self, store, **kwargs):
+            os.makedirs(store)
+            with open(os.path.join(store, "half-written"), "w") as f:
+                f.write("mz")
+            raise OSError(28, "No space left on device")
+
+        monkeypatch.setattr(type(replacement), "to_zarr", out_of_space)
+        with pytest.raises(OSError, match="No space left on device"):
+            await write_peaks(replacement, TEST_FILENAME, overwrite=True)
+
+        np.testing.assert_array_equal(
+            zarr.open(peak_timeseries_zarr_path, mode="r")["mz"][:], original_mz
+        )
+        assert not os.path.exists(staged_path)
+
+    @pytest.mark.asyncio
+    async def test_an_overwrite_clears_what_a_cut_short_one_left(
+        self,
+        create_peak_timeseries_dataset,
+        peak_timeseries_zarr_path,
+    ):
+        """A write whose process ended leaves its half beside the store. The
+        next write starts over, and the store it leaves is its own, whole."""
+        await write_peaks(
+            create_peak_timeseries_dataset(fill_with_nan=True),
+            TEST_FILENAME,
+            overwrite=True,
+        )
+        staged_path = peak_timeseries_zarr_path + ".staged"
+        os.makedirs(os.path.join(staged_path, "leftover"))
+        new_mz = np.linspace(200.0, 600.0, TEST_MZ_SIZE)
+
+        await write_peaks(
+            create_peak_timeseries_dataset(mz_values=new_mz, fill_with_nan=True),
+            TEST_FILENAME,
+            overwrite=True,
+        )
+
+        stored = zarr.open(peak_timeseries_zarr_path, mode="r")
+        np.testing.assert_allclose(stored["mz"][:], new_mz)
+        assert "leftover" not in os.listdir(peak_timeseries_zarr_path)
+        assert not os.path.exists(staged_path)
+
+    @pytest.mark.asyncio
     async def test_partial_update_single_mz(
         self,
         existing_peak_timeseries_zarr,
@@ -682,6 +746,19 @@ def test_the_calibration_lock_is_named_beside_the_samples_stores(sample_file_pat
 
     assert path == os.path.join(sample_file_path, "mz_calibration")
     assert not path.endswith(".zarr")
+
+
+def test_the_detection_lock_is_named_beside_the_samples_stores(sample_file_path):
+    """Beside them and none of them, as the calibration lock is - and not
+    among what deleting a sample's peaks sweeps away, which is every
+    ``peak_*`` beside them: a detection holds its lock across the write of
+    the store it guards."""
+    path = m_io.peak_detection_lock_path(TEST_FILENAME)
+
+    assert path == os.path.join(sample_file_path, "detection")
+    assert not path.endswith(".zarr")
+    assert not os.path.basename(path).startswith("peak_")
+    assert path != m_io.mz_calibration_lock_path(TEST_FILENAME)
 
 
 class TestEnsureSparsityExists:

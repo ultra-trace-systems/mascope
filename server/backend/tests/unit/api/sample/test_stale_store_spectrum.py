@@ -1,0 +1,418 @@
+"""A spectrum route that meets a stale peak store asks for its rebuild, and
+one stale sample does not cost the others their spectra.
+
+A per-stream store the file no longer reads back is refused by the spectrum
+read (``get_sample_sum_signal``). A match that meets such a store asks the
+file converter to detect the file's peaks again; so does a spectrum now,
+for whoever may rematch the sample, and the answer says so. The route for
+several samples answers the ones it can and lists the stale ones
+(``spectrum_service``; ``docs/dev/ingest_routing_and_splitting.md``,
+section 10, step 6).
+"""
+
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
+
+import numpy as np
+import pytest
+import xarray as xr
+from test_utils import captured_logs
+
+from mascope_backend.api.controllers.match import match_controller
+from mascope_backend.api.controllers.samples import (
+    samples_controller,
+    spectrum_service,
+)
+from mascope_backend.api.lib.exceptions.api_exceptions import ApiException
+from mascope_backend.api.models.samples.sample_pydantic_model import (
+    GetSampleSpectrumQueryParams,
+)
+from mascope_backend.api.new.auth.access_token.service import (
+    get_access_token,
+    may_hold_converter_token,
+)
+from mascope_backend.api.new.auth.config import auth_settings
+from mascope_backend.api.new.auth.exceptions import (
+    ForbiddenAccessException,
+    InvalidTokenException,
+)
+from mascope_backend.api.routes.samples import samples_routes
+from mascope_signal.compute import StalePeakStoreError
+
+
+STALE = (
+    "The peak store holds the peaks of scan stream 'low window', and the "
+    "sample file now reads back no stream under that key. Re-run peak "
+    "detection for this sample file to rebuild the store."
+)
+ROLES = auth_settings.ROLE_ACCESS_LEVELS
+USER = SimpleNamespace(
+    id=7, username="editor", role_id=ROLES["editor"], to_dict=lambda: {"id": 7}
+)
+#: An account whose own role is guest, whatever it is in a workspace.
+GUEST_ACCOUNT = SimpleNamespace(
+    id=8, username="guest account", role_id=ROLES["guest"], is_superuser=False
+)
+
+
+def _sample(item_id: str, file_id: str | None = None):
+    file_id = file_id or f"file-of-{item_id}"
+    return SimpleNamespace(
+        sample_item_id=item_id,
+        sample_item_name=f"sample {item_id}",
+        sample_file_id=file_id,
+        filename=f"{file_id}.raw",
+        t0=0.0,
+        t1=10.0,
+        polarity="-",
+    )
+
+
+def _signal() -> xr.DataArray:
+    return xr.DataArray(
+        np.array([1.0, 2.0]), dims=("mz",), coords={"mz": [100.0, 100.5]}
+    )
+
+
+class _Files:
+    """The samples a request reads, some of whose files have a stale store,
+    and what was asked of the file converter for them."""
+
+    def __init__(self, samples, stale=(), failing=()):
+        self.samples = {sample.sample_item_id: sample for sample in samples}
+        self.stale = {f"{file_id}.raw" for file_id in stale}
+        self.failing = {f"{file_id}.raw" for file_id in failing}
+        self.forbidden: set[str] = set()
+        self.rebuilds = AsyncMock(side_effect=lambda files, user, pid: len(files))
+
+    async def fetch_sample(self, sample_item_id):
+        return self.samples[sample_item_id]
+
+    def signal(self, filename, polarity, t_min, t_max, average):
+        if filename in self.stale:
+            raise StalePeakStoreError(STALE)
+        if filename in self.failing:
+            raise OSError("the filestore is gone")
+        return _signal()
+
+    async def check_access(self, sample_item_id, user, min_role):
+        assert min_role == "editor"
+        if sample_item_id in self.forbidden:
+            raise ForbiddenAccessException()
+
+    def __enter__(self):
+        self._patches = [
+            patch.object(samples_controller, "fetch_sample", self.fetch_sample),
+            patch.object(spectrum_service, "fetch_sample", self.fetch_sample),
+            patch.object(
+                samples_controller.m_compute, "get_sample_sum_signal", self.signal
+            ),
+            patch.object(spectrum_service, "check_sample_access", self.check_access),
+            patch.object(
+                spectrum_service, "request_stale_peak_store_rebuilds", self.rebuilds
+            ),
+        ]
+        for patched in self._patches:
+            patched.start()
+        return self
+
+    def __exit__(self, *exc_info):
+        for patched in self._patches:
+            patched.stop()
+        return False
+
+    def queued(self) -> list[dict]:
+        """The files each request to the converter named."""
+        return [call.args[0] for call in self.rebuilds.await_args_list]
+
+
+# -- several samples -------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_one_stale_sample_does_not_cost_the_others_their_spectra():
+    samples = [_sample("a"), _sample("b"), _sample("c")]
+    with _Files(samples, stale=["file-of-b"]):
+        body = await samples_controller.get_samples_spectra(["a", "b", "c"])
+
+    # One entry per sample asked for, in the order asked
+    assert [entry["mz"] for entry in body["data"]] == [
+        [100.0, 100.5],
+        [],
+        [100.0, 100.5],
+    ]
+    assert body["results"] == 3
+    stale = body["data"][1]
+    assert (stale["intensity"], stale["intensity_unit"]) == ([], "counts/s")
+    assert "Re-run peak detection" in stale["message"]
+    assert body["stale"] == [
+        {
+            "sample_item_id": "b",
+            "sample_file_id": "file-of-b",
+            "filename": "file-of-b.raw",
+        }
+    ]
+    assert body["message"].startswith("Spectra retrieved for 2 of 3 samples.")
+    assert "file-of-b.raw" in body["message"]
+    # What a client that pairs `data` with its ids is told by: the SDK logs
+    # each entry, and reads neither the message nor `stale`
+    assert body["warnings"] == [
+        "No spectrum was read for 1 of the 3 samples asked for: the peak data "
+        "of 1 sample file has to be rebuilt first (file-of-b.raw)."
+    ]
+
+
+@pytest.mark.asyncio
+async def test_every_sample_answered_reads_as_before():
+    with _Files([_sample("a"), _sample("b")]):
+        body = await samples_controller.get_samples_spectra(["a", "b"])
+
+    assert body["message"] == "Spectra retrieved successfully."
+    assert (body["stale"], body["warnings"]) == ([], [])
+    assert all("message" not in entry for entry in body["data"])
+
+
+@pytest.mark.asyncio
+async def test_any_other_failure_still_fails_the_request():
+    """Only a stale store is one sample's own condition to answer around."""
+    with _Files([_sample("a"), _sample("b")], failing=["file-of-b"]):
+        with pytest.raises(ApiException):
+            await samples_controller.get_samples_spectra(["a", "b"])
+
+
+@pytest.mark.asyncio
+async def test_the_stale_files_of_several_samples_are_asked_rebuilt_once_each():
+    samples = [
+        _sample("a", "shared"),
+        _sample("b", "shared"),
+        _sample("c"),
+        _sample("d"),
+    ]
+    with _Files(samples, stale=["shared", "file-of-c"]) as files:
+        body = await spectrum_service.get_samples_spectra_for(
+            USER, sample_item_ids=["a", "b", "c", "d"]
+        )
+
+    assert files.queued() == [
+        {"shared": "shared.raw", "file-of-c": "file-of-c.raw"},
+    ]
+    assert files.rebuilds.await_args.args[1] is USER
+    assert body["message"].startswith("Spectra retrieved for 1 of 4 samples.")
+    assert body["message"].endswith(
+        "Peak detection has been queued for 2 of them: ask again once it has finished."
+    )
+    assert body["warnings"] == [
+        "No spectrum was read for 3 of the 4 samples asked for: the peak data "
+        "of 2 sample files has to be rebuilt first (file-of-c.raw, shared.raw). "
+        "Peak detection has been queued for 2 of them: ask again once it has "
+        "finished."
+    ]
+
+
+@pytest.mark.asyncio
+async def test_a_file_is_asked_rebuilt_only_for_someone_who_may_rematch_its_sample():
+    """The rebuild rematches the file's samples as whoever asked: an editor's
+    refresh of the batch, which a guest of the workspace cannot do."""
+    samples = [_sample("mine"), _sample("theirs")]
+    with _Files(samples, stale=["file-of-mine", "file-of-theirs"]) as files:
+        files.forbidden = {"theirs"}
+        body = await spectrum_service.get_samples_spectra_for(
+            USER, sample_item_ids=["mine", "theirs"]
+        )
+
+    assert files.queued() == [{"file-of-mine": "file-of-mine.raw"}]
+    assert "queued for 1 of them" in body["message"]
+
+
+@pytest.mark.asyncio
+async def test_nothing_is_said_of_a_rebuild_that_was_not_queued():
+    """No converter to ask, or nobody who may: the answer names the stale
+    files and promises nothing."""
+    with _Files([_sample("a"), _sample("b")], stale=["file-of-b"]) as files:
+        files.rebuilds.side_effect = lambda files_, user, pid: 0
+        body = await spectrum_service.get_samples_spectra_for(
+            USER, sample_item_ids=["a", "b"]
+        )
+
+    assert "queued" not in body["message"]
+    assert body["stale"]
+    assert len(body["warnings"]) == 1 and "queued" not in body["warnings"][0]
+
+
+@pytest.mark.asyncio
+async def test_a_request_that_met_no_stale_store_asks_for_nothing():
+    with _Files([_sample("a")]) as files:
+        body = await spectrum_service.get_samples_spectra_for(
+            USER, sample_item_ids=["a"]
+        )
+
+    files.rebuilds.assert_not_awaited()
+    assert body["message"] == "Spectra retrieved successfully."
+
+
+# -- one sample ------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_a_spectrum_that_meets_a_stale_store_asks_for_its_rebuild():
+    """The spectrum does not exist until the detection has run, so the
+    request still fails, with the store's own sentence and what was done
+    about it."""
+    with _Files([_sample("a")], stale=["file-of-a"]) as files:
+        with pytest.raises(ApiException) as refused:
+            await spectrum_service.get_sample_spectrum_for(USER, sample_item_id="a")
+
+    assert files.queued() == [{"file-of-a": "file-of-a.raw"}]
+    message = refused.value.user_message
+    assert "Re-run peak detection" in message
+    assert message.endswith(
+        "Peak detection has been queued for the file: open the sample again "
+        "once it has finished."
+    )
+    assert refused.value.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_a_guest_is_told_what_the_store_says_and_nothing_is_queued():
+    with _Files([_sample("a")], stale=["file-of-a"]) as files:
+        files.forbidden = {"a"}
+        with pytest.raises(ApiException) as refused:
+            await spectrum_service.get_sample_spectrum_for(USER, sample_item_id="a")
+
+    files.rebuilds.assert_not_awaited()
+    assert "queued" not in refused.value.user_message
+    assert "Re-run peak detection" in refused.value.user_message
+
+
+@pytest.mark.asyncio
+async def test_an_editor_of_the_workspace_whose_account_is_a_guest_is_answered_as_one():
+    """The workspace role is checked here and the account's own by the file
+    converter's token, and the two are independent. Such an account is given
+    no token: nothing is queued, the answer promises nothing, and nothing is
+    reported as a fault for every stale sample the person opens.
+
+    Run through the request and the token function as they are, with only
+    the converter stood in for. The token's refusal reaches a caller wrapped
+    as the API's own exception, so a stand-in raising it bare would pass
+    whatever the request does with the real one."""
+    with _Files([_sample("a")], stale=["file-of-a"]):
+        with (
+            patch.object(
+                spectrum_service,
+                "request_stale_peak_store_rebuilds",
+                match_controller.request_stale_peak_store_rebuilds,
+            ),
+            patch.object(
+                match_controller, "ensure_converter_available", AsyncMock()
+            ) as converter,
+            patch.object(
+                match_controller, "request_peak_detection", AsyncMock()
+            ) as asked,
+            captured_logs("INFO") as records,
+        ):
+            with pytest.raises(ApiException) as refused:
+                await spectrum_service.get_sample_spectrum_for(
+                    GUEST_ACCOUNT, sample_item_id="a"
+                )
+
+    asked.assert_not_awaited()
+    converter.assert_not_awaited()
+    assert "queued" not in refused.value.user_message
+    assert "Re-run peak detection" in refused.value.user_message
+    said = [record for record in records if "may not ask the file" in record["message"]]
+    assert [record["level"].name for record in said] == ["INFO"]
+    assert not [record for record in records if record["level"].no >= 30]
+
+
+@pytest.mark.parametrize(
+    "role, may",
+    [(None, False), ("guest", False), ("editor", True), ("admin", True)],
+)
+def test_the_converters_token_is_an_editor_accounts_to_hold(role, may):
+    account = SimpleNamespace(role_id=ROLES.get(role))
+
+    assert may_hold_converter_token(account) is may
+
+
+@pytest.mark.asyncio
+async def test_the_tokens_refusal_reaches_a_caller_wrapped():
+    """Why the request asks the rule and does not catch the refusal: the
+    token function is a controller, and what it raises for an account below
+    editor arrives as the API's own exception with the refusal as its cause,
+    which is how any fault inside it arrives too."""
+    with pytest.raises(ApiException) as refused:
+        await get_access_token(user=GUEST_ACCOUNT, service_name="file-converter")
+
+    assert not isinstance(refused.value, InvalidTokenException)
+    assert isinstance(refused.value.__cause__, InvalidTokenException)
+
+
+@pytest.mark.asyncio
+async def test_a_spectrum_that_fails_for_another_reason_asks_for_nothing():
+    with _Files([_sample("a")], failing=["file-of-a"]) as files:
+        with pytest.raises(ApiException):
+            await spectrum_service.get_sample_spectrum_for(USER, sample_item_id="a")
+
+    files.rebuilds.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_spectrum_that_reads_is_returned_as_the_controller_returns_it():
+    with _Files([_sample("a")]) as files:
+        body = await spectrum_service.get_sample_spectrum_for(
+            USER, sample_item_id="a", mz_min=None, mz_max=None
+        )
+
+    files.rebuilds.assert_not_awaited()
+    assert body["data"]["mz"] == [100.0, 100.5]
+
+
+# -- the routes ------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_the_spectrum_route_asks_the_service_as_whoever_asked():
+    """The service is what asks for a rebuild, and it does so in the name of
+    the user it is handed: the route has to reach it, with that user."""
+    service = AsyncMock(return_value={"message": "read", "data": {"mz": []}})
+    with patch.object(samples_routes, "get_sample_spectrum_for", service):
+        response = await samples_routes.get_sample_spectrum_route(
+            sample_item_id="a",
+            query_params=GetSampleSpectrumQueryParams(t_min=1.0, t_max=4.0),
+            user=USER,
+            membership=None,
+        )
+
+    assert response.status_code == 200
+    service.assert_awaited_once()
+    assert service.await_args.args == (USER,)
+    asked = service.await_args.kwargs
+    assert (asked["sample_item_id"], asked["t_min"], asked["t_max"]) == ("a", 1.0, 4.0)
+
+
+@pytest.mark.asyncio
+async def test_the_spectra_route_asks_the_service_as_whoever_asked():
+    service = AsyncMock(return_value={"message": "read", "data": [], "stale": []})
+    with (
+        patch.object(samples_routes, "get_samples_spectra_for", service),
+        patch.object(samples_routes, "check_sample_access_bulk", AsyncMock()) as access,
+    ):
+        response = await samples_routes.get_samples_spectra_route(
+            sample_item_ids=["a", "b"],
+            t_min=1.0,
+            t_max=None,
+            mz_min=None,
+            mz_max=None,
+            user=USER,
+        )
+
+    assert response.status_code == 200
+    access.assert_awaited_once_with(["a", "b"], USER, "guest")
+    service.assert_awaited_once_with(
+        USER,
+        sample_item_ids=["a", "b"],
+        t_min=1.0,
+        t_max=None,
+        mz_min=None,
+        mz_max=None,
+    )

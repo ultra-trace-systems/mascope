@@ -11,11 +11,13 @@ Tasks:
 """
 
 import asyncio
+import copy
 import hashlib
 import hmac
 import json
 import numbers
 import time
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import cast
 
@@ -74,6 +76,7 @@ from mascope_backend.socket.notifications import (
 )
 from mascope_runtime.logging import SENTRY_FINGERPRINT
 from mascope_signal.compute import get_sum_signal
+from mascope_signal.mz_factor import STREAM_FACTORS
 
 
 # Monotonic timestamp of the last emission of each distinct drift warning,
@@ -435,18 +438,21 @@ def _canonical(value):
 
 
 def _fit_seal(fit: dict, filename: str) -> str:
-    """HMAC over what the verdict rests on: the file, the model and its quality."""
-    payload = json.dumps(
-        _canonical(
-            {
-                "filename": filename,
-                "mode": fit.get("mode"),
-                "par": fit.get("par"),
-                "quality": fit.get("quality"),
-            }
-        ),
-        sort_keys=True,
-    )
+    """HMAC over what the verdict rests on: the file, the model and its quality.
+
+    The model of a file calibrated stream by stream is its streams' factors
+    as well (``mascope_signal.mz_factor``). They join what is sealed only
+    where a fit carries them, so a fit of one factor is sealed as it was.
+    """
+    sealed = {
+        "filename": filename,
+        "mode": fit.get("mode"),
+        "par": fit.get("par"),
+        "quality": fit.get("quality"),
+    }
+    if fit.get(STREAM_FACTORS) is not None:
+        sealed[STREAM_FACTORS] = fit[STREAM_FACTORS]
+    payload = json.dumps(_canonical(sealed), sort_keys=True)
     key = derive_token_secret(_FIT_SEAL_PURPOSE).encode("utf-8")
     return hmac.new(key, payload.encode("utf-8"), hashlib.sha256).hexdigest()
 
@@ -561,7 +567,23 @@ def stamp_quality_verdict(
     return issues
 
 
-async def reset_mz_calibration(sample_file) -> bool:
+@dataclass(frozen=True)
+class ClearedMzCalibration:
+    """A sample file's m/z calibration as :func:`reset_mz_calibration` found it.
+
+    Both of its records, as they were before the reset cleared them, for
+    :func:`restore_mz_calibration` to put back.
+    """
+
+    #: The record in the file's ``.props``: the factor its m/z axes were on,
+    #: and each scan stream's where it was calibrated stream by stream.
+    stored: dict | None
+    #: The database record: the same fit, with its quality verdict and
+    #: acquisition-drift markers beside it.
+    recorded: dict | None
+
+
+async def reset_mz_calibration(sample_file) -> ClearedMzCalibration | None:
     """
     Restore a sample file's acquisition m/z axis and clear its calibration.
 
@@ -569,18 +591,25 @@ async def reset_mz_calibration(sample_file) -> bool:
     axes in place and tracks the running factor (zarr props + the database
     record), so a re-processed file silently keeps its previous calibration.
     Dividing by the stored factor restores the acquisition axis exactly,
-    after which the pipeline calibrates from scratch like a fresh upload.
+    after which the pipeline calibrates from scratch like a fresh upload. A
+    file calibrated stream by stream is taken back the same way: a fit that
+    names no stream moves each stream from its own factor to the one given.
 
     TOF fits are absolute (the m/z axis is recomputed from the invariant TOF
     axis on every apply), so there is nothing to reset for them.
 
     :param sample_file: Sample file ORM/DTO object with ``sample_file_id``,
         ``filename`` and ``mz_calibration``.
-    :return: True when a reset was performed.
+    :return: What the reset cleared, for :func:`restore_mz_calibration`;
+        None when there was nothing to reset.
     """
     if m_name.get_instrument_type(sample_file.filename) != "orbi":
-        return False
+        return None
     stored = m_io.read_props(sample_file.filename).get("mz_calibration")
+    cleared = ClearedMzCalibration(
+        stored=copy.deepcopy(stored),
+        recorded=copy.deepcopy(sample_file.mz_calibration),
+    )
     factor = ((stored or {}).get("par") or {}).get("calibration_factor")
     if factor:
         calibration_handler = get_calibration_handler(
@@ -597,7 +626,7 @@ async def reset_mz_calibration(sample_file) -> bool:
             }
         )
     if stored is None and sample_file.mz_calibration is None:
-        return False
+        return None
     m_io.update_props(sample_file.filename, {"mz_calibration": None})
     sample_file.mz_calibration = None
     await update_sample_file(
@@ -606,7 +635,54 @@ async def reset_mz_calibration(sample_file) -> bool:
     runtime.logger.info(
         f"Reset m/z calibration for '{sample_file.filename}' to the acquisition axis."
     )
-    return True
+    return cleared
+
+
+async def restore_mz_calibration(sample_file, cleared: ClearedMzCalibration) -> None:
+    """
+    Put back the m/z calibration :func:`reset_mz_calibration` cleared.
+
+    For a re-processing that reset a file's calibration and then stopped
+    before anything else of the file changed: the samples it keeps were
+    matched on the calibrated axis, so the axis and both records go back to
+    what those matches were made on.
+
+    The factor goes back on by the handler that took it off, from the
+    acquisition axis the reset left. A store detected per scan stream has
+    each stream moved to the factor the record names for it and its rows
+    placed from their readings again, where they were before the reset
+    (``OrbiCalibrationHandler._apply_per_stream``); a store detected whole
+    is rescaled by the file's factor. The apply writes the ``.props`` record
+    as it writes any fit's, which is the record cleared, less what of it the
+    store cannot hold: a stream it does not tell apart. A record with no
+    factor - a failed calibration's marker - moved nothing and is written
+    back as it was. So is the database record, which carries the quality
+    verdict and the drift markers beside the fit.
+
+    :param sample_file: Sample file ORM/DTO object with ``sample_file_id``,
+        ``filename`` and ``mz_calibration``, as the reset left it.
+    :param cleared: What :func:`reset_mz_calibration` returned for it.
+    :raises Exception: If an axis or a record cannot be written.
+    """
+    filename = sample_file.filename
+    stored = cleared.stored
+    factor = ((stored or {}).get("par") or {}).get("calibration_factor")
+    if factor:
+        fit = copy.deepcopy(stored)
+        fit["par"].update(old_factor=1.0, old_factor_scaling=factor)
+        calibration_handler = get_calibration_handler(
+            filename=filename, calibration_params=None, notification=None
+        )
+        await calibration_handler.apply(fit)
+    else:
+        m_io.update_props(filename, {"mz_calibration": stored})
+    sample_file.mz_calibration = copy.deepcopy(cleared.recorded)
+    await update_sample_file(
+        sample_file.sample_file_id, SampleFileUpdate(**sample_file.to_dict())
+    )
+    runtime.logger.info(
+        f"Restored the m/z calibration of '{filename}' after its reset."
+    )
 
 
 @api_controller()
@@ -784,6 +860,12 @@ async def calibration_mz_fit(
             calibration_data["fit"]["quality"]["axis_correction_ppm"] = (
                 axis_correction_ppm(calibration_data["fit"])
             )
+            if calibration_handler.segments is not None:
+                # A file fitted stream by stream: how each stream of the
+                # sample's polarity came by its factor
+                calibration_data["fit"]["quality"]["segments"] = (
+                    calibration_handler.segments
+                )
         # A preview for the calibration dialog, so the operator sees what the
         # fit would be stored as before applying it. Apply decides again from
         # the quality block rather than trusting this.

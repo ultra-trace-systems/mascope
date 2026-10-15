@@ -5,6 +5,7 @@ import threading
 from abc import ABC, abstractmethod
 from collections.abc import Callable
 from concurrent.futures import ProcessPoolExecutor
+from typing import Literal
 
 import dask
 import dask.array as da
@@ -19,6 +20,7 @@ import mascope_file.io as m_io
 import mascope_file.name as m_name
 import mascope_signal.compute as m_compute
 import mascope_signal.fitting as m_fitting
+import mascope_signal.mz_factor as m_factor
 import mascope_signal.stitch as m_stitch
 from mascope_backend.db.id import gen_id
 from mascope_match.params import (
@@ -114,6 +116,56 @@ def _strictly_increasing(mz: np.ndarray) -> np.ndarray:
         least = out[i - 1] * (1.0 + MZ_ROW_SEPARATION)
         if out[i] < least:
             out[i] = least
+    return out
+
+
+def rows_set_apart(mz: np.ndarray, fixed: np.ndarray) -> np.ndarray:
+    """An m/z axis put back in order where its rows were moved apart from
+    each other, the rows of ``fixed`` staying where they are.
+
+    The streams of a per-stream store are calibrated each by its own factor,
+    and its rows are in the order their peaks were detected in. Two streams
+    read one ion a fraction of a ppm apart, so moving each by its own factor
+    carries one reading past the other - every well calibrated pair of them
+    has an even chance of it - and the store finds a row by its m/z, which
+    takes an axis that only rises.
+
+    The rows of a composite are the ones everything reads, so they keep the
+    m/z their calibration gives them, and a reading the composite leaves out
+    gives way: it is set :data:`MZ_ROW_SEPARATION` beside the row it would
+    have passed, on the side it was detected on. It is then off by how far
+    the two streams disagree about that ion once both are calibrated, and no
+    further. Two rows of a composite pass each other only across a boundary
+    of its map, within the difference of two factors of it, and there the
+    later one is moved, as :func:`_strictly_increasing` moves it.
+
+    :param mz: The rows' m/z, in the order the store holds them
+    :type mz: np.ndarray
+    :param fixed: Which rows keep their m/z: those of the composites
+    :type fixed: np.ndarray
+    :return: The axis, strictly increasing
+    :rtype: np.ndarray
+    """
+    out = np.array(mz, dtype=np.float64)
+    fixed = np.asarray(fixed, dtype=bool)
+    step = 1.0 + MZ_ROW_SEPARATION
+
+    # The fixed rows among themselves, each leaving room for the rows that
+    # lie between it and the one before
+    last = None
+    for i in np.flatnonzero(fixed):
+        if last is not None:
+            least = out[last] * step ** (i - last)
+            if out[i] < least:
+                out[i] = least
+        last = i
+    # The others: above the row before, then below the row after
+    for i in range(1, out.size):
+        if not fixed[i]:
+            out[i] = max(out[i], out[i - 1] * step)
+    for i in range(out.size - 2, -1, -1):
+        if not fixed[i]:
+            out[i] = min(out[i], out[i + 1] / step)
     return out
 
 
@@ -362,14 +414,17 @@ class OrbiPeakDetector(BasePeakDetector):
           (:func:`mascope_signal.stitch.overlap_readings`).
 
         The map is in m/z as the instrument recorded them, and the peaks are
-        on the file's calibrated axis, so a peak is placed by the factor the
-        file carries. A file's mask is then the same whenever its peaks are
-        detected, before its calibration or after.
+        on the file's calibrated axis, so a peak is placed by the factor its
+        stream carries (``mascope_signal.mz_factor``). A file's mask is then
+        the same whenever its peaks are detected, before its calibration or
+        after, and so is what its overlaps read.
         """
         store = self.peak_timeseries
-        calibration = self._sample_file_props.get("mz_calibration")
-        factor = calibration["par"]["calibration_factor"] if calibration else 1.0
         peak_mz, peak_stream = store.mz.values, store.stream.values
+        factor = m_factor.stream_factors(
+            self._sample_file_props.get("mz_calibration"),
+            [stream["key"] for stream in self._streams],
+        )[peak_stream]
 
         stitch = m_stitch.stitch_map(self._streams)
         composite = m_stitch.composite_mask(
@@ -425,14 +480,31 @@ class OrbiPeakDetector(BasePeakDetector):
             f"Detecting the peaks of '{self._filename}' per scan stream: "
             f"{'; '.join(stream['key'] for stream in self._streams)}"
         )
+        # One read of the record for the whole detection: the centroids are
+        # placed by it, what each stream recorded is taken back by it, and
+        # the composite is drawn by it (_stitch). A calibration applied to
+        # the file meanwhile is then no part of what the store keeps as read.
+        calibration = self._sample_file_props.get("mz_calibration")
         datasets = []
         for index, stream in enumerate(self._streams):
             peaks = await self._extract_peaks_for_polarity(
-                stream["signature"]["polarity"], stream=stream["key"]
+                stream["signature"]["polarity"],
+                stream=stream["key"],
+                calibration=calibration,
             )
             datasets.append(
                 peaks.assign(
-                    stream=(("mz"), np.full(peaks.mz.shape, index, dtype=np.int16))
+                    stream=(("mz"), np.full(peaks.mz.shape, index, dtype=np.int16)),
+                    # The reading itself, beside the row's place on the axis:
+                    # the centroids come by the stream's factor, which is
+                    # taken off again (m_compute.RECORDED_MZ)
+                    **{
+                        m_compute.RECORDED_MZ: (
+                            ("mz"),
+                            peaks.mz.values
+                            / m_factor.stream_factor(calibration, stream["key"]),
+                        )
+                    },
                 )
             )
         peaks = xarray.concat(datasets, dim="mz").sortby("mz")
@@ -455,12 +527,18 @@ class OrbiPeakDetector(BasePeakDetector):
         return times[order], labels[order]
 
     async def _extract_peaks_for_polarity(
-        self, polarity: str, stream: str | None = None
+        self,
+        polarity: str,
+        stream: str | None = None,
+        calibration: dict | None | object = m_compute.RECORD_ON_FILE,
     ) -> xarray.Dataset:
         """A workaround to extract peaks for a given polarity from Thermo Orbitrap files.
 
         :param stream: Key of the one scan stream to average, of that
             polarity; None averages every MS1 scan of the polarity.
+        :param calibration: The record to put the centroids on the file's
+            axis by, from a caller that holds one; left out, they go by the
+            record the file holds when they are read.
         """
         (
             peak_mzs,
@@ -468,7 +546,7 @@ class OrbiPeakDetector(BasePeakDetector):
             resolutions,
             signal_to_noise,
         ) = await m_compute.get_orbi_centroids(
-            self._filename, polarity=polarity, stream=stream
+            self._filename, polarity=polarity, stream=stream, calibration=calibration
         )
 
         # The m/z peak area is the integral of the analytic peak model, so it is
@@ -870,20 +948,81 @@ def compute_peaks(
         that record as it is, so that re-detecting a file's peaks never
         changes what was decided for it.
     :type per_stream: bool | None
+    :raises TimeoutError: If another process was detecting the same file's
+        peaks, or applying an m/z calibration to it, for longer than
+        ``mascope_file.io.ZARR_PROCESS_LOCK_TIMEOUT``
     """
-    peak_detector = get_peak_detector(filename, instrument_functions, per_stream)
-    asyncio.run(peak_detector.detect_peaks(progress_callback=progress_callback))
-    peak_detector.record_decision()
-    asyncio.run(peak_detector.write_peaks_to_zarr())
+    # One detection of a file at a time, in whichever process: the detector
+    # reads the recorded decision when it is made, and a rebuild that read it
+    # before an explicit decision was recorded would write the store the old
+    # record describes over the one the new record does. It reads the
+    # recorded m/z calibration then as well, and places every peak by it, so
+    # an apply of a calibration to the file waits for this lock too
+    # (mascope_file.io.peak_detection_lock_path). The detection does not take
+    # the calibration lock across it: it caches sum signals under that one,
+    # inside this, as anyone does.
+    with m_io.zarr_write_lock(m_io.peak_detection_lock_path(filename)):
+        peak_detector = get_peak_detector(filename, instrument_functions, per_stream)
+        asyncio.run(peak_detector.detect_peaks(progress_callback=progress_callback))
+        props = m_io.read_props(filename)
+        had_store = os.path.exists(
+            m_name.filename_to_zarr_path(filename, "peak_timeseries")
+        )
+        peak_detector.record_decision()
+        try:
+            asyncio.run(peak_detector.write_peaks_to_zarr())
+        except Exception:
+            if had_store:
+                # The store the file had is still the one it has
+                # (``mascope_file.io.write_peaks``), so the decision it was
+                # built by stands too: a store and a record that disagree
+                # would have the next rebuild write another store than the
+                # file's samples were made against. A file with no store
+                # keeps the new record, which is the decision its first
+                # store is to be built by (record_decision).
+                _restore_decision(filename, props)
+            raise
 
 
-def write_empty_peak_timeseries(filename: str) -> None:
-    """Write an empty peak_timeseries.zarr for blank measurements.
+def _restore_decision(filename: str, props: dict) -> None:
+    """Put a file's recorded decision back to what ``props`` held of it.
+
+    :param filename: Filename of the sample file.
+    :param props: The file's ``.props`` as they were before a detection
+        recorded its own decision.
+    """
+    now = m_io.read_props(filename)
+    if now.get(PER_STREAM_PROP) is props.get(PER_STREAM_PROP):
+        return
+    if PER_STREAM_PROP in props:
+        m_io.update_props(filename, {PER_STREAM_PROP: props[PER_STREAM_PROP]})
+    else:
+        # Nobody had decided: the entry goes, and the file's props are what
+        # they were
+        now.pop(PER_STREAM_PROP, None)
+        m_io.write_props(filename, now)
+
+
+def write_empty_peak_timeseries(
+    filename: str, scan_type: Literal["Ms", "Ms2"] | None = "Ms"
+) -> None:
+    """Write a peak_timeseries.zarr that holds no peaks.
+
+    For a file peak detection is not run on: a blank measurement, and an
+    Orbitrap acquisition that recorded no MS1 scans. The store still carries a
+    scan axis, so that it reads as every other store does - the axis of the
+    scans peaks would have been detected in, which for an acquisition of
+    fragmentation scans alone has to be asked for, as there is no MS1 scan to
+    take it from.
 
     :param filename: Filename of the sample file.
     :type filename: str
+    :param scan_type: The scans whose times the store keeps; see
+        :func:`mascope_signal.compute.get_scan_timestamps`. None for an
+        acquisition with no MS1 scans, whose scans are all of another type.
+    :type scan_type: Literal['Ms', 'Ms2'] | None, optional
     """
-    time_coord = m_compute.get_scan_timestamps(filename)
+    time_coord = m_compute.get_scan_timestamps(filename, scan_type=scan_type)
     empty_dataset = xarray.Dataset(
         data_vars={
             "peak_areas": (

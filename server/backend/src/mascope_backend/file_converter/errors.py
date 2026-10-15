@@ -31,6 +31,14 @@ EMPTY_ACQUISITION_MESSAGE = (
     "The file contains no scans; the acquisition is empty or was aborted."
 )
 
+#: The acquisition software created the file and the acquisition ended before
+#: the file's index was written. Whatever scans were recorded before that
+#: cannot be reached, so the message does not claim there were none.
+UNFINISHED_ACQUISITION_MESSAGE = (
+    "The acquisition was never finished: the file has no index of its scans, "
+    "so nothing in it can be read."
+)
+
 #: Exactly one scan: there is a spectrum but no second one to measure the
 #: spacing against, so neither an interval nor a length can be derived.
 SINGLE_SCAN_MESSAGE = (
@@ -45,28 +53,24 @@ UNUSABLE_SCAN_TIMES_MESSAGE = (
     "measurable time axis."
 )
 
-#: The acquisition recorded only fragmentation scans. Peak detection and the
-#: instrument-function fit both read MS1, so a file without a single MS1 scan
-#: carries nothing either of them can run on - the MS2 scans are real data, but
-#: Mascope has no survey spectrum to anchor them to.
-NO_MS1_SCANS_MESSAGE = (
-    "The file contains no MS1 scans; Mascope detects peaks in MS1, so an "
-    "acquisition of fragmentation scans alone cannot be processed."
-)
-
 
 class EmptyAcquisitionError(Exception):
     """A raw file that carries nothing Mascope can ingest.
 
     Raised by a processor when the reader reports an empty acquisition - a run
     that was aborted, or that wrote a file before recording a single scan -
-    when what was recorded yields no measurable time axis, such as a single
-    scan, and when the scans that are there are all fragmentation scans, which
-    leaves peak detection nothing to run on. Nothing downstream can be derived
-    from such a file, so it still fails and lands in ``failed_files``; the
-    distinct type marks it as a property of the data rather than a fault in
-    Mascope, so ``BaseFileProcessor.run`` logs it at INFO without a traceback
-    and error monitoring stays quiet.
+    when the file was left without the index its scans are read through,
+    and when what was recorded yields no measurable time axis, such as a
+    single scan. Nothing downstream can be derived from such a file, so it
+    still fails and lands in ``failed_files``; the distinct type marks it as a
+    property of the data rather than a fault in Mascope, so
+    ``BaseFileProcessor.run`` logs it at INFO without a traceback and error
+    monitoring stays quiet.
+
+    An acquisition of fragmentation scans alone is not one of these. It has no
+    MS1 scan for peak detection to run on, but its scans are real data, so it
+    is stored without peaks rather than refused
+    (``BaseFileProcessor._process_without_survey_scans``).
 
     The raise site picks which of the messages above applies, because only it
     knows which case it found; the wording lives here because it reaches the

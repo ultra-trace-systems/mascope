@@ -39,6 +39,25 @@ agent.start()  # returns; the agent runs on threads of its own
 agent.stop(timeout=30)
 ```
 
+- `identity()` names the service the machine pairs and uploads as.
+  `file-agent` is the File Agent's own; a program that controls the
+  instrument can pair as `instrument-agent`, so that Mascope lists its
+  machines apart from standalone File Agents. The server accepts a token
+  under the name it was paired as and no other, so the agent saves that
+  name with every token in `config.toml` (`paired_as`), and
+  `identity(settings.service_name(unpaired="instrument-agent"), ...)` names
+  it again: a machine pairs as `instrument-agent` only when it has no token
+  yet, and one that holds a token stays what it was paired as. A token
+  saved before the name was recorded is a File Agent's, which covers a File
+  Agent configuration the program takes over. Moving a paired machine to the
+  other name means pairing it again under that name; the new pairing is a
+  new machine under Paired machines, and the old one stays there until
+  someone revokes it. A Mascope server older than the `instrument-agent`
+  name refuses to pair under it, and setup prints the server's reason.
+- A program that saves tokens itself, through a `persist_token` of its own
+  rather than `AgentSettings.token_writer()`, saves `mascope_sdk.SERVICE_NAME`
+  as `paired_as` with each one, as `token_writer()` does. A token the agent
+  re-pairs is paired under that name, whatever the file said at the start.
 - `AgentSettings` holds the keys of the `[file-agent]` section of the File
   Agent's `config.toml`, so a configuration written by the program is read as
   it is. `AgentSettings(host=..., access_token=..., source=..., instrument=...)`
@@ -48,6 +67,14 @@ agent.stop(timeout=30)
   on the rest when the time runs out, and returns whether everything ended.
   `Agent.running` says whether it is still at work. An agent runs once; build
   another to run again.
+- On the main thread, `Agent.run_until_complete()` takes Ctrl+C for itself
+  while it runs. It replaces Python's handler for SIGINT with one that counts
+  the interrupts and puts Python's back before it returns; the agent acts on
+  each within a second or so: the first stops it and waits for the uploads
+  under way, a second keeps it waiting, a third stops it without them. A
+  handler your program has set is left in place, and so is a process that
+  ignores interrupts. On any other thread nothing is replaced, and
+  `Agent.stop()` is what ends the run.
 - `Agent.on_ready(callback)` calls `callback(path)` with each complete file
   before it is uploaded, one file at a time, on the watcher's thread. A step
   that raises is logged, and the file is uploaded all the same.
@@ -82,9 +109,9 @@ Mascope development checkout around it.
 
 ## Versions
 
-The library is versioned by date (`2026.10.9`), like Mascope's other Python
+The library is versioned by date (`2026.10.14`), like Mascope's other Python
 packages. The Windows program reports the Mascope release it was built for
-(`v1.11.0`).
+(`v1.12.0`).
 
 ## Licence
 

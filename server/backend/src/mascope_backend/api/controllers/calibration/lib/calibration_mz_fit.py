@@ -22,12 +22,22 @@ General calibration workflow:
    missing, underdetermined, or inaccurate.
 - Apply the accepted calibration by updating stored calibration parameters and
    rewriting relevant m/z coordinates in the sample file.
+
+A raw Orbitrap file whose peaks are detected per scan stream and stitched
+(``mascope_signal.stitch``) is calibrated stream by stream: its record carries
+a factor for each stream beside the file's (``mascope_signal.mz_factor``), and
+an apply moves each stream's peaks and signals by that stream's own. Its fit
+is one fit per stream of the sample's polarity, each on the calibrants that
+stream itself holds; a stream that holds none takes a neighbour's factor,
+shifted by what the two read in their overlap where they share enough ions
+and as it is where they do not (``mascope_signal.mz_factor.carry_across``).
 """
 
 import asyncio
 import math
 from abc import abstractmethod
 from itertools import combinations
+from typing import Callable
 
 import numpy as np
 import pandas as pd
@@ -35,6 +45,11 @@ import pandas as pd
 import mascope_file.io as m_io
 import mascope_file.name as m_name
 import mascope_signal.compute as m_compute
+import mascope_signal.mz_factor as m_factor
+import mascope_signal.stitch as m_stitch
+from mascope_backend.api.controllers.samples.lib.samples_segments import (
+    segment_label,
+)
 from mascope_backend.api.controllers.target.associations.target_compound_in_target_collection_controller import (
     get_target_compound_in_target_collection,
 )
@@ -65,6 +80,8 @@ from mascope_match.compute.isotopes import (
 from mascope_match.params import (
     UnmatchedIsotopeParams,
 )
+from mascope_signal.peak import rows_set_apart
+from mascope_thermo.scan_filter import parse_stream_key
 from mascope_tofwerk.calibration import mz_calibrate, tof_to_mass
 
 
@@ -128,6 +145,9 @@ class BaseCalibrationHandler:
         self.stats = None
         self.error = None
         self.warning = None
+        #: How each scan stream of the sample's polarity came by its factor,
+        #: for a file fitted stream by stream; None for any other.
+        self.segments: list[dict] | None = None
 
     def _calibration_lock_path(self) -> str:
         """Path naming the lock that guards a whole ``apply`` for this sample.
@@ -138,6 +158,35 @@ class BaseCalibrationHandler:
         file again (``mascope_signal.compute.load_peak_timeseries``).
         """
         return m_io.mz_calibration_lock_path(self.filename)
+
+    def _detection_lock_path(self) -> str:
+        """Path naming the lock a detection of this sample's peaks holds.
+
+        A detection reads the calibration the file records when it begins,
+        places its peaks by it - a stream's by the stream's factor - and
+        holds this lock until the store it built is written
+        (``mascope_signal.peak.compute_peaks``). An apply that landed in
+        between would move the store the detection is about to replace and
+        record its calibration over it, and the new store would sit on the
+        old calibration under the new record: every read and match of the
+        file after it off by the factor. So an apply holds this lock as
+        well, and a detection and an apply of one file never overlap.
+
+        It is taken before the calibration lock, never after it
+        (``mascope_file.io.peak_detection_lock_path`` says why), and it is
+        the first thing an apply takes, so an apply that gives up waiting
+        for it has written nothing.
+
+        How long it waits is how long a detection runs: from seconds to
+        minutes for a large file. Where another process detects - the file
+        converter, or another backend worker - the wait is bounded by
+        ``mascope_file.io.ZARR_PROCESS_LOCK_TIMEOUT``, and an apply that
+        reaches it fails with a TimeoutError and is applied again once the
+        peaks are in. Where a thread of this process detects, the wait is
+        for the thread lock, and lasts until the detection ends. Either way
+        it is a background task's wait, not a request's.
+        """
+        return m_io.peak_detection_lock_path(self.filename)
 
     def _guarded_apply(self, fit: dict):
         """Run ``_apply_sync`` under a lock covering the whole recalibration.
@@ -158,9 +207,20 @@ class BaseCalibrationHandler:
         sample and held across the lot, and being the same inter-process lock
         the writes use, it also excludes a sibling worker or the file
         converter - which the event loop never did.
+
+        A detection of the file's peaks is kept out too, by the lock it
+        holds (:meth:`_detection_lock_path`), taken first.
         """
-        with m_io.zarr_write_lock(self._calibration_lock_path()):
-            return self._apply_sync(fit)
+        with (
+            m_io.zarr_write_lock(self._detection_lock_path()),
+            m_io.zarr_write_lock(self._calibration_lock_path()),
+        ):
+            # The signal library caches a sum signal under this same lock, so
+            # that one made across an apply is not kept on the axis the apply
+            # is replacing. This thread makes some itself, and says it holds
+            # the lock already.
+            with m_compute.holding_mz_calibration_lock(self._calibration_lock_path()):
+                return self._apply_sync(fit)
 
     def _nothing_to_calibrate_against(self, warning: str) -> None:
         """Record a calibration that never got as far as matching.
@@ -221,15 +281,28 @@ class BaseCalibrationHandler:
     async def _match_calibration_compounds(
         self,
         target_isotopes_df: pd.DataFrame,
+        stream: str | None = None,
     ) -> tuple[pd.DataFrame, pd.DataFrame]:
         """Match calibration compounds in the sample file.
 
         :param target_isotopes_df: Non-empty isotopes of the calibration
             collection, as resolved by :meth:`_resolve_calibration_isotopes`.
         :type target_isotopes_df: pd.DataFrame
+        :param stream: The one scan stream of a per-stream store to match
+            in, by its key; None matches in the file's peaks as a load of
+            the store answers them.
+        :type stream: str | None
         """
         peaks = await self._load_and_filter_peaks(
             target_mzs=target_isotopes_df.mz,
+            stream=stream,
+        )
+        # A row of one stream is fitted on what the stream read, which is
+        # not always where the store keeps the row
+        read_at = (
+            None
+            if stream is None
+            else await asyncio.to_thread(self._stream_readings, stream)
         )
 
         match_df = target_isotopes_df.copy().assign(
@@ -246,8 +319,15 @@ class BaseCalibrationHandler:
 
         def _averaged_peaks_dict():
             averaged_peaks = peaks.mean(dim="time").compute()
+            places = averaged_peaks.mz.values
             return {
-                "mz": averaged_peaks.mz.values,
+                "mz": (
+                    places
+                    if read_at is None
+                    else np.array(
+                        [read_at.get(float(place), place) for place in places]
+                    )
+                ),
                 "tof": averaged_peaks.tof.values,
                 "intensity": averaged_peaks.values,
             }
@@ -339,6 +419,7 @@ class BaseCalibrationHandler:
     async def _load_and_filter_peaks(
         self,
         target_mzs: pd.Series,
+        stream: str | None = None,
     ):
         """Load peak timeseries of the potential calibration peaks.
 
@@ -355,6 +436,10 @@ class BaseCalibrationHandler:
 
         :param target_mzs: Series of target m/z values to be matched against the sample peaks.
         :type target_mzs: pd.Series
+        :param stream: The one scan stream to take the peaks of, by its
+            key, and to read them over the scans of; see
+            :meth:`_peaks_to_match`.
+        :type stream: str | None
         :return: DataArray containing detected peaks with their m/z, intensity, and time information.
         :rtype: xarray.DataArray
         """
@@ -366,29 +451,79 @@ class BaseCalibrationHandler:
         # would move the metadata into the thread and leave every chunk read
         # on the event loop.
         candidate_mzs = await asyncio.to_thread(
-            self._sync_load_and_filter_peaks, np.asarray(target_mzs)
+            self._sync_load_and_filter_peaks, np.asarray(target_mzs), stream
         )
         # Stays on the loop: it awaits the instrument config.
         candidate_mzs = await self._filter_overlapping_peaks(candidate_mzs)
 
-        peak_timeseries = await self._load_peak_timeseries(candidate_mzs)
+        peak_timeseries = await self._load_peak_timeseries(candidate_mzs, stream=stream)
         peak_timeseries = await asyncio.to_thread(
             self._drop_empty_peak_timeseries, peak_timeseries
         )
 
         return self._extract_intensity(peak_timeseries)
 
-    def _sync_load_and_filter_peaks(self, target_mzs: np.ndarray) -> np.ndarray:
+    def _sync_load_and_filter_peaks(
+        self, target_mzs: np.ndarray, stream: str | None = None
+    ) -> np.ndarray:
         """Synchronous body of :meth:`_load_and_filter_peaks` up to the awaits.
 
         One unit so the lazy dataset is both opened and evaluated in the worker
         thread. See the call site for why the split matters.
         """
-        peak_data = m_io.load_peak_data(self.filename)
+        peak_data = self._peaks_to_match(stream)
 
         candidate_mzs = self._filter_mzs_by_polarity_and_snr(peak_data)
         candidate_mzs = self._filter_mzs_by_refine_window(candidate_mzs, target_mzs)
         return self._filter_dominated_peaks(candidate_mzs, peak_data)
+
+    def _peaks_to_match(self, stream: str | None = None):
+        """The peaks calibrants are looked for among.
+
+        The file's peaks as a load of the store answers them, or, for a fit
+        that goes stream by stream, every peak of one stream: the ones its
+        composite takes from another stream included. A stream is calibrated
+        on what it read, wherever in its range, and a calibrant it holds
+        calibrates it whether or not the stitched spectrum shows that
+        reading.
+
+        The rows are found by their place on the store's axis, as everything
+        finds them, which for a row of one stream is not always what the
+        stream read there (:meth:`_stream_readings`).
+
+        :param stream: The stream's key, or None
+        :type stream: str | None
+        :return: The peak dataset
+        """
+        if stream is None:
+            return m_io.load_peak_data(self.filename)
+        peak_data = m_io.load_peak_data(self.filename, composite=False)
+        index = m_compute.peak_store_streams(peak_data).index(stream)
+        return peak_data.isel(mz=np.flatnonzero(peak_data.stream.values == index))
+
+    def _stream_readings(self, stream: str) -> dict[float, float]:
+        """What one scan stream read at each of its rows, by the row's place.
+
+        A reading the composite leaves out can have been set beside the row
+        it would have passed (``mascope_signal.peak.rows_set_apart``), so
+        the m/z a stream's fit is made on is the one it recorded times the
+        factor it carries (``mascope_signal.compute.recorded_mz``), and the
+        place is only where the row is found. Fitted on the place, a stream
+        whose calibrant was set apart would be moved by how far the two
+        streams disagree about that ion.
+
+        :param stream: The stream's key
+        :type stream: str
+        :return: The reading of each of the stream's rows, on the factor the
+            stream carries, by the row's place on the store's axis
+        :rtype: dict[float, float]
+        """
+        peak_data = self._peaks_to_match(stream)
+        calibration = peak_data.attrs["props"]["mz_calibration"]
+        read = m_compute.recorded_mz(peak_data, calibration) * m_factor.stream_factor(
+            calibration, stream
+        )
+        return dict(zip(peak_data.mz.values.tolist(), read.tolist()))
 
     def _filter_mzs_by_polarity_and_snr(self, peak_data) -> np.ndarray:
         """Filter m/z values based on polarity and signal-to-noise ratio (SNR) thresholds."""
@@ -487,12 +622,20 @@ class BaseCalibrationHandler:
         keep_mask[1:] &= ~overlap_with_next
         return sorted_mzs[keep_mask]
 
-    async def _load_peak_timeseries(self, peak_mzs: np.ndarray):
-        """Load peak timeseries for the given m/z values and filter to scan timestamps."""
+    async def _load_peak_timeseries(
+        self, peak_mzs: np.ndarray, stream: str | None = None
+    ):
+        """Load peak timeseries for the given m/z values and filter to scan timestamps.
+
+        :param stream: Key of the scan stream the peaks are of, whose own
+            scans they are then read over; None reads them over the scans of
+            the polarity.
+        """
+        selection = (
+            {"polarity": self.params.polarity} if stream is None else {"stream": stream}
+        )
         scan_timestamps = await asyncio.to_thread(
-            m_compute.get_scan_timestamps,
-            self.filename,
-            polarity=self.params.polarity,
+            m_compute.get_scan_timestamps, self.filename, **selection
         )
         return (await m_compute.load_peak_timeseries(self.filename, peak_mzs)).sel(
             time=scan_timestamps, method="nearest"
@@ -1005,6 +1148,11 @@ class OrbiCalibrationHandler(BaseCalibrationHandler):
         if target_isotopes_df is None:
             return
 
+        streams = await asyncio.to_thread(self._polarity_streams)
+        if streams is not None:
+            await self._fit_per_stream(target_isotopes_df, streams)
+            return
+
         match_isotope_df, good_matches_df = await self._match_calibration_compounds(
             target_isotopes_df
         )
@@ -1063,6 +1211,14 @@ class OrbiCalibrationHandler(BaseCalibrationHandler):
 
     def _apply_sync(self, fit: dict):
         """Synchronous body of :meth:`apply`. See there for why it is one unit."""
+        stream_keys = self._store_stream_keys()
+        if stream_keys:
+            return self._apply_per_stream(fit, stream_keys)
+        # A store detected whole is calibrated by one factor, the file's:
+        # what a fit says of streams the store does not tell apart is not
+        # recorded as if it had been applied.
+        fit.pop(m_factor.STREAM_FACTORS, None)
+
         fit_parameters = fit["par"]
         old_factor_scaling = fit_parameters["old_factor_scaling"]
         if self._is_calibration_already_applied(fit):
@@ -1078,15 +1234,37 @@ class OrbiCalibrationHandler(BaseCalibrationHandler):
         # it, so a file processed before that reader has none yet.
         m_compute.get_sum_signal(self.filename)
 
-        # Update m/z axis for all existing sum signals
+        # Update m/z axis for all existing sum signals. Which way an apply
+        # goes is the store's to say, and where a cached signal sits is the
+        # record's: one that names streams is of a file calibrated stream by
+        # stream, whose store has since been detected whole or is gone. Its
+        # cached signals of one stream sit on that stream's factor, not the
+        # file's, so each goes from its own to the file's new one - what
+        # every stream reads by once the record written below names none.
+        # A stitched one, and one that does not say whose it is, is removed
+        # and made again when asked for, as an apply per stream does it.
+        stored = m_io.read_props(self.filename)["mz_calibration"]
+        named = (stored or {}).get(m_factor.STREAM_FACTORS) or {}
+        new_file = float(fit_parameters["calibration_factor"])
+
+        def to_the_files(stream: str | None) -> float | None:
+            if stream is None:
+                return None
+            return new_file / m_factor.stream_factor(stored, stream)
+
         sample_data_path = m_name.parse_path_from_item_filename(self.filename)
         sample_file_vars = m_io.get_file_data_vars(sample_data_path)
         for var in sample_file_vars:
-            if var.startswith("sum_signal"):
-                new_mz_axis = (
-                    m_io.load_coord(self.filename, var, "mz") * old_factor_scaling
-                )
-                m_io.update_zarr_array_coord(self.filename, var, "mz", new_mz_axis)
+            if not var.startswith("sum_signal"):
+                continue
+            by = old_factor_scaling
+            if named:
+                by = self._cached_signal_scaling(var, to_the_files, old_factor_scaling)
+            if by is None:
+                m_io.remove_path(m_name.filename_to_zarr_path(self.filename, var))
+                continue
+            new_mz_axis = m_io.load_coord(self.filename, var, "mz") * by
+            m_io.update_zarr_array_coord(self.filename, var, "mz", new_mz_axis)
 
         # Update m/z axis for signal and peak arrays if they exist
         sample_file_type = m_name.get_sample_file_type(self.filename)
@@ -1119,15 +1297,376 @@ class OrbiCalibrationHandler(BaseCalibrationHandler):
 
         return full_sum_signal_mz
 
+    def _store_stream_keys(self) -> list[str]:
+        """The stream keys of a peak store detected per stream, else ``[]``.
+
+        A file with no store, and one whose store carries only part of what
+        a per-stream store does, answer ``[]``: neither has rows that can be
+        moved stream by stream, and an apply is not where a damaged store is
+        refused.
+        """
+        try:
+            store = m_io.load_array(self.filename, "peak_timeseries")
+            return m_compute.peak_store_streams(store)
+        except (FileNotFoundError, ValueError):
+            return []
+
+    def _apply_per_stream(self, fit: dict, stream_keys: list[str]):
+        """Apply a fit to a file whose peaks are detected per scan stream.
+
+        Each stream goes to the factor the fit names for it, and a stream it
+        does not name to the file's: a fit that names none - a reset, a fit
+        made before the file's peaks were detected per stream - moves the
+        whole file as one, which is what it says. How far a stream moves is
+        read off the record the file holds, under the lock an apply holds,
+        and not off the fit: its new factor over the one it has. An apply
+        whose factors the file already has moves nothing.
+
+        - The peak store's rows are placed each at what its stream
+          recorded times the stream's new factor, and the axis put back in
+          order where two streams' readings of one ion passed each other
+          (``mascope_signal.peak.rows_set_apart``). From the reading, which
+          the store keeps (``mascope_signal.compute.recorded_mz``), and not
+          from where the row was: a row set apart once would carry that
+          into every calibration after. A store written before the readings
+          were kept is given them first.
+        - The file's full sum signal, every scan pooled, goes by the file's
+          factor, as it is read back by.
+        - A cached signal of one stream goes by that stream's. A stitched
+          one is removed and stitched again when asked for, its runs placed
+          by the new factors; so is a signal that does not say whose it is,
+          which is averaged again on the calibration the file then has.
+
+        The record names the factor of each stream the fit named and the
+        store holds, and nothing else of what the fit said of them: the
+        quality block is where a stream's fit is described.
+        """
+        stored = m_io.read_props(self.filename)["mz_calibration"]
+        old_file = m_factor.file_factor(stored)
+        old = m_factor.stream_factors(stored, stream_keys)
+        new_file = float(fit["par"]["calibration_factor"])
+        named = fit.get(m_factor.STREAM_FACTORS) or {}
+        named = {
+            key: float(named[key]["calibration_factor"])
+            for key in stream_keys
+            if isinstance(named.get(key), dict)
+            and named[key].get("calibration_factor") is not None
+        }
+        new = np.array([named.get(key, new_file) for key in stream_keys], dtype=float)
+
+        if stored and old_file == new_file and np.array_equal(old, new):
+            runtime.logger.info("Same calibration already applied; skipping.")
+            return m_compute.get_sum_signal(self.filename).mz.values
+
+        runtime.logger.info(f"Calibrating file per scan stream: {self.filename}")
+        scaling = dict(zip(stream_keys, (new / old).tolist()))
+
+        # The full sum signal has to exist before it is rescaled; see the
+        # pooled apply.
+        m_compute.get_sum_signal(self.filename)
+        sample_data_path = m_name.parse_path_from_item_filename(self.filename)
+        for var in m_io.get_file_data_vars(sample_data_path):
+            if not var.startswith("sum_signal"):
+                continue
+            by = self._cached_signal_scaling(var, scaling.get, new_file / old_file)
+            if by is None:
+                m_io.remove_path(m_name.filename_to_zarr_path(self.filename, var))
+                continue
+            m_io.update_zarr_array_coord(
+                self.filename, var, "mz", m_io.load_coord(self.filename, var, "mz") * by
+            )
+
+        store = m_io.load_array(self.filename, "peak_timeseries")
+        recorded = m_compute.recorded_mz(store, stored)
+        if m_compute.RECORDED_MZ not in store.variables:
+            # Before any row moves: from here on a row's place is no longer
+            # always its reading
+            m_io.write_peak_variable(self.filename, m_compute.RECORDED_MZ, recorded)
+        moved = recorded * new[store.stream.values]
+        composite = (
+            store.composite.values
+            if "composite" in store.variables
+            else np.ones(moved.shape, dtype=bool)
+        )
+        axis = rows_set_apart(moved, composite)
+        gave_way = np.flatnonzero(composite & (axis != moved))
+        if gave_way.size:
+            # Two rows of a composite passed each other: across a boundary of
+            # the map, or an ion of each polarity lying within the difference
+            # of two factors. Said, because such a row is no longer where its
+            # stream's calibration puts it.
+            furthest = np.max(np.abs(axis[gave_way] / moved[gave_way] - 1.0)) * 1e6
+            runtime.logger.info(
+                f"Calibrating '{self.filename}' per scan stream set "
+                f"{gave_way.size} peak(s) of its composites apart from a peak "
+                f"of another stream, by up to {furthest:.3f} ppm."
+            )
+        m_io.update_zarr_array_coord(self.filename, "peak_timeseries", "mz", axis)
+
+        fit["par"].pop("old_factor", None)
+        fit["par"].pop("old_factor_scaling", None)
+        fit.pop(m_factor.STREAM_FACTORS, None)
+        if named:
+            fit[m_factor.STREAM_FACTORS] = {
+                key: {"calibration_factor": factor} for key, factor in named.items()
+            }
+        full_sum_signal_mz = m_compute.get_sum_signal(self.filename).mz.values
+        new_mz_range = full_sum_signal_mz[0], full_sum_signal_mz[-1]
+        m_io.update_props(self.filename, {"range": new_mz_range, "mz_calibration": fit})
+
+        return full_sum_signal_mz
+
+    def _cached_signal_scaling(
+        self,
+        var: str,
+        stream_scaling: Callable[[str | None], float | None],
+        file_scaling: float,
+    ) -> float | None:
+        """What an apply moves one cached sum signal's axis by, for a file
+        whose streams carry factors of their own.
+
+        :param var: The cached signal's variable name
+        :param stream_scaling: How far the cached signal of a stream moves,
+            asked by the key the signal names, None for one that names
+            none; it answers None for a signal to remove
+        :param file_scaling: How far the file's own factor moves
+        :return: The scaling, or None for a signal to remove: a stitched
+            one, and one ``stream_scaling`` has no answer for that is not
+            the file's full signal
+        """
+        # The full signal carries no hash: "sum_signal" and the reader's suffix
+        if not var.startswith("sum_signal_"):
+            return file_scaling
+        group = m_io.open_zarr_store(m_name.filename_to_zarr_path(self.filename, var))
+        if "segment" in group:
+            return None
+        stream = dict(group["sum_signal"].attrs).get(m_compute.CACHED_STREAM_ATTR)
+        return stream_scaling(stream)
+
+    def _polarity_streams(self) -> dict | None:
+        """The scan streams a fit of the sample's polarity goes by, or None.
+
+        None for a store detected whole, which is fitted as one. For a store
+        detected per stream, what the fit of each stream and the carrying of
+        a factor between them need.
+
+        The streams are the store's of the polarity, by what their keys
+        say, and how far each reaches is its scan range. Not the peaks a
+        load of the store keeps: a range that reads nothing but weak peaks
+        is a stream of the file all the same, and left out it would be
+        given no factor of its own to take from a neighbour - its signal
+        and its rows would go by the file's. A key that states no range
+        reaches as far as the stream's kept peaks do, and a stream with
+        neither is left to the file's factor.
+
+        :return: ``keys``, the store's stream keys; ``members``, the indexes
+            of the polarity's streams; ``extents``, the m/z each reaches
+            from and to; ``held``, how many peaks a load keeps of each; and
+            ``overlaps``, the store's overlap readings
+        :rtype: dict | None
+        """
+        keys = self._store_stream_keys()
+        if not keys:
+            return None
+        store = m_io.load_peak_data(self.filename, composite=False)
+        mz, stream = store.mz.values, store.stream.values
+        filters = [parse_stream_key(key).scan_filter for key in keys]
+        extents: dict[int, tuple[float, float]] = {}
+        held: dict[int, int] = {}
+        for index, scan_filter in enumerate(filters):
+            own = mz[stream == index]
+            polarity = scan_filter.polarity
+            if polarity is None and own.size:
+                # A key that does not say: what its peaks were detected as
+                polarity = str(store.polarity.values[stream == index][0])
+            if polarity != self.params.polarity:
+                continue
+            held[index] = int(own.size)
+            if scan_filter.scan_ranges:
+                extents[index] = (
+                    float(min(lower for lower, _upper in scan_filter.scan_ranges)),
+                    float(max(upper for _lower, upper in scan_filter.scan_ranges)),
+                )
+            elif own.size:
+                extents[index] = (float(own.min()), float(own.max()))
+        return {
+            "keys": keys,
+            "members": sorted(extents),
+            "extents": extents,
+            "held": held,
+            "overlaps": store.attrs.get(m_stitch.STITCH_OVERLAPS_ATTR) or [],
+        }
+
+    async def _fit_per_stream(
+        self, target_isotopes_df: pd.DataFrame, streams: dict
+    ) -> None:
+        """Fit a file whose peaks are detected per scan stream.
+
+        Each stream of the polarity is fitted as a file is, on the
+        calibrants found among its own peaks. A stream that yields a fit has
+        its factor; the others take one from a stream that has
+        (``mascope_signal.mz_factor.carry_across``), and :attr:`segments`
+        says how each came by its own. With no stream fitted there is no
+        fit, as for a file that holds no calibrant.
+
+        The file's own factor, which a reading of the file as a whole goes
+        by, is the median of what every calibrant kept asks for: its target
+        over its m/z as the instrument recorded it. For a file of one stream
+        that is the stream's.
+
+        The statistics are the kept calibrants of every stream, each judged
+        by its own stream's fit and naming its stream, under one summary.
+        """
+        keys, members = streams["keys"], streams["members"]
+        # One read of the record for the whole fit: a stream's peaks are on
+        # the factor it names for the stream, and the stream's fit says how
+        # far from there.
+        record = await asyncio.to_thread(
+            lambda: m_io.read_props(self.filename)["mz_calibration"]
+        )
+
+        fitted: dict[int, dict] = {}
+        notes: dict[int, str] = {}
+        for index in members:
+            key = keys[index]
+            self.warning = None
+            if not streams["held"][index]:
+                # Nothing a load of the store keeps: no calibrant among it
+                notes[index] = NO_CALIBRATION_PEAKS
+                continue
+            _, good_matches_df = await self._match_calibration_compounds(
+                target_isotopes_df, stream=key
+            )
+            if good_matches_df.empty:
+                notes[index] = NO_CALIBRATION_PEAKS
+                continue
+            # Against the ion current of the stream's own scans, which its
+            # calibrants' intensities are averaged over. Against the file's,
+            # a narrow window's calibrants would be measured by scans that
+            # are mostly other streams'.
+            _, tic_per_scan = await asyncio.to_thread(
+                m_compute.get_tic_per_scan, self.filename, stream=key
+            )
+            tic = float(np.sum(tic_per_scan))
+            matches_df = good_matches_df.copy().assign(
+                calibrant_to_tic=good_matches_df["sample_peak_intensity"] / tic,
+            )
+            fit_result, calibration_df = self._fit_retained_matches(matches_df)
+            if fit_result is None or calibration_df.empty:
+                notes[index] = self.warning or NO_CALIBRATION_PEAKS
+                continue
+            old_factor = m_factor.stream_factor(record, key)
+            fitted[index] = {
+                "factor": float(old_factor * fit_result["par"]["old_factor_scaling"]),
+                "old_factor": old_factor,
+                "tic": tic,
+                "rows": calibration_df.assign(
+                    segment=index, segment_label=segment_label(key)
+                ),
+            }
+        self.warning = None
+
+        await self._send_progress(0.75)
+
+        placed = m_factor.carry_across(
+            {index: fit["factor"] for index, fit in fitted.items()},
+            members,
+            streams["overlaps"],
+            streams["extents"],
+        )
+        if not placed:
+            self.warning = _why_no_stream_was_fitted(
+                {segment_label(keys[index]): note for index, note in notes.items()}
+            )
+            return
+
+        calibration_df = pd.concat(
+            [fitted[index]["rows"] for index in sorted(fitted)], ignore_index=True
+        )
+        asked = np.concatenate(
+            [
+                fit["old_factor"]
+                * fit["rows"]["mz"].to_numpy()
+                / fit["rows"]["sample_peak_mz"].to_numpy()
+                for fit in fitted.values()
+            ]
+        )
+        old_factor = m_factor.file_factor(record)
+        calibration_factor = float(np.median(asked))
+        self.fit_result = {
+            "mode": "one-point",
+            "par": {
+                "old_factor": old_factor,
+                "old_factor_scaling": calibration_factor / old_factor,
+                "calibration_factor": calibration_factor,
+            },
+            m_factor.STREAM_FACTORS: {
+                keys[index]: {"calibration_factor": placed[index]["calibration_factor"]}
+                for index in members
+            },
+        }
+        if np.all(
+            np.abs(calibration_df["calibration_mz_error"])
+            > self.params.mz_error_tolerance
+        ):
+            self.warning = "Calibration inaccurate"
+
+        self.segments = []
+        for index in members:
+            entry = placed[index]
+            quality = None
+            if index in fitted:
+                rows = fitted[index]["rows"]
+                quality = fit_quality(
+                    rows.to_dict("records") + [self._get_summary_row(rows)],
+                    self.params,
+                )
+                quality["axis_correction_ppm"] = _finite_or_none(
+                    (entry["calibration_factor"] - 1.0) * 1e6
+                )
+            self.segments.append(
+                {
+                    "index": index,
+                    "key": keys[index],
+                    "label": segment_label(keys[index]),
+                    "source": entry["source"],
+                    "origin": (
+                        None
+                        if entry["origin"] is None
+                        else segment_label(keys[entry["origin"]])
+                    ),
+                    "calibration_factor": entry["calibration_factor"],
+                    "shift_ppm": _finite_or_none(entry["shift_ppm"]),
+                    "shared_ions": entry["shared"],
+                    "note": notes.get(index),
+                    "quality": quality,
+                }
+            )
+
+        self.stats = calibration_df.to_dict("records")
+        summary = self._get_summary_row(calibration_df)
+        # A row's share is of its own stream's ion current, so the rows of
+        # several streams do not add up to a share of anything. The file's
+        # is what its kept calibrants read over the ion current of the
+        # streams they were kept in: each stream's share, weighed by the
+        # stream's ion current.
+        summary["calibrant_to_tic"] = float(
+            sum(
+                fit["rows"]["calibrant_to_tic"].sum() * fit["tic"]
+                for fit in fitted.values()
+            )
+            / sum(fit["tic"] for fit in fitted.values())
+        )
+        self.stats.append(summary)
+
+        await self._send_progress(0.95)
+
     def _get_old_factor(self) -> float:
-        """Retrieve the old calibration factor from the file properties if exists."""
+        """The factor the file carries, which the peaks of a file fitted as
+        one are on. A fit that goes stream by stream takes each stream's own
+        off the record (:meth:`_fit_per_stream`)."""
         props = m_io.read_props(self.filename)
-        old_mz_calibration = props["mz_calibration"]
-        if old_mz_calibration is None:
-            old_factor = 1.0
-        else:
-            old_factor = old_mz_calibration["par"]["calibration_factor"]
-        return old_factor
+        return m_factor.file_factor(props["mz_calibration"])
 
     def _is_calibration_already_applied(self, fit: dict) -> bool:
         """Check if the calibration has already been applied."""
@@ -1140,6 +1679,36 @@ class OrbiCalibrationHandler(BaseCalibrationHandler):
         ):
             return True
         return False
+
+
+#: What a fit says of a file, or of one scan stream of it, that holds no
+#: calibrant.
+NO_CALIBRATION_PEAKS = "No calibration peaks found"
+
+
+def _why_no_stream_was_fitted(notes: dict[str, str]) -> str:
+    """The reason a fit that goes stream by stream fitted none of them.
+
+    Each stream says why it yielded no fit. Most hold no calibrant, which is
+    what a file that holds none is told. A stream that held some and had
+    them turned down says more, and that is the reason to answer: it is what
+    the dialog shows, and what the pipeline records as why the file's
+    calibration failed. One such reason is answered as a file's own would
+    be; several, each with its stream.
+
+    :param notes: Each stream's reason, by the stream's label
+    :type notes: dict[str, str]
+    :return: The warning of the fit
+    :rtype: str
+    """
+    said = {
+        label: note for label, note in notes.items() if note != NO_CALIBRATION_PEAKS
+    }
+    if not said:
+        return NO_CALIBRATION_PEAKS
+    if len(set(said.values())) == 1:
+        return next(iter(said.values()))
+    return "; ".join(f"{label}: {note}" for label, note in said.items())
 
 
 def get_calibration_handler(
@@ -1244,6 +1813,97 @@ def calibration_quality_issues(quality: dict | None, filename: str) -> list[dict
     """
     Why a fit does not clear the quality bar for a ``verified`` record.
 
+    A fit made stream by stream is judged as a whole, on every calibrant it
+    kept, and each stream fitted on calibrants of its own is judged by the
+    same bar on its own block: a stream's fit moves that stream's peaks, so
+    one stream anchored to a wrong peak is a fault of the file's axis
+    whatever the file's calibrants as a whole say. Such an issue names the
+    stream, in its message and under ``segment``. A stream that took its
+    factor from a neighbour has no fit to judge; how it came by the factor
+    is in the block.
+
+    With one stream fitted on calibrants of its own, the file's calibrants
+    are that stream's, so an issue of the file that the stream has too is
+    reported once, as the stream's.
+
+    A stream fitted on too few calibrants to vouch for its own correction -
+    one point, or isotopes of one ion - is vouched for by another stream of
+    the file that can: one fitted on calibrants of several ions that clears
+    the bar on its own, and whose correction lies within
+    ``STREAM_CORROBORATION_PPM`` of the first's. The two then read the
+    instrument's offset from the acquisition axis in two scan ranges, where
+    a stream anchored to a wrong peak lands tens of ppm from the others.
+
+    :param quality: The fit's ``quality`` block (see :func:`fit_quality`).
+    :param filename: Sample filename, selects the instrument-class bounds.
+    :return: One ``{"code", "message"}`` dict per criterion the file or a
+        fitted stream fails, a stream's with its key under ``segment``; a
+        criterion the file fails as its one fitted stream does comes once,
+        as the stream's. Empty when the fit clears the bar.
+    """
+    issues = _quality_block_issues(quality, filename)
+    fitted = [
+        segment
+        for segment in (quality or {}).get("segments") or []
+        if segment.get("source") == m_factor.ANCHORS
+    ]
+    # The corrections of the streams whose own calibrants vouch for them
+    vouching = [
+        block["axis_correction_ppm"]
+        for block in (segment.get("quality") for segment in fitted)
+        if block
+        and block.get("axis_correction_ppm") is not None
+        and _corroborates_itself(block)
+        and not _quality_block_issues(block, filename)
+    ]
+    limit = calibration_config.STREAM_CORROBORATION_PPM
+    for segment in fitted:
+        block = segment.get("quality")
+        correction = (block or {}).get("axis_correction_ppm")
+        vouched = correction is not None and any(
+            abs(correction - other) <= limit for other in vouching
+        )
+        own = _quality_block_issues(block, filename, vouched=vouched)
+        if len(fitted) == 1:
+            # The file's block is then over this stream's rows alone, so
+            # what both say is said where the stream is named
+            issues = [issue for issue in issues if issue not in own]
+        for issue in own:
+            issues.append(
+                {
+                    "code": issue["code"],
+                    "message": f"{segment.get('label')}: {issue['message']}",
+                    "segment": segment.get("key"),
+                }
+            )
+    return issues
+
+
+def _corroborates_itself(quality: dict) -> bool:
+    """
+    Whether a fit's own calibrants check each other: two points or more,
+    from different ions. One point zeroes its own residual, and one ion's
+    isotopes agree whatever peak they sit on. An unrecorded ion count is
+    not taken as corroboration.
+
+    :param quality: A fit's ``quality`` block (see :func:`fit_quality`).
+    :return: True when the points come from at least
+        ``MIN_VERIFIED_CALIBRATION_IONS`` ions.
+    """
+    n_ions = quality.get("n_ions")
+    return (
+        (quality.get("n_points") or 0) >= 2
+        and n_ions is not None
+        and n_ions >= calibration_config.MIN_VERIFIED_CALIBRATION_IONS
+    )
+
+
+def _quality_block_issues(
+    quality: dict | None, filename: str, vouched: bool = False
+) -> list[dict]:
+    """
+    Why one fit's quality block does not clear the bar.
+
     The bar (``calibration_config``) is the fit's mean post-fit residual
     against an instrument-class bound; for a fit on one point, or on two
     isotopes of one ion, how far it moved the axis; for one on three or more,
@@ -1256,6 +1916,9 @@ def calibration_quality_issues(quality: dict | None, filename: str) -> list[dict
 
     :param quality: The fit's ``quality`` block (see :func:`fit_quality`).
     :param filename: Sample filename, selects the instrument-class bounds.
+    :param vouched: Whether another stream of the file vouches for the
+        correction this block makes (see :func:`calibration_quality_issues`),
+        which corroborates a fit its own points cannot.
     :return: One ``{"code", "message"}`` dict per failed criterion; empty when
         the fit clears the bar.
     """
@@ -1304,10 +1967,8 @@ def calibration_quality_issues(quality: dict | None, filename: str) -> list[dict
     min_ions = calibration_config.MIN_VERIFIED_CALIBRATION_IONS
     max_shift = calibration_config.LOW_POINT_MAX_AXIS_CORRECTION_PPM
     # Below min_points, a fit is corroborated only when its points come from
-    # different ions: one point zeroes its own residual, and one ion's
-    # isotopes agree whatever peak they sit on. An unrecorded ion count is
-    # not taken as corroboration.
-    corroborated = n_points >= 2 and n_ions is not None and n_ions >= min_ions
+    # different ions, or when another stream of the file vouches for it
+    corroborated = vouched or _corroborates_itself(quality)
     # How far the fit puts the axis from the acquisition axis. The pre-fit
     # error measures that only on a file no fit has moved yet: an Orbitrap
     # apply rescales the stored axis in place, so a refit of a file a wrong
@@ -1343,7 +2004,12 @@ def calibration_quality_issues(quality: dict | None, filename: str) -> list[dict
             }
         )
 
-    if n_points >= min_points and n_ions is not None and n_ions < min_ions:
+    if (
+        n_points >= min_points
+        and n_ions is not None
+        and n_ions < min_ions
+        and not vouched
+    ):
         issues.append(
             {
                 "code": "ions",

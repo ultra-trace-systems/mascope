@@ -46,7 +46,9 @@ def composites_scan_streams() -> bool:
     (``mascope_runtime.config.BackendConfig``). The converter reads it
     because peak detection runs here, and it is the first conversion of a
     file that decides whether its peak store holds a peak list per scan
-    stream; a rebuild of the store keeps what was decided then.
+    stream; a rebuild of the store keeps what was decided then. The backend
+    reads the same setting where a file is re-processed, which decides again
+    (``mascope_backend.api.controllers.sample.files.process.peaks``).
 
     :return: True when a file whose method measures more than one thing in a
         polarity is to get a peak list per stream
@@ -294,6 +296,18 @@ class BaseFileProcessor(Thread, ABC, metaclass=FileProcessorMeta):
         """Determine if the file being processed a blank/zero measurement (no peaks)."""
         pass
 
+    @property
+    def _records_survey_scans(self) -> bool:
+        """Whether the file holds scans that peaks are detected in.
+
+        Every file does, unless its processor knows of a kind that does not:
+        an Orbitrap acquisition of fragmentation scans alone records no MS1
+        scan, and peak detection and the instrument-function fit read nothing
+        else (``RawProcessor``). Such a file is stored without either, by
+        ``_process_without_survey_scans``.
+        """
+        return True
+
     # Common methods - used by all subclasses
     def _check_orphan_sample_file_filestore(self, filename: str) -> bool:
         """Check if file's directory exists in filestore without corresponding
@@ -375,7 +389,9 @@ class BaseFileProcessor(Thread, ABC, metaclass=FileProcessorMeta):
         """
         Create database record for the sample file.
 
-        None instrument_function_id indicates blank measurement.
+        None instrument_function_id indicates a file no peaks were detected
+        in: a blank measurement, or an acquisition with no scans to detect
+        them in.
 
         :param sample_file_props: File properties
         :type sample_file_props: SampleFileProps
@@ -640,6 +656,26 @@ class BaseFileProcessor(Thread, ABC, metaclass=FileProcessorMeta):
         self._create_db_record(sample_file_props, instrument_function_id=None)
         self._emit_progress_notification(100)
 
+    def _process_without_survey_scans(self, sample_file_props: SampleFileProps) -> None:
+        """Ingest a file that holds no scans to detect peaks in.
+
+        An acquisition of fragmentation scans alone. It is stored as a blank
+        measurement is - an empty peak timeseries, and a sample file record
+        with no instrument config, which is what every reader of a file's
+        peaks already takes to mean "there are none" - but it is not one: a
+        blank was looked at and showed no signal, while this file has signal
+        that peaks are simply not detected in. Its scan-stream census is what
+        tells the two apart afterwards (``SampleFileProps.scan_streams`` holds
+        no MS1 stream), and its fragmentation scans stay readable from the
+        stored file.
+
+        The store's scan axis is that of every scan the file has: with no MS1
+        scan there is no other axis to give it.
+        """
+        write_empty_peak_timeseries(sample_file_props.filename, scan_type=None)
+        self._create_db_record(sample_file_props, instrument_function_id=None)
+        self._emit_progress_notification(100)
+
     def _process_file(
         self, sample_file_props: SampleFileProps, file_path: str, retry_count: int = 0
     ) -> None:
@@ -666,6 +702,15 @@ class BaseFileProcessor(Thread, ABC, metaclass=FileProcessorMeta):
                     f"Blank measurement detected: {filename}, skipping peak detection"
                 )
                 self._process_as_blank(sample_file_props)
+                return
+
+            if not self._records_survey_scans:
+                # Routine: what the acquisition recorded, not a fault
+                runtime.logger.info(
+                    f"No scans to detect peaks in: {filename}, skipping the "
+                    "instrument-function fit and peak detection"
+                )
+                self._process_without_survey_scans(sample_file_props)
                 return
 
             # Fit instrument functions and get the ID

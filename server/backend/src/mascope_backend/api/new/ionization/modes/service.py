@@ -1,4 +1,4 @@
-from sqlalchemy import and_, distinct, or_, select
+from sqlalchemy import and_, distinct, func, or_, select
 
 from mascope_backend.api.controllers.sample.batches.status.service import (
     update_sample_batch_status,
@@ -50,6 +50,32 @@ def _same_value(field: str, incoming, current) -> bool:
     if field == "ionization_mechanism_ids":
         return _mechanism_set(incoming) == _mechanism_set(current)
     return incoming == current
+
+
+#: The date a daily ACQUISITION batch's name starts with: ``YYYY-MM-DD``.
+_BATCH_DATE_LENGTH = len("2026-01-01")
+
+
+def _named_for_mode(mode_name: str):
+    """The daily ACQUISITION batches named for a mode, as a filter.
+
+    A bound batch is named ``"<date> <mode name> acquisition"``
+    (``process/service.py`` ``acquisition_batch_name``), and is matched by its
+    whole name: it ends in the mode's name and " acquisition", and is exactly
+    a date longer than that. A part of the name would also match batches
+    named for other modes - one whose name ends in this one's ("BA" for "A"),
+    and the batch of MS2 samples filed without a chemistry,
+    ``"<date> MS2 acquisition (no chemistry)"``, for a mode named "MS2" - and
+    hold back a mode no sample was bound under.
+
+    :param mode_name: The mode's name.
+    :return: The filter, for a ``where`` on ``SampleBatch``.
+    """
+    ending = f" {mode_name} acquisition"
+    return and_(
+        SampleBatch.sample_batch_name.endswith(ending, autoescape=True),
+        func.length(SampleBatch.sample_batch_name) == _BATCH_DATE_LENGTH + len(ending),
+    )
 
 
 @api_controller()
@@ -371,18 +397,14 @@ async def update_ionization_mode(
                 )
 
         # Check affected acquisition batches for name changes
+        named = [ionization_mode.ionization_mode_name]
+        if update_data.get("ionization_mode_name") is not None:
+            named.append(update_data["ionization_mode_name"])
         affected_acq_batches = await session.execute(
             select(SampleBatch).where(
                 and_(
                     SampleBatch.sample_batch_type == "ACQUISITION",
-                    or_(
-                        SampleBatch.sample_batch_name.contains(
-                            f"{ionization_mode.ionization_mode_name} acquisition"
-                        ),
-                        SampleBatch.sample_batch_name.contains(
-                            f"{update_data.get('ionization_mode_name')} acquisition"
-                        ),
-                    ),
+                    or_(*(_named_for_mode(name) for name in named)),
                 )
             )
         )

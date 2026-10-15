@@ -42,6 +42,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from typing import NamedTuple
 
 
 ANALYZERS = frozenset({"FTMS", "ITMS", "ASTMS", "TOFMS", "TQMS", "SQMS", "SECTOR"})
@@ -213,6 +214,58 @@ class ScanFilter:
         if event is not None:
             parts.append(f"event={event}")
         return " ".join(parts)
+
+
+class StreamKey(NamedTuple):
+    """A stream key read back (:func:`parse_stream_key`)."""
+
+    #: The signature the key renders, parsed
+    scan_filter: ScanFilter
+    #: The FT resolution the key states, None where it states none
+    resolution: int | str | None
+    #: The method segment and the scan event that close the key, each None
+    #: where the key does not name it
+    segment: int | None
+    event: int | None
+
+
+# What :meth:`ScanFilter.stream_key` closes a key with, each part optional
+# and in this order
+_KEY_CLOSE = re.compile(
+    r"(?:(?:^| )R=(?P<resolution>\S+))?"
+    r"(?:(?:^| )segment=(?P<segment>\d+))?"
+    r"(?:(?:^| )event=(?P<event>\d+))?$"
+)
+
+
+def parse_stream_key(key: str | None) -> StreamKey:
+    """Read a stream key back into what :meth:`ScanFilter.stream_key` made it of.
+
+    A key is a signature in the filter's own notation, closed by the
+    resolution and, where the file needs them to tell two experiments
+    apart, the segment and the scan event:
+    ``FTMS - p NSI Full ms [40.0000-600.0000] R=120000 event=2``. Whoever
+    asks a key what it says - its polarity, its scan range, its experiment -
+    asks here, so that the layout of a key is known in one place, beside the
+    one that writes it.
+
+    Never raises, as :func:`parse_scan_filter` does not: a text that is no
+    key reads as a filter with whatever it holds.
+
+    :param key: A stream key. ``None`` reads as empty.
+    :return: The parsed signature and what closes the key.
+    """
+    key = (key or "").strip()
+    close = _KEY_CLOSE.search(key)
+    resolution = close["resolution"]
+    return StreamKey(
+        scan_filter=parse_scan_filter(key[: close.start()]),
+        resolution=(
+            int(resolution) if resolution and resolution.isdigit() else resolution
+        ),
+        segment=int(close["segment"]) if close["segment"] else None,
+        event=int(close["event"]) if close["event"] else None,
+    )
 
 
 def _energy(value: str) -> str:

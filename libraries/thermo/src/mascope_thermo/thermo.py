@@ -10,7 +10,9 @@ defaults to the OpenTFRaw backend; the Thermo backend is opt-in via
 
 from __future__ import annotations
 
+import json
 import math
+from collections.abc import Iterator
 from typing import Iterable, Literal
 
 import dask.array as da
@@ -52,6 +54,19 @@ class ScanTypeError(ValueError):
 
 class NoScansFoundError(ValueError):
     pass
+
+
+class UnfinishedAcquisitionError(NoScansFoundError):
+    """A raw file that was written without a run header.
+
+    The acquisition ended before its index was written, so no scan in the file
+    can be reached, whether or not any was recorded. Raised on opening the
+    file, where both readers otherwise fail with an error of their own that
+    says nothing of the kind (:mod:`mascope_thermo.run_header`).
+
+    A :class:`NoScansFoundError` because that is what such a file is to every
+    caller: a file that holds no scans to select.
+    """
 
 
 class UnknownStreamError(LookupError):
@@ -549,9 +564,10 @@ def get_tic_per_scan(
     timestamps: Iterable[float] | None = None,
     polarity: Literal["+", "-"] | None = None,
     stream: str | None = None,
+    scan_type: Literal["Ms", "Ms2"] | None = "Ms",
 ) -> tuple[np.ndarray, np.ndarray]:
     """
-    Allows filtering by timestamps, polarity and scan stream.
+    Allows filtering by timestamps, polarity, scan stream and scan type.
     If timestamps are provided, the function will return the TIC
     values for the closest scan to each timestamp.
 
@@ -567,12 +583,18 @@ def get_tic_per_scan(
                    ``mascope_thermo.streams``), optional, defaults to None
                    (every stream)
     :type stream: str, optional
+    :param scan_type: Filter by scan type ('Ms' or 'Ms2'), or None for every
+                      scan. Defaults to 'Ms': a sample's TIC is that of its MS1
+                      scans. An acquisition of fragmentation scans alone has
+                      none, so its TIC is read over the scans it does have,
+                      with None.
+    :type scan_type: Literal['Ms', 'Ms2'] | None, optional
     :return: Tuple containing the scan timestamps [s] and TIC values as numpy arrays
     :rtype: tuple
     """
     with open_backend(datafile_path) as backend:
         scan_timestamp, scan_tic = backend.tic_per_scan(
-            polarity=polarity, stream=stream
+            polarity=polarity, ms_type=scan_type, stream=stream
         )
 
     if timestamps is not None:
@@ -1309,6 +1331,95 @@ def _non_finite_as_none(value):
     return value
 
 
+def _json(value) -> str:
+    """Return ``value`` as strict JSON text, a float JSON cannot represent as null.
+
+    Encoded strictly first, and walked for non-finite floats only when that
+    fails: nearly every value has none, and the walk costs more than the
+    encoding.
+    """
+    try:
+        return json.dumps(
+            value, ensure_ascii=False, allow_nan=False, separators=(",", ":")
+        )
+    except ValueError:
+        return json.dumps(
+            _non_finite_as_none(value),
+            ensure_ascii=False,
+            allow_nan=False,
+            separators=(",", ":"),
+        )
+
+
+def get_scan_table(
+    datafile_path: str,
+    polarity: Literal["+", "-"] | None = None,
+    t_min: float | None = None,
+    t_max: float | None = None,
+    first_scan: int | None = None,
+    last_scan: int | None = None,
+    fields: Iterable[str] | None = None,
+) -> dict:
+    """Describe the scans of a raw file without reading a peak.
+
+    The document :meth:`RawFileMetadataLegacy.to_dict` returns, without its
+    centroids and with one difference: ``stats_per_scan`` describes the file
+    rather than a selection from it. It holds the scans of every MS order and
+    leaves none out, not even an outlier first scan, where ``to_dict`` holds
+    the MS1 scans a selection would take. A row says which it is, in its
+    ``MsType``.
+
+    :param datafile_path: Path to the Thermo Fisher raw file (.raw).
+    :type datafile_path: str
+    :param polarity: Describe only the scans of this polarity, optional.
+    :type polarity: Literal['+', '-'] | None, optional
+    :param t_min: Describe only the scans starting at this time [s] or
+        later, optional.
+    :type t_min: float | None, optional
+    :param t_max: Describe only the scans starting at this time [s] or
+        earlier, optional.
+    :type t_max: float | None, optional
+    :param first_scan: Describe only the scans from this scan number on,
+        optional.
+    :type first_scan: int | None, optional
+    :param last_scan: Describe only the scans up to this scan number,
+        optional.
+    :type last_scan: int | None, optional
+    :param fields: The entries to keep of every row: statistics fields
+        (``"ScanType"``) and trailer labels (``"FT Resolution:"``), spelled as
+        the rows spell them. ``"ScanNumber"`` is kept whatever is asked for,
+        and a name no row carries is left out. None keeps every entry.
+    :type fields: Iterable[str] | None, optional
+    :raises PolarityError: ``polarity`` is neither ``"+"`` nor ``"-"``.
+    :raises InvalidRangeError: A range ends before it starts.
+    :return: ``{"num_of_scans", "stats_per_scan", "stats_per_file"}``.
+        ``num_of_scans`` counts the scans of the file, whatever was asked for;
+        ``stats_per_scan`` is keyed by scan number, and empty when no scan
+        matches. A float JSON cannot represent is None.
+    :rtype: dict
+    """
+    with open_backend(datafile_path) as backend:
+        num_of_scans = backend.num_scans()
+        rows = backend.scan_rows(polarity, t_min, t_max, first_scan, last_scan)
+        instrument_details = backend.instrument_details()
+
+    if fields is not None:
+        # A dict rather than a set: the entries keep the order asked for.
+        kept = dict.fromkeys(["ScanNumber", *fields])
+        rows = {
+            scan: {name: row[name] for name in kept if name in row}
+            for scan, row in rows.items()
+        }
+
+    return _non_finite_as_none(
+        {
+            "num_of_scans": num_of_scans,
+            "stats_per_scan": rows,
+            "stats_per_file": {"Value": instrument_details},
+        }
+    )
+
+
 class RawFileMetadataLegacy(RawFileMetadata):
     """Class to access metadata of a Thermo Fisher raw file."""
 
@@ -1367,7 +1478,18 @@ class RawFileMetadataLegacy(RawFileMetadata):
         with open_backend(self.datafile_path) as backend:
             return backend.centroids_meta()
 
-    def to_dict(self):
+    def iter_centroids_meta(self) -> Iterator[tuple[int, float, dict]]:
+        """:attr:`centroids_meta` one scan at a time, in scan order.
+
+        ``(scan_number, time_s, data)`` per scan, ``time_s`` and ``data``
+        being the scan's entries of ``"time"`` and ``"data"``. A scan is read
+        when its turn comes, and the file stays open until the last one has
+        been taken or the iterator is closed.
+        """
+        with open_backend(self.datafile_path) as backend:
+            yield from backend.iter_centroids_meta()
+
+    def to_dict(self, include_centroids: bool = True):
         """Convert the metadata to a dictionary.
 
         The dictionary contains the number of scans, statistics per scan, and statistics
@@ -1375,6 +1497,11 @@ class RawFileMetadataLegacy(RawFileMetadata):
         Values are as the reader reports them: one it leaves unset (an MS1 scan's
         precursor m/z, say) is None, and so is any float strict JSON cannot represent
         (NaN, +/-inf), wherever it sits.
+
+        :param include_centroids: Whether to add ``centroids_meta``, every
+            centroid of every scan. It is nearly all of the dictionary, and
+            the only part a peak is read for.
+        :type include_centroids: bool, optional
         """
         # Built from the reader's dicts rather than the DataFrame views: a pandas
         # round trip turns a None into NaN, and an integer in a numeric scan
@@ -1387,11 +1514,37 @@ class RawFileMetadataLegacy(RawFileMetadata):
             for scan, stats in self.scan_statistics.items()
         }
 
-        return _non_finite_as_none(
-            {
-                "num_of_scans": self.num_of_scans,
-                "stats_per_scan": stats_per_scan,
-                "stats_per_file": {"Value": self.instrument_details},
-                "centroids_meta": self.centroids_meta,
-            }
+        document = {
+            "num_of_scans": self.num_of_scans,
+            "stats_per_scan": stats_per_scan,
+            "stats_per_file": {"Value": self.instrument_details},
+        }
+        if include_centroids:
+            document["centroids_meta"] = self.centroids_meta
+        return _non_finite_as_none(document)
+
+    def iter_json(self) -> Iterator[str]:
+        """The dictionary :meth:`to_dict` returns, as JSON text in pieces.
+
+        Joined, the pieces are one JSON document that parses to what
+        ``to_dict()`` returns. Only the members of ``centroids_meta`` arrive
+        in the other order, ``data`` before ``time``: a scan's time is known
+        when the scan is read.
+
+        The first piece is everything but the centroids, and the only one the
+        scan table and the trailers are read for, so a file that cannot be
+        read fails there, before a caller has sent anything on. Each piece
+        after it is one scan's centroids, read when the piece is asked for. A
+        caller that sends each piece on before taking the next holds one
+        scan's centroids at a time, where ``to_dict`` holds the file's.
+        """
+        members = ",".join(
+            f"{_json(name)}:{_json(value)}"
+            for name, value in self.to_dict(include_centroids=False).items()
         )
+        yield "{" + members + ',"centroids_meta":{"data":['
+        times = []
+        for index, (_, time_s, data) in enumerate(self.iter_centroids_meta()):
+            times.append(time_s)
+            yield ("," if index else "") + _json(data)
+        yield '],"time":' + _json(times) + "}}"

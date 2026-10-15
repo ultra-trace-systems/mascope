@@ -267,6 +267,22 @@ ID", "Step ID", "Sequence run ID", "Agent ID" and "File SHA-256" of its
 samples sheet). The record itself is up to 16 KB, so it is loaded only by
 `GET /api/sample/files/{id}`.
 
+What bound a file is on its samples, and is returned with them. A sample
+item carries `bound_by` (`declared`, `explicit`, `token`, `method`, or null
+for an item auto-processing did not route) and `method_binding_id`
+([ingest_routing_and_splitting.md](ingest_routing_and_splitting.md), section
+5.2). Both are in every serialised item: from `GET /api/sample/items` and
+`GET /api/sample/items/{id}`, which read the item's own row, and in the
+sample view, which is what `GET /api/samples`, a sample's socket events and
+the answer to creating an item are read from. A sample of a file its record
+bound reads `"bound_by": "declared"`.
+
+They are read and never taken. No model a route reads a request into has
+either field, so one sent with a request - by a client returning a row it
+was given, say - is dropped while the request is read: an item made through
+the API records no rung, and an update neither sets one nor clears the one
+an item has. Changing an item's ionization mode clears it, as it always has.
+
 **In routing** the record is rung 0, "declared"
 ([ingest_routing_and_splitting.md](ingest_routing_and_splitting.md), section
 5.2). A file nobody chose modes for is bound by `ionization` before its name
@@ -295,9 +311,21 @@ is read:
   the one it ends on included ("Matched 1 sample. Its acquisition record
   names ..."). A run that fails records how it failed and neither note; the
   run that processes the file again says both again.
-- Items bound this way record `bound_by = "declared"`, the file's status
-  reads "Bound to ... by its acquisition record.", and the declaration teaches
-  the file's method binding, as a token does.
+- Items bound this way record `bound_by = "declared"`, which the API
+  returns with each of them ([In the API](#the-server)), and the declaration
+  teaches the file's method binding, as a token does.
+- The file's status says so, and goes on saying so: "Bound to 'Nitrate' (-)
+  by its acquisition record." is in every status the run records from the
+  binding on, the one it ends on included ("Matched 1 sample. Bound to
+  'Nitrate' (-) by its acquisition record."), as the sentence of a record
+  that bound nothing is. A token and a method say what bound a file in its
+  `bound` status alone. A token is in the file's name, which Raw files shows
+  beside the status, and nearly every file is bound by one, so repeating it
+  would lengthen every status with what the row already shows; a record is
+  shown nowhere else. Neither is a person's choice, which is carried to the
+  end the same way ("Matched 1 sample. Bound to 'Nitrate' (-) as chosen by
+  hand."): it stands ahead of the name, so the row may show a token that
+  did not bind the file.
 - **Re-processing asks the record again, first, and before anything of the
   file is cleared.** Re-process in Raw files, and processing one file on
   request, decide what a run starts with, and ask in the pipeline's order.
@@ -310,20 +338,42 @@ is read:
   that counts only where the method rung is on.
 - A record that binds nothing leaves the file to its name and its samples,
   as a file with no record: a token in the name binds it; with none, it is
-  rebuilt under the modes its samples have; with neither, Re-process
-  refuses it, says what its record named, and touches nothing. It is not
-  sent to the pipeline to find out, because a run clears a file's samples
-  and resets its calibration before it asks. A record that cannot be read
-  is not taken for one that binds nothing either: Re-process refuses the
-  file untouched and says so, and processing on request fails.
-- **A chemistry a person chose stands ahead of the record.** A record is
-  stored as it was sent and cannot be corrected, so choosing by hand is the
-  one way to overrule a record that names the wrong chemistry. The record
-  is not consulted when a person chooses, and re-processing does not ask it
-  of a file whose samples all carry a person's choice: with no token in its
-  name, the file is rebuilt under what they chose. Where its name does
-  carry a token, the file goes back through the pipeline's ladder, as a
-  file with a token always did.
+  rebuilt under the modes its samples have. With neither, a file that has
+  samples is refused with what its record named and nothing of it
+  touched, unless its acquisition method binds it. Where the method rung
+  is on, Re-process and processing on request ask the method first, as the
+  pipeline asks it - Re-process clears the file's samples, and resets its
+  calibration, before the pipeline asks - and send on a file the method
+  binds; one it declines is refused with the method's reason beside the
+  record's. Re-process asks just before it claims the file, once the files
+  ahead of it that a record or a token binds have taught their methods'
+  bindings. A file with no samples has nothing a run could cost it.
+  Processing on request sends it
+  on to the pipeline, which binds it by its acquisition method where the
+  method rung is on, and parks it again otherwise; Re-process sends it on
+  where the rung is on, and refuses it where the rung is off. A record
+  that cannot be read is not taken for one that binds nothing either:
+  Re-process refuses the file untouched and says so, and processing on
+  request fails.
+- **A chemistry a person chose stands ahead of the record, and of the
+  file's name.** A record is stored as it was sent and cannot be corrected,
+  so choosing by hand is the one way to overrule a record that names the
+  wrong chemistry. The record is not consulted when a person chooses, and
+  re-processing asks neither it nor the name of a file whose samples all
+  carry a person's choice (`bound_by = "explicit"`): the file is rebuilt
+  under what they chose, still recorded as their choice, and every status
+  of the run says "Bound to ... as chosen by hand." The name is left unread
+  because the rule's reason does not depend on it. A file with a token in
+  its name used to go back through the pipeline's ladder, record first, so
+  the record overruled the person one step after the check had stepped
+  aside for them, and the run reported nothing but success. A name that
+  matches two modes of one polarity does not refuse such a file either.
+  The choice stands until a person chooses again, which is also the way
+  back: there is no action that returns a file to its record or its name,
+  and choosing the mode they name does it. Samples the record bound, or a
+  token did, or ones older than the record of how they were bound, are
+  nobody's choice, and for those everything above holds. A kept choice
+  teaches the file's method binding nothing; the run it was made for did.
 
 Not built:
 
@@ -333,7 +383,9 @@ Not built:
   site adopts it, so binding to one today would leave a file unprocessed.
 - **The FAIR roadmap's phase 1 exports** do not exist yet. When they do, the
   identifiers go into them as `urn:uuid:<id>`.
-- **The web app** shows none of this beyond the status sentence.
+- **The web app** shows none of this beyond the status sentence. Each
+  sample it lists carries `bound_by`, and no column, filter or mark of it
+  reads the field.
 
 ## Reading the record as provenance
 

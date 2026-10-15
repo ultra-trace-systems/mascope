@@ -60,6 +60,10 @@ sample_view_table = Table(
     Column("t1", Float),
     Column("sample_item_utc_created", TIMESTAMP),
     Column("sample_item_utc_modified", TIMESTAMP),
+    # How auto-processing bound the item's chemistry (SampleItem.bound_by).
+    # Plain columns: nothing joins the view to a binding.
+    Column("bound_by", String(16)),
+    Column("method_binding_id", String(16)),
     # Sample file columns (joined via FK)
     Column("filename", String(256)),
     Column("instrument", String(64)),
@@ -119,6 +123,8 @@ class Sample:
     t1: Mapped[Optional[float]]
     sample_item_utc_created: Mapped[Optional[dt]]
     sample_item_utc_modified: Mapped[Optional[dt]]
+    bound_by: Mapped[Optional[str]]
+    method_binding_id: Mapped[Optional[str]]
 
     # Sample file columns (joined via FK)
     filename: Mapped[str]
@@ -171,6 +177,8 @@ class Sample:
                 si.t1,
                 si.sample_item_utc_created,
                 si.sample_item_utc_modified,
+                si.bound_by,
+                si.method_binding_id,
                 -- Sample file columns (joined via FK)
                 sf.filename,
                 sf.instrument,

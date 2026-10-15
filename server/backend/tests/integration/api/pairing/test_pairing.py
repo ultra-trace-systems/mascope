@@ -57,13 +57,17 @@ async def public_client():
         yield client
 
 
+#: The agent services these tests pair as.
+PAIRED_SERVICES = ("file-agent", "instrument-agent")
+
+
 @pytest_asyncio.fixture(autouse=True)
-async def clean_file_agent_tokens(async_session_factory):
-    """Remove file-agent tokens, machine accounts and devices between tests."""
+async def clean_agent_tokens(async_session_factory):
+    """Remove agent tokens, machine accounts and devices between tests."""
     yield
     async with async_session_factory() as session:
         await session.execute(
-            delete(AccessToken).where(AccessToken.service_name == "file-agent")
+            delete(AccessToken).where(AccessToken.service_name.in_(PAIRED_SERVICES))
         )
         # Deleting a machine account cascades its tokens (the file-converter
         # token pairing mints) and NULLs the device's machine_user_id.
@@ -71,19 +75,30 @@ async def clean_file_agent_tokens(async_session_factory):
             delete(User).where(User.account_type == ACCOUNT_TYPE_MACHINE)
         )
         await session.execute(
-            delete(AgentDevice).where(AgentDevice.service_name == "file-agent")
+            delete(AgentDevice).where(AgentDevice.service_name.in_(PAIRED_SERVICES))
         )
         await session.commit()
 
 
-async def _start(public_client, machine_name="ORBI-PC", **reported):
+async def _start(
+    public_client, machine_name="ORBI-PC", service_name="file-agent", **reported
+):
     """Start a pairing; ``reported`` carries what the agent says about itself."""
     resp = await public_client.post(
         "/api/auth/pairing/start",
-        json={"service_name": "file-agent", "machine_name": machine_name, **reported},
+        json={"service_name": service_name, "machine_name": machine_name, **reported},
     )
     assert resp.status_code == 200, resp.text
     return resp.json()
+
+
+def _bearer_client(token: str, service: str) -> AsyncClient:
+    """A client presenting an agent's credential under a service name."""
+    return AsyncClient(
+        transport=ASGITransport(app=fast),
+        base_url="http://test",
+        headers={"Authorization": f"Bearer {token}", "X-Service-Name": service},
+    )
 
 
 @pytest.mark.asyncio
@@ -157,6 +172,65 @@ async def test_full_pairing_flow(
         "/api/auth/pairing/poll", json={"device_code": started["device_code"]}
     )
     assert resp.json()["status"] == "expired"
+
+
+@pytest.mark.asyncio
+async def test_an_instrument_agent_pairs_and_is_known_by_its_own_name(
+    fake_redis, public_client, editor_client, async_session_factory
+):
+    """The File Agent inside an instrument control program pairs as itself.
+
+    The flow, the machine account and the device are a File Agent's; what
+    differs is the name the device and its tokens carry, so a paired machine
+    says which of the two it runs. The credential answers to that name only,
+    and its renewal keeps it.
+    """
+    started = await _start(
+        public_client, machine_name="CTRL-PC", service_name="instrument-agent"
+    )
+    resp = await editor_client.post(
+        "/api/auth/pairing/approve", json={"user_code": started["user_code"]}
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["service_name"] == "instrument-agent"
+
+    resp = await public_client.post(
+        "/api/auth/pairing/poll", json={"device_code": started["device_code"]}
+    )
+    token = resp.json()["access_token"]
+
+    async with async_session_factory() as session:
+        row = (
+            await session.execute(select(AccessToken).where(AccessToken.token == token))
+        ).scalar_one()
+        device = await session.get(AgentDevice, row.device_id)
+        token_user = await session.get(User, row.user_id)
+    assert row.service_name == "instrument-agent"
+    assert device.service_name == "instrument-agent"
+    assert device.machine_user_id == token_user.id
+    assert token_user.account_type == ACCOUNT_TYPE_MACHINE
+
+    # The request the agent's setup checks its credential with.
+    async with _bearer_client(token, "instrument-agent") as client:
+        accepted = await client.get("/api/sample/files", params={"page": 1, "limit": 1})
+        renewed = await client.post("/api/auth/devices/token")
+    assert accepted.status_code == 200, accepted.text
+    assert renewed.status_code == 200, renewed.text
+
+    async with _bearer_client(token, "file-agent") as client:
+        refused = await client.get("/api/sample/files", params={"page": 1, "limit": 1})
+    assert refused.status_code == 401
+
+    async with async_session_factory() as session:
+        fresh = (
+            await session.execute(
+                select(AccessToken).where(
+                    AccessToken.token == renewed.json()["data"]["access_token"]
+                )
+            )
+        ).scalar_one()
+    assert fresh.service_name == "instrument-agent"
+    assert fresh.device_id == device.device_id
 
 
 @pytest.mark.asyncio

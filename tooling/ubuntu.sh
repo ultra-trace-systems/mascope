@@ -125,7 +125,7 @@ function ensure_uv() {
     fi
 
     if ! uv_is_recent_enough; then
-        write_line "ERROR: uv is too old (needs 'uv tool install --with-executables-from', CI uses uv 0.11.x) and could not be updated automatically. Update uv manually and re-run."
+        write_line "ERROR: uv is too old (needs 'uv tool install --with-executables-from', CI uses uv 0.13.x) and could not be updated automatically. Update uv manually and re-run."
         exit 1
     fi
 

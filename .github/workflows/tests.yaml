@@ -16,6 +16,55 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  changes:
+    # Whether the PR touches anything but documentation. The two slow jobs,
+    # backend pytest and the demo-stack e2e, read no Markdown and nothing under
+    # docs/, so a PR confined to those - a design doc in docs/dev, say - skips
+    # them. Every other job still runs: they take about a minute each, side by
+    # side, and some do read docs (the CLI tests read docs/maintaining.md, and
+    # "Docs strict build" builds docs/user the way the frontend image does).
+    name: Changed paths
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      code: ${{ steps.diff.outputs.code }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # The PR's merge commit and its first parent, the base branch tip
+          fetch-depth: 2
+          persist-credentials: false
+
+      - name: Classify the changed paths
+        id: diff
+        run: |
+          # From the base tip to the merge commit is exactly what merging the
+          # PR changes. --no-renames lists a moved file under both of its
+          # names, so moving code into docs/ cannot pass as a docs change.
+          # -z writes each path as it is, NUL-terminated: without it git
+          # quotes a path with non-ASCII or special characters
+          # ("docs/dev/caf\303\251.md"), which then matches neither pattern.
+          git diff --name-only --no-renames -z HEAD^1 HEAD > "$RUNNER_TEMP/changed-paths"
+          code=false
+          count=0
+          while IFS= read -r -d '' path; do
+            count=$((count + 1))
+            echo "$path"
+            case "$path" in
+              docs/* | *.md) ;;
+              *) code=true ;;
+            esac
+          done < "$RUNNER_TEMP/changed-paths"
+          # An empty diff shows nothing to be docs-only
+          if [ "$count" -eq 0 ]; then
+            code=true
+          fi
+          echo "code=$code" >> "$GITHUB_OUTPUT"
+          if [ "$code" = false ]; then
+            echo "Docs-only change: backend tests and the e2e suite are skipped." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
   checks:
     name: Lint and format
     runs-on: ubuntu-latest
@@ -27,9 +76,9 @@ jobs:
           persist-credentials: false
 
       - name: Install uv
-        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
         with:
-          version: "0.11.2"
+          version: "0.13.1"
 
       - name: Check the lockfile is in sync with pyproject.toml
         run: uv lock --check
@@ -54,7 +103,7 @@ jobs:
         run: uv run --no-sync ruff format --check .
 
       - name: Set up Node
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22
           cache: npm
@@ -98,9 +147,9 @@ jobs:
         run: python3 tooling/check-licenses.py npm
 
       - name: Install uv
-        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
         with:
-          version: "0.11.2"
+          version: "0.13.1"
 
       - name: Install every dependency group
         # uv.lock records no licence metadata at all, so the Python half reads
@@ -133,9 +182,9 @@ jobs:
           persist-credentials: false
 
       - name: Install uv
-        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
         with:
-          version: "0.11.2"
+          version: "0.13.1"
 
       - name: Install every dependency group of the File Agent
         # As for the root lockfile: what is not installed cannot be read, and
@@ -170,9 +219,9 @@ jobs:
           persist-credentials: false
 
       - name: Install uv
-        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
         with:
-          version: "0.11.2"
+          version: "0.13.1"
 
       - name: Build the user docs (strict)
         # Mirrors the docs-build stage in the frontend image: --strict fails on
@@ -209,7 +258,7 @@ jobs:
           persist-credentials: false
 
       - name: Set up Node
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22
           cache: npm
@@ -232,9 +281,9 @@ jobs:
           persist-credentials: false
 
       - name: Install uv
-        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
         with:
-          version: "0.11.2"
+          version: "0.13.1"
 
       - name: Install dependencies
         run: uv sync --group dev
@@ -259,9 +308,9 @@ jobs:
           persist-credentials: false
 
       - name: Install uv
-        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
         with:
-          version: "0.11.2"
+          version: "0.13.1"
 
       - name: Install dependencies
         run: uv sync --group dev
@@ -295,9 +344,9 @@ jobs:
           persist-credentials: false
 
       - name: Install uv
-        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
         with:
-          version: "0.11.2"
+          version: "0.13.1"
 
       - name: Run File Agent tests
         # Hermetic: no runtime, no server, no network. Not only logic, though:
@@ -328,9 +377,9 @@ jobs:
           persist-credentials: false
 
       - name: Install uv
-        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
         with:
-          version: "0.11.2"
+          version: "0.13.1"
 
       - name: Run File Agent tests
         working-directory: agents/file
@@ -347,9 +396,9 @@ jobs:
           persist-credentials: false
 
       - name: Install uv
-        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
         with:
-          version: "0.11.2"
+          version: "0.13.1"
 
       - name: Install dependencies
         run: uv sync --group dev
@@ -372,9 +421,9 @@ jobs:
           persist-credentials: false
 
       - name: Install uv
-        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
         with:
-          version: "0.11.2"
+          version: "0.13.1"
 
       - name: Build the CLI and runtime wheels
         id: wheels
@@ -426,6 +475,11 @@ jobs:
 
   e2e:
     name: End-to-end tests (demo stack)
+    needs: changes
+    # Skipped only on a positive "docs only" from the job above. A skipped job
+    # passes its required check, so a classification that failed (and left
+    # the output empty) runs the job rather than skipping it.
+    if: ${{ !cancelled() && needs.changes.outputs.code != 'false' }}
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
@@ -435,9 +489,9 @@ jobs:
           persist-credentials: false
 
       - name: Install uv
-        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
         with:
-          version: "0.11.2"
+          version: "0.13.1"
 
       - name: Build application images from this PR
         run: |
@@ -447,6 +501,12 @@ jobs:
           export MASCOPE_PATH=$GITHUB_WORKSPACE
           uv run mascope prod build
 
+      - name: Restore the demo bundle from the cache
+        # Before the stack starts: demo_init looks for the bundle in the
+        # directory this fills, and downloads it only when it is not there or
+        # does not verify. The action says what a hit and a miss each mean.
+        uses: ./.github/actions/demo-bundle-cache
+
       - name: Start the demo stack
         run: |
           # The CLI tagged the images with the branch-derived version; point
@@ -455,10 +515,18 @@ jobs:
           # which is the failure we want.
           VERSION=$(docker images "ghcr.io/${{ github.repository }}/backend" --format '{{.Tag}}' | head -1)
           echo "Built image tag: $VERSION"
-          MASCOPE_VERSION=$VERSION docker compose -f docker-compose.demo.yaml up -d
+          # The second file is CI's own: it mounts the checkout's
+          # .runtime/demo, which the step above filled, into demo_init in
+          # place of the demo_cache volume.
+          MASCOPE_VERSION=$VERSION docker compose \
+            -f docker-compose.demo.yaml -f .github/docker-compose.demo.ci.yaml up -d
+          # What demo_init did for the bundle - used the restored copy, or
+          # downloaded - is in its own log, which a passing job never shows.
+          docker logs mascope_demo_init 2>&1 \
+            | grep -E "Demo bundle '|Cached bundle '|Downloading http|Download attempt" || true
 
       - name: Set up Node
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22
           cache: npm
@@ -473,8 +541,9 @@ jobs:
       - name: Wait for the stack to come up
         id: wait-stack
         run: |
-          # demo_init downloads and restores the demo bundle on first start,
-          # so allow generous time before the frontend answers.
+          # demo_init restores the demo bundle, and downloads it first when
+          # the cache step missed, so allow generous time before the
+          # frontend answers.
           for i in $(seq 1 120); do
             if curl -fsS -o /dev/null http://127.0.0.1:8080; then
               echo "Stack is up."
@@ -488,11 +557,11 @@ jobs:
 
       - name: Stage a raw file for the upload spec
         run: |
-          # The upload e2e re-ingests a real demo raw file. The bundle was
-          # already fetched by demo_init into its cache volume; copy one raw
-          # file out instead of downloading the bundle a second time.
-          docker cp mascope_demo_init:/app/.runtime/demo /tmp/demo-bundle
-          RAW=$(find /tmp/demo-bundle -path "*/raw/*.raw" | head -1)
+          # The upload e2e re-ingests a real demo raw file. The bundle is in
+          # the checkout's .runtime/demo, which demo_init had mounted, so
+          # take one raw file from there instead of downloading the bundle a
+          # second time.
+          RAW=$(find "$GITHUB_WORKSPACE/.runtime/demo" -path "*/raw/*.raw" | head -1)
           if [ -z "$RAW" ]; then
             echo "No raw file found in the demo bundle cache." >&2
             exit 1
@@ -529,7 +598,7 @@ jobs:
 
       - name: Upload Playwright report
         if: failure()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: playwright-report
           path: |
@@ -538,6 +607,9 @@ jobs:
           retention-days: 7
 
   test:
+    needs: changes
+    # As for e2e: skipped only on a positive "docs only".
+    if: ${{ !cancelled() && needs.changes.outputs.code != 'false' }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     strategy:
@@ -568,9 +640,9 @@ jobs:
           persist-credentials: false
 
       - name: Install uv
-        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
         with:
-          version: "0.11.2"
+          version: "0.13.1"
 
       - name: Set up environment
         run: |

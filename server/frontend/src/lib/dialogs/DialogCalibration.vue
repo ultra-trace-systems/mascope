@@ -16,6 +16,8 @@ import { useApp } from '@/stores'
 import { useMzFit } from '@/lib/mzFit'
 import { PaneSettingsCalibration } from '@/lib/panes'
 import { canCalibrateInstruments } from '@/lib/permissions'
+import { segmentListItems, splitQualityIssues } from '@/lib/calibrationSegments'
+import { calibrationSettingsText } from '@/lib/calibrationSettings'
 
 const mzFit = useMzFit()
 const confirm = useConfirm()
@@ -87,6 +89,31 @@ const title = computed(() =>
 // Why the previewed fit misses the quality bar (empty when it clears it). The
 // backend judges again on apply; this is what the operator is shown first.
 const qualityIssues = computed(() => mzFit.current?.quality_issues ?? [])
+
+// The scan ranges of a stitched sample, each with how it came by its
+// calibration, as lists to show: of the calibration the sample runs on, which
+// its record lists and its badge names, and of the fit previewed here. The two
+// read the same where this fit repeats the one applied. They differ where that
+// one was made at other settings - the pipeline widens the m/z error tolerance
+// when a fit ends in a warning - and then both are shown, each under its own
+// heading, so the reasons the badge points to are here too. A range below the
+// quality bar says why on its own line, and stands out, as does one that took
+// another's calibration unchanged (`segmentListItems`). Empty for a sample
+// that is not stitched.
+const segmentLists = computed(() => {
+  const sample = batch.value ? previewSample.value : original.value
+  const applied = segmentListItems(sample?.mz_calibration)
+  const fitted = segmentListItems(mzFit.current)
+  const same =
+    applied.length === fitted.length && applied.every((range, at) => range.text === fitted[at].text)
+  if (applied.length === 0 || same) {
+    return fitted.length > 0 ? [{ heading: null, ranges: fitted }] : []
+  }
+  return [
+    { heading: 'Applied:', ranges: applied },
+    ...(fitted.length > 0 ? [{ heading: 'This fit:', ranges: fitted }] : [])
+  ]
+})
 // Whether the deployment keeps a below-bar fit out of matching ("enforce"),
 // which is the only case saving one needs an explicit acceptance.
 const gateEnforced = computed(() => mzFit.current?.quality_gate === 'enforce')
@@ -99,9 +126,21 @@ const qualityIssuesSummary = computed(() => {
     : batch.value
       ? 'this sample would be calibrated but excluded from matching'
       : 'saving accepts it, and matching will use it'
-  const reasons = qualityIssues.value.map((issue) => issue.message).join(' ')
-  return `Below the calibration quality bar – ${consequence}. ${reasons}`
+  // A scan range's issues are on its line in the list below, not repeated here
+  const { own, ranges } = splitQualityIssues(mzFit.current)
+  const reasons = own.map((issue) => ` ${issue.message}`).join('')
+  const marked =
+    ranges === 0
+      ? ''
+      : ` ${ranges === 1 ? 'One scan range misses it' : `${ranges} scan ranges miss it`}, marked below.`
+  return `Below the calibration quality bar – ${consequence}.${reasons}${marked}`
 })
+
+// The settings take room the calibrants' table needs, and are seldom changed:
+// folded, they are named in one line. They stay as they were left while the
+// dialog stays mounted.
+const settingsOpen = ref(false)
+const settingsSummary = computed(() => calibrationSettingsText(mzFit.mzCalibrationParams))
 
 const confirmMessage = computed(() => {
   if (batch.value) {
@@ -138,6 +177,10 @@ const confirmMessage = computed(() => {
 watch(visible, init)
 async function init(active) {
   if (active) {
+    // The dialog stays mounted, and its fit is the last sample's until the
+    // refit below starts: set beside this sample's record it would read as
+    // this sample's fit while the defaults are fetched, and stay if that fails
+    await mzFit.unload()
     // Seed instrument-appropriate parameter defaults for the sample before
     // snapshotting, so the change does not read as a user edit (which would
     // trigger a second fit through the unsynced watcher).
@@ -156,6 +199,8 @@ const unsynced = computed(() =>
 )
 
 watch(previewSample, async (sample) => {
+  // The fit shown is the sample picked before, as on opening (see `init`)
+  await mzFit.unload()
   if (sample?.sample_item_id) {
     await mzFit.loadInstrumentDefaults(sample)
     // Absorb any default changes into the snapshot so the unsynced watcher
@@ -220,6 +265,10 @@ const calibration = computed(() => ({
   key: 0,
   rows: mzFit.stats ?? [],
   columns: [
+    // A stitched sample's calibrants say which scan range each was found in
+    ...((mzFit.stats ?? []).some((row) => row.segment_label)
+      ? [{ field: 'segment_label', label: 'Scan range [m/z]' }]
+      : []),
     { field: 'mz', label: 'Isotope m/z' },
     { field: 'sample_peak_mz', label: 'Observed m/z' },
     {
@@ -243,6 +292,9 @@ const calibration = computed(() => ({
 }))
 
 const columnFormatters = computed(() => ({
+  // Without the unit the header carries, and on one line (`.range-cell`):
+  // wrapped, a label made each row three lines tall
+  segment_label: { format: (label) => label.replace(/^m\/z /, '') },
   mz: num.mz,
   sample_peak_mz: num.mz,
   calibration_mz: num.mz,
@@ -267,8 +319,32 @@ const formatter = new Intl.NumberFormat('en-US', {
   >
     <div class="dialog-content">
       <section class="settings-section">
-        <h3>Calibration Settings</h3>
-        <PaneSettingsCalibration v-model:mzCalibrationParams="mzFit.mzCalibrationParams" />
+        <div class="settings-heading">
+          <h3>
+            <button
+              type="button"
+              class="settings-toggle"
+              data-testid="calibration-settings-toggle"
+              :aria-expanded="settingsOpen"
+              @click="settingsOpen = !settingsOpen"
+            >
+              <span :class="['pi', settingsOpen ? 'pi-chevron-down' : 'pi-chevron-right']" />
+              Calibration Settings
+            </button>
+          </h3>
+          <span
+            v-if="!settingsOpen"
+            class="settings-summary"
+            data-testid="calibration-settings-summary"
+            :title="settingsSummary"
+          >
+            {{ settingsSummary }}
+          </span>
+        </div>
+        <PaneSettingsCalibration
+          v-show="settingsOpen"
+          v-model:mzCalibrationParams="mzFit.mzCalibrationParams"
+        />
       </section>
       <section class="results-section">
         <div class="message-container">
@@ -302,6 +378,24 @@ const formatter = new Intl.NumberFormat('en-US', {
             />
           </div>
           <div class="table-wrapper">
+            <div
+              v-if="segmentLists.length > 0"
+              class="segment-lists"
+              data-testid="calibration-segments"
+            >
+              <template v-for="list in segmentLists" :key="list.heading">
+                <p v-if="list.heading" class="segment-heading">{{ list.heading }}</p>
+                <ul class="segment-list">
+                  <li
+                    v-for="range in list.ranges"
+                    :key="range.key"
+                    :class="{ flagged: range.flagged }"
+                  >
+                    {{ range.text }}
+                  </li>
+                </ul>
+              </template>
+            </div>
             <DataTable
               v-if="calibration.rows.length > 0"
               :key="calibration.key"
@@ -324,7 +418,10 @@ const formatter = new Intl.NumberFormat('en-US', {
               >
                 <template #body="{ data }">
                   <span
-                    :class="data.type == 'summary' ? 'summary-cell' : ''"
+                    :class="[
+                      data.type == 'summary' ? 'summary-cell' : '',
+                      col.field === 'segment_label' ? 'range-cell' : ''
+                    ]"
                     v-if="data[col.field] !== null && data[col.field] !== undefined"
                     >{{
                       columnFormatters[col.field]
@@ -348,8 +445,14 @@ const formatter = new Intl.NumberFormat('en-US', {
                 justify-content: center;
               "
             >
-              <ProgressSpinner v-if="!(mzFit.status == 'error')" />
-              <Message v-else severity="error" style="inline-size: 400px; overflow-wrap: anywhere">
+              <!-- A fit that warns before it has calibrants has no rows either:
+                   it is done, and the warning above says why -->
+              <ProgressSpinner v-if="mzFit.status !== 'error' && mzFit.status !== 'warning'" />
+              <Message
+                v-else-if="mzFit.status === 'error'"
+                severity="error"
+                style="inline-size: 400px; overflow-wrap: anywhere"
+              >
                 {{ mzFit.error ?? 'Calibration failed due to an unknown error.' }}
               </Message>
             </div>
@@ -402,7 +505,6 @@ const formatter = new Intl.NumberFormat('en-US', {
   margin-top: 0;
   margin-bottom: 0.3rem;
   font-weight: 600;
-  color: var(--text-color, #fff);
 }
 
 .content-wrapper {
@@ -421,7 +523,7 @@ const formatter = new Intl.NumberFormat('en-US', {
 .list-wrapper {
   width: 280px;
   flex-shrink: 0;
-  border: 1px solid var(--surface-border, #3c434d);
+  border: 1px solid var(--p-content-border-color);
   border-radius: 6px;
   overflow: hidden;
 }
@@ -442,14 +544,79 @@ const formatter = new Intl.NumberFormat('en-US', {
   font-weight: bold;
 }
 
+.calibration-table :deep(.range-cell) {
+  white-space: nowrap;
+}
+
+.settings-heading {
+  display: flex;
+  align-items: baseline;
+  gap: 1rem;
+  min-width: 0;
+}
+
+.settings-heading h3 {
+  flex-shrink: 0;
+}
+
+.settings-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  white-space: nowrap;
+  padding: 0;
+  border: none;
+  background: none;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+.settings-toggle .pi {
+  font-size: 0.75rem;
+}
+
+.settings-summary {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.85rem;
+  color: var(--p-text-muted-color);
+}
+
 .dialog-actions {
   display: flex;
   justify-content: flex-end;
   gap: 1rem;
   margin-top: 1rem;
   padding-top: 1rem;
-  border-top: 1px solid var(--surface-border, #3c434d);
+  border-top: 1px solid var(--p-content-border-color);
   flex-shrink: 0;
+}
+
+.segment-lists {
+  flex-shrink: 0;
+  margin-bottom: 0.5rem;
+  font-size: 0.85rem;
+  color: var(--p-text-muted-color);
+}
+
+.segment-heading {
+  margin: 0;
+  font-weight: 600;
+}
+
+.segment-list + .segment-heading {
+  margin-top: 0.3rem;
+}
+
+.segment-list {
+  margin: 0;
+  padding-inline-start: 1.2rem;
+}
+
+.segment-list .flagged {
+  color: var(--state-warning);
 }
 
 .message-container {

@@ -11,6 +11,7 @@ import sys
 from threading import Lock
 from typing import Callable
 
+from mascope_file_agent._threads import interrupts
 from mascope_file_agent.wizard import (
     CREDENTIAL_OK,
     CREDENTIAL_REJECTED,
@@ -63,7 +64,16 @@ class Repair:
 
         Called at most once at a time, and not again once it has returned
         None: a refused credential stays refused, and the operator is not
-        asked once per file.
+        asked once per file. Not called at all for a credential found
+        refused after ``Agent.run_until_complete()`` was interrupted: the
+        agent is stopping, and says in the log what it found.
+
+        Called on the thread that found the credential refused: the thread
+        the agent runs on for the check at start, an upload worker after
+        that. On the main thread, where ``Agent.run_until_complete()``
+        otherwise keeps an interrupt from being raised where it arrives,
+        the first Ctrl+C during the offer is raised in it as a
+        ``KeyboardInterrupt``, as at any prompt.
 
         :param reason: The server's explanation
         :type reason: str
@@ -249,7 +259,16 @@ class Credentials:
                 return True  # another worker re-paired while this one waited
             if self._repair_declined:
                 return False
-            token = self.repair.offer(reason, self._pair)
+            if interrupts.pending:
+                # Asked to stop while the server was being asked. A prompt
+                # would not hear that interrupt, only a second one, and
+                # nobody who is leaving wants the question. Not a refusal
+                # of the offer either: the agent's loop answers the
+                # interrupt, and the next start asks.
+                return False
+            # Whoever is at the console gets out of a prompt with Ctrl+C.
+            with interrupts.immediate():
+                token = self.repair.offer(reason, self._pair)
             if not token:
                 self._repair_declined = True
                 return False

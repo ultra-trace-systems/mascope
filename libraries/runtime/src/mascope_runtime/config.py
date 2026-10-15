@@ -438,10 +438,11 @@ class BackendConfig(ModuleConfig):
     # not depend on the backend's role table.
     mfa_required_min_role: Optional[str] = None
     # Refuse bearer tokens for the pairable agent services (file-agent,
-    # tof-agent, export-agent) unless the token is bound to a registered
-    # device. Off by default: tokens issued before the device registry keep
-    # working until the deployment has (re-)paired every agent machine and
-    # turns this on. Pairing binds new tokens to a device automatically.
+    # instrument-agent, tof-agent, export-agent) unless the token is bound to
+    # a registered device. Off by default: tokens issued before the device
+    # registry keep working until the deployment has (re-)paired every agent
+    # machine and turns this on. Pairing binds new tokens to a device
+    # automatically.
     require_device_tokens: bool = False
     # What an m/z calibration below the quality bar does. "warn" (the
     # default) stores it verified with its reasons, so matching and peak
@@ -492,10 +493,13 @@ class BackendConfig(ModuleConfig):
     # whose method only runs the same experiment again in a polarity (the
     # same scan at the same microscans and AGC target). A file already
     # converted keeps what was decided for it then: rebuilding a store goes by
-    # that decision and never by this setting, so this applies to files
-    # converted from then on.
+    # that decision and never by this setting. An explicit re-processing
+    # decides again, so this applies to files converted from then on and to
+    # files re-processed from then on.
     #
-    # Read by the file converter, which is where peaks are detected.
+    # Read where a decision is made, when the process starts: by the file
+    # converter for a file's first conversion, and by the backend for a
+    # re-processing.
     composite_scan_streams: bool = False
     # Allowlist of per-record reference licences the peak-assignment database
     # stage (Stage A) may match against. The reference mirror carries a

@@ -46,6 +46,7 @@ from mascope_backend.api.controllers.sample.files.sample_files_controller import
     get_sample_file_metadata,
     get_sample_file_peak_timeseries,
     get_sample_file_peaks,
+    get_sample_file_scans,
     get_sample_file_spectrum,
     get_sample_files,
     reported_instrument_or_none,
@@ -60,6 +61,7 @@ from mascope_backend.api.models.sample.files.sample_file_pydantic_model import (
     GetRecentSampleFilesQueryParams,
     GetSampleFilePeaksQueryParams,
     GetSampleFilePeakTimeseriesBody,
+    GetSampleFileScansQueryParams,
     GetSampleFilesQueryParams,
     GetSpectrumQueryParams,
     ReprocessSampleFilesBody,
@@ -374,17 +376,60 @@ async def get_sample_file_spectrum_route(
 @api_route(token_access=True)
 async def get_sample_file_metadata_route(
     sample_file_id: str,
+    include_centroids: bool = Query(
+        True,
+        description=(
+            "Include `centroids_meta`, every centroid of every scan. It is "
+            "nearly all of the response - hundreds of megabytes for a long "
+            "acquisition - and is written one scan at a time. Without it the "
+            "response is the scans' statistics and trailers alone."
+        ),
+    ),
     user=Depends(current_active_user),
 ):
     """
     Retrieve metadata for a specific sample file.
 
+    The statistics and trailer of each MS1 scan a selection would take, the
+    file's own statistics and, unless `include_centroids` is false, every
+    centroid of every scan. `GET /api/sample/files/{sample_file_id}/scans`
+    serves the scans alone, of every MS order, and can narrow them.
+
     :param sample_file_id: ID of the sample file.
+    :param include_centroids: Whether to include every scan's centroids.
     :param user: Authenticated user.
     :return: Metadata for the sample file.
     """
     await check_sample_file_instrument_access(sample_file_id, user, "guest")
-    return await get_sample_file_metadata(sample_file_id)
+    return await get_sample_file_metadata(sample_file_id, include_centroids)
+
+
+@sample_files_router.get("/{sample_file_id}/scans")
+@api_route(token_access=True)
+async def get_sample_file_scans_route(
+    sample_file_id: str,
+    query_params: GetSampleFileScansQueryParams = Query(),
+    user=Depends(current_active_user),
+):
+    """
+    Retrieve the scan table of a sample file: every scan's statistics and
+    trailer, without its centroids.
+
+    `stats_per_scan` holds one row per scan under its scan number, with the
+    scan's statistics and its trailer under the instrument's own labels
+    (`FT Resolution:`, `Conversion Parameter B:`), and `stats_per_file` the
+    file's statistics, both as `/metadata` gives them. The rows describe the
+    file: scans of every MS order are included (`MsType` says which), and
+    none is left out. No peak is read, so the response stays small and quick
+    for a file whose centroids run to hundreds of megabytes.
+
+    :param sample_file_id: ID of the sample file.
+    :param query_params: Which scans to describe, and which entries of each.
+    :param user: Authenticated user.
+    :return: The scan table of the sample file.
+    """
+    await check_sample_file_instrument_access(sample_file_id, user, "guest")
+    return await get_sample_file_scans(sample_file_id, **query_params.model_dump())
 
 
 @sample_files_router.post("/{sample_file_id}/process")
@@ -409,13 +454,17 @@ async def process_sample_item_route(
     # Get data for notifications
     process_id = gen_id(8)
 
-    # A file no token binds keeps the modes its own samples hold, and how
-    # each of them was bound - which is not necessarily anybody's choice: a
-    # token that has since been renamed bound some of them.
+    # A file a person chose the chemistry of, and one nothing binds now,
+    # keep the modes their own samples hold, and how each of them was bound
+    # - which is not necessarily anybody's choice: a token that has since
+    # been renamed bound some of them. A file with samples that nothing
+    # binds - no mode any longer, and no acquisition method that answers
+    # for it - or with samples and an ambiguous name, is refused here with
+    # nothing of it claimed: the run could only park the file.
     kept = await modes_to_rebind(sample_file_id)
-    # The run starts by clearing what an earlier run left, and until it
-    # records its own stages the row would still say how that run ended. A
-    # file another run has claimed is left to it.
+    # The run clears what an earlier run left once it has bound the file,
+    # and until it records its own stages the row would still say how that
+    # run ended. A file another run has claimed is left to it.
     if not await claim_for_processing([sample_file_id], "Queued for processing."):
         raise HTTPException(
             status_code=409,
@@ -448,8 +497,9 @@ async def bind_sample_files_route(
 
     For files whose names carry no token of a configured mode. Each is bound
     to the chosen mode of each polarity it holds and processed as a token
-    would have had it processed. Only files without samples are bound, so
-    nothing is rebuilt here, and an editor may choose.
+    would have had it processed. A file that has samples already is rebuilt
+    under the chosen modes, as re-processing rebuilds one, and a sample a
+    person made from it is left as it is. An editor may choose.
 
     :param body: The files, and the modes chosen for them.
     :param user: The current authenticated user with editor permissions.
@@ -989,9 +1039,9 @@ _tus_upload_router = create_tus_router(
 
 # The TUS routes are generated by tuspyserver, so they cannot take the
 # @api_route decorator. Stamp their endpoints token-accessible so agents
-# (file-agent, tof-agent) can upload with a Bearer token, exactly like on
-# the legacy POST /upload route; the web app authenticates with its cookie
-# either way. Without the stamp, get_enabled_backends rejects every
+# (file-agent, instrument-agent, tof-agent) can upload with a Bearer token,
+# exactly like on the legacy POST /upload route; the web app authenticates with
+# its cookie either way. Without the stamp, get_enabled_backends rejects every
 # Bearer-token request to these routes with 401. Stamp the generated routes
 # directly (the wrapper below serves these same endpoint functions).
 for _route in _tus_upload_router.routes:

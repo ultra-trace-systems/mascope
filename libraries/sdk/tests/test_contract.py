@@ -713,6 +713,53 @@ class TestErrorContract:
             )
 
 
+@requires_stack
+class TestSampleFileContract:
+    """Shape of a sample file's scan table (`/api/sample/files/{id}/scans`).
+
+    The demo samples are cut from raw Orbitrap files the stack stores, which
+    is what a scan table is read from.
+    """
+
+    @pytest.fixture(scope="class")
+    def sample_file_id(self, mascope) -> str:
+        _skip_unless_attr(mascope, "sample_files")
+        sample = mascope.samples.get(_first_sample_id(mascope))
+        assert sample.get("sample_file_id"), "a sample names the file it was cut from"
+        return sample["sample_file_id"]
+
+    def test_scan_table_has_a_row_per_scan(self, mascope, sample_file_id):
+        scans = mascope.sample_files.get_scans(sample_file_id)
+
+        assert scans is not None and not scans.empty
+        # The statistics, and the trailer under the instrument's own labels.
+        assert {"ScanNumber", "StartTime", "TIC", "ScanType", "MsType"} <= set(
+            scans.columns
+        )
+        assert "FT Resolution:" in scans.columns
+        # The table describes the file: every scan, in order.
+        assert scans["ScanNumber"].tolist() == list(range(1, len(scans) + 1))
+        assert scans.attrs["num_of_scans"] == len(scans)
+        assert scans.attrs["stats_per_file"]["Model"]
+
+    def test_fields_and_a_scan_range_narrow_the_table(self, mascope, sample_file_id):
+        scans = mascope.sample_files.get_scans(
+            sample_file_id,
+            fields=["FT Resolution:", "MsType"],
+            first_scan=2,
+            last_scan=3,
+        )
+
+        assert scans is not None
+        assert list(scans.columns) == ["ScanNumber", "FT Resolution:", "MsType"]
+        assert scans["ScanNumber"].tolist() == [2, 3]
+        # The count stays the file's, whatever was asked for.
+        assert scans.attrs["num_of_scans"] > len(scans)
+
+    def test_a_window_no_scan_is_in_is_none(self, mascope, sample_file_id):
+        assert mascope.sample_files.get_scans(sample_file_id, first_scan=10**9) is None
+
+
 def _skip_unless_attr(obj, name: str) -> None:
     """Skip when the installed SDK predates attribute *name* on *obj*."""
     if not hasattr(obj, name):

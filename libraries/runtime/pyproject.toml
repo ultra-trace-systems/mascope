@@ -1,6 +1,6 @@
 [project]
 name = "mascope_runtime"
-version = "2026.10.9"
+version = "2026.10.14"
 description = "Ultra Trace Mascope's shared runtime util library for config, state and logging"
 classifiers = [
     "Topic :: Scientific/Engineering :: Atmospheric Science",
@@ -35,5 +35,5 @@ repository = "https://github.com/ultra-trace-systems/mascope"
 "Bug Tracker" = "https://github.com/ultra-trace-systems/mascope/issues"
 
 [build-system]
-requires = ["uv_build>=0.12.5,<0.13"]
+requires = ["uv_build>=0.12.5,<0.14"]
 build-backend = "uv_build"

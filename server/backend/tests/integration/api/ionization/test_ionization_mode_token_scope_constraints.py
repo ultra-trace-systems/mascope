@@ -382,3 +382,147 @@ async def test_the_scope_is_stripped_and_an_empty_one_means_every_instrument(
     async with async_session_factory() as session:
         stored = await session.get(IonizationMode, mode_id)
         assert stored.instrument == stored_as
+
+
+# --- the in-use guard reads a batch's whole name ----------------------------
+
+
+@pytest_asyncio.fixture
+async def acquisition_batch(async_session_factory):
+    """Adds ACQUISITION batches of the given names, and takes them away again."""
+    workspace = Workspace(
+        workspace_id=gen_id(),
+        workspace_name=f"Guard test {gen_id(6)}",
+        is_system=True,
+    )
+    dataset = Dataset(
+        dataset_id=gen_id(),
+        workspace_id=workspace.workspace_id,
+        dataset_name=f"Acquisitions {gen_id(6)}",
+        dataset_type="ACQUISITION",
+        instrument=f"instrument-{gen_id(8)}",
+    )
+    async with async_session_factory() as session:
+        session.add_all([workspace, dataset])
+        await session.commit()
+
+    async def add(name: str) -> None:
+        async with async_session_factory() as session:
+            session.add(
+                SampleBatch(
+                    sample_batch_id=gen_id(),
+                    dataset_id=dataset.dataset_id,
+                    sample_batch_name=name,
+                    sample_batch_type="ACQUISITION",
+                )
+            )
+            await session.commit()
+
+    yield add
+
+    async with async_session_factory() as session:
+        await session.execute(
+            delete(SampleBatch).where(SampleBatch.dataset_id == dataset.dataset_id)
+        )
+        await session.execute(
+            delete(Dataset).where(Dataset.dataset_id == dataset.dataset_id)
+        )
+        await session.execute(
+            delete(Workspace).where(Workspace.workspace_id == workspace.workspace_id)
+        )
+        await session.commit()
+
+
+async def _mode_named(async_session_factory, modes, mechanism, name: str) -> str:
+    """A mode of this name with no samples, removed with the ``modes`` fixture."""
+    mode = IonizationMode(
+        ionization_mode_id=gen_id(),
+        ionization_mode_name=name,
+        ionization_mode_token=None,
+        ionization_mode_polarity="-",
+        ionization_mechanism_ids=[mechanism],
+    )
+    async with async_session_factory() as session:
+        session.add(mode)
+        await session.commit()
+    modes[2](mode.ionization_mode_id)
+    return mode.ionization_mode_id
+
+
+async def _rename(admin_client, mode_id: str, name: str, mechanism: str):
+    return await admin_client.patch(
+        f"/api/ionization/modes/{mode_id}",
+        json={
+            "ionization_mode_name": name,
+            "ionization_mode_token": None,
+            "ionization_mode_polarity": "-",
+            "ionization_mechanism_ids": [mechanism],
+        },
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("mode_name", "batch_of_another"),
+    [
+        ("MS2", "2026-01-01 MS2 acquisition (no chemistry)"),
+        ("A {uid}", "2026-01-01 BA {uid} acquisition"),
+    ],
+    ids=["the batch of MS2 parts", "a mode whose name ends in this one's"],
+)
+async def test_a_batch_named_for_something_else_does_not_hold_a_mode_back(
+    admin_client,
+    async_session_factory,
+    modes,
+    mechanism,
+    acquisition_batch,
+    mode_name,
+    batch_of_another,
+):
+    """A daily batch is named "<date> <mode name> acquisition", and the guard
+    reads the whole name. A part of it would also take the batch of MS2
+    samples filed without a chemistry for a mode named "MS2", and the batch
+    of a mode named "BA" for one named "A": a mode no sample was bound under
+    could not be renamed."""
+    uid = gen_id(6)
+    await acquisition_batch(batch_of_another.format(uid=uid))
+    mode_id = await _mode_named(
+        async_session_factory, modes, mechanism, mode_name.format(uid=uid)
+    )
+
+    resp = await _rename(admin_client, mode_id, f"Renamed {uid}", mechanism)
+
+    assert resp.status_code == 200, resp.text
+
+
+@pytest.mark.asyncio
+async def test_a_mode_may_take_a_name_only_a_batch_of_ms2_parts_ends_in(
+    admin_client, async_session_factory, modes, mechanism, acquisition_batch
+):
+    await acquisition_batch("2026-01-01 MS2 acquisition (no chemistry)")
+    mode_id = await _mode_named(
+        async_session_factory, modes, mechanism, f"Mode {gen_id(6)}"
+    )
+
+    resp = await _rename(admin_client, mode_id, "MS2", mechanism)
+
+    assert resp.status_code == 200, resp.text
+
+
+@pytest.mark.asyncio
+async def test_the_guard_still_holds_a_mode_its_own_batches_are_named_for(
+    admin_client, async_session_factory, modes, mechanism, in_use_mode
+):
+    """Both ways: the mode itself, and another mode taking its name."""
+    other = await _mode_named(
+        async_session_factory, modes, mechanism, f"Mode {gen_id(6)}"
+    )
+
+    renamed = await _rename(
+        admin_client, in_use_mode["mode_id"], f"Renamed {gen_id(6)}", mechanism
+    )
+    taken = await _rename(admin_client, other, in_use_mode["name"], mechanism)
+
+    for resp in (renamed, taken):
+        assert resp.status_code != 200, resp.text
+        assert "in use for one or more acquisition batches" in resp.text

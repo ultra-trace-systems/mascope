@@ -7,10 +7,10 @@ exception: the Thermo path raised the reader's ``NoScansFoundError`` and the
 TOF path an ``IndexError`` off the end of an empty array, both reaching error
 monitoring with a traceback as if Mascope itself had broken.
 
-A file that recorded only fragmentation scans is the same kind of outcome
-reached a different way: every property the extraction reads is answerable
-from the MS2 scans, so it used to survive extraction and fail deep inside the
-instrument-function fit - as a traceback, on a message naming a scan filter.
+A file that recorded only fragmentation scans is not one of these. It has
+data, and is stored without peaks rather than refused
+(``test_ms2_only_acquisition.py``); what stays here is that a file with no
+scans at all is never taken for one.
 
 Two things this must not over-reach on, both covered below. A pre-allocated
 BufTimes array means an aborted TOF run ends in unwritten rows of zeros, so
@@ -23,8 +23,14 @@ Both reader backends are exercised through their own scan selection rather
 than through a stand-in for it, because the guard is only as good as the error
 the reader actually raises - and the two backends reach a scanless file by
 different code.
+
+A file written without a run header is the same outcome met earlier still: the
+reader cannot open it at all, and failed on it with an error of its own -
+``Invalid argument (os error 22)`` for one file, ``unexpected end of file at
+offset 0x2700000026`` for the next - that said nothing about the acquisition.
 """
 
+import struct
 from contextlib import contextmanager
 from queue import Queue
 from threading import Event
@@ -36,15 +42,15 @@ from test_utils import captured_logs
 from mascope_backend.file_converter.base_processor import BaseFileProcessor
 from mascope_backend.file_converter.errors import (
     EMPTY_ACQUISITION_MESSAGE,
-    NO_MS1_SCANS_MESSAGE,
     SINGLE_SCAN_MESSAGE,
+    UNFINISHED_ACQUISITION_MESSAGE,
     UNUSABLE_SCAN_TIMES_MESSAGE,
     EmptyAcquisitionError,
     describe_exception,
     is_routine_file_failure,
 )
 from mascope_thermo.processor import RawProcessor
-from mascope_thermo.thermo import NoScansFoundError
+from mascope_thermo.thermo import NoScansFoundError, UnfinishedAcquisitionError
 from mascope_tofwerk.processor import H5Processor
 from mascope_tofwerk.tofwerk import NoScansRecordedError, recorded_scan_times
 
@@ -171,110 +177,109 @@ class TestThermoEmptyAcquisition:
         assert any(r["exception"] is not None for r in records) is False
 
 
-class _Ms2OnlyRawFile:
-    """Reader stand-in for a .raw whose scans are all fragmentation scans.
+class TestAScanlessFileIsNotAFragmentationOnlyOne:
+    """Both have no MS1 scan, and only one of them has anything to store.
 
-    Unlike the scanless stand-in, every call the property walk makes answers -
-    which is the point: an MS2-only file passes extraction, so the walk cannot
-    be what catches it.
+    A file of fragmentation scans alone is imported without peaks, on the
+    strength of "it recorded no MS1 scan". A file with no scans at all answers
+    that question the same way, so the two are told apart by the scan count -
+    at the extraction, which refuses the empty one before anything asks, and
+    again where the question is asked.
     """
 
-    def scan_indices(self, polarity=None, t_min=None, t_max=None, ms_type=None):  # noqa: ARG002
-        if ms_type == "Ms":
-            raise NoScansFoundError(
-                "No scans found matching the specified filters: polarity='None', "
-                "time_range=(None, None), ms_type='Ms'"
-            )
-        return [1, 2, 3]
-
-    def num_scans(self):
-        return 3
-
-    def scan_times(self, ms_type=None):  # noqa: ARG002
-        return np.array([0.0, 1.5, 3.0])
-
-    def mass_range(self):
-        return (40.0, 160.0)
-
-    def acquisition_parameters(self, max_scans=None):  # noqa: ARG002
-        # Already guarded in the processor: the real backend selects
-        # ms_type="Ms" here, so an MS2-only file raises exactly as a scanless
-        # one does and the property degrades to {}.
-        raise NoScansFoundError(
-            "No scans found matching the specified filters: polarity='None', "
-            "time_range=(None, None), ms_type='Ms'"
-        )
-
-    def created(self):
-        from datetime import datetime, timezone
-
-        return datetime(2026, 9, 4, 16, 12, tzinfo=timezone.utc)
-
-    def method_file(self):
-        return ""
-
-
-class TestThermoMs1LessAcquisition:
-    """A file whose scans are all MS2 fails as data, before the fit.
-
-    Peak detection and the instrument-function fit both read MS1, so such a
-    file has nothing for them to run on. It used to reach the fit and die
-    there on the reader's own error, which reads as a fault in Mascope: a
-    traceback at the level error monitoring subscribes to, and a notification
-    quoting a scan filter at the operator.
-    """
-
-    def test_extraction_names_the_missing_ms1_scans(self):
-        with pytest.raises(EmptyAcquisitionError, match="contains no MS1 scans"):
-            _thermo(_Ms2OnlyRawFile())._get_sample_file_props()
-
-    def test_it_is_reported_as_data_not_as_a_fault(self):
-        assert is_routine_file_failure(EmptyAcquisitionError(NO_MS1_SCANS_MESSAGE))
-
-    def test_the_scan_properties_all_answer_and_report_no_fault(self):
-        """This is what makes the refusal necessary rather than incidental.
-
-        Every property that asks the reader for scans answers for an MS1-less
-        file - the MS2 scans satisfy all of them - so extraction cannot be what
-        catches such a file, and none of them makes monitoring noise on the way
-        to answering. The scanless case is the contrast: there the same
-        properties raise, which is what ``_get_sample_file_props`` converts.
-        """
-        from mascope_runtime.logging import _SENTRY_LEVELS
-
-        processor = _thermo(_Ms2OnlyRawFile())
-        answered = {}
-
-        def _read():
-            for name in ("length", "interval", "acquisition_params", "range"):
-                answered[name] = getattr(processor, name)
-
-        records = _captured(_read)
-        assert set(answered) == {"length", "interval", "acquisition_params", "range"}
-        assert answered["length"] > 0
-        assert [r for r in records if r["level"].name in _SENTRY_LEVELS] == []
-
-    def test_a_scanless_file_is_still_named_the_empty_acquisition_it_is(self):
-        # A file with no scans at all has no MS1 scans either, so the guard
-        # tells the two apart by the scan count and re-raises for this one
-        # rather than reporting the narrower condition.
+    def test_extraction_refuses_it_before_anything_asks(self):
         with pytest.raises(EmptyAcquisitionError, match="contains no scans"):
             _thermo(_ScanlessRawFile())._get_sample_file_props()
 
-    def test_a_file_with_ms1_scans_is_not_refused(self):
-        # The guard must not stand between an ordinary acquisition and its
-        # properties; reaching the walk at all is what this pins.
-        class _WithMs1(_Ms2OnlyRawFile):
-            def scan_indices(self, polarity=None, t_min=None, t_max=None, ms_type=None):  # noqa: ARG002
-                return [1, 2, 3]
+    def test_asked_whether_it_has_survey_scans_it_raises(self):
+        # Not False: False is what sends a file down the path that stores it
+        # without peaks, and an empty file has nothing to store.
+        with pytest.raises(NoScansFoundError):
+            _thermo(_ScanlessRawFile())._records_survey_scans
 
-        processor = _thermo(_WithMs1())
-        assert processor._records_ms1_scans is True
 
-    def test_the_message_reaches_the_user_as_written(self):
-        assert describe_exception(EmptyAcquisitionError(NO_MS1_SCANS_MESSAGE)) == (
-            NO_MS1_SCANS_MESSAGE
+def _unfinished_raw(tmp_path):
+    """Write a .raw as an acquisition leaves it that ends before recording.
+
+    The front of the file - file header, sequence row, autosampler block and
+    raw file info - with every run header address zero, and filler where the
+    instrument method would follow. The reader fails on an address it takes
+    from the filler, as it does on one it takes from a method.
+    """
+
+    def text(value=""):
+        return struct.pack("<I", len(value)) + value.encode("utf-16-le")
+
+    file_header = bytearray(1356)
+    struct.pack_into("<H", file_header, 0, 0xA101)
+    file_header[2:20] = "Finnigan\0".encode("utf-16-le")
+    struct.pack_into("<I", file_header, 36, 66)
+    seq_row = bytes(64) + text() * 16 + bytes(4) + text() * 15
+    autosampler = bytes(24) + text()
+    # The method flag and date, seven integers, a reserved area, the address
+    # table's region with nothing recorded in it, then five label headings
+    # and the computer name.
+    info = bytes(20) + struct.pack("<7I", 1, 0, 0, 0, 0, 0, 0) + bytes(760)
+    info += bytes(1048) + text() * 6
+
+    path = tmp_path / "ORBI-1_unfinished.raw"
+    path.write_bytes(bytes(file_header) + seq_row + autosampler + info + b"\xff" * 6000)
+    return str(path)
+
+
+class TestThermoUnfinishedAcquisition:
+    """A file written without a run header fails as data, on being opened.
+
+    Driven through the processor's own file context and the real reader, over
+    a file on disk: what is under test is the error the reader raises when it
+    cannot open the file, and a stand-in handle would never be asked to.
+    """
+
+    @staticmethod
+    def _processor(tmp_path):
+        processor = RawProcessor(
+            socket_client=None, file_queue=Queue(), shutdown_event=Event()
         )
+        processor.file_to_process = _unfinished_raw(tmp_path)
+        return processor
+
+    def test_extraction_names_the_unfinished_acquisition(self, tmp_path):
+        with pytest.raises(EmptyAcquisitionError) as e:
+            self._processor(tmp_path)._get_sample_file_props()
+        assert str(e.value) == UNFINISHED_ACQUISITION_MESSAGE
+
+    def test_the_reader_error_is_kept_as_the_cause(self, tmp_path):
+        with pytest.raises(EmptyAcquisitionError) as e:
+            self._processor(tmp_path)._get_sample_file_props()
+        named = e.value.__cause__
+        assert isinstance(named, UnfinishedAcquisitionError)
+        assert isinstance(named.__cause__, OSError)
+
+    def test_it_is_reported_as_data_not_as_a_fault(self, tmp_path):
+        from mascope_runtime.logging import _SENTRY_LEVELS
+
+        processor = self._processor(tmp_path)
+        raised = []
+
+        def _extract():
+            try:
+                processor._get_sample_file_props()
+            except EmptyAcquisitionError as e:
+                raised.append(e)
+
+        records = _captured(_extract)
+        assert is_routine_file_failure(raised[0])
+        assert [r for r in records if r["level"].name in _SENTRY_LEVELS] == []
+
+    def test_a_file_cut_short_inside_its_front_stays_a_fault(self, tmp_path):
+        # It records no run header either, because it records nothing. An
+        # upload that stopped is not an acquisition that did.
+        processor = self._processor(tmp_path)
+        with open(processor.file_to_process, "r+b") as f:
+            f.truncate(1500)
+        with pytest.raises(OSError) as e:
+            processor._get_sample_file_props()
+        assert not is_routine_file_failure(e.value)
 
 
 class TestTofEmptyAcquisition:
@@ -370,7 +375,12 @@ class TestRoutineFailureReporting:
 
     @pytest.mark.parametrize(
         "message",
-        [EMPTY_ACQUISITION_MESSAGE, SINGLE_SCAN_MESSAGE, UNUSABLE_SCAN_TIMES_MESSAGE],
+        [
+            EMPTY_ACQUISITION_MESSAGE,
+            UNFINISHED_ACQUISITION_MESSAGE,
+            SINGLE_SCAN_MESSAGE,
+            UNUSABLE_SCAN_TIMES_MESSAGE,
+        ],
     )
     def test_message_reaches_the_user_as_written(self, message):
         # describe_exception prefixes the class name only for cryptic builtin

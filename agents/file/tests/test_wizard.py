@@ -13,7 +13,8 @@ import time
 
 import pytest
 
-from mascope_file_agent import __version__, wizard
+import mascope_sdk
+from mascope_file_agent import __version__, identity, wizard
 
 
 class FakeResponse:
@@ -135,7 +136,24 @@ def test_run_setup_wizard_happy_path(monkeypatch, tmp_path, capsys):
     assert settings["timeout"] == 3
     assert settings["instrument"] == "Orbi-Lab2"
     assert settings["filename_prefix"] == ""
+    assert settings["paired_as"] == "file-agent"
     assert "accepted the access token" in capsys.readouterr().out
+
+
+def test_setup_records_the_service_the_machine_was_paired_as(monkeypatch, tmp_path):
+    """Kept beside the token, which the server accepts under that name only."""
+    identity("instrument-agent")
+    source = tmp_path / "watched"
+    source.mkdir()
+    answers = iter(["mascope.example.com", "", str(source), "", "", "Orbi-Lab2", ""])
+    monkeypatch.setattr("builtins.input", lambda prompt: next(answers))
+    monkeypatch.setattr(wizard, "run_pairing", _pairing_stub())
+    _connection_ok(monkeypatch)
+
+    settings = wizard.run_setup_wizard({"paired_as": "file-agent"})
+
+    assert settings["access_token"] == "paired-token"
+    assert settings["paired_as"] == "instrument-agent"
 
 
 def test_run_setup_wizard_enables_subfolder_watching(monkeypatch, tmp_path):
@@ -770,13 +788,63 @@ def test_start_pairing_unsupported_server(monkeypatch, capsys):
     assert "does not support pairing" in capsys.readouterr().out
 
 
+def test_pairing_asks_for_the_service_the_process_said_it_is(monkeypatch):
+    """A program that embeds the agent pairs as who it said it is in identity().
+
+    Every later request reports that name, and the server accepts a device
+    token under its own service only: paired under any other, the machine
+    would hold a credential none of its requests could use.
+    """
+    identity("instrument-agent", version="6.0.0")
+    calls = _post_sequence(monkeypatch, [_started()])
+
+    wizard.start_pairing("mascope.example.com")
+
+    assert calls[0]["json"]["service_name"] == "instrument-agent"
+    # The program's version, which Paired machines shows, not the library's.
+    assert calls[0]["json"]["agent_version"] == "6.0.0"
+    # The name the paired credential is then presented under.
+    assert mascope_sdk.agent_headers("paired-token")["X-Service-Name"] == (
+        "instrument-agent"
+    )
+
+
+def test_a_refused_pairing_says_why(monkeypatch, capsys):
+    # What a server older than the service a process pairs as answers.
+    reason = (
+        "Validation error on route POST /api/auth/pairing/start. Value error, "
+        "Service 'instrument-agent' cannot be paired."
+    )
+    identity("instrument-agent")
+    _post_sequence(
+        monkeypatch, [FakeJsonResponse(422, {"error": reason, "detail": {}})]
+    )
+
+    assert wizard.start_pairing("mascope.example.com") is None
+    assert f"The server refused to pair this machine: {reason}" in (
+        capsys.readouterr().out
+    )
+
+
+@pytest.mark.parametrize(
+    "body", [{"detail": {"error_id": "abc"}}, {"error": "  "}, ["not", "an", "object"]]
+)
+def test_a_refusal_without_a_reason_is_reported_by_its_status(
+    monkeypatch, capsys, body
+):
+    _post_sequence(monkeypatch, [FakeJsonResponse(422, body)])
+
+    assert wizard.start_pairing("mascope.example.com") is None
+    assert "Unexpected response from the server (HTTP 422)" in capsys.readouterr().out
+
+
 def test_a_long_agent_version_is_clipped_before_pairing(monkeypatch):
     # A build stamped by `git describe` off a date-style release tag runs past
     # what the server stores. Clipped here rather than left for the server to
     # refuse: pairing is the only way a machine gets a credential, so failing
     # it over a version label would leave the machine unusable.
     monkeypatch.setattr(wizard.time, "sleep", lambda seconds: None)
-    monkeypatch.setattr(wizard, "__version__", "v2026.09.01-9b9e54d-394-g7e674438e")
+    identity(version="v2026.09.01-9b9e54d-394-g7e674438e")
     calls = _post_sequence(monkeypatch, [_started()])
 
     wizard.start_pairing("mascope.example.com")
@@ -816,6 +884,7 @@ def test_cancelling_pairing_keeps_the_answers_given_before_it(monkeypatch, tmp_p
     assert kept["recursive"] is True
     assert kept["mask"] == "*.h5"
     assert kept["instrument"] == "Orbi-Lab2"
+    assert "paired_as" not in kept  # nothing was paired, nor before
     # Still a KeyboardInterrupt, so every existing handler treats it as the
     # cancellation it is.
     assert isinstance(excinfo.value, KeyboardInterrupt)

@@ -4,6 +4,8 @@ Orbitrap raw files contain a rich set of metadata variables that provide critica
 
 The list focuses on the metadata fields relevant for Orbitrap Exploris instruments and may not be exhaustive for all Thermo raw file types or models.
 
+The spectrum / scan variables and the trailer variables below are what a scan's row holds in a file's scan table, under these names: `mascope_thermo.thermo.get_scan_table()` in the library, `GET /api/sample/files/{id}/scans` in the API and `mascope.sample_files.get_scans()` in the SDK. A trailer variable is spelled as the instrument labels it, with the colon (`FT Resolution:`), and which labels a file carries depends on the instrument model.
+
 ## Spectrum / Scan Variables
 
 - SpectrumPacketType: Data packet format/type for the spectrum.

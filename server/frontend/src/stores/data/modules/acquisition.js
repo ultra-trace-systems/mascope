@@ -114,13 +114,15 @@ export const useAcquisition = defineStore('app.data.acquisition', () => {
   // own room, so listing every instrument means holding every one of those
   // rooms - one focused instrument is not a special case of that, it is one
   // room instead of all of them. Reconciled rather than toggled, because the
-  // instrument list loads after the store and grows as files arrive.
+  // instrument list loads after the store and grows as files arrive. An
+  // instrument the user has no access to is listed too, marked disabled, and
+  // the server refuses its room: asking for it anyway only earns a refusal,
+  // logged as a warning, every time the list is shown.
   let subscribed = new Set()
   const rooms = computed(() => {
     if (!watching.value) return []
-    return instrument.focused
-      ? [instrument.focused.instrument]
-      : (instrument.list ?? []).map((known) => known.instrument)
+    const shown = instrument.focused ? [instrument.focused] : (instrument.list ?? [])
+    return shown.filter((known) => !known.disabled).map((known) => known.instrument)
   })
   watch(
     () => rooms.value.join(','),

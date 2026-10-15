@@ -10,7 +10,9 @@ serializable` out of the emit, and the user gets an error instead of a plot.
 The profile is held as float32 for transport, so a height read off it is such
 a scalar unless it is converted. That is the fall-back for a main isotope with
 profile signal in its window but no detected peak there - a target that is
-absent from the sample, or matched only far off its expected m/z.
+absent from the sample, or matched only far off its expected m/z - and for a
+main isotope of a sample with no detected peaks at all, such as a TOF file
+whose peak list came out empty.
 
 No DB, file I/O or Socket.IO server: `_process_isotope` is pure.
 """
@@ -53,15 +55,19 @@ def _profile_bump(center: float, height: float) -> xr.DataArray:
     return xr.DataArray(values, coords={"mz": mz}, dims="mz", name="sum_signal")
 
 
-def _context(index: int, main_isotope_height: float) -> IsotopeContext:
-    """A sample whose only detected peak sits outside both isotope windows."""
+def _context(
+    index: int, main_isotope_height: float, *, peaks: bool = True
+) -> IsotopeContext:
+    """A sample whose only detected peak sits outside both isotope windows,
+    or, with ``peaks=False``, a sample with no detected peaks at all."""
     averaged_signal = xr.concat(
         [_profile_bump(MAIN_MZ, PROFILE_HEIGHT), _profile_bump(SECOND_MZ, 2.0)],
         dim="mz",
     )
+    detected = [(594.5, MAIN_MZ + 0.014)] if peaks else []
     detected_peaks = xr.DataArray(
-        np.array([594.5]),
-        coords={"mz": [MAIN_MZ + 0.014]},
+        np.array([height for height, _ in detected], dtype=float),
+        coords={"mz": np.array([mz for _, mz in detected], dtype=float)},
         dims="mz",
         name="peak_heights",
     )
@@ -127,3 +133,26 @@ def test_the_isotopes_that_follow_scale_an_encodable_height():
     assert expected == PROFILE_HEIGHT * (
         RELATIVE_ABUNDANCES[1] / RELATIVE_ABUNDANCES[0]
     )
+
+
+def test_a_sample_with_no_detected_peaks_falls_back_to_its_profile():
+    """A sample whose peak list is empty has no peak heights to read at all.
+
+    The main isotope took its height from `filter_peaks(None)` and raised
+    `AttributeError` out of the controller, so the user got an error where
+    the profile was there to plot.
+    """
+    main = _unmatched_isotope(MAIN_MZ, RELATIVE_ABUNDANCES[0])
+    second = _unmatched_isotope(SECOND_MZ, RELATIVE_ABUNDANCES[1])
+
+    main_result = _process_isotope(main, _context(0, 0, peaks=False), None)
+    result = _process_isotope(
+        second, _context(1, main_result.main_isotope_height, peaks=False), None
+    )
+
+    assert type(main_result.main_isotope_height) is float
+    assert main_result.main_isotope_height == PROFILE_HEIGHT
+    for isotope_result in (main_result, result):
+        _encode(isotope_result.spectrum_traces)
+        assert isotope_result.match_count == 0
+        assert isotope_result.timeseries_traces == []

@@ -14,7 +14,7 @@ import json
 
 import numpy as np
 import pytest
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from test_utils import captured_logs
 
 from mascope_backend.api.lib.api_features import api_route
@@ -196,3 +196,14 @@ class TestResponseShape:
         response = await route_returning(file_response)()
 
         assert response is file_response
+
+    @pytest.mark.asyncio
+    async def test_a_streamed_response_is_returned_as_is(self):
+        # A handler that streams has rendered its own body, piece by piece;
+        # passing it to the JSON renderer would try to encode the response
+        # object itself.
+        streamed = StreamingResponse(iter(['{"data":', "[]}"]))
+
+        response = await route_returning(streamed)()
+
+        assert response is streamed

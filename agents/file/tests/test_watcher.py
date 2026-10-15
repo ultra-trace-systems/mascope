@@ -106,7 +106,7 @@ def test_a_file_gone_before_it_is_complete_is_a_line_not_a_traceback(
     agent = make_agent()
     said = []
     agent.logger.warning = said.append
-    agent.logger.exception = lambda message: pytest.fail(message)
+    agent.logger.exception = pytest.fail
 
     agent.watcher.on_filesystem_object_created(str(tmp_path / "x.raw"))
 

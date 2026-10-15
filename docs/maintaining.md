@@ -631,9 +631,10 @@ day. Once every agent machine **has** been re-paired, close that door:
 require_device_tokens = true
 ```
 
-then `mascope prod up`. Any `file-agent`, `tof-agent` or `export-agent` bearer
-token with no device behind it is then refused with a message telling the
-operator to re-pair, instead of being accepted as a person's token. It ships
+then `mascope prod up`. Any `file-agent`, `instrument-agent`, `tof-agent` or
+`export-agent` bearer token with no device behind it is then refused with a
+message telling the operator to re-pair, instead of being accepted as a
+person's token. It ships
 **off**, and turning it on before a machine is re-paired stops that machine's
 uploads - so treat it as the last step of the rollout, not the first. The TOF
 agent and the export agent have no pairing support on the client side, so it

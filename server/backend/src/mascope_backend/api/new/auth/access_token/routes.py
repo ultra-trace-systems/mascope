@@ -9,6 +9,7 @@ from mascope_backend.api.new.auth.dependencies import (
     guest_user,
     role_based_access,
 )
+from mascope_backend.api.new.auth.exceptions import ForbiddenAccessException
 from mascope_backend.api.new.auth.mfa.reauth import require_recent_mfa
 
 
@@ -30,7 +31,10 @@ async def access_token_regenerate_route(
     - tof-agent: editor or higher - for TOF agent access
     - file-agent: editor or higher - for File agent access
     - export-agent: editor or higher - for Export agent access
+    - instrument-agent: editor or higher - for the File Agent inside an
+      instrument control program
     - file-converter: internal service, managed automatically
+    - any other service: refused
 
     An account with a second factor must have presented a code recently. The
     token this returns is valid for a year and is not bound to the session that
@@ -44,9 +48,14 @@ async def access_token_regenerate_route(
     match service_name:
         case "mascope_sdk":
             await role_based_access(user, "guest")
-        case "tof-agent" | "file-agent" | "export-agent":
+        case "tof-agent" | "file-agent" | "export-agent" | "instrument-agent":
             await role_based_access(user, "editor")
         case "file-converter":
             raise InternalServiceAccessException()
+        case _:
+            # A service AccessTokenRequest accepts but no arm above names has
+            # no role rule, so it is minted for nobody rather than for anyone
+            # signed in.
+            raise ForbiddenAccessException()
 
     return await regenerate_access_token(user=user, service_name=service_name)

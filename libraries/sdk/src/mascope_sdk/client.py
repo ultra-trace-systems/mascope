@@ -93,6 +93,8 @@ class MascopeClient:
     :vartype batches: BatchesResource
     :ivar samples: Resource for sample operations.
     :vartype samples: SamplesResource
+    :ivar sample_files: Resource for sample file operations.
+    :vartype sample_files: SampleFilesResource
     :ivar matching: Resource for compound matching operations.
     :vartype matching: MatchingResource
     :ivar cheminfo: Resource for chemical information queries.
@@ -261,6 +263,7 @@ class MascopeClient:
         self._datasets: Any = None
         self._batches: Any = None
         self._samples: Any = None
+        self._sample_files: Any = None
         self._matching: Any = None
         self._cheminfo: Any = None
         self._ionization: Any = None
@@ -331,6 +334,15 @@ class MascopeClient:
 
             self._samples = SamplesResource(self)
         return self._samples
+
+    @property
+    def sample_files(self) -> "SampleFilesResource":
+        """Resource for sample file operations: a file's scan table."""
+        if self._sample_files is None:
+            from .resources.sample_files import SampleFilesResource
+
+            self._sample_files = SampleFilesResource(self)
+        return self._sample_files
 
     @property
     def matching(self) -> "MatchingResource":
@@ -1103,5 +1115,6 @@ if TYPE_CHECKING:
     from .resources.ionization import IonizationResource
     from .resources.matching import MatchingResource
     from .resources.peak_assignments import PeakAssignmentsResource
+    from .resources.sample_files import SampleFilesResource
     from .resources.samples import SamplesResource
     from .resources.workspaces import WorkspacesResource

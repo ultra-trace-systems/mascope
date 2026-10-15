@@ -68,6 +68,8 @@ async def test_orbi_apply_takes_the_range_from_the_sum_signal_it_asks_for():
         patch(f"{MODULE}.runtime") as runtime,
     ):
         m_compute_.get_sum_signal.return_value = full
+        # A store detected whole, which one factor moves
+        m_compute_.peak_store_streams.return_value = []
         m_io_.load_coord.side_effect = _load_coord
         m_io_.get_file_data_vars.return_value = [CACHED, "peak_timeseries"]
         m_io_.read_props.return_value = {"mz_calibration": None}
@@ -98,6 +100,7 @@ async def test_orbi_apply_already_applied_returns_the_full_sum_signal():
         patch(f"{MODULE}.runtime") as runtime,
     ):
         m_compute_.get_sum_signal.return_value = full
+        m_compute_.peak_store_streams.return_value = []
         m_io_.load_coord.side_effect = _load_coord
         # The same calibration is on the file already, so apply short-circuits
         m_io_.read_props.return_value = {

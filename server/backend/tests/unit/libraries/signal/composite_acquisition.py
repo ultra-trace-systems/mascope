@@ -10,9 +10,12 @@ A plain module, like ``scripted_acquisition``, so that the tests can import
 it by name.
 """
 
+from types import SimpleNamespace
+
 from scripted_acquisition import SAMPLE_FILENAME
 
 import mascope_file.io as m_io
+import mascope_file.name as m_name
 
 
 REAGENT = "FTMS - p NSI Full ms [40.0000-138.0000]"
@@ -51,3 +54,37 @@ def record_calibration(factor):
         SAMPLE_FILENAME,
         {"mz_calibration": {"par": {"calibration_factor": factor}}},
     )
+
+
+def store_rows():
+    """The test sample's peak store, row by row: m/z, what the instrument
+    recorded where the store keeps it, stream, whether its composite takes
+    the row, peak id, and the store's attributes."""
+    store = m_io.load_array(SAMPLE_FILENAME, "peak_timeseries")
+    return SimpleNamespace(
+        mz=store.mz.values,
+        recorded=(
+            store.mz_recorded.values if "mz_recorded" in store.variables else None
+        ),
+        stream=store.stream.values,
+        composite=store.composite.values,
+        peak_id=store.peak_id.values,
+        attrs=dict(store.attrs),
+    )
+
+
+def cached_sum_signals():
+    """The test sample's cached sum signals by name: each one's m/z axis,
+    the stream it says it is of, and whether it is a stitched one."""
+    path = m_name.parse_path_from_item_filename(SAMPLE_FILENAME)
+    cached = {}
+    for var in m_io.get_file_data_vars(path):
+        if not var.startswith("sum_signal"):
+            continue
+        group = m_io.open_zarr_store(m_name.filename_to_zarr_path(SAMPLE_FILENAME, var))
+        cached[var] = SimpleNamespace(
+            mz=m_io.load_coord(SAMPLE_FILENAME, var, "mz"),
+            stream=dict(group["sum_signal"].attrs).get("stream"),
+            stitched="segment" in group,
+        )
+    return cached

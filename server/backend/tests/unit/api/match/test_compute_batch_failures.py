@@ -13,24 +13,31 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi import HTTPException
+from test_utils import captured_logs
 
 from mascope_backend.api.controllers.match import match_controller
 from mascope_backend.api.controllers.match.match_controller import (
     AGGREGATION_FAILURE_REASON,
     FAILURE_REASON_MAX_CHARS,
     STALE_PEAK_STORE_REASON,
-    _is_stale_peak_store,
     _summarize_sample_failures,
     match_compute_batch,
 )
 from mascope_backend.api.lib.exceptions.api_exceptions import ApiException
+from mascope_backend.api.lib.stale_peak_store import is_stale_peak_store
+from mascope_backend.api.new.auth.config import auth_settings
 from mascope_signal.compute import StalePeakStoreError
 
 
 _MOD = "mascope_backend.api.controllers.match.match_controller"
 _FEATURES = "mascope_backend.api.lib.api_features"
 
-_USER = SimpleNamespace(id=7, username="tester", role_id="editor")
+_ROLES = auth_settings.ROLE_ACCESS_LEVELS
+_USER = SimpleNamespace(id=7, username="tester", role_id=_ROLES["editor"])
+#: An account whose own role is guest, whatever it is in a workspace.
+_GUEST_ACCOUNT = SimpleNamespace(
+    id=8, username="guest account", role_id=_ROLES["guest"], is_superuser=False
+)
 
 
 def _wrapped(user_message):
@@ -102,8 +109,13 @@ async def _compute(
     user=_USER,
     converter_available=True,
     rebuild_side_effect=None,
+    real_token=False,
 ):
     """Run match_compute_batch over ``samples`` with a stubbed per-sample step.
+
+    ``real_token`` leaves the file converter's token to the function that
+    gives it, for an account it gives none: it reads the account's role
+    before anything else.
 
     ``incomplete_ids`` stands in for samples an interrupted earlier run left
     with incomplete aggregates: they are what puts a batch in the aggregation
@@ -140,10 +152,18 @@ async def _compute(
         patch(
             f"{_MOD}.ensure_converter_available", new_callable=AsyncMock
         ) as converter,
-        patch(f"{_MOD}.get_access_token", new_callable=AsyncMock) as token,
+        patch(
+            f"{_MOD}.get_access_token",
+            **(
+                {"new": match_controller.get_access_token}
+                if real_token
+                else {"new_callable": AsyncMock}
+            ),
+        ) as token,
         patch(f"{_MOD}.request_peak_detection", new_callable=AsyncMock) as rebuild,
     ):
-        token.return_value = "token-1"
+        if not real_token:
+            token.return_value = "token-1"
         if rebuild_side_effect is not None:
             rebuild.side_effect = rebuild_side_effect
         if not converter_available:
@@ -381,6 +401,35 @@ class TestStalePeakStores:
         assert result["data"]["computed_samples_count"] == 1
         assert "Peak detection has been queued" not in notification.message
 
+    @pytest.mark.asyncio
+    async def test_an_account_the_converter_refuses_is_no_fault(self):
+        """An editor of the batch's workspace whose account is a guest: the
+        converter's token is the account's to be given, and it is given
+        none. Nothing is queued, and that is said once at INFO, where it was
+        an error with its traceback on every refresh such a person makes.
+
+        The token function is the real one: its refusal reaches a caller
+        wrapped as the API's own exception, so a stand-in that raises the
+        refusal bare proves nothing about what is logged."""
+        samples = [_make_sample("s1"), _make_sample("s2")]
+
+        with captured_logs("INFO") as records:
+            result, notification, rebuilds = await _compute(
+                samples,
+                [_matched(), _wrapped_stale()],
+                user=_GUEST_ACCOUNT,
+                real_token=True,
+            )
+
+        assert rebuilds == []
+        assert result["data"]["peak_rebuilds_queued"] == 0
+        assert "Peak detection has been queued" not in notification.message
+        said = [
+            record for record in records if "may not ask the file" in record["message"]
+        ]
+        assert [record["level"].name for record in said] == ["INFO"]
+        assert not [record for record in records if record["level"].name == "ERROR"]
+
 
 @pytest.fixture
 def summary_levels(monkeypatch):
@@ -483,19 +532,19 @@ class TestIsStalePeakStore:
     """The failure arrives wrapped, so the class is looked for on the chain."""
 
     def test_the_exception_itself(self):
-        assert _is_stale_peak_store(StalePeakStoreError("stale"))
+        assert is_stale_peak_store(StalePeakStoreError("stale"))
 
     def test_a_cause_one_level_down(self):
-        assert _is_stale_peak_store(_wrapped_stale())
+        assert is_stale_peak_store(_wrapped_stale())
 
     def test_a_context_rather_than_a_cause(self):
         """A bare `raise` inside an except block sets only __context__."""
         outer = _wrapped("something else")
         outer.__context__ = StalePeakStoreError("stale")
-        assert _is_stale_peak_store(outer)
+        assert is_stale_peak_store(outer)
 
     def test_an_unrelated_failure(self):
-        assert not _is_stale_peak_store(_wrapped("unreadable file"))
+        assert not is_stale_peak_store(_wrapped("unreadable file"))
 
     def test_a_cyclic_chain_terminates(self):
         """A hand-built chain can point back at itself."""
@@ -503,7 +552,7 @@ class TestIsStalePeakStore:
         second = _wrapped("two")
         first.__cause__ = second
         second.__cause__ = first
-        assert not _is_stale_peak_store(first)
+        assert not is_stale_peak_store(first)
 
 
 class TestSummarizeSampleFailures:

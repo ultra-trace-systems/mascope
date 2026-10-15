@@ -291,3 +291,17 @@ neighbours too, not just the new tests.
 - Whether the 360-day access-token lifetime should shrink at the same time.
   Independent of MFA, but the same threat model, and MFA makes the disparity
   starker.
+- **Web session lifetime and revocation. Decided 2026-10-14 (MAS-77):** the
+  7-day session JWT stays and gains an issued-at claim. The dependency that
+  already loads the user row on every cookie request refuses a token issued
+  before the row's cutoff: `password_changed_at`, and a `sessions_revoked_at`
+  stamped by an account disable, by the forced-password-change sweep when it
+  arms the account, and by a sign-out-everywhere action. No new round trip,
+  fails closed, immediate. The socket session stores the issued-at and
+  subscribe makes the same comparison; evicting sockets already subscribed is
+  its own change. Not taken: a short access token with a refresh credential
+  (a second revocable store, silent refresh in the frontend, revocation
+  lagging by the access lifetime), kept available should a genuinely short
+  token ever be required; a deny-list keyed on a token id (a Redis call on
+  every cookie request, the pending token's fail-open precedent, and a
+  per-user index to reach every session).

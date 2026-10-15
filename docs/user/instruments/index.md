@@ -87,7 +87,10 @@ it last connected with, next to when it was last seen — so an upgrade across
 several instrument PCs can be followed from the web app. A machine paired by an
 older agent shows neither until it runs one that reports them. Both follow
 what the agent reports now, so changing `instrument` in a machine's
-configuration and restarting it updates the list on its next upload.
+configuration and restarting it updates the list on its next upload. A machine
+whose instrument control program runs the File Agent inside itself is listed
+as an *Instrument Agent* rather than a *File Agent*; it pairs, renews its token
+and uploads in the same way.
 
 Setup also asks whether to **verify the server's TLS certificate**. Leave
 this on for a normal Mascope server; answer No only for a self-signed or
@@ -108,6 +111,7 @@ All settings live in one file on the instrument PC:
 | ----------------- | ------------------------------------------------------------------ |
 | `host`            | Mascope server address, e.g. `mascope.example.com`                 |
 | `access_token`    | Device token (filled by pairing, renewed automatically)            |
+| `paired_as`       | The service the token was paired as, e.g. `file-agent` (written with the token; do not edit it, the token is accepted under that name only) |
 | `source`          | Full path of the folder watched for new data files                 |
 | `recursive`       | `true` to also watch subfolders of `source` (default `false`)      |
 | `verify_tls`      | `true` to verify the server's TLS certificate (default `true`)     |
@@ -214,19 +218,23 @@ run_0042.raw: its acquisition record went with it.
 The server keeps the record with the file. Where the record names the file's
 chemistry, the file is bound to the ionization mode that has that token,
 before the server looks for a token in the file's name, and Raw files says
-so: "Bound to 'Nitrate' (-) by its acquisition record." A record that names a
+so, while the file is processed and once it is: "Matched 1 sample. Bound to
+'Nitrate' (-) by its acquisition record." The agent's line for the processed
+file says the same. A record that names a
 token no mode has does not hold the file up: it is bound by its name as
 before, or waits for a chemistry. Either way its status in Raw files says
 what the record named, and goes on saying it once the file is processed, so
 a record and a file name that disagree do not go unnoticed. Once an
 ionization mode has the token, select the files that waited in Raw files and
 re-process them: they are bound by their records then. A chemistry somebody
-chose for a file by hand is kept, unless the file's name carries an
-ionization mode token: such a file is bound again by its record, or by that
-token. For a file whose name carries none, choosing by hand is also how a
-record that names the wrong chemistry is overruled. Re-processing takes the
-*admin* role on the instrument. With the *editor* role, right-click a file
-and choose its chemistry instead.
+chose for a file by hand is kept, whatever the file's record and its name
+say, until somebody chooses again. So choosing by hand is how a record that
+names the wrong chemistry is overruled, and Raw files goes on saying that
+somebody chose: "Matched 1 sample. Bound to 'Nitrate' (-) as chosen by
+hand." To have such a file bound by its record after all, choose the
+chemistry its record names. Re-processing takes the *admin* role on the
+instrument. With the *editor* role, right-click a file and choose its
+chemistry instead.
 
 A record never keeps a file from being uploaded:
 

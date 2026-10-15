@@ -44,6 +44,9 @@ const { search, previewCalls, handlers, fetchResult } = vi.hoisted(() => {
 })
 
 let focusedSampleId
+// The focused sample itself, behind a getter so a test can focus one that has
+// no ionization mode.
+let focusedSample
 
 vi.mock('@/stores', () => ({
   useApp: () => ({
@@ -52,7 +55,9 @@ vi.mock('@/stores', () => ({
         get focusedId() {
           return focusedSampleId.value
         },
-        focused: { ionization_mode_id: 'mode-1' }
+        get focused() {
+          return focusedSample.value
+        }
       },
       peak: { list: [PEAK], focused: PEAK },
       target: { compound: { list: [] } },
@@ -157,6 +162,7 @@ beforeEach(() => {
   localStorage.clear()
   setActivePinia(createPinia())
   focusedSampleId = ref('si-1')
+  focusedSample = ref({ ionization_mode_id: 'mode-1' })
   previewCalls.length = 0
   handlers.clear()
 })
@@ -384,5 +390,55 @@ describe('PanePeakSearch ignoring the searches it moved on from', () => {
 
     expect(wrapper.vm.loading).toBe(true)
     expect(wrapper.vm.pendingProcessId).toMatch(/^p-\d+$/)
+  })
+})
+
+// A sample need not have an ionization mode the browser holds: an acquisition
+// whose fragmentation scans were filed without a chemistry has none, and a mode
+// can be deleted under a sample. The pane used to read the mode's mechanisms
+// off `undefined` for such a sample, and the error took its watcher with it.
+describe('PanePeakSearch on a sample without an ionization mode', () => {
+  // Vue hands an error thrown in a watcher to the app's error handler rather
+  // than to whoever mounted the pane, so mounting alone would not notice one.
+  async function mountCatchingErrors() {
+    const errors = []
+    mount(PanePeakSearch, {
+      props: { height: 400 },
+      global: {
+        stubs: STUBS,
+        directives: { tooltip: {}, help: {} },
+        config: { errorHandler: (error) => errors.push(error) }
+      }
+    })
+    await flushPromises()
+    await flushPromises()
+    return errors
+  }
+
+  it.each([
+    ['no mode at all', { ionization_mode_id: null }],
+    ['a mode the browser does not hold', { ionization_mode_id: 'mode-gone' }]
+  ])('reads the mechanisms of a sample with %s without an error', async (_, sample) => {
+    focusedSample.value = sample
+
+    expect(await mountCatchingErrors()).toEqual([])
+  })
+
+  it('launches no search, having no mechanism to search under', async () => {
+    focusedSample.value = { ionization_mode_id: null }
+
+    await mountPane()
+
+    // The fields resolved as they do for any sample, so it is the missing
+    // mechanisms that hold the search back, and nothing else.
+    expect(previewCalls.length).toBeGreaterThan(0)
+    expect(search).not.toHaveBeenCalled()
+  })
+
+  it('still searches a sample that has one', async () => {
+    await mountPane()
+
+    expect(search).toHaveBeenCalled()
+    expect(lastSearch().ionization_mechanism_ids).toEqual(['mech-1'])
   })
 })

@@ -14,7 +14,12 @@
 version: 2
 updates:
   - package-ecosystem: github-actions
-    directory: /
+    # "/" is the workflows in .github/workflows. A composite action anywhere
+    # else is read only if its directory is named, and the pins inside one
+    # that is not named are never refreshed.
+    directories:
+      - /
+      - /.github/actions/demo-bundle-cache
     target-branch: develop
     schedule:
       interval: weekly

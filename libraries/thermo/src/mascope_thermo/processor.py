@@ -14,12 +14,16 @@ from mascope_backend.file_converter.base_processor import (
 )
 from mascope_backend.file_converter.errors import (
     EMPTY_ACQUISITION_MESSAGE,
-    NO_MS1_SCANS_MESSAGE,
+    UNFINISHED_ACQUISITION_MESSAGE,
     EmptyAcquisitionError,
 )
 from mascope_thermo.backend import open_backend
 from mascope_thermo.streams import pooled_ms1_streams, scan_streams
-from mascope_thermo.thermo import NoScansFoundError, get_polarity_options
+from mascope_thermo.thermo import (
+    NoScansFoundError,
+    UnfinishedAcquisitionError,
+    get_polarity_options,
+)
 
 
 _log = logging.getLogger(__name__)
@@ -180,22 +184,22 @@ class RawProcessor(BaseFileProcessor):
 
     @property
     @with_file_context
-    def _records_ms1_scans(self) -> bool:
+    def _records_survey_scans(self) -> bool:
         """Whether the acquisition recorded any MS1 scans.
 
         Peak detection and the instrument-function fit both read MS1, so an
-        acquisition of fragmentation scans alone reaches the fit with nothing
-        to run on. Asking here is what lets that be reported as a property of
-        the data: left to the fit, it surfaces as the reader's own
-        ``NoScansFoundError`` from inside a traceback, which reads as a fault
-        in Mascope and wakes error monitoring.
+        acquisition of fragmentation scans alone would reach the fit with
+        nothing to run on, and fail there on the reader's own
+        ``NoScansFoundError`` - a traceback that reads as a fault in Mascope.
+        Asking here is what lets such a file be stored instead, without a fit
+        and without peaks (``_process_without_survey_scans``): every property
+        the extraction reads is answerable from its MS2 scans, and so are the
+        MS2 reads.
 
-        A file holding no scans at all must keep being named the empty
-        acquisition it is rather than the narrower MS1-less condition, so the
-        two are told apart -- but only once the MS1 selection has already come
-        back empty, and by the scan count, which the reader knows without
-        walking the file. Selecting every scan up front to answer the same
-        question would put a second whole-file sweep on every import.
+        A file holding no scans at all is a different condition, the empty
+        acquisition the extraction has already refused by the time this is
+        asked. The two are still told apart here, by the scan count, so that
+        an empty file can never be taken for one with only fragmentation scans.
 
         :return: True when at least one MS1 scan was recorded
         :rtype: bool
@@ -220,20 +224,25 @@ class RawProcessor(BaseFileProcessor):
         later is covered by construction, and both reader backends are covered
         by the same one.
 
-        A file with scans but no MS1 scan among them is the other condition
-        the walk cannot see: every property it reads is answerable from the
-        MS2 scans, so extraction succeeds and the file fails later, inside the
-        instrument-function fit. It is checked up front instead.
+        A file with scans but no MS1 scan among them is not refused here: every
+        property the walk reads is answerable from its MS2 scans, and
+        ``_process_file`` stores it without peak detection
+        (``_records_survey_scans``).
+
+        A file written without a run header does not open at all, and the
+        reader says so from the first property that asks for the file. It is
+        named apart from the scanless file, because scans may have been
+        recorded in it that nothing can reach.
 
         :return: The properties extracted from the file
         :rtype: SampleFileProps
-        :raises EmptyAcquisitionError: When the file recorded no scans, or none
-            that peak detection can run on.
+        :raises EmptyAcquisitionError: When the file recorded no scans, or
+            was never finished.
         """
         try:
-            if not self._records_ms1_scans:
-                raise EmptyAcquisitionError(NO_MS1_SCANS_MESSAGE)
             return super()._get_sample_file_props()
+        except UnfinishedAcquisitionError as e:
+            raise EmptyAcquisitionError(UNFINISHED_ACQUISITION_MESSAGE) from e
         except NoScansFoundError as e:
             raise EmptyAcquisitionError(EMPTY_ACQUISITION_MESSAGE) from e
 

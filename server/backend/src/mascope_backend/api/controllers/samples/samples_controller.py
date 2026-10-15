@@ -1,14 +1,27 @@
 import asyncio
+from dataclasses import dataclass
 from datetime import datetime
 
 import numpy as np
+from fastapi import HTTPException
 from sqlalchemy import Float, Integer, and_, cast, func, select
 
 import mascope_signal.compute as m_compute
+from mascope_backend.api.controllers.sample.files.process.census import (
+    holds_only_fragmentation_scans,
+)
 from mascope_backend.api.controllers.samples.lib.samples_fetch import fetch_sample
+from mascope_backend.api.controllers.samples.lib.samples_segments import (
+    read_sample_segments,
+    with_stream_rows,
+)
 from mascope_backend.api.lib.api_features import api_controller
-from mascope_backend.api.lib.exceptions.api_exceptions import NotFoundException
+from mascope_backend.api.lib.exceptions.api_exceptions import (
+    ApiException,
+    NotFoundException,
+)
 from mascope_backend.api.lib.sorting import order_by_column
+from mascope_backend.api.lib.stale_peak_store import is_stale_peak_store
 from mascope_backend.api.models.samples.sample_pydantic_model import SampleSortColumn
 from mascope_backend.api.models.target.collections.config import (
     target_collection_config,
@@ -22,7 +35,13 @@ from mascope_backend.db import (
 from mascope_backend.db.views import Sample
 from mascope_backend.runtime import runtime
 from mascope_file.io import load_coord, load_peak_data
+from mascope_file.name import get_sample_file_type
 from mascope_signal.peak import get_peaks
+from mascope_thermo.thermo import NoScansFoundError
+
+
+# How many samples a refusal names before it counts the rest.
+_MAX_NAMED_SAMPLES = 10
 
 
 def _nearest_listed_mz(filename: str, peak_mz: float) -> float:
@@ -366,6 +385,11 @@ async def get_sample_peaks(
         mz_min=mz_min,
         mz_max=mz_max,
     )
+    # Where the sample's spectrum is stitched from several scan streams, the
+    # stream each peak came from: nothing is rescaled where two streams meet,
+    # so a peak's intensity reads against its own segment. None otherwise,
+    # for the peaks and for the segments alike.
+    segments = await _segments_of(sample)
 
     # Carried by either answer. With every peak left out of a time-ranged read
     # the answer is empty, and "no peaks found" on its own reads as a sample
@@ -395,6 +419,8 @@ async def get_sample_peaks(
                 "sparsity": [],
                 "signal_to_noise": [],
                 "match": [] if matches else None,
+                "segment": [] if segments else None,
+                "segments": segments.described if segments else None,
             },
         }
 
@@ -408,6 +434,8 @@ async def get_sample_peaks(
         # the noise where there is one and against abundance alone where there
         # is not, and a zero would say "measured, and noise-free".
         "signal_to_noise": peak_data.signal_to_noise,
+        "segment": peak_data.streams if segments else None,
+        "segments": segments.described if segments else None,
     }
     if areas:
         response_data["area"] = peak_data.areas
@@ -516,13 +544,22 @@ async def get_sample_peak_timeseries(
     )
 
     # Step 3: Get filtered scan timestamps using sample's polarity and time range (adjusted values)
-    time_array = await asyncio.to_thread(
-        m_compute.get_scan_timestamps,
-        base_filename=sample.filename,
-        t_min=t_min_eff,
-        t_max=t_max_eff,
-        polarity=sample.polarity,
-    )
+    try:
+        time_array = await asyncio.to_thread(
+            m_compute.get_scan_timestamps,
+            base_filename=sample.filename,
+            t_min=t_min_eff,
+            t_max=t_max_eff,
+            polarity=sample.polarity,
+        )
+    except NoScansFoundError:
+        # The scans asked for are MS1 scans. An acquisition of fragmentation
+        # scans alone has none, and so no peak with a timeseries: answered
+        # as no scans in the range are, below, as the spectrum is. A
+        # selection of an MS1 sample that holds nothing still fails.
+        if not await holds_only_fragmentation_scans(sample.filename):
+            raise
+        time_array = []
 
     if len(time_array) == 0:
         return {
@@ -624,6 +661,38 @@ async def get_sample_peak_timeseries(
     }
 
 
+@dataclass(frozen=True)
+class _ListedSegments:
+    """A sample's segments, read and described for an answer."""
+
+    described: list[dict]
+
+
+async def _segments_of(sample) -> _ListedSegments | None:
+    """The segments of a sample's composite with what its file's stream rows
+    say of them, or None where its store stitches nothing of its polarity.
+
+    None as well for a store that cannot say - one that carries no map, or
+    only part of what a per-stream store does. The peak listing answers for
+    such a store as it did before it named segments, and what is wrong with
+    the store is said by the reads that refuse it."""
+    try:
+        segments = await asyncio.to_thread(
+            read_sample_segments, sample.filename, sample.polarity
+        )
+    except ValueError:
+        return None
+    if segments is None:
+        return None
+    return _ListedSegments(
+        await with_stream_rows(sample.sample_file_id, segments.segments)
+    )
+
+
+#: The unit of a sample spectrum's intensities: averaged over its scans.
+SPECTRUM_INTENSITY_UNIT = "counts/s"
+
+
 @api_controller()
 async def get_sample_spectrum(
     sample_item_id: str,
@@ -668,7 +737,7 @@ async def get_sample_spectrum(
     )
 
     # - Compute averaged spectrum in the time range with polarity filtering
-    intensity_unit = "counts/s"
+    intensity_unit = SPECTRUM_INTENSITY_UNIT
 
     # Use specific time range with polarity filtering.
     # One thread hop spans the call and the .tolist() materialization: the
@@ -693,9 +762,31 @@ async def get_sample_spectrum(
             spectrum = spectrum.sel(mz=slice(mz_min, mz_max)).compute()
         # Filter out NaN values to ensure JSON serialization
         spectrum = spectrum.dropna(dim="mz", how="any")
-        return spectrum.mz.values.tolist(), spectrum.values.tolist()
+        # A stitched signal says so itself: its samples carry their segment
+        segments = (
+            read_sample_segments(filename, polarity)
+            if "segment" in spectrum.coords
+            else None
+        )
+        runs = (
+            segments.runs_of(spectrum.mz.values, spectrum.segment.values)
+            if segments
+            else None
+        )
+        return spectrum.mz.values.tolist(), spectrum.values.tolist(), segments, runs
 
-    spectrum_arrays = await asyncio.to_thread(_spectrum_arrays)
+    try:
+        spectrum_arrays = await asyncio.to_thread(_spectrum_arrays)
+    except NoScansFoundError:
+        # A raw Orbitrap reader raises for a selection that holds no scans.
+        # For the sample of an acquisition of fragmentation scans alone, which
+        # has no MS1 scan in any window, that is the answer below: there is
+        # no spectrum to show, and a browser opening such a sample is not
+        # told its request was at fault. A selection of an MS1 sample that
+        # holds nothing still is.
+        if not await holds_only_fragmentation_scans(filename):
+            raise
+        spectrum_arrays = None
 
     # Check if spectrum computation returned None (no data found)
     if spectrum_arrays is None:
@@ -712,10 +803,12 @@ async def get_sample_spectrum(
                 "mz": [],
                 "intensity": [],
                 "intensity_unit": intensity_unit,
+                "segments": None,
+                "runs": None,
             },
         }
 
-    mz_values, intensity_values = spectrum_arrays
+    mz_values, intensity_values, segments, runs = spectrum_arrays
 
     # - Return the spectrum data with metadata
     message = f"Retrieved spectrum data with {len(mz_values)} m/z points from sample '{sample.sample_item_name}' with '{sample.polarity}' polarity."
@@ -730,6 +823,17 @@ async def get_sample_spectrum(
             "mz": mz_values,
             "intensity": intensity_values,
             "intensity_unit": intensity_unit,
+            # Where the spectrum is stitched from several scan streams: the
+            # streams, and the map's runs in m/z order, each with the range
+            # of positions its samples take in the arrays above. Nothing is
+            # rescaled where two runs meet, so the signal can step there.
+            # None for a spectrum of one stream, which is nearly every one.
+            "segments": (
+                await with_stream_rows(sample.sample_file_id, segments.segments)
+                if segments
+                else None
+            ),
+            "runs": runs,
         },
     }
 
@@ -754,6 +858,8 @@ async def get_samples_centroids(
     :type process_id: str | None, optional
     :param parent_id: Parent process identifier for tracking background operations, defaults to None.
     :type parent_id: str | None, optional
+    :raises HTTPException: 422 when any of the samples has no Orbitrap raw
+        file to read per-scan centroids from.
     :return: A dictionary containing the extracted centroids for each sample item ID.
     :rtype: dict
     """
@@ -773,6 +879,30 @@ async def get_samples_centroids(
         stmt = stmt.where(Sample.sample_item_id.in_(sample_item_ids))
         result = await session.execute(stmt)
         sample_items = result.scalars().all()
+
+    # Per-scan centroids are read from an Orbitrap raw file. A request naming
+    # any sample without one - a TOF sample, or one whose raw file is not
+    # kept - is refused before anything is extracted, as the request it is
+    # rather than as a fault here.
+    files = [(sample.sample_item_id, sample.filename) for sample in sample_items]
+    without_raw = await asyncio.to_thread(
+        lambda: [
+            item_id
+            for item_id, filename in files
+            if get_sample_file_type(filename) != "orbi_raw"
+        ]
+    )
+    if without_raw:
+        named = ", ".join(without_raw[:_MAX_NAMED_SAMPLES])
+        if len(without_raw) > _MAX_NAMED_SAMPLES:
+            named += f" and {len(without_raw) - _MAX_NAMED_SAMPLES} more"
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "Per-scan centroids are read from Orbitrap raw files, and "
+                f"these samples have none: {named}"
+            ),
+        )
 
     # Step 2: Extract centroids for each sample item
     centroids = dict()
@@ -833,6 +963,12 @@ async def get_samples_spectra(
     :raises ValueError: If no sample_item_ids are provided or if more than 100 sample_item_ids are provided
     :raises ValueError: If the time limits are invalid or if the m/z range is invalid
     :return: A dictionary containing the spectra data for each sample item, including m/z values and intensities.
+        One entry per sample asked for, in the order asked. A sample whose
+        file's peak store is stale has an empty spectrum with a ``message``
+        saying why, and is listed under ``stale`` with its file, so that
+        whoever asked can have the store rebuilt. The ``warnings`` list says
+        the same in a sentence: it is what a client that reads only
+        ``data`` is told by, where the whole request failed before.
     :rtype: dict
     """
     if not sample_item_ids:
@@ -848,16 +984,65 @@ async def get_samples_spectra(
 
     # Prepare the response data
     spectra_data = []
+    stale: list[dict] = []
     for sample in sample_data_list:
-        spectrum_response = await get_sample_spectrum(
-            sample.sample_item_id, t_min, t_max, mz_min, mz_max
-        )
+        try:
+            spectrum_response = await get_sample_spectrum(
+                sample.sample_item_id, t_min, t_max, mz_min, mz_max
+            )
+        except ApiException as error:
+            if not is_stale_peak_store(error):
+                raise
+            # A stale store is one file's condition, and its rebuild is not
+            # this request's to wait for: the sample keeps its place in the
+            # answer, empty, and every other sample is answered.
+            stale.append(
+                {
+                    "sample_item_id": sample.sample_item_id,
+                    "sample_file_id": sample.sample_file_id,
+                    "filename": sample.filename,
+                }
+            )
+            spectra_data.append(
+                {
+                    "mz": [],
+                    "intensity": [],
+                    "intensity_unit": SPECTRUM_INTENSITY_UNIT,
+                    "segments": None,
+                    "runs": None,
+                    "message": error.user_message,
+                }
+            )
+            continue
         spectra_data.append(spectrum_response["data"])
 
+    message = "Spectra retrieved successfully."
+    warnings: list[str] = []
+    if stale:
+        files = sorted({entry["filename"] for entry in stale})
+        # Beside the data and not only in the message: the SDK pairs `data`
+        # with the ids it asked for, so a stale sample is rows that are not
+        # there, and `warnings` is the one thing it logs of an answer.
+        warnings.append(
+            f"No spectrum was read for {len(stale)} of the {len(spectra_data)} "
+            f"sample{'s' if len(spectra_data) != 1 else ''} asked for: the peak "
+            f"data of {len(files)} sample file{'s' if len(files) != 1 else ''} "
+            f"has to be rebuilt first ({', '.join(files)})."
+        )
+        message = (
+            f"Spectra retrieved for {len(spectra_data) - len(stale)} of "
+            f"{len(spectra_data)} samples. The peak data of "
+            f"{len(files)} sample file{'s' if len(files) != 1 else ''} has to be "
+            "rebuilt before the spectra of the other "
+            f"sample{'s' if len(stale) != 1 else ''} can be read: "
+            f"{', '.join(files)}."
+        )
     return {
-        "message": "Spectra retrieved successfully.",
+        "message": message,
         "results": len(spectra_data),
+        "warnings": warnings,
         "data": spectra_data,
+        "stale": stale,
     }
 
 

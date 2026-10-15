@@ -11,17 +11,26 @@ list.
 
 The detail is one or two plain sentences for a person: what the status means
 for this file, and, for a file whose MS1 scans of one polarity come from more
-than one scan stream, that peak detection pools them.
+than one scan stream, that peak detection pools them. A file stitched from
+its streams says more of them: what two scan ranges read where they overlap,
+and which ranges have no fit of their own and run on a neighbour's m/z
+calibration. Its ranges are named as the views name them, by scan range, so
+that what is said of them has room inside the detail's bound.
 """
 
 import asyncio
 from collections.abc import Collection
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
 from sqlalchemy import or_, update
 
-import mascope_file.io as m_io
 import mascope_signal.compute as m_compute
+import mascope_signal.mz_factor as m_factor
+import mascope_signal.stitch as m_stitch
+from mascope_backend.api.controllers.samples.lib.samples_segments import (
+    segment_label,
+)
 from mascope_backend.api.models.sample.files.config import (
     IN_PROGRESS,
     STALLED_AFTER,
@@ -36,11 +45,17 @@ from mascope_backend.method_keys import usable_streams
 from mascope_backend.runtime import runtime
 from mascope_backend.socket.records.service import emit_record_updated
 from mascope_file.io import read_props
+from mascope_thermo.scan_filter import parse_stream_key
 
 
 #: Upper bound on a stored detail. An error's text can carry a whole SQL
-#: statement or traceback summary; the detail is for a person to read.
-_DETAIL_LIMIT = 1000
+#: statement or traceback summary; the detail is for a person to read. The
+#: detail of a stitched file says the most a file's does: what bound it, why
+#: its calibration is below the bar and which ranges run on a neighbour's,
+#: its streams, and what they read where they overlap - over 1,100
+#: characters for a four-range layout, the overlap readings last. The column
+#: is ``Text``, so the bound is this module's alone.
+_DETAIL_LIMIT = 2000
 
 
 def _clip(detail: str | None) -> str | None:
@@ -74,15 +89,18 @@ def pooled_streams_note(
     Unless the file's peaks were detected per stream and stitched. Its peak
     store then holds a peak list for each and the map that makes one
     spectrum of them, and saying they are pooled would be wrong: the
-    sentence says they are stitched instead.
+    sentence says they are stitched instead, and names each stream by its
+    scan range, as the sample's views and everything else the detail says
+    of a stitched file do (``segment_label``). The full keys are in the
+    file's stream rows; four of them alone take a quarter of the detail.
 
     :param streams: The file's scan stream census, as
         :func:`read_scan_streams` returns it: every entry a dict with a dict
         ``signature``.
     :param stitched: The keys of the streams the file's peak store holds a
         peak list for each of, under a stitch map, as
-        :func:`read_store_stream_keys` returns them. Empty for a file whose
-        store is pooled, which is nearly every file.
+        :func:`read_store_stitch` reads them. Empty for a file whose store is
+        pooled, which is nearly every file.
     :return: One sentence per polarity that holds more than one MS1 stream,
         or None when none does.
     """
@@ -100,7 +118,7 @@ def pooled_streams_note(
     notes = [
         (
             f"Polarity {polarity} stitches {len(keys)} MS1 scan streams into one "
-            f"spectrum: {'; '.join(keys)}."
+            f"spectrum: {'; '.join(segment_label(key) for key in keys)}."
             if all(key in stitched for key in keys)
             else f"Polarity {polarity} pools {len(keys)} MS1 scan streams into "
             f"one peak list: {'; '.join(keys)}."
@@ -146,40 +164,59 @@ async def read_scan_streams(filename: str) -> list[dict] | None:
         return None
 
 
-def _store_stream_keys(filename: str) -> list[str]:
-    """Synchronous body of :func:`read_store_stream_keys`."""
+@dataclass(frozen=True)
+class StoreStitch:
+    """What a stored file's peak store says of its stitch."""
+
+    #: The keys of the streams the file's peaks were detected per and
+    #: stitched by; ``[]`` for a store that holds one peak list per
+    #: polarity, which is nearly every store
+    keys: list[str] = field(default_factory=list)
+    #: What two of those streams read where they overlap, as the store
+    #: recorded it at detection (``mascope_signal.stitch.overlap_readings``)
+    overlaps: list[dict] = field(default_factory=list)
+
+
+def _store_stitch(filename: str) -> StoreStitch:
+    """Synchronous body of :func:`read_store_stitch`."""
     try:
-        store = m_io.load_array(filename, var="peak_timeseries")
-        keys = m_compute.peak_store_streams(store)
-        if keys:
-            # A per-stream store without a map is not stitched; every read
-            # of it is refused as stale, and so is this one
-            m_compute.peak_store_stitch_map(store)
-        return keys
+        store = m_compute.read_peak_store_header(filename)
+        if not store.streams:
+            return StoreStitch()
+        # A per-stream store without a map is not stitched; every read of it
+        # is refused as stale, and so is this one
+        store.stitch_map()
+        return StoreStitch(
+            store.streams, store.attrs.get(m_stitch.STITCH_OVERLAPS_ATTR) or []
+        )
     except Exception:  # noqa: BLE001 - a missing store is not a processing error
         runtime.logger.opt(exception=True).debug(
-            f"Could not read the peak store's streams of {filename}"
+            f"Could not read the peak store's stitch of {filename}"
         )
-        return []
+        return StoreStitch()
 
 
-async def read_store_stream_keys(filename: str) -> list[str]:
-    """The keys of the streams a stored file's peaks were detected per and
-    stitched by, read from its peak store.
+async def read_store_stitch(filename: str) -> StoreStitch:
+    """The streams a stored file's peaks were detected per and stitched by,
+    and what they read where they overlap, from its peak store.
 
-    Empty for a file whose store holds one peak list per polarity, which is
-    nearly every file, and for one with no store or an unreadable one: like
-    the census, nothing that reads this may cost a file its processing.
+    Off the store's metadata alone (``mascope_signal.compute.read_peak_store_header``),
+    and once for both: this runs at every registration and every run, of
+    every file, and nearly every store is pooled and has nothing to say.
+    Empty for such a store, for one with no map, and for none at all or an
+    unreadable one: like the census, nothing that reads this may cost a file
+    its processing.
 
     :param filename: The sample file's stored name.
-    :return: The store's stream keys, or ``[]``.
+    :return: The store's stitch, empty where it has none.
     """
-    return await asyncio.to_thread(_store_stream_keys, filename)
+    return await asyncio.to_thread(_store_stitch, filename)
 
 
 async def read_pooled_streams_note(filename: str) -> str | None:
     """:func:`pooled_streams_note` for a stored file, read from its ``.props``
-    and its peak store.
+    and its peak store, with what a stitched file's ranges read where they
+    overlap (:func:`overlap_readings_note`).
 
     :param filename: The sample file's stored name.
     :return: The note, or None.
@@ -187,7 +224,116 @@ async def read_pooled_streams_note(filename: str) -> str | None:
     streams = await read_scan_streams(filename)
     if not streams:
         return None
-    return pooled_streams_note(streams, await read_store_stream_keys(filename))
+    stitch = await read_store_stitch(filename)
+    return compose_detail(
+        pooled_streams_note(streams, stitch.keys),
+        overlap_readings_note(stitch.keys, stitch.overlaps),
+    )
+
+
+def overlap_readings_note(keys: list[str], readings: list[dict]) -> str | None:
+    """What the scan ranges of a stitched file read where two of them overlap.
+
+    Two ranges that both record an ion read it apart, in m/z and in
+    intensity, and the composite takes one of the two readings. The peak
+    store records the other as well (``mascope_signal.stitch.overlap_readings``):
+    over the ions both hold, how far the second range reads them from the
+    first in ppm, as the instrument recorded them, and how high per scan.
+    The offset is what a range short of calibrants is calibrated across, and
+    the ratio is the layout's factor between two windows; both are steady
+    from file to file of one layout, so a file that reads otherwise shows
+    here.
+
+    One clause per pair that shares an ion, the medians over the ions
+    shared. A pair that shares none says nothing: there is nothing to read.
+
+    A reading pairs two streams of one polarity. A file stitched in both
+    polarities can run the same scan ranges in each, which the ranges'
+    names do not tell apart, so where the readings are of more than one
+    polarity each polarity's have a sentence of their own that names it.
+
+    :param keys: The store's stream keys, as the readings index them.
+    :param readings: The store's overlap readings.
+    :return: One sentence per polarity read, or None where no pair shares an
+        ion.
+    """
+    by_polarity: dict[str | None, list[str]] = {}
+    for reading in readings:
+        if not reading.get("shared") or not reading.get("ppm"):
+            continue
+        first_key, second_key = (keys[index] for index in reading["streams"])
+        first, second = segment_label(first_key), segment_label(second_key)
+        offset, ratio = reading["ppm"][1], reading["ratio"][1]
+        shared = reading["shared"]
+        polarity = parse_stream_key(first_key).scan_filter.polarity
+        by_polarity.setdefault(polarity, []).append(
+            f"{second} reads the {shared} ion{'' if shared == 1 else 's'} it shares "
+            f"with {first} {abs(offset):.2f} ppm {'lower' if offset < 0 else 'higher'}"
+            f", at {ratio:.2f} times the intensity"
+        )
+    if len(by_polarity) == 1:
+        (clauses,) = by_polarity.values()
+        return f"Where two scan ranges overlap: {'; '.join(clauses)}."
+    return (
+        " ".join(
+            f"Where two scan ranges{f' of polarity {polarity}' if polarity else ''} "
+            f"overlap: {'; '.join(clauses)}."
+            for polarity, clauses in by_polarity.items()
+        )
+        or None
+    )
+
+
+def carried_calibration_note(mz_calibration: dict | None) -> str | None:
+    """Which scan ranges of a stitched file run on a neighbour's m/z calibration.
+
+    A stitched file is calibrated range by range, and a range with no fit
+    of its own takes the calibration of a neighbouring range: across their
+    overlap where they share enough ions, else as it is. The file's
+    calibration record lists the ranges with how each came by its own
+    (``quality.segments``).
+
+    Why a range has no fit is the fit's to say, and it is quoted where it
+    was recorded (``note``): a range can hold no calibrant of the
+    collection, or hold ones too weak for the fit, or ones that disagree,
+    and only the first is a collection that falls short of the window. The
+    sentence says the range has no fit of its own and nothing it does not
+    know. A note can go on after a ``;`` to say what the range's own fit did
+    next ("skipping calibration"), which the sentence says in its own words -
+    what the range was given instead - so it is quoted up to there, as the
+    calibration dialog quotes it.
+
+    It says what the record the run matched on says. A later calibration
+    from the dialog writes another record, and the sample's badge follows
+    it; this detail is the run's, and stays as the run left it until the
+    file is processed again.
+
+    :param mz_calibration: The file's calibration record.
+    :return: One sentence per range that was not fitted on calibrants of its
+        own, or None: every range was, the file is not stitched, or it holds
+        no applied fit.
+    """
+    segments = ((mz_calibration or {}).get("quality") or {}).get("segments") or []
+    sentences = []
+    for segment in segments:
+        source, label, origin = (
+            segment.get("source"),
+            segment.get("label"),
+            segment.get("origin"),
+        )
+        note = (segment.get("note") or "").split(";")[0].strip().rstrip(".")
+        unfitted = f"{label} has no fit of its own" + (
+            f" ({note[0].lower()}{note[1:]})" if note else ""
+        )
+        if source == m_factor.OVERLAP:
+            shared = segment.get("shared_ions")
+            sentences.append(
+                f"{unfitted}: calibrated from {origin} across the "
+                f"{shared} ion{'' if shared == 1 else 's'} both measure."
+            )
+        elif source == m_factor.BORROWED:
+            sentences.append(f"{unfitted}: given the calibration of {origin} as it is.")
+    return " ".join(sentences) or None
 
 
 async def claim_for_processing(sample_file_ids: list[str], detail: str) -> list[str]:
