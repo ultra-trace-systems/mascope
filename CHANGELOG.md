@@ -44,6 +44,7 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
   Files detected whole, which is every file of a single scan range, are
   fitted and read as before; a stitched file converted earlier keeps its
   one function until it is processed again.
+
 - **The dashboard says what to do next where it used to go quiet.** Five
   small first-run and feedback fixes in the web app, none of which touch the
   server. The Raw files tab opens on the last 30 days rather than the last
