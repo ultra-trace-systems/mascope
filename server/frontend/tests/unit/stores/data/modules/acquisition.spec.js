@@ -140,6 +140,96 @@ describe('acquisition store: the look-back of a status filter', () => {
   })
 })
 
+// The list used to open on the last day only, and on a server whose files
+// were older than that it opened empty. It opens on a month now, and All time
+// is a range of its own: the range route with neither end.
+describe('acquisition store: the time range', () => {
+  it('opens on the last 30 days when the deployment configures nothing', async () => {
+    const store = useAcquisition()
+    expect(store.time.mode).toBe('Last 30 days')
+
+    await store.load()
+
+    const [url, config] = lastRequest()
+    expect(url).toBe('/sample/files/recent')
+    expect(config.params.days).toBe(30)
+  })
+
+  it('opens on the range the deployment configures instead', async () => {
+    const { runtime } = await import('@/lib/runtime')
+    runtime.config.acquisition_filter = 'Last 24 hours'
+    try {
+      const store = useAcquisition()
+      expect(store.time.mode).toBe('Last 24 hours')
+
+      await store.load()
+      expect(lastRequest()[1].params.days).toBe(1)
+    } finally {
+      delete runtime.config.acquisition_filter
+    }
+  })
+
+  it('asks for every file under All time, through the range route with no bounds', async () => {
+    const store = useAcquisition()
+    store.processingStatus = ['done']
+    await nextTick()
+    api.http.get.mockClear()
+
+    store.setTimeMode('All time')
+    await nextTick()
+
+    expect(api.http.get).toHaveBeenCalledTimes(1)
+    const [url, config] = lastRequest()
+    expect(url).toBe('/sample/files')
+    expect(config.params.datetime_min).toBeUndefined()
+    expect(config.params.datetime_max).toBeUndefined()
+    // The other filters still apply.
+    expect(config.params.processing_status).toEqual(['done'])
+    expect(config.params.page).toBe(0)
+  })
+
+  // While either end of a date range is set the mode is coerced back to
+  // 'range', so a preset chosen from one has to let the range go.
+  it('leaves an explicit date range behind when a preset is chosen', async () => {
+    const store = useAcquisition()
+    store.time.range.min = new Date('2026-09-01T00:00:00Z')
+    await nextTick()
+    expect(store.time.mode).toBe('range')
+    api.http.get.mockClear()
+
+    store.setTimeMode('Last 7 days')
+    await nextTick()
+
+    expect(store.time.mode).toBe('Last 7 days')
+    expect(store.time.range.min).toBeNull()
+    expect(api.http.get).toHaveBeenCalledTimes(1)
+    const [url, config] = lastRequest()
+    expect(url).toBe('/sample/files/recent')
+    expect(config.params.days).toBe(7)
+  })
+
+  it('falls back to the default preset when both ends of a range are cleared', async () => {
+    const store = useAcquisition()
+    store.time.range.min = new Date('2026-09-01T00:00:00Z')
+    await nextTick()
+
+    store.time.range.min = null
+    await nextTick()
+
+    expect(store.time.mode).toBe('Last 30 days')
+  })
+
+  it('goes back to the default preset with the other filters', async () => {
+    const store = useAcquisition()
+    store.setTimeMode('All time')
+    await nextTick()
+
+    store.resetFilters()
+
+    expect(store.time.mode).toBe('Last 30 days')
+  })
+})
+
 const handler = (event) => api.socket.on.mock.calls.find(([name]) => name === event)[1]
 const row = (id, status) => ({
   sample_file_id: id,
