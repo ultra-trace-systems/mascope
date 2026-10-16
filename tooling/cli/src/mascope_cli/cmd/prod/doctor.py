@@ -13,9 +13,11 @@ straightforward to test without a live stack.
 """
 
 import datetime
+import os
 import shutil
 import subprocess
-from dataclasses import asdict, dataclass
+import time
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Optional
 
@@ -135,6 +137,53 @@ def version_status(
 
 
 # --- Disk ---
+#
+# Besides the free space now, the doctor reports how fast each filesystem has
+# been filling and when that pace would empty it. It does not keep a history
+# of its own: tooling/disk-check.sh records one sample per filesystem every 15
+# minutes, and the doctor reads that file and fits the same rates, so the two
+# monitors agree on the pace.
+
+_GIB = 1024**3
+
+# Where tooling/disk-check.sh keeps its free-space history, under MASCOPE_PATH.
+# One tab-separated line per filesystem per run: epoch seconds, available
+# bytes, filesystem size in bytes, mount point.
+DISK_HISTORY = Path(".runtime") / "disk-check" / "history.tsv"
+
+# The rate windows in days, and the least history a rate needs before it is
+# reported - both as disk-check.sh has them.
+RATE_WINDOWS_DAYS = (7, 30)
+MIN_HISTORY_DAYS = 1.0
+
+# Flag a filesystem whose fill rate would take it below the free-space floor
+# within this many days. Overridable via MASCOPE_DOCTOR_MIN_DAYS_TO_FLOOR; 0
+# disables. Shorter than disk-check's 30-day warning on purpose: that timer is
+# the early tier, and the doctor marking a server down should mean act now.
+DEFAULT_MIN_DAYS_TO_FLOOR = 7.0
+
+
+def min_days_to_floor() -> float:
+    """Projection horizon for the doctor's disk flag (env-overridable)."""
+    raw = os.environ.get("MASCOPE_DOCTOR_MIN_DAYS_TO_FLOOR")
+    if not raw:
+        return DEFAULT_MIN_DAYS_TO_FLOOR
+    try:
+        return float(raw)
+    except ValueError:
+        return DEFAULT_MIN_DAYS_TO_FLOOR
+
+
+@dataclass
+class FillRate:
+    """How fast a filesystem's used space grew over one window."""
+
+    window_days: int
+    # History the window actually holds; less than window_days while the
+    # history is younger than the window.
+    span_days: float
+    # Positive while filling, negative while space is being freed.
+    gb_per_day: float
 
 
 @dataclass
@@ -146,10 +195,117 @@ class DiskUsage:
     free_gb: Optional[float]
     free_pct: Optional[float]
     low: bool
+    # Fill rates over the 7- and 30-day windows; empty until the disk-check
+    # history holds a day of samples for this filesystem.
+    rates: list[FillRate] = field(default_factory=list)
+    # At the faster rate: days until below the floor and until full. None when
+    # there is no rate or the filesystem is not filling.
+    days_to_floor: Optional[float] = None
+    days_to_full: Optional[float] = None
+    # Projected below the floor within the horizon (min_days_to_floor).
+    filling: bool = False
 
 
-def disk_usage(label: str, path: Path, min_free_gb: float) -> DiskUsage:
-    """Free space on ``path``'s filesystem, flagged ``low`` below ``min_free_gb``."""
+def read_disk_history(history: Path, mount: str) -> list[tuple[float, float]]:
+    """
+    ``(epoch seconds, used GiB)`` samples of one mount from the disk-check
+    history. Used is size minus available, as disk-check.sh fits it, so a
+    filesystem that was grown does not read as one that freed space. A missing
+    or unreadable history is no samples; malformed lines are skipped.
+    """
+    try:
+        text = history.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return []
+    samples = []
+    for line in text.splitlines():
+        parts = line.split("\t")
+        if len(parts) < 4 or parts[3] != mount:
+            continue
+        if not all(p.isascii() and p.isdigit() for p in parts[:3]):
+            continue
+        t, avail, size = (int(p) for p in parts[:3])
+        samples.append((float(t), (size - avail) / _GIB))
+    return samples
+
+
+def fill_rates(
+    samples: list[tuple[float, float]], now: float, used_gb: float
+) -> list[FillRate]:
+    """
+    Least-squares growth of used space over each rate window.
+
+    ``samples`` are ``(epoch seconds, used GiB)``; the current reading
+    ``used_gb`` at ``now`` is added to them. Mirrors ``fill_trend`` in
+    tooling/disk-check.sh: a slope over every sample in the window rather than
+    a first-to-last difference, so one transient reading is not projected
+    forward; a window is skipped until its history spans MIN_HISTORY_DAYS, and
+    the 30-day window until it reaches a day past the 7-day one.
+    """
+    points = [((t - now) / 86400, used) for t, used in samples if t <= now]
+    points.append((0.0, used_gb))
+    rates = []
+    for window in RATE_WINDOWS_DAYS:
+        inside = [(t, u) for t, u in points if t >= -window]
+        span = -min(t for t, _ in inside)
+        if span < MIN_HISTORY_DAYS:
+            continue
+        if window != RATE_WINDOWS_DAYS[0] and span <= RATE_WINDOWS_DAYS[0] + 1:
+            continue
+        n = len(inside)
+        st = sum(t for t, _ in inside)
+        su = sum(u for _, u in inside)
+        stt = sum(t * t for t, _ in inside)
+        stu = sum(t * u for t, u in inside)
+        denominator = n * stt - st * st
+        if denominator <= 0:
+            continue
+        rates.append(FillRate(window, span, (n * stu - st * su) / denominator))
+    return rates
+
+
+def project(
+    free_gb: float, floor_gb: float, rates: list[FillRate]
+) -> tuple[Optional[float], Optional[float]]:
+    """
+    Days until below ``floor_gb`` and until full, at the faster of ``rates``.
+
+    The faster rate is the cautious one: the 7-day rate catches an instrument
+    that has just started a long run, the 30-day rate keeps a quiet week from
+    hiding a disk that fills in bursts. ``(None, None)`` when there is no rate
+    or the filesystem is not filling.
+    """
+    if not rates:
+        return None, None
+    rate = max(r.gb_per_day for r in rates)
+    if rate <= 0:
+        return None, None
+    return max(free_gb - floor_gb, 0.0) / rate, free_gb / rate
+
+
+def _mount_point(path: Path) -> str:
+    """The mount point holding an existing ``path``, as ``df`` names it."""
+    probe = Path(os.path.realpath(path))
+    while not os.path.ismount(probe) and probe != probe.parent:
+        probe = probe.parent
+    return str(probe)
+
+
+def disk_usage(
+    label: str,
+    path: Path,
+    min_free_gb: float,
+    *,
+    history: Optional[Path] = None,
+    min_days: float = 0.0,
+    now: Optional[float] = None,
+) -> DiskUsage:
+    """
+    Free space on ``path``'s filesystem, flagged ``low`` below ``min_free_gb``.
+
+    With a disk-check ``history``, also its fill rates and projection, flagged
+    ``filling`` when the floor is projected within ``min_days`` days.
+    """
     probe = path
     while not probe.exists() and probe != probe.parent:
         probe = probe.parent
@@ -157,9 +313,23 @@ def disk_usage(label: str, path: Path, min_free_gb: float) -> DiskUsage:
         usage = shutil.disk_usage(probe)
     except OSError:
         return DiskUsage(label, str(path), None, None, False)
-    free_gb = usage.free / (1024**3)
+    free_gb = usage.free / _GIB
     free_pct = usage.free * 100 / usage.total if usage.total else 0.0
-    return DiskUsage(label, str(path), free_gb, free_pct, free_gb < min_free_gb)
+    disk = DiskUsage(label, str(path), free_gb, free_pct, free_gb < min_free_gb)
+    if history is None:
+        return disk
+
+    now = time.time() if now is None else now
+    samples = read_disk_history(history, _mount_point(probe))
+    disk.rates = fill_rates(samples, now, (usage.total - usage.free) / _GIB)
+    disk.days_to_floor, disk.days_to_full = project(free_gb, min_free_gb, disk.rates)
+    disk.filling = (
+        not disk.low
+        and min_days > 0
+        and disk.days_to_floor is not None
+        and disk.days_to_floor < min_days
+    )
+    return disk
 
 
 # --- Backups ---
@@ -274,13 +444,14 @@ class Report:
     @property
     def ok(self) -> bool:
         """
-        Healthy stack, no version drift, and no filesystem below its floor
-        (the remaining sections are info-only).
+        Healthy stack, no version drift, and no filesystem below its floor or
+        projected to reach it within the horizon (the remaining sections are
+        info-only).
         """
         return (
             all(c.ok for c in self.containers)
             and not self.versions.drift
-            and not any(d.low for d in self.disks)
+            and not any(d.low or d.filling for d in self.disks)
         )
 
     def to_dict(self) -> dict:
@@ -305,13 +476,27 @@ def build_report(
     disk_specs: list[tuple[str, Path]],
     backups_dir: Path,
     min_free_gb: float,
+    disk_history: Optional[Path] = None,
+    min_days_to_floor: float = 0.0,
     now: Optional[datetime.datetime] = None,
 ) -> Report:
     """Assemble the report from injected container names and paths."""
+    stamp = now.timestamp() if now else None
+    disks = [
+        disk_usage(
+            label,
+            path,
+            min_free_gb,
+            history=disk_history,
+            min_days=min_days_to_floor,
+            now=stamp,
+        )
+        for label, path in disk_specs
+    ]
     return Report(
         containers=[container_health(label, name) for label, name in container_specs],
         versions=version_status(expected_version, versioned_specs),
-        disks=[disk_usage(label, path, min_free_gb) for label, path in disk_specs],
+        disks=disks,
         updates=update_status(mascope_path),
         backups=backup_status(backups_dir, now=now),
         images=image_footprint(),
@@ -349,6 +534,34 @@ def _age_word(hours: Optional[float]) -> str:
     return f"{int(hours / 24)}d ago"
 
 
+def _days_word(days: float) -> str:
+    """A projection in days, worded as disk-check.sh words it."""
+    if days < 1:
+        return "<1 day"
+    if days > 3650:
+        return ">10 years"
+    return f"~{days:.0f} days"
+
+
+def _disk_line(d: DiskUsage) -> str:
+    """One filesystem: free space, then its fill rates and projection."""
+    if d.free_gb is None:
+        return f"{d.label} n/a"
+    parts = [f"{d.label} {d.free_gb:.0f} GiB / {d.free_pct:.0f}% free"]
+    if d.rates:
+        parts.append(
+            ", ".join(
+                f"{r.gb_per_day:+.1f} GiB/day ({r.span_days:.0f}d)" for r in d.rates
+            )
+        )
+        if d.days_to_full is None:
+            parts.append("not filling")
+        else:
+            parts.append(f"full in {_days_word(d.days_to_full)}")
+    flag = "  LOW" if d.low else "  FILLING" if d.filling else ""
+    return " · ".join(parts) + flag
+
+
 def format_text(report: Report) -> str:
     """Render the report as an aligned, human-readable block."""
     lines = []
@@ -358,16 +571,9 @@ def format_text(report: Report) -> str:
 
     lines.append(("Version", _version_line(report.versions)))
 
-    disk_bits = []
-    for d in report.disks:
-        if d.free_gb is None:
-            disk_bits.append(f"{d.label} n/a")
-        else:
-            flag = "  LOW" if d.low else ""
-            disk_bits.append(
-                f"{d.label} {d.free_gb:.0f} GiB / {d.free_pct:.0f}% free{flag}"
-            )
-    lines.append(("Disk", "   ·   ".join(disk_bits)))
+    # One row per filesystem; the rates make a shared row too long to read.
+    for i, d in enumerate(report.disks):
+        lines.append(("Disk" if i == 0 else "", _disk_line(d)))
 
     u = report.updates
     if u.pending_version:
