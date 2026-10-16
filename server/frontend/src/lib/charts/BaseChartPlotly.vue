@@ -32,6 +32,12 @@ const props = defineProps({
   data: {
     type: Array
   },
+  // Point indices drawn selected, the same on every trace; null or empty draws
+  // no selection.
+  selectedPoints: {
+    type: Array,
+    default: null
+  },
   config: {
     type: Object
   },
@@ -94,24 +100,21 @@ const dotted = computed((previous) => {
 })
 
 // The traces as Plotly gets them: `markSamples` is this component's, not a
-// trace attribute Plotly knows.
-const plotData = computed(() =>
-  (props.data ?? []).map((trace, index) => {
-    if (!('markSamples' in trace)) return trace
-    const drawn = { ...toRaw(trace) }
-    delete drawn.markSamples
-    return dotted.value[index] ? withSampleMarkers(drawn) : drawn
+// trace attribute Plotly knows. The selection rides on every trace, so each
+// redraw draws it in the same pass as the data; restyled on afterwards, a
+// redraw would show the new data unselected until the restyle landed.
+const plotData = computed(() => {
+  const selected = props.selectedPoints?.length ? props.selectedPoints : null
+  return (props.data ?? []).map((trace, index) => {
+    let drawn = trace
+    if ('markSamples' in trace) {
+      drawn = { ...toRaw(trace) }
+      delete drawn.markSamples
+      if (dotted.value[index]) drawn = withSampleMarkers(drawn)
+    }
+    return selected ? { ...toRaw(drawn), selectedpoints: selected } : drawn
   })
-)
-
-const resetSelection = () => {
-  if (plot.value && props.data.length > 0) {
-    // removes the selection
-    Plotly.update(plot.value, {}, { selections: [] })
-    // removes the selection overlay
-    Plotly.restyle(plot.value, { selectedpoints: [null] })
-  }
-}
+})
 
 // reset chart zoom to autorange
 const resetZoom = () => {
@@ -120,15 +123,6 @@ const resetZoom = () => {
       'xaxis.autorange': true,
       'yaxis.autorange': true
     })
-  }
-}
-
-const selectPoints = (pointIndices) => {
-  if (plot.value && props.data.length > 0) {
-    // Make the selection
-    Plotly.update(plot.value, {}, { selections: pointIndices })
-    // Make the selection overlay
-    Plotly.restyle(plot.value, { selectedpoints: [pointIndices] })
   }
 }
 
@@ -141,9 +135,7 @@ const resize = () => {
 }
 
 defineExpose({
-  resetSelection,
   resetZoom,
-  selectPoints,
   resize
 })
 
@@ -306,9 +298,10 @@ watch(
   { flush: 'post' }
 )
 
-// New data, or a zoom that brings samples into reach of their dots or out of it
+// New data, a new selection, or a zoom that brings samples into reach of their
+// dots or out of it
 watch(
-  [() => props.data, dotted],
+  [() => props.data, () => props.selectedPoints, dotted],
   () => {
     if (ready.value && props.data && plot.value) {
       console.debug(`📊 [${props.id}] updating chart data`)

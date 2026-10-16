@@ -9,6 +9,7 @@ import { useApp } from '@/stores'
 import { ToolbarDrawMode, ToolbarIntensityScale } from '@/lib/toolbars'
 
 import BaseChartPlotly from '../BaseChartPlotly.vue'
+import { useSelectedSamplePoints } from '../selection'
 import { useSampleScroller } from '@/lib/panes/PaneBrowserSample/stores'
 import { useChartData } from './data'
 
@@ -174,46 +175,10 @@ function onSelect({ points }) {
   scroller.scrollToSamples(app.data.sample.selectedIds)
 }
 
-let syncTimeout = null
+// Selected samples, drawn with the traces so a reload redraws them selected
+const selectedPoints = useSelectedSamplePoints(app)
+
 let loadingTimeout = null
-
-/**
- * Sync chart selection with sample selection (ID-based)
- */
-const syncChartSelection = async () => {
-  if (syncTimeout) {
-    clearTimeout(syncTimeout)
-  }
-
-  syncTimeout = setTimeout(() => {
-    if (!plot.value || !app.data.sample.list.length) return
-
-    const selectedIds = app.data.sample.selectedIds
-
-    if (selectedIds.length === 0) {
-      plot.value.resetSelection()
-    } else {
-      // ID-based index lookup (handles stale object references)
-      const pointIndices = app.data.sample.list
-        .map((sample, index) => (selectedIds.includes(sample.sample_item_id) ? index : null))
-        .filter((index) => index !== null)
-
-      if (pointIndices.length > 0) {
-        plot.value.selectPoints(pointIndices)
-      }
-    }
-  }, 50) // Debounce rapid updates
-}
-
-// Watch sample store selection changes (ID-based)
-watch(() => app.data.sample.selectedIds, syncChartSelection)
-
-// Watch traces changes (collection focus/unfocus, data reload, scale changes)
-watch(traces, () => {
-  // Reapply selection whenever traces change
-  if (data.pending) return // Skip syncing during loading to prevent blinking
-  syncChartSelection()
-})
 
 // Watch for chart reset trigger from data store
 watch(
@@ -273,7 +238,6 @@ watch(
 
 onUnmounted(() => {
   if (loadingTimeout) clearTimeout(loadingTimeout)
-  if (syncTimeout) clearTimeout(syncTimeout)
 })
 </script>
 
@@ -289,6 +253,7 @@ onUnmounted(() => {
       :title="chartTitle"
       :subtitle="chartSubtitle"
       :data="traces"
+      :selectedPoints="selectedPoints"
       :layout="layout"
       @click="onClick"
       @dragmode="

@@ -41,13 +41,14 @@ const signal = () => ({
 /** A peak marker, which does not ask for its points to be dotted. */
 const peak = () => ({ name: 'Peak', mode: 'lines', x: [5, 5], y: [0, 100] })
 
-async function mountChart(data) {
+async function mountChart(data, props = {}) {
   const wrapper = mount(BaseChartPlotly, {
     props: {
       id: 'chart',
       title: 'Chart',
       data,
-      layout: { xaxis: { autorange: true }, yaxis: { autorange: true } }
+      layout: { xaxis: { autorange: true }, yaxis: { autorange: true } },
+      ...props
     },
     global: { directives: { tooltip: {} } }
   })
@@ -126,5 +127,71 @@ describe('BaseChartPlotly sample dots', () => {
     const fresh = await mountChart([signal()])
     await drawn(fresh, [0, 10], between)
     expect(lastDrawn()[0].mode).toBe('lines')
+  })
+})
+
+describe('BaseChartPlotly selection', () => {
+  /** What each trace Plotly was handed last has selected. */
+  const lastSelected = () => lastDrawn().map((trace) => trace.selectedpoints)
+
+  it('draws the selection from the first draw', async () => {
+    await mountChart([peak(), peak()], { selectedPoints: [1] })
+
+    const traces = Plotly.newPlot.mock.calls[0][1]
+    expect(traces.map((trace) => trace.selectedpoints)).toEqual([[1], [1]])
+  })
+
+  // A reload of the batch hands the chart new traces. Drawn without the
+  // selection, with the selection restyled back on afterwards, the new data
+  // shows unselected in between and the selected points blink.
+  it('draws the selection in the same redraw as new data', async () => {
+    const wrapper = await mountChart([peak(), peak()], { selectedPoints: [1] })
+    vi.clearAllMocks()
+
+    await wrapper.setProps({ data: [peak(), peak()] })
+    await flushPromises()
+
+    expect(Plotly.react).toHaveBeenCalledTimes(1)
+    expect(lastSelected()).toEqual([[1], [1]])
+    expect(Plotly.restyle).not.toHaveBeenCalled()
+    expect(Plotly.update).not.toHaveBeenCalled()
+  })
+
+  it('redraws for a new selection', async () => {
+    const wrapper = await mountChart([peak()], { selectedPoints: [0] })
+
+    await wrapper.setProps({ selectedPoints: [0, 1] })
+    await flushPromises()
+    expect(lastSelected()).toEqual([[0, 1]])
+  })
+
+  it('draws no selection once it is cleared', async () => {
+    const wrapper = await mountChart([peak()], { selectedPoints: [0] })
+
+    await wrapper.setProps({ selectedPoints: null })
+    await flushPromises()
+    expect(lastDrawn()[0]).not.toHaveProperty('selectedpoints')
+
+    // An empty selection would dim every point in Plotly; it means none here.
+    await wrapper.setProps({ selectedPoints: [] })
+    await flushPromises()
+    expect(lastDrawn()[0]).not.toHaveProperty('selectedpoints')
+  })
+
+  it('selects on a copy, leaving the trace it was given alone', async () => {
+    const marker = peak()
+    await mountChart([marker], { selectedPoints: [0] })
+
+    expect(lastDrawn()[0].selectedpoints).toEqual([0])
+    expect(marker).not.toHaveProperty('selectedpoints')
+  })
+
+  it('keeps the selection on a dotted trace', async () => {
+    const wrapper = await mountChart([signal()], { selectedPoints: [3] })
+    await drawn(wrapper, [0, 10], 100)
+
+    expect(lastDrawn()[0].mode).toBe('lines+markers')
+    expect(lastDrawn()[0].selectedpoints).toEqual([3])
+    expect(lastDrawn()[0]).not.toHaveProperty('markSamples')
   })
 })
