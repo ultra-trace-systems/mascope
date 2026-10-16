@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Body, Depends, Request
 from fastapi_users.authentication import Strategy
 
+from mascope_backend.accounts import ACCOUNT_TYPE_MACHINE
 from mascope_backend.api.lib.api_features import api_route
 from mascope_backend.api.lib.rate_limit import (
     clear_login_rate_limit,
@@ -92,6 +93,12 @@ async def verify_route(
     if user is None or not user.is_active or not user.mfa_enabled:
         # The account changed under the half-finished sign-in (disabled,
         # deleted, factor removed). Nothing to complete.
+        raise InvalidPendingTokenException()
+    if user.account_type == ACCOUNT_TYPE_MACHINE:
+        # The second of the two places a session is minted, so it states the
+        # login route's rule again rather than trusting that no pending token
+        # for a machine account can exist: the two-factor policy exempts these
+        # accounts only because they never hold an interactive session.
         raise InvalidPendingTokenException()
 
     verified = await service.verify_totp_for_user(user, body.code)
