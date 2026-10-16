@@ -9,6 +9,7 @@ import { useApp } from '@/stores'
 import { ToolbarDrawMode, ToolbarIntensityScale } from '@/lib/toolbars'
 
 import BaseChartPlotly from '../BaseChartPlotly.vue'
+import { useSelectedSamplePoints } from '../selection'
 import { focusSamplePeak, useSampleScroller } from '@/lib/panes/PaneBrowserSample/stores'
 import { useChartAssignmentsData } from './data'
 
@@ -162,31 +163,10 @@ function onSelect({ points }) {
   scroller.scrollToSamples(app.data.sample.selectedIds)
 }
 
-let syncTimeout = null
+// Selected samples, drawn with the traces so a reload redraws them selected
+const selectedPoints = useSelectedSamplePoints(app)
+
 let loadingTimeout = null
-
-const syncChartSelection = async () => {
-  if (syncTimeout) clearTimeout(syncTimeout)
-  syncTimeout = setTimeout(() => {
-    if (!plot.value || !app.data.sample.list.length) return
-    const selectedIds = app.data.sample.selectedIds
-    if (selectedIds.length === 0) {
-      plot.value.resetSelection()
-    } else {
-      const pointIndices = app.data.sample.list
-        .map((sample, index) => (selectedIds.includes(sample.sample_item_id) ? index : null))
-        .filter((index) => index !== null)
-      if (pointIndices.length > 0) plot.value.selectPoints(pointIndices)
-    }
-  }, 50)
-}
-
-watch(() => app.data.sample.selectedIds, syncChartSelection)
-
-watch(traces, () => {
-  if (data.pending) return
-  syncChartSelection()
-})
 
 watch(
   () => data.resetChart,
@@ -239,7 +219,6 @@ watch(
 
 onUnmounted(() => {
   if (loadingTimeout) clearTimeout(loadingTimeout)
-  if (syncTimeout) clearTimeout(syncTimeout)
 })
 </script>
 
@@ -275,6 +254,7 @@ onUnmounted(() => {
       :title="chartTitle"
       :subtitle="chartSubtitle"
       :data="traces"
+      :selectedPoints="selectedPoints"
       :layout="layout"
       @click="onClick"
       @dragmode="
