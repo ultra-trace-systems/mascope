@@ -141,18 +141,18 @@ describe('acquisition store: the look-back of a status filter', () => {
 })
 
 // The list used to open on the last day only, and on a server whose files
-// were older than that it opened empty. It opens on a month now, and All time
+// were older than that it opened empty. It opens on a week now, and All time
 // is a range of its own: the range route with neither end.
 describe('acquisition store: the time range', () => {
-  it('opens on the last 30 days when the deployment configures nothing', async () => {
+  it('opens on the last 7 days when the deployment configures nothing', async () => {
     const store = useAcquisition()
-    expect(store.time.mode).toBe('Last 30 days')
+    expect(store.time.mode).toBe('Last 7 days')
 
     await store.load()
 
     const [url, config] = lastRequest()
     expect(url).toBe('/sample/files/recent')
-    expect(config.params.days).toBe(30)
+    expect(config.params.days).toBe(7)
   })
 
   it('opens on the range the deployment configures instead', async () => {
@@ -197,15 +197,16 @@ describe('acquisition store: the time range', () => {
     expect(store.time.mode).toBe('range')
     api.http.get.mockClear()
 
-    store.setTimeMode('Last 7 days')
+    // Not the default, so that this proves the preset chosen was kept.
+    store.setTimeMode('Last 90 days')
     await nextTick()
 
-    expect(store.time.mode).toBe('Last 7 days')
+    expect(store.time.mode).toBe('Last 90 days')
     expect(store.time.range.min).toBeNull()
     expect(api.http.get).toHaveBeenCalledTimes(1)
     const [url, config] = lastRequest()
     expect(url).toBe('/sample/files/recent')
-    expect(config.params.days).toBe(7)
+    expect(config.params.days).toBe(90)
   })
 
   it('falls back to the default preset when both ends of a range are cleared', async () => {
@@ -216,7 +217,7 @@ describe('acquisition store: the time range', () => {
     store.time.range.min = null
     await nextTick()
 
-    expect(store.time.mode).toBe('Last 30 days')
+    expect(store.time.mode).toBe('Last 7 days')
   })
 
   it('goes back to the default preset with the other filters', async () => {
@@ -226,7 +227,7 @@ describe('acquisition store: the time range', () => {
 
     store.resetFilters()
 
-    expect(store.time.mode).toBe('Last 30 days')
+    expect(store.time.mode).toBe('Last 7 days')
   })
 })
 

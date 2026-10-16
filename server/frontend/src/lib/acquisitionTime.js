@@ -15,11 +15,12 @@ export const TIME_MODES = ['Last 24 hours', 'Last 7 days', 'Last 30 days', 'Last
 
 /**
  * What the list opens on when the deployment configures no
- * `acquisition_filter`. Thirty days rather than a day: on a server whose
- * files are older than that the list used to open empty, with nothing to say
- * why.
+ * `acquisition_filter`. A week rather than a day: on a server whose files
+ * are older than a day the list used to open empty, with nothing to say why.
+ * Not longer, because the server counts and sorts every file in the range on
+ * each load, and the empty state offers the wider ranges in one click.
  */
-export const DEFAULT_TIME_MODE = 'Last 30 days'
+export const DEFAULT_TIME_MODE = 'Last 7 days'
 
 /**
  * The look-back of a preset, in days: what the recent-files route is asked
