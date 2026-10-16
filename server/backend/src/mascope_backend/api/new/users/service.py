@@ -386,9 +386,17 @@ async def sign_out_everywhere(user_id: int) -> dict:
 
     :param user_id: The account whose sessions to end.
     :raises NotFoundException: If the user does not exist.
+    :raises ForbiddenAccessException: If the account is a machine account.
     :return: A success message.
     :rtype: dict
     """
+    async with async_session() as session:
+        user = await session.get(User, user_id)
+    if user is None:
+        raise NotFoundException(f"User with ID '{user_id}' not found.")
+    # A machine account never signs in, so it has no web session to end.
+    refuse_machine_account(user)
+
     if await revoke_user_sessions(user_id) is None:
         raise NotFoundException(f"User with ID '{user_id}' not found.")
 

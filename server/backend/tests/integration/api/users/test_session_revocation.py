@@ -16,6 +16,7 @@ sessions of the shared ``test_users`` other suites authenticate as.
 """
 
 from datetime import datetime, timedelta, timezone
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import jwt
 import pytest
@@ -24,10 +25,15 @@ from fastapi_users.password import PasswordHelper
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import delete
 
+from mascope_backend.accounts import ACCOUNT_TYPE_MACHINE
+from mascope_backend.api.new.auth.backend import auth_backend_jwt
 from mascope_backend.api.new.auth.config import auth_settings
 from mascope_backend.app.fast import fast
 from mascope_backend.db import AccessToken, User
 from mascope_backend.db.id import gen_id
+from mascope_backend.socket.auth.service import authenticate_socket_connection
+from mascope_backend.socket.events.handlers.default.subscription import subscribe
+from mascope_backend.socket.storage import get_session_user, redis_storage_client
 
 
 ORIGINAL_PASSWORD = "nine bushels of slate"
@@ -155,6 +161,19 @@ async def test_signing_out_everywhere_ends_older_sessions(
 
 
 @pytest.mark.asyncio
+async def test_signing_out_everywhere_tells_open_tabs(person):
+    """Open tabs re-fetch the profile on ``user_me`` and find the session over."""
+    emit = AsyncMock()
+    with patch("mascope_backend.api.new.users.service.emit_record_updated", emit):
+        async with _cookie_client(_token(person, datetime.now(timezone.utc))) as c:
+            resp = await c.post("/api/users/me/sign-out-everywhere")
+    assert resp.status_code == 200, resp.text
+    emit.assert_awaited_once()
+    assert emit.await_args.kwargs["record_type"] == "user_me"
+    assert emit.await_args.kwargs["room"] == f"user-{person.id}"
+
+
+@pytest.mark.asyncio
 async def test_signing_out_everywhere_is_not_reachable_by_navigation(person):
     async with _cookie_client(_token(person, datetime.now(timezone.utc))) as client:
         assert (await client.get("/api/users/me/sign-out-everywhere")).status_code in (
@@ -186,6 +205,21 @@ async def test_an_owner_signs_another_account_out_everywhere(
 async def test_only_an_owner_may_sign_another_account_out(admin_client, person):
     resp = await admin_client.post(f"/api/users/owner/{person.id}/sign-out-everywhere")
     assert resp.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_a_machine_account_is_not_signed_out_like_a_person(
+    owner_client, person, async_session_factory
+):
+    """Refused as every other user-management mutation refuses one: 403."""
+    async with async_session_factory() as session:
+        stored = await session.get(User, person.id)
+        stored.account_type = ACCOUNT_TYPE_MACHINE
+        await session.commit()
+
+    resp = await owner_client.post(f"/api/users/owner/{person.id}/sign-out-everywhere")
+    assert resp.status_code == 403, resp.text
+    assert (await _stored(async_session_factory, person.id)).sessions_revoked_at is None
 
 
 @pytest.mark.asyncio
@@ -266,3 +300,69 @@ async def test_other_updates_leave_the_cutoff_alone(
     )
     assert resp.status_code == 200, resp.text
     assert (await _stored(async_session_factory, person.id)).sessions_revoked_at is None
+
+
+# --- A socket's session ---
+
+
+class _SessionRedis:
+    """The Redis commands the socket session store uses, over a plain dict."""
+
+    def __init__(self):
+        self.values: dict[str, str] = {}
+
+    async def setex(self, key: str, seconds: int, value: str) -> bool:
+        self.values[key] = value
+        return True
+
+    async def get(self, key: str) -> str | None:
+        return self.values.get(key)
+
+    async def expire(self, key: str, seconds: int) -> bool:
+        return key in self.values
+
+    async def delete(self, *keys: str) -> int:
+        return sum(self.values.pop(key, None) is not None for key in keys)
+
+
+@pytest.mark.asyncio
+async def test_a_socket_keeps_its_tokens_issue_time_and_its_rooms(
+    person, async_session_factory, monkeypatch
+):
+    """
+    The socket session records the ``iat`` of the token it authenticated with.
+
+    Subscribe compares the account's cutoff with what the session stored, so a
+    session stored without it looks issued before any cutoff: every socket of an
+    account with one - any account whose password was written since the forced
+    change landed - would be held to its own room, and stop hearing anything
+    else. Hence a real token through the real store, for an account that has a
+    cutoff, rather than a hand-built session dict.
+    """
+    async with async_session_factory() as session:
+        stored = await session.get(User, person.id)
+        stored.password_changed_at = datetime.now(timezone.utc) - LONG_AGO
+        await session.commit()
+    monkeypatch.setattr(redis_storage_client, "_client", _SessionRedis())
+
+    token = await auth_backend_jwt.get_strategy().write_token(person)
+    issued_at = jwt.decode(token, options={"verify_signature": False})["iat"]
+
+    await authenticate_socket_connection("socket-sid", token, minimum_role="guest")
+    assert (await get_session_user("socket-sid"))["issued_at"] == issued_at
+
+    sio = MagicMock()
+    sio.enter_room = AsyncMock()
+    room_tracker = MagicMock()
+    room_tracker.join = AsyncMock()
+    handler = "mascope_backend.socket.events.handlers.default.subscription"
+    with (
+        patch(f"{handler}.sio", sio),
+        patch(f"{handler}.room_tracker", room_tracker),
+        patch(
+            "mascope_backend.api.new.workspaces.dependencies.user_can_subscribe_to_room",
+            AsyncMock(return_value=True),
+        ),
+    ):
+        await subscribe("socket-sid", "some-sample-batch-id")
+    sio.enter_room.assert_awaited_once_with("socket-sid", "some-sample-batch-id")
