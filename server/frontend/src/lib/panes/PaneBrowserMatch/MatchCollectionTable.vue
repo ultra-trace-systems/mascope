@@ -17,6 +17,10 @@ import MatchCollectionContextMenu from './MatchCollectionContextMenu.vue'
 const app = useApp()
 const contextMenu = useCollectionContextMenu()
 
+// The create button is icon-only beside a list, where the icon is enough,
+// and spells itself out above an empty one, where it is the only way forward.
+const hasCollections = computed(() => (app.data.match.collection.list?.length ?? 0) > 0)
+
 // Breadcrumb configuration - simple single level
 const breadcrumb = computed(() => {
   const entityName = app.data.sample.focused
@@ -97,17 +101,29 @@ const breadcrumb = computed(() => {
   >
     <template #menu>
       <Button
-        v-tooltip.top="'Create target collection'"
+        v-tooltip.top="hasCollections ? 'Create target collection' : null"
         label="Create target collection"
-        class="hiddenlabel"
+        aria-label="Create target collection"
+        :class="{ hiddenlabel: hasCollections }"
         icon="pi pi-plus"
         text
         size="small"
         @click="contextMenu.dialog.op = 'create'"
       />
     </template>
+    <!-- Without an open batch there is no list to show, and the pane used to
+         be a blank box with a plus in its corner. Styled as the assignment
+         pane's "No sample selected". -->
+    <div v-if="!app.data.batch.focused" class="center empty">
+      <div class="col" style="gap: 0.5rem; text-align: center; max-width: 40ch">
+        <strong><span class="pi ph ph-crosshair" /> Target collections</strong>
+        <i style="opacity: 0.6">
+          The target collections of a batch are listed here once one is open in the sample browser.
+        </i>
+      </div>
+    </div>
     <DataTable
-      v-if="app.data.batch.focused"
+      v-else
       :value="app.data.match.collection.list"
       dataKey="target_collection_id"
       v-model:selection="app.data.match.collection.focused"
@@ -180,6 +196,11 @@ const breadcrumb = computed(() => {
 </template>
 
 <style scoped>
+.empty {
+  width: 100%;
+  height: 220px;
+}
+
 .active-filter {
   visibility: visible !important;
   color: var(--p-button-text-info-color);

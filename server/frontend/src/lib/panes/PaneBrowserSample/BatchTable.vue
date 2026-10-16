@@ -45,6 +45,10 @@ const { height } = useWindowSize()
 const padding = 100
 const tableHeight = computed(() => ((height.value - padding) * app.ui.split.top) / 100 - 50)
 
+// The create button is icon-only beside a list, where the icon is enough,
+// and spells itself out above an empty one, where it is the only way forward.
+const hasBatches = computed(() => (app.data.batch.list?.length ?? 0) > 0)
+
 // Status-icon click handler. A "recalibrate" batch needs its m/z calibration
 // re-fit (e.g. after its ionization mode's calibration collection changed), so
 // open the calibration dialog for it - reusing the same flow as the context
@@ -73,7 +77,8 @@ const onStatusAction = (batch) => {
     :onRetry="() => app.data.batch.load('retry')"
     :contextMenu="contextMenu"
     :pt="
-      app.ui.help.right(`
+      app.ui.help.right(
+        `
         <h1>Sample Browser: Batches</h1>
 
         <p>Shows all batches in the currently selected dataset 
@@ -103,9 +108,10 @@ const onStatusAction = (batch) => {
           />
         </IconField>
         <Button
-          v-tooltip.top="'Create batch'"
+          v-tooltip.top="hasBatches ? 'Create batch' : null"
           label="Create batch"
-          class="hiddenlabel"
+          aria-label="Create batch"
+          :class="{ hiddenlabel: hasBatches }"
           icon="pi pi-plus"
           text
           size="small"
