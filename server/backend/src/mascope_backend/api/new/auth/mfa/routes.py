@@ -151,7 +151,9 @@ async def status_route(user: User = Depends(mfa_gate_exempt_guest_user)):
         "data": MfaStatusResponse(
             enabled=user.mfa_enabled,
             available=service.mfa_available(),
-            required=policy.required_for_role(user.role_id),
+            required=policy.required_for_role(
+                user.role_id, account_type=user.account_type
+            ),
             policy_min_role=policy.required_min_role_name(),
             confirmed_at=(
                 user.mfa_confirmed_at.isoformat() if user.mfa_confirmed_at else None
@@ -287,7 +289,7 @@ async def disable_route(
 
     # Refused before the code is checked, so a correct code cannot be spent on
     # an action that was never going to be allowed.
-    if policy.required_for_role(user.role_id):
+    if policy.required_for_role(user.role_id, account_type=user.account_type):
         raise MfaRequiredByPolicyException()
 
     verified = await service.verify_totp_for_user(user, body.code)

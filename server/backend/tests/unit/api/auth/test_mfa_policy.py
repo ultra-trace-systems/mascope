@@ -12,6 +12,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from mascope_backend.accounts import ACCOUNT_TYPE_MACHINE, ACCOUNT_TYPE_PERSON
 from mascope_backend.api.new.auth.mfa import policy
 from mascope_backend.roles import ROLE_ACCESS_LEVELS
 
@@ -20,6 +21,9 @@ GUEST = ROLE_ACCESS_LEVELS["guest"]
 EDITOR = ROLE_ACCESS_LEVELS["editor"]
 ADMIN = ROLE_ACCESS_LEVELS["admin"]
 OWNER = ROLE_ACCESS_LEVELS["owner"]
+
+PERSON = ACCOUNT_TYPE_PERSON
+MACHINE = ACCOUNT_TYPE_MACHINE
 
 
 @pytest.fixture
@@ -106,29 +110,29 @@ def test_nobody_is_covered_when_the_policy_is_off(with_policy):
     with_policy(None)
     assert not policy.policy_active()
     for role in (GUEST, EDITOR, ADMIN, OWNER):
-        assert not policy.required_for_role(role)
+        assert not policy.required_for_role(role, account_type=PERSON)
 
 
 def test_the_threshold_covers_that_role_and_above(with_policy):
     with_policy(ADMIN)
     assert policy.policy_active()
-    assert not policy.required_for_role(GUEST)
-    assert not policy.required_for_role(EDITOR)
-    assert policy.required_for_role(ADMIN)
-    assert policy.required_for_role(OWNER)
+    assert not policy.required_for_role(GUEST, account_type=PERSON)
+    assert not policy.required_for_role(EDITOR, account_type=PERSON)
+    assert policy.required_for_role(ADMIN, account_type=PERSON)
+    assert policy.required_for_role(OWNER, account_type=PERSON)
 
 
 def test_guest_threshold_covers_everyone(with_policy):
     with_policy(GUEST)
     for role in (GUEST, EDITOR, ADMIN, OWNER):
-        assert policy.required_for_role(role)
+        assert policy.required_for_role(role, account_type=PERSON)
 
 
 def test_an_account_with_no_role_is_not_covered(with_policy):
     # It cannot use the application either way, and the role checks refuse it
     # before this matters.
     with_policy(GUEST)
-    assert not policy.required_for_role(None)
+    assert not policy.required_for_role(None, account_type=PERSON)
 
 
 # --- What the gate asks ---
@@ -136,15 +140,66 @@ def test_an_account_with_no_role_is_not_covered(with_policy):
 
 def test_enrolment_is_owed_only_by_a_covered_account_without_a_factor(with_policy):
     with_policy(ADMIN)
-    assert policy.enrollment_required(ADMIN, mfa_enabled=False)
-    assert not policy.enrollment_required(ADMIN, mfa_enabled=True)
-    assert not policy.enrollment_required(EDITOR, mfa_enabled=False)
+    assert policy.enrollment_required(ADMIN, mfa_enabled=False, account_type=PERSON)
+    assert not policy.enrollment_required(ADMIN, mfa_enabled=True, account_type=PERSON)
+    assert not policy.enrollment_required(
+        EDITOR, mfa_enabled=False, account_type=PERSON
+    )
 
 
 def test_no_enrolment_is_owed_while_the_policy_is_off(with_policy):
     with_policy(None)
     for role in (GUEST, EDITOR, ADMIN, OWNER):
-        assert not policy.enrollment_required(role, mfa_enabled=False)
+        assert not policy.enrollment_required(
+            role, mfa_enabled=False, account_type=PERSON
+        )
+
+
+# --- Accounts exempt by their kind ---
+
+
+def test_a_machine_account_is_exempt_and_a_person_is_not():
+    assert policy.exempt(MACHINE)
+    assert not policy.exempt(PERSON)
+
+
+@pytest.mark.parametrize("threshold", [GUEST, EDITOR])
+def test_a_machine_account_is_never_covered(with_policy, threshold):
+    # A machine account sits at editor, so a policy covering editors would
+    # otherwise count it as owing an enrolment it can never complete.
+    with_policy(threshold)
+    assert not policy.required_for_role(EDITOR, account_type=MACHINE)
+    assert not policy.enrollment_required(
+        EDITOR, mfa_enabled=False, account_type=MACHINE
+    )
+
+
+@pytest.mark.parametrize("threshold", [GUEST, EDITOR])
+def test_a_person_at_the_machine_accounts_role_is_still_covered(with_policy, threshold):
+    # The sibling of the exemption, under the same policy: a policy that covers
+    # the role, so a "not covered" here would be the exemption leaking past the
+    # account kind - for instance into a role check - not an uncovered role.
+    with_policy(threshold)
+    assert policy.required_for_role(EDITOR, account_type=PERSON)
+    assert policy.enrollment_required(EDITOR, mfa_enabled=False, account_type=PERSON)
+
+
+def test_the_exemption_is_keyed_on_kind_not_role(with_policy):
+    # The exemption holds at every role, so it cannot be a role rule in
+    # disguise; and a person at the top of the table is still covered.
+    with_policy(GUEST)
+    for role in (GUEST, EDITOR, ADMIN, OWNER):
+        assert not policy.required_for_role(role, account_type=MACHINE)
+        assert policy.required_for_role(role, account_type=PERSON)
+
+
+def test_the_account_kind_must_be_passed():
+    # Keyword-only and without a default, so a caller cannot consult the policy
+    # and forget the exemption.
+    with pytest.raises(TypeError):
+        policy.required_for_role(EDITOR)
+    with pytest.raises(TypeError):
+        policy.enrollment_required(EDITOR, False)
 
 
 # --- What the status route shows a user ---
@@ -170,8 +225,8 @@ def test_the_displayed_name_comes_from_the_enforced_level(with_policy):
     # restarted into, and claim a policy that is not being enforced.
     with_policy(ADMIN)
     assert policy.required_min_role_name() == "admin"
-    assert policy.required_for_role(ADMIN)
-    assert not policy.required_for_role(EDITOR)
+    assert policy.required_for_role(ADMIN, account_type=PERSON)
+    assert not policy.required_for_role(EDITOR, account_type=PERSON)
 
 
 def test_an_unmappable_level_names_nothing_rather_than_guessing(with_policy):

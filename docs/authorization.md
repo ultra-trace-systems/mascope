@@ -43,6 +43,17 @@ covers admins and owners, `guest` covers everyone); unset, the default, requires
 it of nobody. An account covered by the requirement is held at an enrolment
 screen after signing in until it sets a factor up, and cannot turn it off again.
 
+Machine accounts - the identity a paired instrument agent uploads as - are
+exempt, at any role and under any setting. They never sign in at a browser:
+the login route refuses them, and so does the second-factor step, so there is
+no session for a factor to protect and no screen to enrol at. Counted as
+covered, every one of them would read as owing an enrolment it can never
+complete, and a deployment whose policy covers editors (the role machine
+accounts hold) could never show as compliant. The exemption follows the account
+kind, not the role: a person at editor is covered exactly as before. The users
+API reports it as `mfa_exempt`, and an exempt account is never
+`mfa_enrollment_required`.
+
 Two actions ask for a current code even in an open session: generating an API
 access token, and approving an agent pairing. Both hand out credentials valid
 for a year that are not tied to the browser session, so a session on its own is
