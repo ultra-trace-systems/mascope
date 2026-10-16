@@ -65,31 +65,39 @@ mascope prod update --snooze 7     # postpone it 7 days
 A full disk is the one failure that takes the stack down *and* can corrupt
 Postgres on the way - so unlike auto-updates, the disk check is **enabled by
 default**. Every 15 minutes (cheap, read-only) `mascope-disk-check.timer` runs
-`tooling/disk-check.sh`, which alerts when any monitored filesystem drops below
-**either** threshold:
+`tooling/disk-check.sh`, which measures the `.runtime` filesystem, each env's
+filestore when it is a symlink to a volume of its own, and docker's image
+store, and alerts when any of them drops below **either** threshold:
 
 - `MIN_FREE_GB` (default 10) - absolute floor, the "about to crash" signal;
 - `MIN_FREE_PCT` (default 10) - percentage floor, the earlier warning (set `0`
   to disable on very large disks).
 
-It also alerts when a filesystem is **filling fast enough to reach that floor
+It also warns when a filesystem is **filling fast enough to reach that floor
 within `MIN_DAYS_TO_FLOOR` days** (default 30; `0` disables). Each run appends
 the free space to `$MASCOPE_PATH/.runtime/disk-check/history.tsv` (kept to 60
-days), fits GiB/day over the last 7 and 30 days, and logs the rates and the
-projection on every line:
+days, written under a lock so overlapping runs cannot lose a sample), fits
+GiB/day over the last 7 and 30 days, and logs the rates and the projection on
+every line:
 
 ```
-[disk-check] FILLING: state (.runtime) (/) has 400.0 GiB / 40% free; rate +19.0 GiB/day (7d), +18.6 GiB/day (30d); 100.0 GiB floor in ~16 days, full in ~21 days (alerts under 30 days)
+[disk-check] FILLING: state (.runtime) (/) has 400.0 GiB / 40% free; rate +19.0 GiB/day (7d), +18.6 GiB/day (30d); 100.0 GiB floor in ~16 days, full in ~21 days (warns under 30 days)
 ```
 
 Rates start after a day of history. `mascope prod doctor` reads the same
 history file for its own projection.
 
-With no configuration it only logs to the journal; set `HEALTHCHECK_URL` in
-`/etc/mascope/disk-check.env` to get paged before the disk fills. The service
-treats exit 1 ("a filesystem is low") as expected, so systemd does not pile a
-`failed` unit on top of an alert the operator is already handling. Full
-operator docs: [docs/maintaining.md](../../docs/maintaining.md) -> Disk space.
+With no configuration it only logs to the journal. Set `HEALTHCHECK_URL` in
+`/etc/mascope/disk-check.env` to get paged when a filesystem is below the
+floor, and `HEALTHCHECK_FILLING_URL` - a **second** check - to get paged for
+the fill-rate warning. They are kept apart because healthchecks.io notifies on
+a change of state: one check already down for the warning would say nothing
+when the floor is actually crossed. Without the second check the warning is
+journalled and recorded as a `/log` event on the first, which notifies no one.
+The service treats exit 1 (a filesystem is low or filling) as expected, so
+systemd does not pile a `failed` unit on top of an alert the operator is
+already handling. Full operator docs:
+[docs/maintaining.md](../../docs/maintaining.md) -> Disk space.
 
 ## The assignment-run retention pass
 

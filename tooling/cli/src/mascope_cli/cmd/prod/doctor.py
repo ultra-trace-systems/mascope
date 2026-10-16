@@ -159,19 +159,22 @@ MIN_HISTORY_DAYS = 1.0
 # Flag a filesystem whose fill rate would take it below the free-space floor
 # within this many days. Overridable via MASCOPE_DOCTOR_MIN_DAYS_TO_FLOOR; 0
 # disables. Shorter than disk-check's 30-day warning on purpose: that timer is
-# the early tier, and the doctor marking a server down should mean act now.
+# the early tier, and the doctor's Kuma monitor going down should mean act now.
 DEFAULT_MIN_DAYS_TO_FLOOR = 7.0
+
+# Exit code of `mascope prod doctor` when the stack is healthy but a filesystem
+# is projected below its floor within the horizon. Not 1: the fleet playbooks
+# gate on the doctor, and a disk that will be full next week is no reason to
+# stop rolling a release out to the servers after it. Not 2 either, which is a
+# usage error and what doctor-push.sh reads as "no doctor in this CLI".
+EXIT_FILLING = 3
 
 
 def min_days_to_floor() -> float:
     """Projection horizon for the doctor's disk flag (env-overridable)."""
-    raw = os.environ.get("MASCOPE_DOCTOR_MIN_DAYS_TO_FLOOR")
-    if not raw:
-        return DEFAULT_MIN_DAYS_TO_FLOOR
-    try:
-        return float(raw)
-    except ValueError:
-        return DEFAULT_MIN_DAYS_TO_FLOOR
+    return auto_update.env_float(
+        "MASCOPE_DOCTOR_MIN_DAYS_TO_FLOOR", DEFAULT_MIN_DAYS_TO_FLOOR
+    )
 
 
 @dataclass
@@ -195,6 +198,8 @@ class DiskUsage:
     free_gb: Optional[float]
     free_pct: Optional[float]
     low: bool
+    # The filesystem's mount point, as df and the disk-check history name it.
+    mount: Optional[str] = None
     # Fill rates over the 7- and 30-day windows; empty until the disk-check
     # history holds a day of samples for this filesystem.
     rates: list[FillRate] = field(default_factory=list)
@@ -284,7 +289,23 @@ def project(
 
 
 def _mount_point(path: Path) -> str:
-    """The mount point holding an existing ``path``, as ``df`` names it."""
+    """
+    The mount point holding an existing ``path``, as disk-check.sh records it.
+
+    That is column 6 of ``df -P``, asked of ``df`` itself: the history is keyed
+    by that name, and an ``os.path.ismount`` walk names some mounts
+    differently - a bind mount shares its parent's device, so the walk passes
+    it by. The walk is only the fallback where ``df`` cannot answer.
+    """
+    try:
+        result = _run(["df", "-P", str(path)])
+    except (OSError, subprocess.SubprocessError):
+        result = None
+    if result is not None and result.returncode == 0:
+        lines = result.stdout.splitlines()
+        fields = lines[1].split() if len(lines) >= 2 else []
+        if len(fields) >= 6:
+            return fields[5]
     probe = Path(os.path.realpath(path))
     while not os.path.ismount(probe) and probe != probe.parent:
         probe = probe.parent
@@ -315,12 +336,19 @@ def disk_usage(
         return DiskUsage(label, str(path), None, None, False)
     free_gb = usage.free / _GIB
     free_pct = usage.free * 100 / usage.total if usage.total else 0.0
-    disk = DiskUsage(label, str(path), free_gb, free_pct, free_gb < min_free_gb)
+    disk = DiskUsage(
+        label,
+        str(path),
+        free_gb,
+        free_pct,
+        free_gb < min_free_gb,
+        mount=_mount_point(probe),
+    )
     if history is None:
         return disk
 
     now = time.time() if now is None else now
-    samples = read_disk_history(history, _mount_point(probe))
+    samples = read_disk_history(history, disk.mount)
     disk.rates = fill_rates(samples, now, (usage.total - usage.free) / _GIB)
     disk.days_to_floor, disk.days_to_full = project(free_gb, min_free_gb, disk.rates)
     disk.filling = (
@@ -444,19 +472,32 @@ class Report:
     @property
     def ok(self) -> bool:
         """
-        Healthy stack, no version drift, and no filesystem below its floor or
-        projected to reach it within the horizon (the remaining sections are
-        info-only).
+        Healthy stack, no version drift, and no filesystem below its floor
+        (the remaining sections are info-only, and a filesystem that is only
+        projected to reach its floor is a warning - see ``filling``).
         """
         return (
             all(c.ok for c in self.containers)
             and not self.versions.drift
-            and not any(d.low or d.filling for d in self.disks)
+            and not any(d.low for d in self.disks)
         )
+
+    @property
+    def filling(self) -> bool:
+        """A filesystem is projected below its floor within the horizon."""
+        return any(d.filling for d in self.disks)
+
+    @property
+    def exit_code(self) -> int:
+        """0 healthy, 1 unhealthy, EXIT_FILLING healthy but a disk is filling."""
+        if not self.ok:
+            return 1
+        return EXIT_FILLING if self.filling else 0
 
     def to_dict(self) -> dict:
         return {
             "ok": self.ok,
+            "filling": self.filling,
             "containers": [asdict(c) for c in self.containers],
             # drift is derived, so asdict() does not carry it
             "versions": {**asdict(self.versions), "drift": self.versions.drift},
@@ -543,11 +584,11 @@ def _days_word(days: float) -> str:
     return f"~{days:.0f} days"
 
 
-def _disk_line(d: DiskUsage) -> str:
+def _disk_line(d: DiskUsage, label: str) -> str:
     """One filesystem: free space, then its fill rates and projection."""
     if d.free_gb is None:
-        return f"{d.label} n/a"
-    parts = [f"{d.label} {d.free_gb:.0f} GiB / {d.free_pct:.0f}% free"]
+        return f"{label} n/a"
+    parts = [f"{label} {d.free_gb:.0f} GiB / {d.free_pct:.0f}% free"]
     if d.rates:
         parts.append(
             ", ".join(
@@ -571,9 +612,16 @@ def format_text(report: Report) -> str:
 
     lines.append(("Version", _version_line(report.versions)))
 
-    # One row per filesystem; the rates make a shared row too long to read.
-    for i, d in enumerate(report.disks):
-        lines.append(("Disk" if i == 0 else "", _disk_line(d)))
+    # One row per filesystem, naming every monitored path on it: the state,
+    # the filestore and docker usually share one, and three identical rows
+    # would bury the one that differs.
+    rows: dict = {}
+    for d in report.disks:
+        key = d.mount if d.mount is not None and d.free_gb is not None else id(d)
+        rows.setdefault(key, []).append(d)
+    for i, same in enumerate(rows.values()):
+        label = ", ".join(d.label for d in same)
+        lines.append(("Disk" if i == 0 else "", _disk_line(same[0], label)))
 
     u = report.updates
     if u.pending_version:
@@ -606,6 +654,6 @@ def format_text(report: Report) -> str:
             ("Images", f"{im.count} images · {im.size} ({im.reclaimable} reclaimable)")
         )
 
-    header = "OK" if report.ok else "ATTENTION"
+    header = {0: "OK", 1: "ATTENTION", EXIT_FILLING: "WARNING"}[report.exit_code]
     body = "\n".join(f"{label.ljust(9)}{value}" for label, value in lines)
     return f"[{header}]\n{body}"
