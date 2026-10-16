@@ -2,6 +2,7 @@ import { ref, reactive, computed, watch, watchEffect } from 'vue'
 import { defineStore } from 'pinia'
 
 import { api } from '@/api'
+import { ALL_TIME, DEFAULT_TIME_MODE, daysOf } from '@/lib/acquisitionTime'
 import { makeLogger } from '@/lib/logging'
 import { runtime } from '@/lib/runtime'
 import { debounce } from '@/lib/utils'
@@ -46,20 +47,32 @@ export const useAcquisition = defineStore('app.data.acquisition', () => {
   const sortField = ref('datetime')
   const sortOrder = ref(-1)
 
-  // --- time filter
+  // --- time filter: a preset ('Last 7 days', 'All time', ...) or 'range'
+  // with the ends the date pickers hold.
   const time = reactive(initTime())
-  const days = computed(() =>
-    time.mode == 'range' ? null : time.mode == 'Last 24 hours' ? 1 : Number(time.mode.split(' ')[1])
-  )
-  // Coerce mode to 'range' when an explicit range is set, and back to a
-  // recent preset when both ends are cleared.
+  const days = computed(() => daysOf(time.mode))
+  // Coerce mode to 'range' when an explicit range is set, and back to the
+  // default preset when both ends are cleared.
   watchEffect(() => {
     if (time.range.min || time.range.max) {
       time.mode = 'range'
     } else if (time.mode == 'range') {
-      time.mode = 'Last 24 hours'
+      time.mode = DEFAULT_TIME_MODE
     }
   })
+
+  /**
+   * Show a preset range. An explicit date range is left behind with it: while
+   * either end is set the mode is coerced back to 'range', so the ends are
+   * cleared first.
+   *
+   * @param {string} mode The preset, one of `TIME_MODES`.
+   */
+  function setTimeMode(mode) {
+    time.range.min = null
+    time.range.max = null
+    time.mode = mode
+  }
 
   // --- page filters: narrow the loaded page on the client (filename search
   // and polarity). Kept here rather than in the pane, so that opening files
@@ -152,7 +165,10 @@ export const useAcquisition = defineStore('app.data.acquisition', () => {
     const loadId = ++latestLoad
     updatesDuringLoad ??= new Map()
     let answer = null
-    if (time.mode.startsWith('Last')) {
+    if (time.mode === ALL_TIME) {
+      // The range route with neither end: every file the filters keep.
+      answer = await loadRange({ min: null, max: null })
+    } else if (time.mode.startsWith('Last')) {
       answer = await loadRecent(days.value)
     } else if (time.mode == 'range') {
       answer = await loadRange(time.range)
@@ -364,6 +380,7 @@ export const useAcquisition = defineStore('app.data.acquisition', () => {
     sortField,
     sortOrder,
     setSort,
+    setTimeMode,
     resetFilters,
     showFiles
   }
@@ -383,5 +400,5 @@ function initTime() {
       }
     }
   }
-  return { mode: 'Last 24 hours', range: { min: null, max: null } }
+  return { mode: DEFAULT_TIME_MODE, range: { min: null, max: null } }
 }

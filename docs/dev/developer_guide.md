@@ -2315,7 +2315,7 @@ In order to facilitate ergonomic development with the our standard test dataset,
 acquisition_filter = { min = '2022' }
 ```
 
-You can also set a `max` if necessary, and you can provide any date string parsable by the [Javascript `Date` constructor](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Date/Date), e.g. `2023-05-23` or `2025-01-27T19:14`.
+You can also set a `max` if necessary, and you can provide any date string parsable by the [Javascript `Date` constructor](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Date/Date), e.g. `2023-05-23` or `2025-01-27T19:14`. A string value names one of the selector's presets instead (`'Last 7 days'`, `'All time'`); without the setting the list opens on the last 7 days.
 
 ### Frontend Codebase
 

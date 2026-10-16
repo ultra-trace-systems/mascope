@@ -27,6 +27,18 @@ import { useApp } from '@/stores'
 
 const app = useApp()
 
+// A disabled tab keeps its pointer events (see the style below) so that its
+// tooltip can say what enables it. PrimeVue's Tab would still take the click
+// and the Enter it was never meant to get, so both are stopped on the way in,
+// at the tab list, before they reach it.
+const guardDisabledTab = (event) => {
+  if (event.target?.closest?.('[data-p-disabled="true"]')) {
+    event.stopPropagation()
+    event.preventDefault()
+  }
+}
+
+// `reason` is what a disabled tab says when hovered: what would enable it.
 const tabs = computed(() => [
   {
     label: 'Raw files',
@@ -47,6 +59,7 @@ const tabs = computed(() => [
     label: 'Batch',
     icon: 'pi pi-hashtag',
     disabled: !app.data.batch.focused || app.data.sample.list.length === 0,
+    reason: 'Open a batch with samples',
     doc: app.ui.help.docUrl('guides/target-collections/#read-the-results'),
     help: `
       <h1>Batch View</h1>
@@ -76,6 +89,7 @@ const tabs = computed(() => [
     label: 'Sample',
     icon: 'pi pi-chart-bar',
     disabled: !app.data.sample.focused,
+    reason: 'Select a sample',
     doc: app.ui.help.docUrl(
       peakAssignmentEnabled ? 'how-it-works/peak-assignment/' : 'how-it-works/peak-detection/'
     ),
@@ -107,6 +121,7 @@ const tabs = computed(() => [
     value: 'match',
     icon: 'pi pi-verified',
     disabled: !app.data.match.visualized.ion,
+    reason: 'Visualize an ion match from the ion table',
     // Card body comes from the shared docs snippet
     // (docs/user/_help/matching.md) rather than inline prose -- the docs
     // are the single source of truth.
@@ -160,12 +175,22 @@ const tabs = computed(() => [
       <SplitterPanel :size="app.ui.split.right" :minSize="10">
         <Panel id="charts">
           <Tabs v-model:value="app.ui.tab.active">
-            <TabList>
+            <TabList
+              @click.capture="guardDisabledTab"
+              @mousedown.capture="guardDisabledTab"
+              @keydown.capture="guardDisabledTab"
+            >
+              <!-- Rendered as a div rather than PrimeVue's default button: a
+                   disabled button gets no hover in every browser, so it could
+                   never show the reason it is disabled. The role and keyboard
+                   handling are PrimeVue's own either way. -->
               <Tab
-                v-for="{ icon, label, value, disabled, help, doc, helpKey, title } in tabs"
+                v-for="{ icon, label, value, disabled, reason, help, doc, helpKey, title } in tabs"
                 :value="value ?? label.toLowerCase()"
                 :key="label"
                 :disabled="disabled"
+                as="div"
+                v-tooltip.bottom="disabled ? reason : null"
                 :pt="app.ui.help.bottom(help ?? { helpKey, title }, doc ? { doc } : undefined)"
               >
                 <div class="row">
@@ -229,6 +254,15 @@ article {
 
 #charts :deep(.p-panel-header) {
   display: none;
+}
+
+/* A disabled tab answers a hover with what enables it. PrimeVue's base style
+   turns pointer events off on anything .p-disabled, which would keep that
+   tooltip from ever opening; the click it lets through is stopped in the
+   tab list (guardDisabledTab). */
+#charts :deep(.p-tab.p-disabled) {
+  pointer-events: auto;
+  cursor: not-allowed;
 }
 
 menu {

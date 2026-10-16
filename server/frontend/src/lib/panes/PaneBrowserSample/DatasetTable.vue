@@ -39,6 +39,10 @@ watch(
 const { height } = useWindowSize()
 const padding = 100
 const tableHeight = computed(() => ((height.value - padding) * app.ui.split.top) / 100 - 50)
+
+// The create button is icon-only beside a list, where the icon is enough,
+// and spells itself out above an empty one, where it is the only way forward.
+const hasDatasets = computed(() => (app.data.dataset.list?.length ?? 0) > 0)
 </script>
 
 <template>
@@ -55,7 +59,8 @@ const tableHeight = computed(() => ((height.value - padding) * app.ui.split.top)
     :onRetry="() => app.data.dataset.load('retry')"
     :contextMenu="contextMenu"
     :pt="
-      app.ui.help.right(`
+      app.ui.help.right(
+        `
         <h1>Sample Browser: Datasets</h1>
 
         <p>Shows all datasets in the currently selected workspace
@@ -86,9 +91,10 @@ const tableHeight = computed(() => ((height.value - padding) * app.ui.split.top)
           />
         </IconField>
         <Button
-          v-tooltip.top="'Create dataset'"
+          v-tooltip.top="hasDatasets ? 'Create dataset' : null"
           label="Create dataset"
-          class="hiddenlabel"
+          aria-label="Create dataset"
+          :class="{ hiddenlabel: hasDatasets }"
           icon="pi pi-plus"
           text
           size="small"
