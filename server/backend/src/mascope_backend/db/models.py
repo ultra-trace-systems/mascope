@@ -635,6 +635,22 @@ class Dataset(Base):
     dataset_utc_created: Mapped[Optional[dt]] = mapped_column(TIMESTAMP(timezone=True))
     dataset_utc_modified: Mapped[Optional[dt]] = mapped_column(TIMESTAMP(timezone=True))
 
+    # Descriptive metadata (FAIR F2, R1.1), all optional: nothing may refuse a
+    # dataset for metadata its user does not have. `license` is the dataset's
+    # own data licence as free text (an SPDX id such as CC-BY-4.0, or
+    # "proprietary"), not the `reference_licenses` gate on mirrored sources.
+    # The lists are JSON rather than child tables: small, always read with the
+    # dataset, never queried relationally. Shapes, validated by the API models:
+    #   authors:             [{"name", "orcid", "affiliation"}], in author order
+    #   keywords:            [str]
+    #   related_identifiers: [{"identifier", "relation", "identifier_type"}]
+    #   funding:             [{"funder", "award"}]
+    license: Mapped[Optional[str]] = mapped_column(String(64))
+    authors: Mapped[Optional[list]] = mapped_column(JSON)
+    keywords: Mapped[Optional[list]] = mapped_column(JSON)
+    related_identifiers: Mapped[Optional[list]] = mapped_column(JSON)
+    funding: Mapped[Optional[list]] = mapped_column(JSON)
+
     # Relationships
     workspace = relationship("Workspace", back_populates="datasets")
     sample_batch = relationship(
@@ -689,6 +705,55 @@ class Dataset(Base):
             func.lower(func.btrim(dataset_name)),
             unique=True,
             postgresql_where=text("dataset_type <> 'ACQUISITION'"),
+        ),
+    )
+
+
+class DatasetTombstone(Base):
+    """What a deleted dataset was, kept after its data is gone (FAIR A2).
+
+    One row per deleted dataset, keyed by its original id and written in the
+    same transaction as the delete, by both paths that delete datasets: the
+    dataset controller (``deleted_via='dataset'``) and workspace deletion,
+    which removes its datasets by cascade (``deleted_via='workspace'``). A
+    dataset restored from a dump and deleted again overwrites its earlier row.
+
+    Every column is a snapshot as the dataset stood, and the table has no
+    foreign keys and no relationships on purpose: a row has to outlive the
+    dataset, its workspace and the user who deleted it. ``deleted_by`` is
+    therefore the acting user's email as plain text, not a user id.
+
+    Raw SQL and restored dumps bypass the controllers and so write no
+    tombstone, as they bypass every other controller rule; a trigger would be
+    the database-level answer and is not worth its weight here.
+    """
+
+    __tablename__ = "dataset_tombstone"
+
+    dataset_id: Mapped[str] = mapped_column(String(16), primary_key=True)
+    workspace_id: Mapped[Optional[str]] = mapped_column(String(16))
+    workspace_name: Mapped[Optional[str]] = mapped_column(String(256))
+    dataset_name: Mapped[Optional[str]] = mapped_column(String(256))
+    dataset_description: Mapped[Optional[str]] = mapped_column(Text)
+    dataset_type: Mapped[Optional[str]] = mapped_column(String(64))
+    instrument: Mapped[Optional[str]] = mapped_column(String(64))
+    # The five descriptive fields of `Dataset` as one object:
+    # {license, authors, keywords, related_identifiers, funding}.
+    descriptive_metadata: Mapped[Optional[dict]] = mapped_column(JSON)
+    n_sample_batches: Mapped[Optional[int]] = mapped_column(Integer)
+    n_sample_items: Mapped[Optional[int]] = mapped_column(Integer)
+    n_sample_files: Mapped[Optional[int]] = mapped_column(Integer)
+    dataset_utc_created: Mapped[Optional[dt]] = mapped_column(TIMESTAMP(timezone=True))
+    dataset_utc_modified: Mapped[Optional[dt]] = mapped_column(TIMESTAMP(timezone=True))
+    deleted_utc: Mapped[dt] = mapped_column(TIMESTAMP(timezone=True))
+    deleted_by: Mapped[Optional[str]] = mapped_column(Text)
+    deleted_via: Mapped[str] = mapped_column(String(16))
+    # build_provenance() at delete time: the build that deleted.
+    provenance: Mapped[Optional[dict]] = mapped_column(JSON)
+
+    __table_args__ = (
+        CheckConstraint(
+            "deleted_via IN ('dataset', 'workspace')", name="deleted_via_known"
         ),
     )
 
@@ -1465,6 +1530,14 @@ class TargetCompound(Base):
     target_compound_name: Mapped[Optional[str]] = mapped_column(Text)
     target_compound_formula: Mapped[str] = mapped_column(String(256))
     cas_number: Mapped[Optional[str]] = mapped_column(String(12))
+    # Structure identity (FAIR I3), all optional. `inchikey` is the link to
+    # reference chemistry - matched against `reference_compound.inchikey`, the
+    # cross-source key, at query time. There is deliberately no FK to a
+    # reference row: every ingest replaces those rows with new ids, and a
+    # prune deletes the old ones.
+    inchikey: Mapped[Optional[str]] = mapped_column(String(27), index=True)
+    inchi: Mapped[Optional[str]] = mapped_column(Text)
+    smiles: Mapped[Optional[str]] = mapped_column(Text)
 
     # Relationships
     target_collection = relationship(
