@@ -42,8 +42,8 @@ $ mascope prod doctor
 [OK]
 Stack    backend healthy · frontend healthy · postgres healthy · redis healthy · file_converter running
 Version  v1.6.1
-Disk     state 142 GiB / 61% free · +2.1 GiB/day (7d), +1.8 GiB/day (30d) · full in ~68 days
-         docker 38 GiB / 40% free · +0.1 GiB/day (7d), +0.2 GiB/day (30d) · full in ~190 days
+Disk     state, docker 142 GiB / 61% free · +0.4 GiB/day (7d), +0.3 GiB/day (30d) · full in ~355 days
+         filestore 610 GiB / 31% free · +2.1 GiB/day (7d), +1.8 GiB/day (30d) · full in ~290 days
 Updates  no pending migration recorded
 Backups  5 local dump(s) · newest 8h ago
 Images   11 images · 6.2GB (2.1GB reclaimable)
@@ -51,13 +51,17 @@ Images   11 images · 6.2GB (2.1GB reclaimable)
 
 It exits `0` when the stack is healthy, the running images match the release
 this deployment would deploy, and every filesystem is above the free-space
-floor (`MASCOPE_UPDATE_MIN_FREE_GB`) and not filling fast enough to reach it
-within `MASCOPE_DOCTOR_MIN_DAYS_TO_FLOOR` days (default 7, `0` disables); `1`
-otherwise - so it doubles as a monitoring probe. `--json` emits the same data
-for scripting.
+floor (`MASCOPE_UPDATE_MIN_FREE_GB`); `1` otherwise - so it doubles as a
+monitoring probe. It exits `3`, under a `[WARNING]` header, when all of that
+holds but a filesystem is filling fast enough to reach the floor within
+`MASCOPE_DOCTOR_MIN_DAYS_TO_FLOOR` days (default 7, `0` disables): the Kuma
+push reports that as down, while the fleet playbooks let a rollout carry on
+past it. `--json` emits the same data for scripting.
 
-**Disk** gives each filesystem's fill rate over the last 7 and 30 days and,
-at the faster of the two, when it would be full; a filesystem projected below
+**Disk** has one row per filesystem, naming every monitored path on it - the
+state (`.runtime`), the filestore (which may be a volume of its own) and
+docker's image store - with its fill rate over the last 7 and 30 days and, at
+the faster of the two, when it would be full; a filesystem projected below
 the floor within the horizon is flagged `FILLING`. The doctor keeps no history
 of its own: it reads the samples the [disk monitor](#the-monitor-early-warning)
 records every 15 minutes, so the rates appear once that timer has a day of
@@ -492,16 +496,19 @@ filesystem runs short.
 
 `tooling/ubuntu.sh` installs and **enables** `mascope-disk-check.timer`, which
 runs [`tooling/disk-check.sh`](../tooling/disk-check.sh) every 15 minutes. It
-never deletes anything - it measures free space on the `.runtime` and docker
-filesystems and reports to the journal. When a filesystem drops below the floor,
-or is filling fast enough to reach it soon, it pings a healthchecks.io-style URL
-so you are alerted with lead time.
+never deletes anything - it measures free space on the `.runtime` filesystem,
+each env's filestore when that is a symlink to a volume of its own, and the
+docker filesystem, and reports to the journal. When a filesystem drops below
+the floor it pings a healthchecks.io-style URL so you are alerted with lead
+time; when one is filling fast enough to reach the floor soon, it pings a
+second one.
 
 A floor alone gives a disk that fills fast little warning: at 19 GiB a day, a
 10% floor on a 1 TiB disk is crossed about five days before the disk is full.
 So each run also appends the free space to
-`$MASCOPE_PATH/.runtime/disk-check/history.tsv` (the only file it writes, kept
-to the last 60 days), fits how many GiB a day the filesystem has been filling
+`$MASCOPE_PATH/.runtime/disk-check/history.tsv` (the only file it writes besides
+a lock beside it, kept to the last 60 days), fits how many GiB a day the
+filesystem has been filling
 over the last 7 and 30 days, and projects when it reaches the floor and when
 it is full, at the faster of the two rates - the 7-day rate catches an
 instrument that has just started a long run, the 30-day rate keeps a quiet
@@ -524,13 +531,22 @@ Configure it in `/etc/mascope/disk-check.env` (chmod 600, template
 - `MIN_FREE_GB` (default 10) - absolute floor; the "about to crash" signal.
 - `MIN_FREE_PCT` (default 10) - percentage floor; an earlier warning. Set to
   `0` on a very large disk to avoid paging while tens of GiB are still free.
-- `MIN_DAYS_TO_FLOOR` (default 30) - alert when the filesystem is projected
-  to drop below the floor within this many days. `0` disables the alert; the
+- `MIN_DAYS_TO_FLOOR` (default 30) - warn when the filesystem is projected
+  to drop below the floor within this many days. `0` disables the warning; the
   rates are still logged. An env file seeded before this setting existed does
-  not list it, and the default applies.
-- `HEALTHCHECK_URL` - **set this to actually get alerted.** On every OK run it
-  pings the URL (so a stalled monitor is itself flagged); when low it pings
-  `<url>/fail`. Use a check separate from the backup one.
+  not list it, and the default applies. A threshold that is not a plain number
+  is logged and replaced by its default.
+- `HEALTHCHECK_URL` - **set this to actually get alerted.** Every run pings
+  the URL while no filesystem is below the floor (so a stalled monitor is
+  itself flagged) and `<url>/fail` while one is. Use a check separate from the
+  backup one.
+- `HEALTHCHECK_FILLING_URL` - a **second** check, for the fill-rate warning:
+  `<url>/fail` while a filesystem is projected to reach the floor within
+  `MIN_DAYS_TO_FLOOR` days, `<url>` otherwise. It is kept apart because
+  healthchecks.io notifies on a change of state: one check already down for
+  the warning would say nothing when the floor is actually crossed. Without
+  it, the warning is journalled and recorded as a `/log` event on
+  `HEALTHCHECK_URL`, which notifies no one.
 
 ```sh
 sudo systemctl start mascope-disk-check.service   # run it now

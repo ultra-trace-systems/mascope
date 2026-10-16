@@ -45,9 +45,19 @@ def test_min_free_gb_env_override(monkeypatch):
     assert au.min_free_gb() == 20.0
 
 
-def test_min_free_gb_invalid_falls_back(monkeypatch):
-    monkeypatch.setenv("MASCOPE_UPDATE_MIN_FREE_GB", "lots")
+@pytest.mark.parametrize("raw", ["lots", "nan", "inf", "-5", ""])
+def test_min_free_gb_invalid_falls_back(monkeypatch, raw):
+    # float() accepts "nan" and "inf": nan would never compare below the
+    # floor and inf would refuse every update.
+    monkeypatch.setenv("MASCOPE_UPDATE_MIN_FREE_GB", raw)
     assert au.min_free_gb() == au.DEFAULT_MIN_FREE_GB
+
+
+def test_env_float_accepts_zero_and_fractions(monkeypatch):
+    monkeypatch.setenv("MASCOPE_TEST_FLOAT", "0")
+    assert au.env_float("MASCOPE_TEST_FLOAT", 7.0) == 0.0
+    monkeypatch.setenv("MASCOPE_TEST_FLOAT", "2.5")
+    assert au.env_float("MASCOPE_TEST_FLOAT", 7.0) == 2.5
 
 
 # --- disk_precheck ---

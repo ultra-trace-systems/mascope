@@ -126,8 +126,11 @@ ansible-playbook site.yml --check --diff -K --limit <host>
 `mascope prod doctor` and stopping the rollout on the first failure. It also
 reinstalls the `mascope` CLI, before the stack update, so it cannot drift
 behind the checkout - and so a release that adds a compose secret is
-provisioned by the CLI that knows about it. No sudo
-(and therefore no vault password) is needed:
+provisioned by the CLI that knows about it. The doctor's exit 3 - a healthy
+stack whose disk is projected to reach its free-space floor within days - is
+a warning, not a failure: the play prints a note for that server and carries
+on, since a filling disk needs an operator rather than a fleet stuck on the old
+release. No sudo (and therefore no vault password) is needed:
 
 ```sh
 ansible-playbook update.yml -e mascope_version=vX.Y.Z --limit <canary-host>
@@ -161,7 +164,8 @@ Per server it skips anything without `/var/run/reboot-required`, refuses to
 proceed while a backup is in flight, reboots, then gates on four checks: the
 backend container reports healthy, the running release is the same one the
 server went down with, the origin API answers `422`, and `mascope prod doctor`
-passes. Any failure stops the batch before the next server is touched. The
+passes (its disk-filling warning, exit 3, passes with a note, as in
+`update.yml`). Any failure stops the batch before the next server is touched. The
 transcript states a one-line verdict per server - naming the packages that
 requested the reboot - and, after the reboot, the kernel change it activated,
 so a justified reboot is distinguishable from a skip at a glance.

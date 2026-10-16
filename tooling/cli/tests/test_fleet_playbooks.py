@@ -6,15 +6,21 @@ itself is never imported (it is not a dependency of this suite, and the
 questions here are about task order and file contents, not execution).
 """
 
+import importlib
 from pathlib import Path
 
+import pytest
 import yaml
 
 from mascope_cli.cmd.init import GENERATED_SECRETS
 
 
+# The prod package re-exports the `doctor` command, which shadows the module.
+doctor = importlib.import_module("mascope_cli.cmd.prod.doctor")
+
 REPO_ROOT = Path(__file__).resolve().parents[3]
 UPDATE_PLAYBOOK = REPO_ROOT / "tooling" / "fleet" / "update.yml"
+REBOOT_PLAYBOOK = REPO_ROOT / "tooling" / "fleet" / "reboot.yml"
 COMPOSE_FILE = REPO_ROOT / "docker-compose.yaml"
 
 # Compose secrets the operator supplies by hand rather than the CLI generating
@@ -61,6 +67,30 @@ def test_cli_is_reinstalled_before_the_stack_update():
         "update.yml must reinstall the CLI after checking out the release tag "
         "and BEFORE 'mascope prod update' - a release that adds a compose "
         f"secret takes the backend down otherwise. Order is: {names[checkout:]}"
+    )
+
+
+@pytest.mark.parametrize(
+    "playbook", [UPDATE_PLAYBOOK, REBOOT_PLAYBOOK], ids=lambda p: p.name
+)
+def test_a_filling_disk_does_not_halt_the_roll(playbook):
+    """
+    The doctor gate passes the doctor's disk-filling warning and nothing else.
+
+    Both plays run `serial: 1` with `any_errors_fatal`, so a failed doctor
+    stops every server after this one. The doctor exits EXIT_FILLING when the
+    stack is healthy but a disk is projected to reach its floor within days:
+    that wants an operator, not a fleet left on the old release. Every other
+    non-zero exit is a real failure and must still stop the roll.
+    """
+    tasks = yaml.safe_load(playbook.read_text(encoding="utf-8"))[0]["tasks"]
+    gate = tasks[_task_index(tasks, "prod doctor")]
+    register = gate.get("register")
+    assert register, f"{playbook.name}: the doctor gate must register its result"
+    assert gate.get("failed_when") == (
+        f"{register}.rc not in [0, {doctor.EXIT_FILLING}]"
+    ), (
+        f"{playbook.name}: the doctor gate must pass exit 0 and {doctor.EXIT_FILLING} only"
     )
 
 
