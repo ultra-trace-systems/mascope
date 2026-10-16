@@ -36,13 +36,15 @@ describe('useSelectedSamplePoints', () => {
     expect(points.value).toEqual([2])
   })
 
-  it('keeps its array while the selected places stay the same', () => {
+  // A box select over some traces dims the others, so the selection the store
+  // takes from it is drawn again even when it selects the same samples.
+  it('is a new array for a selection given anew with the same samples', () => {
     const app = appWith(['s1', 's2', 's3'], ['s2'])
     const points = useSelectedSamplePoints(app)
     const before = points.value
 
-    app.data.sample.list = records(['s1', 's2', 's3'])
     app.data.sample.selectedIds = ['s2']
-    expect(points.value).toBe(before)
+    expect(points.value).toEqual(before)
+    expect(points.value).not.toBe(before)
   })
 })
