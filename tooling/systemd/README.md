@@ -72,6 +72,19 @@ default**. Every 15 minutes (cheap, read-only) `mascope-disk-check.timer` runs
 - `MIN_FREE_PCT` (default 10) - percentage floor, the earlier warning (set `0`
   to disable on very large disks).
 
+It also alerts when a filesystem is **filling fast enough to reach that floor
+within `MIN_DAYS_TO_FLOOR` days** (default 30; `0` disables). Each run appends
+the free space to `$MASCOPE_PATH/.runtime/disk-check/history.tsv` (kept to 60
+days), fits GiB/day over the last 7 and 30 days, and logs the rates and the
+projection on every line:
+
+```
+[disk-check] FILLING: state (.runtime) (/) has 400.0 GiB / 40% free; rate +19.0 GiB/day (7d), +18.6 GiB/day (30d); 100.0 GiB floor in ~16 days, full in ~21 days (alerts under 30 days)
+```
+
+Rates start after a day of history. `mascope prod doctor` reads the same
+history file for its own projection.
+
 With no configuration it only logs to the journal; set `HEALTHCHECK_URL` in
 `/etc/mascope/disk-check.env` to get paged before the disk fills. The service
 treats exit 1 ("a filesystem is low") as expected, so systemd does not pile a
@@ -100,6 +113,7 @@ assignment runs.
 systemctl list-timers mascope-update.timer mascope-disk-check.timer mascope-assignment-prune.timer
 journalctl -u mascope-update.service
 journalctl -u mascope-disk-check.service         # disk check history
+cat "$MASCOPE_PATH/.runtime/disk-check/history.tsv"  # free-space samples behind the fill rate
 journalctl -u mascope-assignment-prune.service   # retention pass history
 cat "$MASCOPE_PATH/.runtime/update/status.log"   # applied / pending history
 cat "$MASCOPE_PATH/.runtime/update/state.json"   # the current pending update
