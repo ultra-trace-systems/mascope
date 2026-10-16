@@ -1179,14 +1179,18 @@ def doctor(
     One-glance operational status of the deployment.
 
     Gathers container health, the deployed version, free disk on the state and
-    docker filesystems, the recorded pending update, local backup freshness,
-    and the docker image footprint. Read-only and network-free - safe to run
+    docker filesystems with how fast each is filling (from the disk-check
+    timer's history), the recorded pending update, local backup freshness, and
+    the docker image footprint. Read-only and network-free - safe to run
     anytime or to poll.
 
     Exits 0 when everything looks healthy, 1 when a container is not running,
     the running images do not match the release this deployment would deploy,
     or a filesystem is below the free-space floor (MASCOPE_UPDATE_MIN_FREE_GB),
-    so it can double as a monitoring probe.
+    so it can double as a monitoring probe. Exits 3 when the stack is otherwise
+    healthy but a filesystem is filling fast enough to reach that floor within
+    MASCOPE_DOCTOR_MIN_DAYS_TO_FLOOR days (default 7) - a warning, which the
+    fleet playbooks let a rollout pass and doctor-push.sh reports as down.
 
     \b
     Examples:
@@ -1217,8 +1221,12 @@ def doctor(
         for label, name in container_specs
         if label in ("backend", "frontend", "file_converter")
     ]
+    # The filestore takes every raw upload and may be its own volume (a
+    # symlink or an absolute `filestore` path), so it is measured on its own;
+    # on a shared filesystem it folds into the state row.
     disk_specs = [
         ("state", Path(mascope_path) / ".runtime"),
+        ("filestore", Path(runtime.meta.filestore)),
         ("docker", auto_update.docker_root()),
     ]
 
@@ -1230,13 +1238,15 @@ def doctor(
         disk_specs=disk_specs,
         backups_dir=db_cfg.get_backups_dir(mode=_MODE),
         min_free_gb=auto_update.min_free_gb(),
+        disk_history=Path(mascope_path) / prod_doctor.DISK_HISTORY,
+        min_days_to_floor=prod_doctor.min_days_to_floor(),
     )
 
     if as_json:
         typer.echo(json.dumps(report.to_dict(), indent=2))
     else:
         typer.echo(prod_doctor.format_text(report))
-    raise typer.Exit(0 if report.ok else 1)
+    raise typer.Exit(report.exit_code)
 
 
 @prod_app.command(
