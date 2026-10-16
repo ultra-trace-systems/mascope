@@ -32,6 +32,7 @@ import {
 import { InstrumentSelector } from '@/lib/toolbars'
 
 import { api } from '@/api'
+import { ALL_TIME, TIME_MODES, describeTimeMode, widerTimeMode } from '@/lib/acquisitionTime'
 import {
   PROCESSING_STATUS_FILTERS,
   canChooseChemistry,
@@ -272,6 +273,38 @@ const filterActive = computed(
 const filteredCount = computed(() => acquisitions.value.length)
 const pageCount = computed(() => app.data.acquisition.list?.length ?? 0)
 
+// --- the empty list. It says what narrowed it and offers the way out. The
+// time range is the usual reason on a server whose files are older than the
+// range in force - the list then opened empty with no hint why, and nothing
+// closer than the selector to do about it - so the range is named and the next
+// one up, or all time, is a click away. The filters are the other reason: the
+// page filters above narrow the page on screen, the status filter the query.
+const timeMode = computed(() => app.data.acquisition.time.mode)
+const widerMode = computed(() => widerTimeMode(timeMode.value))
+// All time is offered on its own unless it is the next range up anyway, or
+// the range in force.
+const allTimeOffered = computed(() => timeMode.value !== ALL_TIME && widerMode.value !== ALL_TIME)
+const narrowed = computed(
+  () => filterActive.value || Boolean(app.data.acquisition.processingStatus)
+)
+const emptyMessage = computed(() => {
+  const range = describeTimeMode(timeMode.value)
+  if (narrowed.value) {
+    return range
+      ? `No raw files match the current filters ${range}`
+      : 'No raw files match the current filters'
+  }
+  if (range) return `No raw files ${range}`
+  return app.data.instrument.focused ? 'No raw files from this instrument' : 'No raw files yet'
+})
+// Only what narrowed the list, unlike the toolbar's clear, which also puts the
+// time range back: a range the user just widened to is kept.
+const clearNarrowingFilters = () => {
+  search.value = ''
+  polarityDropdown.value = ''
+  app.data.acquisition.processingStatus = null
+}
+
 // Force DataTable remount on page/page-size change so PrimeVue's internal
 // selection anchor resets. Without this the anchor from a previous page
 // can carry over and produce range-select artifacts.
@@ -359,7 +392,7 @@ const currentPageReportTemplate =
       <Select
         inputId="time"
         v-model="app.data.acquisition.time.mode"
-        :options="['Last 24 hours', 'Last 7 days', 'Last 30 days', 'Last 90 days']"
+        :options="TIME_MODES"
         style="flex-direction: row-reverse"
         placeholder="Recent"
       />
@@ -519,10 +552,41 @@ const currentPageReportTemplate =
                 </strong>
               </template>
             </DataTable>
-            <div v-if="!acquisitions?.length" class="center" style="min-height: 150px">
-              <i class="info-line">
-                <span class="pi pi-inbox" /><span>No raw files found with current filters</span>
-              </i>
+            <div v-if="!acquisitions?.length" class="center empty-list" style="min-height: 150px">
+              <div class="col" style="gap: 0.75rem">
+                <i class="info-line">
+                  <span class="pi pi-inbox" /><span>{{ emptyMessage }}</span>
+                </i>
+                <menu class="empty-actions">
+                  <Button
+                    v-if="widerMode"
+                    :label="`Show ${widerMode.toLowerCase()}`"
+                    icon="pi pi-calendar-plus"
+                    size="small"
+                    outlined
+                    severity="secondary"
+                    @click="app.data.acquisition.setTimeMode(widerMode)"
+                  />
+                  <Button
+                    v-if="allTimeOffered"
+                    label="Show all time"
+                    icon="pi pi-calendar"
+                    size="small"
+                    text
+                    severity="secondary"
+                    @click="app.data.acquisition.setTimeMode(ALL_TIME)"
+                  />
+                  <Button
+                    v-if="narrowed"
+                    label="Clear filters"
+                    icon="pi pi-filter-slash"
+                    size="small"
+                    text
+                    severity="secondary"
+                    @click="clearNarrowingFilters"
+                  />
+                </menu>
+              </div>
             </div>
           </div>
           <div class="bottom-section">
@@ -530,11 +594,7 @@ const currentPageReportTemplate =
               <span class="pi pi-file-arrow-up" /><span>Drag sample files here to upload them</span>
             </i>
             <menu class="bottom-menu">
-              <Button
-                id="uppy-upload-trigger"
-                label="Upload"
-                icon="pi pi-file-arrow-up"
-              />
+              <Button id="uppy-upload-trigger" label="Upload" icon="pi pi-file-arrow-up" />
               <Button
                 v-tooltip.top="processBlockedReason"
                 label="Process selected"
@@ -735,5 +795,9 @@ menu :deep(.full) {
   opacity: 0.5;
   gap: 0.5rem;
   margin: 0.5rem;
+}
+
+.empty-actions {
+  justify-content: center;
 }
 </style>

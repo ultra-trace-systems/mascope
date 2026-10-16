@@ -123,6 +123,7 @@ function makeApp() {
         processingStatus: null,
         setSort: vi.fn(),
         setPage: vi.fn(),
+        setTimeMode: vi.fn(),
         resetFilters: vi.fn(),
         unfocus: vi.fn(),
         setWatching: vi.fn()
@@ -343,6 +344,135 @@ describe('PaneTabAcquisitions', () => {
       await chemistryDialog(wrapper).vm.$emit('update:visible', true)
 
       expect(chemistryDialog(wrapper).props('resume')).toBe(false)
+    })
+  })
+
+  // The list is narrowed to a time range, and on a server whose files are
+  // older than the range it opened empty, saying only that no files matched
+  // the filters. The empty state now names the range and offers the way out,
+  // and All time is a range the selector offers at all.
+  describe('an empty list', () => {
+    const buttons = (wrapper) => wrapper.findAllComponents({ name: 'Button' })
+    const button = (wrapper, label) => buttons(wrapper).find((b) => b.props('label') === label)
+    const labels = (wrapper) =>
+      buttons(wrapper)
+        .map((b) => b.props('label'))
+        .filter((label) => label?.startsWith('Show') || label === 'Clear filters')
+    // The stub passes `inputId` through to its root, where the DOM keeps it
+    // lowercased.
+    const timeSelect = (wrapper) =>
+      wrapper.findAllComponents({ name: 'Select' }).find((s) => s.attributes('inputid') === 'time')
+
+    it('offers All time among the ranges', () => {
+      const wrapper = mountPane()
+
+      expect(timeSelect(wrapper).props('options')).toEqual([
+        'Last 24 hours',
+        'Last 7 days',
+        'Last 30 days',
+        'Last 90 days',
+        'All time'
+      ])
+    })
+
+    it('names the range in force and offers the next one up, or all time', () => {
+      mocks.app.data.acquisition.list = []
+      const wrapper = mountPane()
+
+      expect(wrapper.text()).toContain('No raw files in the last 24 hours')
+      expect(labels(wrapper)).toEqual(['Show last 7 days', 'Show all time'])
+    })
+
+    it('widens the range in one click', async () => {
+      mocks.app.data.acquisition.list = []
+      const wrapper = mountPane()
+
+      await button(wrapper, 'Show last 7 days').vm.$emit('click')
+      expect(mocks.app.data.acquisition.setTimeMode).toHaveBeenLastCalledWith('Last 7 days')
+
+      await button(wrapper, 'Show all time').vm.$emit('click')
+      expect(mocks.app.data.acquisition.setTimeMode).toHaveBeenLastCalledWith('All time')
+    })
+
+    it('follows the range as it widens', async () => {
+      mocks.app.data.acquisition.list = []
+      const wrapper = mountPane()
+
+      mocks.app.data.acquisition.time.mode = 'Last 90 days'
+      await wrapper.vm.$nextTick()
+
+      expect(wrapper.text()).toContain('No raw files in the last 90 days')
+      expect(labels(wrapper)).toEqual(['Show all time'])
+    })
+
+    // A date range has no next preset; all time is its one step out.
+    it('offers all time alone from an explicit date range', () => {
+      mocks.app.data.acquisition.list = []
+      mocks.app.data.acquisition.time.mode = 'range'
+      const wrapper = mountPane()
+
+      expect(wrapper.text()).toContain('No raw files in the selected date range')
+      expect(labels(wrapper)).toEqual(['Show all time'])
+    })
+
+    it('has nothing to widen to from all time', () => {
+      mocks.app.data.acquisition.list = []
+      mocks.app.data.acquisition.time.mode = 'All time'
+      const wrapper = mountPane()
+
+      expect(wrapper.text()).toContain('No raw files yet')
+      expect(labels(wrapper)).toEqual([])
+    })
+
+    it('names the instrument when one is chosen and has no files at all', () => {
+      mocks.app.data.acquisition.list = []
+      mocks.app.data.acquisition.time.mode = 'All time'
+      mocks.app.data.instrument.focused = { instrument: 'Orbi-Lab1' }
+      const wrapper = mountPane()
+
+      expect(wrapper.text()).toContain('No raw files from this instrument')
+    })
+
+    // The page filters narrow the page on screen: files were found, and the
+    // range is not what hid them.
+    it('blames the filters when they are what emptied it', async () => {
+      mocks.app.data.acquisition.search = 'nothing-is-called-this'
+      const wrapper = mountPane()
+
+      expect(wrapper.text()).toContain(
+        'No raw files match the current filters in the last 24 hours'
+      )
+      expect(labels(wrapper)).toContain('Clear filters')
+    })
+
+    it('blames a status filter too', () => {
+      mocks.app.data.acquisition.list = []
+      mocks.app.data.acquisition.processingStatus = ['failed']
+      const wrapper = mountPane()
+
+      expect(wrapper.text()).toContain(
+        'No raw files match the current filters in the last 24 hours'
+      )
+      expect(labels(wrapper)).toContain('Clear filters')
+    })
+
+    // Unlike the toolbar's clear, which also puts the time range back: a range
+    // the user just widened to is kept.
+    it('clears the filters but keeps the range', async () => {
+      mocks.app.data.acquisition.list = []
+      mocks.app.data.acquisition.time.mode = 'All time'
+      mocks.app.data.acquisition.search = 'x'
+      mocks.app.data.acquisition.polarity = '+'
+      mocks.app.data.acquisition.processingStatus = ['failed']
+      const wrapper = mountPane()
+
+      await button(wrapper, 'Clear filters').vm.$emit('click')
+
+      expect(mocks.app.data.acquisition.search).toBe('')
+      expect(mocks.app.data.acquisition.polarity).toBe('')
+      expect(mocks.app.data.acquisition.processingStatus).toBeNull()
+      expect(mocks.app.data.acquisition.time.mode).toBe('All time')
+      expect(mocks.app.data.acquisition.resetFilters).not.toHaveBeenCalled()
     })
   })
 })
