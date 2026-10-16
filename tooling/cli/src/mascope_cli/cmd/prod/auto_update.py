@@ -20,6 +20,7 @@ anonymous rate limit. Both calls go through small seams that tests stub.
 
 import datetime
 import json
+import math
 import os
 import shutil
 import subprocess
@@ -281,15 +282,28 @@ def _run(cmd: list[str], timeout: Optional[int] = 30) -> subprocess.CompletedPro
 DEFAULT_MIN_FREE_GB = 5.0
 
 
+def env_float(name: str, default: float) -> float:
+    """
+    A non-negative number from the environment variable ``name``, else
+    ``default``.
+
+    Unset, empty, unparsable, negative and non-finite values all fall back:
+    ``float()`` accepts "nan" and "inf", and either would quietly turn a
+    threshold off or on for every disk.
+    """
+    raw = os.environ.get(name)
+    if not raw:
+        return default
+    try:
+        value = float(raw)
+    except ValueError:
+        return default
+    return value if math.isfinite(value) and value >= 0 else default
+
+
 def min_free_gb() -> float:
     """Minimum free GiB required before an update may pull (env-overridable)."""
-    raw = os.environ.get("MASCOPE_UPDATE_MIN_FREE_GB")
-    if not raw:
-        return DEFAULT_MIN_FREE_GB
-    try:
-        return float(raw)
-    except ValueError:
-        return DEFAULT_MIN_FREE_GB
+    return env_float("MASCOPE_UPDATE_MIN_FREE_GB", DEFAULT_MIN_FREE_GB)
 
 
 def docker_root() -> Path:
