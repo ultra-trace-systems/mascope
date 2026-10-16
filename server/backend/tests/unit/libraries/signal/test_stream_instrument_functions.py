@@ -15,7 +15,7 @@ from functools import partial
 
 import numpy as np
 import pytest
-from composite_acquisition import COMPOSITE, KEYS, MICROSCANS, RUNS
+from composite_acquisition import COMPOSITE, KEYS, MICROSCANS, POSITIVE, RUNS
 from scripted_acquisition import SAMPLE_FILENAME
 
 import mascope_file.io as m_io
@@ -31,6 +31,9 @@ REAGENT, LOW, MID, HIGH = KEYS
 #: which function a stream got reads off its record.
 FILE_A = 1.6e6
 STREAM_A = {REAGENT: 2.0e6, LOW: 1.9e6, MID: 1.8e6, HIGH: 1.7e6}
+#: A positive scan beside the composite: a polarity of one stream
+POSITIVE_KEY = f"{POSITIVE} R=120000"
+STREAM_A[POSITIVE_KEY] = 1.5e6
 
 
 def _shape(width=1.0):
@@ -218,6 +221,24 @@ def test_one_streams_widths_are_read_by_its_own_function(acquire, file_functions
     # Over the whole of its range, the part the composite takes from
     # another stream included
     assert resolution(100.0) == pytest.approx(r_orbi(100.0, a=STREAM_A[REAGENT]))
+
+
+def test_a_polarity_of_one_stream_is_read_by_that_streams_function(
+    acquire, file_functions, fits
+):
+    fits()
+    acquire(COMPOSITE + [(POSITIVE, 5, {59.0: 70.0, 80.0: 5.0})] * 2, MICROSCANS)
+    m_peak.compute_peaks(SAMPLE_FILENAME, file_functions, per_stream=True)
+
+    resolution = m_stream_functions.peak_store_resolution(
+        SAMPLE_FILENAME, _fallback, polarity="+"
+    )
+
+    # The stitch map draws no runs for a polarity of one stream, so its
+    # widths come from that stream alone, over the m/z the other polarity's
+    # map gives to the reagent scan as well
+    for mz in (59.0, 80.0):
+        assert resolution(mz) == pytest.approx(r_orbi(mz, a=STREAM_A[POSITIVE_KEY]))
 
 
 def test_a_run_is_placed_by_its_owners_calibration(acquire, file_functions, fits):
