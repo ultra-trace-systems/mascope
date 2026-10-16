@@ -153,7 +153,8 @@ screen on its next request:
   back.
 - **An owner requiring a new password of every account** (see Passwords).
   Everyone signs in again with their existing password and is then held at the
-  password screen.
+  password screen. An account that already owed a password change keeps its
+  sessions, which that requirement already holds at the password screen.
 - **Signing out everywhere.** Anyone can do this for their own account
   (`POST /api/users/me/sign-out-everywhere`), and an owner for any account
   (`POST /api/users/owner/{id}/sign-out-everywhere`) - for a session left open

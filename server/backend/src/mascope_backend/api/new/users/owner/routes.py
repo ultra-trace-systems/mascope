@@ -91,9 +91,9 @@ async def owner_require_password_change_route(
     Puts every account through the current password policy, for whatever reason
     the owner has - a tightened rule, a periodic refresh, a concern about
     exposed credentials. Nobody is excluded, the calling owner included.
-    Every open web session is signed out; everyone keeps signing in with their
-    existing password and is held at a mandatory password screen until they
-    replace it.
+    Every open web session of the accounts it flags is signed out; everyone
+    keeps signing in with their existing password and is held at a mandatory
+    password screen until they replace it.
 
     There is no counterpart to undo this over HTTP - withdrawing the
     requirement is a maintenance script run on the server.
@@ -132,8 +132,8 @@ async def owner_require_password_change_route(
         "message": (
             f"{data['flagged_count']} of {data['total_users']} user accounts must "
             "now set a new password - including your own. Everyone keeps signing "
-            "in with their current password until they change it, and every "
-            "open session is signed out. Changing it "
+            "in with their current password until they change it, and their "
+            "open sessions are signed out. Changing it "
             "revokes that user's API access tokens (SDK, notebooks), which must "
             "be regenerated. Instrument agents registered as paired machines "
             "authenticate as their own machine accounts and are not affected; an "

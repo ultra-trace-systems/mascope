@@ -172,13 +172,14 @@ const user = {
       header: 'Require a password change',
       message:
         'Every Mascope account - including your own - will be asked to set a new password. ' +
-        'Everyone keeps signing in with their current password until they change it. Once a ' +
+        'Every open web session is signed out, yours included: everyone signs in again with ' +
+        'their current password and is then asked to replace it. Once a ' +
         'user changes theirs, their API access tokens (SDK, notebooks) stop working and must ' +
         'be regenerated. Instrument agents listed under Paired machines are not affected, but ' +
         'an agent still using a token issued to a person - a TOF agent, or one set up before ' +
         'its machine was listed - stops uploading when that person changes their password, so ' +
-        're-pair those machines first. You will be asked to set yours immediately. Only a ' +
-        'server administrator can reverse this.',
+        're-pair those machines first. You will be taken to the sign-in screen straight ' +
+        'away. Only a server administrator can reverse this.',
       accept: async () => {
         // PrimeVue does not await this callback, so a rejection here would be
         // unhandled - and the dialog would sit open with nothing explaining
@@ -191,11 +192,12 @@ const user = {
           return
         }
         close()
-        // The owner is included, so the password screen replaces this view.
-        // Deliberately no user list reload: this account is already required to
-        // change its password, so the request would be refused. A failed
-        // profile re-read is caught: the gate intercepts the next request
-        // anyway.
+        // The owner is included and the sweep ended this session too, so the
+        // profile re-read answers 401 and the http layer sends this tab (and
+        // every other open one, on its next request) to the sign-in screen;
+        // the password screen follows the next sign-in. Deliberately no user
+        // list reload: it would be refused the same way. The rejection is
+        // caught because the 401 handling has already done its work.
         await app.auth.identify().catch(() => {})
       },
       acceptProps: {
