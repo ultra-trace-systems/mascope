@@ -4873,6 +4873,119 @@ channel is unavailable; the reagent shares of A, D, E and F1 are unchanged
 or up. Not met: the protonated-benzene row on L is settled in 4 of 6, as
 before, for the reason above.
 
+### After step 5.3, the minor-line response measured (2026-10-16)
+
+The pass-9 ledgers (develop `ecbceb593`, 2026-09-25) as the testbed still
+holds them: 60 runs over eleven sets, the chamber Orbitrap's G (with and
+without reagent ion) and I (positive and negative), the internal
+Orbitrap's C, C2 and the one uronium file of A the pass ran, the cylinder
+Orbitrap's K, K3 and L, and the TOF's J. Each committed row (a
+monoisotopic row at assigned or candidate) has its 13C and 18O lines
+predicted by the engine's own `predict_isotopes`, with every predicted
+line one peak of the file's width holds at the line's centre added to the
+share; each line is read off the file-averaged peak list by height and by
+area, the list being the engine's (the ledger's `sample_peak_intensity`
+equals its height on every Orbitrap run and its area on every TOF run, so
+no list has been re-picked since). The ratio is the line's share against
+its anchor's, over the predicted share; the expected S/N is the anchor's
+S/N times the predicted share. Two readings: the committed tracking lines
+(those the run committed as the row's isotopologue, with the mass gate
+calling them tracking), and every predicted line, a line with no peak
+within the run's window counting as zero and a peak another row holds
+left out. The reagent rows' lines are read the same way on pass 10's
+ledgers (2026-09-26), since pass 9 predates the ladders of 3.3.
+
+**13C, committed tracking lines, by height** (median / 20th percentile,
+lines; a cell with fewer than five lines gives the count):
+
+| set | files | 3-10 | 10-20 | 20-50 | 50-100 | 100 and up | all | under 0.9 | under 0.5 |
+|---|---|---|---|---|---|---|---|---|---|
+| G, no reagent ion | 6 | 0.59 / 0.48 (28) | 0.87 / 0.71 (175) | 0.95 / 0.92 (217) | 0.98 / 0.95 (118) | 0.97 / 0.95 (124) | 0.96 / 0.88 (662) | 25% | 2% |
+| G, reagent ion | 6 | 0.79 / 0.69 (22) | 0.88 / 0.81 (115) | 0.91 / 0.87 (78) | 0.92 / 0.91 (29) | 0.97 / 0.92 (21) | 0.90 / 0.83 (265) | 48% | 0% |
+| I, positive | 6 | 0.71 / 0.62 (9) | 0.87 / 0.75 (16) | (4) | - | (1) | 0.83 / 0.71 (30) | 63% | 0% |
+| I, negative | 6 | - | (1) | (1) | - | - | (2) | 1 of 2 | 0 |
+| A, one file | 1 | 0.74 / 0.64 (18) | 1.00 / 0.86 (7) | 0.95 / 0.91 (10) | 0.97 / 0.95 (5) | - | 0.90 / 0.70 (40) | 50% | 0% |
+| C | 5 | 0.76 / 0.66 (22) | 0.92 / 0.85 (52) | 0.97 / 0.88 (28) | 0.97 / 0.95 (10) | 0.96 / 0.95 (10) | 0.94 / 0.81 (122) | 41% | 0% |
+| C2 | 5 | 0.83 / 0.66 (17) | 0.93 / 0.91 (16) | 0.93 / 0.92 (9) | - | 0.95 / 0.93 (10) | 0.93 / 0.85 (52) | 23% | 0% |
+| K | 6 | 0.89 / 0.73 (62) | 0.92 / 0.82 (47) | 0.98 / 0.93 (58) | 0.97 / 0.95 (29) | 0.98 / 0.95 (23) | 0.96 / 0.86 (219) | 26% | 0% |
+| K3 | 7 | 0.85 / 0.70 (22) | 0.93 / 0.88 (6) | 0.95 / 0.94 (5) | (1) | - | 0.93 / 0.76 (34) | 41% | 0% |
+| L | 6 | 0.94 / 0.82 (94) | 0.92 / 0.88 (35) | 0.96 / 0.87 (43) | 0.97 / 0.93 (36) | 0.98 / 0.95 (88) | 0.96 / 0.89 (297) | 23% | 0% |
+| J, TOF | 6 | 0.93 / 0.83 (24) | 0.91 / 0.89 (5) | - | - | - | 1.03 / 0.90 (83) | 20% | 0% |
+
+**The same lines by area:**
+
+| set | 3-10 | 10-20 | 20-50 | 50-100 | 100 and up | all | under 0.9 | under 0.5 |
+|---|---|---|---|---|---|---|---|---|
+| G, no reagent ion | 0.77 / 0.66 | 1.18 / 1.02 | 1.09 / 1.06 | 1.06 / 1.03 | 1.00 / 0.99 | 1.07 / 1.00 | 6% | 0% |
+| G, reagent ion | 1.11 / 0.95 | 1.16 / 1.07 | 1.05 / 1.01 | 1.00 / 0.99 | 1.00 / 0.98 | 1.07 / 1.01 | 1% | 0% |
+| I, positive | 1.02 / 0.94 | 1.17 / 1.09 | - | - | - | 1.12 / 0.99 | 7% | 0% |
+| A, one file | 1.02 / 0.91 | 1.10 / 1.06 | 1.05 / 1.00 | 1.01 / 0.99 | - | 1.05 / 0.98 | 8% | 0% |
+| C | 1.05 / 0.95 | 1.15 / 1.03 | 1.07 / 0.99 | 1.01 / 0.99 | 0.98 / 0.98 | 1.07 / 0.98 | 6% | 0% |
+| C2 | 1.07 / 0.84 | 1.21 / 1.16 | 1.00 / 1.00 | - | 0.99 / 0.97 | 1.04 / 0.97 | 10% | 0% |
+| K | 1.24 / 1.02 | 1.18 / 1.10 | 1.11 / 1.04 | 1.03 / 1.00 | 1.02 / 0.98 | 1.12 / 1.02 | 2% | 0% |
+| K3 | 1.22 / 1.01 | 1.14 / 1.11 | 1.08 / 1.06 | - | - | 1.12 / 1.05 | 3% | 0% |
+| L | 1.25 / 1.11 | 1.07 / 1.00 | 1.06 / 0.96 | 1.07 / 1.00 | 1.03 / 0.99 | 1.07 / 0.99 | 4% | 0% |
+| J, TOF | 0.94 / 0.83 | 0.91 / 0.89 | - | - | - | 1.03 / 0.90 | 20% | 0% |
+
+The TOF reads area, so its two tables are one reading; 54 of its 83 lines
+sit under an expected S/N of 3, on the S/N column step 5.5 replaces (its
+picker's noise was the peak's own wings), so J is re-read after 5.5's
+re-detection rather than binned here. Its engine-side error reads high
+(+14% for these lines) partly because the engine predicts the 13C line
+alone where one TOF peak holds the 15N, 2H and 17O lines too: measured
+against what the peak holds, the median is 1.03.
+
+**13C, every predicted line of the same rows** (share with no peak at
+the line's m/z; the 20th percentile by height and by area, absent lines
+at zero):
+
+| set | lines | absent, under 3 | 3-10 | 10-20 | 20-50 | 20th pct 10-20 | 20th pct 20-50 |
+|---|---|---|---|---|---|---|---|
+| G, no reagent ion | 4,016 | 100% | 94% | 16% | 0% | 0.45 / 0.61 | 0.91 / 1.05 |
+| G, reagent ion | 1,577 | 100% | 79% | 0% | 0% | 0.78 / 1.06 | 0.86 / 1.01 |
+| I, positive | 379 | 100% | 63% | 0% | - | 0.75 / 1.09 | - |
+| I, negative | 110 | 100% | 100% | - | - | - | - |
+| A, one file | 298 | 99% | 65% | 22% | 0% | 0.47 / 0.63 | 0.91 / 1.00 |
+| C | 990 | 100% | 80% | 2% | 15% | 0.84 / 1.02 | 0.82 / 0.89 |
+| C2 | 449 | 100% | 70% | 0% | 0% | 0.73 / 0.73 | 0.92 / 1.00 |
+| K | 930 | 100% | 60% | 0% | 0% | 0.82 / 1.10 | 0.93 / 1.04 |
+| K3 | 387 | 100% | 62% | 14% | 0% | 0.87 / 1.11 | 0.94 / 1.06 |
+| L | 1,536 | 100% | 63% | 51% | 8% | 0 / 0 | 0.29 / 0.35 |
+
+L's column at 10 to 20 is its one 100-microscan file: there all 36 lines
+are absent and the 37 at 20 to 50 read 0.41 by height, where the set's
+five 10-microscan files hold 97% of theirs at 10 to 50 at 0.92 to 0.97;
+from 50 the file reads as its siblings do (0.95 to 0.97). Every peak list
+is cut at an S/N of 3, so absence at 3 to 10 is not the list's cut alone:
+most present lines there are missing from part of their file's scans
+(sparsity) where the anchor is in every scan, and the height of a line at
+10 to 50 falls with the share of scans it misses (0.94 none, 0.88 up to a
+fifth, 0.72 a fifth to a half, 0.44 more; 1,018 lines).
+
+**18O.** 108 committed tracking lines on the chamber Orbitrap read lower
+than the 13C ones by height (0.64 / 0.40 at 10 to 20 on G without reagent
+ion, 0.89 / 0.71 at 20 to 50), 0.92 and 1.01 by area; under 0.9 by height
+52%, by area 29%. The internal Orbitrap has 9, at 0.72 by height and 0.78
+by area. The cylinder Orbitrap's 28 read 1.07 by height and 1.36 by area,
+the small 18O share of a few-oxygen ion on a positive source taking in a
+neighbour, not a response. Every predicted 18O line: 97 to 99% absent per
+instrument, nearly all under an expected S/N of 3.
+
+**The reagent rows' lines** (3.3c's). Pass 9's reagent rows commit 45 13C
+and 18O lines, pass 10's ladders more: at an expected S/N of 100 and up 57
+Orbitrap lines read 0.93 to 1.04 by height and 0.95 to 1.10 by area, but
+for one internal Orbitrap ion's 13C line at 1.16 and 1.21 (6 lines); at 10
+to 20 the chamber Orbitrap's read 0.81 by height and 1.20 by area, the
+analytes' split.
+
+**Cross-checks.** The engine's own error on the same committed 13C and
+18O lines averages -9.8% on the chamber Orbitrap and -5.2% on the
+cylinder one, against the -9.6% and -6.0% 3.5b measured over every line
+kind. The 1- and 100-microscan nitrate sets the brief names are not on
+the testbed: its Orbitrap files are 10-microscan, but for L's one file and
+two 1-microscan files outside the gate sets. The scripts sit with the
+testbed tooling.
+
 ## The step table as it stood on 2026-10-22
 
 | step | PR | state |
