@@ -233,10 +233,12 @@ export const useChartData = defineStore('chart.sample.spectrum', () => {
     const assignments = app.data.peakAssignment.peak
     const assignment = assignments.forPeak(focused.peak_id)
     if (!assignment) return []
-    const familyMembers = assignments.familyOf(assignment)
-    if (familyMembers.length < 2) return []
 
-    const points = familyMembers
+    // Every member of the family, a lone M0 with no isotopologue row
+    // included: its one circle at the predicted m/z, beside the measured
+    // stick, is what lets its m/z error be judged by eye
+    const points = assignments
+      .familyOf(assignment)
       .map((iso) => {
         if (iso.sample_peak_intensity == null) return null
         const theoreticalMz =
