@@ -4,46 +4,9 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 ## [Unreleased]
 
-### Security
-
-- **A web session can be ended before it expires.** Until now a signed-in
-  browser stayed signed in for its full seven days whatever happened to the
-  account: a password change, a disable or a forced password change left
-  every open session running, and signing out only cleared the one browser's
-  cookie. The session token now records when it was issued, and a session
-  issued before the account's cutoff is refused with the usual 401. A password
-  change, disabling the account and the owner's "require a new password of
-  everyone" all move the cutoff, and so does the new sign-out-everywhere
-  action: `POST /api/users/me/sign-out-everywhere` for one's own account,
-  `POST /api/users/owner/{id}/sign-out-everywhere` for an owner on any
-  account. A socket whose session has been ended, or whose account was
-  disabled, can no longer join rooms other than its own user room. A session
-  issued in the minute before the cutoff survives it, to allow for clock skew
-  between workers. API access tokens are unaffected. **Upgrading signs most
-  web users out once**: a session issued by an earlier version carries no
-  issue time, so it cannot show it postdates the account's last password
-  write and is refused for every account that has one - any account created,
-  reset or whose password changed since the forced-password-change release
-  (`docs/authorization.md`, "Sessions").
-
-### Changed
-
-- **Each scan range of a stitched file has an instrument function of its
-  own.** For servers that run `composite_scan_streams`. A file whose
-  polarity is stitched from several scan ranges was fitted one peak shape
-  and one resolution function over all of them, though each range is
-  acquired at its own settings. Each range is now fitted on its own summed
-  signal as well, when its peaks are detected: its peaks' areas are
-  integrated under its own peak shape, and what reads a peak's expected
-  width - the calibration's overlap filter, batch alignment, batch peaks
-  and the peak assignment's mass gate - reads it from the range the peak
-  came from. A range with too few peaks to fit takes the fit of the
-  nearest range of the same resolution setting, else the whole file's.
-  The fits are kept in the file's peak store, and the file's processing
-  detail says each range's resolution at m/z 200 beside the whole file's.
-  Files detected whole, which is every file of a single scan range, are
-  fitted and read as before; a stitched file converted earlier keeps its
-  one function until it is processed again.
+Changes merged since the newest release below are described in
+[`changelog.d/`](changelog.d/), one file per pull request, until the next
+release gathers them here.
 
 ## [1.12.0] - 2026.10.14
 
