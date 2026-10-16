@@ -19,6 +19,7 @@ from functools import lru_cache
 
 import numpy as np
 import pandas as pd
+from scipy.stats import spearmanr
 
 from mascope_backend.api.controllers.match.lib.match_score_v2 import (
     ion_score_v2,
@@ -515,9 +516,62 @@ def pattern_scoring_for(
     )
 
 
+#: The fewest peaks with a signal-to-noise over which the run records how the
+#: column ranks against intensity; fewer, and the correlation is not read.
+SNR_RANK_MIN_PEAKS = 30
+
+
+def signal_to_noise_snapshot(peaks: pd.DataFrame) -> dict:
+    """What a run records about the signal-to-noise it scored on.
+
+    The fit reads each peak's ``signal_to_noise`` to decide whether a
+    predicted line's absence is evidence, and a TOF file's column did not
+    track height until its peaks were detected again under the fixed picker
+    (a reference engine measured rank correlations of -0.07 to 0.17 on a TOF
+    batch, where an Orbitrap file gives 0.99). The stored peak list does not
+    say which picker wrote it, so the run records the column's own rank
+    correlation with the intensity it scored on: near one is a noise estimate
+    that follows the signal, near zero is one that does not. The intensity is
+    what the engine scores (a TOF file's peak areas, an Orbitrap file's
+    heights), so on a TOF the rank is against area, which is height times an
+    m/z-dependent width.
+
+    :param peaks: The peak frame the search scored over: ``intensity`` and,
+        where the file carries one, ``signal_to_noise``.
+    :return: A JSON-serializable dict for the run's scoring snapshot.
+    """
+    none = {"snr_source": "none", "snr_peaks": 0, "snr_intensity_spearman": None}
+    if "signal_to_noise" not in peaks.columns:
+        # "none": the file records no noise estimate, and every absent line
+        # was judged by its expected share alone.
+        return none
+    snr = peaks["signal_to_noise"].to_numpy(dtype=float)
+    intensity = peaks["intensity"].to_numpy(dtype=float)
+    usable = np.isfinite(snr) & (snr > 0) & np.isfinite(intensity) & (intensity > 0)
+    if not usable.any():
+        # A column with no value in it is no estimate either
+        return none
+    spearman = None
+    # A constant column has no rank to read (and spearmanr warns on it)
+    if (
+        usable.sum() >= SNR_RANK_MIN_PEAKS
+        and np.ptp(snr[usable]) > 0
+        and np.ptp(intensity[usable]) > 0
+    ):
+        rho = spearmanr(snr[usable], intensity[usable])[0]
+        spearman = round(float(rho), 4) if np.isfinite(rho) else None
+    return {
+        # "peak_list": the per-peak column the file's peak detection wrote
+        "snr_source": "peak_list",
+        "snr_peaks": int(usable.sum()),
+        "snr_intensity_spearman": spearman,
+    }
+
+
 def pattern_scoring_snapshot(
     scoring: PatternScoring,
     mass_accuracy: "SampleMassAccuracy",
+    peaks: pd.DataFrame | None = None,
 ) -> dict:
     """What a run records about the width it judged a mass error against.
 
@@ -528,6 +582,9 @@ def pattern_scoring_snapshot(
 
     :param scoring: The scoring parameters the search actually used.
     :param mass_accuracy: What Stage A measured, and from how many anchors.
+    :param peaks: The peak frame the search scored over, whose
+        signal-to-noise is recorded (:func:`signal_to_noise_snapshot`);
+        None records nothing about it.
     :return: A JSON-serializable dict for the run's config.
     """
     snapshot = {
@@ -559,6 +616,8 @@ def pattern_scoring_snapshot(
         snapshot["reagent_mu_ppm"] = (
             None if reagent.mu_ppm is None else round(float(reagent.mu_ppm), 4)
         )
+    if peaks is not None:
+        snapshot.update(signal_to_noise_snapshot(peaks))
     return snapshot
 
 

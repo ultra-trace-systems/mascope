@@ -2986,7 +2986,9 @@ async def _run_sample_assignment(
                     for column in ("mz", "intensity", "signal_to_noise")
                     if column in search_peaks_df.columns
                 ]
-                scoring_snapshot = pattern_scoring_snapshot(scoring, mass_accuracy)
+                scoring_snapshot = pattern_scoring_snapshot(
+                    scoring, mass_accuracy, search_peaks_df[search_columns]
+                )
                 runtime.logger.info(
                     f"Untargeted stage for sample '{sample.sample_item_name}' scores "
                     f"at {scoring.sigma_ppm:.3f} ppm "

@@ -1418,6 +1418,39 @@ class TestResolvedProfile:
         }
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("column", [True, False], ids=["with S/N", "without"])
+    async def test_the_run_records_the_signal_to_noise_it_scored_on(self, column):
+        # The frame the search scores over is the one whose column is ranked:
+        # a TOF peak list written before the picker's fix does not track
+        # height, and the run is where that has to show.
+        from mascope_backend.api.new.peak_assignments.config import (
+            PeakAssignmentConfig,
+        )
+
+        intensities = [1000.0 * (index + 1) for index in range(40)]
+        peaks = _peaks_df(
+            [
+                (f"p{index}", 150.0 + 3.1 * index, intensity)
+                for index, intensity in enumerate(intensities)
+            ]
+        )
+        if column:
+            peaks["signal_to_noise"] = [intensity / 50.0 for intensity in intensities]
+        recorder = _Recorder()
+        _start(_patches(recorder, peaks, []))
+
+        await _run(PeakAssignmentConfig())
+
+        recorded = recorder.recorded_configs()[-1]["pattern_scoring"]
+        if column:
+            assert recorded["snr_source"] == "peak_list"
+            assert recorded["snr_peaks"] == 40
+            assert recorded["snr_intensity_spearman"] == pytest.approx(1.0)
+        else:
+            assert recorded["snr_source"] == "none"
+            assert recorded["snr_intensity_spearman"] is None
+
+    @pytest.mark.asyncio
     @pytest.mark.parametrize(
         "library", [True, False], ids=["two library lines", "no library match"]
     )
