@@ -1234,6 +1234,37 @@ processing, and the command says so. It
 reads a copy of the file on this machine, inside the backend container, so the
 stack must be up.
 
+**Acquisition times are hours off for files uploaded from the browser**, and
+their ingest appears to precede their acquisition. A raw file records its
+acquisition time as the instrument PC's wall clock, with no offset, and the
+server can only place it in UTC if the upload says which zone that clock was
+in. A File Agent reports its machine's zone; until the fix that shipped with
+this script the web app reported none, and the converter then read the wall
+clock in its own zone, which is UTC in the backend image. Such a file is stored with
+`utc_offset_source = 'guess'`, no `acquisition_timezone`, and a `datetime_utc`
+that is the wall clock labelled UTC - two hours late in central European
+summer time. New uploads from the web app are right; the rows already stored
+are repaired by reading each wall clock in the zone the instrument PC was in:
+
+```sh
+# report what would change, without changing anything
+MASCOPE_FIX_GUESSED_UTC_ZONE=Europe/Vienna mascope prod db script run fix_guessed_datetime_utc --skip-backup
+
+# repair, with the pre-script backup
+MASCOPE_FIX_GUESSED_UTC_ZONE=Europe/Vienna MASCOPE_FIX_GUESSED_UTC_APPLY=1 mascope prod db script run fix_guessed_datetime_utc
+```
+
+`MASCOPE_FIX_GUESSED_UTC_INSTRUMENT` narrows it to one instrument, for a
+server whose instruments stand in different zones, and
+`MASCOPE_FIX_GUESSED_UTC_CREATED_MIN` / `_CREATED_MAX` (ISO instants) to a
+window of registration time. The script touches only rows guessed with a zero
+offset; a guessed row stored with another offset was guessed in a real zone
+and is counted and left alone, as is a row that carries a reported zone. A
+row already right in the named zone, as a British winter file is, is not
+written, so running the script again is harmless. The repair follows the
+converter's rule for the hour the clocks repeat or skip, and names the rows
+that fall in one.
+
 **Backend unhealthy after an update.** The updater stops and leaves the stack in
 place (no automatic rollback). Investigate with `mascope prod logs backend`. To
 roll back manually: if a migration ran, first restore the pre-migration dump
