@@ -10,12 +10,15 @@ and what the conversion does with the answer.
 """
 
 import math
+import warnings
 from types import SimpleNamespace
 
+import numpy as np
 import pandas as pd
 import pytest
 
 from mascope_backend.api.new.peak_assignments.engine import (
+    SNR_RANK_MIN_PEAKS,
     TIER_ASSIGNED,
     TIER_CANDIDATE,
     ReagentOffset,
@@ -24,6 +27,7 @@ from mascope_backend.api.new.peak_assignments.engine import (
     pattern_scoring_snapshot,
     reagent_line_offset,
     sample_mass_accuracy,
+    signal_to_noise_snapshot,
     untargeted_matches_to_peak_assignments,
     untargeted_seeds,
 )
@@ -415,6 +419,113 @@ class TestTheRunSaysWhatItJudgedAt:
 
         assert snapshot["mz_tolerance_ppm"] == 15
         assert snapshot["abundance_floor"] == 1e-4
+
+
+class TestTheRunSaysWhichSignalToNoiseItScoredOn:
+    """A TOF file's stored column did not track height before its peaks were
+    detected again, and the peak list does not say which picker wrote it: the
+    run records the column's rank against the intensity it scored on."""
+
+    @staticmethod
+    def _peaks(snr, n=SNR_RANK_MIN_PEAKS):
+        intensity = np.geomspace(10.0, 1e5, n)
+        frame = pd.DataFrame(
+            {"mz": np.linspace(100.0, 400.0, n), "intensity": intensity}
+        )
+        if snr is not None:
+            frame["signal_to_noise"] = snr(intensity)
+        return frame
+
+    def test_a_column_that_tracks_height_reads_near_one(self):
+        snapshot = signal_to_noise_snapshot(self._peaks(lambda h: h / 7.0))
+
+        assert snapshot == {
+            "snr_source": "peak_list",
+            "snr_peaks": SNR_RANK_MIN_PEAKS,
+            "snr_intensity_spearman": 1.0,
+        }
+
+    def test_a_column_that_does_not_reads_near_zero(self):
+        # What a TOF peak list written before the fix looks like: the noise
+        # grows with the heights around a peak, so the ratio stays flat.
+        rng = np.random.default_rng(0)
+        snapshot = signal_to_noise_snapshot(
+            self._peaks(lambda h: rng.permutation(h / 7.0))
+        )
+
+        assert abs(snapshot["snr_intensity_spearman"]) < 0.5
+
+    def test_peaks_without_a_ratio_are_not_ranked(self):
+        # NaN, zero and negative ratios, and a peak of no intensity, say
+        # nothing about how the column ranks, and are not counted.
+        def snr(h):
+            out = h / 7.0
+            out[:3] = [np.nan, 0.0, -1.0]
+            return out
+
+        frame = self._peaks(snr, n=SNR_RANK_MIN_PEAKS + 4)
+        frame.loc[3, "intensity"] = 0.0
+
+        snapshot = signal_to_noise_snapshot(frame)
+
+        assert snapshot["snr_peaks"] == SNR_RANK_MIN_PEAKS
+        assert snapshot["snr_intensity_spearman"] == 1.0
+
+    def test_too_few_peaks_are_counted_but_not_ranked(self):
+        snapshot = signal_to_noise_snapshot(
+            self._peaks(lambda h: h, n=SNR_RANK_MIN_PEAKS - 1)
+        )
+
+        assert snapshot["snr_source"] == "peak_list"
+        assert snapshot["snr_peaks"] == SNR_RANK_MIN_PEAKS - 1
+        assert snapshot["snr_intensity_spearman"] is None
+
+    def test_a_file_with_no_column_says_so(self):
+        snapshot = signal_to_noise_snapshot(self._peaks(None))
+
+        assert snapshot == {
+            "snr_source": "none",
+            "snr_peaks": 0,
+            "snr_intensity_spearman": None,
+        }
+
+    def test_a_column_with_no_value_is_no_estimate(self):
+        snapshot = signal_to_noise_snapshot(
+            self._peaks(lambda h: np.full_like(h, np.nan))
+        )
+
+        assert snapshot == {
+            "snr_source": "none",
+            "snr_peaks": 0,
+            "snr_intensity_spearman": None,
+        }
+
+    @pytest.mark.parametrize("constant", ["signal_to_noise", "intensity"])
+    def test_a_constant_column_is_counted_but_not_ranked(self, constant):
+        # Nothing to rank, and no warning in the run's log about it
+        frame = self._peaks(lambda h: h / 7.0)
+        frame[constant] = 5.0
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            snapshot = signal_to_noise_snapshot(frame)
+
+        assert snapshot["snr_source"] == "peak_list"
+        assert snapshot["snr_peaks"] == SNR_RANK_MIN_PEAKS
+        assert snapshot["snr_intensity_spearman"] is None
+
+    def test_the_scoring_snapshot_carries_it_when_given_the_peaks(self):
+        accuracy = SampleMassAccuracy(0.0, 0.3, 11)
+        scoring = pattern_scoring_for(_orbi_params(), accuracy, ORBI_ACCURACY)
+
+        without = pattern_scoring_snapshot(scoring, accuracy)
+        with_peaks = pattern_scoring_snapshot(
+            scoring, accuracy, self._peaks(lambda h: h)
+        )
+
+        assert "snr_source" not in without
+        assert with_peaks["snr_source"] == "peak_list"
+        assert with_peaks["snr_intensity_spearman"] == 1.0
+        assert {k: with_peaks[k] for k in without} == without
 
 
 class TestWhichReadingsAreMeasuredAgain:
