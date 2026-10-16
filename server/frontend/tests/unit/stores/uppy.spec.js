@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { createPinia, setActivePinia } from 'pinia'
 
 // Which files the browser lets through to the upload. A name must start with
@@ -163,5 +163,60 @@ describe('upload store: the note about names without a token', () => {
     store.get().addFiles(files('Orbi-1_a.raw'))
 
     expect(state.push).not.toHaveBeenCalled()
+  })
+})
+
+describe('upload store: the zone an acquisition time is read in', () => {
+  // A raw file records its acquisition time as the instrument PC's wall
+  // clock, with no offset. The server reads it in the zone the upload
+  // reports, as a File Agent reports its machine's; with none reported it
+  // reads it in its own zone, UTC in production, and a file uploaded from a
+  // browser east of UTC was stored hours late.
+  let zone
+
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    vi.clearAllMocks()
+    state.tokenless = true
+    state.pending = false
+    zone = vi.spyOn(Intl.DateTimeFormat.prototype, 'resolvedOptions')
+  })
+
+  afterEach(() => {
+    zone.mockRestore()
+  })
+
+  it('reports the browser zone with every file', () => {
+    zone.mockReturnValue({ timeZone: 'Europe/Vienna' })
+    const store = useUppy()
+
+    expect(add(store, 'Orbi-1_2026.09.21_NO3_001.raw')).toBe(true)
+    expect(store.get().getFiles()[0].meta.timezone).toBe('Europe/Vienna')
+  })
+
+  it('keeps the zone next to the instrument the dialog reports', () => {
+    zone.mockReturnValue({ timeZone: 'America/Denver' })
+    const store = useUppy()
+
+    store.addFromDialog([
+      {
+        name: 'Nowhere_2026.09.21_NO3_001.raw',
+        data: new Blob(['x']),
+        meta: { instrument: 'Lab-2' }
+      }
+    ])
+
+    expect(store.get().getFiles()[0].meta).toMatchObject({
+      instrument: 'Lab-2',
+      timezone: 'America/Denver'
+    })
+  })
+
+  it('reports no zone when the browser cannot name one', () => {
+    zone.mockReturnValue({})
+    const store = useUppy()
+
+    expect(add(store, 'Orbi-1_2026.09.21_NO3_001.raw')).toBe(true)
+    expect(store.get().getFiles()[0].meta).not.toHaveProperty('timezone')
   })
 })
