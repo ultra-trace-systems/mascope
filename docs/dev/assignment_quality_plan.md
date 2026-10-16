@@ -86,7 +86,7 @@ table below names each step's PR, its merge date and one line on its state.
 | 4.5 - profiles as versioned rows, routing by detection | - |  | planned |
 | 5.1 - the reference pinned at a release, a boundary review per peaky release | - |  | planned 2026-10-13; the first review is the section below |
 | 5.2 - decoy arms in the gate: a shifted axis and swapped adducts through the in-app engine | - |  | planned; no target until two gates have read them |
-| 5.3 - measure the minor-line response: isotope lines by height and by area against expected S/N | - |  | in progress (MAS-68); before 3.5b, which fits what it finds |
+| 5.3 - measure the minor-line response: isotope lines by height and by area against expected S/N | - |  | measured 2026-10-16 on the pass-9 ledgers; the call on 3.5b's form is open, recorded there |
 | 5.4 - the side lobe's signatures: width-scaled offset and narrowness in the sidelobe flag | - |  | planned; after 3.5b and 3.5 |
 | 5.5 - the TOF signal-to-noise column: verify it tracks height, fix the picker or fall back to counting statistics | #2377 | 2026-10-16 | built: the picker's TOF noise is now the baseline's MAD; measured next on E, F, J |
 | 5.6 - the import contract: a verdict on batch rows, the engine tier where the user looks | - |  | planned; between rounds |
@@ -572,6 +572,73 @@ Specifications of the completed steps (3.1, 3.1c, 3.1d, 3.2, 3.3, 3.3b, 3.3c,
   say what the evidence is and the band then reads right without a second
   opinion. Whether such a row should meanwhile be read at candidate at
   least is the plan owner's call.
+- **What the instrument does to a minor line (5.3, measured 2026-10-16).**
+  On the pass-9 ledgers' committed rows, every 13C line was read by height
+  and by area off the file-averaged peak list (the engine's own read: its
+  `sample_peak_intensity` is that height on an Orbitrap and that area on a
+  TOF, equal on all 60 runs) against its predicted share, binned by its
+  expected S/N, the anchor's S/N times the share. The committed tracking
+  lines, pooled per instrument (median / 20th percentile, lines). The
+  internal Orbitrap's column pools C and C2, ten files of one reagent;
+  it leaves out A's one uronium file, a single file on another reagent
+  ion, whose 40 lines read 0.90 by height with half under 0.9 (the log's
+  per-set table) and would put the column's share under 0.9 at 38%:
+
+  | expected S/N | chamber Orbitrap, height | area | cylinder Orbitrap, height | area | internal Orbitrap, height | area |
+  |---|---|---|---|---|---|---|
+  | 3 to 10 | 0.72 / 0.56 (59) | 0.97 / 0.72 | 0.92 / 0.76 (178) | 1.24 / 1.05 | 0.77 / 0.66 (39) | 1.07 / 0.92 |
+  | 10 to 20 | 0.87 / 0.76 (307) | 1.17 / 1.05 | 0.92 / 0.86 (88) | 1.12 / 1.03 | 0.92 / 0.87 (68) | 1.18 / 1.03 |
+  | 20 to 50 | 0.94 / 0.90 (300) | 1.08 / 1.04 | 0.97 / 0.91 (106) | 1.08 / 1.02 | 0.95 / 0.88 (37) | 1.05 / 0.99 |
+  | 50 to 100 | 0.97 / 0.93 (147) | 1.05 / 1.01 | 0.97 / 0.94 (66) | 1.05 / 1.00 | 0.97 / 0.95 (10) | 1.01 / 0.99 |
+  | 100 and up | 0.97 / 0.95 (146) | 1.00 / 0.99 | 0.98 / 0.95 (111) | 1.03 / 0.98 | 0.96 / 0.94 (20) | 0.98 / 0.97 |
+  | under 0.9 / under 0.5 | 33% / 1% | 5% / 0% | 25% / 0% | 3% / 0% | 36% / 0% | 7% / 0% |
+
+  These lines are what the untargeted matcher let through, which takes a
+  line only within 40% of its share by height, so they cannot show the
+  deep miss. Read over every predicted 13C line of the same rows instead,
+  a line with no peak at its m/z counting as zero: under an expected S/N
+  of 3 the line is in the list as good as never, at 3 to 10 it is absent
+  for 89% (chamber), 62% (cylinder) and 76% (internal) of the rows, from
+  20 up for 0 to 12%. The list's own cut is an S/N of 3, so a line at 3 to
+  10 that read its share would be in it; the dim lines that are present
+  are missing from part of the file's scans where their anchors are in
+  every one (at 3 to 10, 95 to 100% of them on the chamber and internal
+  Orbitraps and 54% on the cylinder one; on the chamber Orbitrap from a
+  median half of the scans), and at 10 to 50 the height falls with the
+  scans missed: 0.94 with none missed, 0.88 with up to a fifth, 0.72 with
+  a fifth to a half, 0.44 with more. That is the scan-by-scan censoring
+  the reference's 0.10 line names, on Mascope's own list. Three things the
+  reference's reading does not say: area does not take the low bias away
+  but turns it into a high one, by 12 to 18% at an expected S/N of 10 to
+  20 and 5 to 8% at 20 to 50 on all three Orbitraps (the reference saw 7
+  to 13% on one), within 5% from 50; the 18O lines, thin (108 committed
+  lines on the chamber Orbitrap), read lower than the 13C ones by height,
+  0.69 at 10 to 20; and on the one 100-microscan file, in set L, every
+  line at 10 to 20 is absent and those at 20 to 50 read 0.41 where the
+  set's 10-microscan files read 0.92 to 0.97, so the onset is the file's,
+  not the instrument's. Above an expected S/N of 100 the reagent ladders
+  of pass 10 read 0.93 to 1.04 by height and 0.95 to 1.10 by area (57
+  Orbitrap lines; one internal Orbitrap ion's 13C line at 1.16 and 1.21
+  the exception), and at 10 to 20 they show the same split, 0.81 by height
+  and 1.20 by area on the chamber Orbitrap. The TOF's 83 committed lines
+  read 1.03 by area (its read) with a 20th percentile of 0.90, all under
+  an expected S/N of 20 on the S/N column 5.5 replaces, too few and on the
+  wrong scale for a curve. Not measurable here: the testbed holds no 1-
+  and 100-microscan nitrate pair (its Orbitrap files are 10-microscan, but
+  for that one file), so the reference's 0.3 at an S/N of 20 on
+  1-microscan files is neither confirmed nor refuted.
+- **The open call on the form (5.3's, for the plan owner).** (1) Does
+  this step fit a centre and a width as written, a response curve against
+  expected S/N on Orbitrap-class runs (the reference's form, a median and
+  a 20th percentile per bin, non-decreasing, capped at the natural share),
+  or the curve on the Orbitraps and a centre and a width on the TOF? The
+  numbers bear on it this way: a single centre averages a bin 13% low with
+  one 2% low, and its width would be set by the dim lines and loosen the
+  bright ones; a curve has to be fitted per file. (2) Does the engine read
+  Orbitrap isotope lines by area? By area the share of committed lines
+  under 0.9 falls from 25 to 36% to 3 to 7%, but the mid-S/N lines read
+  above their share, where a band capped at the natural share charges
+  them; by height the bias is one-sided and the curve's cap holds.
 - **Where.** `score_pattern_v2` in `heuristic_filter.py` (a floor and a
   centre for the relative error, parameters with today's values as
   defaults); the engine's scoring call and the seeded fit; the service's
@@ -860,6 +927,9 @@ under its milestone 5.
   result into 3.5b's section; no engine change.
 - **Verify.** The table per set with line counts; the call recorded on 3.5b
   before its PR opens.
+- **Measured** 2026-10-16: the per-instrument reading and the open call
+  in 3.5b, the per-set tables in the log's block "After step 5.3"
+  ([`assignment_quality_plan_log.md`](assignment_quality_plan_log.md)).
 - **Size.** S. Blocks 3.5b.
 
 ### 5.4 The side lobe's signatures
