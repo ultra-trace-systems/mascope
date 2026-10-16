@@ -1000,6 +1000,28 @@ class SampleFile(Base):
         TIMESTAMP(timezone=True), nullable=True
     )
 
+    # The Raw files list (`get_sample_files`): a look-back on acquisition time,
+    # of every instrument or one, or on when processing was last recorded,
+    # paged newest first. The two acquisition-time indexes are in the list's
+    # own order - `datetime_utc DESC NULLS LAST`, then the id - so a page is
+    # read off the index, and its count too, instead of sorting every row the
+    # look-back keeps. A plain `datetime_utc` index read backwards is
+    # `DESC NULLS FIRST`, which the planner does not take for it.
+    __table_args__ = (
+        Index(
+            "ix_sample_file_datetime_utc",
+            datetime_utc.desc().nulls_last(),
+            sample_file_id,
+        ),
+        Index(
+            "ix_sample_file_instrument_datetime_utc",
+            instrument,
+            datetime_utc.desc().nulls_last(),
+            sample_file_id,
+        ),
+        Index("ix_sample_file_processing_updated_utc", processing_updated_utc),
+    )
+
     def to_dict(self):
         """The row's columns, without the acquisition record unless it was
         loaded: asking for a deferred column here would fetch it for every
