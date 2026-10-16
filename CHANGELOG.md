@@ -47,10 +47,10 @@ Notable changes to Mascope are documented here. Versions follow the date-based s
 
 - **The dashboard says what to do next where it used to go quiet.** Five
   small first-run and feedback fixes in the web app, none of which touch the
-  server. The Raw files tab opens on the last 30 days rather than the last
+  server. The Raw files tab opens on the last 7 days rather than the last
   24 hours (a deployment's `acquisition_filter` still wins), offers **All
   time** among its ranges, and an empty list names the range in force ("No
-  raw files in the last 30 days") and widens to the next range or to all
+  raw files in the last 7 days") and widens to the next range or to all
   time in one click; a list the filters emptied says so and clears them
   without touching the range. Toasts are headed for the reader - "Share
   link", "Composition search", "Calibration fit", "Match refresh", "Upload",

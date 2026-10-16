@@ -26,8 +26,10 @@ describe('the time ranges of the Raw files list', () => {
     ])
   })
 
-  it('open on a month, which is one of them', () => {
-    expect(DEFAULT_TIME_MODE).toBe('Last 30 days')
+  // A week, not longer: the server counts and sorts every file in the range on
+  // each load, and the empty state offers the wider ranges in one click.
+  it('open on a week, which is one of them', () => {
+    expect(DEFAULT_TIME_MODE).toBe('Last 7 days')
     expect(TIME_MODES).toContain(DEFAULT_TIME_MODE)
   })
 
