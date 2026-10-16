@@ -15,6 +15,7 @@ import xarray
 from scipy.signal._peak_finding_utils import (  # ty:ignore[unresolved-import]
     _select_by_peak_distance,
 )
+from scipy.stats import median_abs_deviation
 
 import mascope_file.io as m_io
 import mascope_file.name as m_name
@@ -61,6 +62,14 @@ def _get_executor() -> ProcessPoolExecutor:
 # Define the delta m/z around unit masses for peak detection
 DMZ = 0.5
 SIGNAL_TO_NOISE_THRESHOLD = 3
+#: The half-width, in peak widths (FWHM), of the core of a fitted TOF peak
+#: that is cut out of the baseline its signal-to-noise is measured on. Wider
+#: than the peak itself, since a TOF peak's wings run beyond a Gaussian's.
+SNR_CORE_WIDTHS = 3.0
+#: The least half-width, in m/z, of the baseline window around a TOF peak:
+#: wide enough to reach past the peaks of its unit mass into the gaps between
+#: unit masses, where the baseline is.
+SNR_WINDOW_DMZ = DMZ
 
 PEAK_ID_LENGTH = 20
 
@@ -743,6 +752,20 @@ class TofPeakDetector(BasePeakDetector):
     ) -> np.ndarray:
         """Compute signal-to-noise ratio for given peaks
 
+        The noise is the spread of the baseline around the peak: the summed
+        spectrum within :data:`SNR_WINDOW_DMZ` (or ten widths, if wider) of
+        the peak, with every fitted peak's core cut out, not only this
+        one's. It was the standard deviation of whatever lay between one and
+        ten widths of the peak, and in a TOF spectrum that is the peak's own
+        wings and its neighbours at the same unit mass: the noise grew with
+        the heights around it, so a strong peak beside a stronger one scored
+        near zero and the column stopped tracking height.
+
+        The spread is the MAD scaled to a standard deviation, so a small peak
+        too weak to be fitted does not count as noise; where the baseline is
+        mostly empty and the MAD is zero, the standard deviation stands in.
+        A peak with no baseline left, or a flat one, has no ratio (NaN).
+
         :param peak_mzs: Fitted peak m/z values
         :type peak_mzs: np.ndarray
         :param peak_heights: Fitted peak heights
@@ -752,29 +775,35 @@ class TofPeakDetector(BasePeakDetector):
         """
         mz_axis = self._sum_signal.mz.values
         signal = self._sum_signal.values
-        snr = np.empty(len(peak_mzs), dtype=np.float64)
+        snr = np.full(len(peak_mzs), np.nan, dtype=np.float64)
 
-        # Compute exclusion zone from the resolution function
-        resolutions = self._resolution_function(peak_mzs)
-        exclusion = peak_mzs / resolutions
+        widths = peak_mzs / self._resolution_function(peak_mzs)
 
-        # Compute baseline window as 10 times the exclusion zone
-        window = 10 * exclusion
+        # The points within a core of any fitted peak, marked by a running sum
+        # over the cores' starts and ends
+        core_start = np.searchsorted(mz_axis, peak_mzs - SNR_CORE_WIDTHS * widths)
+        core_end = np.searchsorted(
+            mz_axis, peak_mzs + SNR_CORE_WIDTHS * widths, side="right"
+        )
+        marks = np.zeros(mz_axis.size + 1, dtype=np.int64)
+        np.add.at(marks, core_start, 1)
+        np.add.at(marks, core_end, -1)
+        in_core = np.cumsum(marks[:-1]) > 0
 
-        # Vectorized baseline window calculation
-        left_min = peak_mzs - window
-        left_max = peak_mzs - exclusion
-        right_min = peak_mzs + exclusion
-        right_max = peak_mzs + window
+        half_window = np.maximum(SNR_WINDOW_DMZ, 10 * widths)
+        window_start = np.searchsorted(mz_axis, peak_mzs - half_window)
+        window_end = np.searchsorted(mz_axis, peak_mzs + half_window, side="right")
 
-        # For each peak, select baseline regions and compute noise std
         for i in range(len(peak_mzs)):
-            left_mask = (mz_axis >= left_min[i]) & (mz_axis <= left_max[i])
-            right_mask = (mz_axis >= right_min[i]) & (mz_axis <= right_max[i])
-            baseline = signal[left_mask | right_mask]
-            # Use robust estimator if baseline is non-Gaussian
-            noise_std = np.std(baseline) if baseline.size > 0 else np.nan
-            snr[i] = peak_heights[i] / noise_std if noise_std > 0 else np.nan
+            window = slice(window_start[i], window_end[i])
+            baseline = signal[window][~in_core[window]]
+            if baseline.size == 0:
+                continue
+            noise = median_abs_deviation(baseline, scale="normal")
+            if not noise > 0:
+                noise = np.std(baseline)
+            if noise > 0:
+                snr[i] = peak_heights[i] / noise
 
         return snr
 
@@ -908,6 +937,47 @@ class OrbiZarrPeakDetector(TofPeakDetector):
     @property
     def peak_fitting_threshold(self):
         return ORBI_FITTING_THRESHOLD
+
+    def _compute_snr(
+        self,
+        peak_mzs: np.ndarray,
+        peak_heights: np.ndarray,
+    ) -> np.ndarray:
+        """Compute signal-to-noise ratio for given peaks, as before the TOF fix
+
+        An Orbitrap sample without its raw file is picked on the TOF path,
+        but :meth:`TofPeakDetector._compute_snr`'s baseline is measured on a
+        TOF spectrum's gaps between unit masses. This one keeps the standard
+        deviation of the summed spectrum between one and ten widths of the
+        peak, which is what its signal-to-noise has always been, until it is
+        measured on Orbitrap profiles.
+
+        :param peak_mzs: Fitted peak m/z values
+        :type peak_mzs: np.ndarray
+        :param peak_heights: Fitted peak heights
+        :type peak_heights: np.ndarray
+        :return: Signal-to-noise ratio array
+        :rtype: np.ndarray
+        """
+        mz_axis = self._sum_signal.mz.values
+        signal = self._sum_signal.values
+        snr = np.empty(len(peak_mzs), dtype=np.float64)
+
+        exclusion = peak_mzs / self._resolution_function(peak_mzs)
+        window = 10 * exclusion
+        left_min = peak_mzs - window
+        left_max = peak_mzs - exclusion
+        right_min = peak_mzs + exclusion
+        right_max = peak_mzs + window
+
+        for i in range(len(peak_mzs)):
+            left_mask = (mz_axis >= left_min[i]) & (mz_axis <= left_max[i])
+            right_mask = (mz_axis >= right_min[i]) & (mz_axis <= right_max[i])
+            baseline = signal[left_mask | right_mask]
+            noise_std = np.std(baseline) if baseline.size > 0 else np.nan
+            snr[i] = peak_heights[i] / noise_std if noise_std > 0 else np.nan
+
+        return snr
 
     def _flag_satellite_peaks(self):
         peaks_df = pd.DataFrame(

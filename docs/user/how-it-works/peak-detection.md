@@ -61,22 +61,24 @@ $$\text{Tol} = \frac{\Delta m/z_{\text{spacing}}}{2}$$
 
 Isobaric groups falling within this tolerance are deduplicated by keeping only the optimization result yielding the highest peak intensity.
 
-The $\text{SNR}$ for each resolved TOF peak is computed via an adaptive windowing strategy.
-For a peak at position $m/z$ with evaluated resolution $R$, an inner peak exclusion zone ($\text{Excl}$) is defined as:
+The $\text{SNR}$ for each resolved TOF peak divides its height by the spread of the baseline around it.
+For a peak at position $m/z$ with evaluated resolution $R$, the peak width is
 
-$$\text{Excl} = \pm \frac{m/z}{R}$$
+$$w = \frac{m/z}{R}$$
 
-An outer baseline window is then established spanning 10 times the width of the exclusion zone:
+and the baseline window around it spans half a unit of mass, or ten widths where that is wider:
 
-$$\text{Window}_{\text{baseline}} = \pm 10 \cdot \text{Excl}$$
+$$\text{Window}_{\text{baseline}} = \pm \max\left(0.5,\ 10 \cdot w\right)$$
 
-The local noise standard deviation ($\sigma_{\text{noise}}$) is calculated using the raw data points situated strictly within the baseline window but outside the inner exclusion zone:
-
-$$\text{Baseline Regions} = \{x \mid \text{Excl} \le |x - m/z| \le \text{Window}_{\text{baseline}}\}$$
+Every fitted peak's core, $\pm 3w$ around its centre, is cut out of the window, not only the peak's own: in a TOF spectrum the window holds the peak's wings and its neighbours at the same unit mass, and counting them as noise would make the noise grow with the heights around the peak.
+The local noise ($\sigma_{\text{noise}}$) is the median absolute deviation of the remaining points, scaled to a standard deviation, so a peak too small to be fitted does not count as noise either; where the baseline is mostly empty and that deviation is zero, the standard deviation of the remaining points stands in.
+A peak with no baseline left in its window, or a perfectly flat one, has no $\text{SNR}$.
 
 The localized signal-to-noise ratio is given by:
 
 $$\text{SNR} = \frac{\text{Peak Height}}{\sigma_{\text{noise}}}$$
+
+An Orbitrap file without its raw file is picked on this TOF path, but its $\text{SNR}$ keeps the earlier noise: the standard deviation of the summed spectrum between one and ten widths of the peak.
 
 ## Peak Area Integration
 For each peak, the standard deviation ($\sigma$) is computed dynamically from the localized resolution:
