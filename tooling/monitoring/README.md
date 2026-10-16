@@ -254,11 +254,14 @@ Per Mascope server:
 Pinging every 30 min against a 60-min window tolerates a single blip without a
 false alarm. The script prefers `doctor`; on a release that predates it, it
 falls back to a direct container-health check. Two extras ride along in each
-heartbeat: the message carries current disk usage (visible in the heartbeat
-tooltip), and the numeric `ping` field carries disk-used %, so the monitor's
-"response time" chart doubles as a disk-usage trend graph — a deliberate,
-lightweight stand-in for a real metrics stack until trend questions justify
-one.
+heartbeat: the message carries current disk usage and, once the disk-check
+timer has a day of history, how fast the state filesystem is filling and when
+it would be full (`OK_disk61pct_docker61pct_fill19.0GiBperday_full21d`, visible
+in the heartbeat tooltip), and the numeric `ping` field carries disk-used %, so
+the monitor's "response time" chart doubles as a disk-usage trend graph — a
+deliberate, lightweight stand-in for a real metrics stack until trend
+questions justify one. The fill rate is read out of `doctor --json` with the
+host's `python3`; without it the message simply carries no rate.
 
 > The `doctor` command requires an up-to-date `mascope` CLI. `mascope prod
 > update` refreshes images but **not** the CLI binary — if `doctor` is missing,
@@ -273,7 +276,14 @@ Python, Docker, the tailnet, and the monitoring box; the disk check is bash +
 `df` + one HTTPS call to an external service — the dumbest reporter survives
 the disk-full scenario that wedges everything else. Keep both, and stagger the
 thresholds so the simple tier warns early and a doctor "down" means it is
-serious.
+serious. The defaults are staggered that way for both the floor and the fill
+rate: the disk check alerts below 10 GiB / 10% free or when that floor is
+projected within 30 days (`MIN_DAYS_TO_FLOOR`); the doctor goes down below
+5 GiB free (`MASCOPE_UPDATE_MIN_FREE_GB`) or when that floor is projected
+within 7 days (`MASCOPE_DOCTOR_MIN_DAYS_TO_FLOOR`). Both fit the same rate,
+from the history the disk check records, so they agree on the pace. Set
+`MASCOPE_DOCTOR_MIN_DAYS_TO_FLOOR` in `/etc/environment`, which
+`doctor-push.sh` sources.
 
 ## 10. Scheduled security assessment (`run-assessment.sh`)
 

@@ -27,7 +27,7 @@ Everything below assumes an Ubuntu host provisioned with
 | **Clear a lost second factor (2FA)** | Manage users in the app, or `mascope prod mfa reset <email>` |
 | What a raw file measured (its scan streams) | `mascope file scans <file.raw>` |
 | **Disk monitor status / run now** | `systemctl list-timers mascope-disk-check.timer` / `sudo systemctl start mascope-disk-check.service` |
-| Disk monitor history | `journalctl -u mascope-disk-check.service` |
+| Disk monitor history | `journalctl -u mascope-disk-check.service` (fill rate and projection on each line) |
 | Assignment-run retention status / run now | `systemctl list-timers mascope-assignment-prune.timer` / `sudo systemctl start mascope-assignment-prune.service` |
 | Assignment-run retention history | `journalctl -u mascope-assignment-prune.service` |
 
@@ -42,7 +42,8 @@ $ mascope prod doctor
 [OK]
 Stack    backend healthy · frontend healthy · postgres healthy · redis healthy · file_converter running
 Version  v1.6.1
-Disk     state 142 GiB / 61% free   ·   docker 38 GiB / 40% free
+Disk     state 142 GiB / 61% free · +2.1 GiB/day (7d), +1.8 GiB/day (30d) · full in ~68 days
+         docker 38 GiB / 40% free · +0.1 GiB/day (7d), +0.2 GiB/day (30d) · full in ~190 days
 Updates  no pending migration recorded
 Backups  5 local dump(s) · newest 8h ago
 Images   11 images · 6.2GB (2.1GB reclaimable)
@@ -50,8 +51,18 @@ Images   11 images · 6.2GB (2.1GB reclaimable)
 
 It exits `0` when the stack is healthy, the running images match the release
 this deployment would deploy, and every filesystem is above the free-space
-floor (`MASCOPE_UPDATE_MIN_FREE_GB`); `1` otherwise - so it doubles as a
-monitoring probe. `--json` emits the same data for scripting.
+floor (`MASCOPE_UPDATE_MIN_FREE_GB`) and not filling fast enough to reach it
+within `MASCOPE_DOCTOR_MIN_DAYS_TO_FLOOR` days (default 7, `0` disables); `1`
+otherwise - so it doubles as a monitoring probe. `--json` emits the same data
+for scripting.
+
+**Disk** gives each filesystem's fill rate over the last 7 and 30 days and,
+at the faster of the two, when it would be full; a filesystem projected below
+the floor within the horizon is flagged `FILLING`. The doctor keeps no history
+of its own: it reads the samples the [disk monitor](#the-monitor-early-warning)
+records every 15 minutes, so the rates appear once that timer has a day of
+history, and the label in brackets is how much history a rate rests on when
+that is less than its window.
 
 **Version** compares the tag the containers are actually running against the
 one this deployment would deploy right now (the `MASCOPE_VERSION` pin, else the
@@ -480,10 +491,32 @@ filesystem runs short.
 ### The monitor (early warning)
 
 `tooling/ubuntu.sh` installs and **enables** `mascope-disk-check.timer`, which
-runs [`tooling/disk-check.sh`](../tooling/disk-check.sh) every 15 minutes. It is
-read-only - it only measures free space on the `.runtime` and docker
-filesystems and reports to the journal. When a filesystem drops below the floor
-it pings a healthchecks.io-style URL so you are alerted with lead time.
+runs [`tooling/disk-check.sh`](../tooling/disk-check.sh) every 15 minutes. It
+never deletes anything - it measures free space on the `.runtime` and docker
+filesystems and reports to the journal. When a filesystem drops below the floor,
+or is filling fast enough to reach it soon, it pings a healthchecks.io-style URL
+so you are alerted with lead time.
+
+A floor alone gives a disk that fills fast little warning: at 19 GiB a day, a
+10% floor on a 1 TiB disk is crossed about five days before the disk is full.
+So each run also appends the free space to
+`$MASCOPE_PATH/.runtime/disk-check/history.tsv` (the only file it writes, kept
+to the last 60 days), fits how many GiB a day the filesystem has been filling
+over the last 7 and 30 days, and projects when it reaches the floor and when
+it is full, at the faster of the two rates - the 7-day rate catches an
+instrument that has just started a long run, the 30-day rate keeps a quiet
+week from hiding a disk that fills in bursts. Every journal line carries it:
+
+```
+[disk-check] ok:  state (.runtime) (/) has 647.3 GiB / 37% free; rate +2.1 GiB/day (7d), +1.8 GiB/day (30d); 174.9 GiB floor in ~225 days, full in ~308 days
+```
+
+The rate is a least-squares fit of *used* space over every sample in the
+window, so growing the filesystem does not read as freeing space and one
+reading taken while a dump is being written is not projected forward. Freeing
+space does lower the rate for as long as the cleanup stays inside the window,
+so after a large cleanup the projection is optimistic for a while - the floor
+still applies. Rates appear after a day of history.
 
 Configure it in `/etc/mascope/disk-check.env` (chmod 600, template
 [`tooling/disk-check.env.example`](../tooling/disk-check.env.example)):
@@ -491,6 +524,10 @@ Configure it in `/etc/mascope/disk-check.env` (chmod 600, template
 - `MIN_FREE_GB` (default 10) - absolute floor; the "about to crash" signal.
 - `MIN_FREE_PCT` (default 10) - percentage floor; an earlier warning. Set to
   `0` on a very large disk to avoid paging while tens of GiB are still free.
+- `MIN_DAYS_TO_FLOOR` (default 30) - alert when the filesystem is projected
+  to drop below the floor within this many days. `0` disables the alert; the
+  rates are still logged. An env file seeded before this setting existed does
+  not list it, and the default applies.
 - `HEALTHCHECK_URL` - **set this to actually get alerted.** On every OK run it
   pings the URL (so a stalled monitor is itself flagged); when low it pings
   `<url>/fail`. Use a check separate from the backup one.
