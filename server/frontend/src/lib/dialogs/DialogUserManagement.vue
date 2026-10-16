@@ -15,6 +15,7 @@ import { api } from '@/api'
 import { useApp } from '@/stores'
 import { BaseCopyableField } from '@/lib/base'
 import { roles, prettyRoleName, roleLevel, ROLES } from '@/lib/roles'
+import { twoFactorDisplay } from '@/lib/twoFactor'
 
 import DialogMfaReauth from './DialogMfaReauth.vue'
 import { useMfaReauth } from './useMfaReauth'
@@ -310,17 +311,11 @@ watch(visible, (open) => {
               <span
                 :class="data.mfa_enabled ? 'pi pi-shield' : 'pi pi-minus'"
                 :style="{ opacity: data.mfa_enabled ? 1 : 0.35 }"
-                v-tooltip.bottom="
-                  data.mfa_enabled
-                    ? 'Two-factor authentication is on'
-                    : data.mfa_enrollment_required
-                      ? 'Required for this role, not set up yet'
-                      : 'Not set up'
-                "
+                v-tooltip.bottom="twoFactorDisplay(data).tooltip"
               />
-              <span v-if="data.mfa_enrollment_required" style="font-size: smaller; opacity: 0.7"
-                >pending</span
-              >
+              <span v-if="twoFactorDisplay(data).label" style="font-size: smaller; opacity: 0.7">{{
+                twoFactorDisplay(data).label
+              }}</span>
               <!-- Hidden rather than disabled when there is nothing to clear,
                    on the caller's own row (clearing your own factor would be a
                    bypass, not a recovery), and on rows the caller's role cannot
