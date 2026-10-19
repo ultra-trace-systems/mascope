@@ -46,6 +46,7 @@ from mascope_backend.api.controllers.sample.files.sample_files_controller import
     get_sample_file_metadata,
     get_sample_file_peak_timeseries,
     get_sample_file_peaks,
+    get_sample_file_raw,
     get_sample_file_scans,
     get_sample_file_spectrum,
     get_sample_files,
@@ -55,6 +56,7 @@ from mascope_backend.api.controllers.sample.files.sample_files_controller import
     upload_sample_files,
 )
 from mascope_backend.api.lib.api_features import api_route
+from mascope_backend.api.lib.rate_limit import enforce_user_rate_limit
 from mascope_backend.api.models.sample.files.sample_file_pydantic_model import (
     BindSampleFilesBody,
     DeleteSampleFilesBody,
@@ -448,6 +450,48 @@ async def get_sample_file_scans_route(
     """
     await check_sample_file_instrument_access(sample_file_id, user, "guest")
     return await get_sample_file_scans(sample_file_id, **query_params.model_dump())
+
+
+#: How many source files one account may download per window. A file runs to
+#: hundreds of megabytes, so a client looping over every id it holds is held
+#: to a pace a shared server can carry; a client working through a batch one
+#: file at a time stays well under it. Counted in Redis, so the limit holds
+#: across workers.
+RAW_DOWNLOADS_PER_WINDOW = 60
+RAW_DOWNLOAD_WINDOW_SECONDS = 600
+
+
+@sample_files_router.get("/{sample_file_id}/raw")
+@api_route(token_access=True)
+async def get_sample_file_raw_route(
+    sample_file_id: str,
+    user=Depends(current_active_user),
+):
+    """
+    Download the source data file of a sample file: the Orbitrap `.raw` or
+    the TOF `.h5` it was converted from, byte for byte as it is stored.
+
+    The file is streamed from the filestore with its `Content-Length`, under
+    the name it was uploaded with (`Content-Disposition`). A sample file that
+    keeps no source file - only its converted data is left - answers 404.
+    Each account may start at most 60 downloads in ten minutes; past that
+    the route answers 429.
+
+    `POST /api/file/download` remains the web app's way to fetch one or
+    several files at once.
+
+    :param sample_file_id: ID of the sample file.
+    :param user: Authenticated user.
+    :return: The source data file.
+    """
+    await enforce_user_rate_limit(
+        user.id,
+        times=RAW_DOWNLOADS_PER_WINDOW,
+        seconds=RAW_DOWNLOAD_WINDOW_SECONDS,
+        scope="sample-file-raw",
+    )
+    await check_sample_file_instrument_access(sample_file_id, user, "guest")
+    return await get_sample_file_raw(sample_file_id)
 
 
 @sample_files_router.post("/{sample_file_id}/process")

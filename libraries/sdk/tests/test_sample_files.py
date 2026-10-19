@@ -15,7 +15,9 @@ from typing import Any
 import pandas as pd
 import pytest
 from loguru import logger
+from requests.exceptions import ChunkedEncodingError
 
+from mascope_sdk.exceptions import MascopeConnectionError
 from mascope_sdk.resources.sample_files import SampleFilesResource
 
 
@@ -200,3 +202,156 @@ def test_fields_the_file_has_raise_no_warning(sample_files, logged):
     sample_files.get_scans(FILE_ID, fields=["MsType", "FT Resolution:"])
 
     assert logged == []
+
+
+# ============= download_raw =============
+
+
+RAW = bytes(range(256)) * 10
+
+
+class _Response:
+    """A streamed response as ``requests`` hands it over: headers, the body
+    in pieces, and a close when the ``with`` ends."""
+
+    url = "http://test/api/sample/files/file-1/raw"
+
+    def __init__(self, chunks, headers):
+        self.chunks = chunks
+        self.headers = headers
+        self.closed = False
+
+    def iter_content(self, chunk_size):
+        for chunk in self.chunks:
+            if isinstance(chunk, Exception):
+                raise chunk
+            yield chunk
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.closed = True
+
+
+def _raw_response(
+    body: bytes = RAW,
+    disposition: str | None = 'attachment; filename="instr_2026.01.01.raw"',
+    length: int | None = None,
+    chunks: list | None = None,
+) -> _Response:
+    headers = {"Content-Length": str(len(body) if length is None else length)}
+    if disposition is not None:
+        headers["Content-Disposition"] = disposition
+    return _Response(chunks or [body[:1000], body[1000:]], headers)
+
+
+@pytest.fixture
+def downloads(monkeypatch) -> SampleFilesResource:
+    """A resource whose GET answers ``answer`` and records what it asked."""
+    resource = SampleFilesResource(client=None)
+    resource.requests = []
+    resource.answer = _raw_response()
+
+    def fake_get(path: str, params: dict[str, Any] | None = None, stream=False):
+        resource.requests.append((path, stream))
+        return resource.answer
+
+    monkeypatch.setattr(resource, "_get", fake_get)
+    return resource
+
+
+def test_download_raw_streams_the_files_route(downloads, tmp_path):
+    downloads.download_raw(FILE_ID, tmp_path / "out.raw")
+
+    assert downloads.requests == [(f"sample/files/{FILE_ID}/raw", True)]
+    assert downloads.answer.closed
+
+
+def test_download_raw_writes_the_bytes_to_the_path_given(downloads, tmp_path):
+    target = tmp_path / "out.raw"
+
+    written = downloads.download_raw(FILE_ID, str(target))
+
+    assert written == target
+    assert target.read_bytes() == RAW
+    assert list(tmp_path.iterdir()) == [target]
+
+
+def test_download_raw_replaces_a_file_at_the_path(downloads, tmp_path):
+    target = tmp_path / "out.raw"
+    target.write_bytes(b"an older download")
+
+    downloads.download_raw(FILE_ID, target)
+
+    assert target.read_bytes() == RAW
+
+
+def test_download_raw_into_a_directory_takes_the_upload_name(downloads, tmp_path):
+    written = downloads.download_raw(FILE_ID, tmp_path)
+
+    assert written == tmp_path / "instr_2026.01.01.raw"
+    assert written.read_bytes() == RAW
+
+
+@pytest.mark.parametrize(
+    ("disposition", "name"),
+    [
+        pytest.param(
+            "attachment; filename*=utf-8''m%C3%A4%C3%A4r%C3%A4.h5",
+            "määrä.h5",
+            id="rfc5987",
+        ),
+        # The name is the server's; it never chooses the directory.
+        pytest.param('attachment; filename="../../escape.raw"', "escape.raw", id="up"),
+        pytest.param('attachment; filename="/etc/escape.raw"', "escape.raw", id="abs"),
+        pytest.param('attachment; filename="..\\\\escape.raw"', "escape.raw", id="win"),
+        pytest.param('attachment; filename=".."', FILE_ID, id="dots"),
+        pytest.param(None, FILE_ID, id="no-header"),
+    ],
+)
+def test_download_raw_names_a_file_in_the_directory_and_nowhere_else(
+    downloads, tmp_path, disposition, name
+):
+    downloads.answer = _raw_response(disposition=disposition)
+
+    written = downloads.download_raw(FILE_ID, tmp_path)
+
+    assert written == tmp_path / name
+    assert [p.name for p in tmp_path.iterdir()] == [name]
+
+
+def test_download_raw_cut_off_part_way_raises_and_leaves_nothing(downloads, tmp_path):
+    downloads.answer = _raw_response(
+        chunks=[RAW[:1000], ChunkedEncodingError("connection reset")]
+    )
+    target = tmp_path / "out.raw"
+
+    with pytest.raises(MascopeConnectionError, match="after 1000 bytes"):
+        downloads.download_raw(FILE_ID, target)
+
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_download_raw_shorter_than_announced_raises_and_leaves_nothing(
+    downloads, tmp_path
+):
+    downloads.answer = _raw_response(length=len(RAW) + 1)
+    target = tmp_path / "out.raw"
+    target.write_bytes(b"an older download")
+
+    with pytest.raises(MascopeConnectionError, match=f"of {len(RAW) + 1} bytes"):
+        downloads.download_raw(FILE_ID, target)
+
+    # What was there is left as it was, and no partial file beside it.
+    assert target.read_bytes() == b"an older download"
+    assert list(tmp_path.iterdir()) == [target]
+
+
+def test_download_raw_of_an_unknown_length_keeps_what_arrived(downloads, tmp_path):
+    downloads.answer = _raw_response()
+    del downloads.answer.headers["Content-Length"]
+
+    written = downloads.download_raw(FILE_ID, tmp_path / "out.raw")
+
+    assert written.read_bytes() == RAW
