@@ -55,7 +55,8 @@ floor (`MASCOPE_UPDATE_MIN_FREE_GB`); `1` otherwise - so it doubles as a
 monitoring probe. It exits `3`, under a `[WARNING]` header, when all of that
 holds but a filesystem is filling fast enough to reach the floor within
 `MASCOPE_DOCTOR_MIN_DAYS_TO_FLOOR` days (default 7, `0` disables): the Kuma
-push reports that as down, while the fleet playbooks let a rollout carry on
+push keeps its monitor up and reports the warning on a second, optional one
+(`FILLING_TOKEN`), while the fleet playbooks let a rollout carry on
 past it. `--json` emits the same data for scripting.
 
 **Disk** has one row per filesystem, naming every monitored path on it - the

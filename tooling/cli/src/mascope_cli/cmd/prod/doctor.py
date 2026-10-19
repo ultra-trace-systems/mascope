@@ -159,7 +159,7 @@ MIN_HISTORY_DAYS = 1.0
 # Flag a filesystem whose fill rate would take it below the free-space floor
 # within this many days. Overridable via MASCOPE_DOCTOR_MIN_DAYS_TO_FLOOR; 0
 # disables. Shorter than disk-check's 30-day warning on purpose: that timer is
-# the early tier, and the doctor's Kuma monitor going down should mean act now.
+# the early tier, and the doctor's disk monitor going down should mean act now.
 DEFAULT_MIN_DAYS_TO_FLOOR = 7.0
 
 # Exit code of `mascope prod doctor` when the stack is healthy but a filesystem

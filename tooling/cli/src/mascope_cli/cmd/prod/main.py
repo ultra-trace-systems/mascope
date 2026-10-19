@@ -1190,7 +1190,8 @@ def doctor(
     so it can double as a monitoring probe. Exits 3 when the stack is otherwise
     healthy but a filesystem is filling fast enough to reach that floor within
     MASCOPE_DOCTOR_MIN_DAYS_TO_FLOOR days (default 7) - a warning, which the
-    fleet playbooks let a rollout pass and doctor-push.sh reports as down.
+    fleet playbooks let a rollout pass and doctor-push.sh reports on its
+    optional disk monitor, keeping the main one up.
 
     \b
     Examples:
