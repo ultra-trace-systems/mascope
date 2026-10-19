@@ -77,7 +77,7 @@ def _install(monkeypatch, *, row, user=USER):
         return user
 
     monkeypatch.setattr(
-        strategy_mod.DatabaseStrategy, "read_token", _read_token, raising=True
+        strategy_mod.HashedDatabaseStrategy, "read_token", _read_token, raising=True
     )
 
 

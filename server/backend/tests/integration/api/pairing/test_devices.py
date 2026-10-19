@@ -19,7 +19,7 @@ from mascope_backend.api.new.auth.devices import service as devices_service
 from mascope_backend.api.new.auth.devices.service import record_reported_instrument
 from mascope_backend.api.new.auth.pairing import service as pairing_service
 from mascope_backend.app.fast import fast
-from mascope_backend.db import AccessToken, AgentDevice, User
+from mascope_backend.db import AccessToken, AgentDevice, User, hash_access_token
 
 
 @pytest.fixture(autouse=True)
@@ -305,7 +305,7 @@ async def test_revoking_one_device_leaves_the_other(
         surviving = (
             (
                 await session.execute(
-                    select(AccessToken.token).where(
+                    select(AccessToken.token_hash).where(
                         AccessToken.service_name == "file-agent"
                     )
                 )
@@ -313,7 +313,7 @@ async def test_revoking_one_device_leaves_the_other(
             .scalars()
             .all()
         )
-        assert surviving == [token_b]
+        assert surviving == [hash_access_token(token_b)]
 
         # The revoked device row is kept, stamped, for attribution history.
         revoked = await session.get(AgentDevice, device_a)

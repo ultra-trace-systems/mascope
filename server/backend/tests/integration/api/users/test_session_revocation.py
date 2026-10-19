@@ -29,7 +29,7 @@ from mascope_backend.accounts import ACCOUNT_TYPE_MACHINE
 from mascope_backend.api.new.auth.backend import auth_backend_jwt
 from mascope_backend.api.new.auth.config import auth_settings
 from mascope_backend.app.fast import fast
-from mascope_backend.db import AccessToken, User
+from mascope_backend.db import AccessToken, User, hash_access_token
 from mascope_backend.db.id import gen_id
 from mascope_backend.socket.auth.service import authenticate_socket_connection
 from mascope_backend.socket.events.handlers.default.subscription import subscribe
@@ -105,7 +105,11 @@ async def sdk_token(async_session_factory, person):
     token = f"revoke-{gen_id()}".ljust(43, "x")
     async with async_session_factory() as session:
         session.add(
-            AccessToken(token=token, user_id=person.id, service_name="mascope_sdk")
+            AccessToken(
+                token_hash=hash_access_token(token),
+                user_id=person.id,
+                service_name="mascope_sdk",
+            )
         )
         await session.commit()
     return token

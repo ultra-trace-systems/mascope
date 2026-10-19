@@ -18,7 +18,7 @@ from mascope_backend.accounts import ACCOUNT_TYPE_MACHINE
 from mascope_backend.api.new.auth.pairing import service as pairing_service
 from mascope_backend.app.fast import fast
 from mascope_backend.capabilities import SERVER_CAPABILITIES
-from mascope_backend.db import AccessToken, AgentDevice, User
+from mascope_backend.db import AccessToken, AgentDevice, User, hash_access_token
 from mascope_backend.roles import ROLE_ACCESS_LEVELS
 
 
@@ -70,7 +70,7 @@ async def clean_agent_tokens(async_session_factory):
             delete(AccessToken).where(AccessToken.service_name.in_(PAIRED_SERVICES))
         )
         # Deleting a machine account cascades its tokens (the file-converter
-        # token pairing mints) and NULLs the device's machine_user_id.
+        # tokens its uploads mint) and NULLs the device's machine_user_id.
         await session.execute(
             delete(User).where(User.account_type == ACCOUNT_TYPE_MACHINE)
         )
@@ -146,13 +146,27 @@ async def test_full_pairing_flow(
     # approver.
     async with async_session_factory() as session:
         row = (
-            await session.execute(select(AccessToken).where(AccessToken.token == token))
+            await session.execute(
+                select(AccessToken).where(
+                    AccessToken.token_hash == hash_access_token(token)
+                )
+            )
         ).scalar_one()
         assert row.service_name == "file-agent"
         assert row.description == "Paired: ORBI-PC"
         assert row.device_id is not None
         device = await session.get(AgentDevice, row.device_id)
         token_user = await session.get(User, row.user_id)
+        # The device's token is the machine account's only one: its uploads
+        # mint their own file-converter tokens.
+        held = (
+            await session.execute(
+                select(AccessToken.service_name).where(
+                    AccessToken.user_id == row.user_id
+                )
+            )
+        ).scalars()
+        assert list(held) == ["file-agent"]
     assert device.name == "ORBI-PC"
     assert device.service_name == "file-agent"
     assert device.sponsor_user_id is not None  # the approving editor
@@ -201,7 +215,11 @@ async def test_an_instrument_agent_pairs_and_is_known_by_its_own_name(
 
     async with async_session_factory() as session:
         row = (
-            await session.execute(select(AccessToken).where(AccessToken.token == token))
+            await session.execute(
+                select(AccessToken).where(
+                    AccessToken.token_hash == hash_access_token(token)
+                )
+            )
         ).scalar_one()
         device = await session.get(AgentDevice, row.device_id)
         token_user = await session.get(User, row.user_id)
@@ -225,7 +243,8 @@ async def test_an_instrument_agent_pairs_and_is_known_by_its_own_name(
         fresh = (
             await session.execute(
                 select(AccessToken).where(
-                    AccessToken.token == renewed.json()["data"]["access_token"]
+                    AccessToken.token_hash
+                    == hash_access_token(renewed.json()["data"]["access_token"])
                 )
             )
         ).scalar_one()

@@ -16,7 +16,7 @@ from sqlalchemy import delete
 
 from mascope_backend.api.new.provenance import routes as provenance_routes
 from mascope_backend.app.fast import fast
-from mascope_backend.db import AccessToken
+from mascope_backend.db import AccessToken, hash_access_token
 from mascope_backend.db.id import gen_id
 from mascope_backend.runtime import runtime
 
@@ -37,7 +37,7 @@ async def sdk_token(async_session_factory, test_users):
     async with async_session_factory() as session:
         session.add(
             AccessToken(
-                token=token,
+                token_hash=hash_access_token(token),
                 user_id=test_users["guest"].id,
                 service_name="mascope_sdk",
             )
@@ -45,7 +45,11 @@ async def sdk_token(async_session_factory, test_users):
         await session.commit()
     yield token
     async with async_session_factory() as session:
-        await session.execute(delete(AccessToken).where(AccessToken.token == token))
+        await session.execute(
+            delete(AccessToken).where(
+                AccessToken.token_hash == hash_access_token(token)
+            )
+        )
         await session.commit()
 
 

@@ -18,10 +18,6 @@ from sqlalchemy import select
 
 from mascope_backend.api.lib.exceptions.api_exceptions import NotFoundException
 from mascope_backend.api.lib.rate_limit import clear_login_rate_limit
-from mascope_backend.api.new.auth.access_token.service import (
-    ensure_access_token,
-    regenerate_access_token,
-)
 from mascope_backend.api.new.auth.config import auth_settings
 from mascope_backend.api.new.auth.transports.cookie import session_token_from_response
 from mascope_backend.api.new.users import exceptions
@@ -223,7 +219,8 @@ class UserManager(IntegerIDMixin, BaseUserManager[User, int]):
         request: Optional[Request] = None,
     ) -> models.UP:
         """
-        Update a user in database and manage file-converter token on role change.
+        Update a user in database, revoking the file-converter tokens of a user
+        demoted below editor.
 
         :param user_update: The UserUpdate model containing
         the changes to apply to the user.
@@ -244,18 +241,12 @@ class UserManager(IntegerIDMixin, BaseUserManager[User, int]):
             and user_update.role_id is not None
             and old_role_id != updated_user.role_id
         ):
+            # Nothing to mint on a promotion: the token is minted for each
+            # upload (access_token.service.get_access_token).
             editor_level = auth_settings.ROLE_ACCESS_LEVELS.get("editor")
-            promoted_to_editor = old_role_id < editor_level <= updated_user.role_id
             demoted_to_guest = old_role_id >= editor_level > updated_user.role_id
 
-            if promoted_to_editor:
-                await regenerate_access_token(
-                    user=updated_user, service_name="file-converter"
-                )
-                runtime.logger.info(
-                    f"Generated file-converter token for {updated_user.username}"
-                )
-            elif demoted_to_guest:
+            if demoted_to_guest:
                 await delete_user_access_tokens(
                     user_id=updated_user.id, service_name="file-converter"
                 )
@@ -375,9 +366,10 @@ class UserManager(IntegerIDMixin, BaseUserManager[User, int]):
     ) -> None:
         """
         After user login:
-        1. Make sure of the file-converter access token (editor+ roles): a
-           valid one is kept, a missing one minted
-        2. Authenticate the socket connection
+        1. Authenticate the socket connection
+
+        Mints no file-converter token: one is minted for each upload
+        (access_token.service.get_access_token).
 
         :param user: The user that is logging in
         :param request: Optional FastAPI request
@@ -400,21 +392,8 @@ class UserManager(IntegerIDMixin, BaseUserManager[User, int]):
                 await clear_login_rate_limit(str(identifier))
 
         worker_pid = os.getpid()
-        # Step 1: the file-converter token. Uploads 401 without it, and it
-        # must exist however the user signs in - kept ahead of the socket
-        # step, whose sid check returns early for API logins (SDK, scripts,
-        # agent pairing). A token still valid is kept, not replaced: the
-        # user's uploads the converter has not reached yet carry it. Near its
-        # end a new one is minted beside it, and the old one lapses on its own.
         try:
-            if user.role_id >= auth_settings.ROLE_ACCESS_LEVELS.get("editor"):
-                await ensure_access_token(user=user, service_name="file-converter")
-        except Exception:
-            runtime.logger.exception(
-                f"Failed to refresh the file-converter token after login [Worker {worker_pid}]"
-            )
-        try:
-            # Step 2: Socket authentication (web-app logins carry a socket sid)
+            # Socket authentication (web-app logins carry a socket sid)
             if request and response and "set-cookie" in response.headers:
                 sid = request.headers.get("x-sid")
                 if not sid:
@@ -471,18 +450,13 @@ class UserManager(IntegerIDMixin, BaseUserManager[User, int]):
         # Revoke access tokens if password changed
         if "password" in update_dict:
             runtime.logger.info(f"User `{user.username}` password was changed.")
+            # Every token goes, the file-converter ones with the rest: the next
+            # upload mints its own. SDK tokens stay revoked on purpose: those
+            # are handed out explicitly and their holders regenerate them. A
+            # paired agent is untouched - its token belongs to the device's
+            # machine account, not to this user - except for a pre-registry
+            # token still issued to the person, which is revoked with the rest.
             await delete_user_access_tokens(user_id=user.id)
-            # Uploads need the file-converter token, and it is otherwise only
-            # minted at login or on promotion to editor, so the wipe above would
-            # leave editor+ users unable to upload until their next sign-in. SDK
-            # tokens stay revoked on purpose: those are handed out explicitly
-            # and their holders regenerate them. A paired agent is untouched
-            # either way - its token belongs to the device's machine account,
-            # not to this user - except for a pre-registry token still issued to
-            # the person, which is revoked with the rest.
-            editor_level = auth_settings.ROLE_ACCESS_LEVELS.get("editor")
-            if user.role_id is not None and user.role_id >= editor_level:
-                await regenerate_access_token(user=user, service_name="file-converter")
 
         # A password write or a disable may leave this account's open sockets
         # in rooms subscribe would now refuse them; eviction decides which.

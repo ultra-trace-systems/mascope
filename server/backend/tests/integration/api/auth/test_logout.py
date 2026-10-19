@@ -18,7 +18,7 @@ from sqlalchemy import delete
 
 from mascope_backend.api.new.auth.config import auth_settings
 from mascope_backend.app.fast import fast
-from mascope_backend.db import AccessToken
+from mascope_backend.db import AccessToken, hash_access_token
 
 
 LOGOUT_URL = "/api/auth/logout"
@@ -33,13 +33,19 @@ async def sdk_token(async_session_factory, test_users):
     async with async_session_factory() as session:
         session.add(
             AccessToken(
-                token=token, user_id=test_users["guest"].id, service_name=SERVICE
+                token_hash=hash_access_token(token),
+                user_id=test_users["guest"].id,
+                service_name=SERVICE,
             )
         )
         await session.commit()
     yield token
     async with async_session_factory() as session:
-        await session.execute(delete(AccessToken).where(AccessToken.token == token))
+        await session.execute(
+            delete(AccessToken).where(
+                AccessToken.token_hash == hash_access_token(token)
+            )
+        )
         await session.commit()
 
 
