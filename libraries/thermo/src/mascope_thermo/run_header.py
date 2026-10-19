@@ -91,6 +91,20 @@ def _run_header_addresses(f: BinaryIO) -> list[int]:
     :raises _NotFollowed: When the file is not a raw file of a version walked
         here, or ends before the address table does.
     """
+    return _address_table(f)[2]
+
+
+def _address_table(f: BinaryIO) -> tuple[int, int, list[int]]:
+    """The file's version and its address table: the scan data address, then
+    the run header addresses, one per controller.
+
+    :param f: The raw file, opened for reading in binary mode.
+    :return: The file format version, the scan data address, and the run
+        header addresses in the order the file lists them.
+    :rtype: tuple[int, int, list[int]]
+    :raises _NotFollowed: When the file is not a raw file of a version walked
+        here, or ends before the address table does.
+    """
     front = _read(f, _VERSION_OFFSET + 4)
     (magic,) = struct.unpack_from("<H", front, 0)
     (version,) = struct.unpack_from("<I", front, _VERSION_OFFSET)
@@ -120,12 +134,13 @@ def _run_header_addresses(f: BinaryIO) -> list[int]:
         # must not size a read.
         raise _NotFollowed
 
-    f.seek(_RESERVED_AREA_SIZE + _TABLE_ENTRY_SIZE, os.SEEK_CUR)
-    table = _read(f, n_entries * _TABLE_ENTRY_SIZE)
-    return [
+    f.seek(_RESERVED_AREA_SIZE, os.SEEK_CUR)
+    table = _read(f, (1 + n_entries) * _TABLE_ENTRY_SIZE)
+    data_address, *run_header_addresses = (
         struct.unpack_from("<Q", table, i * _TABLE_ENTRY_SIZE)[0]
-        for i in range(n_entries)
-    ]
+        for i in range(1 + n_entries)
+    )
+    return version, data_address, run_header_addresses
 
 
 def records_no_run_header(datafile_path: str) -> bool:

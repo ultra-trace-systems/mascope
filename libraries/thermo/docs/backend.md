@@ -32,6 +32,20 @@ It is a `NoScansFoundError`, so callers built on the scanless-file handling need
 The question is only asked of a file that already failed to open, and answers no for anything it cannot follow: a file cut short, a file that is not a raw file, a format version other than 64 and 66.
 Those keep failing with the reader's own error.
 
+### Scan-event records that carry a name (interim, GitHub #2391)
+
+A version-66 scan-event record is a 136-byte preamble and a 136-byte body whose last word counts the UTF-16 code units of a name that follows it.
+A targeted MS2 scan run from an inclusion list stores the entry's name there, so its record is longer than an unnamed one.
+OpenTFRaw 2.0.0 reads every record of a file at one size, inferred from the stream's length, and from the second record on such a file decodes at an offset that drifts: polarity, MS order, analyzer and filter come out as noise, and so does the calibration `profile()` converts frequency to m/z with.
+The scan index, the trailer and the centroids are read from elsewhere and are right.
+
+Until the pinned reader reads these records, the OpenTFRaw backend reads them itself (`mascope_thermo.v66_scan_events`, called once from `OpenTFRawBackend.__enter__`).
+It engages only for a file whose records, walked by their own counts, end exactly at the stream's end, whose names read as text, and whose record boundaries differ from the ones OpenTFRaw reads; every other file gets the `RawFile` as opened.
+For an engaged file the backend's reader re-derives the scan table's event-dependent keys, `scan_filter()` in OpenTFRaw's grammar, and the m/z axis of `profile()`, each from the scan's own event.
+It logs one warning per file and process, and refuses a file whose events still cannot be right, with `UnreadableScanEventsError` (a `ValueError`, so its text reaches the file's status): a scan of an Orbitrap-only instrument read as another analyzer, or the scans of one nonzero trailer `Scan Event:` read as more than one MS order.
+Polarity is not compared within an event, since a polarity-switching full scan alternates under one.
+The module and its call site go once the reader is fixed (MAS-170).
+
 ## API Contract: `ReaderBackend`
 
 All implementations must satisfy the `ReaderBackend` protocol, which defines a capability interface rather than emulating specific .NET objects.

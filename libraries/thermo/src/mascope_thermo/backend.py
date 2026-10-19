@@ -33,6 +33,7 @@ from typing import Literal, Protocol, runtime_checkable
 
 import numpy as np
 
+from mascope_thermo import v66_scan_events
 from mascope_thermo.run_header import records_no_run_header
 from mascope_thermo.scan_filter import parse_scan_filter
 
@@ -1481,6 +1482,18 @@ class OpenTFRawBackend:
         except OSError as e:
             _raise_if_unfinished(self.datafile_path, e)
             raise
+        # Interim until the pinned OpenTFRaw reads named scan-event records
+        # (GitHub #2391); remove with the module (MAS-170).
+        try:
+            self._raw = v66_scan_events.redecode_if_misread(
+                self._raw, self.datafile_path
+            )
+        except v66_scan_events.UnreadableScanEventsError as refused:
+            # Let go of the file: the refusal's traceback would otherwise
+            # hold the reader, and with it the file, open for as long as the
+            # refusal is handled, which is while the converter moves it aside.
+            self._raw = None
+            raise refused.with_traceback(None) from None
         return self
 
     def __exit__(self, *exc) -> None:
