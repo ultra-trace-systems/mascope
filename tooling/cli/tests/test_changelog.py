@@ -499,7 +499,7 @@ def test_extract_keeps_the_note_and_refuses_a_bad_name(tmp_path):
 # ============= In a git checkout =============
 
 
-def _git(root, *args):
+def _git(root, *args, check=True):
     return subprocess.run(
         [
             "git",
@@ -509,10 +509,15 @@ def _git(root, *args):
             "user.email=test@example.com",
             "-c",
             "commit.gpgsign=false",
+            # Rebases run as a script would: no editor opens.
+            "-c",
+            "core.editor=true",
+            "-c",
+            "sequence.editor=:",
             *args,
         ],
         cwd=root,
-        check=True,
+        check=check,
         capture_output=True,
         encoding="utf-8",
     ).stdout
@@ -577,6 +582,96 @@ def test_extract_names_the_fragments_after_the_branch(repo):
     _git(repo, "checkout", "-q", "--detach")
     with pytest.raises(changelog.ChangelogError, match="--name"):
         changelog.branch_name(repo)
+
+
+def _commit_entry_under_unreleased(repo, branch, entry):
+    """A branch, cut from develop, that writes its entry the old way."""
+    _git(repo, "checkout", "-q", "-b", branch, "develop")
+    path = repo / "CHANGELOG.md"
+    path.write_text(
+        path.read_text(encoding="utf-8").replace(
+            "## [Unreleased]\n\n", f"## [Unreleased]\n\n### Fixed\n\n{entry}\n\n"
+        ),
+        encoding="utf-8",
+    )
+    _git(repo, "commit", "-q", "-am", f"fix: {branch}")
+
+
+def _note_on_develop(repo):
+    """develop as it is now: the note under [Unreleased]."""
+    _git(repo, "checkout", "-q", "develop")
+    path = repo / "CHANGELOG.md"
+    path.write_text(
+        path.read_text(encoding="utf-8").replace(
+            "## [Unreleased]\n\n", f"## [Unreleased]\n\n{changelog.UNRELEASED_NOTE}\n\n"
+        ),
+        encoding="utf-8",
+    )
+    _git(repo, "commit", "-q", "-am", "docs: the note")
+
+
+def test_extract_mid_rebase_files_under_the_branch_being_rebased(repo):
+    # A branch from before the fragments meets a develop whose [Unreleased]
+    # now holds the note: the rebase stops on CHANGELOG.md, HEAD detached.
+    _commit_entry_under_unreleased(repo, "mas-5/old", "- **Mine.**")
+    _note_on_develop(repo)
+    path = repo / "CHANGELOG.md"
+    _git(repo, "rebase", "develop", "mas-5/old", check=False)
+    assert "CHANGELOG.md" in _git(repo, "diff", "--name-only", "--diff-filter=U")
+
+    assert changelog.branch_name(repo) == "mas-5-old"
+
+    # Kept both sides, the section holds the note and the entry; extract
+    # files the entry under the branch's name, and the commit that added it
+    # carries the fragment instead.
+    text = path.read_text(encoding="utf-8")
+    path.write_text(
+        "\n".join(
+            line
+            for line in text.split("\n")
+            if not line.startswith(("<<<<<<<", "=======", ">>>>>>>", "|||||||"))
+        ),
+        encoding="utf-8",
+    )
+    changelog.extract(repo, changelog.branch_name(repo))
+    _git(repo, "add", "CHANGELOG.md", "changelog.d")
+    _git(repo, "rebase", "--continue")
+    assert _git(repo, "branch", "--show-current").strip() == "mas-5/old"
+    assert _git(repo, "diff", "develop", "--", "CHANGELOG.md") == ""
+    assert (repo / "changelog.d" / "mas-5-old.fixed.md").read_text() == "- **Mine.**\n"
+    assert changelog.check(repo) == []
+
+
+def test_the_documented_recipe_folds_the_fragment_into_the_entry_commit(repo):
+    # changelog.d/README.md, "A branch with an entry in CHANGELOG.md": after
+    # the rebase, extract, then fold the result into the commit that added
+    # the entry, so that commit passes on its own. This branch was cut from
+    # the current develop and edited CHANGELOG.md by mistake; one rebased
+    # without a conflict is in the same state.
+    _note_on_develop(repo)
+    _commit_entry_under_unreleased(repo, "mas-6-old", "- **Mine.**")
+    entry = _git(repo, "rev-parse", "HEAD").strip()
+    (repo / "later.txt").write_text("a later commit on the branch\n")
+    _git(repo, "add", "later.txt")
+    _git(repo, "commit", "-q", "-m", "feat: a later commit")
+    assert changelog.check(repo) != []
+
+    changelog.extract(repo, changelog.branch_name(repo))
+    _git(repo, "add", "CHANGELOG.md", "changelog.d")
+    _git(repo, "commit", "-q", f"--fixup={entry}")
+    _git(repo, "rebase", "-q", "-i", "--autosquash", "develop")
+
+    assert _git(repo, "log", "--format=%s", "develop..HEAD").splitlines() == [
+        "feat: a later commit",
+        "fix: mas-6-old",
+    ]
+    for commit in ("HEAD~1", "HEAD"):
+        assert _git(repo, "diff", "develop", commit, "--", "CHANGELOG.md") == ""
+        assert (
+            _git(repo, "show", f"{commit}:changelog.d/mas-6-old.fixed.md")
+            == "- **Mine.**\n"
+        )
+    assert changelog.check(repo) == []
 
 
 # ============= main =============

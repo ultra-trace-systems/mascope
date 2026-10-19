@@ -37,8 +37,9 @@
 #                    version before it is tagged, it adds what merged since
 #                    to that section.
 #   extract          Move entries written under [Unreleased] in CHANGELOG.md
-#                    into fragments named after the current branch: the way
-#                    out for a branch that still edits CHANGELOG.md.
+#                    into fragments named after the current branch (in a
+#                    rebase, the branch being rebased): the way out for a
+#                    branch that still edits CHANGELOG.md.
 #
 # Usage:
 #   uv run python tooling/changelog.py check
@@ -177,6 +178,20 @@ def _read_changelog(root: Path) -> list[str]:
 
 def _write(path: Path, text: str) -> None:
     path.write_text(text, encoding="utf-8", newline="\n")
+
+
+def _git_output(root: Path, *args: str) -> str:
+    """What `git <args>` prints in `root`, or "" when it fails or git is missing."""
+    try:
+        return subprocess.run(
+            ["git", *args],
+            cwd=root,
+            capture_output=True,
+            check=True,
+            encoding="utf-8",
+        ).stdout.strip()
+    except (OSError, subprocess.CalledProcessError):
+        return ""
 
 
 def _unreleased_span(lines: list[str]) -> tuple[int, int]:
@@ -320,7 +335,9 @@ def check(root: Path = ROOT, release: bool = False) -> list[Problem]:
                 CHANGELOG,
                 start + 1,
                 f"the [Unreleased] section has been edited. {HOW_TO_ADD} "
-                f"To move what is there into a fragment: {RUN} extract",
+                f"To move what is there into a fragment: {RUN} extract, then fold "
+                "that into the commit that added the entry (changelog.d/README.md, "
+                '"A branch with an entry in CHANGELOG.md")',
             )
         )
 
@@ -388,29 +405,20 @@ def _added_order(root: Path) -> dict[str, int]:
     On develop that is the order the pull requests merged in - the order
     their entries used to be appended in. Empty outside a git checkout.
     """
-    try:
-        log = subprocess.run(
-            [
-                "git",
-                "log",
-                "--reverse",
-                # Parents before children whatever the timestamps say: two
-                # commits rebase-merged in the same second keep their order.
-                "--topo-order",
-                "--no-renames",
-                "--diff-filter=A",
-                "--format=%x00",
-                "--name-only",
-                "--",
-                FRAGMENTS,
-            ],
-            cwd=root,
-            capture_output=True,
-            check=True,
-            encoding="utf-8",
-        ).stdout
-    except (OSError, subprocess.CalledProcessError):
-        return {}
+    log = _git_output(
+        root,
+        "log",
+        "--reverse",
+        # Parents before children whatever the timestamps say: two commits
+        # rebase-merged in the same second keep their order.
+        "--topo-order",
+        "--no-renames",
+        "--diff-filter=A",
+        "--format=%x00",
+        "--name-only",
+        "--",
+        FRAGMENTS,
+    )
     order: dict[str, int] = {}
     for index, commit in enumerate(log.split("\0")):
         for path in commit.split():
@@ -511,16 +519,9 @@ def _parse_version(version: str) -> tuple[int, ...]:
 
 def _tagged(root: Path, version: str) -> bool:
     """Whether the checkout has the tag vX.Y.Z, which says the release is out."""
-    try:
-        subprocess.run(
-            ["git", "rev-parse", "-q", "--verify", f"refs/tags/v{version}"],
-            cwd=root,
-            capture_output=True,
-            check=True,
-        )
-    except (OSError, subprocess.CalledProcessError):
-        return False
-    return True
+    return bool(
+        _git_output(root, "rev-parse", "-q", "--verify", f"refs/tags/v{version}")
+    )
 
 
 def compile_release(root: Path, version: str, date: datetime.date | None = None) -> str:
@@ -619,17 +620,21 @@ def preview(root: Path = ROOT) -> str:
 
 
 def branch_name(root: Path) -> str:
-    """The current branch as a fragment name: `mas-12/x` reads `mas-12-x`."""
-    try:
-        branch = subprocess.run(
-            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
-            cwd=root,
-            capture_output=True,
-            check=True,
-            encoding="utf-8",
-        ).stdout.strip()
-    except (OSError, subprocess.CalledProcessError):
-        branch = ""
+    """The current branch as a fragment name: `mas-12/x` reads `mas-12-x`.
+
+    Mid-rebase HEAD is detached, and the branch is the one git records as
+    being rebased - where a conflict on an old entry under [Unreleased] stops.
+    """
+    branch = _git_output(root, "rev-parse", "--abbrev-ref", "HEAD")
+    if branch == "HEAD":
+        for state in ("rebase-merge/head-name", "rebase-apply/head-name"):
+            path = root / _git_output(root, "rev-parse", "--git-path", state)
+            if path.is_file():
+                # "detached HEAD" when what is being rebased is no branch.
+                head = path.read_text(encoding="utf-8").strip()
+                if head.startswith("refs/heads/"):
+                    branch = head[len("refs/heads/") :]
+                break
     name = re.sub(r"[^A-Za-z0-9._-]+", "-", branch).strip("-_.")
     if not name or branch == "HEAD":
         raise ChangelogError("not on a branch: name the fragments with --name")
