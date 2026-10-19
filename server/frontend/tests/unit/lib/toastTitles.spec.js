@@ -8,10 +8,10 @@ import {
   toastWanted
 } from '@/lib/toastTitles'
 
-// Every toast used to be headed by its notification type beautified and the
-// status word: "Shared link success", "Match compositions by mz success",
-// "Calibration mz fit success". That reads like a log line. The common events
-// get a heading written for the reader; the rest keep the generated form.
+// A toast is headed by what its notification reports. The common events get a
+// heading written for the reader; anything else is headed by its type
+// beautified and the status word ("Update target compound success"), which
+// reads like a log line but is never nothing.
 
 describe('the heading of a toast', () => {
   it.each([
@@ -38,8 +38,8 @@ describe('the heading of a toast', () => {
     expect(toastTitle('match_compositions_by_mz', 'error')).toBe('Composition search failed')
   })
 
-  // A type the map does not know is headed the way every toast used to be,
-  // so a new operation is never headed by nothing.
+  // A type the map does not know keeps the generated form, so a new operation
+  // is never headed by nothing.
   it('falls back to the generated form for anything else', () => {
     expect(toastTitle('update_target_compound', 'success')).toBe('Update target compound success')
     expect(toastTitle('verify_assignment', 'error')).toBe('Verify assignment error')

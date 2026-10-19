@@ -89,10 +89,13 @@ watch(open, (isOpen) => {
       <InputText v-model="log.query" placeholder="Search" style="width: 100%" />
     </IconField>
     <ScrollPanel>
+      <!-- The raw status stays searchable beside the heading: a mapped
+           heading says "failed" where the status says "error", and a search
+           for "error" should still find every failure. -->
       <Message
         v-for="{ id, type, status, message, timestamp } in app.ui.notification.log.filter(
           ({ type, status, message }) =>
-            `${toastTitle(type, status)} ${message}`.includes(log.query)
+            `${toastTitle(type, status)} ${status} ${message}`.includes(log.query)
         )"
         :key="id"
         :severity="messageSeverity(status)"

@@ -92,4 +92,20 @@ describe('NotificationPane', () => {
     expect(wrapper.findAll('.entry')).toHaveLength(1)
     expect(wrapper.get('h4').text()).toBe('Match refresh warning')
   })
+
+  // A mapped heading says "failed" where the status says "error"; the raw
+  // status stays in the search, so "error" still finds every failure.
+  it('still finds a failure by its status word', async () => {
+    notification.log = [
+      { ...entry('upload'), type: 'sample_file_upload', status: 'error' },
+      { ...entry('link'), type: 'shared_link', status: 'success' }
+    ]
+    const wrapper = mountPane()
+
+    wrapper.vm.log.query = 'error'
+    await wrapper.vm.$nextTick()
+
+    expect(wrapper.findAll('.entry')).toHaveLength(1)
+    expect(wrapper.get('h4').text()).toBe('Upload failed')
+  })
 })
