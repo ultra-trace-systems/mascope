@@ -117,6 +117,24 @@ jobs:
         working-directory: server/frontend
         run: npm run lint:check
 
+      - name: Changelog fragments
+        # Entries go in changelog.d/, one file per PR, so no two PRs edit the
+        # same lines; this fails a PR that writes into [Unreleased] in
+        # CHANGELOG.md instead, or adds a fragment that would not compile.
+        # A PR into master releases what it carries, so there no fragment may
+        # be left uncompiled. Here rather than in a job of its own because
+        # this job is a required check, and run even when a lint step failed
+        # so that one push learns both (changelog.d/README.md).
+        if: ${{ !cancelled() }}
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          if [ "$BASE_REF" = master ]; then
+            python3 tooling/changelog.py check --release
+          else
+            python3 tooling/changelog.py check
+          fi
+
   nginx-config:
     name: nginx config validation
     runs-on: ubuntu-latest

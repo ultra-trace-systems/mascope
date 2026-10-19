@@ -162,11 +162,12 @@ justify.
   touches both is split: the library half first, as its own PR with tests
   in `libraries/tools/tests`, and the engine half after the step it would
   collide with has merged, rebased onto it. The status table of this note
-  is edited by every step and conflicts trivially; CHANGELOG merges by
-  union. The testbed is one deployed build, and the comparison reads the
-  latest completed run of each engine per sample, so deploy, gate re-run
-  and comparison are one critical section per step, done at the end of its
-  PR, one branch at a time, with the build tag named in the PR comment.
+  is edited by every step and conflicts trivially; a changelog entry is a
+  fragment of its own in `changelog.d/` and does not. The testbed is one
+  deployed build, and the comparison reads the latest completed run of
+  each engine per sample, so deploy, gate re-run and comparison are one
+  critical section per step, done at the end of its PR, one branch at a
+  time, with the build tag named in the PR comment.
 - **The gate.** Every step ends by re-running the in-app engine on the fixed
   twelve-sample testbed set (six per instrument, peaky's runs already in the
   store) and running `compare_runs.py`; the numbers go into the status table

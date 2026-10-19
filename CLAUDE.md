@@ -143,16 +143,26 @@ Feature) carries the kind. Milestones are not used.
   already made, `git reset --hard <pre-merge-commit>` and rebase instead;
   comparing `git rev-parse HEAD^{tree}` against the merge's tree confirms the
   conflict resolution survived unchanged.
-- **CHANGELOG.md merges by union, so it does not conflict** - every PR appends
-  an entry to the same Unreleased section, so any two PRs in flight collided
-  there even when they touched nothing else. `.gitattributes` marks the file
-  `merge=union`, which keeps both sides instead of raising a conflict. That is
-  right for entries, which are whole blank-line-separated blocks and only ever
-  appended. It does mean no conflict is raised for you to review, so if you
-  **edit** an existing entry rather than adding one, read the merged result:
-  a concurrent edit to the same entry is kept twice rather than flagged.
-  Ordering within a section is not guaranteed either, so put an entry where it
-  reads best rather than assuming its position survives.
+- **A changelog entry is a file in `changelog.d/`, never an edit to
+  `CHANGELOG.md`** - name it `<branch>.<section>.md` (`/` in the branch, and
+  anything but letters, digits, `.`, `-` and `_`, written as `-`;
+  `<section>` one of `added`, `changed`, `deprecated`, `removed`,
+  `performance`, `fixed`, `security`) and write the entry in it exactly as
+  `CHANGELOG.md` shows one: a `- **Bold lead.**` bullet, its continuation
+  lines indented two spaces, no heading. When every PR appended to the same
+  `[Unreleased]` section, each merge left every other open PR with an entry
+  conflicting on GitHub, which merges without the repository's merge
+  drivers; a file of its own touches no line another PR does. `CHANGELOG.md`
+  changes only when a release is cut, by
+  `uv run python tooling/changelog.py compile X.Y.Z`. The "Lint and format"
+  check runs `tooling/changelog.py check` and fails a PR that writes under
+  `[Unreleased]` or adds a fragment that would not compile. A branch that
+  still has an entry there, from before the fragments, conflicts on
+  `CHANGELOG.md` when rebased: resolve it **keeping both sides** - taking
+  develop's side alone drops the branch's entry - then run
+  `uv run python tooling/changelog.py extract`, which files the branch's
+  entry and leaves out the ones develop already has as fragments.
+  `changelog.d/README.md` has the details.
 - **Anonymize commit messages and PR descriptions** - this repository is public,
   so text pushed to GitHub must never contain real instrument names or IDs,
   customer names, internal or customer server hostnames, tailnet/LAN addresses,
