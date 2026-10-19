@@ -171,10 +171,22 @@ export const useAcquisition = defineStore('app.data.acquisition', () => {
   const pending = ref(false)
   const loadError = ref(null)
 
-  async function load() {
+  /**
+   * Fetch the page the filters describe.
+   *
+   * `pending` is raised for a load the user asked for - opening the tab, a
+   * filter, a page, a retry - and not for a `background` one, the refresh a
+   * server event triggers: the list stays on screen as it is until the answer
+   * replaces it, and an empty list would otherwise flicker into a spinner on
+   * every file that arrives outside the range.
+   *
+   * @param {object} [options]
+   * @param {boolean} [options.background] Whether a server event asked, not the user.
+   */
+  async function load({ background = false } = {}) {
     const loadId = ++latestLoad
     updatesDuringLoad ??= new Map()
-    pending.value = true
+    if (!background) pending.value = true
     let answer = null
     if (time.mode === ALL_TIME) {
       // The range route with neither end: every file the filters keep.
@@ -282,7 +294,7 @@ export const useAcquisition = defineStore('app.data.acquisition', () => {
   // exactly while it is busiest.
   const RELOAD_WAIT_MS = 300
   const RELOAD_AT_THE_LATEST_MS = 2000
-  const reload = debounce(() => load(), RELOAD_WAIT_MS, {
+  const reload = debounce(() => load({ background: true }), RELOAD_WAIT_MS, {
     maxWait: RELOAD_AT_THE_LATEST_MS
   })
 
@@ -341,7 +353,7 @@ export const useAcquisition = defineStore('app.data.acquisition', () => {
     if (selected.value.some((s) => s.sample_file_id === record_id)) {
       unfocus()
     }
-    load()
+    load({ background: true })
   })
 
   const resetFilters = () => {

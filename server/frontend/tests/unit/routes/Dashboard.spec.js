@@ -5,10 +5,10 @@ import PrimeVue from 'primevue/config'
 import Tooltip from 'primevue/tooltip'
 
 // The Batch, Sample and Match tabs are disabled until there is something to
-// show in them, and used to give no hint of what that something was. Each now
-// carries a tooltip saying what enables it. PrimeVue turns pointer events off
-// on a disabled tab, so the dashboard turns them back on for its tabs, and
-// has to stop the click that lets through itself.
+// show in them, and each says what that something is: in a tooltip, and as
+// its accessible description. PrimeVue turns pointer events off on a disabled
+// tab, so the dashboard turns them back on for its tabs, and has to stop the
+// click that lets through itself.
 
 const mocks = vi.hoisted(() => ({ app: null }))
 vi.mock('@/stores', () => ({ useApp: () => mocks.app }))
@@ -149,7 +149,8 @@ describe('the disabled dashboard tabs', () => {
 
   // PrimeVue's Tab puts the disabled state on a button only, so on a div the
   // dashboard says it itself - and the reason with it, since the tooltip is
-  // for the pointer alone.
+  // for the pointer alone. The reason describes the tab from outside it: text
+  // inside a tab joins its accessible name, and would be read twice.
   it('say so to assistive tech, with the reason', () => {
     wrapper = mountDashboard()
 
@@ -158,6 +159,7 @@ describe('the disabled dashboard tabs', () => {
       expect(element.attributes('aria-disabled')).toBe('true')
       const description = document.getElementById(element.attributes('aria-describedby'))
       expect(description.textContent.trim()).toBe(reason)
+      expect(element.text()).not.toContain(reason)
     }
     expect(tab(wrapper, 'Raw files').attributes('aria-disabled')).toBeUndefined()
     expect(tab(wrapper, 'Raw files').attributes('aria-describedby')).toBeUndefined()
@@ -179,6 +181,7 @@ describe('the disabled dashboard tabs', () => {
     const sample = tab(wrapper, 'Sample')
 
     expect(dispatch(sample, 'keydown', { code: 'Enter' }).defaultPrevented).toBe(true)
+    expect(dispatch(sample, 'keydown', { code: 'NumpadEnter' }).defaultPrevented).toBe(true)
     expect(dispatch(sample, 'keydown', { code: 'Space' }).defaultPrevented).toBe(true)
     await nextTick()
 
