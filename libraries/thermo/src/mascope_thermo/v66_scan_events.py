@@ -37,13 +37,16 @@ m/z axis of :meth:`profile`. The rest is the ``RawFile``'s own. The scan
 filter follows OpenTFRaw's grammar exactly, so a file's stream keys are the
 ones a reader that reads these records will give it.
 
-**The backstop.** A stand-in that cannot be right is refused: when a scan of
-an instrument whose only analyzer is an Orbitrap reads as another analyzer,
-or the scans of one trailer scan event (of one segment: a method numbers its
-events within each) read as more than one MS order, the file does not open
+**The backstop.** A stand-in that cannot be right is refused: when the scans
+of one trailer scan event (of one segment: a method numbers its events within
+each) read as more than one MS order, the file does not open
 (:class:`UnreadableScanEventsError`). Polarity is not compared within an
 event, since a polarity-switching full scan alternates under one, and scan
-event 0, which a manual acquisition records on every scan, is no event.
+event 0, which a manual acquisition records on every scan, is no event. A
+scan that reads as an analyzer its instrument does not have is refused for
+every file, an engaged one included, by the backend's own check
+(``mascope_thermo.backend._refuse_misread_analyzers``), which judges the
+stand-in's scan table.
 
 The byte layouts and the derivations are ported from OpenTFRaw v2.0.0
 (https://github.com/Sigilweaver/OpenTFRaw, ``crates/opentfraw/src``):
@@ -136,9 +139,6 @@ _ACTIVATIONS = {
     _ETHCD: "ethcd",
 }
 
-# Instrument models whose only analyzer is an Orbitrap, as OpenTFRaw names
-# them: the Exploris family and the Q Exactive family.
-_ORBITRAP_ONLY_MODELS = ("Exploris", "Exactive")
 _SCAN_EVENT = "Scan Event:"
 _SCAN_SEGMENT = "Scan Segment:"
 
@@ -712,7 +712,7 @@ class _RedecodedRawFile:
             )
             self._trailer_events.append(_trailer_scan_event(params))
         self._packet_offsets: np.ndarray | None = None
-        _refuse_if_implausible(raw.instrument_model, self._scans, self._trailer_events)
+        _refuse_if_implausible(self._scans, self._trailer_events)
 
     def __getattr__(self, name):
         if name in self._NOT_REDECODED:
@@ -881,20 +881,10 @@ def _trailer_scan_event(params: dict) -> tuple[int | None, int] | None:
 
 
 def _refuse_if_implausible(
-    model: str | None,
     scans: list[dict],
     trailer_events: list[tuple[int | None, int] | None],
 ) -> None:
     """Refuse a stand-in whose scan events still cannot be right."""
-    if model and any(name in model for name in _ORBITRAP_ONLY_MODELS):
-        foreign = sum(1 for scan in scans if scan["analyzer"] != "FTMS")
-        if foreign:
-            raise UnreadableScanEventsError(
-                _refusal(
-                    f"{foreign} of its {len(scans)} scans read as an analyzer "
-                    f"other than the Orbitrap, the only one the {model} has"
-                )
-            )
     levels: dict[tuple[int | None, int], set[int]] = {}
     for scan, event in zip(scans, trailer_events):
         if event:

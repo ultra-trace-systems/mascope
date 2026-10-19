@@ -868,6 +868,8 @@ class _ScriptedRaw:
     """The slice of ``opentfraw.RawFile`` ``scan_filters`` reads: one
     ``(segment, event)`` per scan, as the scan index holds them."""
 
+    instrument_model = "Scripted"
+
     def __init__(self, experiments):
         self._experiments = experiments
 
