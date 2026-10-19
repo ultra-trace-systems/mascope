@@ -1,8 +1,10 @@
 """The scan events of a version-66 raw file whose records carry names.
 
-**Interim, for GitHub issue #2391.** Delete this module, and the one line in
-``OpenTFRawBackend.__enter__`` that calls :func:`redecode_if_misread`, once
-the pinned OpenTFRaw reads these records itself (MAS-170).
+**Interim, for GitHub issue #2391.** Delete this module once the pinned
+OpenTFRaw reads these records itself (MAS-170), together with its import in
+``mascope_thermo.backend``, the ``try``/``except`` around the call to
+:func:`redecode_if_misread` in ``OpenTFRawBackend.__enter__``, its tests
+(``test_v66_scan_events.py``) and its section of ``docs/backend.md``.
 
 In a version-66 raw file the scan-event stream holds one record per scan, from
 four bytes past the run header's scan trailer address to its scan parameters
@@ -37,11 +39,11 @@ ones a reader that reads these records will give it.
 
 **The backstop.** A stand-in that cannot be right is refused: when a scan of
 an instrument whose only analyzer is an Orbitrap reads as another analyzer,
-or the scans of one trailer scan event read as more than one MS order, the
-file does not open (:class:`UnreadableScanEventsError`). Polarity is not
-compared within an event, since a polarity-switching full scan alternates
-under one, and scan event 0, which a manual acquisition records on every
-scan, is no event.
+or the scans of one trailer scan event (of one segment: a method numbers its
+events within each) read as more than one MS order, the file does not open
+(:class:`UnreadableScanEventsError`). Polarity is not compared within an
+event, since a polarity-switching full scan alternates under one, and scan
+event 0, which a manual acquisition records on every scan, is no event.
 
 The byte layouts and the derivations are ported from OpenTFRaw v2.0.0
 (https://github.com/Sigilweaver/OpenTFRaw, ``crates/opentfraw/src``):
@@ -138,6 +140,7 @@ _ACTIVATIONS = {
 # them: the Exploris family and the Q Exactive family.
 _ORBITRAP_ONLY_MODELS = ("Exploris", "Exactive")
 _SCAN_EVENT = "Scan Event:"
+_SCAN_SEGMENT = "Scan Segment:"
 
 # What str::parse::<f64> accepts, which Python's float() is laxer than.
 _RUST_FLOAT = re.compile(
@@ -439,6 +442,8 @@ def _get_f64(params: dict, label: str) -> float | None:
 
 
 def _get_i32(params: dict, label: str) -> int | None:
+    # The one getter laxer than OpenTFRaw's, which takes Int8, Int16 and
+    # Int32 only: an unsigned integer is an int here as well.
     value = params.get(label)
     return value if type(value) is int else None
 
@@ -698,7 +703,7 @@ class _RedecodedRawFile:
         self._first = int(raw.first_scan)
         self._events = [_decode_event(p, b) for p, b in layout.records]
         self._scans: list[dict] = []
-        self._trailer_events: list[int | None] = []
+        self._trailer_events: list[tuple[int | None, int] | None] = []
         for row, scan_number in enumerate(table["scan_number"]):
             params = raw.scan_parameters(int(scan_number)) or {}
             event = self._event(int(scan_number))
@@ -853,8 +858,7 @@ def _read_profile(
 # -- the backstop -----------------------------------------------------------------
 
 
-def _trailer_scan_event(params: dict) -> int | None:
-    value = params.get(_SCAN_EVENT)
+def _trailer_int(value) -> int | None:
     if isinstance(value, bool):
         return None
     if isinstance(value, int):
@@ -864,8 +868,22 @@ def _trailer_scan_event(params: dict) -> int | None:
     return None
 
 
+def _trailer_scan_event(params: dict) -> tuple[int | None, int] | None:
+    """The scan's trailer ``(segment, event)``, or None for event 0 or none.
+
+    A method numbers its scan events within each of its segments, so an
+    event is one experiment only together with its segment.
+    """
+    event = _trailer_int(params.get(_SCAN_EVENT))
+    if not event:
+        return None
+    return _trailer_int(params.get(_SCAN_SEGMENT)), event
+
+
 def _refuse_if_implausible(
-    model: str | None, scans: list[dict], trailer_events: list[int | None]
+    model: str | None,
+    scans: list[dict],
+    trailer_events: list[tuple[int | None, int] | None],
 ) -> None:
     """Refuse a stand-in whose scan events still cannot be right."""
     if model and any(name in model for name in _ORBITRAP_ONLY_MODELS):
@@ -877,7 +895,7 @@ def _refuse_if_implausible(
                     f"other than the Orbitrap, the only one the {model} has"
                 )
             )
-    levels: dict[int, set[int]] = {}
+    levels: dict[tuple[int | None, int], set[int]] = {}
     for scan, event in zip(scans, trailer_events):
         if event:
             levels.setdefault(event, set()).add(scan["ms_level"])
