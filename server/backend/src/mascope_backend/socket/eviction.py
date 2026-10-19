@@ -89,21 +89,27 @@ async def evict_ended_sessions(user_id: int, user=None) -> int:
         kept: set[str] = set()
         evicted = 0
         for sid in sids:
+            rooms = await room_tracker.socket_rooms(sid)
             try:
                 session = await get_session_user(sid)
             except SocketSessionError:
-                # Gone without a disconnect (a worker died); its rooms went with it.
+                # Gone without a disconnect (a worker died), or alive with its
+                # session lost: either way nothing says it may keep its rooms.
+                # A leave_room for a socket nobody holds is a harmless publish.
+                session = None
                 await forget_user_socket(user_id, sid)
-                continue
-            rooms = await room_tracker.socket_rooms(sid)
-            if socket_hold_reason(user, session.get("issued_at")) is None:
+            if (
+                session is not None
+                and socket_hold_reason(user, session.get("issued_at")) is None
+            ):
                 kept |= rooms
                 continue
             for room in rooms - {own_room}:
                 await sio.leave_room(sid, room)
                 await room_tracker.leave_socket(sid, room)
                 left.add(room)
-            evicted += 1
+            if session is not None or rooms - {own_room}:
+                evicted += 1
 
         # The per-user membership answers "is this user in the room" for
         # notification routing; a room another of the user's sockets still
