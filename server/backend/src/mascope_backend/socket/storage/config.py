@@ -18,6 +18,14 @@ class SocketStorageConfig(BaseModel):
     session_ttl: int = 86400  # 24 hours - Socket session lifetime
     room_ttl: int = 86400  # 24 hours - Room membership tracking lifetime
 
+    # A web socket's session, its entry in its user's socket index and its room
+    # record are refreshed by the worker holding the connection for as long as
+    # it stays connected, not only when the client emits: the SPA emits nothing
+    # but subscribe/unsubscribe, so a tab that only listens would otherwise have
+    # them lapse under it and could no longer be evicted. A worker that dies
+    # takes its renewals with it, and the TTLs above clear what it left.
+    session_renewal_interval: int = 3600  # How often a connected socket refreshes them
+
     # Service presence keys are short-lived and refreshed while the service
     # stays connected, so a key can never outlive the process that wrote it: an
     # unclean backend death (power loss, OOM, `docker kill`) runs no disconnect

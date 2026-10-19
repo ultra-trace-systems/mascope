@@ -7,7 +7,10 @@ a web session the issued_at of the token it was authenticated with.
 
 Sessions persist for a configurable TTL (default 24 hours) as a safety net.
 Primary cleanup occurs on socket disconnect. TTL is refreshed on each
-access to keep active users authenticated indefinitely.
+access to keep active users authenticated indefinitely, and for a web socket
+also by a renewal task that lives exactly as long as the connection (started
+on connect, cancelled on disconnect), so a tab that only listens keeps its
+session and records too.
 
 A web (default-namespace) session is also indexed by user, so every socket an
 account has open can be found from any worker - which is what ending its
@@ -16,6 +19,7 @@ under the Redis manager is local to the worker holding the connection, so
 without the index a socket on another worker could not be reached.
 """
 
+import asyncio
 import json
 import os
 from typing import Any, Optional
@@ -186,8 +190,9 @@ async def get_session_user(sid: str, namespace: str = "/") -> dict[str, Any]:
             session_key, storage_config.session_ttl
         )
         if namespace == WEB_NAMESPACE:
-            # And what eviction finds the socket by, so a tab left open for
-            # days is still in the index and its rooms still on record.
+            # And what eviction finds the socket by, so the index and the
+            # room record live as long as the session (see
+            # start_session_renewal for a socket that never emits).
             await redis_storage_client.client.expire(
                 storage_config.user_sockets_key(session["user_id"]),
                 storage_config.session_ttl,
@@ -249,3 +254,61 @@ async def forget_user_socket(user_id: int, sid: str) -> None:
     await redis_storage_client.client.srem(
         storage_config.user_sockets_key(user_id), sid
     )
+
+
+# Renewal tasks keyed by sid, one per authenticated web socket on this worker.
+# Kept only so the disconnect handler can cancel the matching task.
+_renewal_tasks: dict[str, asyncio.Task] = {}
+
+
+async def _renew_session(sid: str) -> None:
+    """Refresh a web socket's session, index entry and room record until cancelled."""
+    while True:
+        await asyncio.sleep(storage_config.session_renewal_interval)
+        try:
+            # Reading the session refreshes all three.
+            await get_session_user(sid)
+        except SocketSessionError:
+            # Logged inside; retried on the next tick. A session cleared under
+            # a live socket has nothing to refresh until the socket is gone.
+            pass
+
+
+def start_session_renewal(sid: str) -> None:
+    """
+    Keep a web socket's session and records alive for the life of its connection.
+
+    Call from the default namespace's connect handler once the socket is
+    authenticated. Idempotent per sid: a lingering task is cancelled first.
+
+    :param sid: Socket.IO session ID
+    :type sid: str
+    """
+    _cancel_renewal_task(sid)
+    _renewal_tasks[sid] = asyncio.create_task(_renew_session(sid))
+
+
+def _cancel_renewal_task(sid: str) -> asyncio.Task | None:
+    task = _renewal_tasks.pop(sid, None)
+    if task is not None:
+        task.cancel()
+    return task
+
+
+async def stop_session_renewal(sid: str) -> None:
+    """
+    Stop a web socket's session renewal.
+
+    Call from the disconnect handler *before* the session and its records are
+    cleared, so a renewal in flight cannot refresh a key about to be deleted.
+
+    :param sid: Socket.IO session ID
+    :type sid: str
+    """
+    task = _cancel_renewal_task(sid)
+    if task is not None:
+        try:
+            await task
+        except asyncio.CancelledError:
+            # Expected: the task was cancelled just above.
+            pass

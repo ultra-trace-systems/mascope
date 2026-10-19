@@ -75,6 +75,9 @@ async def subscribe(sid, room):
     # Checked after the ACL so the log says which boundary refused, and using
     # the user already loaded above rather than a second query. Eviction makes
     # the same check of a socket that subscribed before the account changed.
+    # Check-then-act: a subscribe that loaded the user just before the change
+    # committed and enters the room just after eviction ran keeps that room
+    # until it reconnects. The window is milliseconds; a reconnect is gated.
     if room != f"user-{user_id}" and (
         reason := socket_hold_reason(user, session.get("issued_at"))
     ):

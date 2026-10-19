@@ -15,6 +15,7 @@ can observe in one process. Redis is this package's in-memory stub (see
 ``conftest.py``), so the session index and the room records are the real code.
 """
 
+import asyncio
 from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, MagicMock, call, patch
 
@@ -29,8 +30,10 @@ from mascope_backend.api.new.auth.config import auth_settings
 from mascope_backend.app.fast import fast
 from mascope_backend.db import AccessToken, User
 from mascope_backend.db.id import gen_id
-from mascope_backend.socket.auth.service import authenticate_socket_connection
-from mascope_backend.socket.events.handlers.default.connection import disconnect
+from mascope_backend.socket.events.handlers.default.connection import (
+    connect,
+    disconnect,
+)
 from mascope_backend.socket.events.handlers.default.subscription import (
     subscribe,
     unsubscribe,
@@ -42,7 +45,9 @@ from mascope_backend.socket.storage import (
     redis_storage_client,
     room_tracker,
     save_user_session,
+    stop_session_renewal,
 )
+from mascope_backend.socket.storage import sessions as session_store
 from mascope_backend.socket.storage.config import storage_config
 
 
@@ -127,11 +132,19 @@ def sio():
         yield server
 
 
+@pytest_asyncio.fixture(autouse=True)
+async def stop_renewals():
+    """Cancel the session renewals of the sockets a test left connected."""
+    yield
+    for sid in list(session_store._renewal_tasks):
+        await stop_session_renewal(sid)
+
+
 async def _open_socket(sid: str, user: User, issued: datetime) -> None:
-    """Authenticate a web socket and subscribe it to a resource and its own room."""
-    await authenticate_socket_connection(
-        sid, _token(user, issued), minimum_role="guest"
-    )
+    """Connect a web socket and subscribe it to a resource and its own room."""
+    cookie = f"{auth_settings.COOKIE_NAME}={_token(user, issued)}"
+    assert await connect(sid, {"HTTP_COOKIE": cookie})
+    assert await get_session_user(sid), "the socket did not authenticate"
     await subscribe(sid, RESOURCE_ROOM)
     await subscribe(sid, f"user-{user.id}")
 
@@ -309,14 +322,72 @@ async def test_a_socket_gone_without_a_disconnect_is_dropped_from_the_index(
 
 
 @pytest.mark.asyncio
+async def test_a_socket_whose_session_lapsed_is_still_evicted(
+    owner_client, person, sio
+):
+    """
+    A missing session does not mean a missing socket.
+
+    A socket whose session key is gone (lapsed, or Redis lost it) may still be
+    connected and in its rooms on its worker. Nothing says it may keep them, so
+    it leaves every recorded room but its own, and drops out of the index.
+    """
+    await _open_socket("sid-a", person, datetime.now(timezone.utc) - LONG_AGO)
+    await redis_storage_client.client.delete(storage_config.session_key("sid-a", "/"))
+
+    resp = await owner_client.post(
+        "/api/users/owner/require-password-change", json={"confirm": True}
+    )
+    assert resp.status_code == 200, resp.text
+
+    await _assert_evicted(sio, "sid-a", person)
+    assert await get_user_socket_sids(person.id) == set()
+
+
+@pytest.mark.asyncio
+async def test_a_socket_that_never_emits_stays_on_record(
+    person, sio, live_rate_limiter, monkeypatch
+):
+    """
+    The worker holding a socket keeps its session and records alive.
+
+    The SPA emits nothing but subscribe/unsubscribe, so a tab that only listens
+    sends no event that would refresh them. Without the connection's own
+    renewal they would lapse a day after its last subscribe, and eviction would
+    then miss a socket still connected and still in its rooms. The renewal
+    stops with the connection.
+    """
+    monkeypatch.setattr(storage_config, "session_renewal_interval", 0.01)
+    await _open_socket("sid-a", person, datetime.now(timezone.utc))
+    refreshed: list[str] = []
+    expire = live_rate_limiter.expire
+
+    async def recording_expire(key: str, seconds: int) -> bool:
+        refreshed.append(key)
+        return await expire(key, seconds)
+
+    live_rate_limiter.expire = recording_expire
+    await asyncio.sleep(0.05)
+
+    assert storage_config.session_key("sid-a", "/") in refreshed
+    assert storage_config.user_sockets_key(person.id) in refreshed
+    assert storage_config.socket_rooms_key("sid-a") in refreshed
+
+    renewal = session_store._renewal_tasks["sid-a"]
+    await disconnect("sid-a")
+    assert renewal.cancelled()
+
+
+@pytest.mark.asyncio
 async def test_a_long_lived_socket_stays_on_record(person, sio, live_rate_limiter):
     """
     Every access that keeps the session alive keeps the index and rooms alive.
 
     Both expire like the session itself, as a safety net for a worker that dies
-    without running disconnect. A tab left open for days has its session's TTL
-    refreshed on each event; if the index and its room record were not, they
-    would lapse under it and eviction would no longer find that socket.
+    without running disconnect. The session's TTL is refreshed on each read (a
+    client event, or the connection's renewal); if the index and its room
+    record were not, they would lapse under it and eviction would no longer
+    find that socket.
     """
     await _open_socket("sid-a", person, datetime.now(timezone.utc))
     refreshed: list[str] = []

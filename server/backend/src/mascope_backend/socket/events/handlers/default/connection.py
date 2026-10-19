@@ -18,6 +18,8 @@ from mascope_backend.socket.storage import (
     clear_user_session,
     get_session_user,
     room_tracker,
+    start_session_renewal,
+    stop_session_renewal,
 )
 
 
@@ -58,6 +60,9 @@ async def connect(sid: str, environ: dict) -> bool:
         await authenticate_socket_connection(
             sid=sid, token=jwt_token, minimum_role="guest"
         )
+        # Keeps the session, and what eviction finds the socket by, alive while
+        # the tab only listens (see storage_config.session_renewal_interval).
+        start_session_renewal(sid)
         runtime.logger.debug(
             f"Socket server: user's socket client {sid} connected [Worker {worker_pid}]"
         )
@@ -111,6 +116,8 @@ async def disconnect(sid: str) -> None:
         )
 
     finally:
-        # Clear session from Redis storage, and the socket's own room record
+        # Clear session from Redis storage, and the socket's own room record,
+        # once nothing can refresh them any more
+        await stop_session_renewal(sid)
         await room_tracker.forget_socket(sid)
         await clear_user_session(sid)
