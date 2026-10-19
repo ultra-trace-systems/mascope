@@ -23,11 +23,10 @@ for a client that has no fingerprint of the file.
 
 from __future__ import annotations
 
-import math
 import re
 import statistics
 
-from mascope_thermo.backend import ReaderBackend
+from mascope_thermo.backend import ReaderBackend, trailer_float
 from mascope_thermo.streams import scan_stream_keys
 
 
@@ -43,22 +42,6 @@ _OVERDUE = re.compile(
     r"Overdue\s*\(\s*(\d{4}-\d{2}-\d{2}[ T]\d{1,2}:\d{2}(?::\d{2})?)\s*\)",
     re.IGNORECASE | re.DOTALL,
 )
-
-
-def _number(value) -> float | None:
-    """A trailer value as a finite float, or None.
-
-    The Thermo backend gives trailer values as text, OpenTFRaw as numbers.
-    The text is formatted in the machine's culture, so its decimal mark may
-    be a comma (``"169409639,6526"``); it carries no group separators.
-    """
-    if value is None:
-        return None
-    try:
-        number = float(str(value).strip().replace(",", "."))
-    except ValueError:
-        return None
-    return number if math.isfinite(number) else None
 
 
 def stream_calibrations(backend: ReaderBackend) -> dict[str, dict]:
@@ -85,8 +68,8 @@ def stream_calibrations(backend: ReaderBackend) -> dict[str, dict]:
     keys = scan_stream_keys(backend)
     for row, key in zip(backend.scan_filters(), keys):
         trailer = backend.scan_trailer(row["scan"])
-        b = _number(trailer.get(CONVERSION_B))
-        c = _number(trailer.get(CONVERSION_C))
+        b = trailer_float(trailer.get(CONVERSION_B))
+        c = trailer_float(trailer.get(CONVERSION_C))
         if b is None or c is None or b == 0:
             continue
         bs, cs, ratios = per_stream.setdefault(key, ([], [], []))

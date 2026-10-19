@@ -30,3 +30,34 @@ def backend(request, monkeypatch):
         )
     monkeypatch.setenv("MASCOPE_THERMO_BACKEND", request.param)
     return request.param
+
+
+@pytest.fixture
+def dotnet_culture(monkeypatch):
+    """Format the Thermo library's text in a .NET culture the test names.
+
+    The library writes trailer values as text in the current culture, so
+    without this a test sees only the regional format of the machine it runs
+    on: a decimal comma on one, a point on another. Yields a function taking
+    a culture name (``""`` for the invariant culture), and puts back the
+    culture the test found. Selects the Thermo backend, and skips without
+    its DLLs.
+    """
+    if not thermo_available():
+        pytest.skip(
+            "Thermo backend unavailable; set MASCOPE_THERMO_DLL_DIR to the "
+            "RawFileReader DLLs to run it."
+        )
+    from mascope_thermo.thermo import _ensure_dotnet
+
+    _ensure_dotnet()
+    from System.Globalization import CultureInfo
+
+    monkeypatch.setenv("MASCOPE_THERMO_BACKEND", "thermo")
+    original = CultureInfo.CurrentCulture
+
+    def use(name: str) -> None:
+        CultureInfo.CurrentCulture = CultureInfo(name)
+
+    yield use
+    CultureInfo.CurrentCulture = original
