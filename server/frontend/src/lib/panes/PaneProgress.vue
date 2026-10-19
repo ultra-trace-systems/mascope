@@ -1,6 +1,6 @@
 <script setup>
 import { useApp } from '@/stores'
-import { beautifySnakeCase } from '@/lib/utils'
+import { notificationTitle } from '@/lib/toastTitles'
 
 const app = useApp()
 
@@ -26,7 +26,7 @@ function color(type) {
     <template v-for="process of app.ui.notification.progress" :key="process.process_id">
       <div
         v-if="process.progress > 0"
-        v-tooltip.top="`${beautifySnakeCase(process.type)}: ${process.message}`"
+        v-tooltip.top="`${notificationTitle(process.type)}: ${process.message}`"
         class="progress-bar"
         :style="`
           background-color: var(--p-${color(process.type)}-500);

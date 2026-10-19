@@ -68,4 +68,28 @@ describe('NotificationPane', () => {
       wrapper.get('button[aria-label="Clear notifications"]').attributes('disabled')
     ).toBeDefined()
   })
+
+  // Headed as its toast was (src/lib/toastTitles.js), so the log and the
+  // toast name one event alike, and a search for the heading finds it.
+  it('heads an entry as its toast was headed', () => {
+    notification.log = [{ ...entry('a'), type: 'rematch_batches', status: 'warning' }]
+    const wrapper = mountPane()
+
+    expect(wrapper.get('h4').text()).toBe('Match refresh warning')
+  })
+
+  it('finds an entry by that heading', async () => {
+    notification.log = [
+      { ...entry('one'), type: 'rematch_batches', status: 'warning' },
+      { ...entry('two'), type: 'shared_link', status: 'success' }
+    ]
+    const wrapper = mountPane()
+    expect(wrapper.findAll('.entry')).toHaveLength(2)
+
+    wrapper.vm.log.query = 'Match refresh'
+    await wrapper.vm.$nextTick()
+
+    expect(wrapper.findAll('.entry')).toHaveLength(1)
+    expect(wrapper.get('h4').text()).toBe('Match refresh warning')
+  })
 })
