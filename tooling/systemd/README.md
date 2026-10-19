@@ -64,10 +64,11 @@ mascope prod update --snooze 7     # postpone it 7 days
 
 A full disk is the one failure that takes the stack down *and* can corrupt
 Postgres on the way - so unlike auto-updates, the disk check is **enabled by
-default**. Every 15 minutes (cheap, read-only) `mascope-disk-check.timer` runs
-`tooling/disk-check.sh`, which measures the `.runtime` filesystem, each env's
-filestore when it is a symlink to a volume of its own, and docker's image
-store, and alerts when any of them drops below **either** threshold:
+default**. Every 15 minutes (cheap, and deleting nothing)
+`mascope-disk-check.timer` runs `tooling/disk-check.sh`, which measures the
+`.runtime` filesystem, each env's filestore when it is a symlink to a volume
+of its own, and docker's image store, and alerts when any of them drops below
+**either** threshold:
 
 - `MIN_FREE_GB` (default 10) - absolute floor, the "about to crash" signal;
 - `MIN_FREE_PCT` (default 10) - percentage floor, the earlier warning (set `0`

@@ -1178,11 +1178,11 @@ def doctor(
     """
     One-glance operational status of the deployment.
 
-    Gathers container health, the deployed version, free disk on the state and
-    docker filesystems with how fast each is filling (from the disk-check
-    timer's history), the recorded pending update, local backup freshness, and
-    the docker image footprint. Read-only and network-free - safe to run
-    anytime or to poll.
+    Gathers container health, the deployed version, free disk on the state,
+    filestore and docker filesystems with how fast each is filling (from the
+    disk-check timer's history), the recorded pending update, local backup
+    freshness, and the docker image footprint. Read-only and network-free -
+    safe to run anytime or to poll.
 
     Exits 0 when everything looks healthy, 1 when a container is not running,
     the running images do not match the release this deployment would deploy,
