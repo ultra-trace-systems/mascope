@@ -74,6 +74,7 @@ async def _insert(
     instrument_type: str = "orbi",
     created: datetime | None = None,
     function_utc: datetime | None = None,
+    length: float = 60.0,
 ) -> str:
     """One sample_file row as the converter would have written it.
 
@@ -85,6 +86,7 @@ async def _insert(
     :param instrument: The instrument the row is filed under.
     :param instrument_type: ``orbi`` or ``tof``.
     :param created: The registration time; the database's now() when None.
+    :param length: The acquisition's length in seconds.
     :param function_utc: When given, an instrument function dated so, fitted
         from this file.
     :return: The row's id.
@@ -111,7 +113,7 @@ async def _insert(
             instrument_function_id=function_id,
             datetime=local,
             datetime_utc=stored_utc,
-            length=60.0,
+            length=length,
             range=[50.0, 500.0],
             polarity="-",
             utc_offset_source=source,
@@ -168,15 +170,17 @@ async def test_a_wall_clock_stored_as_utc_is_read_in_the_zone(
     the dry-run evidence reads as the docs say, and the apply leaves a ledger."""
     summer = datetime(2026, 7, 1, 14, 0)
     winter = datetime(2026, 1, 15, 9, 0)
-    # Registered five minutes after the true end of the acquisition: as
-    # stored (two hours late) the file ends after it was registered, which
-    # no true acquisition time does; repaired, it ends before.
+    # A ten-minute acquisition registered five minutes after the stored
+    # start: as stored (two hours late) the file starts before it was
+    # registered but ends after, which no true acquisition time does, so the
+    # evidence has to count the length; repaired, it ends well before.
     summer_id = await _insert(
         async_session_factory,
         key="summer",
         local=summer,
         stored_utc=summer.replace(tzinfo=UTC),
-        created=datetime(2026, 7, 1, 12, 6, tzinfo=UTC),
+        created=datetime(2026, 7, 1, 14, 5, tzinfo=UTC),
+        length=600.0,
     )
     winter_id = await _insert(
         async_session_factory,
@@ -246,6 +250,14 @@ async def test_rows_that_were_not_guessed_as_utc_are_left_alone(
         stored_utc=local.replace(tzinfo=UTC),
         instrument_type="tof",
     )
+    # A guessed TOF row stored with another offset is not counted either.
+    tof_elsewhere_id = await _insert(
+        async_session_factory,
+        key="tofelse",
+        local=local,
+        stored_utc=datetime(2026, 7, 1, 11, 0, tzinfo=UTC),
+        instrument_type="tof",
+    )
     guessed_id = await _insert(
         async_session_factory,
         key="guessed",
@@ -264,6 +276,7 @@ async def test_rows_that_were_not_guessed_as_utc_are_left_alone(
     assert stored[reported_id] == datetime(2026, 7, 1, 12, 0, tzinfo=UTC)
     assert stored[elsewhere_id] == datetime(2026, 7, 1, 11, 0, tzinfo=UTC)
     assert stored[tof_id] == local.replace(tzinfo=UTC)
+    assert stored[tof_elsewhere_id] == datetime(2026, 7, 1, 11, 0, tzinfo=UTC)
     assert stored[guessed_id] == datetime(2026, 7, 1, 12, 0, tzinfo=UTC)
 
 
@@ -378,6 +391,31 @@ async def test_the_files_instrument_function_moves_with_it(
         ledger[moved_id]["instrument_function_id"] == f"repairfn{'fnmoves':0>24}"[:32]
     )
     assert ledger[kept_id]["instrument_function_id"] is None
+
+
+@pytest.mark.asyncio
+async def test_a_repair_whose_ledger_cannot_be_written_is_not_made(
+    async_session_factory, tmp_path
+):
+    """The ledger is written before the commit, so a repair nobody could trace
+    is rolled back rather than made."""
+    local = datetime(2026, 7, 1, 14, 0)
+    row_id = await _insert(
+        async_session_factory,
+        key="noledger",
+        local=local,
+        stored_utc=local.replace(tzinfo=UTC),
+    )
+    blocked = tmp_path / "not-a-folder"
+    blocked.write_text("a file where the ledger folder would go")
+
+    with pytest.raises(OSError):
+        await fix_guessed_datetime_utc(
+            zone=ZONE, instrument=INSTRUMENT, dry_run=False, ledger_dir=blocked
+        )
+
+    stored = await _stored_utc(async_session_factory)
+    assert stored[row_id] == local.replace(tzinfo=UTC)
 
 
 @pytest.mark.asyncio
