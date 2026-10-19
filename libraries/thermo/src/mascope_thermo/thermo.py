@@ -21,7 +21,7 @@ import pandas as pd
 import xarray as xr
 
 from mascope_thermo.backend import open_backend
-from mascope_thermo.calibration import calibration_status, stream_calibrations
+from mascope_thermo.calibration import calibration_identity
 from mascope_thermo.lib import load_dotnet
 from mascope_thermo.runtime import runtime
 
@@ -1410,11 +1410,8 @@ def get_scan_table(
         rows = backend.scan_rows(polarity, t_min, t_max, first_scan, last_scan)
         stats_per_file = {
             "Value": backend.instrument_details(),
-            "calibrations": stream_calibrations(backend),
+            **calibration_identity(backend),
         }
-        status = calibration_status(backend)
-        if status is not None:
-            stats_per_file["calibration_status"] = status
 
     if fields is not None:
         # A dict rather than a set: the entries keep the order asked for.
