@@ -56,6 +56,8 @@ def _scan(text, event=None, tic=1e6, resolution=120000, segment=1):
 class _ScriptedOpenTFRaw:
     """The slice of ``opentfraw.RawFile`` scan selection reads."""
 
+    instrument_model = "Scripted"
+
     def __init__(self, scans):
         self._scans = scans
         self.trailer_reads = 0

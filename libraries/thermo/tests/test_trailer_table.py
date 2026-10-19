@@ -42,6 +42,8 @@ class _ScriptedRaw:
     """The slice of ``opentfraw.RawFile`` the trailer table reads: one MS1
     scan per trailer record, where ``None`` is a scan with no record."""
 
+    instrument_model = "Scripted"
+
     def __init__(self, trailers: list[dict | None]):
         self._trailers = trailers
 

@@ -70,6 +70,21 @@ class UnfinishedAcquisitionError(NoScansFoundError):
     """
 
 
+class MisreadScanEventsError(ValueError):
+    """A raw file whose scan events the reader has evidently misread.
+
+    Raised where a scan's event says what the instrument cannot have done: an
+    analyzer an Orbitrap-only instrument does not have. Every value the reader
+    derives from that event, the m/z axis of the scan's profile included, is
+    then noise, so the file is refused rather than read on it.
+
+    A ``ValueError``, the error class whose text a file's processing status
+    shows the person who reads it, and deliberately not a
+    :class:`NoScansFoundError`: the file holds scans, and calling it empty
+    would say the wrong thing about it.
+    """
+
+
 class UnknownStreamError(LookupError):
     """A scan stream was asked for by a key the file holds no stream under.
 

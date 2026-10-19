@@ -29,6 +29,7 @@ from mascope_thermo import v66_scan_events
 from mascope_thermo.backend import OpenTFRawBackend
 from mascope_thermo.run_header import _address_table
 from mascope_thermo.runtime import runtime
+from mascope_thermo.thermo import MisreadScanEventsError
 from mascope_thermo.v66_scan_events import (
     UnreadableScanEventsError,
     _misread_layout,
@@ -496,27 +497,24 @@ class TestTheBackstop:
 
         assert backend.scan_indices(ms_type="Ms2") == [5, 6, 7, 8]
 
-    def test_an_analyzer_an_orbitrap_only_instrument_has_not(self, tmp_path, enter):
-        scans = _acquisition()
-        scans[3].analyzer = 0  # ITMS
-        with pytest.raises(UnreadableScanEventsError) as refused:
-            enter(scans, build(tmp_path, scans))
-
-        message = str(refused.value)
-        assert (
-            "1 of its 10 scans read as an analyzer other than the Orbitrap" in message
-        )
-        assert EXPLORIS in message
-        assert "#2391" in message
-
-    def test_the_analyzer_is_not_judged_on_an_instrument_with_others(
+    def test_the_analyzers_judged_are_the_ones_read_by_the_records(
         self, tmp_path, enter
     ):
+        # The reader the stand-in wraps reads every scan as ITMS, which the
+        # backend refuses on an Orbitrap-only instrument; the stand-in's own
+        # reading, all FTMS, is what it judges.
         scans = _acquisition()
-        scans[3].analyzer = 0
-        backend = enter(scans, build(tmp_path, scans), model="Orbitrap Fusion Lumos")
+        backend = enter(scans, build(tmp_path, scans))
 
-        assert backend._all_scans()[3]["analyzer"] == "ITMS"
+        assert {s["analyzer"] for s in backend._all_scans()} == {"FTMS"}
+
+    def test_an_analyzer_read_by_the_records_is_still_judged(self, tmp_path, enter):
+        scans = _acquisition()
+        scans[3].analyzer = 0  # ITMS
+        backend = enter(scans, build(tmp_path, scans))
+
+        with pytest.raises(MisreadScanEventsError, match="1 of its 10 scans"):
+            backend.polarities()
 
     def test_one_event_read_as_two_ms_orders(self, tmp_path, enter):
         scans = _acquisition()
@@ -531,7 +529,7 @@ class TestTheBackstop:
         import opentfraw
 
         scans = _acquisition()
-        scans[3].analyzer = 0
+        scans[7].trailer_event = 1
         opened = []
 
         def raw_file(_path):
@@ -553,7 +551,7 @@ class TestTheBackstop:
         from mascope_thermo.thermo import NoScansFoundError
 
         scans = _acquisition()
-        scans[0].analyzer = 1
+        scans[7].trailer_event = 1
         with pytest.raises(ValueError) as refused:
             enter(scans, build(tmp_path, scans))
         assert not isinstance(refused.value, NoScansFoundError)
