@@ -98,6 +98,39 @@ def test_nothing_is_printed_without_a_rate(stdin):
     assert _load().summarize(stdin) == ""
 
 
+@pytest.mark.parametrize(
+    "filling, low, expected",
+    [(False, False, False), (True, False, True), (False, True, True)],
+    ids=["quiet", "filling", "below the floor"],
+)
+def test_the_warning_covers_a_filling_disk_and_one_below_its_floor(
+    filling, low, expected
+):
+    # The doctor drops `filling` once a disk is low; the warning must not go
+    # up at that moment, so below the floor counts as well.
+    disk = _disk("state", "/", rates=[19.0], days_to_full=5.0)
+    disk.filling, disk.low = filling, low
+    assert _load().disk_warning(_json(_report(disk))) is expected
+
+
+@pytest.mark.parametrize("stdin", ["", "not json", '{"disks": "x"}'])
+def test_no_report_is_no_warning(stdin):
+    assert _load().disk_warning(stdin) is False
+
+
+@pytest.mark.parametrize("filling, code", [(True, 0), (False, 1)])
+def test_the_warning_is_the_exit_status(filling, code):
+    disk = _disk("state", "/", rates=[19.0], days_to_full=5.0)
+    disk.filling = filling
+    result = subprocess.run(
+        [sys.executable, str(SCRIPT), "--warning"],
+        input=_json(_report(disk)),
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == code and result.stdout == ""
+
+
 def test_it_runs_as_doctor_push_runs_it():
     # doctor-push.sh pipes the JSON into the file on the host's python3.
     report = _report(_disk("state", "/", rates=[5.0], days_to_full=80.0))

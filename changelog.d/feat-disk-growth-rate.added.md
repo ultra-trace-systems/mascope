@@ -19,7 +19,9 @@
   until full, the JSON carries them, and a filesystem projected below the
   doctor's floor within `MASCOPE_DOCTOR_MIN_DAYS_TO_FLOOR` days (default 7) is
   flagged `FILLING` and makes it exit 3, a warning: the fleet playbooks let a
-  rollout or reboot window carry on past it, and the Uptime Kuma push
-  (`doctor-push.sh`) reports it as down, with the filesystem nearest to full,
-  its rate and its days until full in the message. Rates appear after a day of
-  history (`docs/maintaining.md`, "Disk space").
+  rollout or reboot window carry on past it. The Uptime Kuma push
+  (`doctor-push.sh`) names the filesystem nearest to full, its rate and its
+  days until full in its message, and can report the warning on a second Push
+  monitor of its own (`FILLING_TOKEN`), down while a disk is filling or below
+  its floor, so the first still goes down for any later failure. Rates appear
+  after a day of history (`docs/maintaining.md`, "Disk space").
