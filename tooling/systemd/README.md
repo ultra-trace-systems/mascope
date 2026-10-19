@@ -90,7 +90,8 @@ history file for its own projection.
 With no configuration it only logs to the journal. Set `HEALTHCHECK_URL` in
 `/etc/mascope/disk-check.env` to get paged when a filesystem is below the
 floor, and `HEALTHCHECK_FILLING_URL` - a **second** check - to get paged for
-the fill-rate warning. They are kept apart because healthchecks.io notifies on
+the fill-rate warning, down while a filesystem is projected to reach the floor
+or is below it. They are kept apart because healthchecks.io notifies on
 a change of state: one check already down for the warning would say nothing
 when the floor is actually crossed. Without the second check the warning is
 journalled and recorded as a `/log` event on the first, which notifies no one.

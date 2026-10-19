@@ -307,11 +307,13 @@ prune_history
 #
 # Two checks, two meanings. HEALTHCHECK_URL goes down only while a filesystem
 # is below the floor; HEALTHCHECK_FILLING_URL, a second check, while one is
-# projected to reach it. healthchecks.io notifies when a check changes state,
-# so a single check already down for the projection would stay silent at the
-# moment the floor is actually crossed. Each check is pinged on every run, so
-# a stalled monitor is noticed on both (healthchecks.io flags a check that
-# stops reporting).
+# projected to reach it or below it already. healthchecks.io notifies when a
+# check changes state, so a single check already down for the projection would
+# stay silent at the moment the floor is actually crossed - and a filling check
+# that counted only the projection would report "recovered" at that moment,
+# since a filesystem below the floor is LOW, not FILLING. Each check is pinged
+# on every run, so a stalled monitor is noticed on both (healthchecks.io flags
+# a check that stops reporting).
 
 ping() { curl -fsS -m 10 --retry 3 "$@" >/dev/null || true; }
 
@@ -330,7 +332,7 @@ if [[ -n "${HEALTHCHECK_URL:-}" ]]; then
     fi
 fi
 if [[ -n "${HEALTHCHECK_FILLING_URL:-}" ]]; then
-    if [[ "$filling_count" -gt 0 ]]; then
+    if [[ $((low_count + filling_count)) -gt 0 ]]; then
         ping "${HEALTHCHECK_FILLING_URL}/fail"
     else
         ping "$HEALTHCHECK_FILLING_URL"
