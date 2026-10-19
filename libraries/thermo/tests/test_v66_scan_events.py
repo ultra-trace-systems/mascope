@@ -21,11 +21,13 @@ import weakref
 from dataclasses import dataclass, field
 
 import numpy as np
+import opentfraw
 import pytest
 from thermo_test_support import NEG_ORBI_FILE_PATH, POS_ORBI_FILE_PATH
 
 from mascope_thermo import v66_scan_events
 from mascope_thermo.backend import OpenTFRawBackend
+from mascope_thermo.run_header import _address_table
 from mascope_thermo.runtime import runtime
 from mascope_thermo.v66_scan_events import (
     UnreadableScanEventsError,
@@ -40,6 +42,8 @@ EXPLORIS = "Orbitrap Exploris 120"
 # header; the rest follow it in this order.
 RUN_HEADER_AT = 0x4000
 RUN_HEADER_SIZE = 7464
+# Where a controller listed before the MS one has its run header.
+OTHER_RUN_HEADER_AT = 0x1000
 SCAN_INDEX_AT = RUN_HEADER_AT + RUN_HEADER_SIZE + 0x100
 
 # An Orbitrap's frequency-to-m/z calibration, as a version-66 event stores
@@ -56,12 +60,16 @@ class Scan:
     name: str = ""
     precursor_mz: float = 0.0
     trailer_event: int | None = 1
+    trailer_segment: int | None = 1
     analyzer: int = 4
     low_mz: float = 40.0
     high_mz: float = 600.0
     hcd_energy: str = "3.00"
     coefficients: tuple = COEFFICIENTS
     profile: list = field(default_factory=lambda: [(1000, [1.0, 5.0, 2.0])])
+    #: Each profile chunk's m/z correction. Real files carry one (packet
+    #: layout 0x80, a three-word chunk header); None writes layout 0.
+    fudge: float | None = None
 
     def record(self) -> bytes:
         preamble = bytearray(136)
@@ -87,14 +95,19 @@ class Scan:
         words = struct.pack("<2d2I", 0.0, 1.0, len(self.profile), 0)
         for first_bin, signal in self.profile:
             words += struct.pack("<2I", first_bin, len(signal))
+            if self.fudge is not None:
+                words += struct.pack("<f", self.fudge)
             words += struct.pack(f"<{len(signal)}f", *signal)
-        header = struct.pack("<8I2f", 0, len(words) // 4, 0, 0, 0, 0, 0, 0, 0, 0)
+        layout = 0 if self.fudge is None else 0x80
+        header = struct.pack("<8I2f", 0, len(words) // 4, 0, layout, 0, 0, 0, 0, 0, 0)
         return header + words
 
     def params(self) -> dict:
         params = {"HCD Energy V:": self.hcd_energy}
         if self.trailer_event is not None:
             params["Scan Event:"] = self.trailer_event
+        if self.trailer_segment is not None:
+            params["Scan Segment:"] = self.trailer_segment
         return params
 
 
@@ -102,7 +115,7 @@ def _text(value: str = "") -> bytes:
     return struct.pack("<I", len(value)) + value.encode("utf-16-le")
 
 
-def _front(data_addr: int, version: int) -> bytes:
+def _front(data_addr: int, version: int, run_headers=(RUN_HEADER_AT, 0)) -> bytes:
     """The front of a raw file, up to the end of its address table."""
     file_header = bytearray(1356)
     struct.pack_into("<H", file_header, 0, 0xA101)
@@ -110,9 +123,10 @@ def _front(data_addr: int, version: int) -> bytes:
     struct.pack_into("<I", file_header, 36, version)
     seq_row = bytes(64) + _text() * 16 + bytes(4) + _text() * 15
     autosampler = bytes(24) + _text()
-    info = bytes(20) + struct.pack("<7I", 1, 0, 1, 0, 0, 0, 0)
-    table = struct.pack("<QII", data_addr, 0, 0) + struct.pack(
-        "<QIIQII", RUN_HEADER_AT, 0, 0, 0, 0, 0
+    controllers = sum(1 for address in run_headers if address)
+    info = bytes(20) + struct.pack("<7I", 1, 0, controllers, 0, 0, 0, 0)
+    table = struct.pack("<QII", data_addr, 0, 0) + b"".join(
+        struct.pack("<QII", address, 0, 0) for address in run_headers
     )
     return bytes(file_header) + seq_row + autosampler + info + bytes(760) + table
 
@@ -123,10 +137,13 @@ def build(
     version: int = 66,
     records: bytes | None = None,
     name: str = "built.raw",
+    other_controller_first: bool = False,
 ) -> str:
     """Write a raw file holding ``scans``, and return its path.
 
     ``records`` replaces the scan-event stream the scans would make.
+    ``other_controller_first`` lists a controller with no scan events and
+    scan data of its own (a UV detector, say) before the MS controller.
     """
     stream = records if records is not None else b"".join(s.record() for s in scans)
     data_addr = SCAN_INDEX_AT + 88 * len(scans) + 0x100
@@ -147,7 +164,14 @@ def build(
     )
 
     image = bytearray(params_addr + 64)
-    front = _front(data_addr, version)
+    run_headers = (RUN_HEADER_AT, 0)
+    if other_controller_first:
+        other = bytearray(RUN_HEADER_SIZE)
+        struct.pack_into("<2I", other, 8, 1, 3)
+        struct.pack_into("<2Q", other, 7408, 0x100, data_addr + 8)
+        image[OTHER_RUN_HEADER_AT : OTHER_RUN_HEADER_AT + RUN_HEADER_SIZE] = other
+        run_headers = (OTHER_RUN_HEADER_AT, RUN_HEADER_AT)
+    front = _front(data_addr, version, run_headers)
     image[: len(front)] = front
     image[RUN_HEADER_AT : RUN_HEADER_AT + RUN_HEADER_SIZE] = run_header
     image[SCAN_INDEX_AT : SCAN_INDEX_AT + len(index)] = index
@@ -305,6 +329,50 @@ class TestWhichFilesItEngages:
         assert _misread_layout(str(path)) is None
         assert _misread_layout(str(tmp_path / "absent.raw")) is None
 
+    def test_a_named_record_after_many_unnamed_ones(self, tmp_path):
+        # One named record in 41: the stream's floor average is 272, so
+        # OpenTFRaw reads the first 40 records right and drifts from the 41st.
+        scans = [Scan() for _ in range(40)] + [_tms2(484.2389, "C6H5NO+")]
+        assert _misread_layout(build(tmp_path, scans)) is not None
+
+    def test_a_controller_listed_before_the_ms_one_is_passed_over(self, tmp_path):
+        # OpenTFRaw reads the first run header whose trailer counts scan
+        # events, or whose scan data address is the file's; this one has
+        # neither.
+        path = build(tmp_path, _acquisition(), other_controller_first=True)
+        layout = _misread_layout(path)
+
+        assert layout is not None
+        assert layout.scan_index_addr == SCAN_INDEX_AT
+
+
+class TestWhatKeepsAFileOnTheReader:
+    """An engaged layout the reader does not agree with is left to it."""
+
+    def test_a_reader_that_counts_other_scans(self, tmp_path):
+        scans = _acquisition()
+        raw = MisreadRawFile(scans)
+        raw.num_scans = len(scans) + 1
+        assert redecode_if_misread(raw, build(tmp_path, scans)) is raw
+
+    def test_a_scan_table_with_a_gap(self, tmp_path):
+        scans = _acquisition()
+        raw = MisreadRawFile(scans)
+        table = raw.scan_table()
+        table["scan_number"][4] = 99
+        raw.scan_table = lambda: table
+        assert redecode_if_misread(raw, build(tmp_path, scans)) is raw
+
+    def test_a_file_the_reader_reads_as_srm(self, tmp_path):
+        # A first scan this small is OpenTFRaw's mark of a flat-peak file,
+        # whose filters it builds without the scan events.
+        scans = _acquisition()
+        raw = MisreadRawFile(scans)
+        table = raw.scan_table()
+        table["data_size"][0] = 50
+        raw.scan_table = lambda: table
+        assert redecode_if_misread(raw, build(tmp_path, scans)) is raw
+
 
 class TestWhatItReads:
     def test_each_scan_reads_from_its_own_event(self, tmp_path, enter):
@@ -336,6 +404,12 @@ class TestWhatItReads:
         assert row["extra"]["opentfraw.is_dia"] == "true"
         assert backend.ms2_events_by_scan()[7] == (452.249, "hcd3.00")
 
+        record = backend._raw.scan(7)
+        assert record["ms_level"] == 2
+        assert record["precursor_mz"] == 452.2490
+        assert record["extra"]["opentfraw.is_dia"] == "true"
+        np.testing.assert_array_equal(record["mz"], [100.0])  # the reader's peaks
+
     def test_a_survey_scan_has_no_precursor(self, tmp_path, enter):
         scans = _acquisition()
         row = enter(scans, build(tmp_path, scans))._all_scans()[0]
@@ -354,18 +428,22 @@ class TestWhatItReads:
         assert row["retention_time"] == 4 / 60
         assert row["total_ion_current"] == 1.0
 
-    def test_the_profile_is_put_on_its_own_events_calibration(self, tmp_path, enter):
+    @pytest.mark.parametrize("fudge", [None, 0.25], ids=["layout-0", "layout-0x80"])
+    def test_the_profile_is_put_on_its_own_events_calibration(
+        self, tmp_path, enter, fudge
+    ):
         signal = [1.0, 5.0, 2.0]
         scans = _acquisition()
         scans[2] = Scan(
             coefficients=(0.0, 0.0, 0.5, 2.0e8, 1.0e12),
             profile=[(1000, signal), (2000, [3.0])],
+            fudge=fudge,
         )
         backend = enter(scans, build(tmp_path, scans))
         mz, intensity = backend._raw.profile(3)
 
         freq = np.array([1000.0, 1001.0, 1002.0, 2000.0])
-        expected = 0.5 + 2.0e8 / freq**2 + 1.0e12 / freq**4
+        expected = 0.5 + 2.0e8 / freq**2 + 1.0e12 / freq**4 + (fudge or 0.0)
         np.testing.assert_allclose(mz, expected, rtol=1e-15)
         np.testing.assert_array_equal(intensity, signal + [3.0])
         assert intensity.dtype == np.float64
@@ -405,6 +483,18 @@ class TestTheBackstop:
         backend = enter(scans, build(tmp_path, scans))
 
         assert len(backend.scan_indices(ms_type="Ms2")) == 5
+
+    def test_one_event_number_in_two_segments_is_no_refusal(self, tmp_path, enter):
+        # A method numbers its events within each segment: event 1 is the
+        # survey scan of the first and a targeted scan of the second.
+        scans = [Scan(trailer_segment=1, trailer_event=1) for _ in range(4)]
+        scans.append(_tms2(484.2389, "C6H5NO+", trailer_segment=1))
+        scans += [_tms2(452.2490, "C7H7NO2+", trailer_segment=2) for _ in range(3)]
+        for scan in scans[5:]:
+            scan.trailer_event = 1
+        backend = enter(scans, build(tmp_path, scans))
+
+        assert backend.scan_indices(ms_type="Ms2") == [5, 6, 7, 8]
 
     def test_an_analyzer_an_orbitrap_only_instrument_has_not(self, tmp_path, enter):
         scans = _acquisition()
@@ -548,3 +638,32 @@ def _event(ms_power, *, scan_mode=0, analyzer=4, activation=0, reactions=()):
 def test_the_filter_reads_as_opentfraw_renders_it(event, window, params, expected):
     """OpenTFRaw 2.0.0's own ``build_filter`` cases (``scan_filter.rs``)."""
     assert v66_scan_events._scan_filter(event, *window, params) == expected
+
+
+@pytest.mark.parametrize("path", [POS_ORBI_FILE_PATH, NEG_ORBI_FILE_PATH])
+def test_read_by_its_records_a_committed_file_reads_as_opentfraw_reads_it(path):
+    """The committed files' records are unnamed, so OpenTFRaw reads them
+    right: the stand-in forced onto them must answer exactly as it does, on
+    the packet layout and the trailers real files have."""
+    with open(path, "rb") as f:
+        _, data_addr, addresses = _address_table(f)
+        first, last, n_events, scan_index_addr, start, end = (
+            v66_scan_events._ms_run_header(f, addresses, data_addr)
+        )
+        f.seek(start)
+        records = v66_scan_events._walk_named_records(f, end - start, n_events)
+    layout = v66_scan_events._Layout(
+        data_addr, scan_index_addr, last - first + 1, tuple(records)
+    )
+    raw = opentfraw.RawFile(path)
+    stand_in = v66_scan_events._RedecodedRawFile(raw, path, layout, raw.scan_table())
+
+    assert stand_in.scan_table() == raw.scan_table()
+    for n in raw.scan_table()["scan_number"]:
+        assert stand_in.scan_filter(n) == raw.scan_filter(n)
+        ours, theirs = stand_in.scan(n), raw.scan(n)
+        for key in ("mz", "intensity"):
+            np.testing.assert_array_equal(ours.pop(key), theirs.pop(key))
+        assert ours == theirs
+        for mine, its in zip(stand_in.profile(n), raw.profile(n)):
+            np.testing.assert_array_equal(mine, its)

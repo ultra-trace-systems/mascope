@@ -42,7 +42,7 @@ The scan index, the trailer and the centroids are read from elsewhere and are ri
 Until the pinned reader reads these records, the OpenTFRaw backend reads them itself (`mascope_thermo.v66_scan_events`, called once from `OpenTFRawBackend.__enter__`).
 It engages only for a file whose records, walked by their own counts, end exactly at the stream's end, whose names read as text, and whose record boundaries differ from the ones OpenTFRaw reads; every other file gets the `RawFile` as opened.
 For an engaged file the backend's reader re-derives the scan table's event-dependent keys, `scan_filter()` in OpenTFRaw's grammar, and the m/z axis of `profile()`, each from the scan's own event.
-It logs one warning per file and process, and refuses a file whose events still cannot be right, with `UnreadableScanEventsError` (a `ValueError`, so its text reaches the file's status): a scan of an Orbitrap-only instrument read as another analyzer, or the scans of one nonzero trailer `Scan Event:` read as more than one MS order.
+It logs one warning per file and process, and refuses a file whose events still cannot be right, with `UnreadableScanEventsError` (a `ValueError`, so its text reaches the file's status): a scan of an Orbitrap-only instrument read as another analyzer, or the scans of one nonzero trailer `Scan Event:` of one `Scan Segment:` read as more than one MS order.
 Polarity is not compared within an event, since a polarity-switching full scan alternates under one.
 The module and its call site go once the reader is fixed (MAS-170).
 
