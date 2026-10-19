@@ -59,27 +59,52 @@ pull request that
   that stands under `[Unreleased]`);
 - writes an entry that is already in `CHANGELOG.md` or another fragment.
 
-### A branch with an entry in `CHANGELOG.md`
-
-A branch that still has an entry under `[Unreleased]` - one opened before the
-fragments, say - conflicts on `CHANGELOG.md` when it is rebased. Resolve that
-conflict **keeping both sides**, not by taking develop's side, which drops the
-branch's own entry. Then run
-
-```sh
-uv run python tooling/changelog.py extract
-```
-
-It moves every entry under `[Unreleased]` into a fragment named after the
-branch and leaves only the note under the heading. It leaves out the entries
-that `CHANGELOG.md` or another fragment holds already, which is what the
-entries a both-sides resolution brings back from develop are. Run it after the
-rebase, not before: before it, `[Unreleased]` also holds entries the branch
-inherited from develop, which develop has since moved into fragments of their
-own, and `extract` would file them under the branch's name too.
-
 On a pull request into `master`, which releases what it carries, the check
 also fails while any fragment is left uncompiled.
+
+### A branch with an entry in `CHANGELOG.md`
+
+A branch that still writes its entry under `[Unreleased]` (one opened before
+the fragments, or one that edited `CHANGELOG.md` by mistake) moves it into a
+fragment once, after rebasing onto develop:
+
+1. `git rebase origin/develop`. If it stops on `CHANGELOG.md`, resolve that
+   conflict **keeping both sides**: taking develop's side alone drops the
+   branch's own entry. Then finish the rebase. It may not stop at all, since
+   git can merge an entry under `[Unreleased]` without a conflict, which is
+   why the next step asks the check rather than the rebase.
+2. Run `uv run python tooling/changelog.py check`. If it says `[Unreleased]`
+   has been edited, run
+
+   ```sh
+   uv run python tooling/changelog.py extract
+   ```
+
+   It moves every entry under `[Unreleased]` into a fragment named after the
+   branch and leaves only the note under the heading. It leaves out the
+   entries that `CHANGELOG.md` or another fragment holds already, which is
+   what the entries a both-sides resolution brings back from develop are.
+3. Fold that into the commit that added the entry, so every commit passes on
+   its own: pull requests are rebase-merged, so each commit lands on develop
+   as written.
+
+   ```sh
+   git add CHANGELOG.md changelog.d/
+   git commit --fixup=<the commit that added the entry>
+   GIT_SEQUENCE_EDITOR=: git rebase -i --autosquash origin/develop
+   ```
+
+   `GIT_SEQUENCE_EDITOR=:` takes the todo list as git writes it, so nothing
+   opens an editor; git before 2.44 needs `-i` for `--autosquash`. Afterwards
+   `git diff origin/develop -- CHANGELOG.md` is empty and the check passes.
+
+Run `extract` after the rebase, not before: before it, `[Unreleased]` also
+holds entries the branch inherited from develop, which develop has since
+moved into fragments of their own, and `extract` would file them under the
+branch's name too. In a rebase that stopped on `CHANGELOG.md`, `extract`
+works as well and names the fragment after the branch being rebased; then
+`git add` and `git rebase --continue` put the fragment into the commit being
+replayed.
 
 ## Cutting a release
 

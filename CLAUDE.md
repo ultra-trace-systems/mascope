@@ -157,12 +157,16 @@ Feature) carries the kind. Milestones are not used.
   `uv run python tooling/changelog.py compile X.Y.Z`. The "Lint and format"
   check runs `tooling/changelog.py check` and fails a PR that writes under
   `[Unreleased]` or adds a fragment that would not compile. A branch that
-  still has an entry there, from before the fragments, conflicts on
-  `CHANGELOG.md` when rebased: resolve it **keeping both sides** - taking
-  develop's side alone drops the branch's entry - then run
-  `uv run python tooling/changelog.py extract`, which files the branch's
-  entry and leaves out the ones develop already has as fragments.
-  `changelog.d/README.md` has the details.
+  still has an entry there, from before the fragments, moves it once after
+  rebasing onto develop. Resolve a `CHANGELOG.md` conflict **keeping both
+  sides** (taking develop's side alone drops the branch's entry) and finish
+  the rebase, which may also go through with no conflict at all. Then, if
+  `tooling/changelog.py check` flags `[Unreleased]`, run
+  `uv run python tooling/changelog.py extract` (it leaves out the entries
+  develop already has as fragments) and fold the result into the commit that
+  added the entry with `git commit --fixup` and an autosquash rebase, so
+  every commit still passes. "A branch with an entry in `CHANGELOG.md`" in
+  `changelog.d/README.md` has the exact commands.
 - **Anonymize commit messages and PR descriptions** - this repository is public,
   so text pushed to GitHub must never contain real instrument names or IDs,
   customer names, internal or customer server hostnames, tailnet/LAN addresses,
