@@ -1,11 +1,16 @@
 """
-The disk fill-rate suffix of doctor-push.sh's Uptime Kuma message.
+The disk part of doctor-push.sh's Uptime Kuma heartbeats.
 
-Reads `mascope prod doctor --json` on stdin and prints, for the filesystem
-nearest to full, its label, its faster fill rate and the days until it is
-full, e.g. "_filestore_fill19.0GiBperday_full21d". Prints nothing when no
-filesystem has a rate yet, the input is not a doctor report, or the doctor
+Reads `mascope prod doctor --json` on stdin. By default it prints, for the
+filesystem nearest to full, its label, its faster fill rate and the days until
+it is full, e.g. "_filestore_fill19.0GiBperday_full21d". It prints nothing when
+no filesystem has a rate yet, the input is not a doctor report, or the doctor
 predates fill rates - the message then simply goes without one.
+
+With --warning it prints nothing and exits 0 when the disk warning monitor
+should be down - a filesystem is filling toward its floor or already below it -
+and 1 otherwise. The doctor's own exit code cannot say this: an unhealthy stack
+exits 1 whether or not a disk is also filling.
 
 Runs on the host's python3 (standard library only, any 3.x a supported Ubuntu
 ships), not the CLI's interpreter. The CLI tests import it and feed it the
@@ -17,13 +22,20 @@ import json
 import sys
 
 
-def summarize(report_json):
-    """The message suffix for a doctor JSON report, or "" when there is none."""
+def _disks(report_json):
+    """The report's disks, or [] when the input is not a doctor report."""
     try:
         disks = json.loads(report_json)["disks"]
     except (ValueError, TypeError, KeyError):
-        return ""
-    with_rates = [d for d in disks if isinstance(d, dict) and d.get("rates")]
+        return []
+    if not isinstance(disks, list):
+        return []
+    return [d for d in disks if isinstance(d, dict)]
+
+
+def summarize(report_json):
+    """The message suffix for a doctor JSON report, or "" when there is none."""
+    with_rates = [d for d in _disks(report_json) if d.get("rates")]
     if not with_rates:
         return ""
 
@@ -45,5 +57,20 @@ def summarize(report_json):
     return suffix
 
 
+def disk_warning(report_json):
+    """
+    Whether a filesystem is projected below its floor within the doctor's
+    horizon, or is below it already.
+
+    Below the floor counts too: the doctor stops flagging a disk as filling once
+    it is low, and a warning monitor that went up at that moment would read as
+    "recovered" just as the disk ran out.
+    """
+    return any(d.get("filling") or d.get("low") for d in _disks(report_json))
+
+
 if __name__ == "__main__":
-    sys.stdout.write(summarize(sys.stdin.read()))
+    report = sys.stdin.read()
+    if sys.argv[1:] == ["--warning"]:
+        sys.exit(0 if disk_warning(report) else 1)
+    sys.stdout.write(summarize(report))
