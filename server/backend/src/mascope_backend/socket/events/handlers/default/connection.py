@@ -47,6 +47,14 @@ async def connect(sid: str, environ: dict) -> bool:
     :rtype: bool
     """
     worker_pid = os.getpid()
+    # Keeps the session, and what eviction finds the socket by, alive while
+    # the tab only listens (see storage_config.session_renewal_interval).
+    # Started for every connection, not only one authenticated here: the SPA
+    # connects before sign-in, and the login route authenticates the socket
+    # later from its X-SID header, possibly on another worker. The renewal has
+    # to live on the worker holding the connection, and a tick with no
+    # session yet simply finds nothing to refresh.
+    start_session_renewal(sid)
     try:
         # --- Get cookies from environment ---
         cookies = environ.get("HTTP_COOKIE")
@@ -60,9 +68,6 @@ async def connect(sid: str, environ: dict) -> bool:
         await authenticate_socket_connection(
             sid=sid, token=jwt_token, minimum_role="guest"
         )
-        # Keeps the session, and what eviction finds the socket by, alive while
-        # the tab only listens (see storage_config.session_renewal_interval).
-        start_session_renewal(sid)
         runtime.logger.debug(
             f"Socket server: user's socket client {sid} connected [Worker {worker_pid}]"
         )
