@@ -29,7 +29,7 @@ from mascope_thermo import v66_scan_events
 from mascope_thermo.backend import OpenTFRawBackend
 from mascope_thermo.run_header import _address_table
 from mascope_thermo.runtime import runtime
-from mascope_thermo.thermo import MisreadScanEventsError
+from mascope_thermo.scan_events import MisreadScanEventsError
 from mascope_thermo.v66_scan_events import (
     UnreadableScanEventsError,
     _misread_layout,
@@ -212,9 +212,9 @@ class MisreadRawFile:
             "is_wideband": False,
             "polarity": "-",
             "scan_mode": "centroid",
-            "analyzer": "ITMS",
+            "analyzer": "SQMS",
             "retention_time": scan_number / 60,
-            "filter_string": "ITMS - c EI Full ms8",
+            "filter_string": "SQMS - c EI Full ms8",
             "total_ion_current": 1.0,
             "low_mz": scan.low_mz,
             "high_mz": scan.high_mz,
@@ -232,7 +232,7 @@ class MisreadRawFile:
         }
 
     def scan_filter(self, scan_number: int) -> str | None:
-        return "ITMS - c EI Full ms8" if 1 <= scan_number <= self.num_scans else None
+        return "SQMS - c EI Full ms8" if 1 <= scan_number <= self.num_scans else None
 
     def scan_parameters(self, scan_number: int) -> dict:
         return self.scans[scan_number - 1].params()
@@ -500,7 +500,7 @@ class TestTheBackstop:
     def test_the_analyzers_judged_are_the_ones_read_by_the_records(
         self, tmp_path, enter
     ):
-        # The reader the stand-in wraps reads every scan as ITMS, which the
+        # The reader the stand-in wraps reads every scan as SQMS, which the
         # backend refuses on an Orbitrap-only instrument; the stand-in's own
         # reading, all FTMS, is what it judges.
         scans = _acquisition()
@@ -508,13 +508,33 @@ class TestTheBackstop:
 
         assert {s["analyzer"] for s in backend._all_scans()} == {"FTMS"}
 
-    def test_an_analyzer_read_by_the_records_is_still_judged(self, tmp_path, enter):
+    def test_an_analyzer_no_orbitrap_instrument_has(self, tmp_path, enter):
+        # Judged by the rule the backend judges every file by, and refused
+        # where this module's refusals are: on opening, naming the cause.
+        scans = _acquisition()
+        scans[3].analyzer = 2  # SQMS
+        with pytest.raises(UnreadableScanEventsError) as refused:
+            enter(scans, build(tmp_path, scans))
+
+        message = str(refused.value)
+        assert "inclusion list" in message
+        assert "1 of its 10 scans read as an analyzer no Orbitrap instrument has" in (
+            message
+        )
+        assert EXPLORIS in message
+        assert "#2391" in message
+
+    def test_an_ion_trap_scan_read_by_the_records_is_not_refused(self, tmp_path, enter):
         scans = _acquisition()
         scans[3].analyzer = 0  # ITMS
         backend = enter(scans, build(tmp_path, scans))
 
-        with pytest.raises(MisreadScanEventsError, match="1 of its 10 scans"):
-            backend.polarities()
+        assert backend._all_scans()[3]["analyzer"] == "ITMS"
+
+    def test_a_refusal_is_one_a_caller_handles_for_every_file(self):
+        # What the backend refuses any file with, so a caller names one class
+        # and nothing changes for it when this module goes (MAS-170).
+        assert issubclass(UnreadableScanEventsError, MisreadScanEventsError)
 
     def test_one_event_read_as_two_ms_orders(self, tmp_path, enter):
         scans = _acquisition()
@@ -576,6 +596,25 @@ class TestTheWarning:
         assert len(messages) == 1
         assert "5 of its records carry inclusion-list names" in messages[0]
         assert "#2391" in messages[0]
+
+    def test_none_for_a_file_it_refuses(self, tmp_path, enter, monkeypatch):
+        # Refused before it is read, so nothing reports a file read past
+        # OpenTFRaw that was then not processed.
+        monkeypatch.setattr(v66_scan_events, "_warned", set())
+        messages: list[str] = []
+        sink = runtime.logger.add(
+            lambda message: messages.append(message.record["message"]),
+            level="WARNING",
+        )
+        try:
+            scans = _acquisition()
+            scans[3].analyzer = 2
+            with pytest.raises(UnreadableScanEventsError):
+                enter(scans, build(tmp_path, scans))
+        finally:
+            runtime.logger.remove(sink)
+
+        assert messages == []
 
     def test_none_for_a_file_it_does_not_engage(self, tmp_path):
         raw = object()

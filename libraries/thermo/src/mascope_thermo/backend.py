@@ -27,7 +27,7 @@ import importlib.metadata
 import math
 import os
 import re
-from collections.abc import Callable, Iterable, Iterator, Sequence
+from collections.abc import Callable, Iterable, Iterator
 from datetime import datetime
 from typing import Literal, Protocol, runtime_checkable
 
@@ -35,6 +35,7 @@ import numpy as np
 
 from mascope_thermo import v66_scan_events
 from mascope_thermo.run_header import records_no_run_header
+from mascope_thermo.scan_events import refuse_misread_analyzers
 from mascope_thermo.scan_filter import parse_scan_filter
 
 
@@ -931,45 +932,6 @@ def _raise_if_unfinished(datafile_path: str, cause: BaseException) -> None:
     ) from cause
 
 
-# Instrument models whose only analyzer is an Orbitrap, as OpenTFRaw names
-# them: the Exploris family and the Q Exactive family.
-_ORBITRAP_ONLY_MODELS = ("Exploris", "Exactive")
-
-
-def _refuse_misread_analyzers(
-    model: str | None, analyzers: Sequence[str | None]
-) -> None:
-    """Refuse a file whose scans read as an analyzer its instrument has not.
-
-    OpenTFRaw derives a scan's analyzer, polarity, MS order and filter, and
-    the calibration it converts the scan's profile to m/z with, from the
-    scan's event. Events read from the wrong bytes give noise that nothing
-    tells apart from data, except where it names an analyzer the instrument
-    does not have. Every scan of an Orbitrap-only instrument is FTMS, so one
-    that is not means the file's events are misread, whatever the cause, and
-    the file is refused rather than read on them. An instrument with other
-    analyzers, or one OpenTFRaw cannot name, is not judged.
-
-    :param model: The instrument model, as OpenTFRaw names it.
-    :param analyzers: Every scan's analyzer, as ``scan_table()`` reads it.
-    :raises MisreadScanEventsError: When a scan of an Orbitrap-only
-        instrument reads as another analyzer, or as none.
-    """
-    if not model or not any(name in model for name in _ORBITRAP_ONLY_MODELS):
-        return
-    foreign = sum(1 for analyzer in analyzers if analyzer != "FTMS")
-    if not foreign:
-        return
-    from mascope_thermo.thermo import MisreadScanEventsError
-
-    raise MisreadScanEventsError(
-        "The scan events of this file cannot be read: "
-        f"{foreign} of its {len(analyzers)} scans read as an analyzer other "
-        f"than the Orbitrap, the only one the {model} has, so the raw-file "
-        "reader has misread them (GitHub issue #2394)."
-    )
-
-
 class ThermoBackend:
     """:class:`ReaderBackend` backed by Thermo RawFileReader via pythonnet.
 
@@ -1578,11 +1540,11 @@ class OpenTFRawBackend:
         opening a file costs what it did and every selection is judged.
 
         :raises MisreadScanEventsError: When the file's scan events are
-            misread (:func:`_refuse_misread_analyzers`).
+            misread (:mod:`mascope_thermo.scan_events`).
         """
         if self._scans is None:
             table = self._raw.scan_table()
-            _refuse_misread_analyzers(
+            refuse_misread_analyzers(
                 self._raw.instrument_model, table.get("analyzer", ())
             )
             columns = list(table)

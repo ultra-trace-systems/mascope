@@ -19,6 +19,7 @@ from mascope_backend.file_converter.errors import (
 )
 from mascope_signal.instrument_func.fit import ORBI_FIT_DMZ
 from mascope_thermo.backend import open_backend
+from mascope_thermo.scan_events import MisreadScanEventsError
 from mascope_thermo.streams import pooled_ms1_streams, scan_streams
 from mascope_thermo.thermo import (
     NoScansFoundError,
@@ -116,10 +117,14 @@ class RawProcessor(BaseFileProcessor):
         Sampled from the per-scan trailer; see
         ``ReaderBackend.acquisition_parameters``. Capturing this must never cost
         us a file, so any reader failure degrades to an empty dict and a
-        warning rather than failing ingestion.
+        warning rather than failing ingestion - except a file whose scan
+        events the reader misread, which is refused: the refusal is the
+        file's, not the census's.
 
         :return: Acquisition parameter summary, or {} if unavailable
         :rtype: dict
+        :raises MisreadScanEventsError: When the file's scan events are
+            misread (:mod:`mascope_thermo.scan_events`).
         """
         try:
             return self.file_handle.acquisition_parameters()
@@ -136,6 +141,12 @@ class RawProcessor(BaseFileProcessor):
                 self.file_to_process,
             )
             return {}
+        except MisreadScanEventsError:
+            # Not degraded like the failures below: this property is read
+            # before the one that would fail the file, so the refusal would
+            # reach error monitoring as a warning traceback first, and the
+            # file would then be refused all the same.
+            raise
         except Exception:
             _log.warning(
                 "Could not read acquisition parameters for %s",
@@ -153,7 +164,8 @@ class RawProcessor(BaseFileProcessor):
 
         See :func:`mascope_thermo.streams.scan_streams`. A census like
         ``acquisition_params``, so it must never cost us a file either: a
-        reader failure degrades to an empty list and a warning.
+        reader failure degrades to an empty list and a warning, and a file
+        whose scan events the reader misread is refused, as there.
 
         Peak detection pools every MS1 scan of a polarity into one peak list,
         so a polarity whose MS1 scans come from more than one stream is logged
@@ -162,9 +174,13 @@ class RawProcessor(BaseFileProcessor):
 
         :return: One dict per stream, or [] if unavailable
         :rtype: list[dict]
+        :raises MisreadScanEventsError: When the file's scan events are
+            misread (:mod:`mascope_thermo.scan_events`).
         """
         try:
             streams = scan_streams(self.file_handle)
+        except MisreadScanEventsError:
+            raise
         except Exception:
             _log.warning(
                 "Could not take the scan stream census of %s",
