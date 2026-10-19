@@ -4,8 +4,9 @@
   working through the SDK presents it as the `ai-agent` service
   (`MascopeClient(service_name="ai-agent")`): it opens the same routes a
   notebook's token opens, with the same person's permissions, and nothing
-  more, but under a name of its own. The backend's access log now records the
-  service an API token was minted for on every request it authenticates
-  (`service_name`, empty for the web app's session), so an agent's requests
+  more, but under a name of its own; that includes changing and deleting what
+  the person's role allows. The backend's access log now records the service
+  an API token was minted for on every request that presents it under that
+  name (`service_name`, empty for the web app's session), so an agent's requests
   are told apart from the person's own. It does not pair; generating it leaves
   the notebook token working.

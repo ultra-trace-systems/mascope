@@ -319,8 +319,9 @@ async def logger_middleware(request: Request, call_next):
     client_host = client_ip(request)
 
     # The service an API token was minted for, set by get_enabled_backends
-    # once the token and its X-Service-Name agree; None for the web app's
-    # session and for a request no token authenticated.
+    # once the token's service and the request's X-Service-Name agree, before
+    # the token is otherwise checked (a refused token is named too); None for
+    # the web app's session and for a token whose service did not match.
     service_name = getattr(request.state, "token_service_name", None)
 
     with runtime.logger.contextualize(
