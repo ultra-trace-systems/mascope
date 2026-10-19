@@ -140,8 +140,7 @@ describe('acquisition store: the look-back of a status filter', () => {
   })
 })
 
-// The list used to open on the last day only, and on a server whose files
-// were older than that it opened empty. It opens on a week now, and All time
+// The list opens on a week unless the deployment says otherwise, and All time
 // is a range of its own: the range route with neither end.
 describe('acquisition store: the time range', () => {
   it('opens on the last 7 days when the deployment configures nothing', async () => {
@@ -278,6 +277,9 @@ const row = (id, status) => ({
 })
 const answer = (...rows) => ({ data: { data: rows, results: rows.length } })
 
+// The debounce behind a server-event refresh, with room to spare.
+const RELOAD_WAIT_AND_SOME_MS = 400
+
 // The pane has to tell an empty answer from no answer yet, and from a request
 // that failed: only the first earns the empty state and its offer to widen
 // the range.
@@ -330,6 +332,68 @@ describe('acquisition store: whether the list has an answer', () => {
     expect(store.loaded).toBe(true)
     expect(store.list).toHaveLength(1)
     error.mockRestore()
+  })
+
+  // The range route fails the same way as the recent one: under All time or a
+  // date range a failure must still end in the error, not in a spinner that
+  // never goes.
+  it('says why a range load failed too', async () => {
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const store = useAcquisition()
+    store.setTimeMode('All time')
+    await nextTick()
+
+    api.http.get.mockRejectedValueOnce(new Error('offline'))
+    await store.load()
+    expect(lastRequest()[0]).toBe('/sample/files')
+    expect(store.loadError).toBeInstanceOf(Error)
+    expect(store.pending).toBe(false)
+
+    store.time.range.min = new Date('2026-09-01T00:00:00Z')
+    await nextTick()
+    api.http.get.mockRejectedValueOnce(new Error('offline'))
+    await store.load()
+    expect(store.loadError).toBeInstanceOf(Error)
+    error.mockRestore()
+  })
+
+  // A refresh a server event asks for leaves `pending` down: the list stays
+  // on screen as it is until the answer replaces it, where an empty list
+  // would otherwise flicker into a spinner on every file arriving outside
+  // the range.
+  it('is not pending during a refresh a server event asked for', async () => {
+    vi.useFakeTimers()
+    try {
+      const store = useAcquisition()
+      api.http.get.mockResolvedValueOnce(answer())
+      await store.load()
+      expect(store.loaded).toBe(true)
+      api.http.get.mockClear()
+
+      handler('acquisition_created')({ record: { instrument: 'Orbi-1' } })
+      vi.advanceTimersByTime(RELOAD_WAIT_AND_SOME_MS)
+      expect(api.http.get).toHaveBeenCalledTimes(1)
+      expect(store.pending).toBe(false)
+
+      handler('acquisition_deleted')({ record_id: 'sf-gone' })
+      expect(api.http.get).toHaveBeenCalledTimes(2)
+      expect(store.pending).toBe(false)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('is pending during a load the user asked for', async () => {
+    const store = useAcquisition()
+    let settle
+    api.http.get.mockImplementationOnce(() => new Promise((resolve) => (settle = resolve)))
+
+    const loading = store.load()
+    expect(store.pending).toBe(true)
+
+    settle(answer())
+    await loading
+    expect(store.pending).toBe(false)
   })
 })
 

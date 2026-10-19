@@ -587,7 +587,13 @@ const currentPageReportTemplate =
               </template>
             </DataTable>
             <div v-if="!pageCount" class="center empty-list" style="min-height: 150px">
-              <div v-if="app.data.acquisition.loadError" class="col" style="gap: 0.75rem">
+              <!-- A retry in flight shows the spinner, not the failure it is
+                   retrying. -->
+              <div
+                v-if="app.data.acquisition.loadError && !app.data.acquisition.pending"
+                class="col"
+                style="gap: 0.75rem"
+              >
                 <i class="info-line">
                   <span class="pi pi-exclamation-triangle" /><span
                     >Could not load the raw files</span

@@ -192,8 +192,8 @@ const tabs = computed(() => [
                    never show the reason it is disabled. The role and keyboard
                    handling are PrimeVue's own either way; the disabled state
                    is not, since Tab only puts it on a button, so it is said
-                   here, and the reason with it, for a reader the tooltip
-                   never reaches. -->
+                   here, and the reason is given after the list as the tab's
+                   description, for a reader the tooltip never reaches. -->
               <Tab
                 v-for="tab in tabs"
                 :value="tab.value ?? tab.label.toLowerCase()"
@@ -213,11 +213,19 @@ const tabs = computed(() => [
                 <div class="row">
                   <span :class="tab.icon" /><span>{{ tab.label }}</span>
                 </div>
-                <span v-if="tab.disabled" :id="reasonId(tab)" class="tab-reason">
-                  {{ tab.reason }}
-                </span>
               </Tab>
             </TabList>
+            <!-- What a disabled tab is described by. Outside the tabs: text
+                 inside one joins the tab's accessible name, so the reason
+                 would be read as part of the name and again as the
+                 description. A hidden element still serves aria-describedby. -->
+            <span
+              v-for="tab in tabs.filter((tab) => tab.disabled)"
+              :key="tab.label"
+              :id="reasonId(tab)"
+              hidden
+              >{{ tab.reason }}</span
+            >
             <TabPanels>
               <TabPanel value="raw files">
                 <PaneTabAcquisitions :active="app.ui.tab.active == 'raw files'" />
@@ -283,18 +291,6 @@ article {
 #charts :deep(.p-tab.p-disabled) {
   pointer-events: auto;
   cursor: not-allowed;
-}
-
-/* The reason a tab is disabled, for assistive tech: the tooltip is for the
-   pointer. Kept out of the layout rather than display: none, which would take
-   it out of the accessibility tree as well. */
-.tab-reason {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  overflow: hidden;
-  clip-path: inset(50%);
-  white-space: nowrap;
 }
 
 menu {

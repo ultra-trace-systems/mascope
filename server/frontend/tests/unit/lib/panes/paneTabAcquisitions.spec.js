@@ -523,6 +523,20 @@ describe('PaneTabAcquisitions', () => {
       expect(mocks.app.data.acquisition.load).toHaveBeenCalled()
     })
 
+    // The failure stays recorded until an answer lands, so a retry in flight
+    // has both the error and a request out: the spinner is what shows.
+    it('shows the spinner, not the failure, while a retry is out', () => {
+      mocks.app.data.acquisition.list = []
+      mocks.app.data.acquisition.loaded = false
+      mocks.app.data.acquisition.loadError = new Error('offline')
+      mocks.app.data.acquisition.pending = true
+      const wrapper = mountPane()
+
+      expect(wrapper.findComponent({ name: 'ProgressSpinner' }).exists()).toBe(true)
+      expect(explanation(wrapper)).not.toContain('Could not load the raw files')
+      expect(button(wrapper, 'Retry')).toBeUndefined()
+    })
+
     // Unlike the toolbar's clear, which also puts the time range back: a range
     // the user just widened to is kept.
     it('clears the filters but keeps the range', async () => {
