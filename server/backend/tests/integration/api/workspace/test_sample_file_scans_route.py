@@ -142,6 +142,16 @@ async def test_the_table_holds_every_scan_and_no_centroid(
         assert row["MsType"] == "Ms"
         assert {"TIC", "StartTime", "ScanType", "FT Resolution:"} <= set(row)
     assert data["stats_per_file"]["Value"]["Model"]
+    # The calibration identity of its one stream, over both scans. The
+    # committed file has no status log, so there is no calibration_status.
+    assert set(data["stats_per_file"]) == {"Value", "calibrations"}
+    [calibration] = data["stats_per_file"]["calibrations"].values()
+    assert calibration["scans"] == 2
+    assert (
+        calibration["c_over_b2_min"]
+        <= calibration["c_over_b2"]
+        <= calibration["c_over_b2_max"]
+    )
 
 
 @pytest.mark.asyncio
@@ -154,7 +164,11 @@ async def test_the_rows_are_the_ones_metadata_serves(
     )
 
     assert scans.status_code == metadata.status_code == 200
-    assert scans.json()["data"] == metadata.json()["data"]
+    table, document = scans.json()["data"], metadata.json()["data"]
+    # The table's file statistics add the calibration identity to the
+    # instrument's details /metadata has.
+    assert table["stats_per_file"].pop("calibrations")
+    assert table == document
 
 
 @pytest.mark.asyncio

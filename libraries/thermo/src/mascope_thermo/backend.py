@@ -241,6 +241,15 @@ class ReaderBackend(Protocol):
         """
         ...
 
+    def status_log(self, scan_number: int) -> dict | None:
+        """The instrument's status-log record for one scan, ``{label: value}``.
+
+        The instrument's state over time (temperatures, pressures, the
+        ``Performance:`` text), apart from the scan's trailer. None when the
+        reader gives no record for the scan, and when the log cannot be read.
+        """
+        ...
+
     def scan_statistics(
         self,
         polarity: Polarity | None = None,
@@ -1101,6 +1110,19 @@ class ThermoBackend:
         header = self._raw.GetTrailerExtraInformation(scan_number)
         return dict(zip(list(header.Labels), list(header.Values)))
 
+    def status_log(self, scan_number: int) -> dict | None:
+        # The library keeps the log by time and gives the record nearest the
+        # scan's start. A file without one, or a library that cannot read
+        # it, gives no record rather than failing the caller.
+        try:
+            entry = self._raw.GetStatusLogForRetentionTime(
+                self._raw.RetentionTimeFromScanNumber(scan_number)
+            )
+            labels, values = list(entry.Labels), list(entry.Values)
+        except Exception:
+            return None
+        return dict(zip(labels, values)) or None
+
     def scan_statistics(
         self,
         polarity: Polarity | None = None,
@@ -1798,6 +1820,14 @@ class OpenTFRawBackend:
         # dict, so a label the trailer repeats appears here once, where
         # GetTrailerExtraInformation lists it each time.
         return self._raw.scan_parameters(scan_number) or {}
+
+    def status_log(self, scan_number: int) -> dict | None:
+        # None where the scan has no record. OpenTFRaw 3.0.0 raises where the
+        # log cannot be read at all, which says the same to a caller.
+        try:
+            return self._raw.status_log(scan_number) or None
+        except Exception:
+            return None
 
     def scan_statistics(
         self,

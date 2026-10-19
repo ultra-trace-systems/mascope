@@ -423,6 +423,24 @@ async def get_sample_file_scans_route(
     none is left out. No peak is read, so the response stays small and quick
     for a file whose centroids run to hundreds of megabytes.
 
+    `stats_per_file` also says which mass calibration the file was acquired
+    on, for every scan of the file whatever the filters keep:
+
+    - `calibrations`, per stream key: the median `b` and `c` of the trailer's
+      Conversion Parameters B and C, `c_over_b2` (C/B², the median, with
+      `c_over_b2_min` and `c_over_b2_max`) and `scans`, the scans counted.
+      C/B² is fixed by the calibration: within one it spreads by about
+      2e-13, and two differ by 1.3e-10 or more. Files share a calibration
+      when their C/B² agree **to within 1e-11**; compare the numbers with that
+      tolerance, never as printed digits, which can round the files of one
+      calibration apart. Grouping files is the client's.
+    - `calibration_status`, where the reader gives the instrument's status
+      log: for `first_scan` and `last_scan`, the `overdue` mass calibrations
+      the log names (`polarity`, and `calibrated`, the time of the
+      calibration in the instrument's local time, as recorded). The
+      instrument names one once it is older than 25 h, so an empty list says
+      none was. Left out when the reader gives no status log.
+
     :param sample_file_id: ID of the sample file.
     :param query_params: Which scans to describe, and which entries of each.
     :param user: Authenticated user.
