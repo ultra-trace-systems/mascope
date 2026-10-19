@@ -61,7 +61,7 @@ async def get_datasets_route(
 
 
 @dataset_router.get("/{dataset_id}")
-@api_route()
+@api_route(token_access=True)
 async def get_dataset_route(
     dataset_id: str,
     workspace_id: str = Path(...),

@@ -175,7 +175,7 @@ async def aggregate_sample_match_compounds_route(
 
 
 @match_aggregate_sample_router.post("/{sample_item_id}")
-@api_route()
+@api_route(token_access=True)
 async def aggregate_sample_matches_route(
     sample_item_id: str,
     body: AggregateMatchIsotopeFilteredDataBody,

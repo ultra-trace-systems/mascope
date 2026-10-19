@@ -22,7 +22,7 @@ target_collection_in_sample_batch_router = APIRouter(
 
 
 @target_collection_in_sample_batch_router.get("")
-@api_route()
+@api_route(token_access=True)
 async def get_target_collections_in_sample_batch_route(
     query_params: GetTargetCollectionsInSampleBatchQueryParams = Depends(),
     user=Depends(current_active_user),
