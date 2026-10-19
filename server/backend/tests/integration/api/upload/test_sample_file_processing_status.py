@@ -305,10 +305,15 @@ async def test_a_file_without_a_registration_time_sorts_last(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("order", ["asc", "desc"])
 async def test_files_that_tie_on_the_sort_column_keep_one_order(
-    admin_client, async_session_factory
+    admin_client, async_session_factory, order
 ):
-    """Paging with OFFSET needs a total order, or pages repeat and skip rows."""
+    """Paging with OFFSET needs a total order, or pages repeat and skip rows.
+
+    The id breaks the tie in the sort's own direction, which is what lets one
+    index serve the list newest first and oldest first.
+    """
     added = [
         await _add_file(async_session_factory, f"tie{i}", "done") for i in range(4)
     ]
@@ -320,6 +325,7 @@ async def test_files_that_tie_on_the_sort_column_keep_one_order(
             params={
                 "instrument": INSTRUMENT,
                 "sort": "processing_status",
+                "order": order,
                 "page": page,
                 "limit": 2,
             },
@@ -327,7 +333,7 @@ async def test_files_that_tie_on_the_sort_column_keep_one_order(
         assert resp.status_code == 200, resp.text
         pages += [row["sample_file_id"] for row in resp.json()["data"]]
 
-    assert pages == sorted(added)
+    assert pages == sorted(added, reverse=order == "desc")
 
 
 @pytest.mark.asyncio

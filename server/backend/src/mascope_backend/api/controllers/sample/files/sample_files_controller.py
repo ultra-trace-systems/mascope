@@ -415,18 +415,27 @@ async def get_sample_files(
                 SampleFile.processing_updated_utc >= processing_updated_min
             )
 
+        # --- Count, before ordering: a count needs no order, and counting an
+        # ordered statement sorts every row it keeps.
+        total = await session.scalar(select(func.count()).select_from(stmt.subquery()))
+
         # --- Apply sorting
-        # Rows without a value last in either direction, so the newest come
-        # first on a descending sort of a column older rows leave NULL; and
-        # the id breaks ties, so pages of rows that share a value neither
-        # repeat nor skip any.
-        stmt = stmt.order_by(
-            order_by_column(SampleFile, sort, order, SampleFileSortColumn).nulls_last(),
-            SampleFile.sample_file_id,
-        )
+        # The id breaks ties in the sort's own direction, so pages of rows
+        # that share a value neither repeat nor skip any. A column older rows
+        # leave NULL sorts them last in either direction, so the newest come
+        # first on a descending sort; a NOT NULL column keeps Postgres' own
+        # order. That is what `ix_sample_file_datetime_utc` and
+        # `ix_sample_file_instrument_datetime_utc` (models.SampleFile) are
+        # declared to serve, read forwards or backwards with no sort: change
+        # this order and those indexes together, as
+        # tests/integration/api/sample/test_sample_file_list_plan.py checks.
+        sort_by = order_by_column(SampleFile, sort, order, SampleFileSortColumn)
+        if SampleFile.__table__.c[sort].nullable:
+            sort_by = sort_by.nulls_last()
+        tiebreak = SampleFile.sample_file_id
+        stmt = stmt.order_by(sort_by, tiebreak.desc() if order == "desc" else tiebreak)
 
         # --- Apply pagination
-        total = await session.scalar(select(func.count()).select_from(stmt))
         if page is not None and limit is not None:
             stmt = stmt.offset(page * limit).limit(limit)
 
