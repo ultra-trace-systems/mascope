@@ -18,12 +18,15 @@ open questions that draft flagged are resolved here against the backend source,
 its appendix is corrected, and the staging is revised around a constraint the
 draft missed (section 1.3).
 
-> **Status (2026-08-11).** Design revision after codebase verification. No code
-> written. All backend/SDK claims below were verified against the tree on this
-> date; file links are the evidence. **Committed 2026-10-14** as written; the
-> tree has moved since (the SDK gained peak-assignment import wrappers, the
-> provenance block is stamped on SDK frames), so section 1 is re-read against
-> `develop` as the first step of the plan before any phase starts.
+> **Status (2026-10-19).** Design revision after codebase verification. No code
+> written. Written and verified against the tree on 2026-08-11 and committed
+> 2026-10-14 as written. Section 1 and the appendix were re-read against
+> `develop` on 2026-10-19, the first step of the plan: the SDK's write path
+> (the batch-ledger import), the provenance block on SDK frames, unified name
+> matching, the token-reachable assignment and upload routes, device-token
+> lifetimes and `/save`'s upsert are now described; file links are the
+> evidence. Sections 2 to 9 were not re-read and still speak from 2026-08-11
+> where they restate section 1.
 
 > **Scope decision (v1): read-only.** Phases 0-2 ship a read-only toolkit and
 > agent. The write path (plan/apply, section 5) requires backend auth work and
@@ -39,45 +42,105 @@ draft missed (section 1.3).
 
 ## 1. Current state (as-is)
 
-### 1.1 The SDK: read-only, notebook-shaped
+### 1.1 The SDK: read-mostly, notebook-shaped
 
 [mascope_sdk](../../libraries/sdk/) wraps the REST API for notebook use:
 workspace/dataset/batch/sample listings with an in-memory cache, peak and
-time-series loaders with concurrent per-sample fetches, spectra, MS2, and four
-RPC-style POSTs that are queries, not mutations
+time-series loaders with concurrent per-sample fetches, spectra, MS2, a sample
+file's scan table
+([sample_files.py](../../libraries/sdk/src/mascope_sdk/resources/sample_files.py)),
+and the assignment results: a sample's peak-assignment runs and ledgers
+([peak_assignments.py](../../libraries/sdk/src/mascope_sdk/resources/peak_assignments.py))
+and a batch's batch ledger
+([batch_peaks.py](../../libraries/sdk/src/mascope_sdk/resources/batch_peaks.py)).
+Four RPC-style POSTs are queries, not mutations
 ([match_compound / match_compounds](../../libraries/sdk/src/mascope_sdk/resources/matching.py),
 [peaks/timeseries](../../libraries/sdk/src/mascope_sdk/resources/samples.py),
-[cheminfo/mz/query](../../libraries/sdk/src/mascope_sdk/resources/cheminfo.py)).
-There are no write methods. There is no collections resource at all —
-collections surface only as a `target_collection_ids` column on peaks.
+[cheminfo/mz/query](../../libraries/sdk/src/mascope_sdk/resources/cheminfo.py)),
+though `peaks/timeseries` computes and stores a peak's time series the first
+time it is asked for one, which `compute_peak_timeseries` drives on purpose
+([samples.py:671-778](../../libraries/sdk/src/mascope_sdk/resources/samples.py)).
+The high-level loaders stamp the server's provenance block (deployment id,
+`mascope_version`, `match_score_version`, `peak_assignment_engine_version`) on
+every frame they return as `df.attrs["provenance"]`
+([client.py:393-485](../../libraries/sdk/src/mascope_sdk/client.py)), which is
+what an agent's answer cites (section 3.4). There is still no collections
+resource: collections surface only as the `target_collection_ids` and
+`target_collection_names` columns on peaks
+([samples.py:332-345](../../libraries/sdk/src/mascope_sdk/resources/samples.py)).
 
-Five behaviors matter to an agent wrapper and are wrong for it as-is:
+**One write path exists: the batch-ledger import.**
+`batch_peaks.import_run` posts an external engine's batch-level result to
+`POST /api/batch-peaks/batch/{id}/runs/import` and polls until the run
+completes
+([batch_peaks.py:199-280](../../libraries/sdk/src/mascope_sdk/resources/batch_peaks.py)).
+The server matches each row to the nearest batch peak, measures the engine's
+formula against that peak's members, and lands the result as a new batch run
+under the engine's name; curated and isotopologue batch peaks are left alone,
+and the name `mascope` is reserved so an import cannot pass as the server's
+own run. Its docstring's example lands a peaky (1.4) result. (The module's
+own docstring still calls the resource read-only.) Besides it, the agent
+upload helpers in
+[_agents.py](../../libraries/sdk/src/mascope_sdk/_agents.py) (`api_post_file`,
+`api_post_file_tus`) are exported but documented as not part of the public
+SDK; the File Agent uploads through them under its own service name.
+
+How phase 3 relates to it: `import_run` is additive (a new run beside the
+existing ones, nothing deleted or moved), engine-specific, and reaches a route
+that was opened to the SDK for it. Phase 3's wrappers are the other kind: they
+reorganise or overwrite the user's own data (datasets, batches, samples,
+collections, compounds, `/save`). `import_run` is the shape to copy for them -
+one thin method over one route, keyword-only options, the server's record
+returned, an asynchronous job polled - but not the risk profile. The toolkit
+treats it as a write all the same: if `mascope_ai` ever exposes it, it goes
+through plan/apply (section 5) with a soft gate, like any other write.
+
+Five behaviors matter to an agent wrapper. Four are still wrong for it as-is;
+the fifth has been fixed since the draft:
 
 - **`confirm_above` does not guard agents.** The interactive prompt
-  ([_loaders.py:93-118](../../libraries/sdk/src/mascope_sdk/_loaders.py))
+  ([_loaders.py:179-204](../../libraries/sdk/src/mascope_sdk/_loaders.py))
   catches `EOFError` on non-interactive stdin and **proceeds silently** — the
   one caller it was meant to slow down is the one it waves through. On a TTY or
-  notebook it blocks, which is worse.
+  notebook it blocks, which is worse. Unchanged.
 - **Partial results are silent.** The concurrent loader
-  ([_concurrent.py:64-83](../../libraries/sdk/src/mascope_sdk/_concurrent.py))
-  swallows per-sample failures and returns partial data with only a log
+  ([_concurrent.py:26-85](../../libraries/sdk/src/mascope_sdk/_concurrent.py))
+  swallows per-task failures and returns partial data with only a log
   warning; there is no programmatic completeness signal. An agent summarising a
   batch cannot tell "March had low signal" from "half of March failed to load."
-- **Two name-resolution semantics.** `resolve_id` treats the query as an
-  unescaped regex
-  ([_resolve.py:44](../../libraries/sdk/src/mascope_sdk/_resolve.py)) while the
-  loaders' `_name_mask` escapes plain strings
-  ([_loaders.py:44](../../libraries/sdk/src/mascope_sdk/_loaders.py)) — a name
-  containing `(` matches in one and crashes or mismatches in the other.
+  The loaders now attach the server's own warnings to the frame as
+  `df.attrs["warnings"]`
+  ([_loaders.py:16-37](../../libraries/sdk/src/mascope_sdk/_loaders.py)), but
+  those say which peaks a read left out, not which reads failed. Unchanged in
+  substance.
+- **Name resolution: one contract now, with a fallback.** Both `resolve_id`
+  and the loaders' filters match a plain string as a case-insensitive literal
+  substring and a compiled `re.Pattern` as a regex
+  ([_resolve.py:15-50](../../libraries/sdk/src/mascope_sdk/_resolve.py)), so a
+  name containing `(` matches the same way everywhere. Name resolution keeps a
+  deprecation shim: when the literal match finds nothing and the string works
+  as a regex that does match, that match is returned with a
+  `DeprecationWarning`
+  ([_resolve.py:54-86](../../libraries/sdk/src/mascope_sdk/_resolve.py)). An
+  agent wrapper should pass names it means literally and treat that warning as
+  an error until the shim is removed.
 - **Cache hands out references.** Cached listing DataFrames are returned
-  by object, not copy
-  ([samples.py:214](../../libraries/sdk/src/mascope_sdk/resources/samples.py));
-  a mutating caller corrupts the session cache.
+  by object, not copy: workspaces, datasets, batches and ionization
+  mechanisms ([datasets.py:41-52](../../libraries/sdk/src/mascope_sdk/resources/datasets.py)
+  and its siblings) and the per-batch sample cache
+  ([samples.py:242-251](../../libraries/sdk/src/mascope_sdk/resources/samples.py));
+  a mutating caller corrupts the session cache. `samples.list()` itself copies
+  each batch's frame before adding a column
+  ([samples.py:221](../../libraries/sdk/src/mascope_sdk/resources/samples.py)),
+  so its result is safe; the others are not.
 - **Score columns are client-side.** `match_score_ion` and
   `match_score_compound` are computed in the SDK from per-isotope scores
-  ([samples.py:382-413](../../libraries/sdk/src/mascope_sdk/resources/samples.py)),
+  ([samples.py:479-513](../../libraries/sdk/src/mascope_sdk/resources/samples.py)),
   not returned by the API — relevant to any provenance claim about "values
-  returned by Mascope."
+  returned by Mascope". The provenance block's `match_score_version` is the
+  server's scoring switch, not a version of this aggregation
+  ([provenance.py](../../server/backend/src/mascope_backend/provenance.py)).
+  Unchanged.
 
 ### 1.2 The backend: full write surface, workspace ACL
 
@@ -95,12 +158,12 @@ Two verified facts settle the draft's open questions:
 
 - **Collection↔batch association is a payload field, not an endpoint.**
   `sample_batch_ids` on `TargetCollectionCreate`/`TargetCollectionUpdate`
-  ([target_collection_pydantic_model.py:101-134](../../server/backend/src/mascope_backend/api/models/target/collections/target_collection_pydantic_model.py));
+  ([target_collection_pydantic_model.py:103-150](../../server/backend/src/mascope_backend/api/models/target/collections/target_collection_pydantic_model.py));
   the association router is GET-only. The update model forbids changing
   compounds and batches in one request, and a batches-only update is
   deliberately cheap: guest on the collection, editor only on the *changed*
   batches
-  ([target_collections_routes.py:126-152](../../server/backend/src/mascope_backend/api/routes/target/collections/target_collections_routes.py),
+  ([target_collections_routes.py:122-152](../../server/backend/src/mascope_backend/api/routes/target/collections/target_collections_routes.py),
   [check_collection_batch_change_access](../../server/backend/src/mascope_backend/api/new/workspaces/dependencies.py)),
   so a workspace editor can attach a global collection to their own batches.
   `plan_associate` maps to a batches-only PATCH.
@@ -108,11 +171,18 @@ Two verified facts settle the draft's open questions:
   `POST /api/match/aggregate/sample/{id}` and `/batch/{id}` run
   [aggregate_matches](../../server/backend/src/mascope_backend/api/controllers/match/aggregate/match_aggregate_controller.py)
   — pure select + pandas, guest-gated, no commits, no sentinels, no advisory
-  locks. The match-refresh sentinels and locks live exclusively on the
-  `/save`, `/resave`, `/compute`, `/rematch` paths. Moreover `/save` is
-  **destructive-rebuild** — it deletes the scope's match rows before recreating
-  them — and `/resave` removes all aggregate levels first. So: preview freely,
-  gate `/save` hard.
+  locks. The token-reachable sample `/compound(s)` previews build their
+  transient targets in a session that is never committed
+  ([match_aggregate_sample_controller.py](../../server/backend/src/mascope_backend/api/controllers/match/aggregate/sample/match_aggregate_sample_controller.py)).
+  The match-refresh sentinels and locks live exclusively on the `/save`,
+  `/resave`, `/compute`, `/rematch` paths. `/save` overwrites the scope's
+  stored aggregates: it clears the scope's sample-level match rows up front as
+  a crash-safe completeness marker, then upserts the ion, compound, collection
+  and sample levels chunk by chunk (`aggregate_and_create_matches`, same
+  controller). `/resave` (batch only) is still a **destructive rebuild**: it
+  removes the ion, compound, collection and sample levels before recreating
+  them (`aggregate_and_recreate_matches`). So: preview freely, gate `/save`
+  and `/resave` hard.
 
 One asymmetry needs designing around: **target compounds have no workspace
 ACL.** The compound routes check only global editor
@@ -125,32 +195,79 @@ compound namespace as shared infrastructure, not the user's sandbox
 ### 1.3 The constraint the draft missed: token access is per-route
 
 Access-token auth is doubly gated. The token's stored service name must match
-the `X-Service-Name` header and be allowlisted
-([backend.py:87-100](../../server/backend/src/mascope_backend/api/new/auth/backend.py);
-allowlist = `mascope_sdk` + four instrument/export agents,
-[access_token/config.py:16-22](../../server/backend/src/mascope_backend/api/new/auth/access_token/config.py))
+the `X-Service-Name` header
+([backend.py:106-124](../../server/backend/src/mascope_backend/api/new/auth/backend.py))
 — **and the endpoint must be decorated `token_access=True`, or the request is
-401'd** ([backend.py:103-113](../../server/backend/src/mascope_backend/api/new/auth/backend.py)).
-Only ~40 routes carry the decorator.
+401'd** ([backend.py:147-157](../../server/backend/src/mascope_backend/api/new/auth/backend.py);
+the flag is set by `@api_route`,
+[api_features.py:261](../../server/backend/src/mascope_backend/api/lib/api_features.py)).
+The allowlist is enforced when a token is minted, not on each request: the
+request model refuses a service outside it
+([access_token/schemas.py:15-24](../../server/backend/src/mascope_backend/api/new/auth/access_token/schemas.py))
+and an admin script (`clean_access_tokens`) purges stored tokens whose
+service is not on it
+([models.py:362](../../server/backend/src/mascope_backend/db/models.py)); a
+stored token is not re-checked against the list per request. The
+allowlist is `mascope_sdk`, the internal `file-converter`, and four agents
+(`tof-agent`, `file-agent`, `export-agent`, `instrument-agent`)
+([access_token/config.py:16-23](../../server/backend/src/mascope_backend/api/new/auth/access_token/config.py)).
+62 handlers carry the decorator, plus the six generated resumable-upload (tus)
+operations stamped by hand
+([sample_files_routes.py:1044-1049](../../server/backend/src/mascope_backend/api/routes/sample/files/sample_files_routes.py)):
+68 operations in the OpenAPI schema, 35 of them GETs.
 
 Consequences:
 
-- **No write endpoint is token-reachable today.** Not datasets, batches,
-  samples, collections, compounds, `/save`, nor `/resave`. The write phase is
-  therefore backend work (auditing and opening routes) before it is SDK work
-  (wrapping them). The draft's "roughly 15 thin wrapper methods" stands, but as
-  the second half of the phase.
-- One exception cuts the other way: `POST /api/match/rematch/sample/{id}`
-  **is** token-accessible — a destructive recompute reachable with any SDK
-  token. The toolkit must simply never call it outside plan/apply (and its
-  token access deserves a review of its own).
+- **The organisation routes are not token-reachable.** Datasets, batches,
+  sample items, target collections, target compounds, and aggregate `/save`
+  and `/resave` all still refuse a token (appendix). Phase 3 is therefore still
+  backend work (auditing and opening routes) before it is SDK work (wrapping
+  them). The draft's "roughly 15 thin wrapper methods" stands, but as the
+  second half of the phase.
+- **Other write routes are, now.** Since the draft, 31 non-GET operations take
+  a token. Some are queries (peak and sample-file time series,
+  `cheminfo/mz/query`, sample `match/aggregate/.../compound(s)`, the
+  peak-assignment fits). The real writes are uploads and sample-file creation
+  and bulk delete
+  ([sample_files_routes.py](../../server/backend/src/mascope_backend/api/routes/sample/files/sample_files_routes.py)),
+  `POST /api/instrument_configs`, device-token renewal, and the
+  peak-assignment surface: per-sample verify, edit, assign, run import, run
+  delete and recalibrate
+  ([peak_assignments/routes.py](../../server/backend/src/mascope_backend/api/new/peak_assignments/routes.py)),
+  and the batch ledger's backfill, untargeted search, verify, retract, curate,
+  release-curation, export and run import
+  ([batch_peaks_routes.py](../../server/backend/src/mascope_backend/api/new/peak_assignments/batch_peaks_routes.py)).
+  Each was opened route by route, the model decision 7.5 recommends for
+  phase 3. The SDK wraps one of them
+  (`batch_peaks.import_run`, 1.1); the per-sample run import
+  (`POST /api/peak-assignments/sample/{id}/runs/import`) has no SDK method.
+  The toolkit must not call any of them outside plan/apply.
+- `POST /api/match/rematch/sample/{id}` **is** still token-accessible
+  ([match_routes.py:334-335](../../server/backend/src/mascope_backend/api/routes/match/match_routes.py))
+  — a destructive recompute reachable with any SDK token whose user is an
+  editor on the sample. Its token access deserves a review of its own.
 - A `mascope_ai` toolkit speaking through the SDK today must present
-  `service_name="mascope_sdk"`; a custom name 401s. Attributable agent traffic
-  requires adding an `ai-agent` service to the allowlist and its minting-role
-  gate ([access_token/routes.py:36-42](../../server/backend/src/mascope_backend/api/new/auth/access_token/routes.py)).
-- Tokens are 360-day, full-user-rights, one active per service. **There is no
-  short-lived or scoped token facility** — the in-app surface (phase 4) needs
-  one built.
+  `service_name="mascope_sdk"`; a token minted for one service is refused under
+  another name, and a name outside the allowlist cannot be minted.
+  Attributable agent traffic requires adding an `ai-agent` service to the
+  allowlist and an arm to the minting-role gate
+  ([access_token/routes.py:44-60](../../server/backend/src/mascope_backend/api/new/auth/access_token/routes.py)),
+  which refuses any service it does not name.
+- SDK tokens are 360-day
+  ([access_token/config.py:25-27](../../server/backend/src/mascope_backend/api/new/auth/access_token/config.py)),
+  full-user-rights, one active per service (minting removes the user's earlier
+  tokens for it,
+  [access_token/service.py:267-270](../../server/backend/src/mascope_backend/api/new/auth/access_token/service.py)),
+  and stored in clear
+  ([models.py:335](../../server/backend/src/mascope_backend/db/models.py)).
+  Hashing them and shortening the default lifetime is in progress (MAS-75); the
+  number is still open. One short-lived facility exists since the draft, for
+  paired devices only: a device-bound agent token expires after 30 days and the
+  agent renews it
+  ([access_token/config.py:56](../../server/backend/src/mascope_backend/api/new/auth/access_token/config.py),
+  [validation.py:75-103](../../server/backend/src/mascope_backend/api/new/auth/access_token/validation.py)).
+  **There is still no per-session or scoped token for a person** — the in-app
+  surface (phase 4) needs one built.
 
 ### 1.4 The peaky precedent
 
@@ -576,19 +693,27 @@ and error taxonomy, peaky's skill and its patterns, the demo stack.
 
 ## Appendix: verified backend write surface
 
-Verified 2026-08-11 against `server/backend/src/mascope_backend/api/`.
-Corrections to the draft: dataset routes are workspace-nested; sample `resave`
-does not exist (batch only); compound PATCH takes a list body on the
-collection root, not `/{id}`.
+Re-verified 2026-10-19 against `server/backend/src/mascope_backend/api/`
+(first verified 2026-08-11). Routers are listed in
+[api/routes/\_\_init\_\_.py](../../server/backend/src/mascope_backend/api/routes/__init__.py)
+and mounted without a further prefix. Changes since 2026-08-11: locked
+datasets, batches and sample items take a higher role or refuse the write;
+batches gained an import route; `/save` upserts instead of deleting first
+(1.2); and the peak-assignment, batch-ledger and upload surfaces exist and take
+a token.
 
-| Capability | Endpoints | ACL |
-|---|---|---|
-| Datasets | `POST/PATCH/DELETE /api/workspaces/{ws}/datasets[/{id}]`, `POST .../{id}/move` | workspace editor (move: editor on both) |
-| Batches | `POST /api/sample/batches`, `PATCH /{id}`, `PATCH /status`, `POST /{id}/copy`, `DELETE /{id}` | dataset/batch editor (copy: editor source + destination dataset) |
-| Samples | `POST /api/sample/items`, `PATCH /{id}`, `POST /move`, `/copy`, `/delete`, `/process`, `DELETE /{id}` | editor (copy: **guest** on source, editor destination) |
-| Target collections | `POST/PATCH/DELETE /api/target/collections[/{id}]`; association via `sample_batch_ids` payload field | workspace editor; batches-only update: guest on collection + editor on changed batches |
-| Target compounds | `POST/PATCH /api/target/compounds`, `DELETE /{id}` | **global editor only — no workspace ACL** |
-| Matching | `POST /api/match/aggregate/{sample\|batch}/{id}` (+`/save`; `/resave` batch-only); `/api/match/{rematch,compute,remove}/...` | aggregate: guest (pure); save/resave: editor, destructive-rebuild |
+| Capability | Endpoints | ACL | Token |
+|---|---|---|---|
+| Datasets ([dataset_routes.py](../../server/backend/src/mascope_backend/api/routes/dataset/dataset_routes.py)) | `POST /api/workspaces/{ws}/datasets`, `PATCH/DELETE .../{id}`, `POST .../{id}/move` | workspace editor (move: editor on both workspaces); a locked dataset needs global admin to update, delete or move | no |
+| Batches ([sample_batches_routes.py](../../server/backend/src/mascope_backend/api/routes/sample/batches/sample_batches_routes.py)) | `POST /api/sample/batches`, `PATCH /{id}`, `PATCH /status`, `POST /{id}/import`, `POST /{id}/copy`, `DELETE /{id}` | dataset editor to create; batch editor otherwise (status: editor on every listed batch; copy: also editor on the destination dataset); locked: update needs global admin, delete needs owner, import into it and copy into a locked dataset are refused | no |
+| Samples ([sample_items_routes.py](../../server/backend/src/mascope_backend/api/routes/sample/items/sample_items_routes.py)) | `POST /api/sample/items`, `PATCH /{id}`, `POST /move`, `/copy`, `/delete`, `/process`, `DELETE /{id}` | editor (copy: **guest** on source, editor on destination batch; move: editor on both); locked: update and delete need owner, move and copy refuse a locked destination | no |
+| Target collections ([target_collections_routes.py](../../server/backend/src/mascope_backend/api/routes/target/collections/target_collections_routes.py)) | `POST/PATCH/DELETE /api/target/collections[/{id}]`; association via the `sample_batch_ids` payload field | workspace editor (global collection: global admin); batches-only update: guest on collection + editor on changed batches | no |
+| Target compounds ([target_compounds_routes.py](../../server/backend/src/mascope_backend/api/routes/target/compounds/target_compounds_routes.py)) | `POST/PATCH /api/target/compounds`, `DELETE /{id}` | **global editor only — no workspace ACL** | no |
+| Matching ([aggregate/](../../server/backend/src/mascope_backend/api/routes/match/aggregate/), [match_routes.py](../../server/backend/src/mascope_backend/api/routes/match/match_routes.py)) | `POST /api/match/aggregate/{sample\|batch}/{id}` and its `/isotope`, `/ion`, `/compound(s)` previews (+`/save`; `/resave` batch-only); `/api/match/{rematch,compute,remove}/...`; `/remove/all` | aggregate: guest (pure); save/resave: editor (save upserts, resave rebuilds); rematch/compute/remove: editor on the scope; remove/all: global admin | sample `/compound(s)` previews and **`POST /rematch/sample/{id}`** only |
+| Peak assignments ([peak_assignments/routes.py](../../server/backend/src/mascope_backend/api/new/peak_assignments/routes.py)) | `POST /api/peak-assignments/sample/{id}/verify`, `PATCH .../assignment/{id}`, `POST .../assign`, `POST .../runs/import`, `DELETE .../runs/{id}`, `POST /calibration/{instrument}/recalibrate`, `POST .../fit/{aggregate,visualize}` | sample editor (recalibrate: superuser; fits: guest, compute only); behind the peak-assignment feature flag | **yes**, all |
+| Batch ledger ([batch_peaks_routes.py](../../server/backend/src/mascope_backend/api/new/peak_assignments/batch_peaks_routes.py)) | `POST /api/batch-peaks/batch/{id}/{backfill,search-untargeted,verify,retract,curate,release-curation,export,runs/import}` | batch editor (export: guest, writes a CSV to the user's temp store); behind the feature flag | **yes**, all |
+| Sample files ([sample_files_routes.py](../../server/backend/src/mascope_backend/api/routes/sample/files/sample_files_routes.py)) | `POST /api/sample/files`, `POST /upload`, tus `/upload/tus[/{id}]`, `POST /delete`; `PATCH/DELETE /{id}`, `POST /{id}/peaks/compute`, `/{id}/process`, `/bind`, `/reprocess` | upload and create: editor in the instrument's workspace; bulk delete and the rest: instrument admin or editor | upload, create and bulk delete only |
 
-**None of these routes accept access-token auth today** (`token_access=True`
-absent); see section 1.3.
+**The data-organisation rows (datasets to matching `/save`) accept no
+access-token auth** (`token_access=True` absent); the token-reachable writes are
+the rematch route and the assignment and upload surfaces (section 1.3).
