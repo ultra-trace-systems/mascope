@@ -2,11 +2,12 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { mount } from '@vue/test-utils'
 import { reactive } from 'vue'
 import PrimeVue from 'primevue/config'
+import Tooltip from 'primevue/tooltip'
 
-// The create button in the panel header used to hide its label whatever the
-// list held, leaving a bare plus as the only way to make a first dataset. It
-// spells itself out above an empty list and goes back to the icon beside a
-// full one, and is named for a screen reader in both states.
+// The create button in the panel header spells itself out above an empty
+// list, where it is the only way to make a first dataset, and goes back to
+// the icon beside a full one. It is named for a screen reader in both states,
+// and explained in a tooltip only while the label is hidden.
 
 const mocks = vi.hoisted(() => ({ app: null }))
 vi.mock('@/stores', () => ({ useApp: () => mocks.app }))
@@ -40,13 +41,13 @@ function makeApp(list) {
   })
 }
 
-// The real PrimeVue Button, since the label and its name are what is under
-// test; the table around it is not.
+// The real PrimeVue Button and Tooltip, since the label, its name and when it
+// is explained are what is under test; the table around it is not.
 const mountTable = () =>
   mount(DatasetTable, {
     global: {
       plugins: [PrimeVue],
-      directives: { tooltip: {} },
+      directives: { tooltip: Tooltip },
       stubs: {
         DataTable: { template: '<div class="datatable"><slot /></div>' },
         Column: true,
@@ -70,6 +71,16 @@ describe('the Create dataset button', () => {
 
     expect(button.classes()).not.toContain('hiddenlabel')
     expect(button.find('.p-button-label').text()).toBe('Create dataset')
+  })
+
+  // The tooltip repeats the label, so it is bound only while the label is
+  // hidden; PrimeVue's directive marks an element it is bound to.
+  it('is explained in a tooltip only while icon-only', () => {
+    mocks.app = makeApp([])
+    expect(createButton(mountTable()).attributes('data-pd-tooltip')).toBeUndefined()
+
+    mocks.app = makeApp([DATASET])
+    expect(createButton(mountTable()).attributes('data-pd-tooltip')).toBe('true')
   })
 
   it('is icon-only beside a list with rows', () => {

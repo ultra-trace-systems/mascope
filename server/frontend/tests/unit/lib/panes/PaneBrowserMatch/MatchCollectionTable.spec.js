@@ -2,12 +2,12 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { mount } from '@vue/test-utils'
 import { reactive } from 'vue'
 import PrimeVue from 'primevue/config'
+import Tooltip from 'primevue/tooltip'
 
 // The lower-left pane lists the target collections of the open batch. With no
-// batch open it used to be a blank box with a plus in its corner: nothing said
-// what the pane was for or how it would fill. It now says so, and the create
-// button spells itself out above an empty list rather than hiding behind the
-// icon it uses beside a full one.
+// batch open it says what it is for and how it fills, and the create button
+// spells itself out above an empty list rather than hiding behind the icon it
+// uses beside a full one.
 
 const mocks = vi.hoisted(() => ({ app: null }))
 vi.mock('@/stores', () => ({ useApp: () => mocks.app }))
@@ -68,7 +68,7 @@ const mountTable = () =>
   mount(MatchCollectionTable, {
     global: {
       plugins: [PrimeVue],
-      directives: { tooltip: {} },
+      directives: { tooltip: Tooltip },
       stubs: {
         DataTable: { template: '<div class="datatable"><slot /></div>' },
         Column: true
@@ -121,6 +121,16 @@ describe('the Create target collection button', () => {
     mocks.app = makeApp({ batch: BATCH, collections: [COLLECTION] })
 
     expect(createButton(mountTable()).classes()).toContain('hiddenlabel')
+  })
+
+  // The tooltip repeats the label, so it is bound only while the label is
+  // hidden; PrimeVue's directive marks an element it is bound to.
+  it('is explained in a tooltip only while icon-only', () => {
+    mocks.app = makeApp()
+    expect(createButton(mountTable()).attributes('data-pd-tooltip')).toBeUndefined()
+
+    mocks.app = makeApp({ batch: BATCH, collections: [COLLECTION] })
+    expect(createButton(mountTable()).attributes('data-pd-tooltip')).toBe('true')
   })
 
   it('is named for a screen reader in both states', () => {
