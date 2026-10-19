@@ -8,6 +8,7 @@ from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
 from fastapi import BackgroundTasks, HTTPException, UploadFile
+from fastapi.responses import FileResponse
 from sqlalchemy import (
     exists,
     func,
@@ -1980,6 +1981,64 @@ async def get_sample_file_metadata(
     return ClosingStreamingResponse(
         _metadata_body(message, head, pieces, filename),
         media_type="application/json",
+    )
+
+
+#: The source data file each kind of stored sample keeps in its directory, by
+#: the sample file type ``get_sample_file_type`` reads: the processor that
+#: converted it decides, a raw file for an Orbitrap and an HDF5 file for a TOF.
+_STORED_DATA_FILES = {"orbi_raw": "data.raw", "tof_h5": "data.h5"}
+
+
+def _stored_data_file(filename: str) -> str | None:
+    """The path of the source data file a sample file keeps, if it keeps one.
+
+    :param filename: Sample file name.
+    :type filename: str
+    :return: The path of ``data.raw`` or ``data.h5`` in the sample's
+        directory, or None when it keeps neither (only its zarr is left) or
+        its kind cannot be told.
+    :rtype: str | None
+    """
+    try:
+        data_file = _STORED_DATA_FILES.get(get_sample_file_type(filename))
+        if data_file is None:
+            return None
+        path = os.path.join(parse_path_from_item_filename(filename), data_file)
+    except (OSError, ValueError):
+        return None
+    return path if os.path.isfile(path) else None
+
+
+@api_controller()
+async def get_sample_file_raw(sample_file_id: str) -> FileResponse:
+    """
+    The source data file of a sample file as it was uploaded, streamed from
+    the filestore.
+
+    The file is sent from where it is stored, read a piece at a time: nothing
+    is copied, and a file of hundreds of megabytes is never held in memory.
+
+    :param sample_file_id: Unique identifier for the sample file.
+    :type sample_file_id: str
+    :raises NotFoundException: If the sample file is not found, or keeps no
+        source data file.
+    :return: The file, with its length and the name it was uploaded under.
+    :rtype: FileResponse
+    """
+    sample_file_data = await get_sample_file(sample_file_id)
+    filename = sample_file_data.get("data").get("filename")
+
+    path = await asyncio.to_thread(_stored_data_file, filename)
+    if path is None:
+        raise NotFoundException(
+            f"Sample file '{filename}' keeps no source data file to download"
+        )
+    extension = os.path.splitext(path)[1]
+    return FileResponse(
+        path,
+        media_type="application/octet-stream",
+        filename=f"{filename}{extension}",
     )
 
 

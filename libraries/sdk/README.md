@@ -624,6 +624,7 @@ A `get_peaks` over a time range (`t_min` / `t_max`) leaves out the peaks whose t
 | Method                                                              | Description                                           | Returns             |
 | ------------------------------------------------------------------- | ----------------------------------------------------- | ------------------- |
 | `get_scans(sample_file_id, fields=, first_scan=, last_scan=, ...)`  | A file's scan table: one row per scan, no centroids   | `pd.DataFrame│None` |
+| `download_raw(sample_file_id, path)`                                | The file's source `.raw` / `.h5`, streamed to disk    | `Path`              |
 
 A sample names the file it was cut from in `sample_file_id` (`mascope.samples.get(sample_id)["sample_file_id"]`). `get_scans` returns one row per scan of that file with the scan's statistics (`ScanNumber`, `StartTime` in minutes, `TIC`, `ScanType`, `MsType`) and its trailer under the instrument's own labels, colon included (`"FT Resolution:"`, `"Conversion Parameter B:"`). Scans of every MS order are in it and none is left out; filter on `MsType` for the MS1 scans alone. No peak is read for it, so it stays under a megabyte for a file whose centroids run to hundreds.
 
@@ -643,6 +644,12 @@ scans = mascope.sample_files.get_scans(
 ```
 
 `fields` keeps the named columns (`ScanNumber` always comes with them); `first_scan` / `last_scan`, `t_min` / `t_max` (seconds) and `polarity` narrow the scans. The number of scans in the file and the file's own statistics ride on `df.attrs["num_of_scans"]` and `df.attrs["stats_per_file"]`. Only a file whose raw Orbitrap data is stored has a scan table; any other is refused with a `ValidationError`.
+
+`download_raw` saves the file the instrument wrote, byte for byte as the server stores it, streaming it to disk a megabyte at a time. Give it a directory and the file keeps the name it was uploaded with; give it a file path and it is written there. A download is not resumed: one cut off part way raises `MascopeConnectionError` and leaves nothing at the destination. The server limits how many files an account may download in a while (60 in ten minutes) and answers 429 past that.
+
+```python
+raw = mascope.sample_files.download_raw(file_id, "downloads/")
+```
 
 #### `mascope.matching`
 
