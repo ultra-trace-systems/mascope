@@ -50,9 +50,12 @@ class _FakeHandle:
         return self._groups[key]
 
 
-def _make_processor(zone_name: str | None):
-    """An H5Processor whose file context reports ``zone_name`` (or none)."""
-    context = SimpleNamespace(instrument_timezone=zone_name)
+def _make_processor(zone_name: str | None, browser_zone: str | None = None):
+    """An H5Processor whose file context reports ``zone_name`` (or none) as the
+    agent's zone, and ``browser_zone`` (or none) as the browser's."""
+    context = SimpleNamespace(
+        instrument_timezone=zone_name, browser_timezone=browser_zone
+    )
     socket_client = SimpleNamespace(
         context_manager=SimpleNamespace(get_context=lambda _name: context)
     )
@@ -84,6 +87,47 @@ def test_offset_falls_back_to_the_agent_zone():
     # Denver in July is MDT: UTC-6. The sign is the regression this guards.
     assert offset == -6 * 3600
     assert source == "agent"
+
+
+def test_offset_falls_back_to_the_browser_zone_and_says_so():
+    """A web upload's zone is a weaker hint than an agent's, and is labelled
+    as one, so a reading taken wherever the uploader sat can be told apart
+    from one taken at the instrument."""
+    processor = _make_processor(zone_name=None, browser_zone="America/Denver")
+    processor.file_handle = _FakeHandle({"AcquisitionTimeZero": [ACQUIRED_FILETIME]})
+    offset, source = processor._resolve_utc_offset()
+    assert (offset, source) == (-6 * 3600, "browser")
+    assert processor.acquisition_timezone == "America/Denver"
+
+
+def test_the_agents_zone_outranks_the_browsers():
+    processor = _make_processor(
+        zone_name="America/Denver", browser_zone="Australia/Sydney"
+    )
+    processor.file_handle = _FakeHandle({"AcquisitionTimeZero": [ACQUIRED_FILETIME]})
+    offset, source = processor._resolve_utc_offset()
+    assert (offset, source) == (-6 * 3600, "agent")
+    assert processor.acquisition_timezone == "America/Denver"
+
+
+def test_the_files_own_offset_outranks_the_browser_zone():
+    processor = _make_processor(zone_name=None, browser_zone="America/Denver")
+    processor.file_handle = _FakeHandle(
+        {"AcquisitionTimeZero": [ACQUIRED_FILETIME], "LocalTimeOffsetToUTC": [2.0]}
+    )
+    offset, source = processor._resolve_utc_offset()
+    assert (offset, source) == (2.0 * 3600, "file")
+    # Recorded all the same, as the agent's zone is: the source says the
+    # file's own offset decided, the zone says what the upload reported.
+    assert processor.acquisition_timezone == "America/Denver"
+
+
+def test_unknown_browser_zone_is_ignored_and_falls_through():
+    processor = _make_processor(zone_name=None, browser_zone="Mars/Olympus_Mons")
+    processor.file_handle = _FakeHandle({"AcquisitionTimeZero": [ACQUIRED_FILETIME]})
+    offset, source = processor._resolve_utc_offset()
+    assert source == "guess"
+    assert processor.acquisition_timezone is None
 
 
 def test_offset_guess_is_used_when_nothing_else_is_available():
@@ -140,6 +184,38 @@ def test_agent_reported_zone_reaches_the_processor():
     zone = processor._context_timezone()
     assert zone is not None and zone.key == "America/Denver"
     assert processor.acquisition_timezone == "America/Denver"
+
+
+def test_browser_reported_zone_reaches_the_processor_under_its_own_name():
+    """The web app's zone travels under a key of its own, so the processor
+    can rank it below an agent's and label it as the browser's."""
+    from mascope_backend.file_converter.socket.events import _build_file_context
+    from mascope_backend.file_converter.socket.session import FileContextManager
+
+    manager = FileContextManager()
+    manager.register_file(
+        _build_file_context(
+            {
+                "filename": "ACQUISITION.h5",
+                "user_id": 1,
+                "username": "person",
+                "role_id": 200,
+                "access_token": "t",
+                "browser_timezone": "Europe/Vienna",
+            }
+        )
+    )
+
+    processor = H5Processor(
+        socket_client=SimpleNamespace(context_manager=manager),
+        file_queue=Queue(),
+        shutdown_event=Event(),
+    )
+    processor.file_to_process = "ACQUISITION.h5"
+
+    zone, source = processor._reported_timezone()
+    assert (zone.key, source) == ("Europe/Vienna", "browser")
+    assert processor.acquisition_timezone == "Europe/Vienna"
 
 
 def test_missing_agent_zone_leaves_the_processor_without_one():
@@ -315,11 +391,13 @@ def test_processor_stays_quiet_for_an_ordinary_wall_clock(monkeypatch):
     assert warnings == []
 
 
-def _thermo(zone_name, wall, filename="ORBI_sample.raw"):
+def _thermo(zone_name, wall, filename="ORBI_sample.raw", browser_zone=None):
     """A RawProcessor wired to a stubbed context and a fixed wall clock."""
     from mascope_thermo.processor import RawProcessor
 
-    context = SimpleNamespace(instrument_timezone=zone_name)
+    context = SimpleNamespace(
+        instrument_timezone=zone_name, browser_timezone=browser_zone
+    )
     processor = RawProcessor.__new__(RawProcessor)
     processor.file_to_process = filename
     processor.socket_client = SimpleNamespace(
@@ -408,3 +486,11 @@ def test_thermo_resolves_once_per_file(thermo_timestamp, monkeypatch):
     processor.utc_offset
     assert len(resolutions) == 2
     assert resolutions[1][0] == datetime(2026, 1, 15, 9, 30)
+
+
+def test_thermo_browser_branch_labels_the_zone_as_the_browsers(thermo_timestamp):
+    """The same rule for raw files, which carry no offset of their own."""
+    processor = _thermo(None, "2026-07-01T12:00:00", browser_zone="America/Denver")
+
+    assert processor._resolve_utc_offset() == (-6 * 3600, "browser")
+    assert processor.acquisition_timezone == "America/Denver"

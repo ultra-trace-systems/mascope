@@ -91,18 +91,21 @@ class SampleFileProps(BaseModel):
     utc_offset_source: str = Field(
         description=(
             "What determined utc_offset: 'file' (an offset embedded in the "
-            "raw file), 'agent' (the IANA zone the uploading machine "
-            "reported), or 'guess' (the converter host's own clock, the "
-            "last-resort fallback)."
+            "raw file), 'agent' (the IANA zone the uploading agent reported "
+            "for the instrument PC), 'browser' (the zone of the browser a "
+            "web upload came from, a weaker hint, since that machine may "
+            "stand anywhere), or 'guess' (the converter host's own clock, "
+            "the last-resort fallback)."
         )
     )
 
     acquisition_timezone: str | None = Field(
         default=None,
         description=(
-            "IANA timezone of the uploading machine, when the agent reported "
-            "a valid one. Recorded even when an offset embedded in the file "
-            "took precedence."
+            "The IANA zone the upload reported, when it was a valid one: the "
+            "agent's for the instrument PC, else the browser's for a web "
+            "upload. Recorded even when an offset embedded in the file took "
+            "precedence; utc_offset_source says what decided the offset."
         ),
     )
 

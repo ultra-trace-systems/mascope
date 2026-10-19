@@ -32,6 +32,7 @@ import {
 import { InstrumentSelector } from '@/lib/toolbars'
 
 import { api } from '@/api'
+import { browserTimezone } from '@/lib/browserTimezone'
 import {
   PROCESSING_STATUS_FILTERS,
   canChooseChemistry,
@@ -42,6 +43,16 @@ import { useApp } from '@/stores'
 const app = useApp()
 const uppy = app.uppy.get()
 const confirm = useConfirm()
+
+// What the upload dialog says of the acquisition times: which zone they are
+// read in. The browser is wherever the person uploading sits, not always at
+// the instrument, so the zone it will report is shown rather than assumed.
+const timezoneNote = () => {
+  const zone = browserTimezone()
+  return zone
+    ? `Acquisition times are read in ${zone}, this browser's timezone.`
+    : "This browser names no geographic timezone, so acquisition times are read in the server's."
+}
 
 onMounted(() => {
   uppy
@@ -59,7 +70,7 @@ onMounted(() => {
       closeModalOnClickOutside: true,
       closeAfterFinish: true,
       proudlyDisplayPoweredByUppy: false,
-      note: 'Supported file types: .h5 (TOF), .raw (Orbi)'
+      note: `Supported file types: .h5 (TOF), .raw (Orbi). ${timezoneNote()}`
     })
 })
 
