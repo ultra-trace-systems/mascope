@@ -319,6 +319,8 @@ def _handler_probe(monkeypatch):
     async def fake_upload(dest_path, **kwargs):
         seen["dest_path"] = dest_path
         seen["source_filename"] = kwargs.get("source_filename")
+        seen["instrument_timezone"] = kwargs.get("instrument_timezone")
+        seen["browser_timezone"] = kwargs.get("browser_timezone")
 
     async def noop(*args, **kwargs):
         return None
@@ -537,3 +539,28 @@ async def test_the_first_file_settles_an_instrument_with_no_class_yet(monkeypatc
         .replace("\\", "/")
         .endswith("/tmp/tus/Lab-1_ambient_2026.09.06-10h12m01s.raw")
     )
+
+
+@pytest.mark.asyncio
+async def test_a_web_uploads_browser_zone_reaches_the_converter_as_its_own(
+    monkeypatch,
+):
+    """The web app sends the zone of the browser under a key of its own.
+
+    It must not arrive as the agent's zone: the converter ranks the two and
+    labels what it stored by which one decided, and a repair of rows read
+    in the wrong zone selects by that label.
+    """
+    handler, seen = _handler_probe(monkeypatch)
+
+    await handler(
+        "/tmp/tus-upload-body",
+        {
+            "filename": "Orbi-Lab2_2026.09.03-10h12m01s.raw",
+            "instrument": "Orbi-Lab2",
+            "browser_timezone": "Europe/Vienna",
+        },
+    )
+
+    assert seen["browser_timezone"] == "Europe/Vienna"
+    assert seen["instrument_timezone"] is None

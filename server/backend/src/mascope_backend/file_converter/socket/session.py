@@ -18,6 +18,11 @@ class FileContext:
     # uploading machine reported (None when it sent none).
     device_id: Optional[int] = None
     instrument_timezone: Optional[str] = None
+    # The IANA timezone of the browser a web upload came from: a weaker hint
+    # than the agent's, since that machine may stand anywhere, and recorded
+    # under its own name (None when the upload was not a web one, or the
+    # browser named no geographic zone).
+    browser_timezone: Optional[str] = None
     # The file's name on the uploading machine, before the server filed it
     # under the instrument the agent reported (None when nothing renamed it).
     source_filename: Optional[str] = None

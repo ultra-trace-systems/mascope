@@ -11,6 +11,7 @@ import { TOKENLESS_UPLOADS, useServer } from './server'
 import { useUi } from './ui'
 
 import { api } from '@/api'
+import { browserTimezone } from '@/lib/browserTimezone'
 import { maxUploadBytes } from '@/lib/features'
 import { hasIonizationToken } from '@/lib/ionizationModes'
 import { runtime } from '@/lib/runtime.js'
@@ -18,29 +19,6 @@ import { genId, isValidInstrumentName } from '@/lib/utils'
 
 // TODO_configuration Default sample file upload params
 const FILE_UPLOAD_EXTENSIONS = ['.h5', '.raw']
-
-/**
- * The IANA zone this browser runs in, or undefined when it cannot name one.
- *
- * A raw file records its acquisition time as the instrument PC's wall clock,
- * with no offset, so the server can only place it in UTC if the upload says
- * which zone that clock was in. A File Agent reports its machine's zone with
- * every upload; a browser upload reported nothing, and the converter then
- * read the wall clock in its own zone - UTC in the production image - so a
- * file uploaded from the web app at a site east of UTC was stored hours late.
- * The browser's zone is the best guess available for the instrument's: it is
- * the machine the user sits at, usually at the site itself.
- *
- * @returns {string | undefined} an IANA zone name, when the browser has one
- */
-function browserTimezone() {
-  try {
-    const zone = Intl.DateTimeFormat().resolvedOptions().timeZone
-    return typeof zone === 'string' && zone ? zone : undefined
-  } catch {
-    return undefined
-  }
-}
 
 function validateFile(file) {
   const validInstrument = validateInstrument(file)
@@ -80,13 +58,7 @@ export const useUppy = defineStore('app.uppy', () => {
 
   const invalidFiles = ref([])
 
-  const timezone = browserTimezone()
   const uppy = new Uppy({
-    // Carried as metadata by every file, as a File Agent carries it: the
-    // server reads `timezone` off the upload's metadata to resolve the
-    // acquisition time. Left out when the browser cannot name its zone, and
-    // the server then falls back to its own, as before.
-    meta: timezone ? { timezone } : {},
     restrictions: {
       allowedFileTypes: FILE_UPLOAD_EXTENSIONS,
       // The server's own per-upload cap, not a separate browser limit: a
@@ -113,6 +85,12 @@ export const useUppy = defineStore('app.uppy', () => {
     // which aborts request bodies over ~25 MB behind Cloudflare - that
     // bug is why this used to be 5 MiB.
     chunkSize: 20 * 1024 * 1024,
+    // Every meta field a file carries goes to the server, which reads
+    // `instrument` and `browser_timezone` off the upload's metadata. The
+    // default, written out because the alternative looks safer and is not:
+    // a list of names sends each name whether the file carries it or not,
+    // an absent one as the string "undefined".
+    allowedMetaFields: true,
     withCredentials: true,
     removeFingerprintOnSuccess: true,
     limit: 1, // Upload files sequentially, one by one
@@ -129,6 +107,18 @@ export const useUppy = defineStore('app.uppy', () => {
       req.setHeader('X-SID', api.socket.id)
     }
   })
+  // The zone the acquisition times of these files are read in, as a File
+  // Agent sends its machine's. Read as each upload starts, not once at app
+  // start: a tab stays open for days, and the machine's zone can change
+  // under it. The server ranks it below an agent's zone and above its own
+  // guess, and records it as the browser's, since the browser is wherever
+  // the person uploading sits. Nothing is sent when the browser names no
+  // geographic zone, and the server then falls back as before.
+  uppy.on('upload', () => {
+    const zone = browserTimezone()
+    if (zone) uppy.setMeta({ browser_timezone: zone })
+  })
+
   // One note for a drop, about the files Uppy admitted - after its own checks
   // for duplicates, types and sizes - and only once the modes are known.
   uppy.on('files-added', (files) => {

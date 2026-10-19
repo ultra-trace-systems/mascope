@@ -344,8 +344,10 @@ class RawProcessor(BaseFileProcessor):
         """Resolve the UTC offset for this file's local timestamp.
 
         Raw files embed no offset of their own, so the order is: the zone
-        the uploading machine reported, evaluated at the file's own
-        timestamp ("agent"); else the converter host's zone at that
+        the uploading agent reported for the instrument PC, evaluated at
+        the file's own timestamp ("agent"); else the zone of the browser a
+        web upload came from ("browser"), a weaker hint, since that machine
+        may stand anywhere; else the converter host's zone at that
         timestamp ("guess") - the legacy fallback, wrong whenever the
         instrument PC and the converter host disagree on timezone or DST.
 
@@ -362,7 +364,7 @@ class RawProcessor(BaseFileProcessor):
         DST anomaly twice for one acquisition. The cache is emptied as each
         file is picked up, so it cannot outlive the file it describes.
 
-        :return: UTC offset [s] and its source ("agent" or "guess")
+        :return: UTC offset [s] and its source ("agent", "browser" or "guess")
         :rtype: tuple[int, str]
         """
         cached = self._per_file_cache.get("utc_offset")
@@ -370,13 +372,13 @@ class RawProcessor(BaseFileProcessor):
             return cached
 
         local_dt = datetime.fromisoformat(self.timestamp)
-        zone = self._context_timezone()
+        zone, source = self._reported_timezone()
         # zone=None reads it in the converter host's own zone, which is what
         # the "guess" fallback means; total_seconds() keeps west-of-UTC
         # offsets negative.
         resolved = (
             self._wall_time_offset(local_dt, zone),
-            "agent" if zone is not None else "guess",
+            source if zone is not None else "guess",
         )
         self._per_file_cache["utc_offset"] = resolved
         return resolved
@@ -392,7 +394,7 @@ class RawProcessor(BaseFileProcessor):
 
     @property
     def utc_offset_source(self) -> str:
-        """What determined utc_offset: "agent" or "guess"
+        """What determined utc_offset: "agent", "browser" or "guess"
 
         :return: Offset source
         :rtype: str

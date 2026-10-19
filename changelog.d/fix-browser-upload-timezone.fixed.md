@@ -8,9 +8,14 @@
   east of UTC was therefore stored hours late - two hours in central
   European summer time - with `utc_offset_source` `guess` and no
   `acquisition_timezone`, and its ingest appeared to precede its
-  acquisition. The web app now sends the browser's IANA zone as the
-  `timezone` metadata of each upload, as the File Agent does, and such a
-  file is stored with its `acquisition_timezone` set and
-  `utc_offset_source` `agent`. A browser in another zone than the
-  instrument still reads the clock in its own, as an agent on such a
-  machine does. Files already stored are not changed.
+  acquisition. The web app now sends the browser's zone with each upload,
+  read as the upload starts, and the upload dialog says which zone it will
+  report. The converter ranks it below an agent's zone and above its own
+  guess, and records such a file with its `acquisition_timezone` set and
+  `utc_offset_source` `browser`, a new value: the browser is wherever the
+  person uploading sits rather than at the instrument, so a file uploaded
+  from another zone than the instrument's is still read in the browser's,
+  and the value says so. Only a geographic zone is sent; a browser that
+  reports a placeholder such as `UTC`, as fingerprinting-resistant,
+  headless and kiosk browsers do, sends none, and the server falls back as
+  before. Files already stored are not changed.

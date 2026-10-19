@@ -816,6 +816,7 @@ def get_upload_handler(
             access_token=access_token,
             device_id=_request_device_id(request),
             instrument_timezone=metadata.get("timezone"),
+            browser_timezone=metadata.get("browser_timezone"),
             source_filename=source_filename,
             acquisition=acquisition,
             sha256=sha256,

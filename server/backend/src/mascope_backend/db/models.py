@@ -924,10 +924,13 @@ class SampleFile(Base):
         index=True,
     )
     # How datetime_utc was derived from the instrument-local datetime:
-    # the IANA zone the uploading agent reported (NULL when none was sent),
-    # and which source determined the applied offset - "file" (an offset
-    # embedded in the raw file), "agent" (the reported zone), or "guess"
-    # (the converter host's own clock, the legacy fallback).
+    # the IANA zone the upload reported - the agent's for the instrument PC,
+    # else the browser's for a web upload (NULL when none was sent) - and
+    # which source determined the applied offset: "file" (an offset embedded
+    # in the raw file), "agent" (the zone the agent reported), "browser" (the
+    # zone of the browser a web upload came from, a weaker hint, since that
+    # machine may stand anywhere), or "guess" (the converter host's own
+    # clock, the legacy fallback).
     acquisition_timezone: Mapped[Optional[str]] = mapped_column(
         String(64), nullable=True
     )

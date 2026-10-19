@@ -563,34 +563,59 @@ class BaseFileProcessor(Thread, ABC, metaclass=FileProcessorMeta):
             )
         return resolved.seconds
 
-    def _context_timezone(self) -> ZoneInfo | None:
-        """The uploading machine's timezone, resolved from the file context.
+    def _reported_timezone(self) -> tuple[ZoneInfo | None, str | None]:
+        """The zone the upload reported for the file, and who reported it.
 
-        None when no socket client or context is registered, the agent
-        reported no zone, or the reported name is not a known IANA zone
-        (logged; the offset then falls back to the processor's own
-        resolution order).
+        An agent's zone first: it is the instrument PC's own, or configured
+        for it. Else the browser's, when the upload came through the web
+        app: a weaker hint, since that machine may stand anywhere, so it is
+        recorded under its own name and a repair can tell the two apart. A
+        name that is not a known IANA zone is logged and skipped, and the
+        offset falls through to the next source.
+
+        :return: The zone and its source, ``"agent"`` or ``"browser"``, or
+            ``(None, None)`` when no socket client or context is registered
+            or neither reported a usable zone.
+        :rtype: tuple[ZoneInfo | None, str | None]
         """
         context_manager = getattr(self.socket_client, "context_manager", None)
         if context_manager is None:
-            return None
+            return None, None
         base_filename = os.path.basename(self.file_to_process)
         context = context_manager.get_context(base_filename)
-        zone_name = getattr(context, "instrument_timezone", None) if context else None
-        if not zone_name:
-            return None
-        try:
-            return ZoneInfo(zone_name)
-        except (ZoneInfoNotFoundError, ValueError, KeyError):
-            runtime.logger.warning(
-                f"Uploader reported unknown timezone '{zone_name}' for "
-                f"{base_filename}; falling back for the UTC offset"
-            )
-            return None
+        if context is None:
+            return None, None
+        for attribute, source in (
+            ("instrument_timezone", "agent"),
+            ("browser_timezone", "browser"),
+        ):
+            zone_name = getattr(context, attribute, None)
+            if not zone_name:
+                continue
+            try:
+                return ZoneInfo(zone_name), source
+            except (ZoneInfoNotFoundError, ValueError, KeyError):
+                runtime.logger.warning(
+                    f"Uploader reported unknown timezone '{zone_name}' for "
+                    f"{base_filename}; falling back for the UTC offset"
+                )
+        return None, None
+
+    def _context_timezone(self) -> ZoneInfo | None:
+        """The zone the upload reported, whoever reported it.
+
+        See :meth:`_reported_timezone`, which also says who.
+        """
+        return self._reported_timezone()[0]
 
     @property
     def acquisition_timezone(self) -> str | None:
-        """IANA timezone of the uploading machine, when it reported a valid one."""
+        """The IANA zone the upload reported, when it was a valid one.
+
+        The agent's for the instrument PC, else the browser's for a web
+        upload. Recorded whether or not it decided the offset, which
+        ``utc_offset_source`` says.
+        """
         zone = self._context_timezone()
         return zone.key if zone is not None else None
 

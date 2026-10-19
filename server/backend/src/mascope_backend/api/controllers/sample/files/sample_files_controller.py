@@ -168,6 +168,7 @@ async def _register_file_with_converter(
     source_filename: str | None = None,
     acquisition: dict | None = None,
     sha256: str | None = None,
+    browser_timezone: str | None = None,
 ) -> None:
     """Tell the converter who uploaded a file, before the file is stored.
 
@@ -203,6 +204,9 @@ async def _register_file_with_converter(
     :param sha256: The file's SHA-256, where its uploader reported one and
         the bytes received have it.
     :type sha256: str | None
+    :param browser_timezone: IANA timezone of the browser a web upload came
+        from, a weaker hint than the agent's zone.
+    :type browser_timezone: str | None
     """
     await event_emitter.emit(
         "file-converter.auth",
@@ -214,6 +218,7 @@ async def _register_file_with_converter(
             "access_token": access_token,
             "device_id": device_id,
             "instrument_timezone": instrument_timezone,
+            "browser_timezone": browser_timezone,
             "source_filename": source_filename,
             "acquisition": acquisition,
             "sha256": sha256,
@@ -1321,6 +1326,7 @@ async def upload_sample_file(
     source_filename: str | None = None,
     acquisition: dict | None = None,
     sha256: str | None = None,
+    browser_timezone: str | None = None,
 ) -> dict:
     """
     Handles upload of a single sample file from a given file path to the `filestreams` directory.
@@ -1346,6 +1352,9 @@ async def upload_sample_file(
     :param sha256: The file's SHA-256, where its uploader reported one and
         the bytes received have it.
     :type sha256: str | None, optional
+    :param browser_timezone: IANA timezone of the browser a web upload came
+        from, a weaker hint than the agent's zone.
+    :type browser_timezone: str | None, optional
     :return: Dictionary with file upload result.
     :rtype: dict
     """
@@ -1404,6 +1413,7 @@ async def upload_sample_file(
             source_filename=source_filename,
             acquisition=acquisition,
             sha256=sha256,
+            browser_timezone=browser_timezone,
         )
 
         # A cross-filesystem move degrades to a non-atomic copy, which the
