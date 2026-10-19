@@ -154,6 +154,18 @@ URL** and an **API token**.
     Treat it like a password. Do not share it or commit it to version control.
     To expire an existing token, you can simply generate a new one.
 
+!!! note "A token for an AI agent"
+    If an AI agent (a coding assistant driving the SDK, for example) works
+    with your data for you, generate a token for **AI Agent** in the same
+    list and give the agent that one rather than your Jupyter Notebooks
+    token. It reads what your notebook token reads, as you and with your
+    permissions, but its requests carry the service name `ai-agent`, so the
+    server's log tells the agent's requests apart from your own. The agent
+    passes that name to the SDK, `MascopeClient(service_name="ai-agent")`;
+    under any other name its token is refused. Each token is generated and
+    expired on its own: generating a new AI Agent token leaves your notebook
+    token working, and the other way round.
+
 ### When your token expires
 
 An API token works for **90 days** from the moment you generate it. After

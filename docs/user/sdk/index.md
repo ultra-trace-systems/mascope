@@ -62,7 +62,9 @@ server runs and names that version in its `info.version`.
   [API token](getting-started.md#generate-an-api-token) sent as
   `Authorization: Bearer <token>` together with the header
   `X-Service-Name: mascope_sdk`, which names the service the token was
-  generated for. A token sent without that header is refused with 401.
+  generated for (`ai-agent` for a token generated for an
+  [AI agent](getting-started.md#generate-an-api-token)). A token sent without
+  that header is refused with 401.
 - Tokens are accepted by the operations the SDK uses, which the document marks
   with the `APIToken` scheme; the rest of the API answers only to the web app's
   signed-in session.

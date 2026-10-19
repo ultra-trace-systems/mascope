@@ -97,3 +97,23 @@ async def test_an_editor_can_mint_a_token_for_a_pairable_service(minted, service
     )
 
     assert minted == [service]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("role", ["guest", "editor"])
+async def test_anyone_signed_in_can_mint_an_ai_agent_token(minted, role):
+    """An AI agent reads what the person who mints its token can read.
+
+    A personal token like the notebook's, so it takes the same guest gate;
+    the name of its own is what tells its requests apart.
+    """
+    await access_token_regenerate_route(
+        AccessTokenRequest(service_name="ai-agent"), user=_User(role)
+    )
+
+    assert minted == ["ai-agent"]
+
+
+def test_an_ai_agent_token_is_minted_by_hand_not_paired():
+    assert "ai-agent" in auth_settings.access_token.ALLOWED_SERVICES
+    assert "ai-agent" not in pairing_settings.ALLOWED_SERVICES

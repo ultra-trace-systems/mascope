@@ -55,6 +55,14 @@ const SERVICE_CONFIGS = [
     minRole: 100 // guest role_id
   },
   {
+    id: 'ai-agent',
+    // An AI agent acting for this person through the SDK: the reads a
+    // notebook makes, under a name of its own so the backend log tells its
+    // requests apart. A personal token, like the notebook's; it does not pair.
+    label: 'AI Agent',
+    minRole: 100 // guest role_id
+  },
+  {
     id: 'tof-agent', // Different delimiter styles (_ vs -) are used in id (packages/libraries use _, services/agents use -).
     label: 'TOF Agent',
     minRole: 200 // editor role_id

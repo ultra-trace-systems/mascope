@@ -28,6 +28,8 @@ async def access_token_regenerate_route(
 
     Different services require different minimum roles:
     - mascope_sdk: guest or higher - for Jupyter access
+    - ai-agent: guest or higher - for an AI agent acting for the person who
+      mints it, through the SDK; a personal token like mascope_sdk's
     - tof-agent: editor or higher - for TOF agent access
     - file-agent: editor or higher - for File agent access
     - export-agent: editor or higher - for Export agent access
@@ -46,7 +48,7 @@ async def access_token_regenerate_route(
     service_name = access_token_request.service_name
 
     match service_name:
-        case "mascope_sdk":
+        case "mascope_sdk" | "ai-agent":
             await role_based_access(user, "guest")
         case "tof-agent" | "file-agent" | "export-agent" | "instrument-agent":
             await role_based_access(user, "editor")
