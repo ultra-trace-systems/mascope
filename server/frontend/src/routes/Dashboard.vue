@@ -30,15 +30,22 @@ const app = useApp()
 // A disabled tab keeps its pointer events (see the style below) so that its
 // tooltip can say what enables it. PrimeVue's Tab would still take the click
 // and the Enter it was never meant to get, so both are stopped on the way in,
-// at the tab list, before they reach it.
+// at the tab list, before they reach it - and the mousedown, which is what
+// would focus the tab. Only the keys that activate a tab are stopped: a tab
+// can hold focus as it becomes disabled, and swallowing Tab there would keep
+// the focus in the tab list.
+const ACTIVATION_KEYS = ['Enter', 'NumpadEnter', 'Space']
 const guardDisabledTab = (event) => {
+  if (event.type === 'keydown' && !ACTIVATION_KEYS.includes(event.code)) return
   if (event.target?.closest?.('[data-p-disabled="true"]')) {
     event.stopPropagation()
     event.preventDefault()
   }
 }
 
-// `reason` is what a disabled tab says when hovered: what would enable it.
+// `reason` is what a disabled tab says: what would enable it. In a tooltip
+// for the pointer, and as the tab's accessible description for everyone else.
+const reasonId = (tab) => `tab-reason-${(tab.value ?? tab.label).toLowerCase()}`
 const tabs = computed(() => [
   {
     label: 'Raw files',
@@ -183,19 +190,32 @@ const tabs = computed(() => [
               <!-- Rendered as a div rather than PrimeVue's default button: a
                    disabled button gets no hover in every browser, so it could
                    never show the reason it is disabled. The role and keyboard
-                   handling are PrimeVue's own either way. -->
+                   handling are PrimeVue's own either way; the disabled state
+                   is not, since Tab only puts it on a button, so it is said
+                   here, and the reason with it, for a reader the tooltip
+                   never reaches. -->
               <Tab
-                v-for="{ icon, label, value, disabled, reason, help, doc, helpKey, title } in tabs"
-                :value="value ?? label.toLowerCase()"
-                :key="label"
-                :disabled="disabled"
+                v-for="tab in tabs"
+                :value="tab.value ?? tab.label.toLowerCase()"
+                :key="tab.label"
+                :disabled="tab.disabled"
                 as="div"
-                v-tooltip.bottom="disabled ? reason : null"
-                :pt="app.ui.help.bottom(help ?? { helpKey, title }, doc ? { doc } : undefined)"
+                :aria-disabled="tab.disabled || undefined"
+                :aria-describedby="tab.disabled ? reasonId(tab) : undefined"
+                v-tooltip.bottom="tab.disabled ? tab.reason : null"
+                :pt="
+                  app.ui.help.bottom(
+                    tab.help ?? { helpKey: tab.helpKey, title: tab.title },
+                    tab.doc ? { doc: tab.doc } : undefined
+                  )
+                "
               >
                 <div class="row">
-                  <span :class="icon" /><span>{{ label }}</span>
+                  <span :class="tab.icon" /><span>{{ tab.label }}</span>
                 </div>
+                <span v-if="tab.disabled" :id="reasonId(tab)" class="tab-reason">
+                  {{ tab.reason }}
+                </span>
               </Tab>
             </TabList>
             <TabPanels>
@@ -263,6 +283,18 @@ article {
 #charts :deep(.p-tab.p-disabled) {
   pointer-events: auto;
   cursor: not-allowed;
+}
+
+/* The reason a tab is disabled, for assistive tech: the tooltip is for the
+   pointer. Kept out of the layout rather than display: none, which would take
+   it out of the accessibility tree as well. */
+.tab-reason {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
 }
 
 menu {

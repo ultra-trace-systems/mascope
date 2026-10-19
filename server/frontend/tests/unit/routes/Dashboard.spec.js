@@ -41,6 +41,22 @@ import Dashboard from '@/routes/Dashboard.vue'
 const BATCH = { sample_batch_id: 'sb-1', sample_batch_name: 'Batch 1' }
 const SAMPLE = { sample_item_id: 'si-1', sample_item_name: 'Sample 1' }
 
+// What each tab says enables it.
+const REASONS = [
+  ['Batch', 'Open a batch with samples'],
+  ['Sample', 'Select a sample'],
+  ['Match', 'Visualize an ion match from the ion table']
+]
+
+// Dispatched rather than triggered, so that `defaultPrevented` can be read
+// back: whether the guard let the event through is the point.
+const dispatch = (element, type, init = {}) => {
+  const Event = type === 'keydown' ? KeyboardEvent : MouseEvent
+  const event = new Event(type, { bubbles: true, cancelable: true, ...init })
+  element.element.dispatchEvent(event)
+  return event
+}
+
 function makeApp({ batch = null, samples = [], sample = null, ion = null } = {}) {
   return reactive({
     data: {
@@ -110,11 +126,7 @@ describe('the disabled dashboard tabs', () => {
     expect(tab(wrapper, 'Raw files').attributes('data-pd-tooltip')).toBeUndefined()
   })
 
-  it.each([
-    ['Batch', 'Open a batch with samples'],
-    ['Sample', 'Select a sample'],
-    ['Match', 'Visualize an ion match from the ion table']
-  ])('say what enables the %s tab when hovered', async (label, reason) => {
+  it.each(REASONS)('say what enables the %s tab when hovered', async (label, reason) => {
     wrapper = mountDashboard()
 
     await hover(tab(wrapper, label))
@@ -135,6 +147,22 @@ describe('the disabled dashboard tabs', () => {
     expect(batch.attributes('disabled')).toBeUndefined()
   })
 
+  // PrimeVue's Tab puts the disabled state on a button only, so on a div the
+  // dashboard says it itself - and the reason with it, since the tooltip is
+  // for the pointer alone.
+  it('say so to assistive tech, with the reason', () => {
+    wrapper = mountDashboard()
+
+    for (const [label, reason] of REASONS) {
+      const element = tab(wrapper, label)
+      expect(element.attributes('aria-disabled')).toBe('true')
+      const description = document.getElementById(element.attributes('aria-describedby'))
+      expect(description.textContent.trim()).toBe(reason)
+    }
+    expect(tab(wrapper, 'Raw files').attributes('aria-disabled')).toBeUndefined()
+    expect(tab(wrapper, 'Raw files').attributes('aria-describedby')).toBeUndefined()
+  })
+
   // With pointer events back on, the click reaches PrimeVue's Tab, which would
   // happily activate it.
   it('do not open when clicked', async () => {
@@ -146,12 +174,35 @@ describe('the disabled dashboard tabs', () => {
     expect(mocks.app.ui.tab.active).toBe('raw files')
   })
 
-  it('do not open on Enter either', async () => {
+  it('do not open on Enter or Space, which are stopped before PrimeVue sees them', async () => {
     wrapper = mountDashboard()
+    const sample = tab(wrapper, 'Sample')
 
-    await tab(wrapper, 'Sample').trigger('keydown', { code: 'Enter' })
+    expect(dispatch(sample, 'keydown', { code: 'Enter' }).defaultPrevented).toBe(true)
+    expect(dispatch(sample, 'keydown', { code: 'Space' }).defaultPrevented).toBe(true)
+    await nextTick()
 
     expect(mocks.app.ui.tab.active).toBe('raw files')
+  })
+
+  // A tabindex="-1" div takes focus on mousedown, which is how a pointer would
+  // land focus on a disabled tab in the first place.
+  it('do not take focus from a mousedown', () => {
+    wrapper = mountDashboard()
+
+    expect(dispatch(tab(wrapper, 'Batch'), 'mousedown').defaultPrevented).toBe(true)
+    expect(dispatch(tab(wrapper, 'Raw files'), 'mousedown').defaultPrevented).toBe(false)
+  })
+
+  // Only the keys that would activate the tab are stopped: a tab can hold
+  // focus as it becomes disabled, and the keyboard must still lead out of it.
+  it('let every other key through', () => {
+    wrapper = mountDashboard()
+    const sample = tab(wrapper, 'Sample')
+
+    for (const code of ['Tab', 'Escape']) {
+      expect(dispatch(sample, 'keydown', { code }).defaultPrevented).toBe(false)
+    }
   })
 })
 
@@ -190,7 +241,24 @@ describe('the enabled dashboard tabs', () => {
 
     const sample = tab(wrapper, 'Sample')
     expect(sample.attributes('data-p-disabled')).toBe('true')
+    expect(sample.attributes('aria-disabled')).toBe('true')
     await hover(sample)
     expect(tooltips()).toContain('Select a sample')
+  })
+
+  // The visualized ion is cleared while the keyboard is on the Match tab: the
+  // tab is disabled under the focus it holds, and Tab must still lead away.
+  it('can be left by keyboard after becoming disabled while focused', async () => {
+    wrapper = mountDashboard()
+    const match = tab(wrapper, 'Match')
+    match.element.focus()
+    expect(document.activeElement).toBe(match.element)
+
+    mocks.app.data.match.visualized.ion = null
+    await nextTick()
+    expect(match.attributes('data-p-disabled')).toBe('true')
+
+    expect(dispatch(match, 'keydown', { code: 'Tab' }).defaultPrevented).toBe(false)
+    expect(dispatch(match, 'keydown', { code: 'Enter' }).defaultPrevented).toBe(true)
   })
 })
