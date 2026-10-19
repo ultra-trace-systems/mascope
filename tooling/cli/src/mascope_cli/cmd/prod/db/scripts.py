@@ -84,6 +84,12 @@ _FORWARDED_ENV_VARS = [
     "BINDING_REPORT_PER_KEY",
     # report_stitch_overlaps
     "STITCH_REPORT_FILES",
+    # fix_guessed_datetime_utc
+    "MASCOPE_FIX_GUESSED_UTC_ZONE",
+    "MASCOPE_FIX_GUESSED_UTC_INSTRUMENT",
+    "MASCOPE_FIX_GUESSED_UTC_CREATED_MIN",
+    "MASCOPE_FIX_GUESSED_UTC_CREATED_MAX",
+    "MASCOPE_FIX_GUESSED_UTC_APPLY",
 ]
 
 # Runs inside the backend container (`<container_python> -c ...`) and prints
