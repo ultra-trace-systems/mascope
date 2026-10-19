@@ -204,14 +204,21 @@ describe('upload store: the zone an acquisition time is read in', () => {
     }
   }
 
-  const metadataSent = async () => {
-    await vi.waitFor(() => expect(requests).toHaveLength(1))
-    return Object.fromEntries(
-      requests[0].headers['Upload-Metadata'].split(',').map((pair) => {
+  const decode = (request) =>
+    Object.fromEntries(
+      request.headers['Upload-Metadata'].split(',').map((pair) => {
         const [key, value] = pair.split(' ')
         return [key, value ? atob(value) : '']
       })
     )
+
+  // The POSTs that create uploads, in order; a cancelled upload may send
+  // other requests through the same stack.
+  const creations = () => requests.filter((request) => request.method === 'POST')
+
+  const metadataSent = async () => {
+    await vi.waitFor(() => expect(creations()).toHaveLength(1))
+    return decode(creations()[0])
   }
 
   // Under Vitest the tus client is its Node build, whose file reader takes
@@ -286,6 +293,26 @@ describe('upload store: the zone an acquisition time is read in', () => {
     const metadata = await metadataSent()
     expect(metadata.filename).toBe('Orbi-1_2026.09.21_NO3_001.raw')
     expect(metadata).not.toHaveProperty('browser_timezone')
+  })
+
+  it('stops sending a zone the browser stopped naming', async () => {
+    // Set on each file as its upload starts, never in the global meta: a
+    // zone sent once must not ride on every later file of the session.
+    const store = storeOnTestStack()
+    add(store, 'Orbi-1_2026.09.21_NO3_001.raw')
+    store.get().upload()
+    expect((await metadataSent()).browser_timezone).toBe('Europe/Vienna')
+
+    store.get().cancelAll()
+    zone.mockReturnValue({ timeZone: 'UTC' })
+    add(store, 'Orbi-1_2026.09.21_NO3_002.raw')
+    store.get().upload()
+
+    await vi.waitFor(() => expect(creations()).toHaveLength(2))
+    const metadata = decode(creations()[1])
+    expect(metadata.filename).toBe('Orbi-1_2026.09.21_NO3_002.raw')
+    expect(metadata).not.toHaveProperty('browser_timezone')
+    expect(store.get().getState().meta).not.toHaveProperty('browser_timezone')
   })
 
   it('lets every meta field a file carries through to the server', () => {
